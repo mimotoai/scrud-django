@@ -1,0 +1,162 @@
+{
+  "$id": "https://api.openteams.com/json-schema/PartnerProgramApplication/v0",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "Partner Program Application",
+  "description": "A resource for applications to the OpenTeams Partner Program.",
+  "properties": {
+    "first_name": {
+      "type": "string",
+      "description": "First name of the contact for this application to the OpenTeams Partner Program."
+    },
+    "last_name": {
+      "type": "string",
+      "description": "Last name of the contact for this application to the OpenTeams Partner Program."
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "Email address of the contact for this application to the OpenTeams Partner Program."
+    },
+    "phone_number": {
+      "type": "string",
+      "pattern": "^(\\([0-9]{3}\\))?[0-9]{3}-[0-9]{4}$",
+      "description": "Telephone number of the contact for this application to the OpenTeams Partner Program."
+    },
+    "country": {
+      "type": "string",
+      "description": "Country for the entity or individual  applying to the OpenTeams Partner Program."
+    },
+    "company_legal_name": {
+      "type": "string",
+      "description": "Legal name of the entity or individual applying to the OpenTeams Partner Program."
+    },
+    "company_address": {
+      "type": "#/definitions/PostalAddress",
+      "description": "Mailing address of the legal entity or individual applying to the OpenTeams Partner Program."
+    },
+    "company_website": {
+      "type": "string",
+      "format": "url",
+      "description": "Homepage URL of the legal entity or individual applying to the OpenTeams Partner Program."
+    },
+    "linkedin_url": {
+      "type": "string",
+      "format": "url",
+      "description": "LinkedIn Profile for the entity or individual applying to the OpenTeams Partner Program."
+    },
+    "github_url": {
+      "type": "string",
+      "format": "url",
+      "description": "GitHub Organization profile or individual profile URL for the applicant to the OpenTeams Partner Program."
+    },
+    "top_skills": {
+      "type": "object",
+      "properties": {
+        "skill_1": { "$ref": "#/definitions/TopSkillEntry" },
+        "skill_2": { "$ref": "#/definitions/TopSkillEntry" },
+        "skill_3": { "$ref": "#/definitions/TopSkillEntry" },
+        "skill_4": { "$ref": "#/definitions/TopSkillEntry" },
+        "skill_5": { "$ref": "#/definitions/TopSkillEntry" }
+      },
+      "description": "The top open source projects your company or organization supports and uses."
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "consulting",
+          "training",
+          "support",
+          "bug fixes",
+          "customization",
+          "installation and administration",
+          "hosting"
+        ]
+      },
+      "description": "The services your company or organization would provide as an OpenTeams Partner."
+    },
+    "average_hourly_rate": {
+      "$ref": "#/definitions/Rate",
+      "description": "The average hourly rate your company or organization charges for its services."
+    },
+    "operational_painpoints": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "marketing",
+          "sales",
+          "recruiting",
+          "project management",
+          "utilization insurance",
+          "administration",
+          "accounting",
+          "human resources operations",
+          "working capital",
+          "physical office spaces",
+          "N/A"
+        ]
+      },
+      "description": "Areas where OpenTeams could assist your company or organization."
+    },
+    "partnership_objectives": {
+      "type": "string",
+      "description": "What benefits and advantages do you hope to realize as an OpenTeams Partner? What metrics matter to you and what targets do you have for those metrics that OpenTeams can help you achieve?"
+    },
+    "found_through": {
+      "type": "array",
+      "items": [
+        "advertisement",
+        "event",
+        "forums",
+        "linkedin",
+        "email",
+        "news or blogs",
+        "search",
+        "word of mouth",
+        "other"
+      ],
+      "description": "One or more ways you were introduced to OpenTeams and the OpenTeams Partner Program."
+    }
+  },
+  "definitions": {
+    "PostalAddress": {
+      "type": "object",
+      "properties": {
+        "country_code": { "type" : "string" },
+        "address_line_1": { "type": "string" },
+        "address_line_2": { "type": "string" },
+        "address_line_3": { "type": "string" },
+        "address_line_4": { "type": "string" },
+        "postal_code": { "type": "string" },
+        "admin_area_1": {
+          "type": "string",
+          "description": "State or province"
+        },
+        "admin_area_2": {
+          "type": "string",
+          "description": "City or town"
+        },
+        "admin_area_3": { "type": "string" },
+        "admin_area_4": { "type": "string" }
+      }
+    },
+    "TopSkillEntry": {
+      "type": "string",
+      "description": "An open source project that an individual, company, or organization specializes in."
+    },
+    "Rate": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string",
+          "description": "The primary currency your company or organization accepts in exchange for its services."
+        }
+      }
+    }
+  }
+}

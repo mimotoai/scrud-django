@@ -1,0 +1,46 @@
+{
+  "schema": "http://schema.org/",
+  "openteams": "http://api.openteams.com/json-ld/common/",
+  "openteams-partner": "http://api.openteams.com/json-ld/PartnerProgramApplication/",
+  "@id": "http://api.openteams.com/json-ld/PartnerProgramApplication",
+  "first_name": "schema:givenName",
+  "last_name": "schema:familyName",
+  "email": "schema:email",
+  "phone_number": "schema:telephone",
+  "country": "schema:country",
+  "company_legal_name": "schema:legalName",
+  "company_address": "schema:location",
+  "company_website": "schema:url",
+  "linkedin_url": "schema:sameAs",
+  "github_url": "schema:sameAs",
+  "top_skills": {
+    "@id": "schema:skills",
+    "@container": "@list",
+    "openteams:contents": {
+      "@type": "openteams:SkillEntry"
+    }
+  },
+  "services": {
+    "@id": "openteams-partner:services",
+    "@container": "@list",
+    "openteams:contents": "openteams:Service"
+  },
+  "average_hourly_rate": {
+    "@id": "schema:PriceSpecification",
+    "amount": "schema:price",
+    "currency": "schema:priceCurrency"
+  },
+  "operational_painpoints": {
+    "@id": "openteams:painPoints",
+    "@container": "@list",
+    "openteams:contents": "openteams:operational_painpoint"
+  },
+  "partnership_objectives": {
+    "@id": "openteams:partnershipObjectives",
+    "@container": "@list"
+  },
+  "found_through": {
+    "@id": "openteams:foundThrough",
+    "@container": "@list"
+  }
+}
