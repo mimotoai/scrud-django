@@ -6,7 +6,15 @@ with open('README.md') as readme_file:
 with open('docs/release-notes.md') as history_file:
     history = history_file.read()
 
-requirements = ['django', 'djangorestframework', 'psycopg2', 'python-dotenv']
+requirements = [
+    'django',
+    'djangorestframework',
+    'django-cors-headers',
+    'psycopg2',
+    'python-decouple',
+    'python-dotenv',
+    'django-jsonfield',
+]
 dev_requirements = [
     # linter and tools
     'black',
@@ -44,7 +52,7 @@ with open('README.md', 'r') as f:
 
 setup(
     name='scrud-django',
-    version='0.1',
+    version='0.1.6',
     description='A Django app for Semantic CRUD.',
     long_description=long_description,
     url='https://github.com/openteamsinc/scrud-django',
