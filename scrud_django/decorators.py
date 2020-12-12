@@ -98,7 +98,22 @@ class ScrudfulViewFunc:
                 response["Last-Modified"] = last_modified
             if link_content:
                 response["Link"] = link_content
+            self.add_expose_headers(response)
         return response
+
+    def add_expose_headers(self, response):
+        """If the Link and/or Location header are provided on the response add the
+        'Access-Control-Expose-Headers` header to expose them over CORS requests.
+        """
+        expose_headers = ""
+        if "Link" in response:
+            expose_headers = "Link"
+        if "Location" in response:
+            if expose_headers:
+                expose_headers = expose_headers + ", "
+            expose_headers = expose_headers + "Location"
+        if expose_headers:
+            response["Access-Control-Expose-Headers"] = expose_headers
 
     def schema_link(self, *args, **kwargs):
         return get_string_or_evaluate(
