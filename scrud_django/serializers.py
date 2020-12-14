@@ -1,3 +1,4 @@
+import json
 from datetime import timezone
 
 from django.db.models import Manager
@@ -23,8 +24,12 @@ class ResourceSerializer(serializers.Serializer):
         list_serializer_class = EnvelopeSerializer
 
     def to_representation(self, instance, envelope=False, context=None):
+        if type(instance.content) is str:
+            content = json.loads(instance.content)
+        else:
+            content = instance.content
         if not envelope:
-            return instance.content
+            return content
         request = self._context["request"]
         last_modified = http_date(
             instance.modified_at.replace(tzinfo=timezone.utc).timestamp()
@@ -37,7 +42,7 @@ class ResourceSerializer(serializers.Serializer):
             ),
             'last_modified': last_modified,
             'etag': quote_etag(instance.etag),
-            'content': instance.content,
+            'content': content,
         }
 
 
