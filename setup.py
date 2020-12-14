@@ -52,7 +52,7 @@ with open('README.md', 'r') as f:
 
 setup(
     name='scrud-django',
-    version='0.1.6',
+    version='0.1.7',
     description='A Django app for Semantic CRUD.',
     long_description=long_description,
     url='https://github.com/openteamsinc/scrud-django',
