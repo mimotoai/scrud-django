@@ -2,7 +2,7 @@ from datetime import timezone
 from functools import partial, update_wrapper
 
 from django.utils.cache import get_conditional_response
-from django.utils.http import quote_etag
+from django.utils.http import http_date, quote_etag
 from rest_framework import status
 from rest_framework.metadata import BaseMetadata
 from rest_framework.response import Response
@@ -68,9 +68,9 @@ class ScrudfulViewFunc:
             if self.last_modified_func:
                 last_modified = self.last_modified_func(*args, **kwargs)
                 if last_modified:
-                    return last_modified.replace(
-                        tzinfo=timezone.utc
-                    ).timestamp()
+                    return http_date(
+                        last_modified.replace(tzinfo=timezone.utc).timestamp()
+                    )
             return None
 
         etag = None

@@ -22,6 +22,12 @@ RESOURCE_ENDPOINT_DETAIL_NAME = f"{RESOURCE_ENDPOINT_PREFIX}-detail"
 RESOURCE_ENDPOINT_LIST_NAME = f"{RESOURCE_ENDPOINT_PREFIX}-list"
 
 
+def last_modified_for(resource):
+    return http_date(
+        resource.modified_at.replace(tzinfo=timezone.utc).timestamp()
+    )
+
+
 def serialize_page(resources):
     return {
         'count': 1,
@@ -37,9 +43,7 @@ def serialize_page(resources):
 def serialize_resource_envelope(resource):
     return {
         'content': resource.content,
-        'last_modified': http_date(
-            resource.modified_at.replace(tzinfo=timezone.utc).timestamp()
-        ),
+        'last_modified': last_modified_for(resource),
         'etag': quote_etag(resource.etag),
         'href': "http://testserver"
         + reverse(RESOURCE_ENDPOINT_DETAIL_NAME, args=[resource.id]),
@@ -69,6 +73,7 @@ def test_resource_get_list(regular_login, partner_profile_post_data):
     Then.http.status_code_is(status.HTTP_200_OK)
     And.http.content_type_is('application/json')
     And.http.response_json_is(serialize_page([resource]))
+    http_response.get('last-modified') == last_modified_for(resource)
 
 
 @pytest.mark.django_db
@@ -90,6 +95,7 @@ def test_resource_get_detail(regular_login, partner_profile_post_data):
     Then.http.status_code_is(status.HTTP_200_OK)
     And.http.content_type_is('application/json')
     And.http.response_json_is(serialize_resource(resource))
+    http_response.get('last-modified') == last_modified_for(resource)
 
 
 @pytest.mark.django_db
