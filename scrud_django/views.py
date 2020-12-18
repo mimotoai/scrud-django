@@ -5,7 +5,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.reverse import reverse_lazy
+from rest_framework.reverse import reverse, reverse_lazy
 from rest_framework.views import APIView
 
 from scrud_django import serializers, services
@@ -374,5 +374,5 @@ class ResourceCollectionContextView(APIView):
 def get_service_list(request, *args, **kwargs):
     catalog = {}
     for k, v in services.services.items():
-        catalog[k] = request.build_absolute_uri(f'/{v}/')
+        catalog[k] = reverse(f'{v}-list', request=request)
     return Response(catalog)

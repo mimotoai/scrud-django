@@ -4,10 +4,12 @@ from django.urls import include, path
 
 from scrud_django import registration
 
-urlpatterns = [
+app_name = "scrud_django-demo"
+
+api_urlpatterns = [
     path("", include("scrud_django.urls")),
 ]
-urlpatterns.extend(
+api_urlpatterns.extend(
     registration.resource_types(
         registration.json_resource_type(
             resource_type_uri="tests://PartnerProfiles",
@@ -22,3 +24,7 @@ urlpatterns.extend(
         ),
     )
 )
+
+urlpatterns = [
+    path("api/", include(api_urlpatterns)),
+]
