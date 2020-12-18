@@ -1,6 +1,8 @@
 """
 SCRUD-Django - Semantic Create, Read, Update and Delete Django application.
 """
+
+__version__ = "0.1.9"
 import base64
 import datetime
 

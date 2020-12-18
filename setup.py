@@ -1,5 +1,7 @@
 from setuptools import find_packages, setup
 
+import scrud_django
+
 with open('README.md') as readme_file:
     readme = readme_file.read()
 
@@ -52,7 +54,7 @@ with open('README.md', 'r') as f:
 
 setup(
     name='scrud-django',
-    version='0.1.8',
+    version=scrud_django.__version__,
     description='A Django app for Semantic CRUD.',
     long_description=long_description,
     url='https://github.com/openteamsinc/scrud-django',
