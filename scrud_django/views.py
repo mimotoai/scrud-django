@@ -3,49 +3,17 @@ from typing import Optional
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework.reverse import reverse, reverse_lazy
+from rest_framework.reverse import reverse
 from rest_framework.views import APIView
 
 from scrud_django import serializers, services
 from scrud_django.decorators import scrudful_api_view, scrudful_viewset
+from scrud_django.headers import get_context_uri_for, get_schema_uri_for
 from scrud_django.models import Resource, ResourceType
 from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.registration import ResourceRegistration
-
-
-def get_schema_uri_for(resource_type, request):
-    uri = None
-    # prefer a local version to a remote version
-    if resource_type.schema:
-        schema = resource_type.schema
-        uri = reverse_lazy(
-            schema.resource_type.route_name_detail(),
-            args=[schema.id],
-            request=request,
-        )
-    elif resource_type.schema_uri:
-        uri = resource_type.schema_uri
-    return uri
-
-
-def get_context_uri_for(resource_type, request):
-    uri = None
-    # prefer a local version to a remote version
-    if resource_type.context:
-        context = resource_type.context
-        uri = reverse_lazy(
-            context.resource_type.route_name_detail(),
-            args=[context.id],
-            request=request,
-        )
-    elif resource_type.context_uri:
-        uri = resource_type.context_uri
-    return uri
-
-
-# RESOURCE
 
 
 @scrudful_viewset
@@ -97,7 +65,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
             resource_type = get_object_or_404(
                 ResourceType, slug=view_instance.resource_type_name
             )
-            return reverse_lazy(
+            return reverse(
                 "collections-json-schema",
                 args=[resource_type.slug],
                 request=request,
@@ -107,7 +75,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
             resource_type = get_object_or_404(
                 ResourceType, slug=view_instance.resource_type_name
             )
-            return reverse_lazy(
+            return reverse(
                 "collections-json-ld",
                 args=[resource_type.slug],
                 request=request,
@@ -143,7 +111,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
         )
         serializer = self.get_serializer(instance=instance, many=False)
         headers = {
-            'Location': reverse_lazy(
+            'Location': reverse(
                 instance.resource_type.route_name_detail(),
                 args=[instance.id],
                 request=request,
@@ -190,80 +158,6 @@ class ResourceViewSet(viewsets.ModelViewSet):
             return Response(self.get_paginated_response(serializer.data))
 
         serializer = self.get_serializer(instance=queryset, many=True)
-        return Response(serializer.data)
-
-
-# JSON-SCHEMA
-
-
-class JSONSchemaViewSet(viewsets.ViewSet):
-    """View set for JSON-Schema requests."""
-
-    serializer_class = serializers.JSONSchemaSerializer
-    permission_classes_mapping = {
-        'list': [AllowAny],
-        'create': [IsAuthenticated],
-        'retrieve': [AllowAny],
-        'update': [IsAuthenticated],
-        'partial_update': [IsAuthenticated],
-        'destroy': [IsAuthenticated],
-    }
-
-    def get_queryset(self):
-        return ResourceType.objects.all()
-
-    def create(self, request, data: dict):
-        """Return the JSON Schema for the given Resource."""
-        raise NotImplementedError('``Create`` not implemented yet.')
-
-    def retrieve(self, request, slug: str):
-        """Return the JSON Schema for the given Resource."""
-        resource_type = ResourceType.objects.filter(type_uri=slug)
-        instance = Resource.objects.filter(resource_type=resource_type)
-        serializer = self.serializer_class(instance=instance, many=False)
-        return Response(serializer.data)
-
-    def list(self, request):
-        """Return the JSON Schema for the given Resource."""
-        instance = Resource.objects.filter()
-        serializer = self.serializer_class(instance=instance, many=True)
-        return Response(serializer.data)
-
-
-# JSON-SCHEMA
-
-
-class JSONLDViewSet(viewsets.ViewSet):
-    """View set for JSON-LD requests."""
-
-    serializer_class = serializers.JSONLDSerializer
-    permission_classes_mapping = {
-        'list': [AllowAny],
-        'create': [IsAuthenticated],
-        'retrieve': [AllowAny],
-        'update': [IsAuthenticated],
-        'partial_update': [IsAuthenticated],
-        'destroy': [IsAuthenticated],
-    }
-
-    def get_queryset(self):
-        return ResourceType.objects.all()
-
-    def create(self, request, data: dict):
-        """Return the JSON LD for the given Resource."""
-        raise NotImplementedError('``Create`` not implemented yet.')
-
-    def retrieve(self, request, slug: str):
-        """Return the JSON LD for the given Resource."""
-        resource_type = ResourceType.objects.filter(type_uri=slug)
-        instance = Resource.objects.filter(resource_type=resource_type)
-        serializer = self.serializer_class(instance=instance, many=False)
-        return Response(serializer.data)
-
-    def list(self, request):
-        """Return the JSON LD for the given Resource."""
-        instance = Resource.objects.filter()
-        serializer = self.serializer_class(instance=instance, many=True)
         return Response(serializer.data)
 
 

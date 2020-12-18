@@ -4,9 +4,10 @@ from datetime import timezone
 from django.db.models import Manager
 from django.utils.http import http_date, quote_etag
 from rest_framework import serializers
-from rest_framework.reverse import reverse_lazy
+from rest_framework.reverse import reverse
 
 from scrud_django import models
+from scrud_django.headers import get_link_header_for
 
 
 class EnvelopeSerializer(serializers.ListSerializer):
@@ -35,13 +36,14 @@ class ResourceSerializer(serializers.Serializer):
             instance.modified_at.replace(tzinfo=timezone.utc).timestamp()
         )
         return {
-            'href': reverse_lazy(
+            'href': reverse(
                 instance.resource_type.route_name_detail(),
                 args=[instance.id],
                 request=request,
             ),
             'last_modified': last_modified,
             'etag': quote_etag(instance.etag),
+            'link': get_link_header_for(instance.resource_type, request),
             'content': content,
         }
 
