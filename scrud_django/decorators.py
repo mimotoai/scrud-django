@@ -8,6 +8,7 @@ from rest_framework.metadata import BaseMetadata
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from scrud_django import __version__
 from scrud_django.utils import get_string_or_evaluate, link_content
 
 
@@ -78,6 +79,7 @@ class ScrudfulViewFunc:
         if request.method not in ("POST", "OPTIONS"):
             if self.etag_func:
                 etag = self.etag_func(*args, **kwargs)
+                etag = etag + __version__ if etag else None
             etag = quote_etag(etag) if etag else None
             last_modified = get_last_modified()
         else:
