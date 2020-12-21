@@ -105,19 +105,33 @@ class ResourceRegistration:
         Resource
 
         """
-        with transaction.atomic():
-            resource_type = get_object_or_404(ResourceType, slug=register_type)
+        resource_type = get_object_or_404(ResourceType, slug=register_type)
+        resource = Resource(content=content, resource_type=resource_type)
+        resource = ResourceRegistration.register_instance(resource)
+        return resource
 
-            resource = Resource(
-                content=content,
-                resource_type=resource_type,
-                etag=uuid4().hex,
-                modified_at=datetime.now(),
-            )
-            resource_type.etag = resource.etag
-            resource_type.modified_at = resource.modified_at
+    @staticmethod
+    def register_instance(resource: Resource) -> Resource:
+        """
+        Register the resource for the given resource type.
+
+        Parameters
+        ----------
+        resource : Resource
+        resource_type : ResourceType
+
+        Returns
+        -------
+        Resource
+
+        """
+        with transaction.atomic():
+            resource.etag = uuid4().hex
+            resource.modified_at = datetime.now()
+            resource.resource_type.etag = resource.etag
+            resource.resource_type.modified_at = resource.modified_at
             resource.save()
-            resource_type.save()
+            resource.resource_type.save()
         return resource
 
     @staticmethod

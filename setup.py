@@ -16,6 +16,7 @@ requirements = [
     'python-decouple',
     'python-dotenv',
     'django-jsonfield',
+    'fastjsonschema',
 ]
 dev_requirements = [
     # linter and tools

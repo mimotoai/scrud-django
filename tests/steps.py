@@ -86,7 +86,7 @@ def resource_envelope_json_is(resource_data: dict):
 
 def resource_json_is(resource_data):
     response = http_response.json()
-    assert response == resource_data
+    assert response == resource_data, response
 
 
 resource_envelope_json_is = step_extension(

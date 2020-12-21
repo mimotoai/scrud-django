@@ -14,6 +14,7 @@ from scrud_django.headers import get_context_uri_for, get_schema_uri_for
 from scrud_django.models import Resource, ResourceType
 from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.registration import ResourceRegistration
+from scrud_django.validators import JsonValidator
 
 
 @scrudful_viewset
@@ -84,6 +85,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.resource_type_name = kwargs.get('resource_type_name')
+        self.validator = JsonValidator()
 
     def get_permissions(self):
         """
@@ -104,16 +106,20 @@ class ResourceViewSet(viewsets.ModelViewSet):
         )
         return instance
 
-    def create(self, request):
-        """Create a Resource."""
-        instance = ResourceRegistration.register(
-            content=request.data, register_type=self.resource_type_name
+    def get_serializer(self, *args, **kwargs):
+        kwargs["resource_type"] = get_object_or_404(
+            ResourceType, slug=self.resource_type_name
         )
-        serializer = self.get_serializer(instance=instance, many=False)
+        return super().get_serializer(*args, **kwargs)
+
+    def create(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
         headers = {
             'Location': reverse(
-                instance.resource_type.route_name_detail(),
-                args=[instance.id],
+                serializer.instance.resource_type.route_name_detail(),
+                args=[serializer.instance.id],
                 request=request,
             )
         }
