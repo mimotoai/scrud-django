@@ -56,9 +56,7 @@ class ResourceTypeRegistration:
             self.resource_type.save()
 
         # Register with service catalog
-        services.add_service(
-            self.resource_type.type_uri, self.resource_type.slug
-        )
+        services.add_service(self.resource_type.type_uri, self.resource_type.slug)
         self.register_urls()
 
     def register_urls(self):

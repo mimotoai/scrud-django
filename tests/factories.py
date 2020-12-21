@@ -19,9 +19,7 @@ def fake_resource():
 class UserFactory(factory.django.DjangoModelFactory):
     username = factory.Sequence(lambda n: f'test_user_{n}')
     email = factory.LazyAttribute(lambda obj: f'{obj.username}@example.com')
-    password = factory.PostGenerationMethodCall(
-        'set_password', 'test_password'
-    )
+    password = factory.PostGenerationMethodCall('set_password', 'test_password')
     is_staff = False
 
     class Meta:

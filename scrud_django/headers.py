@@ -9,9 +9,7 @@ def get_schema_uri_for(resource_type, request):
     if resource_type.schema:
         schema = resource_type.schema
         uri = reverse(
-            schema.resource_type.route_name_detail(),
-            args=[schema.id],
-            request=request,
+            schema.resource_type.route_name_detail(), args=[schema.id], request=request,
         )
     elif resource_type.schema_uri:
         uri = resource_type.schema_uri
@@ -43,9 +41,7 @@ def get_link_header_for(resource_type, request):
     )
     context_link = (
         link_content(
-            context_uri,
-            "http://www.w3.org/ns/json-ld#context",
-            "application/ld+json",
+            context_uri, "http://www.w3.org/ns/json-ld#context", "application/ld+json",
         )
         if context_uri
         else ""

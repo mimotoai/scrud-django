@@ -16,10 +16,7 @@ from scrud_django.validators import JsonValidator
 class EnvelopeSerializer(serializers.ListSerializer):
     def to_representation(self, data):
         iterable = data.all() if isinstance(data, Manager) else data
-        return [
-            self.child.to_representation(item, envelope=True)
-            for item in iterable
-        ]
+        return [self.child.to_representation(item, envelope=True) for item in iterable]
 
 
 class ResourceSerializer(serializers.Serializer):
@@ -59,9 +56,7 @@ class ResourceSerializer(serializers.Serializer):
         return data
 
     def create(self, validated_data):
-        instance = Resource(
-            content=validated_data, resource_type=self.resource_type
-        )
+        instance = Resource(content=validated_data, resource_type=self.resource_type)
         return ResourceRegistration.register_instance(instance)
 
     def update(self, instance, validated_data):

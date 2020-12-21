@@ -12,9 +12,7 @@ class StandardResultsSetPagination(PageNumberPagination):
 
         return {
             'count': self.page.paginator.count,
-            'page_count': math.ceil(
-                self.page.paginator.count / self.page_size
-            ),
+            'page_count': math.ceil(self.page.paginator.count / self.page_size),
             'next': self.get_next_link(),
             'previous': self.get_previous_link(),
             'content': data,

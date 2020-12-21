@@ -23,9 +23,7 @@ RESOURCE_ENDPOINT_LIST_NAME = f"{RESOURCE_ENDPOINT_PREFIX}-list"
 
 
 def last_modified_for(resource):
-    return http_date(
-        resource.modified_at.replace(tzinfo=timezone.utc).timestamp()
-    )
+    return http_date(resource.modified_at.replace(tzinfo=timezone.utc).timestamp())
 
 
 def serialize_page(resources):
@@ -34,9 +32,7 @@ def serialize_page(resources):
         'page_count': 1,
         'next': None,
         'previous': None,
-        'content': [
-            serialize_resource_envelope(resource) for resource in resources
-        ],
+        'content': [serialize_resource_envelope(resource) for resource in resources],
     }
 
 

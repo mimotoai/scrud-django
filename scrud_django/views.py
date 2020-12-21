@@ -67,9 +67,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
                 ResourceType, slug=view_instance.resource_type_name
             )
             return reverse(
-                "collections-json-schema",
-                args=[resource_type.slug],
-                request=request,
+                "collections-json-schema", args=[resource_type.slug], request=request,
             )
 
         def list_context_link_or_func(view_instance, request, *args, **kwargs):
@@ -77,9 +75,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
                 ResourceType, slug=view_instance.resource_type_name
             )
             return reverse(
-                "collections-json-ld",
-                args=[resource_type.slug],
-                request=request,
+                "collections-json-ld", args=[resource_type.slug], request=request,
             )
 
     def __init__(self, *args, **kwargs):
@@ -98,9 +94,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
         return [permission() for permission in permission_classes]
 
     def get_instance(self, request, slug: str):
-        resource_type = get_object_or_404(
-            ResourceType, slug=self.resource_type_name
-        )
+        resource_type = get_object_or_404(ResourceType, slug=self.resource_type_name)
         instance = get_object_or_404(
             Resource, resource_type=resource_type, pk=int(slug)
         )
@@ -130,9 +124,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
     def update(self, request, slug: str):
         """Update a Resource."""
         instance = ResourceRegistration.update(
-            content=request.data,
-            register_type=self.resource_type_name,
-            slug=slug,
+            content=request.data, register_type=self.resource_type_name, slug=slug,
         )
         serializer = self.get_serializer(instance=instance, many=False)
         return Response(serializer.data)
@@ -152,9 +144,7 @@ class ResourceViewSet(viewsets.ModelViewSet):
 
     def list(self, request):
         """Return the resource for the given resource type name."""
-        resource_type = get_object_or_404(
-            ResourceType, slug=self.resource_type_name
-        )
+        resource_type = get_object_or_404(ResourceType, slug=self.resource_type_name)
 
         queryset = Resource.objects.filter(resource_type=resource_type)
         page = self.paginate_queryset(queryset)

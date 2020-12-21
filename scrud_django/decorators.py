@@ -59,8 +59,7 @@ class ScrudfulViewFunc:
             if missing_required_headers:
                 # TODO Define standard error json
                 response = Response(
-                    {"missing-required-headers": missing_required_headers},
-                    status=400,
+                    {"missing-required-headers": missing_required_headers}, status=400,
                 )
                 return response
 
@@ -118,46 +117,34 @@ class ScrudfulViewFunc:
             response["Access-Control-Expose-Headers"] = expose_headers
 
     def schema_link(self, *args, **kwargs):
-        return get_string_or_evaluate(
-            self.schema_link_or_func, *args, **kwargs
-        )
+        return get_string_or_evaluate(self.schema_link_or_func, *args, **kwargs)
 
     def schema_link_header(self, *args, **kwargs):
         link = self.schema_link(*args, **kwargs)
         if link:
             link_rel = (
-                get_string_or_evaluate(
-                    self.schema_rel_or_func, *args, **kwargs,
-                )
+                get_string_or_evaluate(self.schema_rel_or_func, *args, **kwargs,)
                 or "describedBy"
             )
             link_type = (
-                get_string_or_evaluate(
-                    self.schema_type_or_func, *args, **kwargs,
-                )
+                get_string_or_evaluate(self.schema_type_or_func, *args, **kwargs,)
                 or "application/json"
             )
             return link_content(link, link_rel, link_type)
         return None
 
     def context_link(self, *args, **kwargs):
-        return get_string_or_evaluate(
-            self.context_link_or_func, *args, **kwargs
-        )
+        return get_string_or_evaluate(self.context_link_or_func, *args, **kwargs)
 
     def context_link_header(self, *args, **kwargs):
         link = self.context_link(*args, **kwargs)
         if link:
             link_rel = (
-                get_string_or_evaluate(
-                    self.context_rel_or_func, *args, **kwargs,
-                )
+                get_string_or_evaluate(self.context_rel_or_func, *args, **kwargs,)
                 or "http://www.w3.org/ns/json-ld#context"
             )
             link_type = (
-                get_string_or_evaluate(
-                    self.context_type_or_func, *args, **kwargs,
-                )
+                get_string_or_evaluate(self.context_type_or_func, *args, **kwargs,)
                 or "application/ld+json"
             )
             return link_content(link, link_rel, link_type)
@@ -232,9 +219,7 @@ def scrudful_api_view(
 
         ScrudAPIView = type('ScrudAPIView', (APIView,), cls_attr)
 
-        ScrudAPIView.http_method_names = [
-            method.lower() for method in allowed_methods
-        ]
+        ScrudAPIView.http_method_names = [method.lower() for method in allowed_methods]
 
         ScrudAPIView.__name__ = view_method.__name__
         ScrudAPIView.__module__ = view_method.__module__
@@ -267,13 +252,9 @@ class ScrudfulMetadata(BaseMetadata):
             {
                 key: value
                 for key, value in {
-                    "get": self.determine_metadata_for_get(
-                        request, view, "retrieve"
-                    ),
+                    "get": self.determine_metadata_for_get(request, view, "retrieve"),
                     "put": self.determine_metadata_for_put(request, view),
-                    "delete": self.determine_metadata_for_delete(
-                        request, view
-                    ),
+                    "delete": self.determine_metadata_for_delete(request, view),
                 }.items()
                 if value is not None
             }
@@ -287,9 +268,7 @@ class ScrudfulMetadata(BaseMetadata):
                 key: value
                 for key, value in {
                     "post": self.determine_metadata_for_post(request, view),
-                    "get": self.determine_metadata_for_get(
-                        request, view, "list"
-                    ),
+                    "get": self.determine_metadata_for_get(request, view, "list"),
                 }.items()
                 if value is not None
             }
@@ -425,15 +404,9 @@ class ScrudfulAPIViewMetadata(ScrudfulMetadata):
             {
                 key: value
                 for key, value in {
-                    "get": self.determine_metadata_for_get(
-                        request, view, "get"
-                    ),
-                    "post": self.determine_metadata_for_post(
-                        request, view, "post"
-                    ),
-                    "put": self.determine_metadata_for_put(
-                        request, view, "put"
-                    ),
+                    "get": self.determine_metadata_for_get(request, view, "get"),
+                    "post": self.determine_metadata_for_post(request, view, "post"),
+                    "put": self.determine_metadata_for_put(request, view, "put"),
                     "delete": self.determine_metadata_for_delete(
                         request, view, "delete"
                     ),
@@ -479,22 +452,12 @@ def scrudful_viewset(cls):
         scrudful_list = scrudful(
             etag_func=getattr(meta, "list_etag_func", None),
             last_modified_func=getattr(meta, "list_last_modified_func", None),
-            schema_link_or_func=getattr(
-                meta, "list_schema_link_or_func", None
-            ),
+            schema_link_or_func=getattr(meta, "list_schema_link_or_func", None),
             schema_rel_or_func=getattr(meta, "list_schema_rel_or_func", None),
-            schema_type_or_func=getattr(
-                meta, "list_schema_type_or_func", None
-            ),
-            context_link_or_func=getattr(
-                meta, "list_context_link_or_func", None
-            ),
-            context_rel_or_func=getattr(
-                meta, "list_context_rel_or_func", None
-            ),
-            context_type_or_func=getattr(
-                meta, "list_context_type_or_func", None
-            ),
+            schema_type_or_func=getattr(meta, "list_schema_type_or_func", None),
+            context_link_or_func=getattr(meta, "list_context_link_or_func", None),
+            context_rel_or_func=getattr(meta, "list_context_rel_or_func", None),
+            context_type_or_func=getattr(meta, "list_context_type_or_func", None),
         )
         list_method = getattr(cls, "list")
         setattr(cls, "list", scrudful_list(list_method))
