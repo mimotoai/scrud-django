@@ -2,7 +2,11 @@ from datetime import datetime
 
 from django.db.models import Model
 from safetydance import step_data
-from safetydance_django.steps import http_client, http_response  # noqa: F401
+from safetydance_django.steps import (  # noqa: F401
+    http_client,
+    http_response,
+    json_values_match,
+)
 from safetydance_django.test import Http  # noqa: F401
 from safetydance_test.step_extension import step_extension
 
@@ -18,6 +22,7 @@ __all__ = [
     'an_registration_data',
     'check_registration_results',
     'resource_json_is',
+    'response_json_matches',
 ]
 
 
@@ -89,7 +94,13 @@ def resource_json_is(resource_data):
     assert response == resource_data, response
 
 
+def response_json_matches(expected):
+    observed = http_response.json()
+    assert json_values_match(expected, observed), http_response
+
+
 resource_envelope_json_is = step_extension(
     f=resource_envelope_json_is, target_type=Http
 )
 resource_json_is = step_extension(f=resource_json_is, target_type=Http)
+response_json_matches = step_extension(f=response_json_matches, target_type=Http)

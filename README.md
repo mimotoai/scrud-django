@@ -1,7 +1,26 @@
 # scrud-django
 A Django application for SCRUD REST services. Semantic REST API generation.
 
-## Get Started
+## Installation
+
+```bash
+pip install scrud-django
+```
+
+## Configuration
+
+Scrud Django can return [RFC 7807](https://tools.ietf.org/html/rfc7807) responses. To
+configure this add the Scrud Django exception handler for Django REST Framework in your
+`settings.py`.
+
+```python
+REST_FRAMEWORK = {
+  "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+  ...
+}
+```
+
+## Development Get Started
 
 ### Get prepared to run tests and the demo application
 
@@ -25,5 +44,4 @@ make run_tests
 cd demo
 python manage.py runserver
 ```
-
 

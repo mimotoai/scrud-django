@@ -1,5 +1,6 @@
 import fastjsonschema
-from rest_framework import exceptions
+
+from scrud_django.exceptions import JsonValidationError
 
 
 class JsonValidator:
@@ -41,16 +42,7 @@ class JsonValidator:
                 try:
                     return validation_func(content)
                 except fastjsonschema.JsonSchemaException as e:
-                    raise exceptions.ValidationError(
-                        {
-                            e.name: {
-                                "message": e.message,
-                                "definition": e.definition,
-                                "rule": e.rule,
-                                "rule_definition": e.rule_definition,
-                            }
-                        }
-                    )
+                    raise JsonValidationError(e)
 
             self.validators[resource_type.type_uri] = validate
             validator = validate

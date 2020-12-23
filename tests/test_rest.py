@@ -116,6 +116,35 @@ def test_resource_post(admin_login, partner_profile_post_data):
 
 @pytest.mark.django_db
 @scripted_test
+def test_resource_post_bad_request(admin_login, partner_profile_post_data):
+    # NOTE: run url reverse first for resource type registrations
+    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
+    assert url == '/partner-profiles/'
+
+    serialized_data = dict(partner_profile_post_data)
+    serialized_data['logo'] = 42  # must be a string and valid URI
+
+    Given.http.force_authenticate(admin_login)
+    And.http.post(
+        url, data=json.dumps(serialized_data), content_type='application/json',
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    And.http.content_type_is('application/problem+json')
+    print(http_response.json())
+    And.http.response_json_matches(
+        {
+            "type": "https://api.openteams.com/http-problem/json-invalid",
+            "title": "JSON Validation Error",
+            "name": "data.logo",
+            "value": 42,
+            "rule": "type",
+            "rule_definition": "string",
+        }
+    )
+
+
+@pytest.mark.django_db
+@scripted_test
 def test_resource_put(admin_login, partner_profile_post_data):
     # NOTE: run url reverse first for resource type registrations
     reverse(RESOURCE_ENDPOINT_LIST_NAME)

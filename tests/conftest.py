@@ -65,6 +65,9 @@ def pytest_configure(config):
             "django.contrib.auth.hashers.MD5PasswordHasher",
             "django.contrib.auth.hashers.CryptPasswordHasher",
         ),
+        REST_FRAMEWORK={
+            "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+        },
     )
 
     if config.getoption("--no-pkgroot"):
