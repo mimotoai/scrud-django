@@ -1,6 +1,24 @@
 import fastjsonschema
 
 from scrud_django.exceptions import JsonValidationError
+from scrud_django.models import ResourceType
+
+
+class ValidatorEntry:
+    def __init__(self, resource_type: ResourceType, validate: callable):
+        self.type_uri = resource_type.type_uri
+        self.revision = resource_type.revision
+        self.etag = resource_type.schema.etag
+        self.modified_at = resource_type.schema.modified_at
+        self.validate = validate
+
+    def matches(self, resource_type: ResourceType):
+        return (
+            self.type_uri == resource_type.type_uri
+            and self.revision == resource_type.revision
+            and self.etag == resource_type.schema.etag
+            and self.modified_at == resource_type.schema.modified_at
+        )
 
 
 class JsonValidator:
@@ -26,7 +44,7 @@ class JsonValidator:
         if not self.is_json_schema(schema):
             return lambda r: r
         validator = self.validators.get(resource_type.type_uri, None)
-        if validator is None:
+        if validator is None or not validator.matches(resource_type):
             try:
                 content = schema.content
                 if "$id" in content:
@@ -44,6 +62,6 @@ class JsonValidator:
                 except fastjsonschema.JsonSchemaException as e:
                     raise JsonValidationError(e)
 
-            self.validators[resource_type.type_uri] = validate
-            validator = validate
-        return validator
+            validator = ValidatorEntry(resource_type, validate)
+            self.validators[resource_type.type_uri] = validator
+        return validator.validate
