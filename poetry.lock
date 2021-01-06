@@ -264,7 +264,7 @@ Django = "*"
 
 [[package]]
 name = "django-scoped-rbac"
-version = "0.2.1"
+version = "0.2.2"
 description = "A rich and flexible Django application for role-based access control within distinct access control scopes supporting Django Rest Framework."
 category = "main"
 optional = false
@@ -1292,7 +1292,7 @@ testing = ["pytest (>=3.5,!=3.7.3)", "pytest-checkdocs (>=1.2.3)", "pytest-flake
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.7"
-content-hash = "a839804b4b17f7a51ebf0f6be6b91e3bab2ca693db387e241374ec26e3784302"
+content-hash = "8930657b39373df2ad6c628dbdfd4d35b54d09903a131e7df480337f3ae9d852"
 
 [metadata.files]
 alabaster = [
@@ -1494,8 +1494,8 @@ django-rest-framework-condition = [
     {file = "django_rest_framework_condition-0.1.1-py3-none-any.whl", hash = "sha256:04c90e454a0370d974d5d79eb7aa7e906da32eababe3a65b2f4f77ae47629b7a"},
 ]
 django-scoped-rbac = [
-    {file = "django-scoped-rbac-0.2.1.tar.gz", hash = "sha256:ab7b4ba606af81e31ba4402174a7261e33ad7068a5344c12f58d32541f0524b1"},
-    {file = "django_scoped_rbac-0.2.1-py3-none-any.whl", hash = "sha256:40585e69e7dff64a812d1d29a7539a26be47029dcab4f6a2da560702a639feab"},
+    {file = "django-scoped-rbac-0.2.2.tar.gz", hash = "sha256:01ca448dd7fd193a2c2cbef27f22db0b5bcac97b21ba0aa33a6e5ca1c274d728"},
+    {file = "django_scoped_rbac-0.2.2-py3-none-any.whl", hash = "sha256:0efb733b450979f9817f3d87837bb8795b9d5fbe81179874863b2363e735611e"},
 ]
 djangorestframework = [
     {file = "djangorestframework-3.12.2-py3-none-any.whl", hash = "sha256:0209bafcb7b5010fdfec784034f059d512256424de2a0f084cb82b096d6dd6a7"},
