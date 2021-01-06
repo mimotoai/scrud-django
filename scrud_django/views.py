@@ -7,6 +7,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from rest_framework.views import APIView
+from scoped_rbac.rest import AccessControlledAPIView
 
 from scrud_django import serializers, services
 from scrud_django.decorators import scrudful_api_view, scrudful_viewset
@@ -18,7 +19,7 @@ from scrud_django.validators import JsonValidator
 
 
 @scrudful_viewset
-class ResourceViewSet(viewsets.ModelViewSet):
+class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
     queryset = Resource.objects.all()
     serializer_class = serializers.ResourceSerializer
     pagination_class = StandardResultsSetPagination
@@ -83,15 +84,15 @@ class ResourceViewSet(viewsets.ModelViewSet):
         self.resource_type_name = kwargs.get('resource_type_name')
         self.validator = JsonValidator()
 
-    def get_permissions(self):
-        """
-        Returns the list of permissions that this view requires.
-        """
-        if self.action in ['list', 'retrieve']:
-            permission_classes = [AllowAny]
-        else:
-            permission_classes = [AllowAny]
-        return [permission() for permission in permission_classes]
+    # def get_permissions(self):
+    # """
+    # Returns the list of permissions that this view requires.
+    # """
+    # if self.action in ['list', 'retrieve']:
+    # permission_classes = [AllowAny]
+    # else:
+    # permission_classes = [AllowAny]
+    # return [permission() for permission in permission_classes]
 
     def get_instance(self, request, slug: str):
         resource_type = get_object_or_404(ResourceType, slug=self.resource_type_name)
@@ -155,6 +156,19 @@ class ResourceViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(instance=queryset, many=True)
         return Response(serializer.data)
+
+    def resource_type_iri_for(self, request):
+        if self.action == "list":
+            return self.list_type_iri(request)
+        else:
+            return self.resource_type_iri(request)
+
+    def resource_type_iri(self, request):
+        resource_type = get_object_or_404(ResourceType, slug=self.resource_type_name)
+        return resource_type.type_uri
+
+    def list_type_iri(self, request):
+        return self.Meta.list_context_link_or_func(self, request)
 
 
 class ResourceCollectionSchemaView(APIView):

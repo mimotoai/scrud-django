@@ -24,6 +24,11 @@
     "id": {
       "type": "string",
       "description": "The system identifier for the Partner Profile resource."
+    },
+    "rbac_context": {
+      "type": "string",
+      "description": "The role-based authorization context for the Partner Profile resource."
     }
-  }
+  },
+  "required": ["name"]
 }

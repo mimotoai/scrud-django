@@ -54,6 +54,7 @@ def pytest_configure(config):
             "django.contrib.staticfiles",
             "rest_framework",
             "rest_framework.authtoken",
+            "scoped_rbac",
             "scrud_django",
             "tests",
         ),
@@ -67,6 +68,10 @@ def pytest_configure(config):
         ),
         REST_FRAMEWORK={
             "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+            "DEFAULT_PERMISSION_CLASSES": [
+                "scoped_rbac.permissions.IsAuthorized",
+                # "rest_framework.permissions.IsAdminUser",
+            ],
         },
     )
 

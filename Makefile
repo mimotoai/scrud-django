@@ -61,10 +61,7 @@ migrate:
 
 
 run_tests:
-	# Note: for now, run tests for each module because the follow error:
-	# AttributeError: The step `get` couldn't be found for the prefix type `Http`
-	pytest -vv tests/test_models.py
-	pytest -vv tests/test_rest.py
+	pytest -vv
 
 # LINTER AND CODE CHECKING
 pre_commit_check:

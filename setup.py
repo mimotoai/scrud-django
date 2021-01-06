@@ -1,7 +1,5 @@
 from setuptools import find_packages, setup
 
-import scrud_django
-
 with open('README.md') as readme_file:
     readme = readme_file.read()
 
@@ -17,6 +15,7 @@ requirements = [
     'python-dotenv',
     'django-jsonfield',
     'fastjsonschema',
+    'django-scoped-rbac',
 ]
 dev_requirements = [
     # linter and tools
@@ -55,7 +54,7 @@ with open('README.md', 'r') as f:
 
 setup(
     name='scrud-django',
-    version=scrud_django.__version__,
+    version='0.1.9',
     description='A Django app for Semantic CRUD.',
     long_description=long_description,
     url='https://github.com/openteamsinc/scrud-django',
