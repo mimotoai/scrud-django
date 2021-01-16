@@ -156,6 +156,8 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
 
 
 class ResourceCollectionSchemaView(APIView):
+    permission_classes = [AllowAny]
+
     def get(self, request, slug: str):
         resource_type = get_resource_type_for(slug)
 
@@ -234,6 +236,8 @@ class ResourceCollectionSchemaView(APIView):
 
 
 class ResourceCollectionContextView(APIView):
+    permission_classes = [AllowAny]
+
     def get(self, request, slug: str):
         resource_type = get_resource_type_for(slug)
         return Response(
