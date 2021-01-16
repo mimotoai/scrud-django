@@ -40,3 +40,7 @@ class ScrudServices:
 
 
 services = ScrudServices()
+
+
+def collection_type_uri_for(type_uri):
+    return "https://api.openteams.com/json-schema/ResourceCollection?contents_type={type_uri}"  # noqa: E501

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_list_or_404, get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
@@ -36,45 +36,40 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
             instance = view_instance.get_instance(request, slug)
             return instance.modified_at
 
+        def get_resource_type(view_instance):
+            return get_list_or_404(
+                ResourceType.objects.order_by("-revision"),
+                slug=view_instance.resource_type_name,
+            )[0]
+
         def schema_link_or_func(view_instance, request, slug: str = None):
             if view_instance.resource_type_name:
-                resource_type = get_object_or_404(
-                    ResourceType, slug=view_instance.resource_type_name
-                )
+                resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
                 return get_schema_uri_for(resource_type, request)
             return None
 
         def context_link_or_func(view_instance, request, slug: str = None):
             if view_instance.resource_type_name:
-                resource_type = get_object_or_404(
-                    ResourceType, slug=view_instance.resource_type_name
-                )
+                resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
                 return get_context_uri_for(resource_type, request)
+            return None
 
         def list_etag_func(view_instance, request, *args, **kwargs):
-            resource_type = get_object_or_404(
-                ResourceType, slug=view_instance.resource_type_name
-            )
+            resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
             return resource_type.etag
 
         def list_last_modified_func(view_instance, request, *args, **kwargs):
-            resource_type = get_object_or_404(
-                ResourceType, slug=view_instance.resource_type_name
-            )
+            resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
             return resource_type.modified_at
 
         def list_schema_link_or_func(view_instance, request, *args, **kwargs):
-            resource_type = get_object_or_404(
-                ResourceType, slug=view_instance.resource_type_name
-            )
+            resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
             return reverse(
                 "collections-json-schema", args=[resource_type.slug], request=request,
             )
 
         def list_context_link_or_func(view_instance, request, *args, **kwargs):
-            resource_type = get_object_or_404(
-                ResourceType, slug=view_instance.resource_type_name
-            )
+            resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
             return reverse(
                 "collections-json-ld", args=[resource_type.slug], request=request,
             )
