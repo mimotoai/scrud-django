@@ -18,6 +18,10 @@ from scrud_django.registration import ResourceRegistration
 from scrud_django.validators import JsonValidator
 
 
+def get_resource_type_for(slug):
+    return get_list_or_404(ResourceType.objects.order_by("-revision"), slug=slug)[0]
+
+
 @scrudful_viewset
 class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
     queryset = Resource.objects.all()
@@ -36,40 +40,34 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
             instance = view_instance.get_instance(request, slug)
             return instance.modified_at
 
-        def get_resource_type(view_instance):
-            return get_list_or_404(
-                ResourceType.objects.order_by("-revision"),
-                slug=view_instance.resource_type_name,
-            )[0]
-
         def schema_link_or_func(view_instance, request, slug: str = None):
             if view_instance.resource_type_name:
-                resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
+                resource_type = view_instance.get_resource_type()
                 return get_schema_uri_for(resource_type, request)
             return None
 
         def context_link_or_func(view_instance, request, slug: str = None):
             if view_instance.resource_type_name:
-                resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
+                resource_type = view_instance.get_resource_type()
                 return get_context_uri_for(resource_type, request)
             return None
 
         def list_etag_func(view_instance, request, *args, **kwargs):
-            resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
+            resource_type = view_instance.get_resource_type()
             return resource_type.etag
 
         def list_last_modified_func(view_instance, request, *args, **kwargs):
-            resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
+            resource_type = view_instance.get_resource_type()
             return resource_type.modified_at
 
         def list_schema_link_or_func(view_instance, request, *args, **kwargs):
-            resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
+            resource_type = view_instance.get_resource_type()
             return reverse(
                 "collections-json-schema", args=[resource_type.slug], request=request,
             )
 
         def list_context_link_or_func(view_instance, request, *args, **kwargs):
-            resource_type = ResourceViewSet.Meta.get_resource_type(view_instance)
+            resource_type = view_instance.get_resource_type()
             return reverse(
                 "collections-json-ld", args=[resource_type.slug], request=request,
             )
@@ -79,27 +77,18 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
         self.resource_type_name = kwargs.get('resource_type_name')
         self.validator = JsonValidator()
 
-    # def get_permissions(self):
-    # """
-    # Returns the list of permissions that this view requires.
-    # """
-    # if self.action in ['list', 'retrieve']:
-    # permission_classes = [AllowAny]
-    # else:
-    # permission_classes = [AllowAny]
-    # return [permission() for permission in permission_classes]
+    def get_resource_type(self):
+        return get_resource_type_for(self.resource_type_name)
 
     def get_instance(self, request, slug: str):
-        resource_type = get_object_or_404(ResourceType, slug=self.resource_type_name)
+        resource_type = self.get_resource_type()
         instance = get_object_or_404(
             Resource, resource_type=resource_type, pk=int(slug)
         )
         return instance
 
     def get_serializer(self, *args, **kwargs):
-        kwargs["resource_type"] = get_object_or_404(
-            ResourceType, slug=self.resource_type_name
-        )
+        kwargs["resource_type"] = self.get_resource_type()
         return super().get_serializer(*args, **kwargs)
 
     def create(self, request):
@@ -140,7 +129,7 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
 
     def list(self, request):
         """Return the resource for the given resource type name."""
-        resource_type = get_object_or_404(ResourceType, slug=self.resource_type_name)
+        resource_type = self.get_resource_type()
 
         queryset = Resource.objects.filter(resource_type=resource_type)
         page = self.paginate_queryset(queryset)
@@ -159,7 +148,7 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
             return self.resource_type_iri(request)
 
     def resource_type_iri(self, request):
-        resource_type = get_object_or_404(ResourceType, slug=self.resource_type_name)
+        resource_type = self.get_resource_type()
         return resource_type.type_uri
 
     def list_type_iri(self, request):
@@ -168,7 +157,7 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
 
 class ResourceCollectionSchemaView(APIView):
     def get(self, request, slug: str):
-        resource_type = get_object_or_404(ResourceType, slug=slug,)
+        resource_type = get_resource_type_for(slug)
 
         if resource_type.schema:
             content_defn = resource_type.schema.content
@@ -246,7 +235,7 @@ class ResourceCollectionSchemaView(APIView):
 
 class ResourceCollectionContextView(APIView):
     def get(self, request, slug: str):
-        resource_type = get_object_or_404(ResourceType, slug=slug,)
+        resource_type = get_resource_type_for(slug)
         return Response(
             {
                 "openteams": "https://api.openteams.com/json-ld/",
