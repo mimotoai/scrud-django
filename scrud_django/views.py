@@ -9,7 +9,7 @@ from rest_framework.reverse import reverse
 from rest_framework.views import APIView
 from scoped_rbac.rest import AccessControlledAPIView
 
-from scrud_django import serializers, services
+from scrud_django import collection_type_uri_for, serializers, services
 from scrud_django.decorators import scrudful_api_view, scrudful_viewset
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
 from scrud_django.models import Resource, ResourceType
@@ -141,18 +141,14 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
         serializer = self.get_serializer(instance=queryset, many=True)
         return Response(serializer.data)
 
-    def resource_type_iri_for(self, request):
-        if self.action == "list":
-            return self.list_type_iri(request)
-        else:
-            return self.resource_type_iri(request)
-
-    def resource_type_iri(self, request):
+    @property
+    def resource_type_iri(self):
         resource_type = self.get_resource_type()
         return resource_type.type_uri
 
-    def list_type_iri(self, request):
-        return self.Meta.list_context_link_or_func(self, request)
+    @property
+    def list_type_iri(self):
+        return collection_type_uri_for(self.resource_type_iri)
 
 
 class ResourceCollectionSchemaView(APIView):
@@ -243,6 +239,7 @@ class ResourceCollectionContextView(APIView):
         return Response(
             {
                 "openteams": "https://api.openteams.com/json-ld/",
+                "@id": collection_type_uri_for(resource_type.type_uri),
                 "count": {"@id": "openteams:count"},
                 "page_count": {"@id": "openteams:page_count"},
                 "first": {"@id": "opententeams:first"},
