@@ -264,26 +264,19 @@ Django = "*"
 
 [[package]]
 name = "django-scoped-rbac"
-version = "0.2.3"
+version = "0.3.0"
 description = "A rich and flexible Django application for role-based access control within distinct access control scopes supporting Django Rest Framework."
 category = "main"
 optional = false
-python-versions = "^3.7"
-develop = false
+python-versions = ">=3.7,<4.0"
 
 [package.dependencies]
-django = "^2.2.8"
-django-rest-framework-condition = "^0.1.0"
-djangorestframework = "^3.11.0"
-drf-extensions = "^0.6.0"
-psycopg2 = "^2.8.6"
-scrudful = "^0.1.0"
-
-[package.source]
-type = "git"
-url = "https://gitlab.com/openteams/django-scoped-rbac.git"
-reference = "master"
-resolved_reference = "f9485ff527b61bdcfb3b4240f634c4fc079c7c7a"
+django = ">=2.2.8,<3.0.0"
+django-rest-framework-condition = ">=0.1.0,<0.2.0"
+djangorestframework = ">=3.11.0,<4.0.0"
+drf-extensions = ">=0.6.0,<0.7.0"
+psycopg2 = ">=2.8.6,<3.0.0"
+scrudful = ">=0.1.0,<0.2.0"
 
 [[package]]
 name = "djangorestframework"
@@ -1311,7 +1304,7 @@ testing = ["pytest (>=3.5,!=3.7.3)", "pytest-checkdocs (>=1.2.3)", "pytest-flake
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.7"
-content-hash = "be64480785c8bdfd9feee4a74132c5d0c063184bb597e48f40b7f72cdd670353"
+content-hash = "120419e8dbd91566be0be8a6309cdc3f81d9c72b238dee18f34862f1278ed43a"
 
 [metadata.files]
 alabaster = [
@@ -1512,9 +1505,13 @@ django-rest-framework-condition = [
     {file = "django-rest-framework-condition-0.1.1.tar.gz", hash = "sha256:e8fb77602013270fd86597aa213142ac2d9f086ab366da56e113f38d632ee0f9"},
     {file = "django_rest_framework_condition-0.1.1-py3-none-any.whl", hash = "sha256:04c90e454a0370d974d5d79eb7aa7e906da32eababe3a65b2f4f77ae47629b7a"},
 ]
-django-scoped-rbac = []
+django-scoped-rbac = [
+    {file = "django-scoped-rbac-0.3.0.tar.gz", hash = "sha256:fb239c737412b09c485e67e52c05b2a0ad28c5745af2df4a9d86ec4dd9c8bf4d"},
+    {file = "django_scoped_rbac-0.3.0-py3-none-any.whl", hash = "sha256:8541d50ff127092142224d340d01703e9878e38ef909c70acf9ce3174a87502c"},
+]
 djangorestframework = [
     {file = "djangorestframework-3.12.2-py3-none-any.whl", hash = "sha256:0209bafcb7b5010fdfec784034f059d512256424de2a0f084cb82b096d6dd6a7"},
+    {file = "djangorestframework-3.12.2.tar.gz", hash = "sha256:0898182b4737a7b584a2c73735d89816343369f259fea932d90dc78e35d8ac33"},
 ]
 docker = [
     {file = "docker-4.4.1-py2.py3-none-any.whl", hash = "sha256:e455fa49aabd4f22da9f4e1c1f9d16308286adc60abaf64bf3e1feafaed81d06"},
