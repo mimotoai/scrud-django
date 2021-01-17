@@ -26,14 +26,14 @@ packages = [
 python = "^3.7"
 django = "^2.2.8"
 djangorestframework = "^3.11.0"
-#django-scoped-rbac = { path = "../django-scoped-rbac", develop = true }
 django-cors-headers = "^3.6.0"
 psycopg2 = "^2.8.6"
 python-decouple = "^3.3"
 python-dotenv = "^0.15.0"
 django-jsonfield = "^1.4.1"
 fastjsonschema = "^2.14.5"
-django-scoped-rbac = "0.2.2"
+#django-scoped-rbac = "0.2.2"
+django-scoped-rbac = { git = "https://gitlab.com/openteams/django-scoped-rbac.git" }
 
 [tool.poetry.dev-dependencies]
 black = "19.3b0"
