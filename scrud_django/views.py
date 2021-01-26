@@ -240,6 +240,9 @@ class ResourceCollectionContextView(APIView):
             {
                 "openteams": "https://api.openteams.com/json-ld/",
                 "@id": collection_type_uri_for(resource_type.type_uri),
+                "http://www.w3.org/2000/01/rdf-schema#subClassOf": {
+                    "@id": "https://api.openteams.com/json-ld/ResourceCollection"
+                },
                 "count": {"@id": "openteams:count"},
                 "page_count": {"@id": "openteams:page_count"},
                 "first": {"@id": "opententeams:first"},
