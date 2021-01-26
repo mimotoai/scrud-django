@@ -1,6 +1,9 @@
+import json
 from datetime import datetime
 
 from django.db.models import Model
+from jsonpath_ng import parse
+from rdflib import Graph, URIRef
 from safetydance import step_data
 from safetydance_django.steps import (  # noqa: F401
     http_client,
@@ -12,18 +15,28 @@ from safetydance_test.step_extension import step_extension
 
 from scrud_django.models import Resource, ResourceType
 
-named_instances = step_data(dict, initializer=dict)
-
-
 __all__ = [
     'an_instance_named',
     'is_valid_resource',
     'is_valid_resource_type',
     'an_registration_data',
     'check_registration_results',
+    'json_path_expressions',
+    'json_path_match',
+    'json_path_matches',
+    'ld_context_states_sub_class_of',
+    'named_instances',
     'resource_json_is',
     'response_json_matches',
 ]
+
+
+named_instances = step_data(dict, initializer=dict)
+json_path_expressions = step_data(dict, initializer=dict)
+json_path_match = step_data(object)
+
+
+sub_class_of = URIRef("http://www.w3.org/2000/01/rdf-schema#subClassOf")
 
 
 @step_extension
@@ -49,6 +62,15 @@ def is_valid_resource_type(name: str):
     assert len(instance.type_uri) > 0
 
 
+@step_extension
+def ld_context_states_sub_class_of(subclass_uri, superclass_uri):
+    data = http_response.json()
+    g = Graph().parse(data=json.dumps(data), format='json-ld')
+    superclasses = list(g.transitive_objects(subclass_uri, sub_class_of))
+    assert len(superclasses) > 0, superclasses
+    assert superclass_uri in superclasses, superclasses
+
+
 # register
 
 named_registration_data = step_data(dict, initializer=dict)
@@ -70,6 +92,26 @@ def check_registration_results(name: str, result):
     assert result.slug == resource_type_name
     assert result.context_uri == expected['json_ld_context_url']
     assert result.schema_uri == expected['json_schema_url']
+
+
+def get_compiled_expression(expr, compiled_expressions):
+    compiled_expr = compiled_expressions.get(expr, None)
+    if compiled_expr is None:
+        compiled_expr = parse(expr)
+        compiled_expressions[expr] = compiled_expr
+    return compiled_expr
+
+
+@step_extension
+def json_path_matches(expr, condition):
+    data = http_response.json()
+    compiled_expr = get_compiled_expression(expr, json_path_expressions)
+    json_path_match = compiled_expr.find(data)
+    assert len(json_path_match) > 0, data
+    match = json_path_match[0].value
+    assert condition(
+        json_path_match
+    ), f"expr: {expr} \ncondition: {condition}, \n match: {match}"
 
 
 def resource_envelope_json_is(resource_data: dict):
