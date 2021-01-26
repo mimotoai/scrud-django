@@ -6,11 +6,15 @@ from uuid import uuid4
 from django.conf import settings
 from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_list_or_404, get_object_or_404
 from django.urls import path
 
 from scrud_django import services
 from scrud_django.models import Resource, ResourceType
+
+
+def get_resource_type_for(slug):
+    return get_list_or_404(ResourceType.objects.order_by("-revision"), slug=slug)[0]
 
 
 class ResourceTypeRegistration:
@@ -108,7 +112,7 @@ class ResourceRegistration:
         Resource
 
         """
-        resource_type = get_object_or_404(ResourceType, slug=register_type)
+        resource_type = get_resource_type_for(register_type)
         resource = Resource(content=content, resource_type=resource_type)
         resource = ResourceRegistration.register_instance(resource)
         return resource
@@ -154,7 +158,7 @@ class ResourceRegistration:
 
         """
         with transaction.atomic():
-            resource_type = get_object_or_404(ResourceType, slug=register_type)
+            resource_type = get_resource_type_for(register_type)
 
             # note: for now slug is used as ID
             resource = get_object_or_404(
@@ -182,7 +186,7 @@ class ResourceRegistration:
 
         """
         with transaction.atomic():
-            resource_type = get_object_or_404(ResourceType, slug=register_type)
+            resource_type = get_resource_type_for(register_type)
 
             # note: for now slug is used as ID
             resource = get_object_or_404(

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from django.shortcuts import get_list_or_404, get_object_or_404
+from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
@@ -12,14 +12,13 @@ from scoped_rbac.rest import AccessControlledAPIView
 from scrud_django import collection_type_uri_for, serializers, services
 from scrud_django.decorators import scrudful_api_view, scrudful_viewset
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
-from scrud_django.models import Resource, ResourceType
+from scrud_django.models import Resource
 from scrud_django.paginations import StandardResultsSetPagination
-from scrud_django.registration import ResourceRegistration
+from scrud_django.registration import (
+    ResourceRegistration,
+    get_resource_type_for,
+)
 from scrud_django.validators import JsonValidator
-
-
-def get_resource_type_for(slug):
-    return get_list_or_404(ResourceType.objects.order_by("-revision"), slug=slug)[0]
 
 
 @scrudful_viewset
