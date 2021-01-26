@@ -73,6 +73,10 @@ def pytest_configure(config):
                 # "rest_framework.permissions.IsAdminUser",
             ],
         },
+        SCOPED_RBAC={
+            "POLICY_FOR_UNAUTHENTICATED": "tests.rbac_defaults.policy_for_unauthenticated",  # noqa: E501
+            "POLICY_FOR_STAFF": "tests.rbac_defaults.policy_for_staff",
+        },
     )
 
     if config.getoption("--no-pkgroot"):

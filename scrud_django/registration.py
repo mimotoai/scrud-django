@@ -64,11 +64,16 @@ class ResourceTypeRegistration:
         from scrud_django import views
 
         scrud_list = views.ResourceViewSet.as_view(
-            {'get': 'list', 'post': 'create'},
+            {'get': 'list', 'head': 'list', 'post': 'create',},  # noqa: E231
             resource_type_name=self.resource_type.slug,
         )
         scrud_detail = views.ResourceViewSet.as_view(
-            {'get': 'retrieve', 'put': 'update', 'delete': 'destroy'},
+            {
+                'get': 'retrieve',
+                'head': 'retrieve',
+                'put': 'update',
+                'delete': 'destroy',
+            },
             resource_type_name=self.resource_type.slug,
         )
         self.urls = [
