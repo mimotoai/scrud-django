@@ -8,7 +8,6 @@ before_script:
 pages:
   script:
   - mkdir -p public
-  - make clean
   - make build_doc
 #   - cp -r build/html/* public/.
   - cp -r docs/_build/* public/.
