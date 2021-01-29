@@ -9,11 +9,10 @@ pages:
   script:
   - mkdir -p public
   - make build_doc
-#   - cp -r build/html/* public/.
   - cp -r docs/_build/* public/.
   artifacts:
     paths:
       - public
-#   only:
-#     - master
-#     - merge_request
+  only:
+    - master
+    - merge_request
