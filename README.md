@@ -9,6 +9,22 @@ pip install scrud-django
 
 ## Configuration
 
+### Required
+
+Add `scrud_django`, `scoped_rbac`, and `django_jsonfield_backport` to  `INSTALLED_APPS`:
+
+```python
+INSTALLED_APPS = [
+  ...
+  'django_jsonfield_backport',
+  'scoped_rbac',
+  'scrud_django',
+  ...
+]
+```
+
+### Optional
+
 Scrud Django can return [RFC 7807](https://tools.ietf.org/html/rfc7807) responses. To
 configure this add the Scrud Django exception handler for Django REST Framework in your
 `settings.py`.

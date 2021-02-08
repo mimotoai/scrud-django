@@ -52,6 +52,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_jsonfield_backport',
+    'scoped_rbac',
     'scrud_django',
     'rest_framework',
 ]

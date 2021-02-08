@@ -4,9 +4,9 @@ This will support queries, such as:
     GET /resource_type/context?uri=http://schema.org/person
 
 """
-import jsonfield
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+from django_jsonfield_backport.models import JSONField
 
 
 class ResourceType(models.Model):
@@ -48,7 +48,7 @@ class ResourceType(models.Model):
 
 class Resource(models.Model):
     # The actual JSON content for this resource
-    content = jsonfield.JSONField()
+    content = JSONField()
     resource_type = models.ForeignKey(
         ResourceType,
         on_delete=models.PROTECT,
