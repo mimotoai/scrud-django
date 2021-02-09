@@ -1,6 +1,9 @@
 from typing import Optional
 
 from django.shortcuts import get_object_or_404
+
+from django_filters.rest_framework import DjangoFilterBackend
+
 from rest_framework import status, viewsets
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
@@ -149,6 +152,29 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
     def list_type_iri(self):
         return collection_type_uri_for(self.resource_type_iri)
 
+@scrudful_viewset
+class ResourceViewSetGenericFilter(ResourceViewSet):
+
+    filter_backends = [DjangoFilterBackend]
+
+    def list(self, request):
+        """Return the resource for the given resource type name."""
+        resource_type = self.get_resource_type()
+
+        query_filter = dict(request.GET.items())
+
+        queryset = Resource.objects.filter(resource_type=resource_type).filter(content__contains=query_filter)
+
+        queryset = self.filter_queryset(queryset)
+
+        page = self.paginate_queryset(queryset)
+
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return Response(self.get_paginated_response(serializer.data))
+
+        serializer = self.get_serializer(instance=queryset, many=True)
+        return Response(serializer.data)
 
 class ResourceCollectionSchemaView(APIView):
     permission_classes = [AllowAny]
