@@ -1,0 +1,18 @@
+image: continuumio/miniconda3:latest
+
+before_script:
+  - conda env create -f docker/environment-dev.yml
+  - source activate scrud-django
+  - conda install -c conda-forge make
+
+pages:
+  script:
+  - mkdir -p public
+  - make build_doc
+  - cp -r docs/_build/* public/.
+  artifacts:
+    paths:
+      - public
+  only:
+    - master
+    - merge_request
