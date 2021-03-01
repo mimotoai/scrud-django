@@ -50,6 +50,15 @@ start_db:
 stop_db:
 	$(compose_cmd) down
 
+
+# Elastic Search
+
+start_elasticsearch:
+	$(compose_cmd) up
+
+stop_elasticsearch:
+	$(compose_cmd) down
+
 # DJANGO
 
 makemigrations:

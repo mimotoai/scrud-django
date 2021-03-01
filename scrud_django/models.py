@@ -35,6 +35,17 @@ class ResourceType(models.Model):
         related_name='resource_type_context',
     )
     context_uri = models.URLField(null=True)
+
+    # require for indexing schema
+    indexing = models.ForeignKey(
+        'Resource',
+        null=True,
+        on_delete=models.PROTECT,
+        verbose_name=_('indexing resource type'),
+        related_name='resource_type_indexing',
+    )
+    indexing_uri = models.URLField(null=True)
+
     modified_at = models.DateTimeField()
     etag = models.CharField(max_length=40)
     revision = models.CharField(max_length=40)

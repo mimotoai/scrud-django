@@ -115,4 +115,7 @@ def django_db_setup(django_db_setup, django_db_blocker):
             context_func=lambda: importlib.resources.read_text(
                 "tests.static.json_ld", "PartnerProfile"
             ),
+            indexing_policy_func=lambda: importlib.resources.read_text(
+                "tests.static.json_schema", "PartnerProfileIndexing"
+            ),
         )

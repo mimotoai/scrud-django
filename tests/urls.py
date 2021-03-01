@@ -19,6 +19,9 @@ urlpatterns.extend(
             context_func=lambda: importlib.resources.read_text(
                 "tests.static.json_ld", "PartnerProfile"
             ),
+            indexing_policy_func=lambda: importlib.resources.read_text(
+                "tests.static.json_schema", "PartnerProfileIndexing"
+            ),
         ),
     )
 )

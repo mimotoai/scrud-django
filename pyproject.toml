@@ -6,7 +6,7 @@ target-version = ["py36", "py37", "py38"]
 
 
 [settings]
-known_third_party = ["django", "django_jsonfield_backport", "dotenv", "factory", "fastjsonschema", "jsonpath_ng", "pytest", "rdflib", "rest_framework", "safetydance", "safetydance_django", "safetydance_test", "scoped_rbac", "solar_theme"]
+known_third_party = ["django", "django_jsonfield_backport", "dotenv", "factory", "fastjsonschema", "haystack", "jsonpath_ng", "pytest", "rdflib", "rest_framework", "safetydance", "safetydance_django", "safetydance_test", "scoped_rbac", "solar_theme"]
 
 [tool.isort]
 multi_line_output = 3
@@ -61,6 +61,8 @@ django-extensions = "^3.1.0"
 rdflib = "^5.0.0"
 rdflib-jsonld = "^0.5.0"
 jsonpath-ng = "^1.5.2"
+django-haystack = "^3.0"
+elasticsearch = ">= 5, < 6"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

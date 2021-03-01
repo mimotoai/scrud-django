@@ -257,6 +257,86 @@ class ResourceCollectionContextView(APIView):
         )
 
 
+class ResourceCollectionIndexingPolicyView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug: str):
+        resource_type = get_resource_type_for(slug)
+
+        if resource_type.indexing:
+            content_defn = resource_type.indexing.content
+        elif resource_type.indexing_uri:
+            content_defn = {"$ref": resource_type.indexing_uri}
+        else:
+            content_defn = {"type": "any"}
+
+        schema = {
+            "$id": "https://api.openteams.com/json-schema/ResourceCollection"
+            f"?contents_type={resource_type.type_uri}",
+            "$schema": "http://json-schema.org/draft-04/schema",
+            "description": f"A listing of resources of type {resource_type.type_uri}.",
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "description": "The total number of items in the collection.",
+                },
+                "page_count": {
+                    "type": "integer",
+                    "description": "The total number of pages in the collection.",
+                },
+                "first": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "URL of the first page.",
+                },
+                "previous": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "URL of the previous page, if any.",
+                },
+                "next": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "URL of the next page, if any.",
+                },
+                "last": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "URL of the last page.",
+                },
+                "content": {
+                    "properties": {
+                        "type": "array",
+                        "description": f"Listing of {resource_type.type_uri} "
+                        "resources in Envelopes.",
+                        "items": {
+                            "properties": {
+                                "href": {
+                                    "type": "string",
+                                    "format": "uri",
+                                    "description": "URL of the nested resource.",
+                                },
+                                "etag": {
+                                    "type": "string",
+                                    "description": "HTTP ETag header of the nested "
+                                    "resource.",
+                                },
+                                "last_modified": {
+                                    "type": "string",
+                                    "description": "HTTP Last-Modified header of the "
+                                    "nested resource.",
+                                },
+                                "content": content_defn,
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+        return Response(schema)
+
+
 @scrudful_api_view(
     etag_func=lambda *args, **kwargs: services.etag,
     last_modified_func=lambda *args, **kwargs: services.last_modified,

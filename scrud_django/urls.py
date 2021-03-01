@@ -7,6 +7,7 @@ from django.urls import path
 from scrud_django import registration
 from scrud_django.views import (
     ResourceCollectionContextView,
+    ResourceCollectionIndexingPolicyView,
     ResourceCollectionSchemaView,
     get_service_list,
 )
@@ -23,13 +24,20 @@ urlpatterns = [
         ResourceCollectionContextView.as_view(),
         name="collections-json-ld",
     ),
+    path(
+        "collections-indexing-policy/<str:slug>/",
+        ResourceCollectionIndexingPolicyView.as_view(),
+        name="collections-indexing-policy",
+    ),
 ]
 
 try:
 
     registration.register_json_schema_resource_type()
     registration.register_json_ld_resource_type()
+    registration.register_json_indexing_resource_type()
     urlpatterns.extend(registration.JSON_SCHEMA_REGISTRATION_.urls)
     urlpatterns.extend(registration.JSON_LD_REGISTRATION_.urls)
+    urlpatterns.extend(registration.JSON_INDEXING_REGISTRATION_.urls)
 except (OperationalError, ProgrammingError) as e:
     logging.error(e)

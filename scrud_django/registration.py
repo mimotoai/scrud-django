@@ -29,6 +29,9 @@ class ResourceTypeRegistration:
         context_func: str = None,
         context_uri: str = None,
         slug: str = None,
+        indexing_policy_func: str = None,
+        indexing_resource: Resource = None,
+        indexing_uri: str = None,
     ):
         """
         Register resource type model.
@@ -41,6 +44,7 @@ class ResourceTypeRegistration:
                 type_uri=resource_type_uri,
                 schema_uri=schema_uri,
                 context_uri=context_uri,
+                indexing_uri=indexing_uri,
                 slug=slug,
                 etag=uuid4().hex,
                 modified_at=datetime.now(),
@@ -56,6 +60,10 @@ class ResourceTypeRegistration:
             if context_resource is None and context_func:
                 self.resource_type.context = register_json_ld_context(
                     context_func, self.resource_type.context
+                )
+            if indexing_resource is None and indexing_policy_func:
+                self.resource_type.indexing = register_indexing_schema(
+                    indexing_policy_func, self.resource_type.indexing
                 )
             self.resource_type.save()
 
@@ -202,6 +210,8 @@ JSON_SCHEMA_REGISTRATION_ = None
 JSON_SCHEMA_RESOURCE_TYPE_ = None
 JSON_LD_RESOURCE_TYPE_ = None
 JSON_LD_REGISTRATION_ = None
+JSON_INDEXING_RESOURCE_TYPE_ = None
+JSON_INDEXING_REGISTRATION_ = None
 
 
 def register_json_schema_resource_type():
@@ -231,6 +241,19 @@ def register_json_ld_resource_type():
     return JSON_LD_RESOURCE_TYPE_
 
 
+def register_json_indexing_resource_type():
+    global JSON_INDEXING_RESOURCE_TYPE_
+    global JSON_INDEXING_REGISTRATION_
+    if JSON_INDEXING_RESOURCE_TYPE_ is None:
+        JSON_INDEXING_REGISTRATION_ = ResourceTypeRegistration(
+            resource_type_uri="http://api.openteams.com/json-ld/json-indexing-policy",
+            revision="1",
+            slug="json-indexing-policy",
+        )
+        JSON_INDEXING_RESOURCE_TYPE_ = JSON_INDEXING_REGISTRATION_.resource_type
+    return JSON_INDEXING_RESOURCE_TYPE_
+
+
 def register_json_file(file_contents_func, previous_revision, resource_type):
     contents = file_contents_func()
     if type(contents) is str:
@@ -254,6 +277,11 @@ def register_json_ld_context(context_func, previous_revision):
     return register_json_file(context_func, previous_revision, resource_type)
 
 
+def register_indexing_schema(indexing_policy_func, previous_revision):
+    resource_type = register_json_indexing_resource_type()
+    return register_json_file(indexing_policy_func, previous_revision, resource_type)
+
+
 def json_resource_type(
     resource_type_uri: str,
     revision: str,
@@ -264,6 +292,9 @@ def json_resource_type(
     context_resource: Resource = None,
     context_func=None,
     context_uri: str = None,
+    indexing_policy_func=None,
+    indexing_resource: Resource = None,
+    indexing_uri: str = None,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
@@ -280,6 +311,9 @@ def json_resource_type(
             context_resource=context_resource,
             context_func=context_func,
             context_uri=context_uri,
+            indexing_policy_func=indexing_policy_func,
+            indexing_resource=indexing_resource,
+            indexing_uri=indexing_uri,
         )
         return resource_type_registration.urls
     except (OperationalError, ProgrammingError):

@@ -11,7 +11,7 @@ from safetydance_test import And, Then, When, scripted_test
 from scrud_django import collection_type_uri_for
 
 from .fixtures import *  # noqa
-from .fixtures import RESOURCE_ENDPOINT_LIST_NAME
+from .fixtures import JSON_INDEXING_LIST_NAME, RESOURCE_ENDPOINT_LIST_NAME
 from .steps import *  # noqa: F403, F401
 from .steps import json_path_match
 
@@ -63,4 +63,25 @@ def test_detail_json_ld(admin_login):
     When.http.force_authenticate(admin_login)
     When.http.get(context_url)
     Then.http.status_code_is(status.HTTP_200_OK)
+    # TODO add more validation
+
+
+@pytest.mark.django_db
+@scripted_test
+def test_json_indexing_policy_list():
+    url = reverse(JSON_INDEXING_LIST_NAME)
+    assert url == '/json-indexing-policy/'
+
+    When.http.options(url)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    And.json_path_matches(
+        "get.responses['200'].content['application/json'].context",
+        lambda x: x is not None and x != "",
+    )
+    context_url = json_path_match[0].value
+
+    When.http.get(context_url)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    And.http.content_type_is('application/json')
+    # print(http_response.json())
     # TODO add more validation

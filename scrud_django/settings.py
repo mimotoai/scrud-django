@@ -56,10 +56,24 @@ INSTALLED_APPS = [
     'scoped_rbac',
     'scrud_django',
     'rest_framework',
+    'haystack',
+    # 'text_indexing',
 ]
 
 if DEBUG:
     INSTALLED_APPS += ['django_extensions']
+
+
+HAYSTACK_CONNECTIONS = {
+    "default": {
+        "ENGINE": "haystack.backends.elasticsearch5_backend.Elasticsearch5SearchEngine",
+        'URL': 'http://127.0.0.1:9200/',
+        "INDEX_NAME": "haystack",
+    },
+}
+
+HAYSTACK_SIGNAL_PROCESSOR = "haystack.signals.RealtimeSignalProcessor"
+HAYSTACK_SIGNAL_PROCESSOR = "haystack.signals.BaseSignalProcessor"
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -98,7 +112,7 @@ WSGI_APPLICATION = 'scrud_django.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
     }
     # 'default': {
     # 'ENGINE': 'django.db.backends.postgresql',

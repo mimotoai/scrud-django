@@ -21,6 +21,9 @@ api_urlpatterns.extend(
             context_func=lambda: importlib.resources.read_text(
                 "demo", "PartnerProfile-ld.json"
             ),
+            indexing_policy_func=lambda: importlib.resources.read_text(
+                "demo", "PartnerProfileIndexingPolicy.json"
+            ),
         ),
     )
 )
