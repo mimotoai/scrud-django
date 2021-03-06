@@ -1,3 +1,4 @@
+import importlib.resources
 import json
 import logging
 from datetime import datetime
@@ -202,6 +203,8 @@ JSON_SCHEMA_REGISTRATION_ = None
 JSON_SCHEMA_RESOURCE_TYPE_ = None
 JSON_LD_RESOURCE_TYPE_ = None
 JSON_LD_REGISTRATION_ = None
+INDEXING_POLICY_RESOURCE_TYPE_ = None
+INDEXING_POLICY_REGISTRATION_ = None
 
 
 def register_json_schema_resource_type():
@@ -229,6 +232,25 @@ def register_json_ld_resource_type():
         )
         JSON_LD_RESOURCE_TYPE_ = JSON_LD_REGISTRATION_.resource_type
     return JSON_LD_RESOURCE_TYPE_
+
+
+def register_indexing_policy_resource_type():
+    global INDEXING_POLICY_RESOURCE_TYPE_
+    global INDEXING_POLICY_REGISTRATION_
+    if INDEXING_POLICY_RESOURCE_TYPE_ is None:
+        INDEXING_POLICY_REGISTRATION_ = ResourceTypeRegistration(
+            resource_type_uri="http://api.openteams.com/json-ld/IndexingPolicy",
+            revision="1",
+            slug="indexing-policy",
+            schema_func=lambda: importlib.resources.read_text(
+                "scrud_django.static", "IndexingPolicy-schema.json"
+            ),
+            context_func=lambda: importlib.resources.read_text(
+                "scrud_django.static", "IndexingPolicy-ld.json"
+            ),
+        )
+        INDEXING_POLICY_RESOURCE_TYPE_ = INDEXING_POLICY_REGISTRATION_.resource_type
+    return INDEXING_POLICY_RESOURCE_TYPE_
 
 
 def register_json_file(file_contents_func, previous_revision, resource_type):
