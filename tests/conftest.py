@@ -107,12 +107,12 @@ def django_db_setup(django_db_setup, django_db_blocker):
     with django_db_blocker.unblock():
         json_resource_type(
             resource_type_uri="tests://PartnerProfiles",
-            revision="1",
+            revision="2",
             slug="partner-profiles",
             schema_func=lambda: importlib.resources.read_text(
-                "tests.static.json_schema", "PartnerProfile"
+                "tests.static.partner_profile", "schema.json"
             ),
             context_func=lambda: importlib.resources.read_text(
-                "tests.static.json_ld", "PartnerProfile"
+                "tests.static.partner_profile", "ld.json"
             ),
         )

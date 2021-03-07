@@ -98,8 +98,8 @@ WSGI_APPLICATION = 'scrud_django.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+        'NAME': ':memory:',
+    }  # noqa: E231
     # 'default': {
     # 'ENGINE': 'django.db.backends.postgresql',
     # 'HOST': os.getenv('POSTGRES_HOST', default='localhost'),

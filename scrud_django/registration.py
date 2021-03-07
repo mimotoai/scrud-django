@@ -24,11 +24,13 @@ class ResourceTypeRegistration:
         resource_type_uri: str,
         revision: str,
         schema_resource: Resource = None,
-        schema_func: str = None,
+        schema_func: callable = None,
         schema_uri: str = None,
         context_resource: Resource = None,
-        context_func: str = None,
+        context_func: callable = None,
         context_uri: str = None,
+        indexing_policy_resource: Resource = None,
+        indexing_policy_func: callable = None,
         slug: str = None,
     ):
         """
@@ -54,10 +56,23 @@ class ResourceTypeRegistration:
                 self.resource_type.schema = register_json_schema(
                     schema_func, self.resource_type.schema
                 )
+            else:
+                self.resource_type.schema = schema_resource
+
             if context_resource is None and context_func:
                 self.resource_type.context = register_json_ld_context(
                     context_func, self.resource_type.context
                 )
+            else:
+                self.resource_type.context = context_resource
+
+            if indexing_policy_resource is None and indexing_policy_func:
+                self.resource_type.indexing_policy = register_indexing_policy_resource_type(  # noqa: E501
+                    indexing_policy_func, self.resource_type.indexing_policy
+                )
+            else:
+                self.resource_type.indexing_policy = indexing_policy_resource
+
             self.resource_type.save()
 
         # Register with service catalog
@@ -286,6 +301,8 @@ def json_resource_type(
     context_resource: Resource = None,
     context_func=None,
     context_uri: str = None,
+    indexing_policy_resource: Resource = None,
+    indexing_policy_func=None,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
@@ -302,6 +319,8 @@ def json_resource_type(
             context_resource=context_resource,
             context_func=context_func,
             context_uri=context_uri,
+            indexing_policy_resource=indexing_policy_resource,
+            indexing_policy_func=indexing_policy_func,
         )
         return resource_type_registration.urls
     except (OperationalError, ProgrammingError):
