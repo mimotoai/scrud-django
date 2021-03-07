@@ -26,7 +26,6 @@ urlpatterns = [
 ]
 
 try:
-
     registration.register_json_schema_resource_type()
     registration.register_json_ld_resource_type()
     registration.register_indexing_policy_resource_type()

@@ -67,7 +67,7 @@ class ResourceTypeRegistration:
                 self.resource_type.context = context_resource
 
             if indexing_policy_resource is None and indexing_policy_func:
-                self.resource_type.indexing_policy = register_indexing_policy_resource_type(  # noqa: E501
+                self.resource_type.indexing_policy = register_indexing_policy(
                     indexing_policy_func, self.resource_type.indexing_policy
                 )
             else:
@@ -289,6 +289,11 @@ def register_json_schema(schema_func, previous_revision):
 def register_json_ld_context(context_func, previous_revision):
     resource_type = register_json_ld_resource_type()
     return register_json_file(context_func, previous_revision, resource_type)
+
+
+def register_indexing_policy(indexing_policy_func, previous_revision):
+    resource_type = register_indexing_policy_resource_type()
+    return register_json_file(indexing_policy_func, previous_revision, resource_type)
 
 
 def json_resource_type(
