@@ -53,6 +53,7 @@ def pytest_configure(config):
             "django.contrib.messages",
             "django.contrib.staticfiles",
             "django_jsonfield_backport",
+            "haystack",
             "rest_framework",
             "rest_framework.authtoken",
             "scoped_rbac",
@@ -78,6 +79,13 @@ def pytest_configure(config):
             "POLICY_FOR_UNAUTHENTICATED": "tests.rbac_defaults.policy_for_unauthenticated",  # noqa: E501
             "POLICY_FOR_STAFF": "tests.rbac_defaults.policy_for_staff",
         },
+        HAYSTACK_CONNECTIONS={
+            'default': {
+                'ENGINE': 'haystack.backends.whoosh_backend.WhooshEngine',
+                'PATH': os.path.join(os.path.dirname(__file__), 'whoosh_index'),
+            },
+        },
+        HAYSTACK_SIGNAL_PROCESSOR='haystack.signals.RealtimeSignalProcessor',
     )
 
     if config.getoption("--no-pkgroot"):
