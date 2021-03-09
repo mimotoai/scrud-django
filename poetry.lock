@@ -255,6 +255,17 @@ optional = false
 python-versions = ">=3.6"
 
 [[package]]
+name = "django-haystack"
+version = "3.0"
+description = "Pluggable search for Django."
+category = "dev"
+optional = false
+python-versions = "*"
+
+[package.dependencies]
+Django = ">=2.2"
+
+[[package]]
 name = "django-jsonfield-backport"
 version = "1.0.3"
 description = "Backport of the cross-DB JSONField model and form fields from Django 3.1."
@@ -305,7 +316,7 @@ django = ">=2.2"
 
 [[package]]
 name = "docker"
-version = "4.4.1"
+version = "4.4.4"
 description = "A Python library for the Docker Engine API."
 category = "dev"
 optional = false
@@ -1339,10 +1350,18 @@ python-versions = ">=2.6, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*"
 [package.dependencies]
 six = "*"
 
+[[package]]
+name = "whoosh"
+version = "2.7.4"
+description = "Fast, pure-Python full text indexing, search, and spell checking library."
+category = "main"
+optional = false
+python-versions = "*"
+
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.8.5"
-content-hash = "8370ceb2978abc8945d9d58524c737448f188e5049606eccfe726e31aed76bcf"
+content-hash = "46462060d094130f07c8b04475d0eba389c8a453c4501bc79769da65740e96bd"
 
 [metadata.files]
 alabaster = [
@@ -1529,6 +1548,9 @@ django-extensions = [
     {file = "django-extensions-3.1.1.tar.gz", hash = "sha256:674ad4c3b1587a884881824f40212d51829e662e52f85b012cd83d83fe1271d9"},
     {file = "django_extensions-3.1.1-py3-none-any.whl", hash = "sha256:9507f8761ee760748938fd8af766d0608fb2738cf368adfa1b2451f61c15ae35"},
 ]
+django-haystack = [
+    {file = "django-haystack-3.0.tar.gz", hash = "sha256:d490f920afa85471dd1fa5000bc8eff4b704daacbe09aee1a64e75cbc426f3be"},
+]
 django-jsonfield-backport = [
     {file = "django-jsonfield-backport-1.0.3.tar.gz", hash = "sha256:e5645cf17f252879e3759eb28caecd51692a000a076de9d91e5a1de03cb9542e"},
     {file = "django_jsonfield_backport-1.0.3-py3-none-any.whl", hash = "sha256:c2a559a32b95406a08f02fabc0aec08efa9ce677f4e206ababb6a303359419a8"},
@@ -1546,8 +1568,8 @@ djangorestframework = [
     {file = "djangorestframework-3.12.2.tar.gz", hash = "sha256:0898182b4737a7b584a2c73735d89816343369f259fea932d90dc78e35d8ac33"},
 ]
 docker = [
-    {file = "docker-4.4.1-py2.py3-none-any.whl", hash = "sha256:e455fa49aabd4f22da9f4e1c1f9d16308286adc60abaf64bf3e1feafaed81d06"},
-    {file = "docker-4.4.1.tar.gz", hash = "sha256:0604a74719d5d2de438753934b755bfcda6f62f49b8e4b30969a4b0a2a8a1220"},
+    {file = "docker-4.4.4-py2.py3-none-any.whl", hash = "sha256:f3607d5695be025fa405a12aca2e5df702a57db63790c73b927eb6a94aac60af"},
+    {file = "docker-4.4.4.tar.gz", hash = "sha256:d3393c878f575d3a9ca3b94471a3c89a6d960b35feb92f033c0de36cc9d934db"},
 ]
 docker-compose = [
     {file = "docker-compose-1.28.2.tar.gz", hash = "sha256:2f148b590414915d029dad7551f4cdf0b03a774dc9baa674480217236d260cc1"},
@@ -2053,4 +2075,9 @@ virtualenv = [
 websocket-client = [
     {file = "websocket_client-0.57.0-py2.py3-none-any.whl", hash = "sha256:0fc45c961324d79c781bab301359d5a1b00b13ad1b10415a4780229ef71a5549"},
     {file = "websocket_client-0.57.0.tar.gz", hash = "sha256:d735b91d6d1692a6a181f2a8c9e0238e5f6373356f561bb9dc4c7af36f452010"},
+]
+whoosh = [
+    {file = "Whoosh-2.7.4-py2.py3-none-any.whl", hash = "sha256:aa39c3c3426e3fd107dcb4bde64ca1e276a65a889d9085a6e4b54ba82420a852"},
+    {file = "Whoosh-2.7.4.tar.gz", hash = "sha256:7ca5633dbfa9e0e0fa400d3151a8a0c4bec53bd2ecedc0a67705b17565c31a83"},
+    {file = "Whoosh-2.7.4.zip", hash = "sha256:e0857375f63e9041e03fedd5b7541f97cf78917ac1b6b06c1fcc9b45375dda69"},
 ]

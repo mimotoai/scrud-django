@@ -21,7 +21,7 @@ class ResourceType(models.Model):
         'Resource',
         null=True,
         on_delete=models.PROTECT,
-        verbose_name=_('schema resource type'),
+        verbose_name=_('schema'),
         related_name='resource_type_schema',
     )
     schema_uri = models.URLField(null=True)
@@ -31,10 +31,17 @@ class ResourceType(models.Model):
         'Resource',
         null=True,
         on_delete=models.PROTECT,
-        verbose_name=_('context resource type'),
+        verbose_name=_('linked-data context'),
         related_name='resource_type_context',
     )
     context_uri = models.URLField(null=True)
+    indexing_policy = models.ForeignKey(
+        'Resource',
+        null=True,
+        on_delete=models.PROTECT,
+        verbose_name=_('indexing policy'),
+        related_name='resource_type_indexing_policy',
+    )
     modified_at = models.DateTimeField()
     etag = models.CharField(max_length=40)
     revision = models.CharField(max_length=40)

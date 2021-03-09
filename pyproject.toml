@@ -6,7 +6,7 @@ target-version = ["py36", "py37", "py38"]
 
 
 [settings]
-known_third_party = ["django", "django_jsonfield_backport", "dotenv", "factory", "fastjsonschema", "jsonpath_ng", "pytest", "rdflib", "rest_framework", "safetydance", "safetydance_django", "safetydance_test", "scoped_rbac", "solar_theme"]
+known_third_party = ["django", "django_jsonfield_backport", "dotenv", "factory", "fastjsonschema", "haystack", "jsonpath_ng", "pytest", "rdflib", "rest_framework", "safetydance", "safetydance_django", "safetydance_test", "scoped_rbac", "solar_theme"]
 
 [tool.isort]
 multi_line_output = 3
@@ -34,6 +34,7 @@ django-jsonfield-backport = "^1.0.2"
 fastjsonschema = "^2.14.5"
 django-scoped-rbac = "^0.3.0"
 safetydance-test = "^0.1.4"
+Whoosh = "^2.7.4"
 
 [tool.poetry.dev-dependencies]
 astor = { git="https://github.com/Quansight/astor.git", branch="issue-174" }
@@ -61,6 +62,7 @@ django-extensions = "^3.1.0"
 rdflib = "^5.0.0"
 rdflib-jsonld = "^0.5.0"
 jsonpath-ng = "^1.5.2"
+django-haystack = "^3.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
