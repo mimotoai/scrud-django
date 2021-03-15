@@ -53,6 +53,7 @@ def pytest_configure(config):
             "django.contrib.messages",
             "django.contrib.staticfiles",
             "django_jsonfield_backport",
+            "haystack",
             "rest_framework",
             "rest_framework.authtoken",
             "scoped_rbac",
@@ -78,6 +79,13 @@ def pytest_configure(config):
             "POLICY_FOR_UNAUTHENTICATED": "tests.rbac_defaults.policy_for_unauthenticated",  # noqa: E501
             "POLICY_FOR_STAFF": "tests.rbac_defaults.policy_for_staff",
         },
+        HAYSTACK_CONNECTIONS={
+            'default': {
+                'ENGINE': 'haystack.backends.whoosh_backend.WhooshEngine',
+                'PATH': os.path.join(os.path.dirname(__file__), 'whoosh_index'),
+            },
+        },
+        HAYSTACK_SIGNAL_PROCESSOR='haystack.signals.RealtimeSignalProcessor',
     )
 
     if config.getoption("--no-pkgroot"):
@@ -107,12 +115,15 @@ def django_db_setup(django_db_setup, django_db_blocker):
     with django_db_blocker.unblock():
         json_resource_type(
             resource_type_uri="tests://PartnerProfiles",
-            revision="1",
+            revision="2",
             slug="partner-profiles",
             schema_func=lambda: importlib.resources.read_text(
-                "tests.static.json_schema", "PartnerProfile"
+                "tests.static.partner_profile", "schema.json"
             ),
             context_func=lambda: importlib.resources.read_text(
-                "tests.static.json_ld", "PartnerProfile"
+                "tests.static.partner_profile", "ld.json"
+            ),
+            indexing_policy_func=lambda: importlib.resources.read_text(
+                "tests.static.partner_profile", "indexing-policy.json"
             ),
         )
