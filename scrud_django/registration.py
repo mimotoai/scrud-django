@@ -312,7 +312,7 @@ def json_resource_type(
     context_uri: str = None,
     viewset_class: object = None,
     indexing_policy_resource: Resource = None,
-    indexing_policy_func=None,
+    indexing_policy_func = None,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
@@ -333,6 +333,7 @@ def json_resource_type(
             indexing_policy_func=indexing_policy_func,
         )
         return resource_type_registration.urls
+    except (OperationalError, ProgrammingError):
         logging.warning(
             "Failed to register resource type due to OperationalError. "
             "This is expected for migrations."
