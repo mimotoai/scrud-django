@@ -32,11 +32,17 @@ class ResourceTypeRegistration:
         indexing_policy_resource: Resource = None,
         indexing_policy_func: callable = None,
         slug: str = None,
+        viewset_class: object = None,
     ):
         """
         Register resource type model.
         """
+        from scrud_django import views
+
         search = ResourceType.objects.filter(type_uri=resource_type_uri)
+
+        self.viewset_class = viewset_class or views.ResourceViewSet
+
         if search:
             self.resource_type = search[0]
         else:
@@ -81,13 +87,11 @@ class ResourceTypeRegistration:
 
     def register_urls(self):
         """Register resource type url."""
-        from scrud_django import views
-
-        scrud_list = views.ResourceViewSet.as_view(
+        scrud_list = self.viewset_class.as_view(
             {'get': 'list', 'head': 'list', 'post': 'create',},  # noqa: E231
             resource_type_name=self.resource_type.slug,
         )
-        scrud_detail = views.ResourceViewSet.as_view(
+        scrud_detail = self.viewset_class.as_view(
             {
                 'get': 'retrieve',
                 'head': 'retrieve',
@@ -306,8 +310,9 @@ def json_resource_type(
     context_resource: Resource = None,
     context_func=None,
     context_uri: str = None,
+    viewset_class: object = None,
     indexing_policy_resource: Resource = None,
-    indexing_policy_func=None,
+    indexing_policy_func = None,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
@@ -324,7 +329,7 @@ def json_resource_type(
             context_resource=context_resource,
             context_func=context_func,
             context_uri=context_uri,
-            indexing_policy_resource=indexing_policy_resource,
+            viewset_class=viewset_class,
             indexing_policy_func=indexing_policy_func,
         )
         return resource_type_registration.urls
