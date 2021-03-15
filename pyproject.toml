@@ -14,7 +14,7 @@ include_trailing_comma = true
 
 [tool.poetry]
 name = "scrud-django"
-version = "0.3.2"
+version = "0.3.4"
 description = "A Django REST Framework app for Semantic CRUD."
 authors = ["David Charboneau <david@openteams.com>"]
 license = "BSD"
