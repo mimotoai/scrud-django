@@ -23,6 +23,7 @@ class ResourceSerializer(serializers.Serializer):
     class Meta:
         model = models.Resource
         list_serializer_class = EnvelopeSerializer
+        # TODO add WorkflowValidator
         validators = [JsonValidator()]
 
     def __init__(self, *args, **kwargs):

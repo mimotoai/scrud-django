@@ -1,7 +1,11 @@
 import fastjsonschema
 
 from scrud_django.exceptions import JsonValidationError
-from scrud_django.models import ResourceType
+from scrud_django.models import Resource, ResourceType
+from scrud_django.registration import (
+    WORKFLOW_POLICY_RESOURCE_TYPE_ as WorkflowPolicyResourceType,
+)
+from scrud_django.workflow import WorkflowPolicy
 
 
 class ValidatorEntry:
@@ -65,3 +69,27 @@ class JsonValidator:
             validator = ValidatorEntry(resource_type, validate)
             self.validators[resource_type.type_uri] = validator
         return validator.validate
+
+
+class WorkflowValidator:
+    requires_context = True
+
+    def __init__(self):
+        self.workflow_policies = {}
+
+    def __call__(self, data, context):
+        resource_type = context.resource_type
+        policies = Resource.objects.filter(data__resource_type=resource_type.type_uri)
+        # TODO policy should be based on security context!!
+        for policy in policies:
+            workflow_policy = self.workflow_policies.get(
+                (policy.id, policy.version), None
+            )
+            if workflow_policy is None:
+                workflow_policy = WorkflowPolicy(policy.content)
+                self.workflow_policies[(policy.id, policy.version)] = workflow_policy
+            instance = context.instance
+            if instance is None:
+                workflow_policy.validate_initial_state(data)
+            else:
+                workflow_policy.validate_transition(data, instance.content)

@@ -64,3 +64,7 @@ class Resource(models.Model):
     )
     modified_at = models.DateTimeField()
     etag = models.CharField(max_length=40)
+
+    @property
+    def rbac_context(self):
+        return self.content.get("rbac_context", None)
