@@ -1,4 +1,6 @@
 import celpy
+from celpy.celtypes import BoolType
+from celpy.evaluation import CELEvalError
 from itertools import chain
 from scrud_django.exceptions import (
     WorkflowInvalidStateError,
@@ -17,17 +19,20 @@ class WorkflowPolicy:
 
     def __init__(self, policy):
         self.policy = policy
-        self.initial_state_expressions = ()
+        self.initial_state_expressions = {}
         self.state_expressions = {}
         self.allowed_transitions = {}
         self.compile_state_expressions()
         self.compile_allowed_transitions()
 
     def validate(self, proposed_data, prior_data=None):
+        proposed_data_celpy = celpy.json_to_cel(proposed_data)
         if prior_data is None:
-            self.validate_initial_state(proposed_data)
+            self.validate_initial_state(proposed_data_celpy)
         else:
-            self.validate_transition(proposed_data, prior_data)
+            prior_data_celpy = celpy.json_to_cel(prior_data)
+            self.validate_transition(proposed_data_celpy, prior_data_celpy)
+        return proposed_data
 
     def validate_initial_state(self, data):
         proposed_state = self.determine_state(data, self.initial_state_expressions)
@@ -39,20 +44,20 @@ class WorkflowPolicy:
         transition is allowed by this policy.
         """
         # TODO add prior state to Resource instead
-        prior_state = self.determine_state(prior_data)
+        prior_state = self.determine_state(prior_data, self.state_expressions)
         if prior_state is not None:
-            state_expressions = map(
-                lambda s: self.state_expressions[s],
-                self.allowed_transitions[prior_state],
+            state_expressions = dict(
+                map(
+                    lambda s: (s, self.state_expressions[s]),
+                    self.allowed_transitions.get(prior_state, []),
+                )
             )
         else:
             state_expressions = self.state_expressions
         proposed_state = self.determine_state(proposed_data, state_expressions)
         if prior_state is not None and proposed_state is None:
             # fallback and determine if the proposed_data matches any defined state
-            proposed_state = self.determine_state(
-                (proposed_data, self.state_expressions)
-            )
+            proposed_state = self.determine_state(proposed_data, self.state_expressions)
             if proposed_state is None:
                 raise WorkflowInvalidStateError(self.policy)
             else:
@@ -71,15 +76,22 @@ class WorkflowPolicy:
         match.
         """
         for name, condition in state_expressions.items():
-            if condition.evaluate(data) is True:
-                return name
+            try:
+                if condition.evaluate(data) == BoolType(True):
+                    return name
+            except CELEvalError:
+                # This can happen if the expression specifies a property that isn't present in the
+                # provided data
+                pass
         return None
 
     def compile_state_expressions(self):
-        for name, condition in self.policy.initial_states.items():
+        initial_states = self.policy.get("initial_states", {})
+        for name, condition in initial_states.items():
             self.initial_state_expressions[name] = self.compile_expression(condition)
-        self.state_expressions = map(self.initial_state_expressions)
-        for name, condition in self.policy.states.items():
+        self.state_expressions = dict(self.initial_state_expressions)
+        states = self.policy.get("states", {})
+        for name, condition in states.items():
             self.state_expressions[name] = self.compile_expression(condition)
 
     def compile_expression(self, state_condition):
@@ -88,7 +100,8 @@ class WorkflowPolicy:
         return env.program(ast)
 
     def compile_allowed_transitions(self):
-        for source, target in self.policy.transitions:
+        transitions = self.policy.get("transitions", {})
+        for source, target in transitions.items():
             source = set([source]) if not isinstance(source, list) else set(source)
             target = set([target]) if not isinstance(target, list) else set(target)
             for s in source:
