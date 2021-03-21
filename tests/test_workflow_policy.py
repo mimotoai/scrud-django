@@ -9,7 +9,7 @@ from scrud_django.workflow import WorkflowPolicy
 
 workflow_policy = WorkflowPolicy(
     {
-        'context': 'test',
+        'rbac_context': 'test',
         'resource_type': 'test',
         'initial_states': {'start': 'status == "START"'},
         'states': {
@@ -17,7 +17,10 @@ workflow_policy = WorkflowPolicy(
             'end': 'status == "END"',
             'unreachable': 'status == "UNREACHABLE"',
         },
-        'transitions': {'start': ['middle', 'end'], 'middle': 'end'},
+        'transitions': {
+            'move to middle': {'from': 'start', 'to': 'middle'},
+            'move to end': {'from': ['start', 'middle'], 'to': 'end'}
+        }
     }
 )
 
@@ -42,18 +45,24 @@ def test_invalid_state():
         workflow_policy.validate({"bogus": "not a valid state!"}, start)
 
 
-def test_invalid_transition():
+@pytest.mark.parametrize("proposed_state, prior_state", [
+    (start, start),   # reflexive transitions must be explicit
+    (start, middle),
+    (start, end),
+    (middle, end),
+    (unreachable, start),
+    (unreachable, middle),
+    (unreachable, end),
+])
+def test_invalid_transition(proposed_state, prior_state):
     with pytest.raises(WorkflowTransitionError):
-        workflow_policy.validate(start, start) # reflexive transitions must be explicit
-        workflow_policy.validate(unreachable, start)
-        workflow_policy.validate(unreachable, middle)
-        workflow_policy.validate(unreachable, end)
-        workflow_policy.validate(end, start)
-        workflow_policy.validate(end, middle)
-        workflow_policy.validate(end, unreachable)
+        workflow_policy.validate(proposed_state, prior_state)
 
 
-def test_valid_transition():
-    assert workflow_policy.validate(middle, start) == middle
-    assert workflow_policy.validate(end, start) == end
-    assert workflow_policy.validate(end, middle) == end
+@pytest.mark.parametrize("proposed_state, prior_state", [
+    (middle, start),
+    (end, start),
+    (end, middle),
+])
+def test_valid_transition(proposed_state, prior_state):
+    assert workflow_policy.validate(proposed_state, prior_state) == proposed_state

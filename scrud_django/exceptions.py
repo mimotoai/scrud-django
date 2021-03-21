@@ -53,20 +53,20 @@ class WorkflowTransitionError(ScrudException):
     default_detail = "Bad Request"
 
     def __init__(self, policy, prior_state, proposed_state, message=None):
+        super().__init__()
         self.type = "http://api.openteams.com/http-problem/workflow-transition-invalid"
         self.title = "Invalid workflow transition"
+        self.detail = message if message is not None else policy
         self.policy = policy
         self.prior_state = prior_state
         self.proposed_state = proposed_state
-        self.message = (
-            message
-            if message is not None
-            else "The request does not match a valid transition."
-        )
+        self.message = message if message is not None else self.title
 
     def response_data(self, context):
         data = super().response_data(context)
-        data["policy"] = reverse('workflow-policies', {"id": self.policy.id})
+        # TODO make this work correctly
+        # data["policy"] = reverse('workflow-policies', {"id": self.policy.id})
+        data["policy"] = self.policy
         data["prior_state"] = self.prior_state
         data["proposed_state"] = self.proposed_state
         data["message"] = self.message
@@ -88,4 +88,3 @@ class WorkflowInvalidStateError(WorkflowTransitionError):
         super().__init__(
             policy, None, None, message="The request does not match a valid state"
         )
-

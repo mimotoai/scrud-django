@@ -115,7 +115,7 @@ def http_process_server():
     httpd.serve_forever()
 
 
-@pytest.yield_fixture
+@pytest.fixture
 def http_static_server():
     p = Process(target=http_process_server, args=())
     p.start()

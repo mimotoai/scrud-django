@@ -16,6 +16,7 @@
     "states": { "$ref": "#/definitions/StateDefinitionObject" },
     "transitions": { "$ref": "#/definitions/TransitionDefinitionObject" }
   },
+  "required": ["resource_type", "initial_states", "states", "transitions"],
   "definitions": {
     "StateDefinitionObject": {
       "type": "object",

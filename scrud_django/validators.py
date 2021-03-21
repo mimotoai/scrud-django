@@ -1,5 +1,6 @@
 import fastjsonschema
 
+from scrud_django.conf import default_workflow_policies
 from scrud_django.exceptions import JsonValidationError
 from scrud_django.models import Resource, ResourceType
 from scrud_django.registration import (
@@ -75,21 +76,38 @@ class WorkflowValidator:
     requires_context = True
 
     def __init__(self):
-        self.workflow_policies = {}
+        self.default_policies = default_workflow_policies()
+        self.cached_policies = {}
 
     def __call__(self, data, context):
         resource_type = context.resource_type
-        policies = Resource.objects.filter(data__resource_type=resource_type.type_uri)
-        # TODO policy should be based on security context!!
-        for policy in policies:
-            workflow_policy = self.workflow_policies.get(
-                (policy.id, policy.version), None
-            )
-            if workflow_policy is None:
-                workflow_policy = WorkflowPolicy(policy.content)
-                self.workflow_policies[(policy.id, policy.version)] = workflow_policy
-            instance = context.instance
-            if instance is None:
-                workflow_policy.validate_initial_state(data)
-            else:
-                workflow_policy.validate_transition(data, instance.content)
+        policies = Resource.objects.filter(
+            resource_type=WorkflowPolicyResourceType,
+            content__resource_type=resource_type.type_uri,
+        )
+        # TODO policy should be based on rbac_context per resource_type!!
+        if policies.exists():
+            for policy in policies.all():
+                workflow_policy = self.workflow_policies.get(
+                    (policy.id, policy.version), None
+                )
+                if workflow_policy is None:
+                    workflow_policy = WorkflowPolicy(policy.content)
+                    self.workflow_policies[
+                        (policy.id, policy.version)
+                    ] = workflow_policy
+                self.apply(workflow_policy, data, context)
+        elif (
+            data.get("rbac_context", None) is None
+            and resource_type.type_uri in self.default_policies
+        ):
+            workflow_policy = self.default_policies[resource_type.type_uri]
+            self.apply(workflow_policy, data, context)
+        return data
+
+    def apply(self, workflow_policy, data, context):
+        instance = context.instance
+        if instance is None:
+            workflow_policy.validate_initial_state(data)
+        else:
+            workflow_policy.validate_transition(data, instance.content)

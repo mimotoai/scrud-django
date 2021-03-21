@@ -1,7 +1,7 @@
 import celpy
 from celpy.celtypes import BoolType
 from celpy.evaluation import CELEvalError
-from itertools import chain
+from itertools import product
 from scrud_django.exceptions import (
     WorkflowInvalidStateError,
     WorkflowTransitionError,
@@ -21,6 +21,7 @@ class WorkflowPolicy:
         self.policy = policy
         self.initial_state_expressions = {}
         self.state_expressions = {}
+        # from state -> to state -> transition name
         self.allowed_transitions = {}
         self.compile_state_expressions()
         self.compile_allowed_transitions()
@@ -49,7 +50,7 @@ class WorkflowPolicy:
             state_expressions = dict(
                 map(
                     lambda s: (s, self.state_expressions[s]),
-                    self.allowed_transitions.get(prior_state, []),
+                    self.allowed_transitions.get(prior_state, {}),
                 )
             )
         else:
@@ -101,9 +102,10 @@ class WorkflowPolicy:
 
     def compile_allowed_transitions(self):
         transitions = self.policy.get("transitions", {})
-        for source, target in transitions.items():
-            source = set([source]) if not isinstance(source, list) else set(source)
-            target = set([target]) if not isinstance(target, list) else set(target)
-            for s in source:
-                targets_for_source = self.allowed_transitions.get(s, set())
-                self.allowed_transitions[s] = targets_for_source.union(target)
+        as_list = lambda x: [x] if not isinstance(x, list) else x
+        for transition_name, transition_policy in transitions.items():
+            transition_from = as_list(transition_policy["from"])
+            transition_to = as_list(transition_policy["to"])
+            for source, target in product(transition_from, transition_to):
+                source_transitions = self.allowed_transitions.setdefault(source, {})
+                source_transitions[target] = transition_name
