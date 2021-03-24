@@ -4,14 +4,17 @@ from rest_framework import status
 from rest_framework.reverse import reverse
 from safetydance import step_data
 from safetydance_django.test import *
+from safetydance_django.test import http_response
 from safetydance_test import scripted_test, Given, When, Then, And
 from .fixtures import *  # noqa
 from .fixtures import (
     RESOURCE_ENDPOINT_DETAIL_NAME,
     RESOURCE_ENDPOINT_LIST_NAME,
     last_modified_for,
+    role_todo_creator,
     serialize_page,
     serialize_resource,
+    todo_creator_login,
 )
 from .steps import *
 
@@ -195,5 +198,54 @@ def test_valid_transition(admin_login):
 
 @pytest.mark.django_db
 @scripted_test
-def test_unauthorized_transition(admin_login, regular_login):
-    pass
+def test_unauthorized_transition(todo_creator_login):
+    data = {
+        "title": "Buy milk",
+        "status": "not started",
+        "priority": "medium",
+        "assignee": "http://somewhere.example/someone",
+    }
+    Given.http.force_authenticate(todo_creator_login)
+    When.http.post(
+        reverse("todos-list"), data=json.dumps(data), content_type="application/json"
+    )
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    url = http_response["Location"]
+
+    data["status"] = "in progress"
+    Given.http.head(url)
+    When.http.put(  # transition to "in progress"
+        url,
+        data=json.dumps(data),
+        content_type="application/json",
+        HTTP_IF_UNMODIFIED_SINCE=http_response["Last-Modified"],
+        HTTP_IF_MATCH=http_response["Etag"],
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+
+@pytest.mark.django_db
+@scripted_test
+def test_authorized_transition(todo_creator_login):
+    data = {
+        "title": "Buy milk",
+        "status": "not started",
+        "priority": "medium",
+        "assignee": "http://somewhere.example/someone",
+    }
+    Given.http.force_authenticate(todo_creator_login)
+    When.http.post(
+        reverse("todos-list"), data=json.dumps(data), content_type="application/json"
+    )
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    url = http_response["Location"]
+
+    data["status"] = "canceled"
+    Given.http.head(url)
+    When.http.put(  # transition to "in progress"
+        url,
+        data=json.dumps(data),
+        content_type="application/json",
+        HTTP_IF_UNMODIFIED_SINCE=http_response["Last-Modified"],
+        HTTP_IF_MATCH=http_response["Etag"],
+    )
+    Then.http.status_code_is(status.HTTP_200_OK)

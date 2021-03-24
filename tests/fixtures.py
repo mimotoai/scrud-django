@@ -10,6 +10,7 @@ from django.urls import reverse
 from django.utils.http import http_date, quote_etag
 from django.utils.timezone import now
 from scoped_rbac.models import Role, RoleAssignment
+from scoped_rbac.permissions import DEFAULT_CONTEXT
 
 from scrud_django.registration import ResourceRegistration
 
@@ -83,6 +84,29 @@ def role_allow_all():
 
 @pytest.mark.django_db
 @pytest.fixture
+def role_todo_creator():
+    role = Role(
+        definition = {
+            "http.GET": [ "tests://ToDo" ],
+            "http.POST": [ "tests://ToDo" ],
+            "http.PUT": {
+                "tests://ToDo": {
+                    "condition": {
+                        "operator": "scrud_workflow",
+                        "authorized_transitions": ["cancel"],
+                    }
+                }
+            }
+        },
+        etag=uuid4().hex,
+        modified_at=now(),
+    )
+    role.save()
+    return role
+
+
+@pytest.mark.django_db
+@pytest.fixture
 def regular_login(role_allow_all):
     user = UserFactory()
     RoleAssignment(
@@ -105,6 +129,20 @@ def admin_login():
 @pytest.fixture
 def login_no_roles():
     return UserFactory()
+
+
+@pytest.mark.django_db
+@pytest.fixture
+def todo_creator_login(role_todo_creator):
+    user = UserFactory()
+    RoleAssignment(
+        user=user,
+        role=role_todo_creator,
+        rbac_context=DEFAULT_CONTEXT,
+        etag=uuid4().hex,
+        modified_at=now(),
+    ).save()
+    return user
 
 
 def http_process_server():

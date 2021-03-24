@@ -1,12 +1,15 @@
 import fastjsonschema
 
+from scoped_rbac.permissions import http_action_iri_for, policy_for, DEFAULT_CONTEXT
+from scoped_rbac.policy import Permission
 from scrud_django.conf import default_workflow_policies
-from scrud_django.exceptions import JsonValidationError
+from scrud_django.exceptions import JsonValidationError, WorkflowTransitionError
 from scrud_django.models import Resource, ResourceType
 from scrud_django.registration import (
     WORKFLOW_POLICY_RESOURCE_TYPE_ as WorkflowPolicyResourceType,
 )
-from scrud_django.workflow import WorkflowPolicy
+from scrud_django.permissions import TransitionCheck
+from scrud_django.workflow import TransitionData, WorkflowPolicy
 
 
 class ValidatorEntry:
@@ -109,5 +112,22 @@ class WorkflowValidator:
         instance = context.instance
         if instance is None:
             workflow_policy.validate_initial_state(data)
+            transition_data = TransitionData(None, data, "__INITIALIZE__")
         else:
-            workflow_policy.validate_transition(data, instance.content)
+            transition_data = workflow_policy.determine_transition(data, instance.content)
+        request = context.context["request"]
+        permissions_policy = policy_for(request)
+        permission = Permission(
+            http_action_iri_for(request), context.resource_type.type_uri
+        )
+        if not permissions_policy.should_allow(
+            permission,
+            data.get("rbac_context", DEFAULT_CONTEXT),
+            resource=TransitionCheck(transition_data.transition),
+        ):
+            raise WorkflowTransitionError(
+                workflow_policy.policy,
+                transition_data.prior_state,
+                transition_data.proposed_state,
+                message="The user isn't authorized to perform this state transition on this resource.",
+            )

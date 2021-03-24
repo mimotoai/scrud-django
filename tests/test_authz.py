@@ -40,9 +40,6 @@ def test_unauthenticated_authorized_post(partner_profiles):
 
     from scoped_rbac.conf import policy_for_unauthenticated
 
-    print(f"effective policy: {policy}")
-    print(f"policy_for_unauthenticated: {policy_for_unauthenticated()}")
-
     When.http.post(
         url, {"name": "Some Name", "rbac_context": "",}, format="json",  # noqa: E231
     )
