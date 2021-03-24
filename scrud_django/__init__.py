@@ -9,6 +9,9 @@ import datetime
 from django.utils.timezone import datetime as ddt
 
 
+default_app_config = "scrud_django.apps.ScrudConfig"
+
+
 class ScrudServices:
     last_modified: datetime.datetime
     services: dict
@@ -16,7 +19,6 @@ class ScrudServices:
 
     def __init__(self):
         self.update_last_modified()
-        print(F"Initializing services - last modified = {self.last_modified}")
         self.services = {}
 
     def _set_etag(self):

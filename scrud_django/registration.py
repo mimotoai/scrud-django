@@ -224,6 +224,8 @@ JSON_LD_RESOURCE_TYPE_ = None
 JSON_LD_REGISTRATION_ = None
 INDEXING_POLICY_RESOURCE_TYPE_ = None
 INDEXING_POLICY_REGISTRATION_ = None
+WORKFLOW_POLICY_RESOURCE_TYPE_ = None
+WORKFLOW_POLICY_REGISTRATION_ = None
 
 
 def register_json_schema_resource_type():
@@ -270,6 +272,25 @@ def register_indexing_policy_resource_type():
         )
         INDEXING_POLICY_RESOURCE_TYPE_ = INDEXING_POLICY_REGISTRATION_.resource_type
     return INDEXING_POLICY_RESOURCE_TYPE_
+
+
+def register_workflow_policy_resource_type():
+    global WORKFLOW_POLICY_RESOURCE_TYPE_
+    global WORKFLOW_POLICY_REGISTRATION_
+    if WORKFLOW_POLICY_RESOURCE_TYPE_ is None:
+        WORKFLOW_POLICY_REGISTRATION_ = ResourceTypeRegistration(
+            resource_type_uri="http://api.openteams.com/json-ld/WorkflowPolicy",
+            revision="1",
+            slug="workflow-policies",
+            schema_func=lambda: importlib.resources.read_text(
+                "scrud_django.static", "WorkflowPolicy-schema.json"
+            ),
+            context_func=lambda: importlib.resources.read_text(
+                "scrud_django.static", "WorkflowPolicy-ld.json"
+            ),
+        )
+        WORKFLOW_POLICY_RESOURCE_TYPE_ = WORKFLOW_POLICY_REGISTRATION_.resource_type
+    return WORKFLOW_POLICY_RESOURCE_TYPE_
 
 
 def register_json_file(file_contents_func, previous_revision, resource_type):
