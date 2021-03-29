@@ -13,7 +13,7 @@ include_trailing_comma = true
 
 [tool.poetry]
 name = "scrud-django"
-version = "0.3.3"
+version = "0.4.0"
 description = "A Django REST Framework app for Semantic CRUD."
 authors = ["David Charboneau <david@openteams.com>"]
 license = "BSD"
@@ -32,12 +32,12 @@ python-dotenv = "^0.15.0"
 # django-jsonfield = "^1.4.1"
 django-jsonfield-backport = "^1.0.2"
 fastjsonschema = "^2.14.5"
-# django-scoped-rbac = "^0.3.0"
-django-scoped-rbac = { git="https://gitlab.com/openteams/django-scoped-rbac.git", branch="workflow" }
+django-scoped-rbac = "^0.4.0"
+# django-scoped-rbac = { git="https://gitlab.com/openteams/django-scoped-rbac.git", branch="workflow" }
 safetydance-test = "^0.1.4"
 Whoosh = "^2.7.4"
 django-filter = "^2.4.0"
-cel-python = {git = "https://github.com/openteamsinc/cel-python.git"}
+# cel-python = {git = "https://github.com/openteamsinc/cel-python.git"}
 
 [tool.poetry.dev-dependencies]
 astor = { git="https://github.com/Quansight/astor.git", branch="issue-174" }
