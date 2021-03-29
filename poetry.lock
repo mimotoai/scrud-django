@@ -199,7 +199,7 @@ test = ["pytest (>=6.0)", "pytest-cov", "pytest-subtests", "pytest-xdist", "pret
 name = "decorator"
 version = "4.4.2"
 description = "Decorators for Humans"
-category = "dev"
+category = "main"
 optional = false
 python-versions = ">=2.6, !=3.0.*, !=3.1.*"
 
@@ -545,7 +545,7 @@ python-versions = ">=2.6, !=3.0.*, !=3.1.*, !=3.2.*"
 name = "jsonpath-ng"
 version = "1.5.2"
 description = "A final implementation of JSONPath for Python that aims to be standard compliant, including arithmetic and binary comparison operators and providing clear AST for metaprogramming."
-category = "dev"
+category = "main"
 optional = false
 python-versions = "*"
 
@@ -751,7 +751,7 @@ dev = ["pre-commit", "tox"]
 name = "ply"
 version = "3.11"
 description = "Python Lex & Yacc"
-category = "dev"
+category = "main"
 optional = false
 python-versions = "*"
 
@@ -1386,7 +1386,7 @@ python-versions = "*"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.8.5"
-content-hash = "0e43f0d088b72d6c0621b6418adbd0c3dba0259680e749b9a4d607292f68d44b"
+content-hash = "8b65d9207dca51f43d892d070645f002af16a227410be4a09dbf4ec79b81a77d"
 
 [metadata.files]
 alabaster = [
