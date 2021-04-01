@@ -10,7 +10,7 @@ from scrud_django import models
 from scrud_django.headers import get_link_header_for
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
-from scrud_django.validators import JsonValidator
+from scrud_django.validators import JsonValidator, WorkflowValidator
 
 
 class EnvelopeSerializer(serializers.ListSerializer):
@@ -23,7 +23,8 @@ class ResourceSerializer(serializers.Serializer):
     class Meta:
         model = models.Resource
         list_serializer_class = EnvelopeSerializer
-        validators = [JsonValidator()]
+        # TODO add WorkflowValidator
+        validators = [JsonValidator(), WorkflowValidator()]
 
     def __init__(self, *args, **kwargs):
         self.resource_type = kwargs.pop("resource_type")

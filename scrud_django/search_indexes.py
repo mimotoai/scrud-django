@@ -35,6 +35,8 @@ class ResourceIndex(indexes.SearchIndex, indexes.Indexable):
         # })
         if text_policy:
             self.prepared_data["text"] = self.apply(text_policy, obj.content)
+        else:
+            self.prepared_data["text"] = ""
         return self.prepared_data
 
     def get_indexing_policy(self, obj):

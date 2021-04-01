@@ -110,6 +110,9 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
 
     def update(self, request, slug: str):
         """Update a Resource."""
+        instance = self.get_instance(request, slug)
+        serializer = self.get_serializer(data=request.data, instance=instance, many=False)
+        serializer.is_valid(raise_exception=True)
         instance = ResourceRegistration.update(
             content=request.data, register_type=self.resource_type_name, slug=slug,
         )

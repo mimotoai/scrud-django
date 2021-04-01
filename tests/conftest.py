@@ -79,6 +79,9 @@ def pytest_configure(config):
             "POLICY_FOR_UNAUTHENTICATED": "tests.rbac_defaults.policy_for_unauthenticated",  # noqa: E501
             "POLICY_FOR_STAFF": "tests.rbac_defaults.policy_for_staff",
         },
+        SCRUD_WORKFLOW={
+            "DEFAULT_WORKFLOW_POLICIES": "tests.workflow_defaults.workflow_policies",
+        },
         HAYSTACK_CONNECTIONS={
             'default': {
                 'ENGINE': 'haystack.backends.whoosh_backend.WhooshEngine',
@@ -110,20 +113,7 @@ def django_db_setup(django_db_setup, django_db_blocker):
     """Ensure that the partner-profiles resource type is properly initialized for all
     tests.
     """
-    from scrud_django.registration import json_resource_type
+    from tests import resource_types
 
     with django_db_blocker.unblock():
-        json_resource_type(
-            resource_type_uri="tests://PartnerProfiles",
-            revision="2",
-            slug="partner-profiles",
-            schema_func=lambda: importlib.resources.read_text(
-                "tests.static.partner_profile", "schema.json"
-            ),
-            context_func=lambda: importlib.resources.read_text(
-                "tests.static.partner_profile", "ld.json"
-            ),
-            indexing_policy_func=lambda: importlib.resources.read_text(
-                "tests.static.partner_profile", "indexing-policy.json"
-            ),
-        )
+        resource_types.json_resource_types()

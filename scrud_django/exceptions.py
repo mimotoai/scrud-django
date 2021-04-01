@@ -1,4 +1,5 @@
 from rest_framework.exceptions import APIException
+from rest_framework.reverse import reverse
 from rest_framework.views import exception_handler as drf_exception_handler
 
 
@@ -45,3 +46,45 @@ class JsonValidationError(ScrudException):
         data["rule"] = self.exc.rule
         data["rule_definition"] = self.exc.rule_definition
         return data
+
+
+class WorkflowTransitionError(ScrudException):
+    status_code = 400
+    default_detail = "Bad Request"
+
+    def __init__(self, policy, prior_state, proposed_state, message=None):
+        super().__init__()
+        self.type = "http://api.openteams.com/http-problem/workflow-transition-invalid"
+        self.title = "Invalid workflow transition"
+        self.detail = message if message is not None else policy
+        self.policy = policy
+        self.prior_state = prior_state
+        self.proposed_state = proposed_state
+        self.message = message if message is not None else self.title
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        # TODO make this work correctly
+        # data["policy"] = reverse('workflow-policies', {"id": self.policy.id})
+        data["policy"] = self.policy
+        data["prior_state"] = self.prior_state
+        data["proposed_state"] = self.proposed_state
+        data["message"] = self.message
+        return data
+
+
+class WorkflowInvalidInitialStateError(WorkflowTransitionError):
+    def __init__(self, policy, proposed_state):
+        super().__init__(
+            policy,
+            None,
+            proposed_state,
+            message="The request is not a valid initial state.",
+        )
+
+
+class WorkflowInvalidStateError(WorkflowTransitionError):
+    def __init__(self, policy):
+        super().__init__(
+            policy, None, None, message="The request does not match a valid state"
+        )
