@@ -274,7 +274,7 @@ def register_indexing_policy_resource_type():
     return INDEXING_POLICY_RESOURCE_TYPE_
 
 
-def register_workflow_policy_resource_type():
+def workflow_policy_resource_type():
     global WORKFLOW_POLICY_RESOURCE_TYPE_
     global WORKFLOW_POLICY_REGISTRATION_
     if WORKFLOW_POLICY_RESOURCE_TYPE_ is None:
