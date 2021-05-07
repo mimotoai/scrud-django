@@ -1,0 +1,25 @@
+image: node:latest
+
+cache:
+  paths:
+    - node_modules/
+
+publish:
+  before_script:
+    - git config --global user.name "Gitlab CI/CD"
+    - git config --global user.email "CICD@gitlab.com"
+
+  script:
+    - npm version patch
+    - NPM_TOKEN=$NPM_ACCESS_TOKEN npm publish --access public
+    - git status
+    - git add package.json
+    - git commit -m "[ci skip] updated $(npm run getName -s) version to $(npm run version -s)"
+    - git push -o ci-skip http://root:$PROJECT_ACCESS_TOKEN@gitlab.com/openteams/scrud-django HEAD:master
+
+  only:
+    refs:
+    - master
+    - merge_requests
+    changes:
+    - package.json
