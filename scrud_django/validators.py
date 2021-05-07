@@ -5,9 +5,7 @@ from scoped_rbac.policy import Permission
 from scrud_django.conf import default_workflow_policies
 from scrud_django.exceptions import JsonValidationError, WorkflowTransitionError
 from scrud_django.models import Resource, ResourceType
-from scrud_django.registration import (
-    WORKFLOW_POLICY_RESOURCE_TYPE_ as WorkflowPolicyResourceType,
-)
+from scrud_django.registration import workflow_policy_resource_type
 from scrud_django.permissions import TransitionCheck
 from scrud_django.workflow import TransitionData, WorkflowPolicy
 
@@ -85,7 +83,7 @@ class WorkflowValidator:
     def __call__(self, data, context):
         resource_type = context.resource_type
         policies = Resource.objects.filter(
-            resource_type=WorkflowPolicyResourceType,
+            resource_type=workflow_policy_resource_type(),
             content__resource_type=resource_type.type_uri,
         )
         # TODO policy should be based on rbac_context per resource_type!!
