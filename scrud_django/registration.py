@@ -167,8 +167,12 @@ class ResourceRegistration:
             resource.modified_at = datetime.now()
             resource.resource_type.etag = resource.etag
             resource.resource_type.modified_at = resource.modified_at
-            resource.save()
-            resource.resource_type.save()
+            with reversion.create_revision():
+                resource.save()
+                reversion.set_comment('Add Resource')
+            with reversion.create_revision():
+                resource.resource_type.save()
+                reversion.set_comment('Change Resource_type')
         return resource
 
     @staticmethod
@@ -200,8 +204,12 @@ class ResourceRegistration:
             resource.modified_at = datetime.now()
             resource_type.etag = resource.etag
             resource_type.modified_at = resource.modified_at
-            resource.save()
-            resource_type.save()
+            with reversion.create_revision():
+                resource.save()
+                reversion.set_comment('Change Resource')
+            with reversion.create_revision():
+                resource.resource_type.save()
+                reversion.set_comment('Change Resource_type')
         return resource
 
     @staticmethod
@@ -222,10 +230,14 @@ class ResourceRegistration:
             resource = get_object_or_404(
                 Resource, resource_type=resource_type, pk=int(slug)
             )
-            resource.delete()
-            resource_type.etag = uuid4().hex
-            resource_type.modified_at = datetime.now()
-            resource_type.save()
+            with reversion.create_revision():
+                resource.delete()
+                reversion.set_comment('Delete Resource')
+            with reversion.create_revision():
+                resource_type.etag = uuid4().hex
+                resource_type.modified_at = datetime.now()
+                resource_type.save()
+                reversion.set_comment('Change Resource_type')
 
 
 JSON_SCHEMA_REGISTRATION_ = None
