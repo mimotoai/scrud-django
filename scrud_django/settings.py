@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     'scoped_rbac',
     'scrud_django',
     'rest_framework',
+    'reversion',
 ]
 
 if DEBUG:

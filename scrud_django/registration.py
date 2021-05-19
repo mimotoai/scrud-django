@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from uuid import uuid4
 
+import reversion
 from django.conf import settings
 from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
@@ -33,6 +34,7 @@ class ResourceTypeRegistration:
         indexing_policy_func: callable = None,
         slug: str = None,
         viewset_class: object = None,
+        uses_reversion: bool = None,
     ):
         """
         Register resource type model.
@@ -53,6 +55,7 @@ class ResourceTypeRegistration:
                 slug=slug,
                 etag=uuid4().hex,
                 modified_at=datetime.now(),
+                uses_reversion=uses_reversion or True,
             )
             self.resource_type = resource_type
 
@@ -78,12 +81,19 @@ class ResourceTypeRegistration:
                 )
             else:
                 self.resource_type.indexing_policy = indexing_policy_resource
-
-            self.resource_type.save()
+            # with reversion.create_revision():
+            self.perform_save_resource_type()
+            # reversion.set_comment('Added resource_type')
 
         # Register with service catalog
         services.add_service(self.resource_type.type_uri, self.resource_type.slug)
         self.register_urls()
+
+    def perform_save_resource_type(self):
+        resource_type = self.resource_type
+        with reversion.create_revision():
+            resource_type.save()
+            reversion.set_comment('Added resource_type')
 
     def register_urls(self):
         """Register resource type url."""
@@ -333,7 +343,7 @@ def json_resource_type(
     context_uri: str = None,
     viewset_class: object = None,
     indexing_policy_resource: Resource = None,
-    indexing_policy_func = None,
+    indexing_policy_func=None,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
