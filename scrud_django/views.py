@@ -93,10 +93,12 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
         return super().get_serializer(*args, **kwargs)
 
     def perform_create(self, serializer):
-        with reversion.create_revision():
-            response = serializer.save()
-            reversion.set_comment('Add Resource')
+        if self.get_resource_type().uses_reversion:
+            with reversion.create_revision():
+                response = serializer.save()
+                reversion.set_comment('Add Resource')
             return response
+        return serializer.save()
 
     def create(self, request):
         serializer = self.get_serializer(data=request.data)
