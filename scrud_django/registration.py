@@ -233,17 +233,19 @@ class ResourceRegistration:
             resource = get_object_or_404(
                 Resource, resource_type=resource_type, pk=int(slug)
             )
-            if resource.resource_type.uses_reversion:
-                with reversion.create_revision():
-                    resource.delete()
-                    reversion.set_comment('Delete Resource')
-            else:
-                resource.delete()
-            # with reversion.create_revision():
+
+            # Proposed Solution in case we need to recover the deleted resource
+            # =================================================================
+
+            # if resource_type.uses_reversion:
+            #     with reversion.create_revision():
+            #         resource.save()
+            #         reversion.set_comment(f'Delete Resource__{resource.pk}')
+
+            resource.delete()
             resource_type.etag = uuid4().hex
             resource_type.modified_at = datetime.now()
             resource_type.save()
-            # reversion.set_comment('Change Resource_type')
 
 
 JSON_SCHEMA_REGISTRATION_ = None
