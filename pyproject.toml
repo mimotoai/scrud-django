@@ -36,6 +36,7 @@ python-decouple = "^3.3"
 python-dotenv = "^0.15.0"
 safetydance-test = "^0.1.4"
 Whoosh = "^2.7.4"
+django-reversion = "^3.0.9"
 
 [tool.poetry.dev-dependencies]
 astor = { git="https://github.com/Quansight/astor.git", branch="issue-174" }
