@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from uuid import uuid4
 
+import reversion
 from django.conf import settings
 from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
@@ -33,6 +34,7 @@ class ResourceTypeRegistration:
         indexing_policy_func: callable = None,
         slug: str = None,
         viewset_class: object = None,
+        uses_reversion: bool = True,
     ):
         """
         Register resource type model.
@@ -53,10 +55,15 @@ class ResourceTypeRegistration:
                 slug=slug,
                 etag=uuid4().hex,
                 modified_at=datetime.now(),
+                uses_reversion=uses_reversion,
             )
             self.resource_type = resource_type
 
-        if self.resource_type.revision != revision or settings.DEBUG:
+        if (
+            self.resource_type.revision != revision
+            or settings.DEBUG
+            or self.resource_type.uses_reversion != uses_reversion
+        ):
             self.resource_type.revision = revision
             if schema_resource is None and schema_func:
                 self.resource_type.schema = register_json_schema(
@@ -78,7 +85,7 @@ class ResourceTypeRegistration:
                 )
             else:
                 self.resource_type.indexing_policy = indexing_policy_resource
-
+            self.resource_type.uses_reversion = uses_reversion
             self.resource_type.save()
 
         # Register with service catalog
@@ -157,11 +164,18 @@ class ResourceRegistration:
             resource.modified_at = datetime.now()
             resource.resource_type.etag = resource.etag
             resource.resource_type.modified_at = resource.modified_at
-            resource.save()
+            if resource.resource_type.uses_reversion:
+                with reversion.create_revision():
+                    resource.save()
+                    reversion.set_comment('Add Resource')
+            else:
+                resource.save()
+            # with reversion.create_revision():
             resource.resource_type.save()
+            # reversion.set_comment('Change Resource_type')
         return resource
 
-    @staticmethod
+    # @staticmethod
     def update(content: str, register_type: str, slug: str) -> Resource:
         """
         Update resource content for the given resource type name and slug.
@@ -190,8 +204,15 @@ class ResourceRegistration:
             resource.modified_at = datetime.now()
             resource_type.etag = resource.etag
             resource_type.modified_at = resource.modified_at
-            resource.save()
-            resource_type.save()
+            if resource.resource_type.uses_reversion:
+                with reversion.create_revision():
+                    resource.save()
+                    reversion.set_comment('Change Resource')
+            else:
+                resource.save()
+            # with reversion.create_revision():
+            resource.resource_type.save()
+            # reversion.set_comment('Change Resource_type')
         return resource
 
     @staticmethod
@@ -212,6 +233,15 @@ class ResourceRegistration:
             resource = get_object_or_404(
                 Resource, resource_type=resource_type, pk=int(slug)
             )
+
+            # Proposed Solution in case we need to recover the deleted resource
+            # =================================================================
+
+            # if resource_type.uses_reversion:
+            #     with reversion.create_revision():
+            #         resource.save()
+            #         reversion.set_comment(f'Delete Resource__{resource.pk}')
+
             resource.delete()
             resource_type.etag = uuid4().hex
             resource_type.modified_at = datetime.now()
@@ -333,7 +363,8 @@ def json_resource_type(
     context_uri: str = None,
     viewset_class: object = None,
     indexing_policy_resource: Resource = None,
-    indexing_policy_func = None,
+    indexing_policy_func=None,
+    uses_reversion: bool = True,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
@@ -352,6 +383,7 @@ def json_resource_type(
             context_uri=context_uri,
             viewset_class=viewset_class,
             indexing_policy_func=indexing_policy_func,
+            uses_reversion=uses_reversion,
         )
         return resource_type_registration.urls
     except (OperationalError, ProgrammingError):

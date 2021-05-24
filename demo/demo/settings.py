@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'scoped_rbac',
     'scrud_django',
     'django_jsonfield_backport',
+    'reversion',
 ]
 
 MIDDLEWARE = [

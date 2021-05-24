@@ -1,4 +1,3 @@
-import importlib.resources
 import os
 import sys
 
@@ -59,6 +58,7 @@ def pytest_configure(config):
             "scoped_rbac",
             "scrud_django",
             "tests",
+            "reversion",
         ),
         PASSWORD_HASHERS=(
             "django.contrib.auth.hashers.SHA1PasswordHasher",

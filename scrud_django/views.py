@@ -1,9 +1,8 @@
 from typing import Optional
 
+import reversion
 from django.shortcuts import get_object_or_404
-
 from django_filters.rest_framework import DjangoFilterBackend
-
 from rest_framework import status, viewsets
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
@@ -93,6 +92,14 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
         kwargs["resource_type"] = self.get_resource_type()
         return super().get_serializer(*args, **kwargs)
 
+    def perform_create(self, serializer):
+        if self.get_resource_type().uses_reversion:
+            with reversion.create_revision():
+                response = serializer.save()
+                reversion.set_comment('Add Resource')
+            return response
+        return serializer.save()
+
     def create(self, request):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -111,7 +118,9 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
     def update(self, request, slug: str):
         """Update a Resource."""
         instance = self.get_instance(request, slug)
-        serializer = self.get_serializer(data=request.data, instance=instance, many=False)
+        serializer = self.get_serializer(
+            data=request.data, instance=instance, many=False
+        )
         serializer.is_valid(raise_exception=True)
         instance = ResourceRegistration.update(
             content=request.data, register_type=self.resource_type_name, slug=slug,
@@ -154,6 +163,7 @@ class ResourceViewSet(AccessControlledAPIView, viewsets.ModelViewSet):
     @property
     def list_type_iri(self):
         return collection_type_uri_for(self.resource_type_iri)
+
 
 @scrudful_viewset
 class ResourceViewSetGenericFilter(AccessControlledAPIView, viewsets.ModelViewSet):
@@ -225,6 +235,12 @@ class ResourceViewSetGenericFilter(AccessControlledAPIView, viewsets.ModelViewSe
         kwargs["resource_type"] = self.get_resource_type()
         return super().get_serializer(*args, **kwargs)
 
+    def perform_create(self, serializer):
+        with reversion.create_revision():
+            response = serializer.save()
+            reversion.set_comment('Add Resource')
+            return response
+
     def create(self, request):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -267,7 +283,9 @@ class ResourceViewSetGenericFilter(AccessControlledAPIView, viewsets.ModelViewSe
 
         query_filter = dict(request.GET.items())
 
-        queryset = Resource.objects.filter(resource_type=resource_type).filter(content__contains=query_filter)
+        queryset = Resource.objects.filter(resource_type=resource_type).filter(
+            content__contains=query_filter
+        )
 
         queryset = self.filter_queryset(queryset)
 

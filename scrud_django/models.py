@@ -4,11 +4,13 @@ This will support queries, such as:
     GET /resource_type/context?uri=http://schema.org/person
 
 """
+import reversion
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django_jsonfield_backport.models import JSONField
 
 
+@reversion.register()
 class ResourceType(models.Model):
     type_uri = models.URLField()
 
@@ -45,6 +47,7 @@ class ResourceType(models.Model):
     modified_at = models.DateTimeField()
     etag = models.CharField(max_length=40)
     revision = models.CharField(max_length=40)
+    uses_reversion = models.BooleanField(default=True)
 
     def route_name_list(self):
         return f"{self.slug}-list"
@@ -53,6 +56,7 @@ class ResourceType(models.Model):
         return f"{self.slug}-detail"
 
 
+@reversion.register()
 class Resource(models.Model):
     # The actual JSON content for this resource
     content = JSONField()
