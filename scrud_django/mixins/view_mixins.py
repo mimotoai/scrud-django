@@ -6,7 +6,6 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 
-from scrud_django import serializers
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
 from scrud_django.models import Resource
 from scrud_django.paginations import StandardResultsSetPagination
@@ -14,11 +13,12 @@ from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
 )
+from scrud_django.serializers import ResourceSerializer
 
 
 class ResourceViewMixin:
     queryset = Resource.objects.all()
-    serializer_class = serializers.ResourceSerializer
+    serializer_class = ResourceSerializer
     pagination_class = StandardResultsSetPagination
 
     # scrud variable

@@ -9,7 +9,7 @@ from scoped_rbac.rest import AccessControlledAPIView
 
 from scrud_django import collection_type_uri_for, services
 from scrud_django.decorators import scrudful_api_view, scrudful_viewset
-from scrud_django.mixins import ResourceViewMixin
+from scrud_django.mixins.view_mixins import ResourceViewMixin
 from scrud_django.models import Resource
 from scrud_django.registration import get_resource_type_for
 from scrud_django.validators import JsonValidator
