@@ -1,5 +1,6 @@
 """SCRUD DJANGO URL Configuration."""
 import logging
+from itertools import chain
 
 from django.db.utils import OperationalError, ProgrammingError
 from django.urls import path
@@ -26,10 +27,16 @@ urlpatterns = [
 ]
 
 try:
-
     registration.register_json_schema_resource_type()
     registration.register_json_ld_resource_type()
-    urlpatterns.extend(registration.JSON_SCHEMA_REGISTRATION_.urls)
-    urlpatterns.extend(registration.JSON_LD_REGISTRATION_.urls)
+    registration.register_indexing_policy_resource_type()
+    registration.workflow_policy_resource_type()
+
+    urlpatterns.extend(chain(
+        registration.JSON_SCHEMA_REGISTRATION_.urls,
+        registration.JSON_LD_REGISTRATION_.urls,
+        registration.INDEXING_POLICY_REGISTRATION_.urls,
+        registration.WORKFLOW_POLICY_REGISTRATION_.urls,
+    ))
 except (OperationalError, ProgrammingError) as e:
     logging.error(e)

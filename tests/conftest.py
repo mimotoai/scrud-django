@@ -1,4 +1,3 @@
-import importlib.resources
 import os
 import sys
 
@@ -52,11 +51,14 @@ def pytest_configure(config):
             "django.contrib.sites",
             "django.contrib.messages",
             "django.contrib.staticfiles",
+            "django_jsonfield_backport",
+            "haystack",
             "rest_framework",
             "rest_framework.authtoken",
             "scoped_rbac",
             "scrud_django",
             "tests",
+            "reversion",
         ),
         PASSWORD_HASHERS=(
             "django.contrib.auth.hashers.SHA1PasswordHasher",
@@ -77,6 +79,16 @@ def pytest_configure(config):
             "POLICY_FOR_UNAUTHENTICATED": "tests.rbac_defaults.policy_for_unauthenticated",  # noqa: E501
             "POLICY_FOR_STAFF": "tests.rbac_defaults.policy_for_staff",
         },
+        SCRUD_WORKFLOW={
+            "DEFAULT_WORKFLOW_POLICIES": "tests.workflow_defaults.workflow_policies",
+        },
+        HAYSTACK_CONNECTIONS={
+            'default': {
+                'ENGINE': 'haystack.backends.whoosh_backend.WhooshEngine',
+                'PATH': os.path.join(os.path.dirname(__file__), 'whoosh_index'),
+            },
+        },
+        HAYSTACK_SIGNAL_PROCESSOR='haystack.signals.RealtimeSignalProcessor',
     )
 
     if config.getoption("--no-pkgroot"):
@@ -101,17 +113,7 @@ def django_db_setup(django_db_setup, django_db_blocker):
     """Ensure that the partner-profiles resource type is properly initialized for all
     tests.
     """
-    from scrud_django.registration import json_resource_type
+    from tests import resource_types
 
     with django_db_blocker.unblock():
-        json_resource_type(
-            resource_type_uri="tests://PartnerProfiles",
-            revision="1",
-            slug="partner-profiles",
-            schema_func=lambda: importlib.resources.read_text(
-                "tests.static.json_schema", "PartnerProfile"
-            ),
-            context_func=lambda: importlib.resources.read_text(
-                "tests.static.json_ld", "PartnerProfile"
-            ),
-        )
+        resource_types.json_resource_types()

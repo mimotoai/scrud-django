@@ -4,11 +4,13 @@ This will support queries, such as:
     GET /resource_type/context?uri=http://schema.org/person
 
 """
-import jsonfield
+import reversion
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+from django_jsonfield_backport.models import JSONField
 
 
+@reversion.register()
 class ResourceType(models.Model):
     type_uri = models.URLField()
 
@@ -21,7 +23,7 @@ class ResourceType(models.Model):
         'Resource',
         null=True,
         on_delete=models.PROTECT,
-        verbose_name=_('schema resource type'),
+        verbose_name=_('schema'),
         related_name='resource_type_schema',
     )
     schema_uri = models.URLField(null=True)
@@ -31,13 +33,21 @@ class ResourceType(models.Model):
         'Resource',
         null=True,
         on_delete=models.PROTECT,
-        verbose_name=_('context resource type'),
+        verbose_name=_('linked-data context'),
         related_name='resource_type_context',
     )
     context_uri = models.URLField(null=True)
+    indexing_policy = models.ForeignKey(
+        'Resource',
+        null=True,
+        on_delete=models.PROTECT,
+        verbose_name=_('indexing policy'),
+        related_name='resource_type_indexing_policy',
+    )
     modified_at = models.DateTimeField()
     etag = models.CharField(max_length=40)
     revision = models.CharField(max_length=40)
+    uses_reversion = models.BooleanField(default=True)
 
     def route_name_list(self):
         return f"{self.slug}-list"
@@ -46,9 +56,10 @@ class ResourceType(models.Model):
         return f"{self.slug}-detail"
 
 
+@reversion.register()
 class Resource(models.Model):
     # The actual JSON content for this resource
-    content = jsonfield.JSONField()
+    content = JSONField()
     resource_type = models.ForeignKey(
         ResourceType,
         on_delete=models.PROTECT,
@@ -57,3 +68,7 @@ class Resource(models.Model):
     )
     modified_at = models.DateTimeField()
     etag = models.CharField(max_length=40)
+
+    @property
+    def rbac_context(self):
+        return self.content.get("rbac_context", None)

@@ -41,6 +41,7 @@ class ResourceTypeFactory(factory.django.DjangoModelFactory):
 
     modified_at = factory.LazyFunction(datetime.now)
     etag = factory.LazyFunction(lambda: uuid4().hex)
+    uses_reversion = True
 
 
 class ResourceFactory(factory.django.DjangoModelFactory):

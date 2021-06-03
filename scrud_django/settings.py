@@ -52,8 +52,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_jsonfield_backport',
+    'scoped_rbac',
     'scrud_django',
     'rest_framework',
+    'reversion',
 ]
 
 if DEBUG:
@@ -96,18 +99,8 @@ WSGI_APPLICATION = 'scrud_django.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
     }
-    # 'default': {
-    # 'ENGINE': 'django.db.backends.postgresql',
-    # 'HOST': os.getenv('POSTGRES_HOST', default='localhost'),
-    # 'NAME': os.getenv('POSTGRES_DB', default='postgres'),
-    # 'USER': os.getenv('POSTGRES_USER', default='postgres'),
-    # 'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'postgres'),
-    # # 35432 is the port used by docker-compose
-    # 'PORT': os.getenv('POSTGRES_PORT', 35432),
-    # 'CONN_MAX_AGE': None,
-    # },
 }
 
 

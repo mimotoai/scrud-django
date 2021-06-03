@@ -1,8 +1,10 @@
+import importlib.resources
 import json
 import logging
 from datetime import datetime
 from uuid import uuid4
 
+import reversion
 from django.conf import settings
 from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
@@ -23,17 +25,26 @@ class ResourceTypeRegistration:
         resource_type_uri: str,
         revision: str,
         schema_resource: Resource = None,
-        schema_func: str = None,
+        schema_func: callable = None,
         schema_uri: str = None,
         context_resource: Resource = None,
-        context_func: str = None,
+        context_func: callable = None,
         context_uri: str = None,
+        indexing_policy_resource: Resource = None,
+        indexing_policy_func: callable = None,
         slug: str = None,
+        viewset_class: object = None,
+        uses_reversion: bool = True,
     ):
         """
         Register resource type model.
         """
+        from scrud_django import views
+
         search = ResourceType.objects.filter(type_uri=resource_type_uri)
+
+        self.viewset_class = viewset_class or views.ResourceViewSet
+
         if search:
             self.resource_type = search[0]
         else:
@@ -44,19 +55,37 @@ class ResourceTypeRegistration:
                 slug=slug,
                 etag=uuid4().hex,
                 modified_at=datetime.now(),
+                uses_reversion=uses_reversion,
             )
             self.resource_type = resource_type
 
-        if self.resource_type.revision != revision or settings.DEBUG:
+        if (
+            self.resource_type.revision != revision
+            or settings.DEBUG
+            or self.resource_type.uses_reversion != uses_reversion
+        ):
             self.resource_type.revision = revision
             if schema_resource is None and schema_func:
                 self.resource_type.schema = register_json_schema(
                     schema_func, self.resource_type.schema
                 )
+            else:
+                self.resource_type.schema = schema_resource
+
             if context_resource is None and context_func:
                 self.resource_type.context = register_json_ld_context(
                     context_func, self.resource_type.context
                 )
+            else:
+                self.resource_type.context = context_resource
+
+            if indexing_policy_resource is None and indexing_policy_func:
+                self.resource_type.indexing_policy = register_indexing_policy(
+                    indexing_policy_func, self.resource_type.indexing_policy
+                )
+            else:
+                self.resource_type.indexing_policy = indexing_policy_resource
+            self.resource_type.uses_reversion = uses_reversion
             self.resource_type.save()
 
         # Register with service catalog
@@ -65,13 +94,11 @@ class ResourceTypeRegistration:
 
     def register_urls(self):
         """Register resource type url."""
-        from scrud_django import views
-
-        scrud_list = views.ResourceViewSet.as_view(
+        scrud_list = self.viewset_class.as_view(
             {'get': 'list', 'head': 'list', 'post': 'create',},  # noqa: E231
             resource_type_name=self.resource_type.slug,
         )
-        scrud_detail = views.ResourceViewSet.as_view(
+        scrud_detail = self.viewset_class.as_view(
             {
                 'get': 'retrieve',
                 'head': 'retrieve',
@@ -137,11 +164,18 @@ class ResourceRegistration:
             resource.modified_at = datetime.now()
             resource.resource_type.etag = resource.etag
             resource.resource_type.modified_at = resource.modified_at
-            resource.save()
+            if resource.resource_type.uses_reversion:
+                with reversion.create_revision():
+                    resource.save()
+                    reversion.set_comment('Add Resource')
+            else:
+                resource.save()
+            # with reversion.create_revision():
             resource.resource_type.save()
+            # reversion.set_comment('Change Resource_type')
         return resource
 
-    @staticmethod
+    # @staticmethod
     def update(content: str, register_type: str, slug: str) -> Resource:
         """
         Update resource content for the given resource type name and slug.
@@ -170,8 +204,15 @@ class ResourceRegistration:
             resource.modified_at = datetime.now()
             resource_type.etag = resource.etag
             resource_type.modified_at = resource.modified_at
-            resource.save()
-            resource_type.save()
+            if resource.resource_type.uses_reversion:
+                with reversion.create_revision():
+                    resource.save()
+                    reversion.set_comment('Change Resource')
+            else:
+                resource.save()
+            # with reversion.create_revision():
+            resource.resource_type.save()
+            # reversion.set_comment('Change Resource_type')
         return resource
 
     @staticmethod
@@ -192,6 +233,15 @@ class ResourceRegistration:
             resource = get_object_or_404(
                 Resource, resource_type=resource_type, pk=int(slug)
             )
+
+            # Proposed Solution in case we need to recover the deleted resource
+            # =================================================================
+
+            # if resource_type.uses_reversion:
+            #     with reversion.create_revision():
+            #         resource.save()
+            #         reversion.set_comment(f'Delete Resource__{resource.pk}')
+
             resource.delete()
             resource_type.etag = uuid4().hex
             resource_type.modified_at = datetime.now()
@@ -202,6 +252,10 @@ JSON_SCHEMA_REGISTRATION_ = None
 JSON_SCHEMA_RESOURCE_TYPE_ = None
 JSON_LD_RESOURCE_TYPE_ = None
 JSON_LD_REGISTRATION_ = None
+INDEXING_POLICY_RESOURCE_TYPE_ = None
+INDEXING_POLICY_REGISTRATION_ = None
+WORKFLOW_POLICY_RESOURCE_TYPE_ = None
+WORKFLOW_POLICY_REGISTRATION_ = None
 
 
 def register_json_schema_resource_type():
@@ -231,6 +285,44 @@ def register_json_ld_resource_type():
     return JSON_LD_RESOURCE_TYPE_
 
 
+def register_indexing_policy_resource_type():
+    global INDEXING_POLICY_RESOURCE_TYPE_
+    global INDEXING_POLICY_REGISTRATION_
+    if INDEXING_POLICY_RESOURCE_TYPE_ is None:
+        INDEXING_POLICY_REGISTRATION_ = ResourceTypeRegistration(
+            resource_type_uri="http://api.openteams.com/json-ld/IndexingPolicy",
+            revision="1",
+            slug="indexing-policies",
+            schema_func=lambda: importlib.resources.read_text(
+                "scrud_django.static", "IndexingPolicy-schema.json"
+            ),
+            context_func=lambda: importlib.resources.read_text(
+                "scrud_django.static", "IndexingPolicy-ld.json"
+            ),
+        )
+        INDEXING_POLICY_RESOURCE_TYPE_ = INDEXING_POLICY_REGISTRATION_.resource_type
+    return INDEXING_POLICY_RESOURCE_TYPE_
+
+
+def workflow_policy_resource_type():
+    global WORKFLOW_POLICY_RESOURCE_TYPE_
+    global WORKFLOW_POLICY_REGISTRATION_
+    if WORKFLOW_POLICY_RESOURCE_TYPE_ is None:
+        WORKFLOW_POLICY_REGISTRATION_ = ResourceTypeRegistration(
+            resource_type_uri="http://api.openteams.com/json-ld/WorkflowPolicy",
+            revision="1",
+            slug="workflow-policies",
+            schema_func=lambda: importlib.resources.read_text(
+                "scrud_django.static", "WorkflowPolicy-schema.json"
+            ),
+            context_func=lambda: importlib.resources.read_text(
+                "scrud_django.static", "WorkflowPolicy-ld.json"
+            ),
+        )
+        WORKFLOW_POLICY_RESOURCE_TYPE_ = WORKFLOW_POLICY_REGISTRATION_.resource_type
+    return WORKFLOW_POLICY_RESOURCE_TYPE_
+
+
 def register_json_file(file_contents_func, previous_revision, resource_type):
     contents = file_contents_func()
     if type(contents) is str:
@@ -254,6 +346,11 @@ def register_json_ld_context(context_func, previous_revision):
     return register_json_file(context_func, previous_revision, resource_type)
 
 
+def register_indexing_policy(indexing_policy_func, previous_revision):
+    resource_type = register_indexing_policy_resource_type()
+    return register_json_file(indexing_policy_func, previous_revision, resource_type)
+
+
 def json_resource_type(
     resource_type_uri: str,
     revision: str,
@@ -264,6 +361,10 @@ def json_resource_type(
     context_resource: Resource = None,
     context_func=None,
     context_uri: str = None,
+    viewset_class: object = None,
+    indexing_policy_resource: Resource = None,
+    indexing_policy_func=None,
+    uses_reversion: bool = True,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
@@ -280,6 +381,9 @@ def json_resource_type(
             context_resource=context_resource,
             context_func=context_func,
             context_uri=context_uri,
+            viewset_class=viewset_class,
+            indexing_policy_func=indexing_policy_func,
+            uses_reversion=uses_reversion,
         )
         return resource_type_registration.urls
     except (OperationalError, ProgrammingError):

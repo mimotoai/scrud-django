@@ -85,7 +85,6 @@ def test_resource_post_bad_request(admin_login, partner_profile_post_data):
     )
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
     And.http.content_type_is('application/problem+json')
-    print(http_response.json())
     And.http.response_json_matches(
         {
             "type": "https://api.openteams.com/http-problem/json-invalid",
