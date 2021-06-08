@@ -317,7 +317,7 @@ django = ">=1.11"
 
 [[package]]
 name = "django-scoped-rbac"
-version = "0.5.1"
+version = "0.6.0"
 description = "A rich and flexible Django application for role-based access control within distinct access control scopes supporting Django Rest Framework."
 category = "main"
 optional = false
@@ -1404,7 +1404,7 @@ python-versions = "*"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.8"
-content-hash = "e1f024bcf773adb3e32a8fe52b060dd270c4c28b45cff73991477bcde1b3fe9d"
+content-hash = "872f878d57d49474c8877c30417ab605d051c66306c91fd3be18b22e56e0e126"
 
 [metadata.files]
 alabaster = [
@@ -1620,8 +1620,8 @@ django-reversion = [
     {file = "django_reversion-3.0.9-py3-none-any.whl", hash = "sha256:1b57127a136b969f4b843a915c72af271febe7f336469db6c27121f8adcad35c"},
 ]
 django-scoped-rbac = [
-    {file = "django-scoped-rbac-0.5.1.tar.gz", hash = "sha256:dbf6ae925a316c9fd28caa75e04217c67f97e02b0013062bd375c0d7059c6d24"},
-    {file = "django_scoped_rbac-0.5.1-py3-none-any.whl", hash = "sha256:b3780a351fca4eb01e69cc5f6a1993e5141a73cbbcadd43beff816a418bd3578"},
+    {file = "django-scoped-rbac-0.6.0.tar.gz", hash = "sha256:a15cd0025cb0564d1de8e71b8d558e3c76356fafc2c448abe1af620dac491bbd"},
+    {file = "django_scoped_rbac-0.6.0-py3-none-any.whl", hash = "sha256:b0e3a2942887873e97a1e9ae6327dd91a4d0fbc378f15660081fcf247cc60f0c"},
 ]
 djangorestframework = [
     {file = "djangorestframework-3.12.4-py3-none-any.whl", hash = "sha256:6d1d59f623a5ad0509fe0d6bfe93cbdfe17b8116ebc8eda86d45f6e16e819aaf"},
