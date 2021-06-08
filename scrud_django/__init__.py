@@ -7,6 +7,7 @@ import base64
 import datetime
 
 from django.utils.timezone import datetime as ddt
+from rest_framework.reverse import reverse
 
 
 default_app_config = "scrud_django.apps.ScrudConfig"
@@ -30,8 +31,11 @@ class ScrudServices:
         self.last_modified = ddt.now()
         self._set_etag()
 
-    def add_service(self, key, value):
-        self.services[key] = value
+    def add_service(self, type_uri, value):
+        if callable(value):
+            self.services[type_uri] = value
+        else:
+            self.services[type_uri] = lambda request=None: reverse(f"{value}-list", request=request)
         self.update_last_modified()
 
     def get_last_modified(self):

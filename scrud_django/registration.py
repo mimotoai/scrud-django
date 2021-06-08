@@ -11,7 +11,7 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.shortcuts import get_list_or_404, get_object_or_404
 from django.urls import path
 
-from scrud_django import services
+from scrud_django import collection_type_uri_for, services
 from scrud_django.models import Resource, ResourceType
 
 
@@ -89,7 +89,7 @@ class ResourceTypeRegistration:
             self.resource_type.save()
 
         # Register with service catalog
-        services.add_service(self.resource_type.type_uri, self.resource_type.slug)
+        services.add_service(collection_type_uri_for(self.resource_type.type_uri), self.resource_type.slug)
         self.register_urls()
 
     def register_urls(self):

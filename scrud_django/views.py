@@ -3,7 +3,6 @@ from rest_framework import viewsets
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework.reverse import reverse
 from rest_framework.views import APIView
 from scoped_rbac.rest import AccessControlledAPIView
 
@@ -190,6 +189,6 @@ class ResourceCollectionContextView(APIView):
 @permission_classes([AllowAny])
 def get_service_list(request, *args, **kwargs):
     catalog = {}
-    for k, v in services.services.items():
-        catalog[k] = reverse(f'{v}-list', request=request)
+    for type_uri, url_func in services.services.items():
+        catalog[type_uri] = url_func(request=request)
     return Response(catalog)

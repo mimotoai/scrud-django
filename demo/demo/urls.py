@@ -1,12 +1,17 @@
 import importlib.resources
 
 from django.urls import include, path
-
+from rest_framework.routers import DefaultRouter
+from scoped_rbac.rest import UserViewSet
 from scrud_django import registration
 
 app_name = "scrud_django-demo"
 
+router = DefaultRouter()
+router.register(r"users", UserViewSet)
+
 api_urlpatterns = [
+    path("", include(router.urls), name="api"),
     path("", include("scrud_django.urls")),
 ]
 api_urlpatterns.extend(
