@@ -2,7 +2,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django_jsonfield_backport.models import JSONField
 
-from scrud_django.models import ResourceType
+from scrud_django.models.resource_type import ResourceType
 
 
 class ResourceMixin(models.Model):
