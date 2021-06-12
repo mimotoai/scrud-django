@@ -317,7 +317,7 @@ django = ">=1.11"
 
 [[package]]
 name = "django-scoped-rbac"
-version = "0.6.0"
+version = "0.7.1"
 description = "A rich and flexible Django application for role-based access control within distinct access control scopes supporting Django Rest Framework."
 category = "main"
 optional = false
@@ -447,7 +447,7 @@ doc = ["sphinx", "sphinx-rtd-theme", "sphinxcontrib-spelling"]
 
 [[package]]
 name = "faker"
-version = "8.6.0"
+version = "8.7.0"
 description = "Faker is a Python package that generates fake data for you."
 category = "dev"
 optional = false
@@ -1404,7 +1404,7 @@ python-versions = "*"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.8"
-content-hash = "872f878d57d49474c8877c30417ab605d051c66306c91fd3be18b22e56e0e126"
+content-hash = "e33c03dce2d08ffb6b6684edd16cb29ac4236e7f93ab1163ad6ecfbcc5a18955"
 
 [metadata.files]
 alabaster = [
@@ -1620,8 +1620,8 @@ django-reversion = [
     {file = "django_reversion-3.0.9-py3-none-any.whl", hash = "sha256:1b57127a136b969f4b843a915c72af271febe7f336469db6c27121f8adcad35c"},
 ]
 django-scoped-rbac = [
-    {file = "django-scoped-rbac-0.6.0.tar.gz", hash = "sha256:a15cd0025cb0564d1de8e71b8d558e3c76356fafc2c448abe1af620dac491bbd"},
-    {file = "django_scoped_rbac-0.6.0-py3-none-any.whl", hash = "sha256:b0e3a2942887873e97a1e9ae6327dd91a4d0fbc378f15660081fcf247cc60f0c"},
+    {file = "django-scoped-rbac-0.7.1.tar.gz", hash = "sha256:1701994c49c34a4ff1c20545ff2b932ccd63d2fef63b5c1ea40e246d1dafb09a"},
+    {file = "django_scoped_rbac-0.7.1-py3-none-any.whl", hash = "sha256:b4314eb4b8b68c2dbab59e28505ef0dcfd8eea98a738307a3d17fc06cfbfdb97"},
 ]
 djangorestframework = [
     {file = "djangorestframework-3.12.4-py3-none-any.whl", hash = "sha256:6d1d59f623a5ad0509fe0d6bfe93cbdfe17b8116ebc8eda86d45f6e16e819aaf"},
@@ -1654,8 +1654,8 @@ factory-boy = [
     {file = "factory_boy-3.2.0.tar.gz", hash = "sha256:401cc00ff339a022f84d64a4339503d1689e8263a4478d876e58a3295b155c5b"},
 ]
 faker = [
-    {file = "Faker-8.6.0-py3-none-any.whl", hash = "sha256:8f2800605b55cbf92d30c1a9db2cc11d0bfb200732590f597603a7789a43f5f4"},
-    {file = "Faker-8.6.0.tar.gz", hash = "sha256:69febb4db797d2c463e5bd56263aa0068c99480ace3beeb6ba0e14bf82d46607"},
+    {file = "Faker-8.7.0-py3-none-any.whl", hash = "sha256:30189045769cb26f91ed218140469fd0b42520b2ea22ff2958ed81071a3ed839"},
+    {file = "Faker-8.7.0.tar.gz", hash = "sha256:a724ca2325f4af659929052fbbb613caaec237a93fcdc1cbc7aa860e61e3c18f"},
 ]
 fastjsonschema = [
     {file = "fastjsonschema-2.15.1-py3-none-any.whl", hash = "sha256:fa2f4bb1e31419c5eb1150f2e0545921712c10c34165b86d33f08f5562ad4b85"},
