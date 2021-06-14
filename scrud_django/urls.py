@@ -3,9 +3,10 @@ import logging
 from itertools import chain
 
 from django.db.utils import OperationalError, ProgrammingError
-from django.urls import path
+from django.urls import include, path
 
-from scrud_django import registration
+from scoped_rbac.models import Role, RoleAssignment
+from scrud_django import registration, services, collection_type_uri_for
 from scrud_django.views import (
     ResourceCollectionContextView,
     ResourceCollectionSchemaView,
@@ -24,6 +25,7 @@ urlpatterns = [
         ResourceCollectionContextView.as_view(),
         name="collections-json-ld",
     ),
+    path("", include("scoped_rbac.urls")),
 ]
 
 try:
@@ -40,3 +42,6 @@ try:
     ))
 except (OperationalError, ProgrammingError) as e:
     logging.error(e)
+
+services.add_service(collection_type_uri_for(Role.resource_type.iri), "role")
+services.add_service(collection_type_uri_for(RoleAssignment.resource_type.iri), "roleassignment")
