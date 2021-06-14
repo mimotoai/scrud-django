@@ -11,7 +11,7 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.shortcuts import get_list_or_404, get_object_or_404
 from django.urls import path
 
-from scrud_django import collection_type_uri_for, services
+from scrud_django import services
 from scrud_django.models import Resource, ResourceType
 
 
@@ -35,6 +35,7 @@ class ResourceTypeRegistration:
         slug: str = None,
         viewset_class: object = None,
         uses_reversion: bool = True,
+        register_service: bool = True,
     ):
         """
         Register resource type model.
@@ -89,7 +90,8 @@ class ResourceTypeRegistration:
             self.resource_type.save()
 
         # Register with service catalog
-        services.add_service(collection_type_uri_for(self.resource_type.type_uri), self.resource_type.slug)
+        if register_service:
+            services.add_service(self.resource_type.type_uri, self.resource_type.slug)
         self.register_urls()
 
     def register_urls(self):
@@ -365,6 +367,7 @@ def json_resource_type(
     indexing_policy_resource: Resource = None,
     indexing_policy_func=None,
     uses_reversion: bool = True,
+    register_service: bool = True,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
@@ -384,6 +387,7 @@ def json_resource_type(
             viewset_class=viewset_class,
             indexing_policy_func=indexing_policy_func,
             uses_reversion=uses_reversion,
+            register_service=register_service,
         )
         return resource_type_registration.urls
     except (OperationalError, ProgrammingError):
