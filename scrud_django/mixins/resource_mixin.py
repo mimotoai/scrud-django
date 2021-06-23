@@ -9,10 +9,7 @@ class ResourceMixin(models.Model):
     # The actual JSON content for this resource
     content = JSONField()
     resource_type = models.ForeignKey(
-        ResourceType,
-        on_delete=models.PROTECT,
-        verbose_name=_('resource type'),
-        related_name='resource_type',
+        ResourceType, on_delete=models.PROTECT, verbose_name=_('resource type'),
     )
     modified_at = models.DateTimeField()
     etag = models.CharField(max_length=40)

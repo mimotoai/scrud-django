@@ -5,7 +5,6 @@ from datetime import datetime
 from uuid import uuid4
 
 import reversion
-from django.conf import settings
 from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
 from django.shortcuts import get_list_or_404, get_object_or_404
@@ -23,7 +22,7 @@ class ResourceTypeRegistration:
     def __init__(
         self,
         resource_type_uri: str,
-        revision: str,
+        revision: str = '1',
         schema_resource: Resource = None,
         schema_func: callable = None,
         schema_uri: str = None,
@@ -57,37 +56,36 @@ class ResourceTypeRegistration:
                 etag=uuid4().hex,
                 modified_at=datetime.now(),
                 uses_reversion=uses_reversion,
+                revision=revision,
             )
             self.resource_type = resource_type
 
-        if (
-            self.resource_type.revision != revision
-            or settings.DEBUG
-            or self.resource_type.uses_reversion != uses_reversion
-        ):
-            self.resource_type.revision = revision
-            if schema_resource is None and schema_func:
-                self.resource_type.schema = register_json_schema(
-                    schema_func, self.resource_type.schema
-                )
-            else:
-                self.resource_type.schema = schema_resource
+        if schema_resource is None and schema_func:
+            self.resource_type.schema = register_json_schema(
+                schema_func, self.resource_type.schema
+            )
+        else:
+            self.resource_type.schema = schema_resource
 
-            if context_resource is None and context_func:
-                self.resource_type.context = register_json_ld_context(
-                    context_func, self.resource_type.context
-                )
-            else:
-                self.resource_type.context = context_resource
+        if context_resource is None and context_func:
+            self.resource_type.context = register_json_ld_context(
+                context_func, self.resource_type.context
+            )
+        else:
+            self.resource_type.context = context_resource
 
-            if indexing_policy_resource is None and indexing_policy_func:
-                self.resource_type.indexing_policy = register_indexing_policy(
-                    indexing_policy_func, self.resource_type.indexing_policy
-                )
-            else:
-                self.resource_type.indexing_policy = indexing_policy_resource
-            self.resource_type.uses_reversion = uses_reversion
+        if indexing_policy_resource is None and indexing_policy_func:
+            self.resource_type.indexing_policy = register_indexing_policy(
+                indexing_policy_func, self.resource_type.indexing_policy
+            )
+        else:
+            self.resource_type.indexing_policy = indexing_policy_resource
+        self.resource_type.uses_reversion = uses_reversion
+        with reversion.create_revision():
             self.resource_type.save()
+            reversion.set_comment(
+                'Update resourcetype' if search else 'Add resourcetype'
+            )
 
         # Register with service catalog
         if register_service:
@@ -236,14 +234,6 @@ class ResourceRegistration:
                 Resource, resource_type=resource_type, pk=int(slug)
             )
 
-            # Proposed Solution in case we need to recover the deleted resource
-            # =================================================================
-
-            # if resource_type.uses_reversion:
-            #     with reversion.create_revision():
-            #         resource.save()
-            #         reversion.set_comment(f'Delete Resource__{resource.pk}')
-
             resource.delete()
             resource_type.etag = uuid4().hex
             resource_type.modified_at = datetime.now()
@@ -355,8 +345,8 @@ def register_indexing_policy(indexing_policy_func, previous_revision):
 
 def json_resource_type(
     resource_type_uri: str,
-    revision: str,
     slug: str,
+    revision: str = '1',
     schema_resource: Resource = None,
     schema_func=None,
     schema_uri: str = None,
