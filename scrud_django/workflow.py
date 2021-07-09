@@ -1,16 +1,16 @@
-from dataclasses import dataclass
-import celpy
 import logging
+from dataclasses import dataclass
+from itertools import product
+
+import celpy
 from celpy.celtypes import BoolType
 from celpy.evaluation import CELEvalError
-from itertools import product
+
 from scrud_django.exceptions import (
+    WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
     WorkflowTransitionError,
-    WorkflowInvalidInitialStateError,
 )
-from scrud_django.models import Resource, ResourceType
-
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class WorkflowPolicy:
         return TransitionData(
             proposed_state,
             prior_state,
-            self.allowed_transitions[prior_state][proposed_state]
+            self.allowed_transitions[prior_state][proposed_state],
         )
 
     def determine_state(self, data, state_expressions):
@@ -102,8 +102,8 @@ class WorkflowPolicy:
                 if condition.evaluate(data) == BoolType(True):
                     return name
             except CELEvalError as e:
-                # This can happen if the expression specifies a property that isn't present in the
-                # provided data
+                # This can happen if the expression specifies a
+                # property that isn't present in the provided data
                 logger.debug(e)
 
         return None
@@ -124,20 +124,10 @@ class WorkflowPolicy:
 
     def compile_allowed_transitions(self):
         transitions = self.policy.get("transitions", {})
-        as_list = lambda x: [x] if not isinstance(x, list) else x
+        as_list = lambda x: [x] if not isinstance(x, list) else x  # noqa: E731
         for transition_name, transition_policy in transitions.items():
             transition_from = as_list(transition_policy["from"])
             transition_to = as_list(transition_policy["to"])
             for source, target in product(transition_from, transition_to):
                 source_transitions = self.allowed_transitions.setdefault(source, {})
                 source_transitions[target] = transition_name
-
-
-def workflow_for(resource_type_uri, rbac_context):
-    resource_type = ResourceType.objects.filter(type_uri=resource_type_uri)
-    workflow = Resource.objects.filter(
-        resource_type=resource_type, rbac_context=rbac_context
-    )
-    if workflow.exists():
-        return WorkflowPolicy(workflow.first().content)
-
