@@ -18,11 +18,22 @@ class ScrudSignalProcessor:
         self.workflow_actions = workflow_actions()
 
     def post_save_trigger(self, sender, **kwargs):
-        actions = self.workflow_actions.get(kwargs.get(self.resource_type_uri_literal))
-        if self.post_save_literal in actions:
-            actions[self.post_save_literal](sender, **kwargs)
+        action = self.determine_action(
+            self.post_save_literal, kwargs.get(self.resource_type_uri_literal)
+        )
+        if action:
+            action(sender, **kwargs)
 
     def post_delete_trigger(self, sender, **kwargs):
-        actions = self.workflow_actions.get(kwargs.get(self.resource_type_uri_literal))
-        if self.post_save_literal in actions:
-            actions[self.post_save_literal](sender, **kwargs)
+        action = self.determine_action(
+            self.post_delete_literal, kwargs.get(self.resource_type_uri_literal)
+        )
+        if action:
+            action(sender, **kwargs)
+
+    def determine_action(self, post_literal, type_uri):
+        actions = self.workflow_actions.get(type_uri, None)
+        if actions is not None:
+            if post_literal in actions:
+                return actions[post_literal]
+        return None
