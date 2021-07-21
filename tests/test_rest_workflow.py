@@ -1,11 +1,13 @@
 import json
+
 import pytest
 from rest_framework import status
 from rest_framework.reverse import reverse
 from safetydance import step_data
 from safetydance_django.test import *
 from safetydance_django.test import http_response
-from safetydance_test import scripted_test, Given, When, Then, And
+from safetydance_test import And, Given, Then, When, scripted_test
+
 from .fixtures import *  # noqa
 from .fixtures import (
     RESOURCE_ENDPOINT_DETAIL_NAME,
@@ -131,7 +133,7 @@ def test_invalid_transition(admin_login):
         HTTP_IF_UNMODIFIED_SINCE=http_response["Last-Modified"],
         HTTP_IF_MATCH=http_response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(status.HTTP_200_OK)
 
     data["status"] = "in progress"
     Given.http.head(url)
@@ -222,6 +224,7 @@ def test_unauthorized_transition(todo_creator_login):
         HTTP_IF_MATCH=http_response["Etag"],
     )
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+
 
 @pytest.mark.django_db
 @scripted_test
