@@ -1,7 +1,5 @@
 from django.apps import AppConfig
 
-from .scrud_signals import ScrudSignalProcessor
-
 
 class ScrudConfig(AppConfig):
     name = "scrud_django"
@@ -12,4 +10,3 @@ class ScrudConfig(AppConfig):
         from scrud_django.permissions import authorized_transitions
 
         register_operator("scrud_workflow", authorized_transitions)
-        ScrudSignalProcessor()

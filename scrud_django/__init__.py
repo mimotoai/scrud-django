@@ -9,6 +9,7 @@ import datetime
 from django.utils.timezone import datetime as ddt
 from rest_framework.reverse import reverse
 
+from scrud_django.scrud_signals import ScrudSignalProcessor
 
 default_app_config = "scrud_django.apps.ScrudConfig"
 
@@ -35,7 +36,9 @@ class ScrudServices:
         if callable(value):
             self.services[type_uri] = value
         else:
-            self.services[type_uri] = lambda request=None: reverse(f"{value}-list", request=request)
+            self.services[type_uri] = lambda request=None: reverse(
+                f"{value}-list", request=request
+            )
         self.update_last_modified()
 
     def get_last_modified(self):
@@ -50,3 +53,6 @@ services = ScrudServices()
 
 def collection_type_uri_for(type_uri):
     return f"https://api.openteams.com/json-schema/ResourceCollection?contents_type={type_uri}"  # noqa: E501
+
+
+processor = ScrudSignalProcessor()
