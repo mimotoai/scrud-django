@@ -30,6 +30,7 @@ class ResourceMixin(models.Model):
         self, force_insert=False, force_update=False, using=None, update_fields=None
     ) -> None:
         transition_data = self.get_transition_data()
+        action = 'CREATE' if self._state.adding else 'UPDATE'
         super().save(
             force_insert=force_insert,
             force_update=force_update,
@@ -43,6 +44,7 @@ class ResourceMixin(models.Model):
             using=using,
             resource_type_uri=self.resource_type.type_uri,
             transition_data=transition_data,
+            action=action,
         )
 
     def delete(self, using=None, keep_parents=False) -> Tuple[int, Dict[str, int]]:
@@ -52,12 +54,16 @@ class ResourceMixin(models.Model):
             instance=self,
             using=using,
             resource_type_uri=self.resource_type.type_uri,
+            action='DELETE',
         )
         return res
 
     def get_transition_data(self):
-        prior_version = self.__class__.objects.filter(pk=self.pk)
-        prior_data = prior_version.first().content if prior_version.exists() else None
+        if self._state.adding:
+            prior_data = None
+        else:
+            prior_version = self.__class__.objects.filter(pk=self.pk)
+            prior_data = prior_version.first().content
         workflow = self.get_workflow_policy()
         if workflow is None:
             return None

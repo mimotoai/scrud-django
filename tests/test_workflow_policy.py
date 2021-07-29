@@ -21,6 +21,7 @@ workflow_policy = WorkflowPolicy(
             'move to middle': {'from': 'start', 'to': 'middle'},
             'move to end': {'from': ['start', 'middle'], 'to': 'end'},
         },
+        'restrict_update': ['start', 'end'],
     }
 )
 
@@ -69,8 +70,12 @@ def test_valid_transition(proposed_state, prior_state):
     assert workflow_policy.validate(proposed_state, prior_state) == proposed_state
 
 
-@pytest.mark.parametrize(
-    "proposed_state, prior_state", [(start, start), (middle, middle), (end, end)]
-)
+@pytest.mark.parametrize("proposed_state, prior_state", [(middle, middle)])
 def test_same_state_transition(proposed_state, prior_state):
     assert workflow_policy.validate(proposed_state, prior_state) == proposed_state
+
+
+@pytest.mark.parametrize("proposed_state, prior_state", [(start, start), (end, end)])
+def test_same_state_update_restricted(proposed_state, prior_state):
+    with pytest.raises(WorkflowTransitionError):
+        workflow_policy.validate(proposed_state, prior_state)
