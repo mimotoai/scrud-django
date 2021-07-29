@@ -6,7 +6,13 @@ from django_jsonfield_backport.models import JSONField
 
 from scrud_django.conf import default_workflow_policies
 from scrud_django.models.resource_type import ResourceType
-from scrud_django.workflow import TransitionData, WorkflowPolicy
+from scrud_django.workflow import (
+    TransitionData,
+    WorkflowInvalidInitialStateError,
+    WorkflowInvalidStateError,
+    WorkflowPolicy,
+    WorkflowTransitionError,
+)
 
 from ..scrud_signals import scrud_post_delete, scrud_post_save
 
@@ -69,7 +75,16 @@ class ResourceMixin(models.Model):
             return None
         elif prior_data is None:
             return TransitionData(None, self.content, "__INITIALIZE__")
-        return workflow.determine_transition(self.content, prior_data)
+        try:
+            return workflow.determine_transition(self.content, prior_data)
+        except (
+            WorkflowInvalidInitialStateError,
+            WorkflowInvalidStateError,
+            WorkflowTransitionError,
+        ):
+            """ Workflow validation shouldn't happen in here.
+                hence we ignore the exceptions. """
+            return None
 
     def get_workflow_policy(self):
         workflow = self.__class__.objects.filter(
