@@ -89,6 +89,7 @@ def pytest_configure(config):
             },
         },
         HAYSTACK_SIGNAL_PROCESSOR='haystack.signals.RealtimeSignalProcessor',
+        SCRUD_WORKFLOW_ACTIONS=["tests.workflow_actions.actions"],
     )
 
     if config.getoption("--no-pkgroot"):
