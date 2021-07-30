@@ -11,7 +11,7 @@ from tests.factories import fake_resource
 from tests.workflow_actions import actions
 
 
-class TestScrudSignalProcessor(ScrudSignalProcessor):
+class ScrudSignalProcessorMock(ScrudSignalProcessor):
     def post_save_trigger(self, sender, **kwargs):
         super().post_save_trigger(sender, **kwargs)
         return self.determine_action(
@@ -37,7 +37,7 @@ class TestCustomDjangoSignals(TestCase):
         super().__init__(methodName=methodName)
         scrud_post_delete.connect(self.handler)
         scrud_post_save.connect(self.handler)
-        self.signal_processor = TestScrudSignalProcessor()
+        self.signal_processor = ScrudSignalProcessorMock()
 
     def handler(self, sender, **kwargs):
         self.type_uri = kwargs.get('resource_type_uri')

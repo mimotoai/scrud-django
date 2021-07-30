@@ -6,7 +6,13 @@ from django_jsonfield_backport.models import JSONField
 
 from scrud_django.conf import default_workflow_policies
 from scrud_django.models.resource_type import ResourceType
-from scrud_django.workflow import TransitionData, WorkflowPolicy
+from scrud_django.workflow import (
+    TransitionData,
+    WorkflowInvalidInitialStateError,
+    WorkflowInvalidStateError,
+    WorkflowPolicy,
+    WorkflowTransitionError,
+)
 
 from ..scrud_signals import scrud_post_delete, scrud_post_save
 
@@ -30,6 +36,7 @@ class ResourceMixin(models.Model):
         self, force_insert=False, force_update=False, using=None, update_fields=None
     ) -> None:
         transition_data = self.get_transition_data()
+        action = 'CREATE' if self._state.adding else 'UPDATE'
         super().save(
             force_insert=force_insert,
             force_update=force_update,
@@ -43,6 +50,7 @@ class ResourceMixin(models.Model):
             using=using,
             resource_type_uri=self.resource_type.type_uri,
             transition_data=transition_data,
+            action=action,
         )
 
     def delete(self, using=None, keep_parents=False) -> Tuple[int, Dict[str, int]]:
@@ -52,18 +60,31 @@ class ResourceMixin(models.Model):
             instance=self,
             using=using,
             resource_type_uri=self.resource_type.type_uri,
+            action='DELETE',
         )
         return res
 
     def get_transition_data(self):
-        prior_version = self.__class__.objects.filter(pk=self.pk)
-        prior_data = prior_version.first().content if prior_version.exists() else None
+        if self._state.adding:
+            prior_data = None
+        else:
+            prior_version = self.__class__.objects.filter(pk=self.pk)
+            prior_data = prior_version.first().content
         workflow = self.get_workflow_policy()
         if workflow is None:
             return None
         elif prior_data is None:
             return TransitionData(None, self.content, "__INITIALIZE__")
-        return workflow.determine_transition(self.content, prior_data)
+        try:
+            return workflow.determine_transition(self.content, prior_data)
+        except (
+            WorkflowInvalidInitialStateError,
+            WorkflowInvalidStateError,
+            WorkflowTransitionError,
+        ):
+            """ Workflow validation shouldn't happen in here.
+                hence we ignore the exceptions. """
+            return None
 
     def get_workflow_policy(self):
         workflow = self.__class__.objects.filter(

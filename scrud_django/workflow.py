@@ -72,18 +72,31 @@ class WorkflowPolicy:
         else:
             state_expressions = self.state_expressions
         proposed_state = self.determine_state(proposed_data, state_expressions)
+
         if prior_state is not None and proposed_state is None:
             # fallback and determine if the proposed_data matches any defined state
             proposed_state = self.determine_state(proposed_data, self.state_expressions)
             if proposed_state is None:
                 raise WorkflowInvalidStateError(self.policy)
             else:
+                if prior_state == proposed_state:
+                    if proposed_state not in self.policy.get('restrict_update', []):
+                        return TransitionData(
+                            proposed_state, prior_state, "__SAME_STATE__"
+                        )
+                    raise WorkflowTransitionError(
+                        self.policy,
+                        prior_state,
+                        proposed_state,
+                        message='Update not allowed on this state',
+                    )
                 raise WorkflowTransitionError(self.policy, proposed_state, prior_state)
         elif (
             prior_state not in self.allowed_transitions
             or proposed_state not in self.allowed_transitions[prior_state]
         ):
             raise WorkflowTransitionError(self.policy, proposed_state, prior_state)
+
         return TransitionData(
             proposed_state,
             prior_state,
@@ -124,7 +137,10 @@ class WorkflowPolicy:
 
     def compile_allowed_transitions(self):
         transitions = self.policy.get("transitions", {})
-        as_list = lambda x: [x] if not isinstance(x, list) else x  # noqa: E731
+
+        def as_list(x):
+            return [x] if not isinstance(x, list) else x  # noqa: E731
+
         for transition_name, transition_policy in transitions.items():
             transition_from = as_list(transition_policy["from"])
             transition_to = as_list(transition_policy["to"])
