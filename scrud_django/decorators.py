@@ -424,7 +424,7 @@ def options(view_instance, request, *args, **kwargs):
     return Response(data, status=status.HTTP_200_OK)
 
 
-def scrudful_viewset(cls):
+def scrudful_viewset(cls, options=options):
     setattr(cls, "options", options)
     meta = getattr(cls, "Meta", None)
     etag_func = getattr(meta, "etag_func", None)
