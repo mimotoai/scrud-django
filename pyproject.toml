@@ -34,12 +34,10 @@ fastjsonschema = "^2.14.5"
 python = "^3.8"
 python-decouple = "^3.3"
 python-dotenv = "^0.15.0"
-safetydance-test = "^0.1.4"
 Whoosh = "^2.7.4"
 django-reversion = "^3.0.9"
 
 [tool.poetry.dev-dependencies]
-astor = { git="https://github.com/Quansight/astor.git", branch="issue-174" }
 black = "19.3b0"
 coverage = "^5.3.1"
 factory-boy = "^3.2.0"
@@ -47,8 +45,7 @@ flake8 = "^3.8.4"
 pytest = "^6.2.1"
 pytest-cov = "^2.10.1"
 pytest-django = "^4.1.0"
-safetydance = { git="https://gitlab.com/openteams/safetydance.git", branch="python38" }
-safetydance-django = "^0.0.6"
+safetydance-django = { git="https://gitlab.com/openteams/safetydance_django" }
 Sphinx = "^2.3.1"
 sphinxcontrib-django = "^0.5.1"
 sphinx-autobuild = "^2020.9.1"
