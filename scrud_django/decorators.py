@@ -435,6 +435,7 @@ def scrudful_viewset(cls):
     context_link_or_func = getattr(meta, "context_link_or_func", None)
     context_rel_or_func = getattr(meta, "context_rel_or_func", None)
     context_type_or_func = getattr(meta, "context_type_or_func", None)
+    extra_view_methods = getattr(meta, "extra_view_methods", [])
     scrudful_item = scrudful(
         etag_func=etag_func,
         last_modified_func=last_modified_func,
@@ -445,7 +446,9 @@ def scrudful_viewset(cls):
         context_rel_or_func=context_rel_or_func,
         context_type_or_func=context_type_or_func,
     )
-    for method_name in ("create", "retrieve", "update", "destroy"):
+    view_methods = ["create", "retrieve", "update", "destroy"]
+    view_methods.extend(extra_view_methods)
+    for method_name in view_methods:
         method = getattr(cls, method_name, None)
         setattr(cls, method_name, scrudful_item(method))
     if hasattr(cls, "list"):
