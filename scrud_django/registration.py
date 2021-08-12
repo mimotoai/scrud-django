@@ -5,6 +5,7 @@ from datetime import datetime
 from uuid import uuid4
 
 import reversion
+from django.conf import settings
 from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
 from django.shortcuts import get_list_or_404, get_object_or_404
@@ -47,6 +48,20 @@ class ResourceTypeRegistration:
 
         if search:
             self.resource_type = search[0]
+            # update everything if settings.DEBUG (in development)
+            if settings.DEBUG:
+                self.resource_type = ResourceType(
+                    type_uri=resource_type_uri,
+                    schema_uri=schema_uri,
+                    context_uri=context_uri,
+                    slug=slug,
+                    etag=uuid4().hex,
+                    modified_at=datetime.now(),
+                    uses_reversion=uses_reversion,
+                    revision=revision,
+                )
+                self.resource_type.pk = search[0].pk
+
         else:
             resource_type = ResourceType(
                 type_uri=resource_type_uri,
