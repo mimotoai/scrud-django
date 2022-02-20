@@ -19,14 +19,24 @@ from ..scrud_signals import scrud_post_delete, scrud_post_save
 workflow_policy_type_uri = "http://api.openteams.com/json-ld/WorkflowPolicy"
 
 
-class ResourceMixin(models.Model):
-    # The actual JSON content for this resource
-    content = JSONField()
+class ScrudfulMixin(models.Model):
+    class Meta:
+        abstract = True
+
     resource_type = models.ForeignKey(
         ResourceType, on_delete=models.PROTECT, verbose_name=_('resource type'),
     )
     modified_at = models.DateTimeField()
     etag = models.CharField(max_length=40)
+
+    @property
+    def rbac_context(self):
+        raise NotImplementedError()
+
+
+class ResourceMixin(ScrudfulMixin):
+    # The actual JSON content for this resource
+    content = JSONField()
 
     @property
     def rbac_context(self):

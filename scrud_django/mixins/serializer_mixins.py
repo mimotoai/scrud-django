@@ -12,11 +12,15 @@ class SerializerMixin:
         self.resource_type = kwargs.pop("resource_type")
         super().__init__(*args, **kwargs)
 
-    def to_representation(self, instance, envelope=False, context=None):
+    def to_content(self, instance, context=None):
         if type(instance.content) is str:
             content = json.loads(instance.content)
         else:
             content = instance.content
+        return content
+
+    def to_representation(self, instance, envelope=False, context=None):
+        content = self.to_content(instance, context=context)
         if not envelope:
             return content
         request = self._context["request"]

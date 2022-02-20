@@ -12,10 +12,13 @@ from django.shortcuts import get_list_or_404, get_object_or_404
 from django.urls import path
 
 from scrud_django import services
-from scrud_django.models import Resource, ResourceType
+from scrud_django.models import Resource, ResourceType, resource
 
 
 def get_resource_type_for(slug):
+    import logging
+    logging.error(slug)
+    logging.error(ResourceType.objects.order_by("-revision").all().count())
     return get_list_or_404(ResourceType.objects.order_by("-revision"), slug=slug)[0]
 
 

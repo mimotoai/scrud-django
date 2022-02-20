@@ -19,7 +19,7 @@ class ResourceType(models.Model):
 
     # require either schema or schema_uri
     schema = models.ForeignKey(
-        'Resource',
+        to='scrud_django.Resource',
         null=True,
         on_delete=models.PROTECT,
         verbose_name=_('schema'),
@@ -29,7 +29,7 @@ class ResourceType(models.Model):
 
     # require either context or context_uri
     context = models.ForeignKey(
-        'Resource',
+        to='scrud_django.Resource',
         null=True,
         on_delete=models.PROTECT,
         verbose_name=_('linked-data context'),
@@ -37,7 +37,7 @@ class ResourceType(models.Model):
     )
     context_uri = models.URLField(null=True)
     indexing_policy = models.ForeignKey(
-        'Resource',
+        to='scrud_django.Resource',
         null=True,
         on_delete=models.PROTECT,
         verbose_name=_('indexing policy'),

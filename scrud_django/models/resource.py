@@ -14,7 +14,7 @@ from scrud_django.models.resource_type import ResourceType
 @reversion.register()
 class Resource(ResourceMixin):
     resource_type = models.ForeignKey(
-        ResourceType,
+        to=ResourceType,
         on_delete=models.PROTECT,
         verbose_name='resource type',
         related_name='resource_type',
