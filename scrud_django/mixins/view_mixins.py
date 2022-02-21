@@ -190,8 +190,6 @@ class GenericViewMixin:
             )
 
     def get_resource_type(self):
-        import logging
-        logging.error(f"get_serializer for {self.resource_type_name}")
         return get_resource_type_for(self.resource_type_name)
 
     def get_instance(self, request, slug: str):

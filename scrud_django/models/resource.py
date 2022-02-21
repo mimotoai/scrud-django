@@ -13,6 +13,9 @@ from scrud_django.models.resource_type import ResourceType
 
 @reversion.register()
 class Resource(ResourceMixin):
+    class Meta:
+        ordering = ["id"]
+
     resource_type = models.ForeignKey(
         to=ResourceType,
         on_delete=models.PROTECT,

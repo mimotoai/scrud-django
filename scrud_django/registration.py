@@ -1,7 +1,7 @@
 import importlib.resources
 import json
 import logging
-from datetime import datetime
+from django.utils import timezone
 from uuid import uuid4
 
 import reversion
@@ -16,9 +16,6 @@ from scrud_django.models import Resource, ResourceType, resource
 
 
 def get_resource_type_for(slug):
-    import logging
-    logging.error(slug)
-    logging.error(ResourceType.objects.order_by("-revision").all().count())
     return get_list_or_404(ResourceType.objects.order_by("-revision"), slug=slug)[0]
 
 
@@ -59,7 +56,7 @@ class ResourceTypeRegistration:
                     context_uri=context_uri,
                     slug=slug,
                     etag=uuid4().hex,
-                    modified_at=datetime.now(),
+                    modified_at=timezone.now(),
                     uses_reversion=uses_reversion,
                     revision=revision,
                 )
@@ -72,7 +69,7 @@ class ResourceTypeRegistration:
                 context_uri=context_uri,
                 slug=slug,
                 etag=uuid4().hex,
-                modified_at=datetime.now(),
+                modified_at=timezone.now(),
                 uses_reversion=uses_reversion,
                 revision=revision,
             )
@@ -179,7 +176,7 @@ class ResourceRegistration:
         """
         with transaction.atomic():
             resource.etag = uuid4().hex
-            resource.modified_at = datetime.now()
+            resource.modified_at = timezone.now()
             resource.resource_type.etag = resource.etag
             resource.resource_type.modified_at = resource.modified_at
             if resource.resource_type.uses_reversion:
@@ -219,7 +216,7 @@ class ResourceRegistration:
 
             resource.content = content
             resource.etag = uuid4().hex
-            resource.modified_at = datetime.now()
+            resource.modified_at = timezone.now()
             resource_type.etag = resource.etag
             resource_type.modified_at = resource.modified_at
             if resource.resource_type.uses_reversion:
@@ -254,7 +251,7 @@ class ResourceRegistration:
 
             resource.delete()
             resource_type.etag = uuid4().hex
-            resource_type.modified_at = datetime.now()
+            resource_type.modified_at = timezone.now()
             resource_type.save()
 
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from django.utils import timezone
 from uuid import uuid4
 
 import factory
@@ -39,7 +39,7 @@ class ResourceTypeFactory(factory.django.DjangoModelFactory):
     context = factory.LazyFunction(fake_resource)
     context_uri = None
 
-    modified_at = factory.LazyFunction(datetime.now)
+    modified_at = factory.LazyFunction(timezone.now)
     etag = factory.LazyFunction(lambda: uuid4().hex)
     uses_reversion = True
 
@@ -50,5 +50,5 @@ class ResourceFactory(factory.django.DjangoModelFactory):
 
     content = factory.LazyFunction(lambda: {'name': uuid4().hex})
     resource_type = factory.SubFactory(ResourceTypeFactory)
-    modified_at = factory.LazyFunction(datetime.now)
+    modified_at = factory.LazyFunction(timezone.now)
     etag = factory.LazyFunction(lambda: uuid4().hex)
