@@ -1,16 +1,21 @@
 import fastjsonschema
+from django.core.exceptions import ImproperlyConfigured
+from rest_framework.exceptions import ValidationError
 from scoped_rbac import access
 from scoped_rbac.permissions import http_action_iri_for, policy_for
 from scoped_rbac.policy import Permission
-from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
-from scrud_django.conf import default_workflow_policies
 from scrud_django.exceptions import JsonValidationError, WorkflowTransitionError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
-from scrud_django.models import Resource, ResourceType
+from scrud_django.models import ResourceType
 from scrud_django.permissions import TransitionCheck
-from scrud_django.registration import workflow_policy_resource_type
-from scrud_django.workflow import TransitionData, WorkflowPolicy
+from scrud_django.workflow import (
+    WORKFLOW_POLICY_TYPE_URI,
+    TransitionData,
+    WorkflowPolicy,
+    default_workflow_policy_for,
+    workflow_policy_for,
+)
 
 
 class ValidatorEntry:
@@ -77,63 +82,76 @@ class JsonValidator:
 
 
 class WorkflowValidator:
-    requires_context = True
+    """Checks a create or update of a resource against the workflow policy of
+    every context concerned (`workflow_policy_for`: the context's stored policy,
+    else the settings default).
 
-    def __init__(self):
-        self.default_policies = default_workflow_policies()
-        self.cached_policies = {}
+    The contexts are those the new content names (`rbac_contexts_of`) and, for
+    an update, those the stored resource is in as well, so that moving a
+    resource out of a context is checked under that context's policy too. In
+    each of them that has a policy, a create must be a valid initial state and
+    an update a valid transition, and the user must be authorized for the
+    transition (a `TransitionCheck` for the ``scrud_workflow`` operator) in that
+    context. All of them must pass. A resource in no context is checked under
+    the settings default, and only a superuser may make its transition, as
+    scoped-rbac's object checks allow.
+
+    A ``WorkflowPolicy`` resource is itself compiled when it is written: an
+    invalid policy is a 400 rather than a policy that breaks every later write.
+    """
+
+    requires_context = True
 
     def __call__(self, data, context):
         resource_type = context.resource_type
-        policies = Resource.objects.filter(
-            resource_type=workflow_policy_resource_type(),
-            content__resource_type=resource_type.type_uri,
-        )
-        # TODO policy should be based on rbac_context per resource_type!!
-        if policies.exists():
-            for policy in policies.all():
-                workflow_policy = self.workflow_policies.get(
-                    (policy.id, policy.version), None
-                )
-                if workflow_policy is None:
-                    workflow_policy = WorkflowPolicy(policy.content)
-                    self.workflow_policies[(policy.id, policy.version)] = (
-                        workflow_policy
-                    )
-                self.apply(workflow_policy, data, context)
-        elif (
-            DEFAULT_CONTEXT in rbac_contexts_of(data)
-            and resource_type.type_uri in self.default_policies
-        ):
-            workflow_policy = self.default_policies[resource_type.type_uri]
-            self.apply(workflow_policy, data, context)
+        if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
+            self.validate_policy(data)
+        instance = context.instance
+        contexts = rbac_contexts_of(data)
+        if instance is not None:
+            contexts = list(
+                dict.fromkeys(rbac_contexts_of(instance.content) + contexts)
+            )
+        if contexts:
+            policies = [(c, workflow_policy_for(resource_type, c)) for c in contexts]
+        else:
+            policies = [(None, default_workflow_policy_for(resource_type))]
+        transitions = [
+            (c, policy, self.transition_for(policy, data, instance))
+            for c, policy in policies
+            if policy is not None
+        ]
+        for c, policy, transition_data in transitions:
+            self.authorize(policy, transition_data, c, context)
         return data
 
-    def apply(self, workflow_policy, data, context):
-        instance = context.instance
+    def validate_policy(self, data):
+        try:
+            WorkflowPolicy(data)
+        except ImproperlyConfigured as e:
+            raise ValidationError({"workflow_policy": [str(e)]}) from e
+
+    def transition_for(self, workflow_policy, data, instance):
         if instance is None:
             workflow_policy.validate_initial_state(data)
-            transition_data = TransitionData(None, data, "__INITIALIZE__")
-        else:
-            transition_data = workflow_policy.determine_transition(
-                data, instance.content
-            )
+            return TransitionData(None, data, "__INITIALIZE__")
+        return workflow_policy.determine_transition(data, instance.content)
+
+    def authorize(self, workflow_policy, transition_data, rbac_context, context):
+        """Raise unless the user may make `transition_data`'s transition in
+        `rbac_context` (``None``: the resource is in no context)."""
         request = context.context["request"]
-        permissions_policy = policy_for(request)
         permission = Permission(
             http_action_iri_for(request), context.resource_type.type_uri
         )
         transition = TransitionCheck(transition_data.transition)
-        # The transition must be allowed in every context the resource is in.
-        contexts = rbac_contexts_of(data)
-        if contexts:
-            allowed = all(
-                permissions_policy.should_allow(permission, c, resource=transition)
-                for c in contexts
-            )
-        else:
+        if rbac_context is None:
             # No context: only a superuser (as scoped-rbac's object checks).
             allowed = access.may_act_on(request, permission, transition, [])
+        else:
+            allowed = policy_for(request).should_allow(
+                permission, rbac_context, resource=transition
+            )
         if not allowed:
             raise WorkflowTransitionError(
                 workflow_policy.policy,

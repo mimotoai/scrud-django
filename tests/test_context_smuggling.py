@@ -185,12 +185,25 @@ def test_json_todo_post_in_a_permitted_context_is_created():
     reverse("todos-list")
     writer = user_with({m: [TODO] for m in ALL_METHODS}, "attacker")
     Given.http.force_authenticate(writer)
+    # The ToDo workflow policy applies in "attacker" too (0.12.0): a ToDo with
+    # no status is not a valid initial state there, as in the default context.
     When.http.post(
         reverse("todos-list"),
         {"title": "x", "rbac_context": "attacker"},
         format="json",
     )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert Http.response.json()["type"] == (
+        "http://api.openteams.com/http-problem/workflow-transition-invalid"
+    )
+    When.http.post(
+        reverse("todos-list"),
+        {"title": "x", "status": "not started", "rbac_context": "attacker"},
+        format="json",
+    )
     Then.http.status_code_is(status.HTTP_201_CREATED)
+    created = Resource.objects.order_by("-id").first()
+    assert created.rbac_contexts == ["attacker"]
 
 
 # A throwaway type whose schema gives ``rbac_context`` a default. fastjsonschema

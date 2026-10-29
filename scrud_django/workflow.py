@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 
@@ -17,6 +18,8 @@ from scrud_django.exceptions import (
 
 CEL_ENVIRONMENT = new_environment({})
 
+WORKFLOW_POLICY_TYPE_URI = "http://api.openteams.com/json-ld/WorkflowPolicy"
+
 
 @dataclass
 class TransitionData:
@@ -26,11 +29,14 @@ class TransitionData:
 
 
 class WorkflowPolicy:
-    """Currently assuming one workflow policy in effect per resource type per access
-    control context. In this scheme... moving a resource to a new access control
-    context will require the user to be authorized in both the source and target
-    contexts and for the proposed state to be a valid state in the workflow policy
-    associated with the target context.
+    """One workflow policy is in effect per resource type per access control
+    context (see `workflow_policy_for`). A write is checked under the policy of
+    every context the resource is in and every context it is moved to: the new
+    state must be valid, and the transition authorized, in each of them.
+
+    Constructing a policy compiles it: an invalid state condition, or a
+    transition that is not an object with ``from`` and ``to`` naming defined
+    states, raises ``ImproperlyConfigured``.
     """
 
     def __init__(self, policy):
@@ -141,8 +147,63 @@ class WorkflowPolicy:
             return [x] if not isinstance(x, list) else x  # noqa: E731
 
         for transition_name, transition_policy in transitions.items():
+            if not (
+                isinstance(transition_policy, Mapping)
+                and "from" in transition_policy
+                and "to" in transition_policy
+            ):
+                raise ImproperlyConfigured(
+                    f"Invalid workflow transition {transition_name!r}: it must be "
+                    "an object with 'from' and 'to'."
+                )
             transition_from = as_list(transition_policy["from"])
             transition_to = as_list(transition_policy["to"])
+            for state in transition_from + transition_to:
+                if not isinstance(state, str) or state not in self.state_expressions:
+                    raise ImproperlyConfigured(
+                        f"Invalid workflow transition {transition_name!r}: "
+                        f"{state!r} is not a defined state."
+                    )
             for source, target in product(transition_from, transition_to):
                 source_transitions = self.allowed_transitions.setdefault(source, {})
                 source_transitions[target] = transition_name
+
+
+def _type_uri(resource_type):
+    return getattr(resource_type, "type_uri", resource_type)
+
+
+def default_workflow_policy_for(resource_type):
+    """The settings default policy for `resource_type` (a `ResourceType` or its
+    type URI), from ``SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]``, or ``None``."""
+    from scrud_django.conf import default_workflow_policies
+
+    return default_workflow_policies().get(_type_uri(resource_type))
+
+
+def workflow_policy_for(resource_type, context):
+    """The `WorkflowPolicy` in effect for `resource_type` (a `ResourceType` or its
+    type URI) in `context`, or ``None`` when the type has no workflow there.
+
+    It is the stored ``WorkflowPolicy`` resource for the type whose own contexts
+    (read with `rbac_contexts_of`, so a policy that names no ``rbac_context`` is
+    in the default context ``""``) include `context`; when several do, the most
+    recently modified one wins. Without one, it is the settings default for the
+    type (`default_workflow_policy_for`). A policy stored in one context never
+    applies in another.
+
+    The one lookup of a policy: the `WorkflowValidator` and
+    ``ResourceMixin.get_workflow_policy`` both use it.
+    """
+    from scrud_django.mixins.resource_mixin import rbac_contexts_of
+    from scrud_django.models import Resource
+
+    type_uri = _type_uri(resource_type)
+    stored = Resource.objects.filter(
+        resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI,
+        content__resource_type=type_uri,
+    ).order_by("-modified_at", "-pk")
+    for policy in stored:
+        if context in rbac_contexts_of(policy.content):
+            return WorkflowPolicy(policy.content)
+    return default_workflow_policy_for(type_uri)

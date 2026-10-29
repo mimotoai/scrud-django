@@ -5,19 +5,20 @@ from django.db.models import JSONField
 from django.utils.translation import gettext_lazy as _
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
-from scrud_django.conf import default_workflow_policies
 from scrud_django.models.resource_type import ResourceType
 from scrud_django.workflow import (
+    WORKFLOW_POLICY_TYPE_URI,
     TransitionData,
     WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
-    WorkflowPolicy,
     WorkflowTransitionError,
+    default_workflow_policy_for,
+    workflow_policy_for,
 )
 
 from ..scrud_signals import scrud_post_delete, scrud_post_save
 
-workflow_policy_type_uri = "http://api.openteams.com/json-ld/WorkflowPolicy"
+workflow_policy_type_uri = WORKFLOW_POLICY_TYPE_URI
 
 
 def rbac_contexts_of(content):
@@ -132,20 +133,18 @@ class ResourceMixin(ScrudfulMixin):
             return None
 
     def get_workflow_policy(self):
-        workflow = self.__class__.objects.filter(
-            resource_type__type_uri=workflow_policy_type_uri,
-            content__resource_type=self.resource_type.type_uri,
-        )
-        dflt_workflow_policies = default_workflow_policies()
-        # The default context however the content names it (absent, None, "").
-        if workflow.exists() and DEFAULT_CONTEXT in self.rbac_contexts:
-            return WorkflowPolicy(workflow.first().content)
-        elif workflow.exists() and self.rbac_context:
-            return WorkflowPolicy(
-                workflow.filter(content__rbac_context=self.rbac_context).first().content
-            )
-        elif self.resource_type.type_uri in default_workflow_policies():
-            return dflt_workflow_policies[self.resource_type.type_uri]
+        """The policy whose transition the ``scrud_post_save`` signal reports: that
+        of the first of the resource's (new) contexts that has one
+        (`workflow_policy_for`), or the settings default when the resource is in
+        no context. Validation and authorization are the `WorkflowValidator`'s,
+        which checks every context."""
+        contexts = self.rbac_contexts
+        if not contexts:
+            return default_workflow_policy_for(self.resource_type)
+        for context in contexts:
+            policy = workflow_policy_for(self.resource_type, context)
+            if policy is not None:
+                return policy
         return None
 
     class Meta:
