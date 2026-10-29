@@ -21,6 +21,11 @@ CEL_ENVIRONMENT = new_environment({})
 
 WORKFLOW_POLICY_TYPE_URI = "http://api.openteams.com/json-ld/WorkflowPolicy"
 
+# The transitions scrud-django names itself: ``__INITIALIZE__`` (a create) and
+# ``__SAME_STATE__`` (an update that stays in its state). A policy may not
+# define a transition with this prefix.
+RESERVED_TRANSITION_PREFIX = "__"
+
 
 @dataclass
 class TransitionData:
@@ -37,8 +42,9 @@ class WorkflowPolicy:
 
     Constructing a policy checks it and raises ``ImproperlyConfigured`` for a
     state condition that does not compile, a transition that is not an object
-    with ``from`` and ``to`` naming defined states, or a ``restrict_update``
-    that is not a list of defined state names. These are the checks a
+    with ``from`` and ``to`` naming defined states or whose name starts with
+    ``__`` (reserved), or a ``restrict_update`` that is not a list of defined
+    state names. These are the checks a
     ``WorkflowPolicy`` write must pass; they are not a proof that every write
     under the policy succeeds.
     """
@@ -170,6 +176,14 @@ class WorkflowPolicy:
             return [x] if not isinstance(x, list) else x  # noqa: E731
 
         for transition_name, transition_policy in transitions.items():
+            if not isinstance(transition_name, str) or transition_name.startswith(
+                RESERVED_TRANSITION_PREFIX
+            ):
+                raise ImproperlyConfigured(
+                    f"Invalid workflow transition {transition_name!r}: a name must "
+                    f"be a string not starting with {RESERVED_TRANSITION_PREFIX!r}, "
+                    "which is reserved (__INITIALIZE__, __SAME_STATE__)."
+                )
             if not (
                 isinstance(transition_policy, Mapping)
                 and "from" in transition_policy
@@ -222,29 +236,46 @@ def default_workflow_policy_for(resource_type):
     return default_workflow_policy_set().policy_for(_type_uri(resource_type))
 
 
+def stored_policies_for(resource_type, context):
+    """The stored ``WorkflowPolicy`` resources for `resource_type` (a
+    `ResourceType` or its type URI) whose own contexts (read with
+    `rbac_contexts_of`, so a policy that names no ``rbac_context`` is in the
+    default context ``""``) include `context`, oldest first. There is at most
+    one, unless policies were stored past the API's check (or before it)."""
+    from scrud_django.mixins.resource_mixin import rbac_contexts_of
+    from scrud_django.models import Resource
+
+    stored = Resource.objects.filter(
+        resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI,
+        content__resource_type=_type_uri(resource_type),
+    ).order_by("pk")
+    return [policy for policy in stored if context in rbac_contexts_of(policy.content)]
+
+
 def workflow_policy_for(resource_type, context):
     """The `WorkflowPolicy` in effect for `resource_type` (a `ResourceType` or its
     type URI) in `context`, or ``None`` when the type has no workflow there.
 
-    It is the stored ``WorkflowPolicy`` resource for the type whose own contexts
-    (read with `rbac_contexts_of`, so a policy that names no ``rbac_context`` is
-    in the default context ``""``) include `context`; when several do, the most
-    recently modified one wins. Without one, it is the settings default for the
-    type (`default_workflow_policy_for`). A policy stored in one context never
-    applies in another.
+    It is the one stored ``WorkflowPolicy`` resource for the type in
+    `context` (`stored_policies_for`); a ``WorkflowPolicy`` write that would
+    make a second one is refused. Without one, it is the settings default for
+    the type (`default_workflow_policy_for`). A policy stored in one context
+    never applies in another. Several stored policies for the type in
+    `context` (stored before policies were unique, or past the API) raise
+    ``ImproperlyConfigured``: none of them is picked, so the writes they
+    govern fail until all but one are deleted.
 
     The one lookup of a policy: the `WorkflowValidator` and
     ``ResourceMixin.get_workflow_policy`` both use it.
     """
-    from scrud_django.mixins.resource_mixin import rbac_contexts_of
-    from scrud_django.models import Resource
-
-    type_uri = _type_uri(resource_type)
-    stored = Resource.objects.filter(
-        resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI,
-        content__resource_type=type_uri,
-    ).order_by("-modified_at", "-pk")
-    for policy in stored:
-        if context in rbac_contexts_of(policy.content):
-            return WorkflowPolicy(policy.content, resource=policy)
-    return default_workflow_policy_for(type_uri)
+    stored = stored_policies_for(resource_type, context)
+    if len(stored) > 1:
+        raise ImproperlyConfigured(
+            f"{len(stored)} WorkflowPolicy resources (pks "
+            f"{[policy.pk for policy in stored]}) apply to "
+            f"{_type_uri(resource_type)!r} in context {context!r}; there must be "
+            "at most one."
+        )
+    if stored:
+        return WorkflowPolicy(stored[0].content, resource=stored[0])
+    return default_workflow_policy_for(resource_type)

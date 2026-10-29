@@ -103,8 +103,7 @@ Conditional request handling now comes from scrudful 0.8.
 * Workflow policies now apply in every context, not only the default context
   `""`. The policy in effect for a resource type in a context is the stored
   `WorkflowPolicy` for that type whose `rbac_context` is that context (one that
-  names no `rbac_context` is in `""`; when several match, the most recently
-  modified wins), else the type's default from
+  names no `rbac_context` is in `""`), else the type's default from
   `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`. A policy stored in one context
   no longer affects any other. Before, writes outside `""` skipped the
   initial-state check, transition validity and transition authorization
@@ -123,8 +122,16 @@ Conditional request handling now comes from scrudful 0.8.
   `scrud_post_save` reports) both use it.
 * A `WorkflowPolicy` is checked when it is created or updated, and refused with
   400 (nothing is stored) when a state condition is not valid CEL, a transition
-  is not an object with `from` and `to` naming defined states, or
-  `restrict_update` is not a list of defined state names. The `WorkflowPolicy`
+  is not an object with `from` and `to` naming defined states, a transition's
+  name starts with `__` (reserved for `__INITIALIZE__` and `__SAME_STATE__`),
+  `restrict_update` is not a list of defined state names, or `rbac_context` is
+  present but not a string.
+* There is at most one stored `WorkflowPolicy` per resource type and context. A
+  create, or an update moving a policy into a context, that would make a second
+  one is refused with 400; update or delete the existing policy instead. If
+  several were stored before (or past the API), none is picked: writes of the
+  type in that context fail with `ImproperlyConfigured` until all but one are
+  deleted. The `WorkflowPolicy`
   schema now also declares `restrict_update` as an array of strings. These
   checks catch the policy errors known to make later writes fail; they do not
   prove that a policy which passes them is usable. A policy stored by an

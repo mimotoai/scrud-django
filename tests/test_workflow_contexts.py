@@ -2,8 +2,7 @@
 and the ones a write moves it to.
 
 A context's policy is the stored ``WorkflowPolicy`` for the type in that
-context (the most recently modified one if there are several), else the
-default policy from ``SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]``. A create
+context (there is at most one), else the default policy from ``SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]``. A create
 must be a valid initial state under the policy of every context it names. An
 update must be a valid transition, and the user must be authorized to make it
 (the ``scrud_workflow`` operator), under the policy of every context the
@@ -11,10 +10,10 @@ resource is in **and** every context the body names.
 """
 
 import json
-from datetime import timedelta
 from uuid import uuid4
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
@@ -24,7 +23,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
-from scrud_django.models import Resource
+from scrud_django.models import Resource, ResourceType
 from scrud_django.registration import (
     ResourceRegistration,
     workflow_policy_resource_type,
@@ -302,40 +301,220 @@ def test_policy_lookup_reads_the_policy_contexts_as_resources_do():
     }
 
 
-def set_modified_at(resource, modified_at):
-    Resource.objects.filter(pk=resource.pk).update(modified_at=modified_at)
+def policy_writer():
+    """May do anything in "", "p" and "q"."""
+    return user_with((True, DEFAULT_CONTEXT), (True, "p"), (True, "q"))
+
+
+def post_policy(content):
+    When.http.post(
+        "/workflow-policies/", data=json.dumps(content), content_type="application/json"
+    )
+
+
+def put_policy(stored, content):
+    When.http.put(
+        f"/workflow-policies/{stored.pk}/",
+        data=json.dumps(content),
+        content_type="application/json",
+        HTTP_IF_MATCH=quote_etag(stored.etag),
+    )
+
+
+def assert_policy_refused():
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert "workflow_policy" in Http.response.json()["errors"], Http.response.json()
+
+
+def policy_resources():
+    return list(
+        Resource.objects.filter(resource_type__type_uri=WORKFLOW_POLICY).order_by("pk")
+    )
 
 
 @pytest.mark.django_db
-def test_most_recently_modified_policy_wins():
-    older = store_policy(
-        dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"older": "true"})
+@pytest.mark.parametrize("context", ["p", ""])
+@test_context
+def test_second_policy_for_a_type_and_context_is_refused(context):
+    first = store_policy(dict(PERMISSIVE_POLICY, rbac_context=context))
+    Given.http.force_authenticate(policy_writer())
+    post_policy(
+        dict(PERMISSIVE_POLICY, rbac_context=context, initial_states={"x": "true"})
     )
-    newer = store_policy(
-        dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"newer": "true"})
-    )
-    # Explicit times: two registrations can share a clock tick.
-    t = now()
-    set_modified_at(older, t - timedelta(hours=1))
-    set_modified_at(newer, t)
-    assert workflow_policy_for(TODO, "p").policy["initial_states"] == {"newer": "true"}
-
-    set_modified_at(older, t + timedelta(hours=1))
-    assert workflow_policy_for(TODO, "p").policy["initial_states"] == {"older": "true"}
+    assert_policy_refused()
+    assert policy_resources() == [first]
+    assert workflow_policy_for(TODO, context).resource == first
 
 
 @pytest.mark.django_db
-def test_same_modification_time_the_later_policy_wins():
-    first = store_policy(
-        dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"first": "true"})
+@test_context
+def test_second_policy_naming_no_context_is_refused_in_the_default_context():
+    first = store_policy(dict(PERMISSIVE_POLICY, rbac_context=DEFAULT_CONTEXT))
+    Given.http.force_authenticate(policy_writer())
+    post_policy(dict(PERMISSIVE_POLICY))
+    assert_policy_refused()
+    assert policy_resources() == [first]
+
+
+@pytest.mark.django_db
+@test_context
+def test_policies_of_other_contexts_or_types_are_independent():
+    reverse("todos-list")
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    Given.http.force_authenticate(policy_writer())
+    post_policy(dict(PERMISSIVE_POLICY, rbac_context="q"))
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    post_policy(
+        dict(
+            PERMISSIVE_POLICY, rbac_context="p", resource_type="tests://PartnerProfiles"
+        )
     )
-    second = store_policy(
-        dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"second": "true"})
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    assert len(policy_resources()) == 3
+
+
+@pytest.mark.django_db
+@test_context
+def test_moving_a_policy_into_a_context_that_has_one_is_refused():
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    other = store_policy(dict(PERMISSIVE_POLICY, rbac_context="q"))
+    Given.http.force_authenticate(policy_writer())
+    put_policy(other, dict(PERMISSIVE_POLICY, rbac_context="p"))
+    assert_policy_refused()
+    assert_unchanged(other)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_policy_may_be_updated_in_its_own_context():
+    stored = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    updated = dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"x": "true"})
+    Given.http.force_authenticate(policy_writer())
+    put_policy(stored, updated)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert workflow_policy_for(TODO, "p").policy == updated
+
+
+@pytest.mark.django_db
+@test_context
+def test_post_only_writer_cannot_supersede_a_stored_policy():
+    # The reviewer's probe: with most-recent-wins, a user who may only POST
+    # policies in "x" replaced the admin's policy there with a permissive one.
+    admin_policy = store_policy(
+        dict(PERMISSIVE_POLICY, rbac_context="x", restrict_update=["any"])
     )
-    t = now()
-    set_modified_at(first, t)
-    set_modified_at(second, t)
-    assert workflow_policy_for(TODO, "p").policy["initial_states"] == {"second": "true"}
+    user = user_with(({"http.POST": [WORKFLOW_POLICY]}, "x"))
+    Given.http.force_authenticate(user)
+    post_policy(dict(PERMISSIVE_POLICY, rbac_context="x"))
+    assert_policy_refused()
+    assert policy_resources() == [admin_policy]
+    assert workflow_policy_for(TODO, "x").resource == admin_policy
+
+
+@pytest.mark.django_db
+def test_several_stored_policies_in_a_context_fail_closed():
+    # Stored before policies were unique (or past the API): no policy is
+    # picked; writes of the type in that context are a configuration error.
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    with pytest.raises(ImproperlyConfigured, match="2 WorkflowPolicy"):
+        workflow_policy_for(TODO, "p")
+    assert workflow_policy_for(TODO, "q").resource is None
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "rbac_context", [["a", "b"], [], None, 5, {"@id": "x"}], ids=repr
+)
+def test_policy_rbac_context_must_be_a_string(rbac_context):
+    from rest_framework.exceptions import ValidationError
+
+    from scrud_django.validators import WorkflowValidator
+
+    with pytest.raises(ValidationError) as excinfo:
+        WorkflowValidator().validate_policy(
+            dict(PERMISSIVE_POLICY, rbac_context=rbac_context), None
+        )
+    assert "workflow_policy" in excinfo.value.detail
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("rbac_context", [["a", "b"], None, 5], ids=repr)
+@test_context
+def test_policy_with_a_non_string_context_is_refused(admin_login, rbac_context):
+    # Also when the stored WorkflowPolicy schema does not declare its type. (A
+    # superuser: scoped-rbac's request check refuses these contexts to others.)
+    workflow_policy_resource_type()
+    schema = ResourceType.objects.get(type_uri=WORKFLOW_POLICY).schema
+    relaxed = json.loads(json.dumps(schema.content))
+    del relaxed["properties"]["rbac_context"]
+    ResourceRegistration.update(
+        content=relaxed, register_type="json-schema", slug=str(schema.pk)
+    )
+    before = Resource.objects.count()
+    Given.http.force_authenticate(admin_login)
+    post_policy(dict(PERMISSIVE_POLICY, rbac_context=rbac_context))
+    assert_policy_refused()
+    assert Resource.objects.count() == before
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("name", ["__SAME_STATE__", "__INITIALIZE__", "__mine"])
+@test_context
+def test_reserved_transition_names_are_refused(regular_login, name):
+    policy = dict(
+        PERMISSIVE_POLICY,
+        states={"done": "false"},
+        transitions={name: {"from": "any", "to": "done"}},
+    )
+    reverse("todos-list")
+    before = Resource.objects.count()
+    Given.http.force_authenticate(regular_login)
+    post_policy(policy)
+    assert_policy_refused()
+    assert Resource.objects.count() == before
+
+
+def a_policy_admin(context):
+    return user_with(
+        (
+            {m: [WORKFLOW_POLICY] for m in ("http.GET", "http.PUT", "http.DELETE")},
+            context,
+        )
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_admin_of_one_context_cannot_update_or_delete_anothers_policy():
+    policy_b = store_policy(dict(PERMISSIVE_POLICY, rbac_context="b"))
+    Given.http.force_authenticate(a_policy_admin("a"))
+    put_policy(policy_b, dict(PERMISSIVE_POLICY, rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+    # A body naming "b": refused by the request check, before the lookup.
+    put_policy(policy_b, dict(PERMISSIVE_POLICY, rbac_context="b"))
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    When.http.delete(
+        f"/workflow-policies/{policy_b.pk}/", HTTP_IF_MATCH=quote_etag(policy_b.etag)
+    )
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+    assert_unchanged(policy_b)
+
+
+@pytest.mark.django_db
+@test_context
+def test_admin_of_one_context_cannot_move_its_policy_into_another():
+    policy_a = store_policy(dict(PERMISSIVE_POLICY, rbac_context="a"))
+    Given.http.force_authenticate(a_policy_admin("a"))
+    put_policy(policy_a, dict(PERMISSIVE_POLICY, rbac_context="b"))
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert_unchanged(policy_a)
+
+    When.http.delete(
+        f"/workflow-policies/{policy_a.pk}/", HTTP_IF_MATCH=quote_etag(policy_a.etag)
+    )
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert policy_resources() == []
 
 
 INVALID_POLICIES = [

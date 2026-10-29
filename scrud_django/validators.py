@@ -23,6 +23,7 @@ from scrud_django.workflow import (
     TransitionData,
     WorkflowPolicy,
     default_workflow_policy_for,
+    stored_policies_for,
     workflow_policy_for,
 )
 
@@ -176,18 +177,20 @@ class WorkflowValidator:
     An error under a stored policy the requester may not read names neither
     the policy nor its states (`errors_hidden_unless_readable`).
 
-    A ``WorkflowPolicy`` resource is itself checked when it is written (see
-    `WorkflowPolicy`): a policy that fails those checks is a 400 and is not
-    stored. Policies stored before those checks existed are not rechecked.
+    A ``WorkflowPolicy`` resource is itself checked when it is written
+    (`validate_policy`): a policy that fails those checks, names a context that
+    is not a string, or would be a second policy for its type in its context
+    is a 400 and is not stored. Policies stored before those checks existed are
+    not rechecked.
     """
 
     requires_context = True
 
     def __call__(self, data, context):
         resource_type = context.resource_type
-        if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
-            self.validate_policy(data)
         instance = context.instance
+        if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
+            self.validate_policy(data, instance)
         contexts = rbac_contexts_of(data)
         if instance is not None:
             contexts = list(
@@ -245,11 +248,37 @@ class WorkflowValidator:
                 raise HiddenWorkflowTransitionError() from e
             raise
 
-    def validate_policy(self, data):
+    def validate_policy(self, data, instance):
+        """Refuse (400, ``{"workflow_policy": [...]}``) a ``WorkflowPolicy``
+        write `data` (replacing `instance`, ``None`` for a create) that fails
+        `WorkflowPolicy`'s checks, whose ``rbac_context`` is present but not a
+        string (a policy is in exactly one context), or that would be a second
+        stored policy for its type in its context."""
+
+        def refuse(message):
+            raise ValidationError({"workflow_policy": [message]})
+
+        if "rbac_context" in data and not isinstance(data["rbac_context"], str):
+            refuse(
+                "A WorkflowPolicy's rbac_context must be a string (one context), "
+                f"not {data['rbac_context']!r}."
+            )
         try:
             WorkflowPolicy(data)
         except ImproperlyConfigured as e:
             raise ValidationError({"workflow_policy": [str(e)]}) from e
+        resource_type = data.get("resource_type")
+        for rbac_context in rbac_contexts_of(data):
+            others = [
+                policy
+                for policy in stored_policies_for(resource_type, rbac_context)
+                if instance is None or policy.pk != instance.pk
+            ]
+            if others:
+                refuse(
+                    f"A WorkflowPolicy for {resource_type!r} already exists in "
+                    f"context {rbac_context!r}; update or delete it instead."
+                )
 
     def transition_for(self, workflow_policy, data, instance):
         if instance is None:
