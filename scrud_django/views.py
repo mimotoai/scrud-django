@@ -4,10 +4,10 @@ from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from scoped_rbac.rest import AccessControlledAPIView
+from scoped_rbac.rest import AccessControlledAPIView, RbacFilter
+from scrudful.rest_framework import scrudful_api_view, scrudful_viewset
 
 from scrud_django import collection_type_uri_for, services
-from scrud_django.decorators import scrudful_api_view, scrudful_viewset
 from scrud_django.mixins.view_mixins import ResourceViewMixin
 from scrud_django.models import Resource
 from scrud_django.registration import get_resource_type_for
@@ -37,7 +37,9 @@ class ResourceViewSet(
 class ResourceViewSetGenericFilter(
     AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
 ):
-    filter_backends = [DjangoFilterBackend]
+    # RbacFilter first, as AccessControlledAPIView sets it: get_object() (and so
+    # scrudful's object validators) must only see resources the user may read.
+    filter_backends = [RbacFilter, DjangoFilterBackend]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

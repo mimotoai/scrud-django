@@ -15,6 +15,7 @@ from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
+from .rbac_defaults import TYPE_URI_PARTNER_PROFILES
 
 __all__ = [
     'ROOT_PATH',
@@ -26,6 +27,7 @@ __all__ = [
     'http_static_server',
     'last_modified_for',
     'login_no_roles',
+    'login_other_context',
     'partner_profile_post_data',
     'partner_profiles',
     'regular_login',
@@ -128,6 +130,30 @@ def admin_login(db):
 @pytest.fixture
 def login_no_roles(db):
     return UserFactory()
+
+
+@pytest.fixture
+def login_other_context(db):
+    """A user who may GET, PUT and DELETE partner profiles only in the context
+    "other": past the view-level check, but unable to read a resource in ""."""
+    role = Role(
+        definition={
+            method: [TYPE_URI_PARTNER_PROFILES]
+            for method in ("http.GET", "http.PUT", "http.DELETE")
+        },
+        etag=uuid4().hex,
+        modified_at=now(),
+    )
+    role.save()
+    user = UserFactory()
+    RoleAssignment(
+        user=user,
+        role=role,
+        rbac_context="other",
+        etag=uuid4().hex,
+        modified_at=now(),
+    ).save()
+    return user
 
 
 @pytest.fixture

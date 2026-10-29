@@ -33,7 +33,7 @@ def test_collection_json_ld():
     When.http.options(url)
     Then.http.status_code_is(status.HTTP_200_OK)
     And.json_path_matches(
-        "get.responses['200'].content['application/json'].context",
+        "get.responses['200'].content['application/json']['x-rdf-context'].href",
         lambda x: x is not None and x != "",
     )
     context_url = Scrud.json_path_match[0].value
@@ -54,7 +54,7 @@ def test_detail_json_ld(admin_login):
     When.http.options(url)
     Then.http.status_code_is(status.HTTP_200_OK)
     And.json_path_matches(
-        "post.requestBody.content['application/json'].context",
+        "post.requestBody.content['application/json']['x-rdf-context'].href",
         lambda x: x is not None and x != "",
     )
     context_url = Scrud.json_path_match[0].value

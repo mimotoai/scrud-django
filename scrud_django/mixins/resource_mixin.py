@@ -1,6 +1,7 @@
 from django.db import models
-from django.utils.translation import gettext_lazy as _
 from django.db.models import JSONField
+from django.utils.translation import gettext_lazy as _
+from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.conf import default_workflow_policies
 from scrud_django.models.resource_type import ResourceType
@@ -41,6 +42,18 @@ class ResourceMixin(ScrudfulMixin):
     @property
     def rbac_context(self):
         return self.content.get("rbac_context", None)
+
+    # A resource whose content names no ``rbac_context`` belongs to the default
+    # context (""), where scoped-rbac also authorizes its creation.
+    @property
+    def rbac_contexts(self):
+        """The contexts scoped-rbac checks this resource in (its object checks
+        read ``rbac_contexts`` before ``rbac_context``): the content's
+        ``rbac_context``, else ``DEFAULT_CONTEXT``, the context scoped-rbac
+        authorizes a POST that names none in. Without it a resource that names
+        none would have no context, which no role grants."""
+        context = self.rbac_context
+        return [DEFAULT_CONTEXT if context is None else context]
 
     def save(
         self, force_insert=False, force_update=False, using=None, update_fields=None

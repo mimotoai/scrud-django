@@ -1,6 +1,4 @@
-
 import reversion
-from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
@@ -19,40 +17,48 @@ class ResourceViewMixin:
     queryset = Resource.objects.all()
     serializer_class = ResourceSerializer
     pagination_class = StandardResultsSetPagination
+    # The detail route's URL keyword; it names the primary key.
+    lookup_url_kwarg = "slug"
 
     # scrud variable
     resource_type_name: str | None = None
 
     class Meta:
-        def etag_func(view_instance, request, slug: str):
-            instance = view_instance.get_instance(request, slug)
-            return instance.etag
+        # scrudful computes the item validators from the object ``get_object()``
+        # returns, before evaluating preconditions: the lookup is scoped and
+        # permission-checked first, so an unreadable resource is a 404 and never
+        # reveals a validator (304) or its existence (412/428).
+        object_validators = True
 
-        def last_modified_func(view_instance, request, slug: str):
-            instance = view_instance.get_instance(request, slug)
-            return instance.modified_at
+        def etag_func(obj):
+            return obj.etag
 
-        def schema_link_or_func(view_instance, request, slug: str = None):
+        def last_modified_func(obj):
+            return obj.modified_at
+
+        # Link callbacks also run for create and the list route's OPTIONS, where
+        # there is no slug: they take ``**kwargs``.
+        def schema_link_or_func(view_instance, request, **kwargs):
             if view_instance.resource_type_name:
                 resource_type = view_instance.get_resource_type()
                 return get_schema_uri_for(resource_type, request)
             return None
 
-        def context_link_or_func(view_instance, request, slug: str = None):
+        def context_link_or_func(view_instance, request, **kwargs):
             if view_instance.resource_type_name:
                 resource_type = view_instance.get_resource_type()
                 return get_context_uri_for(resource_type, request)
             return None
 
-        def list_etag_func(view_instance, request, *args, **kwargs):
+        def list_etag_func(view_instance, request, **kwargs):
             resource_type = view_instance.get_resource_type()
             return resource_type.etag
 
-        def list_last_modified_func(view_instance, request, *args, **kwargs):
+        def list_last_modified_func(view_instance, request, **kwargs):
             resource_type = view_instance.get_resource_type()
             return resource_type.modified_at
 
-        def list_schema_link_or_func(view_instance, request, *args, **kwargs):
+        def list_schema_link_or_func(view_instance, request, **kwargs):
             resource_type = view_instance.get_resource_type()
             return reverse(
                 "collections-json-schema",
@@ -60,7 +66,7 @@ class ResourceViewMixin:
                 request=request,
             )
 
-        def list_context_link_or_func(view_instance, request, *args, **kwargs):
+        def list_context_link_or_func(view_instance, request, **kwargs):
             resource_type = view_instance.get_resource_type()
             return reverse(
                 "collections-json-ld",
@@ -71,12 +77,14 @@ class ResourceViewMixin:
     def get_resource_type(self):
         return get_resource_type_for(self.resource_type_name)
 
+    def get_queryset(self):
+        return Resource.objects.filter(resource_type=self.get_resource_type())
+
     def get_instance(self, request, slug: str):
-        resource_type = self.get_resource_type()
-        instance = get_object_or_404(
-            Resource, resource_type=resource_type, pk=int(slug)
-        )
-        return instance
+        """The resource named by the URL: DRF's ``get_object()``, filtered and
+        permission-checked (an unreadable resource is a 404). scrudful already
+        looked it up for the validators; the same instance is returned."""
+        return self.get_object()
 
     def get_serializer(self, *args, **kwargs):
         kwargs["resource_type"] = self.get_resource_type()
@@ -121,7 +129,8 @@ class ResourceViewMixin:
         return Response(serializer.data)
 
     def destroy(self, request, slug: str):
-        """Update a Resource."""
+        """Delete a Resource."""
+        self.get_instance(request, slug)
         ResourceRegistration.delete(
             register_type=self.resource_type_name,
             slug=slug,
@@ -150,39 +159,54 @@ class ResourceViewMixin:
 
 
 class GenericViewMixin:
+    """SCRUD views over a model of your own (decorate with ``scrudful_viewset``).
+
+    Subclasses provide DRF's ``get_queryset()`` (and ``lookup_field`` /
+    ``lookup_url_kwarg``), not a ``get_instance``: ``Meta.object_validators``
+    makes scrudful read the item validators from the object ``get_object()``
+    returns, so that lookup must be scoped and permission-checked (precede
+    ``GenericAPIView`` with scoped-rbac's ``AccessControlledAPIView``).
+    """
+
     # scrud variable
     resource_type_name: str | None = None
 
     class Meta:
-        def etag_func(view_instance, request, slug: str):
-            instance = view_instance.get_instance(request, slug)
-            return instance.etag
+        # scrudful computes the item validators from the object ``get_object()``
+        # returns, before evaluating preconditions: the lookup is scoped and
+        # permission-checked first, so an unreadable resource is a 404 and never
+        # reveals a validator (304) or its existence (412/428).
+        object_validators = True
 
-        def last_modified_func(view_instance, request, slug: str):
-            instance = view_instance.get_instance(request, slug)
-            return instance.modified_at
+        def etag_func(obj):
+            return obj.etag
 
-        def schema_link_or_func(view_instance, request, slug: str = None):
+        def last_modified_func(obj):
+            return obj.modified_at
+
+        # Link callbacks also run for create and the list route's OPTIONS, where
+        # there is no slug: they take ``**kwargs``.
+        def schema_link_or_func(view_instance, request, **kwargs):
             if view_instance.resource_type_name:
                 resource_type = view_instance.get_resource_type()
                 return get_schema_uri_for(resource_type, request)
             return None
 
-        def context_link_or_func(view_instance, request, slug: str = None):
+        def context_link_or_func(view_instance, request, **kwargs):
             if view_instance.resource_type_name:
                 resource_type = view_instance.get_resource_type()
                 return get_context_uri_for(resource_type, request)
             return None
 
-        def list_etag_func(view_instance, request, *args, **kwargs):
+        def list_etag_func(view_instance, request, **kwargs):
             resource_type = view_instance.get_resource_type()
             return resource_type.etag
 
-        def list_last_modified_func(view_instance, request, *args, **kwargs):
+        def list_last_modified_func(view_instance, request, **kwargs):
             resource_type = view_instance.get_resource_type()
             return resource_type.modified_at
 
-        def list_schema_link_or_func(view_instance, request, *args, **kwargs):
+        def list_schema_link_or_func(view_instance, request, **kwargs):
             resource_type = view_instance.get_resource_type()
             return reverse(
                 "collections-json-schema",
@@ -190,7 +214,7 @@ class GenericViewMixin:
                 request=request,
             )
 
-        def list_context_link_or_func(view_instance, request, *args, **kwargs):
+        def list_context_link_or_func(view_instance, request, **kwargs):
             resource_type = view_instance.get_resource_type()
             return reverse(
                 "collections-json-ld",
@@ -200,14 +224,6 @@ class GenericViewMixin:
 
     def get_resource_type(self):
         return get_resource_type_for(self.resource_type_name)
-
-    def get_instance(self, request, slug: str):
-        """
-        Subclasses **MUST** override this method.
-        Return the instance from the DB, used when updating,
-        retrieving and deleting the instance.
-        """
-        raise NotImplementedError()
 
     def get_serializer(self, *args, **kwargs):
         kwargs["resource_type"] = self.get_resource_type()
