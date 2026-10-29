@@ -6,10 +6,12 @@ This will support queries, such as:
 """
 
 import reversion
-from django.db import models, router, transaction
+from django.db import IntegrityError, models, router, transaction
 from django.db.models import Q
-from django.db.models.signals import post_save, pre_save
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
+from django.utils import timezone
+from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
 from scrud_django.mixins.resource_mixin import ResourceMixin, rbac_contexts_of
 from scrud_django.models.resource_type import ResourceType
@@ -92,6 +94,33 @@ class ResourceContext(models.Model):
         return f"{self.resource_id}: {self.rbac_context!r}"
 
 
+class ResourceRemoval(models.Model):
+    """When a resource of a type last left a context: deleted, or saved with
+    content no longer in it. One row per type and context, its `removed_at`
+    the newest such moment (`stamp_removals`). A list's ``Last-Modified``
+    takes the newest stamp of the contexts whose every resource the requester
+    may list (`scrud_django.filters.readable_removal`), so that a list that
+    lost a resource is not "not modified". A deleted resource in no context
+    stamps `SOME_CONTEXT` (reserved: superusers' lists only)."""
+
+    resource_type = models.ForeignKey(
+        ResourceType, on_delete=models.CASCADE, related_name="removals"
+    )
+    rbac_context = models.CharField(max_length=MAX_CONTEXT_LENGTH)
+    removed_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["resource_type", "rbac_context"],
+                name="scrud_django_resourceremoval_unique",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.resource_type_id}: {self.rbac_context!r} at {self.removed_at}"
+
+
 def check_contexts(content):
     """Raise ``ValueError`` if a context of `content` is longer than a
     `ResourceContext` row holds (`MAX_CONTEXT_LENGTH`)."""
@@ -117,6 +146,7 @@ def sync_resource_contexts(resource, using, *, inserting=False):
     stale = existing - wanted
     if stale:
         rows.filter(resource=resource, rbac_context__in=stale).delete()
+        stamp_removals(resource.resource_type_id, stale, using)
     missing = wanted - existing
     if missing:
         rows.bulk_create(
@@ -125,6 +155,27 @@ def sync_resource_contexts(resource, using, *, inserting=False):
                 for context in sorted(missing)
             ]
         )
+
+
+def stamp_removals(resource_type_id, contexts, using):
+    """Record on database `using`, in the caller's transaction, that a
+    resource of the type `resource_type_id` left each of `contexts` now
+    (`ResourceRemoval`): the stamp of each type and context only moves
+    forward."""
+    when = timezone.now()
+    rows = ResourceRemoval.objects.using(using)
+    for context in sorted(set(contexts)):
+        key = {"resource_type_id": resource_type_id, "rbac_context": context}
+        if rows.filter(**key, removed_at__lt=when).update(removed_at=when):
+            continue
+        if rows.filter(**key).exists():
+            continue
+        try:
+            with transaction.atomic(using=using):
+                rows.create(removed_at=when, **key)
+        except IntegrityError:
+            # A concurrent removal created it first.
+            rows.filter(**key, removed_at__lt=when).update(removed_at=when)
 
 
 def require_transaction(using, what):
@@ -196,3 +247,13 @@ def resync_after_raw_row(sender, instance, raw, using, **kwargs):
     resource_ids = {instance.resource_id, *getattr(instance, "_scrud_displaced", ())}
     for resource in Resource.objects.using(using).filter(pk__in=resource_ids):
         sync_resource_contexts(resource, using)
+
+
+@receiver(post_delete, sender=Resource, dispatch_uid="scrud_django.stamp_deletion")
+def stamp_deletion(sender, instance, using, **kwargs):
+    """A deleted resource left every context it was in (`stamp_removals`),
+    in the deletion's transaction: ``Model.delete()``, ``QuerySet.delete()``
+    and `ResourceRegistration` alike. One in no context stamps
+    ``SOME_CONTEXT``, which only superusers' lists read."""
+    contexts = rbac_contexts_of(instance.content) or [SOME_CONTEXT]
+    stamp_removals(instance.resource_type_id, contexts, using)

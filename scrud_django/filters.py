@@ -7,7 +7,16 @@ them in SQL. `ResourceContentFilter` filters a list on query parameters.
 
 import re
 
-from django.db.models import BooleanField, Case, Exists, OuterRef, Q, Value, When
+from django.db.models import (
+    BooleanField,
+    Case,
+    Exists,
+    Max,
+    OuterRef,
+    Q,
+    Value,
+    When,
+)
 from django.db.models.fields.json import KeyTransform
 from rest_framework.exceptions import ValidationError
 from rest_framework.filters import BaseFilterBackend
@@ -19,7 +28,7 @@ from scoped_rbac.permissions import AccessAPIError, http_action_iri_for, policy_
 from scoped_rbac.policy import Permission
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
-from scrud_django.models import Resource, ResourceContext
+from scrud_django.models import Resource, ResourceContext, ResourceRemoval
 from scrud_django.permissions import resource_check
 
 # Rows fetched per chunk while conditional candidates are evaluated one by one,
@@ -215,6 +224,40 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
         if all(map(allows, contexts_fors)):
             allowed_pks.append(obj.pk)
     return queryset.filter(pk__in=allowed_pks)
+
+
+def readable_removal(request, view, resource_type, using=None):
+    """The newest `ResourceRemoval` stamp of `resource_type` a list `view`'s
+    ``Last-Modified`` takes for `request` (``None`` for none): of the contexts
+    in which the requester may read **every** resource (``http.GET`` on the
+    item type), so that a stamp only ever tells them that a resource they
+    could list left: every context for a superuser, every context not
+    plainly reserved for a grant in every context, else the contexts that
+    grant it outright. A context that grants it only by a condition is left
+    out: the resource that left may be one the condition refuses. Without
+    `ResourceRbacFilter` among the view's ``filter_backends``, or with an
+    ``IsAuthorized`` that overrides ``contexts_for`` (whose contexts are not
+    the stamped ones), there is none. Read on database `using` (the list's)."""
+    backends = getattr(view, "filter_backends", ())
+    if not any(
+        isinstance(backend, type) and issubclass(backend, ResourceRbacFilter)
+        for backend in backends
+    ):
+        return None
+    if access.non_default_contexts_for(RbacFilter.contexts_for(view)) is not None:
+        return None
+    stamps = ResourceRemoval.objects.filter(resource_type=resource_type)
+    if using is not None:
+        stamps = stamps.using(using)
+    user = access.request_user(request)
+    if user is None or not user.is_superuser:
+        permission = Permission("http.GET", view.resource_type_iri)
+        scope = policy_for(request).list_scope(permission, exclude=(SOME_CONTEXT,))
+        if scope.unrestricted:
+            stamps = stamps.exclude(_plainly_reserved())
+        else:
+            stamps = stamps.filter(rbac_context__in=_usable(scope.outright))
+    return stamps.aggregate(newest=Max("removed_at"))["newest"]
 
 
 class ResourceRbacFilter(RbacFilter):

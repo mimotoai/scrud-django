@@ -15,6 +15,7 @@ from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import drf_error
 
 from scrud_django.exceptions import RbacContextInvalidError, RequestBodyMissingError
+from scrud_django.filters import readable_removal
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
@@ -502,6 +503,24 @@ class ResourceViewMixin(LockedWriteMixin, ListValidatorsMixin):
         check_body_present(request, self)
         check_written_contexts(request)
         super().check_permissions(request)
+
+    def list_last_modified(self):
+        """The list's Last-Modified: the newest ``modified_at`` of every
+        resource the requester may list, or the newest time a resource left a
+        context in which they may list every resource
+        (`scrud_django.filters.readable_removal`: deleted, or moved out),
+        whichever is later; ``None`` for neither. A list that lost a resource
+        they could list is therefore modified; a removal in a context they
+        read only by a condition, or not at all, does not move it (the ETag
+        follows what they see)."""
+        newest = super().list_last_modified()
+        removed = readable_removal(
+            self.request,
+            self,
+            self.get_resource_type(),
+            using=self.list_queryset().db,
+        )
+        return max((t for t in (newest, removed) if t is not None), default=None)
 
     def list(self, request):
         """The resources of the type the requester may read, a page at a time."""
