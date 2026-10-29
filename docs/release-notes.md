@@ -27,7 +27,11 @@ django-scoped-rbac 0.11. It has several breaking changes.
    `__`; `restrict_update` must be a list), and your
    `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` (run `manage.py check`; give
    policies as mappings).
-8. Read the security caveat below: lists are not filtered per resource, so do
+8. Code: read "API changes" below for the removed modules
+   (`scrud_django.decorators`, `settings`, `wsgi`, `asgi`), what
+   `GenericViewMixin` subclasses must now provide, and the exception handler
+   and error body changes.
+9. Read the security caveat below: lists are not filtered per resource, so do
    not use the library for multi-tenant deployments yet.
 
 ### Security caveat: lists are not filtered per resource

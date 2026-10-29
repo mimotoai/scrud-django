@@ -22,12 +22,11 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
 
 ## Commands
 
-Python 3.13 is pinned in `.python-version`; CI covers 3.11, 3.12 and 3.13.
-Python 3.14 is not in CI (the suite passes on it locally), and the default uv or
-system Python may be 3.14, so leave `.python-version` at 3.13. Always go through
-`uv run` so the project environment is used. `uv run` syncs the environment
-implicitly before it runs (CI uses `--locked`; the commands here do not, so the
-allow rules in `.claude/settings.json` match them exactly).
+Python 3.13 is pinned in `.python-version`; CI covers 3.11-3.13, not 3.14 (the
+suite passes on it locally). The default uv or system Python may be 3.14, so
+leave the pin. Always go through `uv run`, which syncs the project environment
+first (CI uses `--locked`; these commands do not, so the allow rules in
+`.claude/settings.json` match them exactly).
 
 Run these directly. Each is pre-approved in `.claude/settings.json` by an
 exact-match allow rule (one rule per command line below, no wildcards) and runs
@@ -43,8 +42,10 @@ uv run python manage.py makemigrations scrud_django --check --dry-run
 uv run --group docs sphinx-build -W -b html docs docs/_build
 ```
 
-The docs build treats warnings as errors. The first docs build installs the
-`docs` dependency group, which needs network access.
+The docs build treats warnings as errors; its first run installs the `docs`
+dependency group, which needs network access. The read-only `git status`,
+`git diff`, `git diff --stat`, `git diff --cached` and `git log --oneline -20`
+are pre-approved the same way.
 
 Any other pytest invocation prompts, because the rules are exact. That includes
 a single test, which is the usual way to run one while working:
@@ -85,12 +86,12 @@ See `tests/test_conditional.py` for the idiom.
 
 - Decorator order is `@pytest.mark.django_db` first, then `@test_context`
   directly above the function (the order every test module uses).
-- Custom steps live in `tests/steps.py` only. `tests/conftest.py::pytest_configure`
-  imports that module after `django.setup()` so the steps register before
-  collection. Test modules that use the custom steps also `from .steps import *`;
-  the module is imported once, so steps are not registered twice. Never define steps in
-  `conftest.py` (importing it first would register them before Django models
-  are usable).
+- Custom steps live in `tests/steps.py` only.
+  `tests/conftest.py::pytest_configure` imports that module after
+  `django.setup()` so the steps register before collection. Test modules that
+  use them also `from .steps import *`; the module is imported once, so steps
+  are not registered twice. Never define steps in `conftest.py` (importing it
+  first would register them before Django models are usable).
 - `@context_data` fields become test-context attributes. A field name must not
   shadow a pytest fixture name, or it collides with the fixture.
 - Test modules star-import safetydance and steps; ruff per-file ignores for

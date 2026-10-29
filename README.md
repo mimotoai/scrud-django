@@ -84,7 +84,7 @@ HAYSTACK_CONNECTIONS = {
 
 Version 0.12.0 has breaking changes (Django 5.2, uv, scrudful 0.8, scoped-rbac
 0.11, JSON-only bodies, workflow policies in every context). Read the
-[0.12.0 release notes](docs/release-notes.md) before upgrading.
+[0.12.0 release notes](https://gitlab.com/dcharbon/scrud-django/-/blob/develop/docs/release-notes.md) before upgrading.
 
 ## Development Get Started
 

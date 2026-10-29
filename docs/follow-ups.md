@@ -488,3 +488,16 @@ Settings default policies are built once; stored ones are not cached.
 Impact: CPU per write grows with the number of conditions and the number of
 contexts. Suggested fix: cache the compiled policy by the stored resource's
 ETag and modification time, as `validator_for` does for JSON Schema validators.
+
+<a id="schema-error-echoes-compiler-text"></a>
+## schema-error-echoes-compiler-text: a refused JSON Schema's 400 echoes fastjsonschema's message
+
+A JSON Schema written through the API must compile
+(`scrud_django.validators.compile_json_schema`); when it does not, the 400
+`JsonSchemaInvalidError` detail is "The JSON Schema does not compile: " followed
+by fastjsonschema's exception text, which quotes parts of the schema (a refused
+`$ref` URI, an invalid keyword value). It is the writer's own schema, so it
+reveals nothing they did not send, and no fetched content is included (remote
+`$ref`s are refused before any fetch). Recorded only: the text is
+fastjsonschema's and may change between its versions. A stored schema that
+does not compile gives other writers a generic detail.
