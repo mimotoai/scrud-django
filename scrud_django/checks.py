@@ -13,7 +13,9 @@ def check_default_workflow_policies(app_configs, **kwargs):
     for a ``DEFAULT_WORKFLOW_POLICIES`` setting that cannot be loaded. At request
     time such a policy fails the writes of its type with
     ``ImproperlyConfigured``; ``manage.py check`` reports it before that.
-    Stored ``WorkflowPolicy`` resources are checked when they are written."""
+    Stored ``WorkflowPolicy`` resources are checked when they are written
+    through the API, and by the database check `check_stored_workflow_policies`
+    (``scrud_django.E005``)."""
     defaults = DefaultWorkflowPolicies()
     if defaults.load_error is not None:
         return [
@@ -43,15 +45,22 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
       until all but one are deleted;
     - ``scrud_django.E003`` for each whose ``resource_type`` is not a string
       (stored server-side; it governs no type);
+    - ``scrud_django.E005`` for each that does not pass ``WorkflowPolicy``'s
+      checks (a state condition that does not compile, a malformed transition
+      or one naming an undefined state, a reserved transition name, an invalid
+      ``restrict_update``), as a policy stored before 0.12.0 or server-side
+      may not: every write of its type in its contexts fails with
+      ``ImproperlyConfigured`` (a 500) until it is fixed or deleted;
     - ``scrud_django.W001`` for each policy stored with a list ``rbac_context``
       (before 0.12.0, or server-side). It applies in each of those contexts, and
       updating or deleting it needs rights in all of them.
     """
+    from django.core.exceptions import ImproperlyConfigured
     from django.db.utils import OperationalError, ProgrammingError
 
     from scrud_django.mixins.resource_mixin import rbac_contexts_of
     from scrud_django.models import Resource
-    from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
+    from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI, WorkflowPolicy
 
     found = []
     for alias in databases or ():
@@ -78,9 +87,30 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
                     )
                 )
                 continue
-            for context in rbac_contexts_of(content):
+            contexts = rbac_contexts_of(content)
+            for context in contexts:
                 key = (type_uri, context)
                 by_type_and_context.setdefault(key, []).append(policy.pk)
+            try:
+                WorkflowPolicy(content)
+            except ImproperlyConfigured as error:
+                where = (
+                    f"in context {contexts[0]!r}"
+                    if len(contexts) == 1
+                    else f"in contexts {contexts!r}"
+                )
+                found.append(
+                    checks.Error(
+                        f"WorkflowPolicy pk {policy.pk} for {type_uri!r} {where} "
+                        f"does not pass WorkflowPolicy's checks: {error}",
+                        hint=(
+                            "Fix it (a PUT through the API checks it) or delete "
+                            "it: until then every write of its type in its "
+                            "contexts fails with ImproperlyConfigured (a 500)."
+                        ),
+                        id="scrud_django.E005",
+                    )
+                )
             if isinstance(content.get("rbac_context"), (list, tuple)):
                 listed.append(policy)
         for (type_uri, context), pks in by_type_and_context.items():

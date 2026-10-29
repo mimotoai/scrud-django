@@ -275,6 +275,55 @@ def test_system_check_reports_a_non_string_resource_type(resource_type):
     )
 
 
+# Policies stored past the API's checks (server-side, or before 0.12.0), with
+# the reason each fails WorkflowPolicy's checks.
+STORED_INVALID_POLICIES = [
+    pytest.param(
+        dict(PERMISSIVE_POLICY, states={"done": "status == "}),
+        "Invalid workflow state condition: ",
+        id="invalid-condition",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, transitions={"go": {"from": "any", "to": "nowhere"}}),
+        "Invalid workflow transition 'go': 'nowhere' is not a defined state.",
+        id="transition-to-undefined-state",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, transitions={"__mine": {"from": "any", "to": "any"}}),
+        "Invalid workflow transition '__mine': a name must be a string not "
+        "starting with '__'",
+        id="reserved-transition-name",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, restrict_update="any"),
+        "Invalid workflow restrict_update: it must be a list of defined state "
+        "names, not 'any'.",
+        id="restrict-update-string",
+    ),
+]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("content,reason", STORED_INVALID_POLICIES)
+def test_system_check_reports_an_invalid_stored_policy(content, reason):
+    invalid = store_policy(dict(content, rbac_context="p"))
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="q"))
+    found = scrud_checks.check_stored_workflow_policies(None, databases=["default"])
+    assert [(m.id, m.level) for m in found] == [("scrud_django.E005", checks.ERROR)]
+    assert found[0].msg.startswith(
+        f"WorkflowPolicy pk {invalid.pk} for {TODO!r} in context 'p' does not "
+        f"pass WorkflowPolicy's checks: {reason}"
+    ), found[0].msg
+    assert found[0].hint == (
+        "Fix it (a PUT through the API checks it) or delete it: until then "
+        "every write of its type in its contexts fails with "
+        "ImproperlyConfigured (a 500)."
+    )
+    # A database check: `check --database` and `migrate` run it.
+    assert found[0] in checks.run_checks(databases=["default"])
+    assert found[0] not in checks.run_checks()
+
+
 class ReadReplicaRouter:
     """Reads go to a replica (here an alias that does not exist), writes to
     "default"."""

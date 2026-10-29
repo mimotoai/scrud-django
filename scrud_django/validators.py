@@ -209,8 +209,9 @@ class WorkflowValidator:
     A ``WorkflowPolicy`` resource is itself checked when it is written
     (`validate_policy`): a policy that fails those checks, names a context that
     is not a string, or would be a second policy for its type in its context
-    is a 400 and is not stored. Policies stored before those checks existed are
-    not rechecked.
+    is a 400 and is not stored. Policies stored before those checks existed
+    (or server-side) are not rechecked on write; the database system check
+    reports those that fail them (``scrud_django.E005``).
     """
 
     requires_context = True
