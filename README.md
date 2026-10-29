@@ -1,27 +1,49 @@
 # scrud-django
 A Django application for SCRUD REST services. Semantic REST API generation.
 
+Requires Python 3.11+ and Django 5.2.
+
 ## Installation
 
 ```bash
-pip install scrud-django
+uv add scrud-django
+# or: pip install scrud-django
+```
+
+For haystack search support, install the `search` extra:
+
+```bash
+uv add "scrud-django[search]"
 ```
 
 ## Configuration
 
 ### Required
 
-Add `scrud_django`, `scoped_rbac`, and `django_jsonfield_backport` to  `INSTALLED_APPS`:
+Add `rest_framework`, `reversion`, `scoped_rbac` and `scrud_django` to `INSTALLED_APPS`:
 
 ```python
 INSTALLED_APPS = [
   ...
-  'django_jsonfield_backport',
+  'rest_framework',
+  'reversion',
   'scoped_rbac',
   'scrud_django',
   ...
 ]
 ```
+
+Include the scrud-django URLs. They include the scoped-rbac semantic URLs
+(`semantic/`) that serve each resource type's schema and JSON-LD context:
+
+```python
+urlpatterns = [
+    path("api/", include("scrud_django.urls")),
+]
+```
+
+If you mount URLs yourself, include `scoped_rbac.semantic_urls`, for example
+`path("semantic/", include("scoped_rbac.semantic_urls"))`.
 
 ### Optional
 
@@ -38,26 +60,29 @@ REST_FRAMEWORK = {
 
 ## Development Get Started
 
-### Get prepared to run tests and the demo application
+Development uses [uv](https://docs.astral.sh/uv/).
 
 ```bash
-cd docker
-conda env create -f environment-dev.yml
-conda activate scrud-django
-cd ..
-make develop
-make migrate
+uv sync
+uv run pre-commit install
 ```
+
 ### Confirm setup
 
 ```bash
-make run_tests
+make test
+make lint
+make migrations-check
 ```
+
+Build the documentation with `make docs`.
 
 ### Start the demo application
 
 ```bash
 cd demo
-python manage.py runserver
+uv run python manage.py migrate
+uv run python manage.py runserver
 ```
 
+The API root is at http://127.0.0.1:8000/api/.
