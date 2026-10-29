@@ -2,12 +2,14 @@
 SCRUD-Django - Semantic Create, Read, Update and Delete Django application.
 """
 
-__version__ = "0.1.9"
 import base64
 import datetime
+from importlib.metadata import version
 
 from django.utils.timezone import datetime as ddt
 from rest_framework.reverse import reverse
+
+__version__ = version("scrud-django")
 
 default_app_config = "scrud_django.apps.ScrudConfig"
 
