@@ -5,7 +5,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from scoped_rbac.permissions import IsAuthorized
-from scoped_rbac.rest import AccessControlledAPIView, RbacFilter
+from scoped_rbac.rest import AccessControlledAPIView, RbacFilter, RbacJSONParser
 from scrudful.rest_framework import scrudful_api_view, scrudful_viewset
 
 from scrud_django import collection_type_uri_for, services
@@ -23,6 +23,10 @@ class ResourceViewSet(
     # default either, so without this a project that does not configure
     # DEFAULT_PERMISSION_CLASSES would let anyone write and delete resources.
     permission_classes = [IsAuthorized]
+
+    # JSON bodies only. A form or multipart body can name ``rbac_context`` more
+    # than once: scoped-rbac checks the last value, the list would be stored.
+    parser_classes = [RbacJSONParser]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -47,6 +51,10 @@ class ResourceViewSetGenericFilter(
     # default either, so without this a project that does not configure
     # DEFAULT_PERMISSION_CLASSES would let anyone write and delete resources.
     permission_classes = [IsAuthorized]
+
+    # JSON bodies only. A form or multipart body can name ``rbac_context`` more
+    # than once: scoped-rbac checks the last value, the list would be stored.
+    parser_classes = [RbacJSONParser]
 
     # RbacFilter first, as AccessControlledAPIView sets it: it scopes the lookup
     # in get_object() (and so scrudful's object validators) to the contexts the

@@ -1,9 +1,12 @@
 import json
+from collections.abc import Mapping
 from datetime import UTC
 from functools import cached_property
 
 from django.utils.http import http_date, quote_etag
+from rest_framework.exceptions import ValidationError
 from rest_framework.reverse import reverse
+from rest_framework.settings import api_settings
 
 from scrud_django.headers import get_link_header_for
 from scrud_django.registration import get_resource_type_for
@@ -49,6 +52,13 @@ class GenericSerializerMixin:
         }
 
     def to_internal_value(self, data):
+        # A resource is a JSON object: its ``rbac_context`` decides where it is
+        # stored, and conditions read its fields.
+        if not isinstance(data, Mapping):
+            raise ValidationError(
+                {api_settings.NON_FIELD_ERRORS_KEY: ["Expected a JSON object."]},
+                code="invalid",
+            )
         return data
 
     def create(self, validated_data):
