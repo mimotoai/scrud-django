@@ -54,7 +54,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
    table, which records when a resource leaves a context, so that lists'
    `Last-Modified` moves on removals from then on;
    `0010_resource_base_manager` changes model options only (no SQL). Then
-   run the database check of step 7.
+   run the database check of step 7. A resource stored with a context longer
+   than 2048 bytes in UTF-8 gets no row for that context (see Lists below):
+   the check reports it as `scrud_django.W003`; give it a shorter context or
+   delete it.
 10. Lists now show only what the requester may read (see Lists below). Give
     users who list a type `http.GET` on the type itself, in each context whose
     resources they should see, as well as on its list type; check your roles
@@ -188,8 +191,16 @@ django-scoped-rbac 0.11. It has several breaking changes.
   rows, kept in step by `Resource.save()` (a new instance saved over an
   existing key included) and by raw saves (`loaddata`, reversion's revert,
   which must run inside a transaction), in the same transaction as the
-  resource's row. A context longer than 2048 characters is refused on every
-  save path (`ValueError`). Lists find the resources of the contexts that
+  resource's row. A context longer than 2048 bytes in UTF-8 (so that its rows
+  fit PostgreSQL's btree indexes; 683 characters of CJK are already over) is
+  refused on every save path (`ValueError`). A resource stored before 0.12.0
+  with a longer context is kept: migration `0008_resourcecontext` gives that
+  context no row (it never truncates one), so lists leave the resource out
+  there (superusers' lists excepted), its deletion stamps `__SOME_CONTEXT__`
+  for it (superusers' lists), and saving its content fails with `ValueError`
+  until it gets a shorter context. A new database check,
+  `scrud_django.W003` (`manage.py check --database <alias>`, also run by
+  `migrate`), names such resources. Lists find the resources of the contexts that
   grant `http.GET` outright in SQL; only the resources of contexts whose grant
   is conditional are checked one by one, at most
   `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` of them (default 10 000; past it
@@ -358,8 +369,10 @@ Conditional request handling now comes from scrudful 0.8.
   scoped-rbac's request check, superusers included. Leave `rbac_context` out,
   or give `""`, for the default context. Server code (`ResourceRegistration`)
   may still store `[]`: the resource is then in no context, and only
-  superusers can read or list it. A context longer than 2048 characters gets
-  the same 400 through the API and a `ValueError` from `Resource.save()`.
+  superusers can read or list it. A context longer than 2048 bytes in UTF-8
+  gets the same 400 through the API and a `ValueError` from
+  `Resource.save()` (on PostgreSQL a longer multibyte context of 2048
+  characters or fewer was a 500).
 * Object checks give the permission class and the grants' conditions the
   stored resource as a `scrud_django.permissions.ResourceCheck`: a mapping
   over its content (`{}` for content that is not a JSON object), read-only at

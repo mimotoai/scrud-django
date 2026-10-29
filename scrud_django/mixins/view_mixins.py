@@ -25,7 +25,7 @@ from scrud_django.filters import (
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
-from scrud_django.models.resource import MAX_CONTEXT_LENGTH
+from scrud_django.models.resource import MAX_CONTEXT_BYTES, context_fits
 from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.permissions import resource_check
 from scrud_django.registration import (
@@ -71,7 +71,7 @@ def check_written_contexts(request):
     ``rbac_context`` is an empty list, which would store the resource in no
     context (only a superuser could read it; a server-side
     ``ResourceRegistration`` may still store one), or names a context longer
-    than a ``ResourceContext`` row holds."""
+    than its rows hold (`context_fits`: 2048 bytes of UTF-8)."""
     if request.method not in ("POST", "PUT", "PATCH"):
         return
     data = request.data
@@ -83,9 +83,9 @@ def check_written_contexts(request):
             "rbac_context must name at least one context; leave it out (or give "
             '"") for the default context.'
         )
-    if any(len(c) > MAX_CONTEXT_LENGTH for c in rbac_contexts_of(data)):
+    if not all(context_fits(c) for c in rbac_contexts_of(data)):
         raise RbacContextInvalidError(
-            f"An rbac_context may be at most {MAX_CONTEXT_LENGTH} characters long."
+            f"An rbac_context may be at most {MAX_CONTEXT_BYTES} bytes long in UTF-8."
         )
 
 

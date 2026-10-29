@@ -171,6 +171,68 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
     return found
 
 
+def check_overlong_contexts(app_configs, databases=None, **kwargs):
+    """A database check (``manage.py check --database default``, and
+    ``migrate``): a Warning (``scrud_django.W003``) naming the resources, on
+    each migrated database of `databases` (`scrud_migrations_pending`), with
+    a context longer than ``MAX_CONTEXT_BYTES`` (2048) bytes of UTF-8, which
+    only a resource stored before 0.12.0 can have. Migration 0008 gave such a
+    context no ``ResourceContext`` row: lists leave the resource out in it
+    (superusers' lists excepted), and saving its content fails with
+    ``ValueError`` until it is given a shorter context. Only resources whose
+    ``rbac_context`` is over 512 characters long as JSON text are read (no
+    shorter one can be over 2048 bytes)."""
+    from django.db.models.fields.json import KeyTextTransform
+    from django.db.models.functions import Length
+    from django.db.utils import OperationalError, ProgrammingError
+
+    from scrud_django.mixins.resource_mixin import rbac_contexts_of
+    from scrud_django.models import Resource
+    from scrud_django.models.resource import MAX_CONTEXT_BYTES, context_fits
+
+    found = []
+    for alias in databases or ():
+        if scrud_migrations_pending(alias):
+            continue
+        candidates = (
+            Resource.objects.using(alias)
+            .alias(
+                _scrud_context_length=Length(
+                    KeyTextTransform("rbac_context", "content")
+                )
+            )
+            .filter(_scrud_context_length__gt=MAX_CONTEXT_BYTES // 4)
+            .order_by("pk")
+            .values_list("pk", "content")
+        )
+        try:
+            pks = [
+                pk
+                for pk, content in candidates.iterator()
+                if not all(map(context_fits, rbac_contexts_of(content)))
+            ]
+        except (OperationalError, ProgrammingError):
+            continue
+        if not pks:
+            continue
+        shown = ", ".join(map(str, pks[:20])) + (", ..." if len(pks) > 20 else "")
+        found.append(
+            checks.Warning(
+                f"{len(pks)} resources on database {alias!r} have an rbac_context "
+                f"longer than {MAX_CONTEXT_BYTES} bytes in UTF-8 (pks [{shown}]): "
+                "they have no ResourceContext row for it, so lists leave them out "
+                "in that context (superusers' lists excepted), and saving their "
+                "content fails with ValueError.",
+                hint=(
+                    "Give each a shorter rbac_context (a PUT through the API, or "
+                    "ResourceRegistration.update), or delete it."
+                ),
+                id="scrud_django.W003",
+            )
+        )
+    return found
+
+
 def check_write_routing(app_configs, **kwargs):
     """An Error (``scrud_django.E004``) when the database router sends writes
     of ``Resource``, ``ResourceType``, ``ResourceContext`` and

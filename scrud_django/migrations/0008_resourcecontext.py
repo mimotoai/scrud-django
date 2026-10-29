@@ -7,6 +7,12 @@ from django.db import migrations, models
 
 BATCH_SIZE = 1000
 
+# The longest context a row is made for, in bytes of UTF-8
+# (``scrud_django.models.resource.MAX_CONTEXT_BYTES`` when this migration was
+# written): a longer one would not fit the column (2048 characters) or
+# PostgreSQL's btree index (about 2700 bytes an entry).
+MAX_CONTEXT_BYTES = 2048
+
 
 def contexts_of(content):
     """The contexts a resource's `content` is in, as
@@ -24,8 +30,16 @@ def contexts_of(content):
     return [""]
 
 
+def fits(context):
+    return len(context.encode("utf-8", "surrogatepass")) <= MAX_CONTEXT_BYTES
+
+
 def backfill_resource_contexts(apps, schema_editor):
-    """One ``ResourceContext`` row per context of every stored resource."""
+    """One ``ResourceContext`` row per context of every stored resource,
+    except a context longer than `MAX_CONTEXT_BYTES`: it gets no row (it is
+    never truncated, which could name another context), so that the
+    migration does not fail; the resource is then listed in it to superusers
+    only, and the ``scrud_django.W003`` database check reports it."""
     db = schema_editor.connection.alias
     Resource = apps.get_model("scrud_django", "Resource")
     ResourceContext = apps.get_model("scrud_django", "ResourceContext")
@@ -35,6 +49,7 @@ def backfill_resource_contexts(apps, schema_editor):
         rows.extend(
             ResourceContext(resource_id=pk, rbac_context=context)
             for context in sorted(set(contexts_of(content)))
+            if fits(context)
         )
         if len(rows) >= BATCH_SIZE:
             ResourceContext.objects.using(db).bulk_create(rows, ignore_conflicts=True)

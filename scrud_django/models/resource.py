@@ -18,9 +18,22 @@ from scoped_rbac.rbac_contexts import SOME_CONTEXT
 from scrud_django.mixins.resource_mixin import ResourceMixin, rbac_contexts_of
 from scrud_django.models.resource_type import ResourceType
 
-# The longest context a resource may be stored in: the ``rbac_context`` column
-# of `ResourceContext`.
+# The ``rbac_context`` column of `ResourceContext` and `ResourceRemoval`, in
+# characters.
 MAX_CONTEXT_LENGTH = 2048
+
+# The longest context a resource may be stored in, in bytes of UTF-8: its
+# `ResourceContext` and `ResourceRemoval` rows must fit PostgreSQL's btree
+# indexes (about 2700 bytes an entry), which a context of 2048 characters
+# may not.
+MAX_CONTEXT_BYTES = 2048
+
+
+def context_fits(context):
+    """Whether `context` (a string) is at most `MAX_CONTEXT_BYTES` long in
+    UTF-8 (a lone surrogate counts its 3 bytes), so that its rows can be
+    stored."""
+    return len(context.encode("utf-8", "surrogatepass")) <= MAX_CONTEXT_BYTES
 
 
 # ``(database, pairs)``: the (type, context) pairs a QuerySet.delete() of
@@ -167,12 +180,13 @@ class ResourceRemoval(models.Model):
 
 
 def check_contexts(content):
-    """Raise ``ValueError`` if a context of `content` is longer than a
-    `ResourceContext` row holds (`MAX_CONTEXT_LENGTH`)."""
+    """Raise ``ValueError`` if a context of `content` is longer than its rows
+    can hold (`context_fits`: `MAX_CONTEXT_BYTES` of UTF-8)."""
     for context in rbac_contexts_of(content):
-        if len(context) > MAX_CONTEXT_LENGTH:
+        if not context_fits(context):
             raise ValueError(
-                f"An rbac_context may be at most {MAX_CONTEXT_LENGTH} characters long."
+                f"An rbac_context may be at most {MAX_CONTEXT_BYTES} bytes long "
+                "in UTF-8."
             )
 
 
@@ -206,10 +220,14 @@ def stamp_removals(resource_type_id, contexts, using):
     """Record on database `using`, in the caller's transaction, that a
     resource of the type `resource_type_id` left each of `contexts` now
     (`ResourceRemoval`): the stamp of each type and context only moves
-    forward."""
+    forward. A context too long for a row (`context_fits`: one stored before
+    0.12.0, which has no `ResourceContext` row and is listed to superusers
+    only) is stamped as ``SOME_CONTEXT``, which only superusers' lists
+    read."""
     when = timezone.now()
     rows = ResourceRemoval.objects.using(using)
-    for context in sorted(set(contexts)):
+    contexts = {c if context_fits(c) else SOME_CONTEXT for c in contexts}
+    for context in sorted(contexts):
         key = {"resource_type_id": resource_type_id, "rbac_context": context}
         if rows.filter(**key, removed_at__lt=when).update(removed_at=when):
             continue

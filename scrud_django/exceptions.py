@@ -80,7 +80,7 @@ class JsonSchemaInvalidError(ScrudException):
 class RbacContextInvalidError(ScrudException):
     """A request body whose ``rbac_context`` cannot be stored: an empty list
     (which would put the resource in no context), or a context longer than
-    ``scrud_django.models.resource.MAX_CONTEXT_LENGTH``."""
+    ``scrud_django.models.resource.MAX_CONTEXT_BYTES`` bytes of UTF-8."""
 
     status_code = 400
     default_detail = "Bad Request"

@@ -15,6 +15,7 @@ class ScrudConfig(AppConfig):
             check_default_workflow_policies,
             check_isolation_level,
             check_list_filters,
+            check_overlong_contexts,
             check_stored_workflow_policies,
             check_write_routing,
         )
@@ -23,6 +24,7 @@ class ScrudConfig(AppConfig):
         register_operator("scrud_workflow", authorized_transitions)
         checks.register(check_default_workflow_policies)
         checks.register(check_stored_workflow_policies, checks.Tags.database)
+        checks.register(check_overlong_contexts, checks.Tags.database)
         checks.register(check_write_routing)
         checks.register(check_isolation_level, checks.Tags.database)
         checks.register(check_list_filters, checks.Tags.urls)
