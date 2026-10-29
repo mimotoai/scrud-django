@@ -398,6 +398,35 @@ Suggested fix: give `GenericViewMixin` the same `list_etag` /
 `list_last_modified` over `filter_queryset(get_queryset())` as
 `ResourceViewMixin`, or none; test a write followed by `If-None-Match`.
 
+<a id="generic-view-writes-not-locked"></a>
+## generic-view-writes-not-locked: `GenericViewMixin` writes are not one locked transaction
+
+`ResourceViewMixin` runs a PUT or DELETE in one transaction with the row
+locked (`dispatch`, `get_queryset`), so scrudful's precondition evaluation,
+the object check and the write see one row. `GenericViewMixin` (for models of
+your own) leaves `update` and `destroy` to the subclass and does neither:
+scrudful evaluates `If-Match` against the object `get_object()` read outside
+any transaction, so two concurrent writes with the same `If-Match` can both
+pass (scrudful's own docstring says so).
+
+Suggested fix: give `GenericViewMixin` the same `dispatch` (one transaction
+on the model's write database for PUT, PATCH and DELETE) and a
+`select_for_update` in the lookup, or document that subclasses must; test two
+interleaved writes as `tests/test_atomic_writes.py` does.
+
+<a id="serializer-update-slug"></a>
+## serializer-update-slug: `ResourceSerializer.update` reads a `slug` a resource does not have
+
+`ResourceSerializer.update` calls `ResourceRegistration.update(...,
+slug=instance.slug)`, but `Resource` has no `slug`: it raises
+`AttributeError`. Nothing in scrud-django calls it (the views write through
+`ResourceRegistration.update_locked` / `delete_locked`), so only code that
+calls `serializer.save()` on an existing resource hits it.
+
+Suggested fix: write through `ResourceRegistration.update_locked` with the
+serializer's (locked) instance, or remove the method. Test: a serializer
+given an instance and valid data saves it.
+
 # Decided
 
 <a id="policy-recheck-isolation"></a>
