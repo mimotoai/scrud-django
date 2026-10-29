@@ -118,8 +118,57 @@ def post_todo(content):
     )
 
 
+def policy_conditions(policy):
+    """The CEL conditions of the policy content `policy`."""
+    conditions = []
+    for key in ("initial_states", "states"):
+        states = policy.get(key) or {}
+        if isinstance(states, dict):
+            conditions.extend(c for c in states.values() if isinstance(c, str))
+    return conditions
+
+
+def every_known_policy():
+    """The settings default policies and every stored ``WorkflowPolicy``."""
+    from scrud_django.conf import default_workflow_policies
+
+    policies = [p.policy for p in default_workflow_policies().values()]
+    policies.extend(
+        r.content
+        for r in Resource.objects.filter(resource_type__type_uri=WORKFLOW_POLICY)
+        if isinstance(r.content, dict)
+    )
+    return policies
+
+
+def strings_and_keys_of(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from strings_and_keys_of(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings_and_keys_of(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def assert_no_policy_content(body):
+    """No workflow error body carries a policy's content: none of its CEL
+    conditions and no ``initial_states``, ``states`` or ``transitions``,
+    whichever policy (default or stored, of any context) caused it."""
+    conditions = {c for p in every_known_policy() for c in policy_conditions(p)}
+    assert conditions, "no policy to compare with"
+    for text in strings_and_keys_of(body):
+        assert text not in ("initial_states", "states", "transitions"), body
+        for condition in conditions:
+            assert condition not in text, (condition, body)
+
+
 def assert_workflow_error():
-    assert Http.response.json()["type"] == WORKFLOW_ERROR, Http.response.json()
+    body = Http.response.json()
+    assert body["type"] == WORKFLOW_ERROR, body
+    assert_no_policy_content(body)
 
 
 def assert_unchanged(resource):
@@ -802,24 +851,90 @@ def test_editing_a_shared_resource_does_not_leak_the_other_contexts_policy():
     assert f"/workflow-policies/{policy_b.pk}/" not in response.content.decode()
 
 
+# How a workflow error names the settings default policy of the ToDo type: by
+# its type, with a marker, never by its content.
+DEFAULT_TODO_POLICY_REFERENCE = {"resource_type": TODO, "default": True}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("context", [DEFAULT_CONTEXT, "w"])
+@test_context
+def test_default_policy_errors_reference_the_policy(context):
+    # Was test_default_policy_errors_still_embed_the_policy: the body embedded
+    # the default policy (CEL conditions and every transition) in "policy" and
+    # "detail". It now names the policy by reference, in "" and elsewhere.
+    cancel_only = user_with((CANCEL_ONLY, context))
+    resource = todo(rbac_context=context)
+    Given.http.force_authenticate(cancel_only)
+    put_todo(resource, dict(NOT_STARTED, status="done", rbac_context=context))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)  # "finish": cancel-only
+    assert_workflow_error()
+    body = Http.response.json()
+    assert body["policy"] == DEFAULT_TODO_POLICY_REFERENCE, body
+    assert (body["prior_state"], body["proposed_state"]) == ("not started", "done")
+    assert body["detail"] == body["message"], body
+
+    Given.http.force_authenticate(user_with((TODO_WRITER, context)))
+    done = todo(status="done", rbac_context=context)
+    put_todo(done, dict(NOT_STARTED, rbac_context=context))  # out of "done"
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_workflow_error()
+    body = Http.response.json()
+    assert body == {
+        "type": WORKFLOW_ERROR,
+        "title": "Invalid workflow transition",
+        "detail": DEFAULT_TODO_POLICY_REFERENCE,
+        "policy": DEFAULT_TODO_POLICY_REFERENCE,
+        "prior_state": "done",
+        "proposed_state": "not started",
+        "message": "Invalid workflow transition",
+        "status": 400,
+    }, body
+
+    post_todo(dict(NOT_STARTED, status="done", rbac_context=context))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_workflow_error()
+    body = Http.response.json()
+    assert body["policy"] == DEFAULT_TODO_POLICY_REFERENCE, body
+    assert body["message"] == "The request is not a valid initial state."
+
+    put_todo(done, dict(NOT_STARTED, status="nonsense", rbac_context=context))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)  # the schema's enum
+    put_todo(done, {"title": "t", "rbac_context": context})  # in no state
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_workflow_error()
+    assert Http.response.json()["policy"] == DEFAULT_TODO_POLICY_REFERENCE
+
+
 @pytest.mark.django_db
 @test_context
-def test_default_policy_errors_still_embed_the_policy(todo_creator_login):
-    default = workflow_policy_for(TODO, DEFAULT_CONTEXT).policy
-    resource = todo()
-    Given.http.force_authenticate(todo_creator_login)
-    put_todo(resource, dict(NOT_STARTED, status="done"))  # "finish": cancel-only
+def test_no_workflow_error_body_carries_cel():
+    # Stored (readable and not), default, and other-context policies at once:
+    # a ToDo in "a" (default policy), "b" (SECRET_POLICY) and "c" (a stored
+    # policy the writer may read).
+    store_policy(SECRET_POLICY)
+    readable = store_policy(
+        dict(SECRET_POLICY, rbac_context="c", initial_states={"x": 'title == "C"'})
+    )
+    writer = user_with(
+        (CANCEL_ONLY, "a"), (TODO_WRITER, "b"), (TODO_WRITER, "c"), (READ_POLICIES, "c")
+    )
+    url = "http://testserver" + reverse("workflow-policies-detail", args=[readable.pk])
+    Given.http.force_authenticate(writer)
+    for context, policy in (
+        ("a", DEFAULT_TODO_POLICY_REFERENCE),
+        ("b", None),  # not readable: a generic error
+        ("c", url),
+    ):
+        post_todo(dict(NOT_STARTED, status="done", rbac_context=context))
+        Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+        assert_workflow_error()
+        assert Http.response.json()["policy"] == policy
+    # A ToDo in all three (stored server-side; the schema takes one context).
+    resource = todo(rbac_context=["a", "b", "c"])
+    put_todo(resource, dict(NOT_STARTED, status="done", rbac_context="a"))
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
     assert_workflow_error()
-    assert Http.response.json()["policy"] == default
-
-    Given.http.force_authenticate(user_with((TODO_WRITER, DEFAULT_CONTEXT)))
-    done = todo(status="done")
-    put_todo(done, dict(NOT_STARTED))  # no transition out of "done"
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
-    assert_workflow_error()
-    assert Http.response.json()["policy"] == default
-    assert Http.response.json()["detail"] == default
 
 
 @pytest.mark.django_db

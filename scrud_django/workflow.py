@@ -11,6 +11,7 @@ from scoped_rbac.cel import (
 )
 
 from scrud_django.exceptions import (
+    DefaultPolicyReference,
     StoredPolicyReference,
     WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
@@ -49,12 +50,14 @@ class WorkflowPolicy:
     under the policy succeeds.
     """
 
-    def __init__(self, policy, resource=None):
+    def __init__(self, policy, resource=None, default_for=None):
         """`policy` is the policy's content; `resource` the stored
         ``WorkflowPolicy`` resource it comes from, or ``None`` for a policy from
-        settings."""
+        settings, whose type URI is `default_for` (``None``: the content's
+        ``resource_type``)."""
         self.policy = policy
         self.resource = resource
+        self.default_for = default_for
         self.initial_state_expressions = {}
         self.state_expressions = {}
         # from state -> to state -> transition name
@@ -65,12 +68,17 @@ class WorkflowPolicy:
 
     @property
     def reference(self):
-        """What a workflow error names as its policy: a stored policy by
-        reference (its URL, which RBAC protects; the writer may not be allowed
-        to read it), a policy from settings by its content."""
-        if self.resource is None:
-            return self.policy
-        return StoredPolicyReference(self.resource)
+        """What a workflow error names as its policy, never its content: a
+        stored policy by its URL (`StoredPolicyReference`, which RBAC
+        protects; the writer may not be allowed to read it), a policy from
+        settings by the type it is the default for (`DefaultPolicyReference`).
+        """
+        if self.resource is not None:
+            return StoredPolicyReference(self.resource)
+        type_uri = self.default_for
+        if type_uri is None and isinstance(self.policy, Mapping):
+            type_uri = self.policy.get("resource_type")
+        return DefaultPolicyReference(type_uri if isinstance(type_uri, str) else None)
 
     def validate(self, proposed_data, prior_data=None):
         if prior_data is None:

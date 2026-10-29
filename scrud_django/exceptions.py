@@ -132,6 +132,33 @@ class StoredPolicyReference:
         return f"StoredPolicyReference(pk={self.resource.pk!r})"
 
 
+class DefaultPolicyReference:
+    """A settings default workflow policy
+    (``SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]``), as a workflow error
+    names it: by the type URI it is the default for, marked as the default,
+    never by its content (its CEL conditions and transitions, some of which
+    may be other roles'). The body gives it as `data`:
+    ``{"resource_type": "<type URI>", "default": true}``."""
+
+    def __init__(self, type_uri):
+        self.type_uri = type_uri
+
+    def data(self):
+        return {"resource_type": self.type_uri, "default": True}
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, DefaultPolicyReference)
+            and other.type_uri == self.type_uri
+        )
+
+    def __hash__(self):
+        return hash((DefaultPolicyReference, self.type_uri))
+
+    def __repr__(self):
+        return f"DefaultPolicyReference({self.type_uri!r})"
+
+
 class WorkflowTransitionError(ScrudException):
     status_code = 400
     default_detail = "Bad Request"
@@ -139,10 +166,14 @@ class WorkflowTransitionError(ScrudException):
     title = "Invalid workflow transition"
 
     def __init__(self, policy, prior_state, proposed_state, message=None):
-        """`policy` is the policy's content (a policy from settings) or a
-        `StoredPolicyReference` (a stored policy), which the body gives as its
-        URL. ``detail`` is `message` (else the title); the body's ``detail`` is
-        the policy when there is no `message`, as it has always been."""
+        """`policy` names the policy: a `StoredPolicyReference` (a stored
+        policy), which the body gives as its URL, or a `DefaultPolicyReference`
+        (a settings default), which the body gives as
+        ``{"resource_type": ..., "default": true}``; ``None`` in a generic
+        error. Any other value is given as it is. No policy the library raises
+        an error for is embedded. ``detail`` is `message` (else the title);
+        the body's ``detail`` is the policy reference when there is no
+        `message`, as it has always been."""
         super().__init__(message if message is not None else self.title)
         self.type = "http://api.openteams.com/http-problem/workflow-transition-invalid"
         self.detail_is_policy = message is None
@@ -155,6 +186,8 @@ class WorkflowTransitionError(ScrudException):
         if isinstance(self.policy, StoredPolicyReference):
             request = context.get("request") if isinstance(context, dict) else None
             return self.policy.url(request)
+        if isinstance(self.policy, DefaultPolicyReference):
+            return self.policy.data()
         return self.policy
 
     def response_data(self, context):

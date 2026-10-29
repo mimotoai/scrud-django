@@ -65,6 +65,10 @@ class DefaultWorkflowPolicies:
             return
         for type_uri, policy in configured.items():
             if isinstance(policy, WorkflowPolicy):
+                # Workflow errors name a default by its type
+                # (``WorkflowPolicy.reference``).
+                if getattr(policy, "default_for", None) is None:
+                    policy.default_for = type_uri
                 self.policies[type_uri] = policy
                 continue
             try:
@@ -73,7 +77,7 @@ class DefaultWorkflowPolicies:
                         "a workflow policy must be a mapping or a WorkflowPolicy, "
                         f"not {policy!r}."
                     )
-                self.policies[type_uri] = WorkflowPolicy(policy)
+                self.policies[type_uri] = WorkflowPolicy(policy, default_for=type_uri)
             except ImproperlyConfigured as e:
                 self.errors[type_uri] = e
 
