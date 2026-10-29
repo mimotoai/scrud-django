@@ -14,23 +14,48 @@ https://docs.djangoproject.com/en/3.1/ref/settings/
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve(strict=True).parent.parent
 
 
-# DO NOT DEPLOY these settings. They are for running the demo locally: the
-# secret key is public, DEBUG is on and every host is allowed.
+# The secret key, DEBUG and the allowed hosts come from the environment:
+#
+#   DJANGO_SECRET_KEY      the secret key (required when DEBUG is off)
+#   DJANGO_DEBUG           "1"/"true"/"yes"/"on" for DEBUG (default on)
+#   DJANGO_ALLOWED_HOSTS   comma-separated host names
+#                          (default localhost, 127.0.0.1 and [::1])
+#
+# The defaults are for running the demo locally only: the development secret key
+# below is public, so it is refused when DEBUG is off.
+# See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/3.1/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'a!wnea7#s0#)$7$(-&z#3^5l96d=6yr97ms&a$cjf8nr1t6+4p'
+def env_flag(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+DEBUG = env_flag("DJANGO_DEBUG", True)
+
+DEVELOPMENT_SECRET_KEY = "demo-development-only-a!wnea7#s0#)$7$(-&z#3^5l96d"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", DEVELOPMENT_SECRET_KEY)
+if not DEBUG and SECRET_KEY == DEVELOPMENT_SECRET_KEY:
+    raise ImproperlyConfigured(
+        "Set DJANGO_SECRET_KEY: the demo's development secret key is public and "
+        "may only be used with DEBUG on."
+    )
+
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get(
+        "DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]"
+    ).split(",")
+    if host.strip()
+]
 INTERNAL_IPS = ['0.0.0.0', '127.0.0.1', '192.168.1.98']
 DISPLAY_API_DOCS = True
 

@@ -1,5 +1,13 @@
 #!/usr/bin/env python
-"""Django's command-line utility for administrative tasks."""
+"""Django's command-line utility for the library's own checks.
+
+It configures ``tests.settings.SETTINGS``, the test settings, whose databases
+are SQLite ``:memory:``: nothing a command writes persists, and each command
+starts from an empty database. Use it for ``check`` and
+``makemigrations scrud_django --check --dry-run`` (and to generate a
+migration). For a server with a persistent database, use the demo project
+(``cd demo && uv run python manage.py migrate`` then ``runserver``).
+"""
 
 import os
 import sys
