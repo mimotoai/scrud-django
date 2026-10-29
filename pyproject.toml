@@ -37,6 +37,9 @@ dev = [
     "pre-commit",
     "django-extensions",
     "scrud-django[search]",
+    # The PostgreSQL driver for the test suite on PostgreSQL (CI's
+    # test-postgres job; tests/settings.py reads SCRUD_TEST_PG_*).
+    "psycopg[binary]>=3.2,<4",
 ]
 docs = [
     "sphinx",

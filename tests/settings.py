@@ -2,25 +2,43 @@
 
 Used as ``settings.configure(**SETTINGS)`` by both ``tests/conftest.py`` and
 ``manage.py``.
+
+The databases are in-memory SQLite, unless ``SCRUD_TEST_PG_HOST`` names a
+PostgreSQL server (the CI job ``test-postgres``): both aliases then use it,
+with ``SCRUD_TEST_PG_PORT`` (5432), ``SCRUD_TEST_PG_USER`` (postgres),
+``SCRUD_TEST_PG_PASSWORD`` (none) and ``SCRUD_TEST_PG_NAME`` (scrud; the
+"other" alias appends ``_other``). pytest-django creates and drops the test
+databases (``test_`` and those names).
 """
 
 import os
 from typing import Any
 
+
+def database(alias):
+    """The settings of database `alias` ("default" or "other")."""
+    host = os.environ.get("SCRUD_TEST_PG_HOST")
+    if not host:
+        return {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
+    name = os.environ.get("SCRUD_TEST_PG_NAME", "scrud")
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "HOST": host,
+        "PORT": os.environ.get("SCRUD_TEST_PG_PORT", "5432"),
+        "USER": os.environ.get("SCRUD_TEST_PG_USER", "postgres"),
+        "PASSWORD": os.environ.get("SCRUD_TEST_PG_PASSWORD", ""),
+        "NAME": name if alias == "default" else f"{name}_{alias}",
+    }
+
+
 SETTINGS: dict[str, Any] = dict(
     DEBUG_PROPAGATE_EXCEPTIONS=True,
     DATABASES={
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": ":memory:",
-        },
+        "default": database("default"),
         # Only for tests that route Resource writes to a second alias
         # (``@pytest.mark.django_db(databases=["default", "other"])``);
         # pytest-django creates it only for them.
-        "other": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": ":memory:",
-        },
+        "other": database("other"),
     },
     SITE_ID=1,
     SECRET_KEY="not very secret in tests",

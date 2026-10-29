@@ -77,8 +77,8 @@ uv run python manage.py runserver
 ```
 
 CI is `.gitlab-ci.yml` (lint, migrations check, docs build, tests with coverage
-on 3.11-3.13, a package build/README check, a version-bump check on merge
-requests). Run the lint and test commands above before committing. Publishing to
+on 3.11-3.13, the suite on PostgreSQL 14 via `SCRUD_TEST_PG_*` (`test-postgres`),
+a package build/README check, a version-bump check on merge requests). Run the lint and test commands above before committing. Publishing to
 PyPI runs in CI when a merge to `develop` carries a version not yet on PyPI
 (`scripts/release.py`); never run `uv publish` locally or create release tags by
 hand.
@@ -114,7 +114,9 @@ See `tests/test_conditional.py` for the idiom.
   settings module on disk and no `DJANGO_SETTINGS_MODULE`. Add settings there.
 - Request bodies are JSON-only (`parser_classes = [RbacJSONParser]` in
   `scrud_django/views.py`): form or multipart bodies get 415.
-- Tests run on in-memory SQLite only. Code the tests exercise must work on SQLite.
+- Tests run on in-memory SQLite unless `SCRUD_TEST_PG_HOST` is set (CI's
+  `test-postgres`; see `tests/settings.py`). Code the tests exercise must work
+  on both.
 - Migrations must keep the migrations check above clean. If a model change needs a
   migration, generate it with `uv run python manage.py makemigrations scrud_django`
   and commit it with the model change.

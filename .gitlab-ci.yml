@@ -1,7 +1,7 @@
 # Pipelines run for merge requests, tags and the default branch. A branch push
 # gets its own pipeline only when it has no open merge request. `lint`, `docs`,
-# `package` and `test` run in all of them, `version-check` in merge requests,
-# and `publish` (PyPI) only on the default branch.
+# `package`, `test` and `test-postgres` run in all of them, `version-check` in
+# merge requests, and `publish` (PyPI) only on the default branch.
 #
 # Releasing: a merge request that changes the package sets the version to
 # release (`uv version --bump minor`, `uv version 1.0.0`); merging it to the
@@ -89,6 +89,31 @@ test:
       coverage_report:
         coverage_format: cobertura
         path: coverage.xml
+
+# The suite on PostgreSQL 14, where the PostgreSQL-only tests run (row locks
+# that PostgreSQL refuses through some querysets, READ COMMITTED, the
+# isolation check) and SQLite-only ones skip. tests/settings.py points both
+# database aliases at the service when SCRUD_TEST_PG_HOST is set.
+test-postgres:
+  stage: test
+  services:
+    - name: postgres:14
+      alias: postgres
+  variables:
+    POSTGRES_HOST_AUTH_METHOD: trust
+    SCRUD_TEST_PG_HOST: postgres
+  cache:
+    when: always
+    key:
+      files: [uv.lock]
+      prefix: test-postgres
+    paths:
+      - .uv-cache
+  script:
+    - uv run --locked python -V
+    - uv run --locked pytest -q -rs
+  after_script:
+    - uv cache prune --ci
 
 # PyPI refuses an upload whose README doesn't render; check the built metadata
 # on every pipeline rather than at publish time. The wheel is also installed

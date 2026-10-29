@@ -70,6 +70,15 @@ $ make lint
 $ make test
 $ make migrations-check
 ```
+   The suite runs on in-memory SQLite. To run it on PostgreSQL, as CI's
+   `test-postgres` job does (some tests run only there), point the test
+   settings at a server with `SCRUD_TEST_PG_HOST` (and `SCRUD_TEST_PG_PORT`,
+   `SCRUD_TEST_PG_USER`, `SCRUD_TEST_PG_PASSWORD`, `SCRUD_TEST_PG_NAME` if the
+   defaults 5432, postgres, none and scrud don't fit; see `tests/settings.py`):
+```{sourceCode} console
+$ docker run -d --name scrud-pg -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:14
+$ SCRUD_TEST_PG_HOST=localhost uv run pytest
+```
 6. Commit your changes and push your branch to GitLab:
 ```{sourceCode} console
 $ git add .
@@ -85,7 +94,8 @@ Before you submit a merge request, check that it meets these guidelines:
 
 1. The merge request should include tests.
 2. If the merge request adds functionality, the docs should be updated. Put your new functionality into a function with a docstring.
-3. The change should work for Python 3.11, 3.12 and 3.13.
+3. The change should work for Python 3.11, 3.12 and 3.13, on SQLite and
+   PostgreSQL.
 4. A merge request that changes the package (`scrud_django/`, or the published
    parts of `pyproject.toml`) must raise the version; see "Releasing" below.
 
