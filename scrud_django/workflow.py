@@ -2,9 +2,13 @@ import logging
 from dataclasses import dataclass
 from itertools import product
 
-import celpy
-from celpy.celtypes import BoolType
-from celpy.evaluation import CELEvalError
+from django.core.exceptions import ImproperlyConfigured
+from scoped_rbac.cel import (
+    InvalidExpression,
+    compile_expression,
+    is_true,
+    new_environment,
+)
 
 from scrud_django.exceptions import (
     WorkflowInvalidInitialStateError,
@@ -13,6 +17,8 @@ from scrud_django.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+CEL_ENVIRONMENT = new_environment({})
 
 
 @dataclass
@@ -40,12 +46,10 @@ class WorkflowPolicy:
         self.compile_allowed_transitions()
 
     def validate(self, proposed_data, prior_data=None):
-        proposed_data_celpy = celpy.json_to_cel(proposed_data)
         if prior_data is None:
-            self.validate_initial_state(proposed_data_celpy)
+            self.validate_initial_state(proposed_data)
         else:
-            prior_data_celpy = celpy.json_to_cel(prior_data)
-            self.validate_transition(proposed_data_celpy, prior_data_celpy)
+            self.validate_transition(proposed_data, prior_data)
         return proposed_data
 
     def validate_initial_state(self, data):
@@ -111,13 +115,10 @@ class WorkflowPolicy:
         match.
         """
         for name, condition in state_expressions.items():
-            try:
-                if condition.evaluate(data) == BoolType(True):
-                    return name
-            except CELEvalError as e:
-                # This can happen if the expression specifies a
-                # property that isn't present in the provided data
-                logger.debug(e)
+            # Evaluation errors, such as a property missing from the provided data,
+            # count as not matching.
+            if is_true(condition, data):
+                return name
 
         return None
 
@@ -131,9 +132,10 @@ class WorkflowPolicy:
             self.state_expressions[name] = self.compile_expression(condition)
 
     def compile_expression(self, state_condition):
-        env = celpy.Environment()
-        ast = env.compile(state_condition)
-        return env.program(ast)
+        try:
+            return compile_expression(state_condition, CEL_ENVIRONMENT)
+        except InvalidExpression as e:
+            raise ImproperlyConfigured(f"Invalid workflow state condition: {e}") from e
 
     def compile_allowed_transitions(self):
         transitions = self.policy.get("transitions", {})

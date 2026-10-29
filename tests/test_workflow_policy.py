@@ -1,4 +1,6 @@
 import pytest
+from django.core.exceptions import ImproperlyConfigured
+from scoped_rbac.cel import InvalidExpression
 
 from scrud_django.exceptions import (
     WorkflowInvalidInitialStateError,
@@ -79,3 +81,14 @@ def test_same_state_transition(proposed_state, prior_state):
 def test_same_state_update_restricted(proposed_state, prior_state):
     with pytest.raises(WorkflowTransitionError):
         workflow_policy.validate(proposed_state, prior_state)
+
+
+def test_invalid_state_expression_is_a_configuration_error():
+    policy = {
+        "initial_states": {"draft": "status == "},
+        "states": {},
+        "transitions": {},
+    }
+    with pytest.raises(ImproperlyConfigured) as excinfo:
+        WorkflowPolicy(policy)
+    assert isinstance(excinfo.value.__cause__, InvalidExpression)
