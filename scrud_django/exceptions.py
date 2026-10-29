@@ -1,18 +1,23 @@
 from rest_framework.exceptions import APIException
 from rest_framework.views import exception_handler as drf_exception_handler
+from scoped_rbac.rest import exception_handler as scoped_rbac_exception_handler
 
 
 def scrud_exception_handler(exc, context):
+    """Scrud errors keep their own body; everything else gets scoped-rbac's
+    RFC 9457 problem details."""
+    if not isinstance(exc, ScrudException):
+        return scoped_rbac_exception_handler(exc, context)
     response = drf_exception_handler(exc, context)
-    if isinstance(exc, ScrudException):
-        response.data = exc.response_data(context)
-        response.data["status"] = response.status_code
-        try:
-            request = context["request"]
-            if request.accepted_renderer.format == "json":
-                response.content_type = "application/problem+json"
-        except AttributeError:
-            pass
+    response.data = exc.response_data(context)
+    response.data["status"] = response.status_code
+    try:
+        request = context["request"]
+        if request.accepted_renderer.format == "json":
+            response.content_type = "application/problem+json"
+            response["Content-Type"] = "application/problem+json"
+    except AttributeError:
+        pass
     return response
 
 
