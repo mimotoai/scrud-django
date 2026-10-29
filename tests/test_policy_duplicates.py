@@ -156,3 +156,92 @@ def test_system_check_passes_without_duplicates():
         scrud_checks.check_stored_workflow_policies(None, databases=["default"]) == []
     )
     assert scrud_checks.check_stored_workflow_policies(None) == []
+
+
+# Lock order: every WorkflowPolicy write takes the type lock before it writes
+# the Resource row (PUT and DELETE in different orders deadlock on PostgreSQL).
+
+
+@pytest.fixture
+def write_order():
+    from django.db.models.signals import pre_delete, pre_save
+
+    from scrud_django import registration
+
+    events = []
+
+    def record(event):
+        def receiver(sender, instance, **kwargs):
+            if instance.resource_type.type_uri == WORKFLOW_POLICY:
+                events.append(event)
+
+        return receiver
+
+    on_save, on_delete = record("save"), record("delete")
+    pre_save.connect(on_save, sender=Resource)
+    pre_delete.connect(on_delete, sender=Resource)
+
+    def lock(using):
+        events.append("lock")
+
+    with (
+        mock.patch.object(registration, "lock_workflow_policy_type", lock),
+        mock.patch.object(view_mixins, "lock_workflow_policy_type", lock),
+    ):
+        yield events
+    pre_save.disconnect(on_save, sender=Resource)
+    pre_delete.disconnect(on_delete, sender=Resource)
+
+
+@pytest.mark.django_db
+def test_api_delete_of_a_policy_locks_before_deleting(write_order):
+    from django.utils.http import quote_etag
+
+    stored = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    del write_order[:]
+    response = admin_client().delete(
+        reverse("workflow-policies-detail", args=[stored.pk]),
+        HTTP_IF_MATCH=quote_etag(stored.etag),
+    )
+    assert response.status_code == 204, response.content
+    assert write_order == ["lock", "delete"]
+
+
+@pytest.mark.django_db
+def test_api_update_of_a_policy_locks_before_saving(write_order):
+    from django.utils.http import quote_etag
+
+    stored = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    del write_order[:]
+    response = admin_client().put(
+        reverse("workflow-policies-detail", args=[stored.pk]),
+        dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"x": "true"}),
+        format="json",
+        HTTP_IF_MATCH=quote_etag(stored.etag),
+    )
+    assert response.status_code == 200, response.content
+    assert write_order[0] == "lock" and "save" in write_order, write_order
+    assert write_order.index("lock") < write_order.index("save")
+
+
+@pytest.mark.django_db
+def test_server_side_policy_writes_lock_before_writing(write_order):
+    stored = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    assert write_order == ["lock", "save"]
+    del write_order[:]
+    ResourceRegistration.update(
+        content=dict(PERMISSIVE_POLICY, rbac_context="q"),
+        register_type="workflow-policies",
+        slug=str(stored.pk),
+    )
+    assert write_order == ["lock", "save"]
+    del write_order[:]
+    ResourceRegistration.delete(register_type="workflow-policies", slug=str(stored.pk))
+    assert write_order == ["lock", "delete"]
+
+
+@pytest.mark.django_db
+def test_other_writes_take_no_policy_lock(write_order):
+    reverse("todos-list")
+    ResourceRegistration.register({"name": "n"}, "partner-profiles")
+    assert write_order == []

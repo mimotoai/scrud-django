@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import reversion
 from django.conf import settings
-from django.db import transaction
+from django.db import router, transaction
 from django.db.utils import OperationalError, ProgrammingError
 from django.shortcuts import get_list_or_404, get_object_or_404
 from django.urls import path
@@ -13,6 +13,17 @@ from django.utils import timezone
 
 from scrud_django import services
 from scrud_django.models import Resource, ResourceType
+from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI, lock_workflow_policy_type
+
+
+def lock_if_workflow_policy(resource_type):
+    """Take `lock_workflow_policy_type` first, in the write's transaction, when
+    `resource_type` is ``WorkflowPolicy``. Every ``WorkflowPolicy`` write (the
+    API's and these server-side ones) then locks the type row before it writes
+    the ``Resource`` row and then the type row, in that one order: a PUT and a
+    DELETE of the same policy cannot deadlock on PostgreSQL."""
+    if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
+        lock_workflow_policy_type(router.db_for_write(Resource))
 
 
 def get_resource_type_for(slug):
@@ -179,6 +190,7 @@ class ResourceRegistration:
 
         """
         with transaction.atomic():
+            lock_if_workflow_policy(resource.resource_type)
             resource.etag = uuid4().hex
             resource.modified_at = timezone.now()
             resource.resource_type.etag = resource.etag
@@ -212,6 +224,7 @@ class ResourceRegistration:
         """
         with transaction.atomic():
             resource_type = get_resource_type_for(register_type)
+            lock_if_workflow_policy(resource_type)
 
             # note: for now slug is used as ID
             resource = get_object_or_404(
@@ -247,6 +260,7 @@ class ResourceRegistration:
         """
         with transaction.atomic():
             resource_type = get_resource_type_for(register_type)
+            lock_if_workflow_policy(resource_type)
 
             # note: for now slug is used as ID
             resource = get_object_or_404(
