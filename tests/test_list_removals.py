@@ -253,3 +253,58 @@ def test_a_bulk_delete_stamps_each_type_once_in_one_order(monkeypatch):
             resource_type_id=first.resource_type_id
         ).values_list("rbac_context", flat=True)
     ) == {"a", "b", "c"}
+
+
+@pytest.mark.django_db
+def test_a_bulk_delete_through_the_base_manager_stamps_once_in_one_order(
+    monkeypatch,
+):
+    # Django's own deletion paths (related managers, cascades) use the base
+    # manager: it is the same ResourceQuerySet.
+    from scrud_django.models import resource as resource_module
+
+    first = profile("first", rbac_context="b")
+    second = profile("second", rbac_context=["c", "a"])
+    calls = []
+    original = resource_module.stamp_removals
+
+    def recording(resource_type_id, contexts, using):
+        calls.append((resource_type_id, list(contexts), using))
+        return original(resource_type_id, contexts, using)
+
+    monkeypatch.setattr(resource_module, "stamp_removals", recording)
+    Resource._base_manager.filter(pk__in=[first.pk, second.pk]).delete()
+    assert calls == [(first.resource_type_id, ["a", "b", "c"], "default")]
+
+
+@pytest.mark.django_db
+def test_a_deletion_on_another_database_during_a_bulk_delete_stamps_there(
+    monkeypatch,
+):
+    # A deletion on another alias while a bulk delete runs (from a signal
+    # receiver, say) is stamped at once on its own database, not collected
+    # into the bulk delete's stamps on its database.
+    from scrud_django.models import resource as resource_module
+
+    victim = profile("victim", rbac_context="a")
+    other = Resource(pk=victim.pk, resource_type=victim.resource_type)
+    other.content = {"rbac_context": "z"}
+    calls = []
+    monkeypatch.setattr(
+        resource_module,
+        "stamp_removals",
+        lambda type_id, contexts, using: calls.append((list(contexts), using)),
+    )
+
+    def delete_elsewhere(sender, instance, using, **kwargs):
+        if instance.pk == victim.pk and using == "default":
+            resource_module.stamp_deletion(Resource, other, "other")
+
+    from django.db.models.signals import post_delete
+
+    post_delete.connect(delete_elsewhere, sender=Resource, weak=False)
+    try:
+        Resource.objects.filter(pk=victim.pk).delete()
+    finally:
+        post_delete.disconnect(delete_elsewhere, sender=Resource)
+    assert calls == [(["z"], "other"), (["a"], "default")]

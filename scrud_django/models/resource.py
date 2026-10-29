@@ -23,8 +23,9 @@ from scrud_django.models.resource_type import ResourceType
 MAX_CONTEXT_LENGTH = 2048
 
 
-# The (type, context) pairs a QuerySet.delete() of resources has removed so
-# far, stamped once when it ends (`ResourceQuerySet.delete`); None outside one.
+# ``(database, pairs)``: the (type, context) pairs a QuerySet.delete() of
+# resources on that database has removed so far, stamped once when it ends
+# (`ResourceQuerySet.delete`); None outside one.
 _PENDING_STAMPS = contextvars.ContextVar("scrud_pending_stamps", default=None)
 
 
@@ -35,10 +36,15 @@ class ResourceQuerySet(models.QuerySet):
         context), after the rows are gone and in the same transaction: the
         per-instance stamps (`stamp_deletion`) would follow the order the
         resources were collected in, and two concurrent bulk deletes taking
-        the stamp rows in opposite orders could deadlock."""
+        the stamp rows in opposite orders could deadlock. It is the base
+        manager's queryset too (``Meta.base_manager_name``), so Django's own
+        bulk paths use it. A deletion on another database while it runs (a
+        signal receiver's) is stamped there at once. Only a deletion of many
+        resources through a ``Collector`` built by hand, outside a queryset,
+        still stamps them one by one."""
         with transaction.atomic(using=self.db, savepoint=False):
             pending = set()
-            token = _PENDING_STAMPS.set(pending)
+            token = _PENDING_STAMPS.set((self.db, pending))
             try:
                 result = super().delete()
             finally:
@@ -56,10 +62,14 @@ class ResourceQuerySet(models.QuerySet):
 
 @reversion.register()
 class Resource(ResourceMixin):
+    # The base manager too, which Django's own deletion paths (cascades,
+    # related managers) and Resource._base_manager use: every queryset
+    # delete() of resources stamps once, in one order.
     objects = ResourceQuerySet.as_manager()
 
     class Meta:
         ordering = ["id"]
+        base_manager_name = "objects"
 
     resource_type = models.ForeignKey(
         to=ResourceType,
@@ -293,9 +303,10 @@ def stamp_deletion(sender, instance, using, **kwargs):
     in no context stamps ``SOME_CONTEXT``, which only superusers' lists
     read."""
     contexts = rbac_contexts_of(instance.content) or [SOME_CONTEXT]
-    pending = _PENDING_STAMPS.get()
-    if pending is not None:
-        # A ResourceQuerySet.delete() stamps them all at its end.
-        pending.update((instance.resource_type_id, c) for c in contexts)
+    deferred = _PENDING_STAMPS.get()
+    if deferred is not None and deferred[0] == using:
+        # A ResourceQuerySet.delete() on this database stamps them all at
+        # its end; a deletion on another database is stamped there now.
+        deferred[1].update((instance.resource_type_id, c) for c in contexts)
         return
     stamp_removals(instance.resource_type_id, contexts, using)
