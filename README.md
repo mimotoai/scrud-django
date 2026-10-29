@@ -85,6 +85,17 @@ DRF's own default permission is `AllowAny`. The scrud-django viewsets set
 `IsAuthorized` themselves, but any other view in your project (and any view you
 build on scoped-rbac) relies on `DEFAULT_PERMISSION_CLASSES` to fail closed.
 
+Resource type metadata is public by design: the service list (`services/`),
+each type's collection schema (`collections-json-schema/<slug>/`) and
+collection JSON-LD context (`collections-json-ld/<slug>/`) answer anyone,
+anonymous users included. Clients need the schemas and contexts to build
+requests, and resource types are global, not per context. The resources
+themselves, a type's schema and context documents among them, are
+RBAC-checked on their own routes.
+
+The Django admin shows `Resource` and `ResourceType` to superusers only: a
+write there bypasses scoped-rbac, the workflow and JSON Schema validation.
+
 ### Search (optional)
 
 With the `search` extra, also add `haystack` to `INSTALLED_APPS` and configure a
@@ -118,7 +129,8 @@ receiver whose work leaves the database should wrap it in
 
 Version 0.12.0 has breaking changes (Django 5.2, uv, scrudful 0.8, scoped-rbac
 0.11, JSON-only bodies, workflow policies in every context, RBAC-filtered
-lists with a new migration to run). Read the
+lists with new migrations to run, problem details for precondition errors, a
+superuser-only admin). Read the
 [0.12.0 release notes](https://gitlab.com/dcharbon/scrud-django/-/blob/develop/docs/release-notes.md) before upgrading.
 
 ## Development Get Started
@@ -148,4 +160,11 @@ uv run python manage.py migrate
 uv run python manage.py runserver
 ```
 
-The API root is at http://127.0.0.1:8000/api/.
+The API root is at http://127.0.0.1:8000/api/. The demo reads
+`DJANGO_SECRET_KEY`, `DJANGO_DEBUG` and `DJANGO_ALLOWED_HOSTS` from the
+environment; its defaults (a public development key, DEBUG on, localhost
+only) are for running it locally, and with DEBUG off it needs a key of its
+own.
+
+The `manage.py` at the repository root runs on the in-memory test settings
+(nothing persists): use it for `check` and the migrations check only.
