@@ -10,6 +10,10 @@ def pytest_configure(config):
     settings.configure(**SETTINGS)
     django.setup()
 
+    # Importing the steps module registers them; it imports Django models, so it
+    # must happen after django.setup().
+    import tests.steps  # noqa: F401
+
 
 @pytest.fixture(scope="session")
 def django_db_setup(django_db_setup, django_db_blocker):
