@@ -177,7 +177,9 @@ Conditional request handling now comes from scrudful 0.8.
   what the write it waited for committed. A new database check,
   `scrud_django.W002` (`manage.py check --database <alias>`, also run by
   `migrate`), warns when transactions on the database scrud-django writes
-  resources to run above it. On PostgreSQL at REPEATABLE READ or
+  resources to run at any other level, READ UNCOMMITTED included (on MySQL
+  and MariaDB it lets the workflow check read a policy whose write is later
+  rolled back). On PostgreSQL at REPEATABLE READ or
   SERIALIZABLE, the second of two concurrent writes of one resource (or of two
   `WorkflowPolicy` writes that would make a duplicate) fails with a
   serialization error, a 500, instead of a 412 or 400; on MySQL or MariaDB at

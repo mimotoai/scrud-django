@@ -139,9 +139,11 @@ def check_write_routing(app_configs, **kwargs):
     ]
 
 
-# The isolation levels scrud-django's concurrency control is written for: a
-# statement sees what other transactions committed before it started.
-SUPPORTED_ISOLATION_LEVELS = ("read committed", "read uncommitted")
+# The isolation level scrud-django's concurrency control is written for: a
+# statement sees what other transactions committed before it started, and
+# nothing they have not committed (READ UNCOMMITTED would let the workflow
+# check read a policy whose write later rolls back on MySQL and MariaDB).
+SUPPORTED_ISOLATION_LEVELS = ("read committed",)
 
 # How to ask each backend for the isolation level of a transaction, in order
 # (MySQL before 5.7.20 and MariaDB before 11.1 know only ``tx_isolation``).
@@ -158,7 +160,7 @@ def transaction_isolation(alias):
     """The isolation level of a transaction on database `alias`, in lower
     case with spaces (``"read committed"``), asked inside one (PostgreSQL
     applies ``OPTIONS["isolation_level"]`` per transaction). ``None`` for a
-    backend this does not ask (SQLite, whose writes are serialized anyway) or
+    backend this does not ask (SQLite, which has no such levels) or
     when the level cannot be read."""
     from django.db import DatabaseError, connections, transaction
 
@@ -178,13 +180,15 @@ def transaction_isolation(alias):
 def check_isolation_level(app_configs, databases=None, **kwargs):
     """A database check: a Warning (``scrud_django.W002``) when transactions
     on the database scrud-django writes resources to
-    (``router.db_for_write(Resource)``), among `databases`, run above READ
-    COMMITTED, the supported level. Under it, a write blocked on a row or the
+    (``router.db_for_write(Resource)``), among `databases`, run at any level
+    but READ COMMITTED, the supported level. Under it, a write blocked on a row or the
     ``WorkflowPolicy`` lock reads what the writer it waited for committed. At
     REPEATABLE READ or SERIALIZABLE, PostgreSQL fails that write with a
     serialization error (a 500); MySQL and MariaDB read their snapshot, so the
     ``WorkflowPolicy`` uniqueness re-check can miss a concurrent duplicate.
-    Django's MySQL backend uses READ COMMITTED unless
+    At READ UNCOMMITTED, MySQL and MariaDB let those checks read a policy
+    that is never committed (PostgreSQL treats it as READ COMMITTED; it is
+    warned about all the same). Django's MySQL backend uses READ COMMITTED unless
     ``OPTIONS["isolation_level"]`` says otherwise."""
     from django.db import router
 
@@ -198,15 +202,24 @@ def check_isolation_level(app_configs, databases=None, **kwargs):
         level = transaction_isolation(alias)
         if level is None or level in SUPPORTED_ISOLATION_LEVELS:
             continue
+        if level == "read uncommitted":
+            consequence = (
+                "On MySQL or MariaDB the workflow check and the WorkflowPolicy "
+                "uniqueness check can read a policy whose write is later rolled "
+                "back."
+            )
+        else:
+            consequence = (
+                "Concurrent writes of one resource, or of WorkflowPolicy "
+                "resources, can fail with a serialization error (a 500) instead "
+                "of a 412 or 400, and on MySQL or MariaDB two WorkflowPolicy "
+                "resources can be stored for one type and context."
+            )
         found.append(
             checks.Warning(
                 f"Transactions on database {alias!r}, where scrud-django writes "
                 f"resources, run at {level.upper()}; scrud-django supports READ "
-                "COMMITTED. Concurrent writes of one resource, or of "
-                "WorkflowPolicy resources, can fail with a serialization error "
-                "(a 500) instead of a 412 or 400, and on MySQL or MariaDB two "
-                "WorkflowPolicy resources can be stored for one type and "
-                "context.",
+                f"COMMITTED. {consequence}",
                 hint=(
                     f'Use READ COMMITTED: leave DATABASES[{alias!r}]["OPTIONS"]'
                     '["isolation_level"] out (or set it to read committed: '

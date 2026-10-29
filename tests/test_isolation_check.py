@@ -23,20 +23,32 @@ def warnings_for(databases):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("level", ["repeatable read", "serializable"])
-def test_an_isolation_level_above_read_committed_is_a_warning(level):
+@pytest.mark.parametrize(
+    "level", ["repeatable read", "serializable", "read uncommitted"]
+)
+def test_an_isolation_level_other_than_read_committed_is_a_warning(level):
     with isolation(level):
         found = warnings_for(["default"])
         assert [(m.id, m.level) for m in found] == [
             ("scrud_django.W002", checks.WARNING)
         ]
+        if level == "read uncommitted":
+            consequence = (
+                "On MySQL or MariaDB the workflow check and the WorkflowPolicy "
+                "uniqueness check can read a policy whose write is later rolled "
+                "back."
+            )
+        else:
+            consequence = (
+                "Concurrent writes of one resource, or of WorkflowPolicy "
+                "resources, can fail with a serialization error (a 500) instead "
+                "of a 412 or 400, and on MySQL or MariaDB two WorkflowPolicy "
+                "resources can be stored for one type and context."
+            )
         assert found[0].msg == (
             f"Transactions on database 'default', where scrud-django writes "
             f"resources, run at {level.upper()}; scrud-django supports READ "
-            "COMMITTED. Concurrent writes of one resource, or of WorkflowPolicy "
-            "resources, can fail with a serialization error (a 500) instead of "
-            "a 412 or 400, and on MySQL or MariaDB two WorkflowPolicy resources "
-            "can be stored for one type and context."
+            f"COMMITTED. {consequence}"
         )
         # A database check: `check --database` and `migrate` run it.
         assert found[0] in checks.run_checks(databases=["default"])
@@ -44,7 +56,7 @@ def test_an_isolation_level_above_read_committed_is_a_warning(level):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("level", ["read committed", "read uncommitted", None])
+@pytest.mark.parametrize("level", ["read committed", None])
 def test_read_committed_and_unknown_levels_pass(level):
     with isolation(level):
         assert warnings_for(["default"]) == []
