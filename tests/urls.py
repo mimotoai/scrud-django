@@ -302,3 +302,28 @@ urlpatterns.extend(
         ),
     ]
 )
+
+
+class OwnerIsAuthorized(IsAuthorized):
+    """An adopter's "owners may do anything" shortcut: allows whatever
+    ``obj`` has ``owner`` equal to the user's name, else ``IsAuthorized``.
+    In the workflow check ``obj`` is a ``TransitionCheck`` over the request
+    body, so the shortcut must not widen a transition there."""
+
+    def has_context_permission(self, request, view, obj, context):
+        if hasattr(obj, "get") and obj.get("owner") == request.user.username:
+            return True
+        return super().has_context_permission(request, view, obj, context)
+
+
+class OwnerResourceViewSet(ResourceViewSet):
+    permission_classes = [OwnerIsAuthorized]
+
+
+urlpatterns.append(
+    path(
+        "owner/todos/<slug>/",
+        OwnerResourceViewSet.as_view({"put": "update"}, resource_type_name="todos"),
+        name="owner-todos-detail",
+    )
+)

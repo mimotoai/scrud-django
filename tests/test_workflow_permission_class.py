@@ -119,3 +119,48 @@ def test_a_subclass_refusing_a_context_is_asked_by_the_workflow_check():
         reverse("todos-list"), dict(IN_PROGRESS, rbac_context="denied"), format="json"
     )
     assert response.status_code == 201, response.content
+
+
+@pytest.mark.django_db
+def test_a_subclass_cannot_grant_a_transition_the_policy_refuses():
+    # tests/urls.py: OwnerIsAuthorized allows whatever names the user as its
+    # "owner". In the workflow check its obj is the request body, so a user
+    # whose grant allows only "finish" could otherwise cancel (and take over)
+    # anyone's ToDo by naming themselves owner. A subclass narrows the
+    # transitions the policy allows; it never adds one.
+    todo = a_todo(owner="alice")
+    finish_only = {
+        "http.GET": [TODO],
+        "http.PUT": {
+            TODO: {
+                "condition": {
+                    "operator": "scrud_workflow",
+                    "authorized_transitions": ["finish"],
+                }
+            }
+        },
+    }
+    client = client_with(finish_only, "")
+    user = client.handler._force_user  # APIClient.force_authenticate's user
+    url = reverse("owner-todos-detail", args=[todo.pk])
+    response = client.put(
+        url,
+        dict(IN_PROGRESS, status="canceled", owner=user.username),
+        format="json",
+        HTTP_IF_MATCH=quote_etag(todo.etag),
+    )
+    assert response.status_code == 400, response.content
+    body = response.json()
+    assert body["type"] == TRANSITION_INVALID, body
+    assert body["message"] == UNAUTHORIZED, body
+    stored = Resource.objects.get(pk=todo.pk).content
+    assert (stored["status"], stored["owner"]) == ("in progress", "alice")
+
+    # The transition the policy allows still goes through the subclass.
+    response = client.put(
+        url,
+        dict(IN_PROGRESS, status="done", owner="alice"),
+        format="json",
+        HTTP_IF_MATCH=quote_etag(todo.etag),
+    )
+    assert response.status_code == 200, response.content

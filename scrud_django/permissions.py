@@ -9,7 +9,12 @@ class TransitionCheck(Mapping):
     (there is no transition to authorize). As a mapping it is the request body
     (read-only), so an operator other than ``scrud_workflow`` reads it as it
     reads the body in scoped-rbac's request check; ``scrud_workflow`` recognises
-    it by its type."""
+    it by its type.
+
+    The permission classes' ``has_context_permission`` gets it in the
+    workflow check too, where it may refuse, never grant, a transition the
+    policy refuses: its mapping is the request body, which the writer chose,
+    not the stored resource."""
 
     __slots__ = ("_transition", "_body")
 

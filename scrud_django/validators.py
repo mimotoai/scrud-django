@@ -382,12 +382,16 @@ class WorkflowValidator:
         scoped-rbac's request check. Without `transition_check`, on the body
         alone.
 
-        With a view in the serializer context (the scrud views'), each of its
-        ``IsAuthorized`` permissions (`rbac_permissions_of`) must allow it:
-        ``has_context_permission(request, view, check, rbac_context)``, so an
-        ``IsAuthorized`` subclass decides the transition as it decides the
-        object and post-save checks. Without one (a serializer used outside
-        the views), the request's policy decides."""
+        The request's policy must allow it, and, with a view in the
+        serializer context (the scrud views'), so must each of the view's
+        ``IsAuthorized`` permissions (`rbac_permissions_of`):
+        ``has_context_permission(request, view, check, rbac_context)``. An
+        ``IsAuthorized`` subclass can therefore refuse a transition, never
+        grant one the policy refuses: its ``obj`` here is the
+        `TransitionCheck`, whose mapping is the request body as the writer
+        sent it (a check written for stored fields, such as an owner, would
+        read the writer's claim). Without a view (a serializer used outside
+        the views), the policy alone decides."""
         request = self.request_of(context)
         permission = Permission(
             http_action_iri_for(request), context.resource_type.type_uri
@@ -396,13 +400,15 @@ class WorkflowValidator:
         resource = TransitionCheck(transition, body) if transition_check else body
         if rbac_context is None:
             return access.may_act_on(request, permission, resource, [])
-        view = getattr(context, "context", {}).get("view")
-        leaves = rbac_permissions_of(view)
-        if leaves:
-            return all(
-                leaf.has_context_permission(request, view, resource, rbac_context)
-                for leaf in leaves
-            )
-        return policy_for(request).should_allow(
+        if not policy_for(request).should_allow(
             permission, rbac_context, resource=resource
+        ):
+            return False
+        # The view's IsAuthorized permissions may refuse what the policy
+        # allows, never allow what it refuses: here `resource` reads the
+        # request body, which the writer chose.
+        view = getattr(context, "context", {}).get("view")
+        return all(
+            leaf.has_context_permission(request, view, resource, rbac_context)
+            for leaf in rbac_permissions_of(view)
         )
