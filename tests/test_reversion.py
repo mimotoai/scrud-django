@@ -6,9 +6,8 @@ from scrud_django.registration import ResourceRegistration
 from .factories import fake_resource
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def resource_creator():
+def resource_creator(db):
     new_resource = fake_resource()
     new_resource = ResourceRegistration.register(
         new_resource.content, new_resource.resource_type.slug

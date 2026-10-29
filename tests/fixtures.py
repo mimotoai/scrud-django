@@ -10,7 +10,7 @@ from django.urls import reverse
 from django.utils.http import http_date, quote_etag
 from django.utils.timezone import now
 from scoped_rbac.models import Role, RoleAssignment
-from scoped_rbac.permissions import DEFAULT_CONTEXT
+from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.registration import ResourceRegistration
 
@@ -74,9 +74,8 @@ def serialize_resource(resource):
     return resource.content
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def role_allow_all():
+def role_allow_all(db):
     role = Role(
         definition=True,
         etag=uuid4().hex,
@@ -86,9 +85,8 @@ def role_allow_all():
     return role
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def role_todo_creator():
+def role_todo_creator(db):
     role = Role(
         definition={
             "http.GET": ["tests://ToDo"],
@@ -109,9 +107,8 @@ def role_todo_creator():
     return role
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def regular_login(role_allow_all):
+def regular_login(db, role_allow_all):
     user = UserFactory()
     RoleAssignment(
         user=user,
@@ -123,21 +120,18 @@ def regular_login(role_allow_all):
     return user
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def admin_login():
+def admin_login(db):
     return UserFactory(is_staff=True, is_superuser=True)
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def login_no_roles():
+def login_no_roles(db):
     return UserFactory()
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def todo_creator_login(role_todo_creator):
+def todo_creator_login(db, role_todo_creator):
     user = UserFactory()
     RoleAssignment(
         user=user,
@@ -179,9 +173,8 @@ def partner_profile_post_data():
         return json.loads(f.read())
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def partner_profiles(partner_profile_post_data):
+def partner_profiles(db, partner_profile_post_data):
     # force registration of resource types
     reverse(RESOURCE_ENDPOINT_LIST_NAME)
     return ResourceRegistration.register(

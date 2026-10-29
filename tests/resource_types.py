@@ -13,25 +13,35 @@ def json_resource_types():
             resource_type_uri="tests://PartnerProfiles",
             revision="2",
             slug="partner-profiles",
-            schema_func=lambda: importlib.resources.read_text(
-                "tests.static.partner_profile", "schema.json"
+            schema_func=lambda: (
+                importlib.resources.files("tests.static.partner_profile")
+                .joinpath("schema.json")
+                .read_text()
             ),
-            context_func=lambda: importlib.resources.read_text(
-                "tests.static.partner_profile", "ld.json"
+            context_func=lambda: (
+                importlib.resources.files("tests.static.partner_profile")
+                .joinpath("ld.json")
+                .read_text()
             ),
-            indexing_policy_func=lambda: importlib.resources.read_text(
-                "tests.static.partner_profile", "indexing-policy.json"
+            indexing_policy_func=lambda: (
+                importlib.resources.files("tests.static.partner_profile")
+                .joinpath("indexing-policy.json")
+                .read_text()
             ),
         ),
         registration.json_resource_type(
             resource_type_uri="tests://ToDo",
             revision="1",
             slug="todos",
-            schema_func=lambda: importlib.resources.read_text(
-                "tests.static.todo_flow", "schema.json"
+            schema_func=lambda: (
+                importlib.resources.files("tests.static.todo_flow")
+                .joinpath("schema.json")
+                .read_text()
             ),
-            context_func=lambda: importlib.resources.read_text(
-                "tests.static.todo_flow", "ld.json"
+            context_func=lambda: (
+                importlib.resources.files("tests.static.todo_flow")
+                .joinpath("ld.json")
+                .read_text()
             ),
         ),
     ]

@@ -1,5 +1,6 @@
 import fastjsonschema
-from scoped_rbac.permissions import DEFAULT_CONTEXT, http_action_iri_for, policy_for
+from scoped_rbac.permissions import http_action_iri_for, policy_for
+from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 from scoped_rbac.policy import Permission
 
 from scrud_django.conf import default_workflow_policies

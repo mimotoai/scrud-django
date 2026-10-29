@@ -11,8 +11,6 @@ from rest_framework.reverse import reverse
 
 __version__ = version("scrud-django")
 
-default_app_config = "scrud_django.apps.ScrudConfig"
-
 
 class ScrudServices:
     last_modified: datetime.datetime

@@ -304,11 +304,15 @@ def register_indexing_policy_resource_type():
             resource_type_uri="http://api.openteams.com/json-ld/IndexingPolicy",
             revision="1",
             slug="indexing-policies",
-            schema_func=lambda: importlib.resources.read_text(
-                "scrud_django.static", "IndexingPolicy-schema.json"
+            schema_func=lambda: (
+                importlib.resources.files("scrud_django.static")
+                .joinpath("IndexingPolicy-schema.json")
+                .read_text()
             ),
-            context_func=lambda: importlib.resources.read_text(
-                "scrud_django.static", "IndexingPolicy-ld.json"
+            context_func=lambda: (
+                importlib.resources.files("scrud_django.static")
+                .joinpath("IndexingPolicy-ld.json")
+                .read_text()
             ),
         )
         INDEXING_POLICY_RESOURCE_TYPE_ = INDEXING_POLICY_REGISTRATION_.resource_type
@@ -323,11 +327,15 @@ def workflow_policy_resource_type():
             resource_type_uri="http://api.openteams.com/json-ld/WorkflowPolicy",
             revision="1",
             slug="workflow-policies",
-            schema_func=lambda: importlib.resources.read_text(
-                "scrud_django.static", "WorkflowPolicy-schema.json"
+            schema_func=lambda: (
+                importlib.resources.files("scrud_django.static")
+                .joinpath("WorkflowPolicy-schema.json")
+                .read_text()
             ),
-            context_func=lambda: importlib.resources.read_text(
-                "scrud_django.static", "WorkflowPolicy-ld.json"
+            context_func=lambda: (
+                importlib.resources.files("scrud_django.static")
+                .joinpath("WorkflowPolicy-ld.json")
+                .read_text()
             ),
         )
         WORKFLOW_POLICY_RESOURCE_TYPE_ = WORKFLOW_POLICY_REGISTRATION_.resource_type

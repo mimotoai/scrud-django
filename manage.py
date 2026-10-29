@@ -6,7 +6,12 @@ import sys
 
 
 def main():
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'scrud_django.settings')
+    if "DJANGO_SETTINGS_MODULE" not in os.environ:
+        from django.conf import settings
+
+        from tests.settings import SETTINGS
+
+        settings.configure(**SETTINGS)
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:

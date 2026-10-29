@@ -11,6 +11,10 @@ def workflow_policies():
 
 
 def read_workflow_policy(module, filename):
-    text = importlib.resources.read_text("tests.static.todo_flow", "workflow.json")
+    text = (
+        importlib.resources.files("tests.static.todo_flow")
+        .joinpath("workflow.json")
+        .read_text()
+    )
     policy_json = json.loads(text)
     return WorkflowPolicy(policy_json)

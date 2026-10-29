@@ -5,6 +5,7 @@ from scrud_django.scrud_signals import ScrudSignalProcessor
 
 class ScrudConfig(AppConfig):
     name = "scrud_django"
+    default_auto_field = "django.db.models.AutoField"
 
     def ready(self):
         from scoped_rbac.conf import register_operator

@@ -1,7 +1,6 @@
-
 from django.db import models
 from django.utils.translation import gettext_lazy as _
-from django_jsonfield_backport.models import JSONField
+from django.db.models import JSONField
 
 from scrud_django.conf import default_workflow_policies
 from scrud_django.models.resource_type import ResourceType

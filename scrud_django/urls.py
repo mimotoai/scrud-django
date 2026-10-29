@@ -27,6 +27,7 @@ urlpatterns = [
         name="collections-json-ld",
     ),
     path("", include("scoped_rbac.urls")),
+    path("semantic/", include("scoped_rbac.semantic_urls")),
 ]
 
 try:
