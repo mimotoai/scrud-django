@@ -23,7 +23,9 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
 ## Commands
 
 Python 3.13 is pinned in `.python-version`; CI also runs 3.11 and 3.12. Always go
-through `uv run` so the project environment is used.
+through `uv run` so the project environment is used. The default uv or system
+Python may be 3.14, which is unsupported, so always use `uv run` and leave
+`.python-version` at 3.13.
 
 | Task | Make target | Raw command |
 | --- | --- | --- |
@@ -34,6 +36,9 @@ through `uv run` so the project environment is used.
 | Format and autofix | `make format` | `uv run ruff check --fix . && uv run ruff format .` |
 | Migrations check | `make migrations-check` | `uv run python manage.py makemigrations scrud_django --check --dry-run` |
 | Docs (warnings are errors) | `make docs` | `uv run --group docs sphinx-build -W -b html docs docs/_build` |
+
+`ruff format .` touches the whole repo, so after `make format` check
+`git diff --stat` and revert changes to files you did not mean to edit.
 
 Demo app (API root at http://127.0.0.1:8000/api/):
 

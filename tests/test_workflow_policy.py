@@ -92,3 +92,22 @@ def test_invalid_state_expression_is_a_configuration_error():
     with pytest.raises(ImproperlyConfigured) as excinfo:
         WorkflowPolicy(policy)
     assert isinstance(excinfo.value.__cause__, InvalidExpression)
+
+
+def test_condition_on_missing_property_is_no_match():
+    # "priority" is absent from the data: evaluating the first condition fails,
+    # which counts as "no match" (not an error), so the next state still matches.
+    policy = WorkflowPolicy(
+        {
+            "initial_states": {
+                "urgent": 'priority == "HIGH"',
+                "open": 'status == "OPEN"',
+            },
+            "states": {},
+            "transitions": {},
+        }
+    )
+    data = {"status": "OPEN"}
+    assert policy.determine_state(data, policy.initial_state_expressions) == "open"
+    assert policy.determine_state({}, policy.initial_state_expressions) is None
+    assert policy.validate(data) == data

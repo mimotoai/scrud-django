@@ -12,6 +12,7 @@
 
 import os
 import sys
+from importlib.metadata import version as _package_version
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '_ext'))
 
@@ -22,8 +23,11 @@ project = 'SCRUD Django'
 copyright = '2020-2026, David Charboneau'
 author = 'David Charboneau'
 
-# The full version, including alpha/beta/rc tags
-release = '0.12.0'
+# The full version, including alpha/beta/rc tags, from the installed package
+# (pyproject.toml is the single source).
+release = _package_version('scrud-django')
+# The short X.Y version.
+version = '.'.join(release.split('.')[:2])
 
 
 # -- General configuration ---------------------------------------------------

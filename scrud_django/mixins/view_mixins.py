@@ -161,12 +161,18 @@ class ResourceViewMixin:
 class GenericViewMixin:
     """SCRUD views over a model of your own (decorate with ``scrudful_viewset``).
 
-    Subclasses provide DRF's ``get_queryset()`` (and ``lookup_field`` /
-    ``lookup_url_kwarg``), not a ``get_instance``: ``Meta.object_validators``
-    makes scrudful read the item validators from the object ``get_object()``
-    returns, so that lookup must be scoped and permission-checked (precede
-    ``GenericAPIView`` with scoped-rbac's ``AccessControlledAPIView``).
+    Subclasses provide DRF's ``get_queryset()``, not a ``get_instance``:
+    ``Meta.object_validators`` makes scrudful read the item validators from the
+    object ``get_object()`` returns, so that lookup must be scoped and
+    permission-checked (precede ``GenericAPIView`` with scoped-rbac's
+    ``AccessControlledAPIView``). The detail route's URL keyword is ``slug``, as
+    the ``update``/``destroy``/``retrieve`` stubs take it (``lookup_url_kwarg``);
+    it is looked up by ``lookup_field`` (DRF's default ``pk``), which a subclass
+    may override.
     """
+
+    # The detail route's URL keyword, as the detail stubs below take it.
+    lookup_url_kwarg = "slug"
 
     # scrud variable
     resource_type_name: str | None = None
