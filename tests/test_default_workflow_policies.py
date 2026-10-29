@@ -122,12 +122,37 @@ def test_invalid_default_breaks_only_writes_of_its_type(partner_profile_post_dat
 
 
 def test_a_default_may_be_a_workflow_policy():
+    # The default is a copy of the configured object that knows its type
+    # (workflow errors name a default by type); the object itself is left
+    # alone, and the compiled conditions are shared, not compiled again.
     policy = WorkflowPolicy(todo_policy())
     with override_settings(
         SCRUD_WORKFLOW={"DEFAULT_WORKFLOW_POLICIES": {TODO: policy}}
     ):
-        assert default_workflow_policy_for(TODO) is policy
+        default = default_workflow_policy_for(TODO)
+        assert isinstance(default, WorkflowPolicy)
+        assert default.policy is policy.policy
+        assert default.state_expressions is policy.state_expressions
+        assert default.allowed_transitions is policy.allowed_transitions
+        assert default.default_for == TODO
+        assert policy.default_for is None
         assert check_default_workflow_policies(None) == []
+
+
+def test_one_workflow_policy_object_may_be_the_default_of_two_types():
+    from scrud_django.exceptions import DefaultPolicyReference
+
+    other = "tests://Other"
+    policy = WorkflowPolicy(todo_policy())
+    with override_settings(
+        SCRUD_WORKFLOW={"DEFAULT_WORKFLOW_POLICIES": {TODO: policy, other: policy}}
+    ):
+        assert default_workflow_policy_for(TODO).reference == (
+            DefaultPolicyReference(TODO)
+        )
+        assert default_workflow_policy_for(other).reference == (
+            DefaultPolicyReference(other)
+        )
 
 
 def test_test_defaults_are_policy_content():

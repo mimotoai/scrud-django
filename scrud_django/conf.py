@@ -1,3 +1,4 @@
+import copy
 from collections.abc import Mapping
 
 from django.conf import settings
@@ -65,10 +66,12 @@ class DefaultWorkflowPolicies:
             return
         for type_uri, policy in configured.items():
             if isinstance(policy, WorkflowPolicy):
-                # Workflow errors name a default by its type
-                # (``WorkflowPolicy.reference``).
-                if getattr(policy, "default_for", None) is None:
-                    policy.default_for = type_uri
+                # A copy that knows its type, as workflow errors name a
+                # default (``WorkflowPolicy.reference``); the configured
+                # object (which may be the default of several types) is
+                # left alone, and its compiled conditions are shared.
+                policy = copy.copy(policy)
+                policy.default_for = type_uri
                 self.policies[type_uri] = policy
                 continue
             try:
