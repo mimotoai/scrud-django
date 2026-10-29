@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(uv run pytest:*)",
+      "Bash(uv run pytest)",
+      "Bash(uv run pytest -q)",
       "Bash(uv run ruff check .)",
       "Bash(uv run ruff format --check .)",
       "Bash(uv run python manage.py makemigrations scrud_django --check --dry-run)",

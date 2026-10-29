@@ -22,21 +22,35 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
 
 ## Commands
 
-Python 3.13 is pinned in `.python-version`; CI also runs 3.11 and 3.12. Always go
-through `uv run` so the project environment is used. The default uv or system
-Python may be 3.14, which is unsupported, so leave `.python-version` at 3.13.
+Python 3.13 is pinned in `.python-version`; CI covers 3.11, 3.12 and 3.13.
+Python 3.14 is not in CI (the suite passes on it locally), and the default uv or
+system Python may be 3.14, so leave `.python-version` at 3.13. Always go through
+`uv run` so the project environment is used. `uv run` syncs the environment
+implicitly before it runs (CI uses `--locked`; the commands here do not, so the
+allow rules in `.claude/settings.json` match them exactly).
 
-Run these directly. Each of the first block is pre-approved in
-`.claude/settings.json` (an exact-match allow rule, or `uv run pytest:*`) and
-runs without a prompt:
+Run these directly. Each is pre-approved in `.claude/settings.json` by an
+exact-match allow rule (one rule per command line below, no wildcards) and runs
+without a prompt:
 
 ```bash
+uv run pytest
 uv run pytest -q
-uv run pytest tests/test_rest.py::test_resource_get_list   # one test
 uv run ruff check .
 uv run ruff format --check .
+uv run python manage.py check
 uv run python manage.py makemigrations scrud_django --check --dry-run
-uv run --group docs sphinx-build -W -b html docs docs/_build   # warnings are errors
+uv run --group docs sphinx-build -W -b html docs docs/_build
+```
+
+The docs build treats warnings as errors. The first docs build installs the
+`docs` dependency group, which needs network access.
+
+Any other pytest invocation prompts, because the rules are exact. That includes
+a single test, which is the usual way to run one while working:
+
+```bash
+uv run pytest tests/test_rest.py::test_resource_get_list
 ```
 
 These write files or touch the environment, so they prompt. Run them on the
@@ -73,9 +87,10 @@ See `tests/test_conditional.py` for the idiom.
   directly above the function (the order every test module uses).
 - Custom steps live in `tests/steps.py` only. `tests/conftest.py::pytest_configure`
   imports that module after `django.setup()` so the steps register before
-  collection. Test modules also `from .steps import *`; the module is imported
-  once, so steps are not registered twice. Never define steps in `conftest.py`
-  (importing it first would register them before Django models are usable).
+  collection. Test modules that use the custom steps also `from .steps import *`;
+  the module is imported once, so steps are not registered twice. Never define steps in
+  `conftest.py` (importing it first would register them before Django models
+  are usable).
 - `@context_data` fields become test-context attributes. A field name must not
   shadow a pytest fixture name, or it collides with the fixture.
 - Test modules star-import safetydance and steps; ruff per-file ignores for
