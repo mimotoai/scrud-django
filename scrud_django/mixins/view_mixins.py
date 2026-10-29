@@ -9,7 +9,7 @@ from django.db.models import Max
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
-from scoped_rbac import access
+from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import IsAuthorized, drf_error
 
@@ -104,6 +104,15 @@ class ResourceViewMixin:
         # permission-checked first, so an unreadable resource is a 404 and never
         # reveals a validator (304) or its existence (412/428).
         object_validators = True
+
+        # scrudful's own 400, 412 and 428 (a malformed, failed or missing
+        # precondition), which it answers before the view runs, are problem
+        # details served as application/problem+json, as scoped-rbac's own
+        # viewsets answer them: the other errors are problem details too.
+        error = problems.problem_entity()
+        error_body_func = problems.conditional_problem
+        list_error = problems.problem_entity()
+        list_error_body_func = problems.conditional_problem
 
         def etag_func(obj):
             return obj.etag
@@ -492,6 +501,15 @@ class GenericViewMixin:
         # permission-checked first, so an unreadable resource is a 404 and never
         # reveals a validator (304) or its existence (412/428).
         object_validators = True
+
+        # scrudful's own 400, 412 and 428 (a malformed, failed or missing
+        # precondition), which it answers before the view runs, are problem
+        # details served as application/problem+json, as scoped-rbac's own
+        # viewsets answer them: the other errors are problem details too.
+        error = problems.problem_entity()
+        error_body_func = problems.conditional_problem
+        list_error = problems.problem_entity()
+        list_error_body_func = problems.conditional_problem
 
         def etag_func(obj):
             return obj.etag

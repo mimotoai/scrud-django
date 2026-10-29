@@ -132,9 +132,36 @@ def test_detail_validators_and_links(partner_profiles, regular_login):
     )
 
 
+# scrudful's own 400, 412 and 428 are problem details, as scoped-rbac's own
+# viewsets answer them (scoped_rbac.problems.conditional_problem): type
+# about:blank, the reason phrase as title, the status, scrudful's detail and a
+# code, served as application/problem+json with the problem-details Links.
+PROBLEM_LINKS = (
+    '<https://w3id.org/semantic-http/0.1/problem-details.schema.json>; '
+    'rel="describedby"; type="application/schema+json", '
+    '<https://w3id.org/semantic-http/0.1/problem-details.context.jsonld>; '
+    'rel="http://www.w3.org/ns/json-ld#context"; type="application/ld+json"'
+)
+
+
+def assert_precondition_problem(status, title, code, detail=None):
+    assert Http.response.status_code == status, Http.response.content
+    assert Http.response["Content-Type"] == "application/problem+json"
+    assert Http.response["Link"] == PROBLEM_LINKS
+    body = json.loads(Http.response.content)
+    assert body["type"] == "about:blank", body
+    assert body["title"] == title, body
+    assert body["status"] == status, body
+    assert body["code"] == code, body
+    assert isinstance(body["detail"], str) and body["detail"], body
+    if detail is not None:
+        assert body["detail"] == detail, body
+    return body
+
+
 @pytest.mark.django_db
 @test_context
-def test_failed_if_match_is_412_with_json_body(
+def test_failed_if_match_is_412_with_problem_details(
     partner_profiles, admin_login, partner_profile_post_data
 ):
     url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
@@ -145,9 +172,71 @@ def test_failed_if_match_is_412_with_json_body(
         content_type="application/json",
         HTTP_IF_MATCH='"not-the-current-etag"',
     )
-    Then.http.status_code_is(412)
-    And.http.content_type_is("application/json")
-    assert json.loads(Http.response.content) == {"detail": "Precondition failed."}
+    body = assert_precondition_problem(
+        412, "Precondition Failed", "precondition_failed", "Precondition failed."
+    )
+    assert body == {
+        "type": "about:blank",
+        "title": "Precondition Failed",
+        "status": 412,
+        "detail": "Precondition failed.",
+        "code": "precondition_failed",
+    }
+    When.http.delete(url, HTTP_IF_MATCH='"not-the-current-etag"')
+    assert_precondition_problem(
+        412, "Precondition Failed", "precondition_failed", "Precondition failed."
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_missing_precondition_is_428_with_problem_details(
+    partner_profiles, admin_login, partner_profile_post_data
+):
+    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
+    Given.http.force_authenticate(admin_login)
+    When.http.put(
+        url,
+        data=json.dumps(partner_profile_post_data),
+        content_type="application/json",
+    )
+    expected = {
+        "type": "about:blank",
+        "title": "Precondition Required",
+        "status": 428,
+        "detail": "This request must be conditional.",
+        "accepted-precondition-headers": ["If-Match", "If-Unmodified-Since"],
+        "code": "precondition_required",
+    }
+    body = assert_precondition_problem(
+        428, "Precondition Required", "precondition_required"
+    )
+    assert body == expected
+    When.http.delete(url)
+    body = assert_precondition_problem(
+        428, "Precondition Required", "precondition_required"
+    )
+    assert body == expected
+
+
+@pytest.mark.django_db
+@test_context
+def test_malformed_precondition_is_400_with_problem_details(
+    partner_profiles, admin_login, partner_profile_post_data
+):
+    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
+    Given.http.force_authenticate(admin_login)
+    When.http.put(
+        url,
+        data=json.dumps(partner_profile_post_data),
+        content_type="application/json",
+        HTTP_IF_MATCH="not-quoted",
+    )
+    assert_precondition_problem(400, "Bad Request", "malformed_precondition")
+    When.http.get(url, HTTP_IF_NONE_MATCH="not-quoted")
+    assert_precondition_problem(400, "Bad Request", "malformed_precondition")
+    When.http.get(reverse(RESOURCE_ENDPOINT_LIST_NAME), HTTP_IF_NONE_MATCH="not-quoted")
+    assert_precondition_problem(400, "Bad Request", "malformed_precondition")
 
 
 @pytest.mark.django_db
