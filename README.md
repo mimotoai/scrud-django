@@ -45,18 +45,21 @@ urlpatterns = [
 If you mount URLs yourself, include `scoped_rbac.semantic_urls`, for example
 `path("semantic/", include("scoped_rbac.semantic_urls"))`.
 
-### Optional
-
-Scrud Django can return [RFC 7807](https://tools.ietf.org/html/rfc7807) responses. To
-configure this add the Scrud Django exception handler for Django REST Framework in your
-`settings.py`.
+Configure Django REST Framework to authorize with scoped-rbac and to answer
+errors as [RFC 7807](https://tools.ietf.org/html/rfc7807) problem details while
+keeping scrud-django's own validation and workflow error bodies:
 
 ```python
 REST_FRAMEWORK = {
-  "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
-  ...
+    "DEFAULT_PERMISSION_CLASSES": ["scoped_rbac.permissions.IsAuthorized"],
+    "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+    ...
 }
 ```
+
+DRF's own default permission is `AllowAny`. The scrud-django viewsets set
+`IsAuthorized` themselves, but any other view in your project (and any view you
+build on scoped-rbac) relies on `DEFAULT_PERMISSION_CLASSES` to fail closed.
 
 ## Development Get Started
 

@@ -24,6 +24,13 @@ Conditional request handling now comes from scrudful 0.8.
 
 ### Authorization
 
+* RBAC is enforced by scoped-rbac's `IsAuthorized` permission class. DRF's
+  default permission is `AllowAny`, so a view without `IsAuthorized` is open to
+  everyone, anonymous users included. `ResourceViewSet` and
+  `ResourceViewSetGenericFilter` now set `permission_classes = [IsAuthorized]`
+  themselves, so they fail closed whatever `DEFAULT_PERMISSION_CLASSES` says.
+  Still set `"DEFAULT_PERMISSION_CLASSES": ["scoped_rbac.permissions.IsAuthorized"]`
+  in `REST_FRAMEWORK` so that your other views fail closed too (see the README).
 * Detail routes enforce object-level RBAC through scoped-rbac. An object the
   user cannot read now gives 404. Resources with no `rbac_context` belong to the
   default context `""`.

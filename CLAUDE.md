@@ -15,7 +15,9 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
 
 - scrudful handles conditional requests (ETag, If-Match, 304/412/428).
 - Object-level RBAC comes from scoped-rbac; detail routes authorize through
-  `get_object()`.
+  `get_object()`. `ResourceViewSet` and `ResourceViewSetGenericFilter` set
+  `permission_classes = [IsAuthorized]` themselves so they fail closed even
+  under DRF's `AllowAny` default; keep it that way (`tests/test_authz.py`).
 - The combined exception handler is `scrud_django.exceptions.scrud_exception_handler`.
 
 ## Commands

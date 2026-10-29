@@ -4,6 +4,7 @@ from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from scoped_rbac.permissions import IsAuthorized
 from scoped_rbac.rest import AccessControlledAPIView, RbacFilter
 from scrudful.rest_framework import scrudful_api_view, scrudful_viewset
 
@@ -18,6 +19,11 @@ from scrud_django.validators import JsonValidator
 class ResourceViewSet(
     AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
 ):
+    # Fail closed: DRF's default permission is AllowAny, and scoped-rbac sets no
+    # default either, so without this a project that does not configure
+    # DEFAULT_PERMISSION_CLASSES would let anyone write and delete resources.
+    permission_classes = [IsAuthorized]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.resource_type_name = kwargs.get('resource_type_name')
@@ -37,8 +43,15 @@ class ResourceViewSet(
 class ResourceViewSetGenericFilter(
     AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
 ):
-    # RbacFilter first, as AccessControlledAPIView sets it: get_object() (and so
-    # scrudful's object validators) must only see resources the user may read.
+    # Fail closed: DRF's default permission is AllowAny, and scoped-rbac sets no
+    # default either, so without this a project that does not configure
+    # DEFAULT_PERMISSION_CLASSES would let anyone write and delete resources.
+    permission_classes = [IsAuthorized]
+
+    # RbacFilter first, as AccessControlledAPIView sets it: it scopes the lookup
+    # in get_object() (and so scrudful's object validators) to the contexts the
+    # user holds grants in; check_object_permissions then enforces the object's
+    # access for the method (GET, PUT, DELETE).
     filter_backends = [RbacFilter, DjangoFilterBackend]
 
     def __init__(self, *args, **kwargs):

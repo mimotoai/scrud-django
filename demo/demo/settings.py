@@ -13,7 +13,6 @@ https://docs.djangoproject.com/en/3.1/ref/settings/
 import os
 from pathlib import Path
 
-# from corsheaders.defaults import default_headers
 # from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -120,6 +119,15 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 
 USE_TZ = True
+
+
+# Django REST Framework: authorize with scoped-rbac (DRF's own default is
+# AllowAny) and answer errors with scrud-django's handler.
+
+REST_FRAMEWORK = {
+    "DEFAULT_PERMISSION_CLASSES": ["scoped_rbac.permissions.IsAuthorized"],
+    "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+}
 
 
 # Static files (CSS, JavaScript, Images)
