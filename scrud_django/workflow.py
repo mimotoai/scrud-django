@@ -272,7 +272,9 @@ def lock_workflow_policy_type(using):
     """Lock the ``WorkflowPolicy`` resource type's rows (``select_for_update``)
     on database `using`, inside the caller's transaction: ``WorkflowPolicy``
     writes take it before they re-check uniqueness, so they run one at a
-    time. (SQLite ignores the lock; its writes are serialized anyway.)"""
+    time. (SQLite ignores the lock: one writer holds the whole database. Give
+    a file database ``OPTIONS["transaction_mode"] = "IMMEDIATE"`` so that a
+    second writer waits instead of failing with "database is locked".)"""
     from scrud_django.models import ResourceType
 
     list(

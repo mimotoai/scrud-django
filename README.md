@@ -66,11 +66,16 @@ If you use `DATABASE_ROUTERS`, route the writes of `scrud_django`'s models
 (`Resource`, `ResourceType`, `ResourceContext`) to one database alias:
 scrud-django writes a resource, its context rows and its type's row in one
 transaction there, and the `scrud_django.E004` system check reports a split.
+Routing these models by instance hint is not supported.
 
 Run the database at READ COMMITTED, the supported transaction isolation level
 (PostgreSQL's default; Django's MySQL backend uses it unless
 `OPTIONS["isolation_level"]` says otherwise). `manage.py check --database
-default` warns about another (`scrud_django.W002`).
+<alias>`, with the alias your router gives for `Resource` writes (and
+`migrate` of it), warns about another (`scrud_django.W002`). A file SQLite
+database that takes concurrent writes needs
+`"OPTIONS": {"transaction_mode": "IMMEDIATE"}`: otherwise a second concurrent
+writer fails with "database is locked" instead of waiting.
 
 DRF's own default permission is `AllowAny`. The scrud-django viewsets set
 `IsAuthorized` themselves, but any other view in your project (and any view you

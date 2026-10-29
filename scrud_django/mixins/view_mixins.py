@@ -266,7 +266,10 @@ class ResourceViewMixin:
             ),
             queryset=self.get_queryset(),
         )
-        db = write_db()
+        # The request's locked write transaction, if any (`dispatch`); else
+        # the un-hinted write alias, as there (instance-hint routing of
+        # scrud_django's models is not supported for the API).
+        db = self.locked_write_db or write_db()
         if self.get_resource_type().type_uri == WORKFLOW_POLICY_TYPE_URI:
             save = self.serialized_policy_save(save, db)
         try:

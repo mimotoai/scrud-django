@@ -31,7 +31,8 @@ class ScrudSignalProcessor:
     (``on_delete``), once the write commits (``transaction.on_commit`` on its
     database): a write rolled back (a post-save 403, any error) runs none of
     them, and outside a transaction they run at once. An action that raises
-    is logged (``robust``), as the write has committed."""
+    never fails the write, in a transaction or not (``robust``): Django logs
+    the error on the ``django.db.backends.base`` logger."""
 
     workflow_actions = {}
     post_save_literal = 'on_save'

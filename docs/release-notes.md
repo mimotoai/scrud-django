@@ -57,8 +57,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
     `ResourceContext` writes to one alias: `manage.py check` now reports a
     split as `scrud_django.E004`.
 14. Run your database at READ COMMITTED, the supported transaction isolation
-    level (`manage.py check --database default` reports another as
-    `scrud_django.W002`).
+    level (`manage.py check --database <alias>`, for the alias your router
+    gives for `Resource` writes, reports another as `scrud_django.W002`). Give
+    a file SQLite database that takes concurrent writes
+    `"OPTIONS": {"transaction_mode": "IMMEDIATE"}`.
 15. Search: set `HAYSTACK_SIGNAL_PROCESSOR =
     "scrud_django.search.OnCommitSignalProcessor"`. Workflow actions
     (`SCRUD_WORKFLOW_ACTIONS`) now run after the write commits; move one that
@@ -170,8 +172,17 @@ Conditional request handling now comes from scrudful 0.8.
   that is not a success rolls the whole request back. The lock is held until
   the response is ready, so concurrent writes of one resource now queue
   behind each other; a `WorkflowPolicy` write takes the `WorkflowPolicy` type
-  lock before the row's, as before. SQLite ignores the row lock; its writes
-  are serialized anyway.
+  lock before the row's, as before. The row is locked before the object check
+  (so that the check reads the locked row): a user with `http.PUT` or
+  `http.DELETE` on the type in some context can lock a row they may not read
+  for the length of their request, which then answers 404 or 403. With
+  `ATOMIC_REQUESTS = True` this transaction is a savepoint inside the
+  request's, and a refused write still rolls back. SQLite ignores the row
+  lock and lets one transaction write at a time: on a file database, a second
+  concurrent writer fails with "database is locked" (a 500) rather than
+  waiting. Give a file SQLite database that takes concurrent writes
+  `"OPTIONS": {"transaction_mode": "IMMEDIATE"}` (Django 5.1 and later), so
+  that the second writer waits and then gets its 412 or 400.
 * READ COMMITTED is the supported transaction isolation level (PostgreSQL's
   default, and Django's for MySQL): a write that waited for a lock then sees
   what the write it waited for committed. A new database check,
@@ -296,9 +307,14 @@ Conditional request handling now comes from scrudful 0.8.
   `lock_timeout`, a 500). A new system check, `scrud_django.E004` (run by
   `manage.py check`, no database needed), is an error when the router sends
   `Resource`, `ResourceType` and `ResourceContext` writes to different
-  aliases. The check asks the routers without an instance hint; a router that
-  routes these models by instance must still keep each resource, its context
-  rows and its type on one alias.
+  aliases. Routing these models by instance hint is not supported: the API's
+  writes open their transaction, and look the resource up, on the alias the
+  router gives without a hint (there is no instance yet), so a resource a
+  router places elsewhere by instance is a 404 to PUT and DELETE, and a POST
+  that the router would save elsewhere fails. The check, which asks without a
+  hint, cannot see such a router. (`ResourceRegistration.register_instance`
+  passes the resource as the hint, so server code gets one transaction on the
+  alias its save goes to.)
 * `ResourceViewMixin.get_instance(request, slug)` now returns `get_object()`
   and ignores `slug`. scrudful reads the validators (ETag, Last-Modified) from
   the same object, so an override of `get_instance` no longer affects them.
@@ -448,10 +464,13 @@ Conditional request handling now comes from scrudful 0.8.
   now run when the write commits (`transaction.on_commit` on the write's
   database), not inside it: a write that is rolled back (the post-save check's
   403, a 412, any error) runs none of them. Outside a transaction they run at
-  once, as before. An action that raises is logged and does not fail the
-  response: the write has committed. An action can no longer veto a write by
-  raising, nor read the write's uncommitted state; do that in a
-  `scrud_post_save` receiver.
+  once, as before. An action that raises never fails the write or the
+  response, inside a transaction or not (a server-side `save()` outside one
+  used to raise the action's error): Django logs the error on the
+  `django.db.backends.base` logger, so route that logger to see it. An action
+  can no longer veto a write by raising, nor read the write's uncommitted
+  state; do that in a `scrud_post_save` receiver. `OnCommitSignalProcessor`'s
+  index errors are logged the same way.
 * `scrud_post_save` and `scrud_post_delete` themselves still fire inside the
   write, before the post-save check, with the same arguments
   (`transition_data` included): a receiver may read or change the database in
@@ -470,3 +489,6 @@ See [follow-ups](follow-ups.md) for known issues. In particular:
 
 * An empty body sent as `application/json` is read as `{}`
   ([empty-json-body](follow-ups.md#empty-json-body)).
+* `GenericViewMixin` views (models of your own) get no locked write
+  transaction: two concurrent writes with the same `If-Match` can both pass
+  ([generic-view-writes-not-locked](follow-ups.md#generic-view-writes-not-locked)).

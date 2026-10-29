@@ -17,7 +17,8 @@ class OnCommitSignalProcessor(BaseSignalProcessor):
     once its write commits (``transaction.on_commit`` on the database of the
     save), or at once outside a transaction. A deleted instance is named
     (``get_identifier``) when the delete happens, while it still has its pk.
-    An index error is logged (``robust``), as the write has committed."""
+    An index error never fails the write (``robust``): Django logs it on the
+    ``django.db.backends.base`` logger."""
 
     def setup(self):
         models.signals.post_save.connect(self.enqueue_save)
