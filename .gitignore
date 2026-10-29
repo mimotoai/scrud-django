@@ -130,3 +130,6 @@ db.sqlite*
 scrud-registration.yml
 
 whoosh_index
+
+# Claude Code personal settings
+.claude/settings.local.json
