@@ -308,18 +308,19 @@ actions) inside the write. The post-save context check of creates and updates
 on a 403, but an action's effects outside the database (mail, queues, HTTP
 calls) are not undone.
 
-The haystack search index is another such effect: `RealtimeSignalProcessor`
-indexes on `post_save` inside the transaction, so a write rolled back with 403
-stays in the search index.
+The haystack search index is another such effect. The library ships no signal
+processor, but haystack's `RealtimeSignalProcessor` (as `tests/settings.py`
+configures it) indexes on `post_save` inside the transaction, so a write rolled
+back with 403 stays in the search index.
 
 Suggested fix: have actions that leave the database run on
 `transaction.on_commit`, and document it for `SCRUD_WORKFLOW` actions. For
 search, use a processor that indexes on commit or queues the update.
 
 <a id="empty-json-body"></a>
-## empty-json-body: an empty body with Content-Type application/json parses as `{}`
+## empty-json-body: an empty body is read as `{}`
 
-`RbacJSONParser` returns `{}` for an empty body sent as `application/json`.
+An empty request body sent as `application/json` is read as `{}`.
 
 Impact: a POST creates an empty resource and a PUT wipes the resource's
 content; authorization is still checked, in the default context `""`. The
@@ -335,10 +336,6 @@ body leaves the stored content unchanged.
 `access.may_act_in` directly rather than going through the permission class, so
 a custom `IsAuthorized` subclass that overrides permission methods is only
 partly honoured by the post-save check.
-
-The `GenericViewMixin` docstring (`scrud_django/mixins/view_mixins.py`) also
-used to point at `ResourceViewMixin.save_checked`, which is specific to
-`Resource`; it now names the check without that reference.
 
 Suggested fix: route the post-save check through the permission class's own
 method (or document that it uses `may_act_in`), and test a subclass that denies

@@ -52,6 +52,9 @@ docs:
 test:
   stage: test
   image: ghcr.io/astral-sh/uv:python$PYTHON-bookworm-slim
+  variables:
+    # .python-version says 3.13; with downloads off, uv must use this image's.
+    UV_PYTHON: "$PYTHON"
   parallel:
     matrix:
       - PYTHON: ["3.11", "3.12", "3.13"]

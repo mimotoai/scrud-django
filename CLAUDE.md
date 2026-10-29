@@ -24,8 +24,7 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
 
 Python 3.13 is pinned in `.python-version`; CI also runs 3.11 and 3.12. Always go
 through `uv run` so the project environment is used. The default uv or system
-Python may be 3.14, which is unsupported, so always use `uv run` and leave
-`.python-version` at 3.13.
+Python may be 3.14, which is unsupported, so leave `.python-version` at 3.13.
 
 Run these directly. Each of the first block is pre-approved in
 `.claude/settings.json` (an exact-match allow rule, or `uv run pytest:*`) and
