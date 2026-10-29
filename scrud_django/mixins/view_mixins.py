@@ -13,6 +13,7 @@ from rest_framework.reverse import reverse
 from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import drf_error
+from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django.exceptions import RbacContextInvalidError, RequestBodyMissingError
 from scrud_django.filters import readable_removal
@@ -96,7 +97,8 @@ class ScrudfulMeta:
     # scrudful's own 400, 412 and 428 (a malformed, failed or missing
     # precondition), which it answers before the view runs, are problem
     # details served as application/problem+json, as scoped-rbac's own
-    # viewsets answer them: the other errors are problem details too.
+    # viewsets answer them, while SCOPED_RBAC["UNIFORM_ERRORS"] is on
+    # (UniformErrorsMixin); off, they are scrudful's native bodies.
     error = problems.problem_entity()
     error_body_func = problems.conditional_problem
     list_error = problems.problem_entity()
@@ -146,6 +148,58 @@ class ScrudfulMeta:
             args=[resource_type.slug],
             request=request,
         )
+
+
+class UniformErrorsViewFunc(ScrudfulViewFunc):
+    """A scrudful handler whose ``error`` entity and ``error_body_func`` (the
+    problem details of `ScrudfulMeta`) apply only while
+    ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is on for DRF, read per request, as
+    scoped-rbac's own viewsets have it. Off, scrudful's 400, 412 and 428 are
+    its native ``{"detail": ...}`` as ``application/json``, and the errors the
+    view raises are not relabelled as problem details."""
+
+    @property
+    def error(self):
+        return self._scrud_error if problems.uniform_errors("drf") else None
+
+    @error.setter
+    def error(self, value):
+        self._scrud_error = value
+
+    @property
+    def error_body_func(self):
+        if problems.uniform_errors("drf"):
+            return self._scrud_error_body_func
+        return None
+
+    @error_body_func.setter
+    def error_body_func(self, value):
+        self._scrud_error_body_func = value
+
+
+def gate_uniform_errors(cls):
+    """Make every scrudful handler of `cls` (and its bases), which
+    ``scrudful_viewset`` installed, a `UniformErrorsViewFunc`. Idempotent."""
+    for klass in cls.__mro__:
+        for value in list(vars(klass).values()):
+            if type(value) is ScrudfulViewFunc:
+                # Keep the configured values under the properties' names
+                # before the class changes, so no request sees neither.
+                value._scrud_error = value.__dict__.get("error")
+                value._scrud_error_body_func = value.__dict__.get("error_body_func")
+                value.__class__ = UniformErrorsViewFunc
+
+
+class UniformErrorsMixin:
+    """Gate the scrudful handlers' problem-details errors on
+    ``SCOPED_RBAC["UNIFORM_ERRORS"]`` (`UniformErrorsViewFunc`): ``as_view``,
+    which runs after ``scrudful_viewset`` decorated the class, converts
+    them."""
+
+    @classmethod
+    def as_view(cls, *args, **kwargs):
+        gate_uniform_errors(cls)
+        return super().as_view(*args, **kwargs)
 
 
 class LockedWriteMixin:
@@ -268,7 +322,7 @@ class ListValidatorsMixin:
         return self.list_queryset().aggregate(newest=Max("modified_at"))["newest"]
 
 
-class ResourceViewMixin(LockedWriteMixin, ListValidatorsMixin):
+class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin):
     queryset = Resource.objects.all()
     serializer_class = ResourceSerializer
     pagination_class = StandardResultsSetPagination
@@ -534,7 +588,7 @@ class ResourceViewMixin(LockedWriteMixin, ListValidatorsMixin):
         return Response(serializer.data)
 
 
-class GenericViewMixin(LockedWriteMixin, ListValidatorsMixin):
+class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin):
     """SCRUD views over a model of your own (decorate with ``scrudful_viewset``).
 
     Subclasses provide DRF's ``get_queryset()``, not a ``get_instance``:
