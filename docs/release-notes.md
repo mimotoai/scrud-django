@@ -205,7 +205,12 @@ Conditional request handling now comes from scrudful 0.8.
   scoped-rbac's request check. The workflow check passes operators a
   `scrud_django.permissions.TransitionCheck`, a read-only mapping over the
   request body with a `transition` attribute: your own operators read it as
-  the body, as they do in scoped-rbac's request check.
+  the body, as they do in scoped-rbac's request check. It is a
+  `collections.abc.Mapping`, not a `dict`: an operator that tests
+  `isinstance(resource, dict)` denies it (a 403 on every write of the types
+  its grant covers), so test `isinstance(resource, Mapping)`. On a detail
+  route's object check an operator still gets the `Resource` model instance
+  ([resource-no-to-cel](follow-ups.md#resource-no-to-cel)).
 * A reserved transition name (one that starts with `__`) is refused, in stored
   policies and in defaults.
 * Workflow error bodies give `prior_state` (the stored resource's state) and

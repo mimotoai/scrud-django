@@ -268,3 +268,27 @@ def test_system_check_reports_a_non_string_resource_type(resource_type):
         f"WorkflowPolicy pk {odd.pk} has resource_type {resource_type!r}; it must "
         "be a type URI (a string)."
     )
+
+
+class ReadReplicaRouter:
+    """Reads go to a replica (here an alias that does not exist), writes to
+    "default"."""
+
+    def db_for_read(self, model, **hints):
+        return "replica"
+
+    def db_for_write(self, model, **hints):
+        return "default"
+
+
+@pytest.mark.django_db
+def test_policy_lookup_reads_the_write_database():
+    from django.test import override_settings
+
+    from scrud_django.workflow import stored_policies_for
+
+    stored = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    with override_settings(
+        DATABASE_ROUTERS=["tests.test_policy_duplicates.ReadReplicaRouter"]
+    ):
+        assert stored_policies_for(TODO, "p") == [stored]

@@ -250,13 +250,21 @@ def stored_policies_for(resource_type, context):
     `rbac_contexts_of`, so a policy that names no ``rbac_context`` is in the
     default context ``""``) include `context`, oldest first. There is at most
     one, unless policies were stored past the API's check (or before it)."""
+    from django.db import router
+
     from scrud_django.mixins.resource_mixin import rbac_contexts_of
     from scrud_django.models import Resource
 
-    stored = Resource.objects.filter(
-        resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI,
-        content__resource_type=_type_uri(resource_type),
-    ).order_by("pk")
+    # The write database: a write's uniqueness re-check (and the policy a
+    # write is checked under) must not read a stale replica.
+    stored = (
+        Resource.objects.using(router.db_for_write(Resource))
+        .filter(
+            resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI,
+            content__resource_type=_type_uri(resource_type),
+        )
+        .order_by("pk")
+    )
     return [policy for policy in stored if context in rbac_contexts_of(policy.content)]
 
 

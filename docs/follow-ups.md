@@ -349,8 +349,15 @@ the stored content, so it is not affected either.
 Impact: when a role's `http.PUT` grant on a scrud type has a CEL condition,
 for example `{"condition": "name == \"x\""}`, every PUT whose body meets it is
 a 500. A conditional `http.GET` grant cannot read a detail route
-(403). Unconditional grants and operator conditions (`scrud_workflow`) are not
-affected.
+(403). Unconditional grants and the `scrud_workflow` operator are not affected.
+
+Operators are affected too. On a detail route's object check an operator
+receives the `Resource` model instance, not a mapping, so an adopter's operator
+that reads the body (`resource.get("name")`) raises `AttributeError` (a 500)
+on every GET, PUT and DELETE of a detail route its grant conditions. (Where
+the workflow check authorizes a transition, operators get the read-only body
+mapping `TransitionCheck`, so creates are not affected:
+`tests/test_custom_operators.py`.)
 
 The workflow check, which authorizes a `TransitionCheck` in every context of
 a write, passes it as a `scoped_rbac.policy.RequestResource` whose CEL fields
@@ -360,6 +367,10 @@ Only the object check is affected.
 
 Suggested fix: add `ResourceMixin.to_cel()` returning the content when it is a
 mapping (else `{}`), and test a CEL-conditional GET and PUT on a detail route.
+For operators, pass the object check a `scoped_rbac.policy.RequestResource`
+whose instance is a read-only mapping over the content (as `TransitionCheck`
+is), or document that operators get the model instance there; test a
+body-reading operator on a detail-route PUT.
 
 <a id="schema-defaults-not-stored"></a>
 ## schema-defaults-not-stored: JSON Schema `default` values are never stored
@@ -421,6 +432,34 @@ partly honoured by the post-save check.
 Suggested fix: route the post-save check through the permission class's own
 method (or document that it uses `may_act_in`), and test a subclass that denies
 a context.
+
+<a id="policy-recheck-isolation"></a>
+## policy-recheck-isolation: the policy uniqueness re-check assumes READ COMMITTED
+
+A `WorkflowPolicy` write takes `lock_workflow_policy_type` and, after its
+save, re-checks that it is the only policy for its type in its context
+(`ResourceViewMixin.serialized_policy_save`). A writer blocked on the lock
+sees the policy the first writer committed only if its re-check reads
+committed data: true under PostgreSQL's default READ COMMITTED. Under
+PostgreSQL REPEATABLE READ or SERIALIZABLE, or MySQL's default REPEATABLE
+READ, the blocked writer's snapshot may predate the other commit, so the
+re-check misses the duplicate (PostgreSQL SERIALIZABLE may instead fail the
+transaction with a serialization error, a 500).
+
+`stored_policies_for` reads through the write database
+(`router.db_for_write(Resource)`), so a read-replica router does not make the
+re-check read stale rows
+(`tests/test_policy_duplicates.py::test_policy_lookup_reads_the_write_database`).
+
+Impact: on those isolation levels, concurrent creates can still store
+duplicates. They fail closed (writes of the type in that context are
+`ImproperlyConfigured`) and the `scrud_django.E002` database check reports
+them.
+
+Suggested fix: document READ COMMITTED as the supported isolation level, or
+re-run the re-check in a fresh transaction (or a `SELECT ... FOR UPDATE` on the
+policy rows, which PostgreSQL reads at the latest committed version). Test:
+needs PostgreSQL with two connections.
 
 <a id="eager-callable-default-policies"></a>
 ## eager-callable-default-policies: a callable default that raises fails every type
