@@ -1,3 +1,6 @@
+import copy
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
@@ -276,6 +279,70 @@ def stored_policies_for(resource_type, context):
     return [policy for policy in stored if context in rbac_contexts_of(policy.content)]
 
 
+# How many compiled stored policies `workflow_policy_for` keeps
+# (`STORED_POLICY_CACHE`), least recently used first out.
+STORED_POLICY_CACHE_SIZE = 256
+
+
+class CompiledPolicyCache:
+    """Compiled stored ``WorkflowPolicy`` resources, so that a policy's CEL
+    conditions are compiled once per version rather than for every context of
+    every write: a bounded LRU cache of at most `maxsize` policies, keyed by
+    the stored resource's pk, ETag and ``modified_at`` (every write through
+    ``ResourceRegistration`` or the API gives it a new ETag). A hit whose
+    content differs from the resource's (a save that kept the ETag) is
+    compiled again. Safe to share between threads: the entries are read and
+    changed under a lock, and a compiled policy is not changed after it is
+    built (settings defaults are shared the same way). A policy that does not
+    compile is not cached: each lookup raises ``ImproperlyConfigured``."""
+
+    def __init__(self, maxsize=STORED_POLICY_CACHE_SIZE):
+        self.maxsize = maxsize
+        self._entries = OrderedDict()
+        self._lock = threading.Lock()
+
+    def __len__(self):
+        with self._lock:
+            return len(self._entries)
+
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+
+    def get(self, resource):
+        """The `WorkflowPolicy` of the stored ``WorkflowPolicy`` `resource`:
+        a copy of the cached compiled policy that names `resource` (its
+        ``resource`` and ``policy`` are this lookup's)."""
+        key = (resource.pk, resource.etag, resource.modified_at)
+        with self._lock:
+            compiled = self._entries.get(key)
+            if compiled is not None and compiled.policy == resource.content:
+                self._entries.move_to_end(key)
+            else:
+                compiled = None
+        if compiled is None:
+            content = copy.deepcopy(resource.content)
+            try:
+                compiled = WorkflowPolicy(content)
+            except ImproperlyConfigured as e:
+                raise ImproperlyConfigured(
+                    f"Stored WorkflowPolicy pk {resource.pk} is invalid "
+                    f"(scrud_django.E005): {e}"
+                ) from e
+            with self._lock:
+                self._entries[key] = compiled
+                self._entries.move_to_end(key)
+                while len(self._entries) > self.maxsize:
+                    self._entries.popitem(last=False)
+        policy = copy.copy(compiled)
+        policy.policy = resource.content
+        policy.resource = resource
+        return policy
+
+
+STORED_POLICY_CACHE = CompiledPolicyCache()
+
+
 def lock_workflow_policy_type(using):
     """Lock the ``WorkflowPolicy`` resource type's rows (``select_for_update``)
     on database `using`, inside the caller's transaction: ``WorkflowPolicy``
@@ -307,7 +374,9 @@ def workflow_policy_for(resource_type, context):
     govern fail until all but one are deleted.
 
     The one lookup of a policy: the `WorkflowValidator` and
-    ``ResourceMixin.get_workflow_policy`` both use it.
+    ``ResourceMixin.get_workflow_policy`` both use it. A stored policy is
+    compiled once per version (`STORED_POLICY_CACHE`); the stored resources
+    are read on every call.
     """
     stored = stored_policies_for(resource_type, context)
     if len(stored) > 1:
@@ -318,5 +387,5 @@ def workflow_policy_for(resource_type, context):
             "at most one."
         )
     if stored:
-        return WorkflowPolicy(stored[0].content, resource=stored[0])
+        return STORED_POLICY_CACHE.get(stored[0])
     return default_workflow_policy_for(resource_type)
