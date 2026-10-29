@@ -78,6 +78,13 @@ class ResourceMixin(ScrudfulMixin):
         content."""
         return rbac_contexts_of(self.content)
 
+    def to_cel(self):
+        """What a grant's CEL condition reads for this resource (scoped-rbac
+        calls ``to_cel()`` on the resource of an object check or a list's
+        per-object check): its content when it is a mapping, else ``{}``.
+        Operator conditions still get the resource itself."""
+        return self.content if isinstance(self.content, Mapping) else {}
+
     def save(
         self, force_insert=False, force_update=False, using=None, update_fields=None
     ) -> None:

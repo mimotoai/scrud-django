@@ -1,9 +1,15 @@
+import hashlib
+from urllib.parse import urlencode
+
 import reversion
+from django.core.exceptions import ImproperlyConfigured
 from django.db import router
+from django.db.models import Max
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access
+from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import drf_error, view_permission
 
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
@@ -58,13 +64,14 @@ class ResourceViewMixin:
                 return get_context_uri_for(resource_type, request)
             return None
 
+        # The list's validators describe the page the requester gets, from the
+        # same RBAC-filtered queryset (`list_queryset`): a write to a resource
+        # they cannot read changes neither.
         def list_etag_func(view_instance, request, **kwargs):
-            resource_type = view_instance.get_resource_type()
-            return resource_type.etag
+            return view_instance.list_etag(request)
 
         def list_last_modified_func(view_instance, request, **kwargs):
-            resource_type = view_instance.get_resource_type()
-            return resource_type.modified_at
+            return view_instance.list_last_modified()
 
         def list_schema_link_or_func(view_instance, request, **kwargs):
             resource_type = view_instance.get_resource_type()
@@ -239,18 +246,76 @@ class ResourceViewMixin:
         serializer = self.get_serializer(instance=instance, many=False)
         return Response(serializer.data)
 
-    def list(self, request):
-        """Return the resource for the given resource type name."""
-        resource_type = self.get_resource_type()
+    def list_queryset(self):
+        """The list's resources: ``filter_queryset(get_queryset())``, so that
+        the RBAC filter (`scrud_django.filters.ResourceRbacFilter`) and the
+        other filter backends run, built once per request (the validators and
+        the page share it). A view without an ``RbacFilter`` among its
+        ``filter_backends`` is refused (``ImproperlyConfigured``) rather than
+        listing every resource."""
+        queryset = getattr(self, "_scrud_list_queryset", None)
+        if queryset is None:
+            if not any(
+                isinstance(backend, type) and issubclass(backend, RbacFilter)
+                for backend in self.filter_backends
+            ):
+                raise ImproperlyConfigured(
+                    f"{type(self).__name__} lists resources without an RBAC filter: "
+                    "put scrud_django.filters.ResourceRbacFilter in its "
+                    "filter_backends."
+                )
+            queryset = self.filter_queryset(self.get_queryset())
+            self._scrud_list_queryset = queryset
+        return queryset
 
-        queryset = Resource.objects.filter(resource_type=resource_type)
-        page = self.paginate_queryset(queryset)
+    def list_page(self):
+        """The page of `list_queryset` the request asks for (``None`` without a
+        paginator), computed once per request."""
+        if not hasattr(self, "_scrud_list_page"):
+            self._scrud_list_page = self.paginate_queryset(self.list_queryset())
+        return self._scrud_list_page
+
+    def list_etag(self, request):
+        """The list's ETag: a hash of what the requester gets, the page's
+        resources (key and ETag, in page order), the list's count, the query
+        parameters and the type's link targets. Nothing else changes it."""
+        page = self.list_page()
+        if page is None:
+            items = list(self.list_queryset())
+            count = len(items)
+        else:
+            items = page
+            count = self.paginator.page.paginator.count
+        resource_type = self.get_resource_type()
+        parts = [
+            resource_type.pk,
+            resource_type.revision,
+            resource_type.schema_id,
+            resource_type.schema_uri,
+            resource_type.context_id,
+            resource_type.context_uri,
+            count,
+            urlencode(sorted(request.query_params.lists()), doseq=True),
+            *(f"{obj.pk}:{obj.etag}" for obj in items),
+        ]
+        digest = hashlib.sha256("\n".join(map(str, parts)).encode("utf-8"))
+        return digest.hexdigest()
+
+    def list_last_modified(self):
+        """The list's Last-Modified: the newest ``modified_at`` of every
+        resource the requester may list (``None`` for none). A deletion does
+        not change it (use the ETag)."""
+        return self.list_queryset().aggregate(newest=Max("modified_at"))["newest"]
+
+    def list(self, request):
+        """The resources of the type the requester may read, a page at a time."""
+        page = self.list_page()
 
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             return Response(self.get_paginated_response(serializer.data))
 
-        serializer = self.get_serializer(instance=queryset, many=True)
+        serializer = self.get_serializer(instance=self.list_queryset(), many=True)
         return Response(serializer.data)
 
 

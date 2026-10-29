@@ -26,3 +26,13 @@ policy_for_staff = policy_from_json(
         },
     }
 )
+
+# A default for every authenticated user that grants reading partner profiles in
+# any context ("*"): unrestricted for the list, without being a superuser.
+policy_read_partner_profiles_anywhere = policy_from_json(
+    {
+        "*": {
+            "http.GET": [TYPE_URI_PARTNER_PROFILES, TYPE_URI_LIST_PARTNER_PROFILES],
+        },
+    }
+)

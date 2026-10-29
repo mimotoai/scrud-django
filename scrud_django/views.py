@@ -5,12 +5,12 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from scoped_rbac.permissions import IsAuthorized
-from scoped_rbac.rest import AccessControlledAPIView, RbacFilter, RbacJSONParser
+from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
 from scrudful.rest_framework import scrudful_api_view, scrudful_viewset
 
 from scrud_django import collection_type_uri_for, services
+from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
 from scrud_django.mixins.view_mixins import ResourceViewMixin
-from scrud_django.models import Resource
 from scrud_django.registration import get_resource_type_for
 from scrud_django.validators import JsonValidator
 
@@ -27,6 +27,10 @@ class ResourceViewSet(
     # JSON bodies only. A form or multipart body can name ``rbac_context`` more
     # than once: scoped-rbac checks the last value, the list would be stored.
     parser_classes = [RbacJSONParser]
+
+    # The list shows exactly the resources the detail route shows the user
+    # (ResourceRbacFilter); a detail lookup is scoped as RbacFilter scopes it.
+    filter_backends = [ResourceRbacFilter]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -56,37 +60,18 @@ class ResourceViewSetGenericFilter(
     # than once: scoped-rbac checks the last value, the list would be stored.
     parser_classes = [RbacJSONParser]
 
-    # RbacFilter first, as AccessControlledAPIView sets it: it scopes the lookup
-    # in get_object() (and so scrudful's object validators) to the contexts the
-    # user holds grants in; check_object_permissions then enforces the object's
-    # access for the method (GET, PUT, DELETE).
-    filter_backends = [RbacFilter, DjangoFilterBackend]
+    # ResourceRbacFilter first: it scopes the lookup in get_object() (and so
+    # scrudful's object validators) as scoped-rbac's RbacFilter does, and
+    # restricts the list to the resources the detail route shows the user;
+    # check_object_permissions then enforces the object's access for the
+    # method (GET, PUT, DELETE). ResourceContentFilter filters the list on its
+    # query parameters.
+    filter_backends = [ResourceRbacFilter, ResourceContentFilter, DjangoFilterBackend]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.resource_type_name = kwargs.get('resource_type_name')
         self.validator = JsonValidator()
-
-    def list(self, request):
-        """Return the resource for the given resource type name."""
-        resource_type = self.get_resource_type()
-
-        query_filter = dict(request.GET.items())
-
-        queryset = Resource.objects.filter(resource_type=resource_type).filter(
-            content__contains=query_filter
-        )
-
-        queryset = self.filter_queryset(queryset)
-
-        page = self.paginate_queryset(queryset)
-
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return Response(self.get_paginated_response(serializer.data))
-
-        serializer = self.get_serializer(instance=queryset, many=True)
-        return Response(serializer.data)
 
     @property
     def resource_type_iri(self):

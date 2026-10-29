@@ -145,3 +145,9 @@ def test_raw_saves_keep_rows_in_step():
     assert loaded.object.content["rbac_context"] == ["c", "d"]
     loaded.save()
     assert rows_of(resource) == {"c", "d"}
+
+
+def test_resource_content_reads_as_cel_fields():
+    resource = Resource(content={"name": "x"})
+    assert resource.to_cel() == {"name": "x"}
+    assert Resource(content=json.loads('"text"')).to_cel() == {}
