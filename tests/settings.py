@@ -36,11 +36,9 @@ SETTINGS: dict[str, Any] = dict(
     DATABASES={
         "default": database("default"),
         # Only for tests that route Resource writes to a second alias
-        # (``@pytest.mark.django_db(databases=["default", "other"])``), or
-        # migrate it (tests/test_upgrade_checks.py, which asks for it alone:
-        # it does not depend on "default"); pytest-django creates it only
-        # for them.
-        "other": dict(database("other"), TEST={"DEPENDENCIES": []}),
+        # (``@pytest.mark.django_db(databases=["default", "other"])``);
+        # pytest-django creates it only for them.
+        "other": database("other"),
     },
     SITE_ID=1,
     SECRET_KEY="not very secret in tests",

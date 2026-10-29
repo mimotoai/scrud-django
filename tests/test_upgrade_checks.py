@@ -5,23 +5,26 @@ migrations, whose tables the fix needs), then ``check --database`` reports
 them (``scrud_django.E002``, ``E005``), and fixing or deleting them clears
 it.
 
-It runs on the "other" database, migrated back to 0007 and forward again in
-the test (a transactional test, which flushes only that database)."""
+It runs on a database of its own (alias "upgrade": a file SQLite database,
+or a PostgreSQL database next to the test database), created empty for the
+test, migrated to 0007 and then forward, and dropped after: the test
+databases pytest-django sets up are not migrated back, and a failure leaves
+nothing behind."""
 
 from uuid import uuid4
 
 import pytest
 from django.core.management import call_command
-from django.db import connections, transaction
+from django.db import connections
 from django.db.migrations.executor import MigrationExecutor
-from django.urls import get_resolver
+from django.db.utils import load_backend
 from django.utils.timezone import now
 
 from scrud_django.checks import check_stored_workflow_policies
 from scrud_django.models import Resource
 from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
 
-ALIAS = "other"
+ALIAS = "upgrade"
 BEFORE_0_12 = ("scrud_django", "0007_auto_20220221_0551")
 THING = "tests://UpgradedThing"
 POLICY = {
@@ -32,14 +35,34 @@ POLICY = {
 }
 
 
-@pytest.fixture(scope="module")
-def urls_loaded(django_db_setup, django_db_blocker):
-    """The URLconf imported (``migrate``'s URL checks read it), its resource
-    type registrations rolled back on the default database, before the test
-    starts: the test may only use "other"."""
-    with django_db_blocker.unblock(), transaction.atomic():
-        assert get_resolver().url_patterns
-        transaction.set_rollback(True)
+@pytest.fixture
+def upgrade_database(tmp_path):
+    """The database alias `ALIAS`, an empty database (the default test
+    database's settings, another name) for the length of the test. Its
+    connection is set in ``connections`` but not in the settings: Django's
+    test isolation allows a connection made at run time."""
+    default = connections["default"]
+    settings_dict = dict(default.settings_dict)
+    postgresql = default.vendor == "postgresql"
+    if postgresql:
+        settings_dict["NAME"] = f"{default.settings_dict['NAME']}_upgrade"
+        with default._nodb_cursor() as cursor:
+            cursor.execute(f'DROP DATABASE IF EXISTS "{settings_dict["NAME"]}"')
+            cursor.execute(f'CREATE DATABASE "{settings_dict["NAME"]}"')
+    else:
+        settings_dict["NAME"] = str(tmp_path / "upgrade.sqlite3")
+    connection = load_backend(settings_dict["ENGINE"]).DatabaseWrapper(
+        settings_dict, ALIAS
+    )
+    connections[ALIAS] = connection
+    try:
+        yield ALIAS
+    finally:
+        connection.close()
+        del connections[ALIAS]
+        if postgresql:
+            with default._nodb_cursor() as cursor:
+                cursor.execute(f'DROP DATABASE IF EXISTS "{settings_dict["NAME"]}"')
 
 
 def migrate_to(target):
@@ -54,9 +77,9 @@ def ids(found):
     return sorted(error.id for error in found)
 
 
-@pytest.mark.django_db(transaction=True, databases=[ALIAS])
+@pytest.mark.django_db
 def test_a_0_11_database_with_bad_policies_migrates_then_check_reports_them(
-    urls_loaded,
+    upgrade_database,
 ):
     apps = migrate_to(BEFORE_0_12)
     ResourceType = apps.get_model("scrud_django", "ResourceType")
@@ -112,9 +135,7 @@ def test_a_0_11_database_with_bad_policies_migrates_then_check_reports_them(
 @pytest.mark.django_db
 def test_a_migrated_database_is_checked():
     # The default database is migrated: its stored policies are checked (a
-    # duplicate stored server-side is reported). This test also makes
-    # pytest-django set up "default" when this module runs alone, which
-    # tests/conftest.py registers the test resource types in.
+    # duplicate stored server-side is reported).
     from scrud_django.registration import ResourceRegistration
 
     for _ in range(2):
