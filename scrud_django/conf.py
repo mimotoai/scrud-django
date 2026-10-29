@@ -28,11 +28,20 @@ class DefaultWorkflowPolicies:
     """``SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]``, loaded and checked once.
 
     The setting is a mapping of type URI to policy, or the dotted path of one
-    (or of a function returning one). A policy is its content (a mapping, which
-    is compiled here) or a ``WorkflowPolicy``. `policies` holds the valid ones;
-    `errors` the ``ImproperlyConfigured`` of each type whose policy is invalid,
-    and `load_error` the one raised loading the setting itself (then there are
-    no policies at all)."""
+    (or of a function returning one). Give each policy as its content (a
+    mapping, for example ``json.loads`` of a file): it is compiled and checked
+    here, per type, so an invalid one fails only the writes of its type and is
+    reported by the ``scrud_django.E001`` system check. A ``WorkflowPolicy`` is
+    accepted too, but a function that builds them eagerly and raises on an
+    invalid one cannot be isolated: the whole setting fails to load
+    (`load_error`) and every type's default with it.
+
+    A function is called once per process: the result is cached until
+    ``SCRUD_WORKFLOW`` changes (``setting_changed``, as ``override_settings``
+    sends it). `policies` holds the valid policies; `errors` the
+    ``ImproperlyConfigured`` of each type whose policy is invalid, and
+    `load_error` the one raised loading the setting itself (then there are no
+    policies at all)."""
 
     def __init__(self):
         from scrud_django.workflow import WorkflowPolicy

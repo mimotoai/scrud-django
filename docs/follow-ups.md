@@ -433,9 +433,14 @@ were built successfully. A dotted-path function that builds `WorkflowPolicy`
 objects eagerly and raises on an invalid one cannot be isolated: the setting
 cannot be loaded, E001 reports it, and every type's default fails.
 
-Suggested fix: document that the setting should give mappings, not
-`WorkflowPolicy` objects built by a function. Test: a function that raises
-yields one E001 for the setting.
+This is documented (the 0.12.0 release notes and
+`scrud_django.conf.DefaultWorkflowPolicies`, which recommend mappings), and
+`tests/test_default_workflow_policies.py::test_a_callable_that_raises_is_one_error_for_the_setting`
+pins it. The test settings' defaults (`tests/workflow_defaults.py`) are
+mappings.
+
+Suggested fix, if wanted: accept a mapping of type URI to a function per
+policy, called and checked per type.
 
 <a id="delete-no-workflow-check"></a>
 ## delete-no-workflow-check: DELETE is not checked against the workflow

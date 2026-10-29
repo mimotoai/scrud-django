@@ -22,9 +22,11 @@ django-scoped-rbac 0.11. It has several breaking changes.
 6. Clients must send JSON bodies (form and multipart bodies get 415). Give your
    own `GenericViewMixin` views `parser_classes = [RbacJSONParser]`.
 7. Workflow policies: check your stored `WorkflowPolicy` resources (at most one
-   per type and context; transition names must not start with `__`;
-   `restrict_update` must be a list), and your
-   `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` (run `manage.py check`).
+   per type and context, in one context each, reported by
+   `manage.py check --database default`; transition names must not start with
+   `__`; `restrict_update` must be a list), and your
+   `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` (run `manage.py check`; give
+   policies as mappings).
 8. Read the security caveat below: lists are not filtered per resource, so do
    not use the library for multi-tenant deployments yet.
 
@@ -181,10 +183,17 @@ Conditional request handling now comes from scrudful 0.8.
   the same transition and `restrict_update` checks as a stored policy. An
   invalid default makes only writes of its own type fail. A string
   `restrict_update` used to be read as a substring test; it is now an error (it
-  must be a list of defined state names). Give policy content (mappings) rather
-  than a function that builds `WorkflowPolicy` objects, which cannot be isolated
-  per type
+  must be a list of defined state names). Give each policy as its content (a
+  mapping, for example `json.loads` of a file), not as a `WorkflowPolicy`: a
+  function that builds `WorkflowPolicy` objects eagerly and raises on an invalid
+  one makes the whole setting fail to load, so every type's default fails, not
+  only that one
   ([eager-callable-default-policies](follow-ups.md#eager-callable-default-policies)).
+  A dotted-path function given as the setting is now called once per process,
+  not on every write: its result is cached until `SCRUD_WORKFLOW` changes
+  (`setting_changed`, which `override_settings` sends). A function that returned
+  different policies over time must be replaced by stored `WorkflowPolicy`
+  resources or a restart.
 * A workflow-conditioned grant (`scrud_workflow` operator) no longer allows a
   write in a context where no workflow policy applies: the write is refused
   with 403. Unconditional and CEL grants are unaffected. A CEL condition on a

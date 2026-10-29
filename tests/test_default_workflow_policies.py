@@ -4,6 +4,7 @@ and at request time it affects only writes of its own type."""
 
 import importlib.resources
 import json
+from unittest import mock
 
 import pytest
 from django.core import checks
@@ -127,3 +128,41 @@ def test_a_default_may_be_a_workflow_policy():
     ):
         assert default_workflow_policy_for(TODO) is policy
         assert check_default_workflow_policies(None) == []
+
+
+def test_test_defaults_are_policy_content():
+    from tests.workflow_defaults import workflow_policies
+
+    assert workflow_policies() == {TODO: todo_policy()}
+
+
+def test_a_callable_setting_is_called_once():
+    from django.conf import settings
+
+    import tests.workflow_defaults
+
+    calls = mock.Mock(wraps=tests.workflow_defaults.workflow_policies)
+    with (
+        mock.patch.object(tests.workflow_defaults, "workflow_policies", calls),
+        override_settings(SCRUD_WORKFLOW=dict(settings.SCRUD_WORKFLOW)),
+    ):
+        for _ in range(3):
+            assert default_workflow_policy_for(TODO).policy == todo_policy()
+        assert calls.call_count == 1
+
+
+def raising_workflow_policies():
+    return {TODO: WorkflowPolicy(INVALID_TODO_DEFAULT)}
+
+
+def test_a_callable_that_raises_is_one_error_for_the_setting():
+    # It builds WorkflowPolicy objects eagerly: the invalid one cannot be
+    # isolated to its type (give mappings instead).
+    path = "tests.test_default_workflow_policies.raising_workflow_policies"
+    with override_settings(SCRUD_WORKFLOW={"DEFAULT_WORKFLOW_POLICIES": path}):
+        errors = check_default_workflow_policies(None)
+        assert [e.id for e in errors] == ["scrud_django.E001"]
+        assert errors[0].obj is None
+        assert "could not be loaded" in errors[0].msg
+        with pytest.raises(ImproperlyConfigured):
+            default_workflow_policy_for("tests://PartnerProfiles")
