@@ -209,10 +209,14 @@ def _type_uri(resource_type):
 
 def default_workflow_policy_for(resource_type):
     """The settings default policy for `resource_type` (a `ResourceType` or its
-    type URI), from ``SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]``, or ``None``."""
-    from scrud_django.conf import default_workflow_policies
+    type URI), from ``SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]``, or ``None``.
 
-    return default_workflow_policies().get(_type_uri(resource_type))
+    The defaults are built and checked once (`scrud_django.conf`). An invalid
+    default raises ``ImproperlyConfigured`` here, for its own type only; the
+    ``scrud_django.E001`` system check reports it at ``manage.py check``."""
+    from scrud_django.conf import default_workflow_policy_set
+
+    return default_workflow_policy_set().policy_for(_type_uri(resource_type))
 
 
 def workflow_policy_for(resource_type, context):

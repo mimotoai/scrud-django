@@ -8,10 +8,13 @@ class ScrudConfig(AppConfig):
     default_auto_field = "django.db.models.AutoField"
 
     def ready(self):
+        from django.core import checks
         from scoped_rbac.conf import register_operator
 
+        from scrud_django.checks import check_default_workflow_policies
         from scrud_django.permissions import authorized_transitions
 
         register_operator("scrud_workflow", authorized_transitions)
+        checks.register(check_default_workflow_policies)
 
         self.processor = ScrudSignalProcessor()
