@@ -407,3 +407,83 @@ def test_dump_without_context_rows_loads_them_from_the_content(tmp_path):
     call_command("loaddata", str(dump), verbosity=0)
     assert {r.pk: rows_of(r) for r in Resource.objects.all()} == before
     every_resource_matches_its_rows()
+
+
+JSON_LD = "http://www.w3.org/ns/json-ld#context"
+
+
+def json_ld_writer(context):
+    from uuid import uuid4
+
+    from django.utils.timezone import now
+    from scoped_rbac.models import Role, RoleAssignment
+
+    from .factories import UserFactory
+
+    role = Role(
+        definition={m: [JSON_LD] for m in ("http.GET", "http.POST", "http.PUT")},
+        etag=uuid4().hex,
+        modified_at=now(),
+    )
+    role.save()
+    user = UserFactory()
+    RoleAssignment(
+        user=user, role=role, rbac_context=context, etag=uuid4().hex, modified_at=now()
+    ).save()
+    return user
+
+
+# Bodies whose rbac_context names no context: the resource is stored in the
+# default context "" (rbac_contexts_of), and the write is authorized there.
+DEFAULT_CONTEXT_BODIES = [
+    pytest.param(
+        {"@id": "x", "rbac_context": {"@id": "openteams:RBACContext"}},
+        id="json-ld-term-definition",
+    ),
+    pytest.param({"name": "n", "rbac_context": None}, id="null"),
+    pytest.param({"name": "n"}, id="absent"),
+]
+# A list with a member that is not a string is stored in "" too, but
+# scoped-rbac's request check also needs the method in each member of a list
+# rbac_context (access.authorize_request), so no role allows it (it fails
+# closed): refused below.
+LIST_WITH_A_NON_STRING = pytest.param(
+    {"name": "n", "rbac_context": ["a", 1]}, id="list-with-a-non-string"
+)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("body", DEFAULT_CONTEXT_BODIES)
+@test_context
+def test_a_body_naming_no_context_is_written_in_the_default_context(body):
+    reverse("json-ld-list")
+    Given.http.force_authenticate(json_ld_writer(""))
+    When.http.post(reverse("json-ld-list"), body, format="json")
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    created = Resource.objects.filter(resource_type__type_uri=JSON_LD).latest("pk")
+    assert created.content == body
+    assert created.rbac_contexts == [""]
+    assert rows_of(created) == {""}
+
+    When.http.put(
+        reverse("json-ld-detail", args=[created.pk]),
+        dict(body, extra=1),
+        format="json",
+        HTTP_IF_MATCH=f'"{created.etag}"',
+    )
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert Resource.objects.get(pk=created.pk).content == dict(body, extra=1)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("body", [*DEFAULT_CONTEXT_BODIES, LIST_WITH_A_NON_STRING])
+@test_context
+def test_a_body_naming_no_context_needs_the_default_context(body):
+    # A writer in "a" only: the body would be stored in "", where they may not
+    # write (a list naming "a" next to a non-string included).
+    reverse("json-ld-list")
+    before = Resource.objects.count()
+    Given.http.force_authenticate(json_ld_writer("a"))
+    When.http.post(reverse("json-ld-list"), body, format="json")
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.count() == before
