@@ -13,8 +13,8 @@ from django.urls import reverse
 from rest_framework import status
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django.models import Resource, ResourceContext
-from scrud_django.registration import ResourceRegistration
+from scrud_django.models import Resource, ResourceContext, ResourceType
+from scrud_django.registration import ResourceRegistration, get_resource_type_for
 
 from .fixtures import *  # noqa: F401, F403
 from .fixtures import RESOURCE_ENDPOINT_DETAIL_NAME, RESOURCE_ENDPOINT_LIST_NAME
@@ -196,6 +196,21 @@ def test_server_side_empty_context_list_is_stored_superuser_only(
     Given.http.force_authenticate(admin_login)
     When.http.get(url)
     Then.http.status_code_is(status.HTTP_200_OK)
+
+
+@pytest.mark.django_db
+def test_update_bumps_the_resource_types_etag():
+    resource = register({"rbac_context": "a"})
+    before = ResourceType.objects.get(pk=resource.resource_type_id)
+    updated = ResourceRegistration.update(
+        {"name": "changed"}, "partner-profiles", resource.pk
+    )
+    after = ResourceType.objects.get(pk=resource.resource_type_id)
+    assert after.etag != before.etag
+    assert after.etag == updated.etag
+    assert after.modified_at == updated.modified_at
+    assert after.modified_at > before.modified_at
+    assert get_resource_type_for("partner-profiles").etag == updated.etag
 
 
 def test_resource_content_reads_as_cel_fields():

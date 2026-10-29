@@ -241,20 +241,22 @@ class ResourceRegistration:
             resource = get_object_or_404(
                 Resource, resource_type=resource_type, pk=int(slug)
             )
+            # One instance of the type: the one whose etag is bumped is saved.
+            resource.resource_type = resource_type
 
             resource.content = content
             resource.etag = uuid4().hex
             resource.modified_at = timezone.now()
             resource_type.etag = resource.etag
             resource_type.modified_at = resource.modified_at
-            if resource.resource_type.uses_reversion:
+            if resource_type.uses_reversion:
                 with reversion.create_revision():
                     resource.save()
                     reversion.set_comment('Change Resource')
             else:
                 resource.save()
             # with reversion.create_revision():
-            resource.resource_type.save()
+            resource_type.save()
             # reversion.set_comment('Change Resource_type')
         return resource
 
