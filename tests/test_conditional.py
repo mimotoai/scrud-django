@@ -4,10 +4,11 @@ import json
 
 import pytest
 from django.urls import reverse
+from django.utils.http import quote_etag
 from safetydance_django.test import *  # noqa: F403, F401
 
 from .fixtures import *  # noqa
-from .fixtures import RESOURCE_ENDPOINT_DETAIL_NAME
+from .fixtures import RESOURCE_ENDPOINT_DETAIL_NAME, last_modified_for
 from .steps import *  # noqa: F403, F401
 
 
@@ -92,3 +93,93 @@ def test_if_modified_since_current_is_304(partner_profiles, admin_login):
     last_modified = Http.response["Last-Modified"]
     When.http.get(url, HTTP_IF_MODIFIED_SINCE=last_modified)
     Then.http.status_code_is(304)
+
+
+def _detail_url_of(resource):
+    return "http://testserver" + reverse(
+        resource.resource_type.route_name_detail(), args=[resource.id]
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_detail_validators_and_links(partner_profiles, regular_login):
+    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
+    resource_type = partner_profiles.resource_type
+    schema_url = _detail_url_of(resource_type.schema)
+    context_url = _detail_url_of(resource_type.context)
+
+    Given.http.force_authenticate(regular_login)
+    When.http.get(url)
+    Then.http.status_code_is(200)
+    # The plain quoted etag: no __version__ suffix (scrudful appends nothing).
+    assert Http.response["ETag"] == quote_etag(partner_profiles.etag)
+    assert Http.response["ETag"] == f'"{partner_profiles.etag}"'
+    assert Http.response["Last-Modified"] == last_modified_for(partner_profiles)
+    # Schema link: rel="describedby", type="application/schema+json"; context
+    # link: JSON-LD's context relation and type.
+    assert Http.response["Link"] == (
+        f'<{schema_url}>; rel="describedby"; type="application/schema+json", '
+        f'<{context_url}>; rel="http://www.w3.org/ns/json-ld#context"; '
+        'type="application/ld+json"'
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_failed_if_match_is_412_with_json_body(
+    partner_profiles, admin_login, partner_profile_post_data
+):
+    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
+    Given.http.force_authenticate(admin_login)
+    When.http.put(
+        url,
+        data=json.dumps(partner_profile_post_data),
+        content_type="application/json",
+        HTTP_IF_MATCH='"not-the-current-etag"',
+    )
+    Then.http.status_code_is(412)
+    And.http.content_type_is("application/json")
+    assert json.loads(Http.response.content) == {"detail": "Precondition failed."}
+
+
+@pytest.mark.django_db
+@test_context
+def test_put_with_only_if_match_succeeds(
+    partner_profiles, admin_login, partner_profile_post_data
+):
+    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
+    Given.http.force_authenticate(admin_login)
+    When.http.head(url)
+    Then.http.status_code_is(200)
+    etag = Http.response["ETag"]
+    assert etag == quote_etag(partner_profiles.etag)
+    When.http.put(
+        url,
+        data=json.dumps(partner_profile_post_data),
+        content_type="application/json",
+        HTTP_IF_MATCH=etag,
+    )
+    Then.http.status_code_is(200)
+    And.http.resource_json_is(partner_profile_post_data)
+
+
+@pytest.mark.django_db
+@test_context
+def test_put_with_only_if_unmodified_since_succeeds(
+    partner_profiles, admin_login, partner_profile_post_data
+):
+    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
+    Given.http.force_authenticate(admin_login)
+    When.http.get(url)
+    Then.http.status_code_is(200)
+    last_modified = Http.response["Last-Modified"]
+    assert last_modified == last_modified_for(partner_profiles)
+    When.http.put(
+        url,
+        data=json.dumps(partner_profile_post_data),
+        content_type="application/json",
+        HTTP_IF_UNMODIFIED_SINCE=last_modified,
+    )
+    Then.http.status_code_is(200)
+    And.http.resource_json_is(partner_profile_post_data)
