@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Manager
 from rest_framework import serializers
 
@@ -5,7 +6,11 @@ from scrud_django import models
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.mixins.serializer_mixins import SerializerMixin
 from scrud_django.models import Resource
-from scrud_django.registration import ResourceRegistration
+from scrud_django.registration import (
+    ResourceRegistration,
+    lock_if_workflow_policy,
+    write_db,
+)
 from scrud_django.validators import JsonValidator, WorkflowValidator
 
 
@@ -38,11 +43,20 @@ class ResourceSerializer(SerializerMixin, serializers.Serializer):
         return ResourceRegistration.register_instance(instance)
 
     def update(self, instance, validated_data):
-        return ResourceRegistration.update(
-            content=validated_data,
-            register_type=self.resource_type.slug,
-            slug=instance.slug,
-        )
+        """Write `validated_data` to `instance` (``serializer.save()`` on an
+        existing resource) through `ResourceRegistration.update_locked`, in a
+        transaction on the database the instance was read from (else
+        `write_db`), after the ``WorkflowPolicy`` type lock. The instance is
+        written as it is, as the views write theirs: to keep what was
+        validated from changing underneath, read it with its row locked
+        (`get_locked_resource`) inside a transaction there, as the views do."""
+        resource_type = self.resource_type or instance.resource_type
+        db = instance._state.db or write_db(instance)
+        with transaction.atomic(using=db):
+            lock_if_workflow_policy(resource_type, db)
+            return ResourceRegistration.update_locked(
+                instance, validated_data, resource_type=resource_type, using=db
+            )
 
 
 class JSONSchemaSerializer(serializers.Serializer):

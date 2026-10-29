@@ -71,13 +71,9 @@ class GenericSerializerMixin:
 
 
 class SerializerMixin(GenericSerializerMixin):
-    @cached_property
-    def resource_type(self):
-        return (
-            self._resource_type
-            if self._resource_type is not None
-            else super().resource_type()
-        )
+    # ``resource_type`` is GenericSerializerMixin's: the type given as the
+    # ``resource_type`` keyword, else the one ``Meta.resource_type_slug``
+    # names, else ``None``.
 
     def to_content(self, instance, context=None):
         if type(instance.content) is str:
