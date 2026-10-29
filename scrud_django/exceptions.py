@@ -23,24 +23,34 @@ def scrud_exception_handler(exc, context):
 
 
 class ScrudException(APIException):
+    """A scrud error. Its ``detail`` is always an ``ErrorDetail`` (a message
+    with the class's ``default_code``), as DRF's ``APIException`` makes it, so
+    any exception handler (DRF's, scoped-rbac's, scrud's) can render it and read
+    its code. The RFC 7807 body `scrud_exception_handler` sends is
+    `response_data`, which may say more."""
+
+    def __init__(self, message=None):
+        super().__init__(detail=message)
+
     def response_data(self, context):
         """Return RFC 7807 response data"""
         data = {}
         for property_name in ["type", "title", "detail", "instance"]:
             if hasattr(self, property_name):
-                data[property_name] = getattr(self, property_name)
+                value = getattr(self, property_name)
+                data[property_name] = str(value) if isinstance(value, str) else value
         return data
 
 
 class JsonValidationError(ScrudException):
     status_code = 400
     default_detail = "Bad Request"
+    default_code = "json_invalid"
 
     def __init__(self, json_schema_exc):
-        super().__init__()
+        super().__init__(json_schema_exc.message)
         self.type = "https://api.openteams.com/http-problem/json-invalid"
         self.title = "JSON Validation Error"
-        self.detail = json_schema_exc.message
         self.exc = json_schema_exc
 
     def response_data(self, context):
@@ -78,15 +88,17 @@ class StoredPolicyReference:
 class WorkflowTransitionError(ScrudException):
     status_code = 400
     default_detail = "Bad Request"
+    default_code = "workflow_transition_invalid"
+    title = "Invalid workflow transition"
 
     def __init__(self, policy, prior_state, proposed_state, message=None):
         """`policy` is the policy's content (a policy from settings) or a
         `StoredPolicyReference` (a stored policy), which the body gives as its
-        URL."""
-        super().__init__()
+        URL. ``detail`` is `message` (else the title); the body's ``detail`` is
+        the policy when there is no `message`, as it has always been."""
+        super().__init__(message if message is not None else self.title)
         self.type = "http://api.openteams.com/http-problem/workflow-transition-invalid"
-        self.title = "Invalid workflow transition"
-        self.detail = message if message is not None else policy
+        self.detail_is_policy = message is None
         self.policy = policy
         self.prior_state = prior_state
         self.proposed_state = proposed_state
@@ -100,7 +112,7 @@ class WorkflowTransitionError(ScrudException):
 
     def response_data(self, context):
         data = super().response_data(context)
-        if self.detail is self.policy:
+        if self.detail_is_policy:
             data["detail"] = self.policy_data(context)
         data["policy"] = self.policy_data(context)
         data["prior_state"] = self.prior_state
