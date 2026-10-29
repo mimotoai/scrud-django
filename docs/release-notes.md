@@ -551,7 +551,12 @@ Conditional request handling now comes from scrudful 0.8.
   your own); its `ETag` does.
 * `ResourceViewMixin.get_object` is DRF's lookup with the object check given
   a `scrud_django.permissions.ResourceCheck` (see Authorization); it returns
-  the `Resource`. `ResourceViewMixin.get_rbac_permissions()` gives the
+  the `Resource`, whose `resource_type` is the view's.
+  `ResourceViewMixin.get_resource_type()` (and `GenericViewMixin`'s) reads
+  the type once per request and database and returns that instance after
+  (`initial` forgets it): a request read it up to 20 times (measured by
+  `tests/test_query_budget.py`, a list of a partner profile page now makes
+  11 queries, a GET 8 and a PUT 25; they made 19, 14 and 43). `ResourceViewMixin.get_rbac_permissions()` gives the
   `IsAuthorized` permissions of the view (nested ones included), which
   `get_post_save_permissions()` returns and the `WorkflowValidator` asks.
   `check_post_save_permissions` calls each permission's

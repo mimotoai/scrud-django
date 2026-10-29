@@ -403,19 +403,27 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         return write_db()
 
     def initial(self, request, *args, **kwargs):
-        """DRF's, then, inside a locked write (`dispatch`), the
+        """Forget the resource types `get_resource_type` read (a view
+        instance serves one request; this keeps a reused one from serving a
+        stale type), DRF's, then, inside a locked write (`dispatch`), the
         ``WorkflowPolicy`` type lock (`lock_if_workflow_policy`) before the
         row is read: every ``WorkflowPolicy`` write locks the type row and then
         the policy's row, in that order, so two cannot deadlock."""
+        self._scrud_resource_types = {}
         super().initial(request, *args, **kwargs)
         if self.locked_write_db is not None:
             lock_if_workflow_policy(self.get_resource_type(), self.locked_write_db)
 
     def get_resource_type(self):
-        """The view's resource type. Inside a locked write it is read on the
-        type's write database (`type_db`), not through the read router."""
+        """The view's resource type, read once per request and database (the
+        filter, the serializer, the validators, the Links and the write all
+        ask for it). Inside a locked write it is read on the type's write
+        database (`type_db`), not through the read router."""
         using = type_db() if self.locked_write_db is not None else None
-        return get_resource_type_for(self.resource_type_name, using=using)
+        read = self.__dict__.setdefault("_scrud_resource_types", {})
+        if using not in read:
+            read[using] = get_resource_type_for(self.resource_type_name, using=using)
+        return read[using]
 
     def get_queryset(self):
         """The type's resources. Inside a locked write (`dispatch`) they are
@@ -442,6 +450,10 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         obj = get_object_or_404(
             queryset, **{self.lookup_field: self.kwargs[lookup_url_kwarg]}
         )
+        resource_type = self.get_resource_type()
+        if obj.resource_type_id == resource_type.pk:
+            # The type the view read (on the same database), not read again.
+            Resource.resource_type.field.set_cached_value(obj, resource_type)
         self.check_object_permissions(self.request, self.object_for_checks(obj))
         return obj
 
@@ -777,7 +789,12 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
             return None
 
     def get_resource_type(self):
-        return get_resource_type_for(self.resource_type_name)
+        """The view's resource type (``resource_type_name``), read once per
+        view instance (one request)."""
+        read = self.__dict__.setdefault("_scrud_resource_types", {})
+        if None not in read:
+            read[None] = get_resource_type_for(self.resource_type_name)
+        return read[None]
 
     def get_serializer(self, *args, **kwargs):
         kwargs["resource_type"] = self.get_resource_type()
