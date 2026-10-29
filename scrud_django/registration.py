@@ -16,14 +16,23 @@ from scrud_django.models import Resource, ResourceType
 from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI, lock_workflow_policy_type
 
 
-def lock_if_workflow_policy(resource_type):
-    """Take `lock_workflow_policy_type` first, in the write's transaction, when
-    `resource_type` is ``WorkflowPolicy``. Every ``WorkflowPolicy`` write (the
-    API's and these server-side ones) then locks the type row before it writes
-    the ``Resource`` row and then the type row, in that one order: a PUT and a
-    DELETE of the same policy cannot deadlock on PostgreSQL."""
+def write_db():
+    """The database `ResourceRegistration` writes resources to
+    (``router.db_for_write(Resource)``): its transactions open there, so that
+    the ``WorkflowPolicy`` lock and the writes share one transaction."""
+    return router.db_for_write(Resource)
+
+
+def lock_if_workflow_policy(resource_type, using):
+    """When `resource_type` is ``WorkflowPolicy``, take
+    `lock_workflow_policy_type` on database `using`. Call it first inside the
+    write's transaction on that same database (``transaction.atomic(using=
+    write_db())``; ``select_for_update`` outside a transaction is an error on
+    PostgreSQL). `ResourceRegistration`'s writes, and so the API's, then lock
+    the type row before they write the ``Resource`` row and the type row, in
+    that one order: a PUT and a DELETE of the same policy cannot deadlock."""
     if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
-        lock_workflow_policy_type(router.db_for_write(Resource))
+        lock_workflow_policy_type(using)
 
 
 def get_resource_type_for(slug):
@@ -189,8 +198,9 @@ class ResourceRegistration:
         Resource
 
         """
-        with transaction.atomic():
-            lock_if_workflow_policy(resource.resource_type)
+        db = write_db()
+        with transaction.atomic(using=db):
+            lock_if_workflow_policy(resource.resource_type, db)
             resource.etag = uuid4().hex
             resource.modified_at = timezone.now()
             resource.resource_type.etag = resource.etag
@@ -222,9 +232,10 @@ class ResourceRegistration:
         Resource
 
         """
-        with transaction.atomic():
+        db = write_db()
+        with transaction.atomic(using=db):
             resource_type = get_resource_type_for(register_type)
-            lock_if_workflow_policy(resource_type)
+            lock_if_workflow_policy(resource_type, db)
 
             # note: for now slug is used as ID
             resource = get_object_or_404(
@@ -258,9 +269,10 @@ class ResourceRegistration:
         slug : str
 
         """
-        with transaction.atomic():
+        db = write_db()
+        with transaction.atomic(using=db):
             resource_type = get_resource_type_for(register_type)
-            lock_if_workflow_policy(resource_type)
+            lock_if_workflow_policy(resource_type, db)
 
             # note: for now slug is used as ID
             resource = get_object_or_404(

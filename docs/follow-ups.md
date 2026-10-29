@@ -456,6 +456,12 @@ duplicates. They fail closed (writes of the type in that context are
 `ImproperlyConfigured`) and the `scrud_django.E002` database check reports
 them.
 
+The type lock serializes concurrent writes of one policy, but does not check
+their preconditions again: a DELETE (or PUT) whose `If-Match` named the ETag
+before a concurrent PUT waits for the lock and then succeeds against the new
+version. That is the lost update of
+[authorize-write-not-atomic](#authorize-write-not-atomic), not a new case.
+
 Suggested fix: document READ COMMITTED as the supported isolation level, or
 re-run the re-check in a fresh transaction (or a `SELECT ... FOR UPDATE` on the
 policy rows, which PostgreSQL reads at the latest committed version). Test:

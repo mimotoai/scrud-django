@@ -13,7 +13,14 @@ SETTINGS: dict[str, Any] = dict(
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": ":memory:",
-        }
+        },
+        # Only for tests that route Resource writes to a second alias
+        # (``@pytest.mark.django_db(databases=["default", "other"])``);
+        # pytest-django creates it only for them.
+        "other": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        },
     },
     SITE_ID=1,
     SECRET_KEY="not very secret in tests",

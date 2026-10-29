@@ -3,6 +3,7 @@ before 0.12.0): the write that would make one is re-checked under a lock,
 writes governed by existing duplicates fail closed, and a system check
 reports them and policies stored with a list ``rbac_context``."""
 
+from contextlib import contextmanager
 from unittest import mock
 
 import pytest
@@ -292,3 +293,86 @@ def test_policy_lookup_reads_the_write_database():
         DATABASE_ROUTERS=["tests.test_policy_duplicates.ReadReplicaRouter"]
     ):
         assert stored_policies_for(TODO, "p") == [stored]
+
+
+class OtherWriteRouter:
+    """Resource writes go to the "other" alias; everything else to default."""
+
+    def db_for_write(self, model, **hints):
+        return "other" if model is Resource else None
+
+    def allow_relation(self, obj1, obj2, **hints):
+        return True
+
+
+class LockTaken(Exception):
+    pass
+
+
+@contextmanager
+def lock_on_other():
+    """Route Resource writes to "other" and stop at the policy lock, recording
+    the alias it got and whether the code under test had opened a transaction
+    (an atomic block) on that alias. Enter it after the test's setup writes,
+    which go to "default"."""
+    from django.db import connections
+    from django.test import override_settings
+
+    from scrud_django import registration
+
+    seen = []
+    # The test itself runs in a transaction on each database: what counts is
+    # an atomic block the code under test opened on the alias, one deeper.
+    depth = {alias: len(connections[alias].atomic_blocks) for alias in connections}
+
+    def lock(using):
+        seen.append((using, len(connections[using].atomic_blocks) > depth[using]))
+        raise LockTaken()
+
+    with (
+        override_settings(
+            DATABASE_ROUTERS=["tests.test_policy_duplicates.OtherWriteRouter"]
+        ),
+        mock.patch.object(registration, "lock_workflow_policy_type", lock),
+    ):
+        yield seen
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_server_side_policy_writes_lock_inside_the_routed_transaction():
+    stored = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    policy_type = stored.resource_type
+    with lock_on_other() as seen:
+        with pytest.raises(LockTaken):
+            ResourceRegistration.register_instance(
+                Resource(
+                    content=dict(PERMISSIVE_POLICY, rbac_context="q"),
+                    resource_type=policy_type,
+                )
+            )
+        with pytest.raises(LockTaken):
+            ResourceRegistration.update(
+                content=dict(PERMISSIVE_POLICY, rbac_context="q"),
+                register_type="workflow-policies",
+                slug=str(stored.pk),
+            )
+        with pytest.raises(LockTaken):
+            ResourceRegistration.delete(
+                register_type="workflow-policies", slug=str(stored.pk)
+            )
+    assert seen == [("other", True)] * 3
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_api_delete_of_a_policy_locks_inside_the_routed_transaction():
+    from django.utils.http import quote_etag
+
+    stored = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    client = admin_client()
+    with lock_on_other() as seen, pytest.raises(LockTaken):
+        client.delete(
+            reverse("workflow-policies-detail", args=[stored.pk]),
+            HTTP_IF_MATCH=quote_etag(stored.etag),
+        )
+    assert seen == [("other", True)]
+    assert Resource.objects.filter(pk=stored.pk).exists()

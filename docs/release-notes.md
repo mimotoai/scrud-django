@@ -232,9 +232,12 @@ Conditional request handling now comes from scrudful 0.8.
   update or delete the existing policy instead. `WorkflowPolicy` writes lock the
   `WorkflowPolicy` resource type's row (`select_for_update`) and check again
   after the save, so of two concurrent writes the second is refused. Every
-  `WorkflowPolicy` write (create, update, delete, through the API or
-  `ResourceRegistration`) takes that lock first, before it writes the policy's
-  row, so concurrent writes of one policy cannot deadlock. If several
+  `WorkflowPolicy` write through `ResourceRegistration` (`register`,
+  `register_instance`, `update`, `delete`, which the API's create, update and
+  delete use) takes that lock first, inside its transaction on the database
+  the router gives for `Resource` writes, before it writes the policy's row, so
+  concurrent writes of one policy cannot deadlock. A write that saves a
+  `Resource` directly, bypassing `ResourceRegistration`, takes no lock. If several
   were stored before (or past the API), none is picked: writes of the type in
   that context fail with `ImproperlyConfigured` until all but one are deleted.
   The database system check (`manage.py check --database default`, also run
