@@ -14,6 +14,7 @@ class ScrudConfig(AppConfig):
         from scrud_django.checks import (
             check_default_workflow_policies,
             check_isolation_level,
+            check_list_filters,
             check_stored_workflow_policies,
             check_write_routing,
         )
@@ -24,5 +25,6 @@ class ScrudConfig(AppConfig):
         checks.register(check_stored_workflow_policies, checks.Tags.database)
         checks.register(check_write_routing)
         checks.register(check_isolation_level, checks.Tags.database)
+        checks.register(check_list_filters, checks.Tags.urls)
 
         self.processor = ScrudSignalProcessor()

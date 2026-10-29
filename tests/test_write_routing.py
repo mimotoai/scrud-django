@@ -16,7 +16,12 @@ from rest_framework.test import APIClient
 
 from scrud_django import checks as scrud_checks
 from scrud_django import registration
-from scrud_django.models import Resource, ResourceContext, ResourceType
+from scrud_django.models import (
+    Resource,
+    ResourceContext,
+    ResourceRemoval,
+    ResourceType,
+)
 from scrud_django.registration import (
     ResourceRegistration,
     workflow_policy_resource_type,
@@ -63,6 +68,13 @@ class ContextsElsewhereRouter:
 
     def db_for_write(self, model, **hints):
         return "other" if model is ResourceContext else None
+
+
+class RemovalsElsewhereRouter:
+    """``ResourceRemoval`` writes go to "other"; everything else to default."""
+
+    def db_for_write(self, model, **hints):
+        return "other" if model is ResourceRemoval else None
 
 
 class OneAliasRouter:
@@ -185,6 +197,7 @@ def test_one_write_database_passes_the_check():
     [
         ("TypeElsewhereRouter", "ResourceType -> 'other'"),
         ("ContextsElsewhereRouter", "ResourceContext -> 'other'"),
+        ("RemovalsElsewhereRouter", "ResourceRemoval -> 'other'"),
         (
             "tests.test_policy_duplicates.OtherWriteRouter",
             "Resource -> 'other'",

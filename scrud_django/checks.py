@@ -147,20 +147,26 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
 
 def check_write_routing(app_configs, **kwargs):
     """An Error (``scrud_django.E004``) when the database router sends writes
-    of ``Resource``, ``ResourceType`` and ``ResourceContext`` to different
-    aliases (asked without an instance hint). ``ResourceRegistration`` writes
-    a resource, its context rows and its type's row in one transaction, on the
+    of ``Resource``, ``ResourceType``, ``ResourceContext`` and
+    ``ResourceRemoval`` to different aliases (asked without an instance
+    hint). ``ResourceRegistration`` writes a resource, its context rows, its
+    removal stamps and its type's row in one transaction, on the
     ``Resource`` alias, and the ``WorkflowPolicy`` lock is taken there: on two
     aliases of one database, a write would wait on its own lock; on two
     databases, the ``Resource.resource_type`` foreign key would cross them.
     Not a database check: it reads the routers only."""
     from django.db import router
 
-    from scrud_django.models import Resource, ResourceContext, ResourceType
+    from scrud_django.models import (
+        Resource,
+        ResourceContext,
+        ResourceRemoval,
+        ResourceType,
+    )
 
     aliases = {
         model.__name__: router.db_for_write(model)
-        for model in (Resource, ResourceType, ResourceContext)
+        for model in (Resource, ResourceType, ResourceContext, ResourceRemoval)
     }
     if len(set(aliases.values())) <= 1:
         return []
@@ -169,8 +175,9 @@ def check_write_routing(app_configs, **kwargs):
         checks.Error(
             f"scrud_django's models are written to different databases: {routed}.",
             hint=(
-                "Route Resource, ResourceType and ResourceContext writes to one "
-                "database alias (DATABASE_ROUTERS)."
+                "Route Resource, ResourceType, ResourceContext and "
+                "ResourceRemoval writes to one database alias (DATABASE_ROUTERS), "
+                "and migrate all four there."
             ),
             id="scrud_django.E004",
         )
@@ -269,3 +276,62 @@ def check_isolation_level(app_configs, databases=None, **kwargs):
             )
         )
     return found
+
+
+def list_filter_errors(patterns, prefix=""):
+    """An Error (``scrud_django.E006``) for each view in the URL `patterns`
+    (``URLPattern`` and ``URLResolver`` entries, walked recursively) that is a
+    ``ResourceViewMixin`` or ``GenericViewMixin`` viewset routed for
+    ``list`` without an ``RbacFilter`` among its ``filter_backends``: its
+    list answers every request with ``ImproperlyConfigured`` (a 500) rather
+    than listing every object."""
+    from django.urls import URLPattern, URLResolver
+    from scoped_rbac.filters import RbacFilter
+
+    from scrud_django.mixins.view_mixins import ListValidatorsMixin
+
+    errors = []
+    for entry in patterns:
+        route = prefix + str(entry.pattern)
+        if isinstance(entry, URLResolver):
+            errors.extend(list_filter_errors(entry.url_patterns, route))
+            continue
+        if not isinstance(entry, URLPattern):
+            continue
+        view_class = getattr(entry.callback, "cls", None)
+        actions = getattr(entry.callback, "actions", None) or {}
+        if (
+            not isinstance(view_class, type)
+            or not issubclass(view_class, ListValidatorsMixin)
+            or "list" not in actions.values()
+        ):
+            continue
+        backends = getattr(view_class, "filter_backends", ()) or ()
+        if any(
+            isinstance(backend, type) and issubclass(backend, RbacFilter)
+            for backend in backends
+        ):
+            continue
+        errors.append(
+            checks.Error(
+                f"{view_class.__module__}.{view_class.__qualname__} lists at "
+                f"{route!r} without an RBAC filter: every list request would be "
+                "ImproperlyConfigured (a 500).",
+                hint=(
+                    "Put scoped_rbac.filters.RbacFilter (for resources, "
+                    "scrud_django.filters.ResourceRbacFilter) in its "
+                    "filter_backends."
+                ),
+                obj=view_class,
+                id="scrud_django.E006",
+            )
+        )
+    return errors
+
+
+def check_list_filters(app_configs, **kwargs):
+    """`list_filter_errors` over the project's URLconf (``ROOT_URLCONF``),
+    registered with Django's ``urls`` tag, as its own URL checks are."""
+    from django.urls import get_resolver
+
+    return list_filter_errors(get_resolver().url_patterns)
