@@ -5,6 +5,8 @@ This will support queries, such as:
 
 """
 
+import contextvars
+
 import reversion
 from django.db import IntegrityError, models, router, transaction
 from django.db.models import Q
@@ -21,8 +23,41 @@ from scrud_django.models.resource_type import ResourceType
 MAX_CONTEXT_LENGTH = 2048
 
 
+# The (type, context) pairs a QuerySet.delete() of resources has removed so
+# far, stamped once when it ends (`ResourceQuerySet.delete`); None outside one.
+_PENDING_STAMPS = contextvars.ContextVar("scrud_pending_stamps", default=None)
+
+
+class ResourceQuerySet(models.QuerySet):
+    def delete(self):
+        """``QuerySet.delete()``, stamping the contexts the deleted resources
+        left (`stamp_removals`) once per type, in one order (by type, then
+        context), after the rows are gone and in the same transaction: the
+        per-instance stamps (`stamp_deletion`) would follow the order the
+        resources were collected in, and two concurrent bulk deletes taking
+        the stamp rows in opposite orders could deadlock."""
+        with transaction.atomic(using=self.db, savepoint=False):
+            pending = set()
+            token = _PENDING_STAMPS.set(pending)
+            try:
+                result = super().delete()
+            finally:
+                _PENDING_STAMPS.reset(token)
+            contexts_by_type = {}
+            for type_id, context in pending:
+                contexts_by_type.setdefault(type_id, set()).add(context)
+            for type_id in sorted(contexts_by_type):
+                stamp_removals(type_id, sorted(contexts_by_type[type_id]), self.db)
+        return result
+
+    delete.alters_data = True
+    delete.queryset_only = True
+
+
 @reversion.register()
 class Resource(ResourceMixin):
+    objects = ResourceQuerySet.as_manager()
+
     class Meta:
         ordering = ["id"]
 
@@ -252,8 +287,15 @@ def resync_after_raw_row(sender, instance, raw, using, **kwargs):
 @receiver(post_delete, sender=Resource, dispatch_uid="scrud_django.stamp_deletion")
 def stamp_deletion(sender, instance, using, **kwargs):
     """A deleted resource left every context it was in (`stamp_removals`),
-    in the deletion's transaction: ``Model.delete()``, ``QuerySet.delete()``
-    and `ResourceRegistration` alike. One in no context stamps
-    ``SOME_CONTEXT``, which only superusers' lists read."""
+    in the deletion's transaction: ``Model.delete()`` and
+    `ResourceRegistration` at once, ``Resource.objects`` querysets'
+    ``delete()`` (`ResourceQuerySet.delete`) all together when it ends. One
+    in no context stamps ``SOME_CONTEXT``, which only superusers' lists
+    read."""
     contexts = rbac_contexts_of(instance.content) or [SOME_CONTEXT]
+    pending = _PENDING_STAMPS.get()
+    if pending is not None:
+        # A ResourceQuerySet.delete() stamps them all at its end.
+        pending.update((instance.resource_type_id, c) for c in contexts)
+        return
     stamp_removals(instance.resource_type_id, contexts, using)

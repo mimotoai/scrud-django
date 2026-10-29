@@ -226,3 +226,30 @@ def test_each_removal_stamps_the_contexts_the_resource_left():
         ).count()
         == 1
     )
+
+
+@pytest.mark.django_db
+def test_a_bulk_delete_stamps_each_type_once_in_one_order(monkeypatch):
+    # One sorted call per type, after the rows are gone, whatever order the
+    # resources were collected in: two concurrent bulk deletes then take the
+    # stamp rows' locks in the same order and cannot deadlock.
+    from scrud_django.models import resource as resource_module
+
+    first = profile("first", rbac_context="b")
+    second = profile("second", rbac_context=["c", "a"])
+    calls = []
+    original = resource_module.stamp_removals
+
+    def recording(resource_type_id, contexts, using):
+        calls.append((resource_type_id, list(contexts)))
+        return original(resource_type_id, contexts, using)
+
+    monkeypatch.setattr(resource_module, "stamp_removals", recording)
+    Resource.objects.filter(pk__in=[first.pk, second.pk]).delete()
+    assert calls == [(first.resource_type_id, ["a", "b", "c"])]
+    assert not Resource.objects.filter(pk__in=[first.pk, second.pk]).exists()
+    assert set(
+        ResourceRemoval.objects.filter(
+            resource_type_id=first.resource_type_id
+        ).values_list("rbac_context", flat=True)
+    ) == {"a", "b", "c"}
