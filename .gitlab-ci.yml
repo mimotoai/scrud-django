@@ -1,0 +1,30 @@
+image: ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+
+stages:
+  - lint
+  - test
+
+variables:
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  UV_PYTHON_DOWNLOADS: automatic
+
+cache:
+  paths:
+    - .uv-cache
+
+lint:
+  stage: lint
+  script:
+    - uv sync --locked
+    - uv run ruff check .
+    - uv run ruff format --check .
+    - uv run python manage.py makemigrations scrud_django --check --dry-run
+
+test:
+  stage: test
+  parallel:
+    matrix:
+      - PYTHON: ["3.11", "3.12", "3.13"]
+  script:
+    - uv run --locked --python $PYTHON python -V
+    - uv run --locked --python $PYTHON pytest --cov=scrud_django
