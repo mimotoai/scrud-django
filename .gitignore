@@ -133,3 +133,7 @@ whoosh_index
 
 # Claude Code personal settings
 .claude/settings.local.json
+
+# Claude Code and CI
+.superpowers/
+.uv-cache/
