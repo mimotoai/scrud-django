@@ -41,6 +41,8 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
     - ``scrud_django.E002`` for each resource type and context with more than
       one: `workflow_policy_for` picks none, so the writes they govern fail
       until all but one are deleted;
+    - ``scrud_django.E003`` for each whose ``resource_type`` is not a string
+      (stored server-side; it governs no type);
     - ``scrud_django.W001`` for each policy stored with a list ``rbac_context``
       (before 0.12.0, or server-side). It applies in each of those contexts, and
       updating or deleting it needs rights in all of them.
@@ -65,8 +67,19 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
         listed = []
         for policy in stored:
             content = policy.content if isinstance(policy.content, dict) else {}
+            type_uri = content.get("resource_type")
+            if not isinstance(type_uri, str):
+                found.append(
+                    checks.Error(
+                        f"WorkflowPolicy pk {policy.pk} has resource_type "
+                        f"{type_uri!r}; it must be a type URI (a string).",
+                        hint="Fix or delete it: it governs no resource type.",
+                        id="scrud_django.E003",
+                    )
+                )
+                continue
             for context in rbac_contexts_of(content):
-                key = (content.get("resource_type"), context)
+                key = (type_uri, context)
                 by_type_and_context.setdefault(key, []).append(policy.pk)
             if isinstance(content.get("rbac_context"), (list, tuple)):
                 listed.append(policy)

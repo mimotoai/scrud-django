@@ -233,8 +233,9 @@ Conditional request handling now comes from scrudful 0.8.
   were stored before (or past the API), none is picked: writes of the type in
   that context fail with `ImproperlyConfigured` until all but one are deleted.
   The database system check (`manage.py check --database default`, also run
-  by `migrate`) reports them (`scrud_django.E002`), and policies stored with a
-  list `rbac_context` (`scrud_django.W001`). The `WorkflowPolicy`
+  by `migrate`) reports them (`scrud_django.E002`), policies whose
+  `resource_type` is not a string (`scrud_django.E003`), and policies stored
+  with a list `rbac_context` (`scrud_django.W001`). The `WorkflowPolicy`
   schema now also declares `restrict_update` as an array of strings. These
   checks catch the policy errors known to make later writes fail; they do not
   prove that a policy which passes them is usable. A policy stored by an

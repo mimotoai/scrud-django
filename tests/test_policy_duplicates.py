@@ -245,3 +245,26 @@ def test_other_writes_take_no_policy_lock(write_order):
     reverse("todos-list")
     ResourceRegistration.register({"name": "n"}, "partner-profiles")
     assert write_order == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("resource_type", [[TODO], {"@id": TODO}, None, 5], ids=repr)
+def test_system_check_reports_a_non_string_resource_type(resource_type):
+    from django.utils.timezone import now
+
+    from scrud_django.models import ResourceType
+
+    workflow_policy_resource_type()
+    odd = Resource.objects.create(
+        resource_type=ResourceType.objects.get(type_uri=WORKFLOW_POLICY),
+        content=dict(PERMISSIVE_POLICY, resource_type=resource_type),
+        etag="x",
+        modified_at=now(),
+    )
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    found = scrud_checks.check_stored_workflow_policies(None, databases=["default"])
+    assert [(m.id, m.level) for m in found] == [("scrud_django.E003", checks.ERROR)]
+    assert found[0].msg == (
+        f"WorkflowPolicy pk {odd.pk} has resource_type {resource_type!r}; it must "
+        "be a type URI (a string)."
+    )
