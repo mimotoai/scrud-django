@@ -155,3 +155,20 @@ def test_the_database_check_reports_a_context_too_long_for_a_row():
     # A database check: `check --database` and `migrate` run it.
     assert found[0] in checks.run_checks(databases=["default"])
     assert found[0] not in checks.run_checks()
+
+
+@pytest.mark.django_db
+def test_loading_a_dumped_resource_whose_context_is_over_2048_bytes_is_refused():
+    # A 0.11 dump can hold one (within the old 2048-character limit): the
+    # release notes' Upgrading 12 says to shorten it before dumping.
+    from django.core import serializers
+    from django.db import transaction
+
+    resource = register("a")
+    data = json.loads(serializers.serialize("json", [resource]))
+    data[0]["fields"]["content"]["rbac_context"] = WIDE
+    (loaded,) = serializers.deserialize("json", json.dumps(data))
+    with pytest.raises(ValueError, match="2048 bytes"), transaction.atomic():
+        loaded.save()
+    resource.refresh_from_db()
+    assert resource.content["rbac_context"] == "a"
