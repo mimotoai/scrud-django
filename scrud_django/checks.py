@@ -36,9 +36,27 @@ def check_default_workflow_policies(app_configs, **kwargs):
     ]
 
 
+def scrud_migrations_pending(alias):
+    """Whether database `alias` lacks one of scrud_django's migrations (or
+    has no migration table yet): its tables are then not all there, and
+    neither the API nor ``ResourceRegistration`` can write a resource."""
+    from django.db import connections
+    from django.db.migrations.loader import MigrationLoader
+
+    loader = MigrationLoader(connections[alias], ignore_no_migrations=True)
+    wanted = {key for key in loader.graph.nodes if key[0] == "scrud_django"}
+    return bool(wanted - set(loader.applied_migrations))
+
+
 def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
     """A database check (``manage.py check --database default``, and
-    ``migrate``) of the stored ``WorkflowPolicy`` resources:
+    ``migrate``) of the stored ``WorkflowPolicy`` resources, on each of
+    `databases` whose scrud_django migrations are all applied: on one that
+    lacks some (`scrud_migrations_pending`, such as a 0.11 database before
+    ``migrate``) it reports nothing, so that ``migrate`` can apply them; the
+    policies could not be fixed or deleted before (a write needs the tables
+    the migrations create). Run ``check --database <alias>`` after
+    ``migrate``. It reports:
 
     - ``scrud_django.E002`` for each resource type and context with more than
       one: `workflow_policy_for` picks none, so the writes they govern fail
@@ -66,6 +84,8 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
 
     found = []
     for alias in databases or ():
+        if scrud_migrations_pending(alias):
+            continue  # Checked once migrated (see above).
         try:
             stored = list(
                 Resource.objects.using(alias)
@@ -113,8 +133,10 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
                         f"{problem}",
                         hint=(
                             "Fix it (a PUT through the API checks it) or delete "
-                            "it: until then every write of its type in its "
-                            "contexts fails with ImproperlyConfigured (a 500)."
+                            "it (through the API or ResourceRegistration.delete) "
+                            "on this migrated database: until then every write "
+                            "of its type in its contexts fails with "
+                            "ImproperlyConfigured (a 500)."
                         ),
                         id="scrud_django.E005",
                     )
@@ -128,7 +150,11 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
                         f"{len(pks)} WorkflowPolicy resources apply to "
                         f"{type_uri!r} in context {context!r} (pks {pks}); there "
                         "must be at most one.",
-                        hint="Delete all but one of them.",
+                        hint=(
+                            "Delete all but one of them (through the API or "
+                            "ResourceRegistration.delete), or move the others "
+                            "to other contexts with a PUT through the API."
+                        ),
                         id="scrud_django.E002",
                     )
                 )

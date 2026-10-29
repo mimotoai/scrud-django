@@ -21,17 +21,25 @@ django-scoped-rbac 0.11. It has several breaking changes.
    backport.
 6. Clients must send JSON bodies (form and multipart bodies get 415). Give your
    own `GenericViewMixin` views `parser_classes = [RbacJSONParser]`.
-7. Workflow policies: check your stored `WorkflowPolicy` resources (at most one
-   per type and context, in one context each, and each passing the checks a
-   write now makes; transition names must not start with `__`;
-   `restrict_update` must be a list). `manage.py check --database <alias>`,
-   for the alias your router gives for `Resource` writes, reports them as
-   `scrud_django.E002`, `E003`, `E005` (errors) and `W001` (a warning).
-   `migrate` runs the same check and stops on an error: fix or delete those
-   policies first, or run `migrate --skip-checks` and then fix or delete them
-   (through the API or `ResourceRegistration`). Check your
-   `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` too (`manage.py check`,
-   `scrud_django.E001`; give policies as mappings).
+7. Workflow policies: your stored `WorkflowPolicy` resources must be at most
+   one per type and context, in one context each, and each must pass the
+   checks a write now makes (transition names must not start with `__`;
+   `restrict_update` must be a list). In this order:
+   1. run `manage.py migrate` (step 9). While scrud_django's migrations are
+      not all applied, the database check of stored policies reports
+      nothing, so a plain `migrate` of a 0.11 database goes through;
+   2. run `manage.py check --database <alias>`, for the alias your router
+      gives for `Resource` writes. It reports the policies to fix as
+      `scrud_django.E002`, `E003`, `E005` (errors) and `W001` (a warning);
+   3. fix or delete each one it reports, through the API (a PUT checks a
+      fixed policy) or `ResourceRegistration` (`delete`, `update`), and run
+      the check again. Until then every write of the type in their contexts
+      fails with `ImproperlyConfigured` (a 500), and later `migrate` runs on
+      that database stop on the errors (`migrate --skip-checks` gets past
+      them).
+
+   Check your `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` too
+   (`manage.py check`, `scrud_django.E001`; give policies as mappings).
 8. Code: read "API changes" below for the removed modules
    (`scrud_django.decorators`, `settings`, `wsgi`, `asgi`), what
    `GenericViewMixin` subclasses must now provide, and the exception handler
@@ -45,7 +53,8 @@ django-scoped-rbac 0.11. It has several breaking changes.
    Migration `0009_resourceremoval` creates the (empty) `ResourceRemoval`
    table, which records when a resource leaves a context, so that lists'
    `Last-Modified` moves on removals from then on;
-   `0010_resource_base_manager` changes model options only (no SQL).
+   `0010_resource_base_manager` changes model options only (no SQL). Then
+   run the database check of step 7.
 10. Lists now show only what the requester may read (see Lists below). Give
     users who list a type `http.GET` on the type itself, in each context whose
     resources they should see, as well as on its list type; check your roles
@@ -716,10 +725,13 @@ Conditional request handling now comes from scrudful 0.8.
   policy, until it is fixed or deleted), and policies stored with a list
   `rbac_context` (`scrud_django.W001`, a warning). A policy the check cannot
   even evaluate is reported as E005 too, rather than crashing the check.
-  E002, E003 and E005 are errors: `check --database` fails on them and
-  `migrate` stops before migrating. Fix or delete the policies (through the
-  API or `ResourceRegistration`), or run `migrate --skip-checks` and then fix
-  or delete them. The `WorkflowPolicy` schema now also declares
+  E002, E003 and E005 are errors: `check --database` fails on them, and so
+  does `migrate` of a migrated database. On a database whose scrud_django
+  migrations are not all applied (a 0.11 database before `migrate`) the
+  check reports nothing, so that `migrate` can create the tables a fix
+  needs: migrate, then run `check --database <alias>`, then fix or delete
+  the policies it reports (through the API or `ResourceRegistration`;
+  Upgrading step 7). The `WorkflowPolicy` schema now also declares
   `restrict_update` as an array of strings. These checks catch the policy
   errors known to make later writes fail; they do not prove that a policy
   which passes them is usable.

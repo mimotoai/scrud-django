@@ -352,9 +352,12 @@ def test_system_check_reports_an_invalid_stored_policy(content, reason):
         f"WorkflowPolicy pk {invalid.pk} for {TODO!r} in context 'p' does not "
         f"pass WorkflowPolicy's checks: {reason}"
     ), found[0].msg
+    # The hint names the ways to fix it on the migrated database the check
+    # reports on (it reports nothing before migrate: test_upgrade_checks.py).
     assert found[0].hint == (
-        "Fix it (a PUT through the API checks it) or delete it: until then "
-        "every write of its type in its contexts fails with "
+        "Fix it (a PUT through the API checks it) or delete it (through the "
+        "API or ResourceRegistration.delete) on this migrated database: until "
+        "then every write of its type in its contexts fails with "
         "ImproperlyConfigured (a 500)."
     )
     # A database check: `check --database` and `migrate` run it.
