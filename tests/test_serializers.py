@@ -2,6 +2,7 @@
 fallback and ``serializer.save()`` on an existing resource."""
 
 import pytest
+from django.test import override_settings
 from rest_framework.test import APIRequestFactory
 
 from scrud_django.models import Resource
@@ -51,3 +52,35 @@ def test_serializer_save_updates_an_existing_resource():
     assert stored.etag == saved.etag != old_etag
     assert stored.resource_type.etag == saved.etag != old_type_etag
     assert Resource.objects.count() == count
+
+
+class PrimaryRouter:
+    """Every scrud_django write goes to "default", whatever database an
+    instance was read from (a read replica's, say)."""
+
+    def db_for_write(self, model, **hints):
+        return "default" if model._meta.app_label == "scrud_django" else None
+
+    def allow_relation(self, obj1, obj2, **hints):
+        return True
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_serializer_save_writes_where_the_router_sends_resource_writes():
+    resource_type = register_json_ld_resource_type()
+    resource = ResourceRegistration.register({"name": "before"}, "json-ld")
+    # As if read through a read router from a replica alias.
+    resource._state.db = "other"
+    serializer = ResourceSerializer(
+        instance=resource,
+        data={"name": "after"},
+        resource_type=resource_type,
+        context={"request": APIRequestFactory().put("/")},
+    )
+    assert serializer.is_valid(), serializer.errors
+    with override_settings(DATABASE_ROUTERS=["tests.test_serializers.PrimaryRouter"]):
+        serializer.save()
+    assert Resource.objects.using("default").get(pk=resource.pk).content == {
+        "name": "after"
+    }
+    assert not Resource.objects.using("other").exists()

@@ -45,13 +45,15 @@ class ResourceSerializer(SerializerMixin, serializers.Serializer):
     def update(self, instance, validated_data):
         """Write `validated_data` to `instance` (``serializer.save()`` on an
         existing resource) through `ResourceRegistration.update_locked`, in a
-        transaction on the database the instance was read from (else
-        `write_db`), after the ``WorkflowPolicy`` type lock. The instance is
+        transaction on `write_db` (the router's database for resource writes,
+        given the instance as its hint; the instance's own database only
+        when no router decides, as Django has it), after the
+        ``WorkflowPolicy`` type lock. The instance is
         written as it is, as the views write theirs: to keep what was
         validated from changing underneath, read it with its row locked
         (`get_locked_resource`) inside a transaction there, as the views do."""
         resource_type = self.resource_type or instance.resource_type
-        db = instance._state.db or write_db(instance)
+        db = write_db(instance)
         with transaction.atomic(using=db):
             lock_if_workflow_policy(resource_type, db)
             return ResourceRegistration.update_locked(
