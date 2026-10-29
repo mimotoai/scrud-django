@@ -5,10 +5,22 @@
 This release moves scrud-django to Django 5.2, uv, scrudful 0.8 and
 django-scoped-rbac 0.11. It has several breaking changes.
 
-### Requirements
+### Security caveat: lists are not filtered per resource
+
+List endpoints do not check each resource's RBAC context. A user who may list a
+resource type (a grant in any context) sees every resource of that type in the
+list, including resources in contexts where they have no access, and which
+their detail URL hides from them with a 404. Do not rely on RBAC contexts to
+keep resources of one type apart from users who may list that type. See
+[list-not-rbac-filtered](follow-ups.md#list-not-rbac-filtered).
+
+### Requirements and packaging
 
 * Python 3.11 or newer and Django 5.2 are required.
 * `django_jsonfield_backport` is no longer used. Remove it from `INSTALLED_APPS`.
+* django-haystack and Whoosh are no longer installed by default; they are in
+  the `search` extra. If `haystack` is in your `INSTALLED_APPS`, install
+  `scrud-django[search]`.
 
 ### Conditional requests
 
@@ -41,10 +53,32 @@ Conditional request handling now comes from scrudful 0.8.
 ### API changes
 
 * `scrud_django.decorators` is removed. Use `scrudful.rest_framework` instead.
+* `scrud_django.settings`, `scrud_django.wsgi` and `scrud_django.asgi` are
+  removed: the package no longer ships a Django project. Use your own project's
+  settings, WSGI and ASGI modules.
+* `scrud_django.utils.get_string_or_evaluate` is removed.
+* `ResourceViewSet` and `ResourceViewSetGenericFilter` set
+  `permission_classes = [IsAuthorized]`. A subclass that relied on a different
+  `DEFAULT_PERMISSION_CLASSES` must set `permission_classes` itself.
+* `scrud_django.urls` now also mounts scoped-rbac's semantic URLs at
+  `semantic/`, which serve each resource type's schema and JSON-LD context. If
+  you mount URLs yourself, include `scoped_rbac.semantic_urls` once.
+* The Role and RoleAssignment endpoints that `scrud_django.urls` includes from
+  `scoped_rbac.urls` now serve scoped-rbac 0.11's Role and RoleAssignment
+  shapes. Clients of those endpoints must follow scoped-rbac 0.11.
 * `GenericViewMixin` subclasses must provide the DRF `get_queryset()` and a
   lookup instead of `get_instance`.
 * `scrud_exception_handler` keeps scrud-django's own error bodies and passes
   every other exception to scoped-rbac's problem details handler.
+
+### Workflows
+
+* Workflow state conditions are evaluated with scoped-rbac's CEL engine,
+  `scoped_rbac.cel`, instead of `celpy`. A condition that cannot be evaluated
+  for a resource, for example because it reads a property the resource does not
+  have, still counts as not matching.
+* An invalid workflow state condition (one that does not compile) now raises
+  `django.core.exceptions.ImproperlyConfigured` when the policy is loaded.
 
 ### Known issues
 
