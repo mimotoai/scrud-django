@@ -20,10 +20,11 @@ def write_db(instance=None):
     """The database `ResourceRegistration` writes resources to
     (``router.db_for_write(Resource)``, with `instance` as the router's
     ``instance`` hint when there is one): its transactions open there, and the
-    resource, its ``ResourceContext`` rows and its type's row are all saved
-    there, so that the ``WorkflowPolicy`` lock and the writes share one
-    transaction. Route ``Resource``, ``ResourceType`` and ``ResourceContext``
-    writes to one alias (the ``scrud_django.E004`` check)."""
+    resource, its ``ResourceContext`` rows, its ``ResourceRemoval`` stamps
+    and its type's row are all saved there, so that the ``WorkflowPolicy``
+    lock and the writes share one transaction. Route ``Resource``,
+    ``ResourceType``, ``ResourceContext`` and ``ResourceRemoval`` writes to
+    one alias (the ``scrud_django.E004`` check)."""
     if instance is None:
         return router.db_for_write(Resource)
     return router.db_for_write(Resource, instance=instance)
