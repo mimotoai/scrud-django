@@ -27,86 +27,21 @@ Fix [list-validators-side-channel](#list-validators-side-channel) at the same
 time: once the list is filtered, its `ETag` and `Last-Modified` must not still
 come from the newest resource of the type in any context.
 
-<a id="workflow-context-hop"></a>
-## workflow-context-hop: the workflow policy is not enforced outside the default context
+<a id="stored-invalid-workflow-policy"></a>
+## stored-invalid-workflow-policy: a policy stored before 0.12.0 can still fail every write in its context
 
-`scrud_django/validators.py:104-108` and `:128` (`WorkflowValidator.__call__`)
-apply the default workflow policy only when the **new body** is in the default
-context, and read only the new body's contexts. The `scrud_workflow` operator
-(`scrud_django/permissions.py:22-28`) returns `True` for anything that is not a
-`TransitionCheck`. In any other context there is therefore no initial-state
-check, no transition validity check and no transition authorization. This
-predates the `modernize-uv` branch.
+Since 0.12.0 a `WorkflowPolicy` is compiled when it is written, and one whose
+state conditions are not valid CEL, or whose transitions are malformed or name
+undefined states, is refused with 400. A policy stored by an earlier version is
+not checked again: `scrud_django.workflow.workflow_policy_for` compiles it when
+a resource of its type is written in the policy's context, and the
+`ImproperlyConfigured` it raises is a 500 for every create or update of that
+type in that context (no longer in other contexts).
 
-Impact: a user can move a resource out of the context whose policy restricts
-them. Example: a user who may only cancel a ToDo in `""` but has write in `"w"`
-sends `PUT {"status": "done", "rbac_context": "w"}` and gets 200; the resource
-is stored as `done` in `"w"`. The post-save check passes because the user may
-write in `"w"`, and the old context's policy is never consulted.
-
-Suggested fix: validate under the policies of **both** the stored contexts and
-the new ones (all-of); in each context with no policy, fall back to the
-defaults; and authorize the transition in the old contexts too. See
-[workflow-validator-undefined-state](#workflow-validator-undefined-state),
-whose fix must be done together with this one. Tests: the PUT above must be
-400 or 403 and leave the stored resource unchanged; a create in `"w"` with an
-initial state the default policy forbids is 400.
-
-<a id="workflow-validator-undefined-state"></a>
-## workflow-validator-undefined-state: a stored WorkflowPolicy breaks every write of its type
-
-`scrud_django/validators.py:86-102` (`WorkflowValidator.__call__`) reads and
-writes `self.workflow_policies`, which is never defined, and keys it on
-`policy.version`, which `Resource` does not have. It also loads **every**
-stored policy for the resource type, from every context, and applies all of
-them. `scrud_django/mixins/resource_mixin.py:134-148` (`get_workflow_policy`,
-run by `Resource.save()`) takes `.first()` policy of the type from any context
-for a resource in the default context (since the `""` fix, a resource in the
-default context goes through this cross-context `.first()` lookup whenever any
-stored policy of the type exists), and reads `.content` of a
-`.first()` that is `None` when the resource's own context has no policy. This
-predates the `modernize-uv` branch.
-
-Impact (a denial of service any policy writer can cause):
-
-* Any user who may POST a `WorkflowPolicy` (`http.POST` on
-  `http://api.openteams.com/json-ld/WorkflowPolicy`) in **their own** context
-  can store a policy for a type, for example `tests://ToDo`. From then on every
-  create or update of that type, by every user and in every context, fails with
-  a 500 (`AttributeError: 'WorkflowValidator' object has no attribute
-  'workflow_policies'`).
-* A stored policy whose state conditions are not valid CEL is accepted (201:
-  nothing compiles it on write). Every save of a resource of that type then
-  raises `ImproperlyConfigured` from `get_workflow_policy` (and, once the
-  `AttributeError` is fixed, from the validator too): again a 500 for everyone.
-
-The naive fix makes it worse. Defining `self.workflow_policies = {}` and a
-`version` turns the 500 into cross-context policy injection: the validator
-applies every stored policy of the type, so a permissive policy stored in
-"attacker" (for example `"initial_states": {"any": "true"}`) replaces the
-default policy everywhere. A user in the default context can then create a
-ToDo directly in state "done", which the default policy forbids.
-
-Suggested fix:
-
-* Scope the policy lookup per context, in the validator and
-  in `get_workflow_policy` alike (`rbac_contexts_of`, so absent, `None` and `""`
-  are the default context), and fall back to the default policies when that
-  context has none. Never use `.first()` of the type across contexts, and never
-  dereference a `.first()` that can be `None`. Scoping to the destination
-  context alone is not enough: it still allows the context hop in
-  [workflow-context-hop](#workflow-context-hop). The lookup must cover the
-  stored contexts **and** the new ones.
-* Validate a `WorkflowPolicy` on write: compile its conditions and answer 400
-  for invalid CEL, so a bad policy is never stored.
-* Treat POST (and PUT/DELETE) on `WorkflowPolicy` as an admin-level grant in
-  the docs and default roles: a policy governs every resource of its type in
-  its context.
-
-Tests: a user with POST on WorkflowPolicy only in "attacker" stores a
-permissive ToDo policy; a ToDo create in "" still gets the default policy (400
-for an initial "done"), and does not 500. A policy with invalid CEL is a 400 on
-write.
+Suggested fix: a system check or management command that compiles every stored
+`WorkflowPolicy` and reports the invalid ones, run on upgrade. Test: store an
+invalid policy with `ResourceRegistration.register` and expect the check to
+name it.
 
 <a id="cached-property-called"></a>
 ## cached-property-called: `SerializerMixin.resource_type` calls a `cached_property` value

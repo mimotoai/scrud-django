@@ -67,6 +67,10 @@ Conditional request handling now comes from scrudful 0.8.
   leaving the key out does. Before, a body with `"rbac_context": ""` skipped the
   default workflow policy, so its initial-state check, transition validity and
   transition authorization did not apply.
+* Workflow transitions are authorized in every context the resource is in
+  **and** every context the write moves it to (see Workflows below). A user
+  who may only make some transitions in one context can no longer make others
+  by moving the resource into a context where they may write.
 
 ### API changes
 
@@ -96,6 +100,35 @@ Conditional request handling now comes from scrudful 0.8.
 
 ### Workflows
 
+* Workflow policies now apply in every context, not only the default context
+  `""`. The policy in effect for a resource type in a context is the stored
+  `WorkflowPolicy` for that type whose `rbac_context` is that context (one that
+  names no `rbac_context` is in `""`; when several match, the most recently
+  modified wins), else the type's default from
+  `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`. A policy stored in one context
+  no longer affects any other. Before, writes outside `""` skipped the
+  initial-state check, transition validity and transition authorization
+  entirely, and storing any `WorkflowPolicy` for a type made every later write
+  of that type fail with 500. Resources outside `""` whose bodies are not a
+  valid initial state under the default policy (for example a ToDo with no
+  `status`) are now refused with 400.
+* A create must be a valid initial state under the policy of every context it
+  names. An update must be a valid transition, and the user must be authorized
+  for it (the `scrud_workflow` operator's `authorized_transitions`), under the
+  policy of every context the resource is in and every context the body names.
+  So moving a resource between contexts needs the transition in both.
+* `scrud_django.workflow.workflow_policy_for(resource_type, context)` is the
+  one policy lookup; the `WorkflowValidator` and
+  `ResourceMixin.get_workflow_policy` (which picks the policy whose transition
+  `scrud_post_save` reports) both use it.
+* A `WorkflowPolicy` is compiled when it is created or updated. One with a state
+  condition that is not valid CEL, or with a transition that is not an object
+  with `from` and `to` naming defined states, is refused with 400 and nothing is
+  stored. A policy stored by an earlier version is not rechecked
+  ([stored-invalid-workflow-policy](follow-ups.md#stored-invalid-workflow-policy)).
+* A `WorkflowPolicy` governs every resource of its type in its context, for
+  every user there. Treat `http.POST`, `http.PUT` and `http.DELETE` on
+  `http://api.openteams.com/json-ld/WorkflowPolicy` as an administrative grant.
 * Workflow state conditions are evaluated with scoped-rbac's CEL engine,
   `scoped_rbac.cel`, instead of `celpy`. A condition that cannot be evaluated
   for a resource, for example because it reads a property the resource does not
@@ -113,10 +146,6 @@ Conditional request handling now comes from scrudful 0.8.
 
 See [follow-ups](follow-ups.md) for known issues. In particular:
 
-* The default workflow policy is enforced only for resources in the default
-  context. In any other context a user can move a resource to a state, or into
-  another context, that the policy would forbid
-  ([workflow-context-hop](follow-ups.md#workflow-context-hop)).
 * An empty body sent as `application/json` is read as `{}`
   ([empty-json-body](follow-ups.md#empty-json-body)).
 * Search-index and workflow-action side effects of a write that is rolled back
