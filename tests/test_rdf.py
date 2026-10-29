@@ -1,6 +1,7 @@
 """Tests to validate that the endpoints are returning valid JSON-LD with the expected
 and desired properties
 """
+
 import pytest
 from django.urls import reverse
 from rdflib import URIRef

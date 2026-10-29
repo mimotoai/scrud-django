@@ -1,6 +1,6 @@
-from functools import cached_property
 import json
-from datetime import timezone
+from datetime import UTC
+from functools import cached_property
 
 from django.utils.http import http_date, quote_etag
 from rest_framework.reverse import reverse
@@ -40,7 +40,7 @@ class GenericSerializerMixin:
         if request is None and context is not None:
             request = context.get("request", None)
         last_modified = http_date(
-            instance.modified_at.replace(tzinfo=timezone.utc).timestamp()
+            instance.modified_at.replace(tzinfo=UTC).timestamp()
         )
         return {
             'href': self.link_to_self(instance, request),
@@ -65,7 +65,11 @@ class GenericSerializerMixin:
 class SerializerMixin(GenericSerializerMixin):
     @cached_property
     def resource_type(self):
-        return self._resource_type if self._resource_type is not None else super().resource_type()
+        return (
+            self._resource_type
+            if self._resource_type is not None
+            else super().resource_type()
+        )
 
     def to_content(self, instance, context=None):
         if type(instance.content) is str:

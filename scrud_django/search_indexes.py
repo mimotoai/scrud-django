@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import UTC
 
 from django.utils.http import http_date
 from haystack import indexes
@@ -20,7 +20,7 @@ class ResourceIndex(indexes.SearchIndex, indexes.Indexable):
         self.prepared_data = super().prepare(obj)
         self.prepared_data["type_uri"] = obj.resource_type.type_uri
         self.prepared_data["modified_at"] = http_date(
-            obj.modified_at.replace(tzinfo=timezone.utc).timestamp()
+            obj.modified_at.replace(tzinfo=UTC).timestamp()
         )
         self.prepared_data["etag"] = obj.etag
         indexing_policy = self.get_indexing_policy(obj)

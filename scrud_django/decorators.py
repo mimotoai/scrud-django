@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import UTC
 from functools import partial, update_wrapper
 
 from django.utils.cache import get_conditional_response
@@ -59,7 +59,8 @@ class ScrudfulViewFunc:
             if missing_required_headers:
                 # TODO Define standard error json
                 response = Response(
-                    {"missing-required-headers": missing_required_headers}, status=400,
+                    {"missing-required-headers": missing_required_headers},
+                    status=400,
                 )
                 return response
 
@@ -69,7 +70,7 @@ class ScrudfulViewFunc:
                 last_modified = self.last_modified_func(*args, **kwargs)
                 if last_modified:
                     return http_date(
-                        last_modified.replace(tzinfo=timezone.utc).timestamp()
+                        last_modified.replace(tzinfo=UTC).timestamp()
                     )
             return None
 
@@ -123,11 +124,19 @@ class ScrudfulViewFunc:
         link = self.schema_link(*args, **kwargs)
         if link:
             link_rel = (
-                get_string_or_evaluate(self.schema_rel_or_func, *args, **kwargs,)
+                get_string_or_evaluate(
+                    self.schema_rel_or_func,
+                    *args,
+                    **kwargs,
+                )
                 or "describedBy"
             )
             link_type = (
-                get_string_or_evaluate(self.schema_type_or_func, *args, **kwargs,)
+                get_string_or_evaluate(
+                    self.schema_type_or_func,
+                    *args,
+                    **kwargs,
+                )
                 or "application/json"
             )
             return link_content(link, link_rel, link_type)
@@ -140,11 +149,19 @@ class ScrudfulViewFunc:
         link = self.context_link(*args, **kwargs)
         if link:
             link_rel = (
-                get_string_or_evaluate(self.context_rel_or_func, *args, **kwargs,)
+                get_string_or_evaluate(
+                    self.context_rel_or_func,
+                    *args,
+                    **kwargs,
+                )
                 or "http://www.w3.org/ns/json-ld#context"
             )
             link_type = (
-                get_string_or_evaluate(self.context_type_or_func, *args, **kwargs,)
+                get_string_or_evaluate(
+                    self.context_type_or_func,
+                    *args,
+                    **kwargs,
+                )
                 or "application/ld+json"
             )
             return link_content(link, link_rel, link_type)
@@ -163,6 +180,7 @@ def scrudful(
     http_schema_or_func=None,
 ):
     """Decorator to make a view method SCRUDful"""
+
     # TODO what about 400 Bad Request context and schema?
     def decorator(view_method):
         return ScrudfulViewFunc(
@@ -425,7 +443,7 @@ def options(view_instance, request, *args, **kwargs):
 
 
 def scrudful_viewset(cls):
-    setattr(cls, "options", options)
+    cls.options = options
     meta = getattr(cls, "Meta", None)
     etag_func = getattr(meta, "etag_func", None)
     last_modified_func = getattr(meta, "last_modified_func", None)
@@ -462,6 +480,6 @@ def scrudful_viewset(cls):
             context_rel_or_func=getattr(meta, "list_context_rel_or_func", None),
             context_type_or_func=getattr(meta, "list_context_type_or_func", None),
         )
-        list_method = getattr(cls, "list")
-        setattr(cls, "list", scrudful_list(list_method))
+        list_method = cls.list
+        cls.list = scrudful_list(list_method)
     return cls

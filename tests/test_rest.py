@@ -40,7 +40,10 @@ def test_resource_get_list(regular_login, partner_profiles):
 @pytest.mark.django_db
 @scripted_test
 def test_resource_get_detail(regular_login, partner_profiles):
-    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={'slug': partner_profiles.id},)
+    url = reverse(
+        RESOURCE_ENDPOINT_DETAIL_NAME,
+        kwargs={'slug': partner_profiles.id},
+    )
     assert url == f'/partner-profiles/{partner_profiles.id}/'
 
     Given.http.force_authenticate(regular_login)
@@ -81,7 +84,9 @@ def test_resource_post_bad_request(admin_login, partner_profile_post_data):
 
     Given.http.force_authenticate(admin_login)
     And.http.post(
-        url, data=json.dumps(serialized_data), content_type='application/json',
+        url,
+        data=json.dumps(serialized_data),
+        content_type='application/json',
     )
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
     And.http.content_type_is('application/problem+json')

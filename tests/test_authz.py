@@ -35,12 +35,16 @@ def test_unauthenticated_authorized_post(partner_profiles):
     from scoped_rbac.permissions import policy_for
 
     dummy_request = APIRequestFactory().post(url, {})
-    setattr(dummy_request, "user", AnonymousUser())
+    dummy_request.user = AnonymousUser()
     policy = policy_for(dummy_request)
 
-    from scoped_rbac.conf import policy_for_unauthenticated
 
     When.http.post(
-        url, {"name": "Some Name", "rbac_context": "",}, format="json",  # noqa: E231
+        url,
+        {
+            "name": "Some Name",
+            "rbac_context": "",
+        },
+        format="json",  # noqa: E231
     )
     Then.http.status_code_is(status.HTTP_201_CREATED)

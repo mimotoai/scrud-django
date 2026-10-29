@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import timezone
+from datetime import UTC
 from http import server
 from multiprocessing import Process
 from uuid import uuid4
@@ -47,7 +47,7 @@ RESOURCE_ENDPOINT_LIST_NAME = f"{RESOURCE_ENDPOINT_PREFIX}-list"
 
 
 def last_modified_for(resource):
-    return http_date(resource.modified_at.replace(tzinfo=timezone.utc).timestamp())
+    return http_date(resource.modified_at.replace(tzinfo=UTC).timestamp())
 
 
 def serialize_page(resources):
@@ -77,7 +77,11 @@ def serialize_resource(resource):
 @pytest.mark.django_db
 @pytest.fixture
 def role_allow_all():
-    role = Role(definition=True, etag=uuid4().hex, modified_at=now(),)
+    role = Role(
+        definition=True,
+        etag=uuid4().hex,
+        modified_at=now(),
+    )
     role.save()
     return role
 
@@ -86,9 +90,9 @@ def role_allow_all():
 @pytest.fixture
 def role_todo_creator():
     role = Role(
-        definition = {
-            "http.GET": [ "tests://ToDo" ],
-            "http.POST": [ "tests://ToDo" ],
+        definition={
+            "http.GET": ["tests://ToDo"],
+            "http.POST": ["tests://ToDo"],
             "http.PUT": {
                 "tests://ToDo": {
                     "condition": {
@@ -96,7 +100,7 @@ def role_todo_creator():
                         "authorized_transitions": ["cancel"],
                     }
                 }
-            }
+            },
         },
         etag=uuid4().hex,
         modified_at=now(),
@@ -171,7 +175,7 @@ def partner_profile_post_data():
         'static',
         'post_partner_profile.json',
     )
-    with open(path, 'r') as f:
+    with open(path) as f:
         return json.loads(f.read())
 
 

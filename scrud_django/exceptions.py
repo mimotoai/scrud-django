@@ -1,5 +1,4 @@
 from rest_framework.exceptions import APIException
-from rest_framework.reverse import reverse
 from rest_framework.views import exception_handler as drf_exception_handler
 
 

@@ -1,4 +1,3 @@
-from typing import Dict, Tuple
 
 from django.db import models
 from django.utils.translation import gettext_lazy as _
@@ -24,7 +23,9 @@ class ScrudfulMixin(models.Model):
         abstract = True
 
     resource_type = models.ForeignKey(
-        ResourceType, on_delete=models.PROTECT, verbose_name=_('resource type'),
+        ResourceType,
+        on_delete=models.PROTECT,
+        verbose_name=_('resource type'),
     )
     modified_at = models.DateTimeField()
     etag = models.CharField(max_length=40)
@@ -63,7 +64,7 @@ class ResourceMixin(ScrudfulMixin):
             action=action,
         )
 
-    def delete(self, using=None, keep_parents=False) -> Tuple[int, Dict[str, int]]:
+    def delete(self, using=None, keep_parents=False) -> tuple[int, dict[str, int]]:
         res = super().delete(using=using, keep_parents=keep_parents)
         scrud_post_delete.send(
             sender=self.__class__,

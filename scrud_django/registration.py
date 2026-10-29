@@ -1,7 +1,6 @@
 import importlib.resources
 import json
 import logging
-from django.utils import timezone
 from uuid import uuid4
 
 import reversion
@@ -10,9 +9,10 @@ from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
 from django.shortcuts import get_list_or_404, get_object_or_404
 from django.urls import path
+from django.utils import timezone
 
 from scrud_django import services
-from scrud_django.models import Resource, ResourceType, resource
+from scrud_django.models import Resource, ResourceType
 
 
 def get_resource_type_for(slug):
@@ -110,7 +110,11 @@ class ResourceTypeRegistration:
     def register_urls(self):
         """Register resource type url."""
         scrud_list = self.viewset_class.as_view(
-            {'get': 'list', 'head': 'list', 'post': 'create',},  # noqa: E231
+            {
+                'get': 'list',
+                'head': 'list',
+                'post': 'create',
+            },  # noqa: E231
             resource_type_name=self.resource_type.slug,
         )
         scrud_detail = self.viewset_class.as_view(

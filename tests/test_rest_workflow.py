@@ -3,21 +3,11 @@ import json
 import pytest
 from rest_framework import status
 from rest_framework.reverse import reverse
-from safetydance import step_data
 from safetydance_django.test import *
 from safetydance_django.test import http_response
-from safetydance_test import And, Given, Then, When, scripted_test
+from safetydance_test import Given, Then, When, scripted_test
 
 from .fixtures import *  # noqa
-from .fixtures import (
-    RESOURCE_ENDPOINT_DETAIL_NAME,
-    RESOURCE_ENDPOINT_LIST_NAME,
-    last_modified_for,
-    role_todo_creator,
-    serialize_page,
-    serialize_resource,
-    todo_creator_login,
-)
 from .steps import *
 
 

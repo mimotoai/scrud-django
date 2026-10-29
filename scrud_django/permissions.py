@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from scrud_django.exceptions import WorkflowTransitionError
 
 
 @dataclass
@@ -12,7 +11,7 @@ def authorized_transitions(resource, configuration):
     to enable the `WorkflowValidator` to instead look to see if there is a registered
     policy that dictates the authorized transitions. Otherwise, the workflow
     validation would run twice.
-    
+
     To use this `scoped_rbac.policy.Operator`, define an operator condition that
     specifies the `allowed_transitions` property. Here's an example: ```json {
     "condition": "operator", "allowed_transitions": ["start"] }
@@ -24,5 +23,5 @@ def authorized_transitions(resource, configuration):
         if resource.transition in configuration["authorized_transitions"]:
             return True
         else:
-          return False
+            return False
     return True

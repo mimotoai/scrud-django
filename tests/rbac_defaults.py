@@ -8,7 +8,9 @@ policy_for_unauthenticated = policy_from_json(
     {
         DEFAULT_CONTEXT: {
             "http.OPTIONS": True,
-            "http.POST": [TYPE_URI_PARTNER_PROFILES,],  # noqa: E231
+            "http.POST": [
+                TYPE_URI_PARTNER_PROFILES,
+            ],  # noqa: E231
         },
     }
 )

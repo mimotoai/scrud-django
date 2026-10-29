@@ -109,9 +109,9 @@ def json_path_matches(expr, condition):
     json_path_match = compiled_expr.find(data)
     assert len(json_path_match) > 0, data
     match = json_path_match[0].value
-    assert condition(
-        json_path_match
-    ), f"expr: {expr} \ncondition: {condition}, \n match: {match}"
+    assert condition(json_path_match), (
+        f"expr: {expr} \ncondition: {condition}, \n match: {match}"
+    )
 
 
 def resource_envelope_json_is(resource_data: dict):

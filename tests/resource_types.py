@@ -1,4 +1,5 @@
 import importlib.resources
+
 from scrud_django import registration
 
 

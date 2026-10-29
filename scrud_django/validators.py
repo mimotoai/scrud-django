@@ -1,12 +1,12 @@
 import fastjsonschema
-
-from scoped_rbac.permissions import http_action_iri_for, policy_for, DEFAULT_CONTEXT
+from scoped_rbac.permissions import DEFAULT_CONTEXT, http_action_iri_for, policy_for
 from scoped_rbac.policy import Permission
+
 from scrud_django.conf import default_workflow_policies
 from scrud_django.exceptions import JsonValidationError, WorkflowTransitionError
 from scrud_django.models import Resource, ResourceType
-from scrud_django.registration import workflow_policy_resource_type
 from scrud_django.permissions import TransitionCheck
+from scrud_django.registration import workflow_policy_resource_type
 from scrud_django.workflow import TransitionData, WorkflowPolicy
 
 
@@ -94,9 +94,9 @@ class WorkflowValidator:
                 )
                 if workflow_policy is None:
                     workflow_policy = WorkflowPolicy(policy.content)
-                    self.workflow_policies[
-                        (policy.id, policy.version)
-                    ] = workflow_policy
+                    self.workflow_policies[(policy.id, policy.version)] = (
+                        workflow_policy
+                    )
                 self.apply(workflow_policy, data, context)
         elif (
             data.get("rbac_context", None) is None
@@ -112,7 +112,9 @@ class WorkflowValidator:
             workflow_policy.validate_initial_state(data)
             transition_data = TransitionData(None, data, "__INITIALIZE__")
         else:
-            transition_data = workflow_policy.determine_transition(data, instance.content)
+            transition_data = workflow_policy.determine_transition(
+                data, instance.content
+            )
         request = context.context["request"]
         permissions_policy = policy_for(request)
         permission = Permission(

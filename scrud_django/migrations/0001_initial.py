@@ -6,7 +6,6 @@ from django_jsonfield_backport.models import JSONField
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = []

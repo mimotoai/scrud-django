@@ -5,7 +5,6 @@ from django_jsonfield_backport.models import JSONField
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ('scrud_django', '0004_auto_20210306_1600'),
     ]

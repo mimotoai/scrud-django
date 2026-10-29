@@ -1,4 +1,3 @@
-from typing import Optional
 
 import reversion
 from django.shortcuts import get_object_or_404
@@ -22,7 +21,7 @@ class ResourceViewMixin:
     pagination_class = StandardResultsSetPagination
 
     # scrud variable
-    resource_type_name: Optional[str] = None
+    resource_type_name: str | None = None
 
     class Meta:
         def etag_func(view_instance, request, slug: str):
@@ -56,13 +55,17 @@ class ResourceViewMixin:
         def list_schema_link_or_func(view_instance, request, *args, **kwargs):
             resource_type = view_instance.get_resource_type()
             return reverse(
-                "collections-json-schema", args=[resource_type.slug], request=request,
+                "collections-json-schema",
+                args=[resource_type.slug],
+                request=request,
             )
 
         def list_context_link_or_func(view_instance, request, *args, **kwargs):
             resource_type = view_instance.get_resource_type()
             return reverse(
-                "collections-json-ld", args=[resource_type.slug], request=request,
+                "collections-json-ld",
+                args=[resource_type.slug],
+                request=request,
             )
 
     def get_resource_type(self):
@@ -110,7 +113,9 @@ class ResourceViewMixin:
         )
         serializer.is_valid(raise_exception=True)
         instance = ResourceRegistration.update(
-            content=request.data, register_type=self.resource_type_name, slug=slug,
+            content=request.data,
+            register_type=self.resource_type_name,
+            slug=slug,
         )
         serializer = self.get_serializer(instance=instance, many=False)
         return Response(serializer.data)
@@ -118,7 +123,8 @@ class ResourceViewMixin:
     def destroy(self, request, slug: str):
         """Update a Resource."""
         ResourceRegistration.delete(
-            register_type=self.resource_type_name, slug=slug,
+            register_type=self.resource_type_name,
+            slug=slug,
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -144,9 +150,8 @@ class ResourceViewMixin:
 
 
 class GenericViewMixin:
-
     # scrud variable
-    resource_type_name: Optional[str] = None
+    resource_type_name: str | None = None
 
     class Meta:
         def etag_func(view_instance, request, slug: str):
@@ -180,13 +185,17 @@ class GenericViewMixin:
         def list_schema_link_or_func(view_instance, request, *args, **kwargs):
             resource_type = view_instance.get_resource_type()
             return reverse(
-                "collections-json-schema", args=[resource_type.slug], request=request,
+                "collections-json-schema",
+                args=[resource_type.slug],
+                request=request,
             )
 
         def list_context_link_or_func(view_instance, request, *args, **kwargs):
             resource_type = view_instance.get_resource_type()
             return reverse(
-                "collections-json-ld", args=[resource_type.slug], request=request,
+                "collections-json-ld",
+                args=[resource_type.slug],
+                request=request,
             )
 
     def get_resource_type(self):
@@ -194,9 +203,9 @@ class GenericViewMixin:
 
     def get_instance(self, request, slug: str):
         """
-            Subclasses **MUST** override this method.
-            Return the instance from the DB, used when updating,
-            retrieving and deleting the instance.
+        Subclasses **MUST** override this method.
+        Return the instance from the DB, used when updating,
+        retrieving and deleting the instance.
         """
         raise NotImplementedError()
 
@@ -205,7 +214,7 @@ class GenericViewMixin:
         return super().get_serializer(*args, **kwargs)
 
     def create(self, request):
-        """ Add a Resource."""
+        """Add a Resource."""
         raise NotImplementedError()
 
     def update(self, request, slug: str):
