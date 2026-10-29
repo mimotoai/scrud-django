@@ -4,7 +4,6 @@ from contextlib import contextmanager
 
 import fastjsonschema
 from django.core.exceptions import ImproperlyConfigured
-from rest_framework.exceptions import ValidationError
 from scoped_rbac import access
 from scoped_rbac.permissions import drf_error, http_action_iri_for, policy_for
 from scoped_rbac.policy import Permission, RequestResource
@@ -13,6 +12,7 @@ from scrud_django.exceptions import (
     HiddenWorkflowTransitionError,
     JsonSchemaInvalidError,
     JsonValidationError,
+    WorkflowPolicyInvalidError,
     WorkflowTransitionError,
 )
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
@@ -156,7 +156,7 @@ class JsonValidator:
 
 
 def check_policy_is_unique(content, pk=None):
-    """Refuse (400, ``{"workflow_policy": [...]}``) the ``WorkflowPolicy``
+    """Refuse (`WorkflowPolicyInvalidError`, 400) the ``WorkflowPolicy``
     `content` (of the resource `pk`, ``None`` for a create) when another
     stored policy for its type applies in one of its contexts. Run by
     `WorkflowValidator.validate_policy`, and again after the save under
@@ -170,14 +170,9 @@ def check_policy_is_unique(content, pk=None):
             if policy.pk != pk
         ]
         if others:
-            raise ValidationError(
-                {
-                    "workflow_policy": [
-                        f"A WorkflowPolicy for {resource_type!r} already exists "
-                        f"in context {rbac_context!r}; update or delete it "
-                        "instead."
-                    ]
-                }
+            raise WorkflowPolicyInvalidError(
+                f"A WorkflowPolicy for {resource_type!r} already exists in "
+                f"context {rbac_context!r}; update or delete it instead."
             )
 
 
@@ -280,24 +275,21 @@ class WorkflowValidator:
             raise
 
     def validate_policy(self, data, instance):
-        """Refuse (400, ``{"workflow_policy": [...]}``) a ``WorkflowPolicy``
-        write `data` (replacing `instance`, ``None`` for a create) that fails
-        `WorkflowPolicy`'s checks, whose ``rbac_context`` is present but not a
-        string (a policy is in exactly one context), or that would be a second
-        stored policy for its type in its context."""
-
-        def refuse(message):
-            raise ValidationError({"workflow_policy": [message]})
-
+        """Refuse (`WorkflowPolicyInvalidError`, 400, with the reason as its
+        ``detail``) a ``WorkflowPolicy`` write `data` (replacing `instance`,
+        ``None`` for a create) that fails `WorkflowPolicy`'s checks, whose
+        ``rbac_context`` is present but not a string (a policy is in exactly
+        one context), or that would be a second stored policy for its type in
+        its context."""
         if "rbac_context" in data and not isinstance(data["rbac_context"], str):
-            refuse(
+            raise WorkflowPolicyInvalidError(
                 "A WorkflowPolicy's rbac_context must be a string (one context), "
                 f"not {data['rbac_context']!r}."
             )
         try:
             WorkflowPolicy(data)
         except ImproperlyConfigured as e:
-            raise ValidationError({"workflow_policy": [str(e)]}) from e
+            raise WorkflowPolicyInvalidError(str(e)) from e
         check_policy_is_unique(data, instance.pk if instance is not None else None)
 
     def transition_for(self, workflow_policy, data, instance):

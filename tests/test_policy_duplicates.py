@@ -66,7 +66,11 @@ def test_a_racing_duplicate_is_refused_under_the_lock():
             format="json",
         )
     assert response.status_code == 400, response.content
-    assert "workflow_policy" in response.json()["errors"], response.json()
+    body = response.json()
+    assert (
+        body["type"] == "https://api.openteams.com/http-problem/workflow-policy-invalid"
+    ), body
+    assert "already exists in context 'p'" in body["detail"], body
     assert policies() == [first]
     lock.assert_called_once_with("default")
 

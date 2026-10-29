@@ -92,6 +92,24 @@ class RbacContextInvalidError(ScrudException):
         self.title = "Invalid rbac_context"
 
 
+class WorkflowPolicyInvalidError(ScrudException):
+    """A ``WorkflowPolicy`` write that is refused, with the reason as
+    ``detail``: the policy fails ``WorkflowPolicy``'s checks (for example a
+    state condition that does not compile; the ``ImproperlyConfigured``
+    message), names a context that is not a string, or would be a second
+    stored policy for its type in its context. The reason is about the
+    policy in the request body, which its writer sent."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "workflow_policy_invalid"
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.type = "https://api.openteams.com/http-problem/workflow-policy-invalid"
+        self.title = "Invalid workflow policy"
+
+
 class StoredPolicyReference:
     """A stored ``WorkflowPolicy`` resource, as a workflow error names it: by its
     detail URL, never its content, which a writer refused because of it may not

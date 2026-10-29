@@ -18,6 +18,7 @@ from scrud_django.exceptions import (
     JsonValidationError,
     StoredPolicyReference,
     WorkflowInvalidStateError,
+    WorkflowPolicyInvalidError,
     scrud_exception_handler,
 )
 from scrud_django.registration import (
@@ -172,6 +173,45 @@ def test_unauthorized_transition_is_400_under_any_handler(handler):
     json.loads(response.content)
 
 
+INVALID_CONDITION_POLICY = dict(
+    NO_TRANSITIONS_POLICY, states={"in progress": "status == "}
+)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("handler", HANDLERS)
+def test_invalid_workflow_policy_is_400_under_any_handler(handler):
+    reverse("todos-list")
+    workflow_policy_resource_type()
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    with with_handler(handler):
+        response = client_for(admin).post(
+            reverse("workflow-policies-list"), INVALID_CONDITION_POLICY, format="json"
+        )
+    assert response.status_code == 400, response.content
+    json.loads(response.content)
+
+
+@pytest.mark.django_db
+def test_scrud_handler_body_for_an_invalid_workflow_policy():
+    reverse("todos-list")
+    workflow_policy_resource_type()
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    response = client_for(admin).post(
+        reverse("workflow-policies-list"), INVALID_CONDITION_POLICY, format="json"
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert set(body) == {"type", "title", "detail", "status"}, body
+    assert body["type"] == (
+        "https://api.openteams.com/http-problem/workflow-policy-invalid"
+    )
+    assert body["title"] == "Invalid workflow policy"
+    assert body["detail"].startswith("Invalid workflow state condition: "), body
+    assert body["status"] == 400
+    assert response["Content-Type"].startswith("application/problem+json")
+
+
 @pytest.mark.django_db
 def test_scrud_handler_body_for_a_stored_policy_error():
     stored = store_policy(NO_TRANSITIONS_POLICY)
@@ -221,3 +261,7 @@ def test_scrud_errors_carry_an_error_detail_with_a_code():
     assert isinstance(json_exc.detail, ErrorDetail)
     assert json_exc.detail.code == "json_invalid"
     assert str(json_exc.detail) == "data must be object"
+    policy_exc = WorkflowPolicyInvalidError("Invalid workflow state condition: x")
+    assert isinstance(policy_exc.detail, ErrorDetail)
+    assert policy_exc.detail.code == "workflow_policy_invalid"
+    assert str(policy_exc.detail) == "Invalid workflow state condition: x"

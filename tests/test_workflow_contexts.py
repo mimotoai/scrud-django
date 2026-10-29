@@ -38,6 +38,9 @@ from .steps import *  # noqa: F403, F401
 TODO = "tests://ToDo"
 WORKFLOW_POLICY = "http://api.openteams.com/json-ld/WorkflowPolicy"
 WORKFLOW_ERROR = "http://api.openteams.com/http-problem/workflow-transition-invalid"
+WORKFLOW_POLICY_INVALID = (
+    "https://api.openteams.com/http-problem/workflow-policy-invalid"
+)
 JSON_INVALID = "https://api.openteams.com/http-problem/json-invalid"
 ALL_METHODS = ("http.GET", "http.POST", "http.PUT", "http.DELETE")
 
@@ -321,9 +324,17 @@ def put_policy(stored, content):
     )
 
 
-def assert_policy_refused():
+def assert_policy_refused(reason=None):
+    """A ``WorkflowPolicy`` write refused with the policy problem, whose
+    ``detail`` says why (and contains `reason`, if given)."""
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
-    assert "workflow_policy" in Http.response.json()["errors"], Http.response.json()
+    body = Http.response.json()
+    assert body["type"] == WORKFLOW_POLICY_INVALID, body
+    assert body["title"] == "Invalid workflow policy", body
+    assert body["status"] == 400, body
+    assert isinstance(body["detail"], str) and body["detail"], body
+    if reason is not None:
+        assert reason in body["detail"], body
 
 
 def policy_resources():
@@ -341,7 +352,7 @@ def test_second_policy_for_a_type_and_context_is_refused(context):
     post_policy(
         dict(PERMISSIVE_POLICY, rbac_context=context, initial_states={"x": "true"})
     )
-    assert_policy_refused()
+    assert_policy_refused(f"already exists in context {context!r}")
     assert policy_resources() == [first]
     assert workflow_policy_for(TODO, context).resource == first
 
@@ -352,7 +363,7 @@ def test_second_policy_naming_no_context_is_refused_in_the_default_context():
     first = store_policy(dict(PERMISSIVE_POLICY, rbac_context=DEFAULT_CONTEXT))
     Given.http.force_authenticate(policy_writer())
     post_policy(dict(PERMISSIVE_POLICY))
-    assert_policy_refused()
+    assert_policy_refused("already exists in context ''")
     assert policy_resources() == [first]
 
 
@@ -380,7 +391,7 @@ def test_moving_a_policy_into_a_context_that_has_one_is_refused():
     other = store_policy(dict(PERMISSIVE_POLICY, rbac_context="q"))
     Given.http.force_authenticate(policy_writer())
     put_policy(other, dict(PERMISSIVE_POLICY, rbac_context="p"))
-    assert_policy_refused()
+    assert_policy_refused("already exists in context 'p'")
     assert_unchanged(other)
 
 
@@ -406,7 +417,7 @@ def test_post_only_writer_cannot_supersede_a_stored_policy():
     user = user_with(({"http.POST": [WORKFLOW_POLICY]}, "x"))
     Given.http.force_authenticate(user)
     post_policy(dict(PERMISSIVE_POLICY, rbac_context="x"))
-    assert_policy_refused()
+    assert_policy_refused("already exists in context 'x'")
     assert policy_resources() == [admin_policy]
     assert workflow_policy_for(TODO, "x").resource == admin_policy
 
@@ -427,15 +438,15 @@ def test_several_stored_policies_in_a_context_fail_closed():
     "rbac_context", [["a", "b"], [], None, 5, {"@id": "x"}], ids=repr
 )
 def test_policy_rbac_context_must_be_a_string(rbac_context):
-    from rest_framework.exceptions import ValidationError
-
+    from scrud_django.exceptions import WorkflowPolicyInvalidError
     from scrud_django.validators import WorkflowValidator
 
-    with pytest.raises(ValidationError) as excinfo:
+    with pytest.raises(WorkflowPolicyInvalidError) as excinfo:
         WorkflowValidator().validate_policy(
             dict(PERMISSIVE_POLICY, rbac_context=rbac_context), None
         )
-    assert "workflow_policy" in excinfo.value.detail
+    assert "rbac_context must be a string" in str(excinfo.value.detail)
+    assert excinfo.value.detail.code == "workflow_policy_invalid"
 
 
 @pytest.mark.django_db
@@ -454,7 +465,7 @@ def test_policy_with_a_non_string_context_is_refused(admin_login, rbac_context):
     before = Resource.objects.count()
     Given.http.force_authenticate(admin_login)
     post_policy(dict(PERMISSIVE_POLICY, rbac_context=rbac_context))
-    assert_policy_refused()
+    assert_policy_refused("rbac_context must be a string")
     assert Resource.objects.count() == before
 
 
@@ -471,7 +482,7 @@ def test_reserved_transition_names_are_refused(regular_login, name):
     before = Resource.objects.count()
     Given.http.force_authenticate(regular_login)
     post_policy(policy)
-    assert_policy_refused()
+    assert_policy_refused(f"Invalid workflow transition {name!r}")
     assert Resource.objects.count() == before
 
 
@@ -517,25 +528,32 @@ def test_admin_of_one_context_cannot_move_its_policy_into_another():
     assert policy_resources() == []
 
 
+# Each invalid policy, with what its 400's ``detail`` says about it.
 INVALID_POLICIES = [
     pytest.param(
         dict(PERMISSIVE_POLICY, initial_states={"draft": "status == "}),
+        "Invalid workflow state condition: ",
         id="invalid-initial-state-condition",
     ),
     pytest.param(
         dict(PERMISSIVE_POLICY, states={"done": "status == "}),
+        "Invalid workflow state condition: ",
         id="invalid-state-condition",
     ),
     pytest.param(
         dict(PERMISSIVE_POLICY, transitions={"go": {"from": "any", "to": "nowhere"}}),
+        "Invalid workflow transition 'go': 'nowhere' is not a defined state.",
         id="transition-to-undefined-state",
     ),
     pytest.param(
         dict(PERMISSIVE_POLICY, transitions={"go": [{"from": "any", "to": "any"}]}),
+        "Invalid workflow transition 'go': it must be an object with 'from' and 'to'.",
         id="transition-list",
     ),
     pytest.param(
         dict(PERMISSIVE_POLICY, restrict_update=["nowhere"]),
+        "Invalid workflow restrict_update: it must be a list of defined state "
+        "names, not ['nowhere'].",
         id="restrict-update-undefined-state",
     ),
 ]
@@ -548,17 +566,19 @@ SCHEMA_INVALID_POLICIES = [
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("policy", INVALID_POLICIES)
+@pytest.mark.parametrize("policy,reason", INVALID_POLICIES)
 @test_context
-def test_invalid_policy_is_refused_on_create(regular_login, policy):
+def test_invalid_policy_is_refused_on_create(regular_login, policy, reason):
     reverse("todos-list")
     before = Resource.objects.count()
     Given.http.force_authenticate(regular_login)
     When.http.post(
         "/workflow-policies/", data=json.dumps(policy), content_type="application/json"
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
-    assert "workflow_policy" in Http.response.json()["errors"], Http.response.json()
+    # The 400 says why: the problem's detail is the reason the policy fails
+    # WorkflowPolicy's checks.
+    assert_policy_refused(reason)
+    assert Http.response["Content-Type"].startswith("application/problem+json")
     assert Resource.objects.count() == before
 
     # Writes of the type still work.
@@ -567,9 +587,9 @@ def test_invalid_policy_is_refused_on_create(regular_login, policy):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("policy", INVALID_POLICIES)
+@pytest.mark.parametrize("policy,reason", INVALID_POLICIES)
 @test_context
-def test_invalid_policy_is_refused_on_update(regular_login, policy):
+def test_invalid_policy_is_refused_on_update(regular_login, policy, reason):
     stored = store_policy(dict(PERMISSIVE_POLICY))
     Given.http.force_authenticate(regular_login)
     When.http.put(
@@ -578,8 +598,7 @@ def test_invalid_policy_is_refused_on_update(regular_login, policy):
         content_type="application/json",
         HTTP_IF_MATCH=quote_etag(stored.etag),
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
-    assert "workflow_policy" in Http.response.json()["errors"], Http.response.json()
+    assert_policy_refused(reason)
     assert_unchanged(stored)
 
 
