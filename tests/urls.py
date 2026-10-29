@@ -1,11 +1,22 @@
+from uuid import uuid4
+
 from django.contrib import admin
 from django.urls import include, path
+from django.utils.timezone import now
+from rest_framework import serializers, status, viewsets
+from rest_framework.response import Response
+from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import IsAuthorized
+from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
+from scrudful.rest_framework import scrudful_viewset
 
 from scrud_django import registration
+from scrud_django.mixins.view_mixins import GenericViewMixin
+from scrud_django.models import ResourceType
 from scrud_django.permissions import TransitionCheck
 from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
 
+from .models import Note
 from .resource_types import json_resource_types
 
 urlpatterns = [
@@ -214,6 +225,80 @@ urlpatterns.extend(
                 {"post": "create"}, resource_type_name="todos"
             ),
             name="denying-todos-list",
+        ),
+    ]
+)
+
+
+NOTE = "tests://Note"
+
+
+class NoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Note
+        fields = ["id", "text", "rbac_context"]
+
+    def __init__(self, *args, **kwargs):
+        kwargs.pop("resource_type", None)  # GenericViewMixin passes it
+        super().__init__(*args, **kwargs)
+
+
+@scrudful_viewset
+class NoteViewSet(AccessControlledAPIView, GenericViewMixin, viewsets.GenericViewSet):
+    """An adopter's view of a model of their own (`Note`) on GenericViewMixin."""
+
+    queryset = Note.objects.all()
+    serializer_class = NoteSerializer
+    permission_classes = [IsAuthorized]
+    parser_classes = [RbacJSONParser]
+    filter_backends = [RbacFilter]
+    resource_type_iri = NOTE
+
+    def get_resource_type(self):
+        resource_type, _ = ResourceType.objects.get_or_create(
+            type_uri=NOTE,
+            defaults={
+                "slug": "notes",
+                "revision": "1",
+                "etag": uuid4().hex,
+                "modified_at": now(),
+            },
+        )
+        return resource_type
+
+    def list(self, request):
+        queryset = self.filter_queryset(self.get_queryset())
+        return Response(self.get_serializer(queryset, many=True).data)
+
+    def retrieve(self, request, slug: str):
+        return Response(self.get_serializer(self.get_object()).data)
+
+    def update(self, request, slug: str):
+        note = self.get_object()
+        note.text = request.data.get("text", "")
+        note.etag = uuid4().hex
+        note.modified_at = now()
+        note.save()
+        return Response(self.get_serializer(note).data)
+
+    def destroy(self, request, slug: str):
+        self.get_object().delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+urlpatterns.extend(
+    [
+        path(
+            "generic/notes/",
+            NoteViewSet.as_view({"get": "list", "head": "list"}),
+            name="generic-notes-list",
+        ),
+        path(
+            "generic/notes/<slug>/",
+            NoteViewSet.as_view(
+                {"get": "retrieve", "put": "update", "delete": "destroy"}
+            ),
+            name="generic-notes-detail",
         ),
     ]
 )
