@@ -194,7 +194,8 @@ class ResourceContentFilter(BaseFilterBackend):
     ``"name__startswith"`` is ``"x"``. All values of a repeated parameter must
     match. The pagination parameters and DRF's format override are not
     filters. A key that is an integer is a 400 (a JSON path reads it as an
-    array index). Only lists are filtered (``view.action == "list"``)."""
+    array index), and so is a NUL character in a key or a value (PostgreSQL
+    text cannot hold one). Only lists are filtered (``view.action == "list"``)."""
 
     def ignored_parameters(self, view):
         paginator = getattr(view, "paginator", None)
@@ -214,11 +215,15 @@ class ResourceContentFilter(BaseFilterBackend):
             for key, values in request.query_params.lists()
             if key not in ignored
         ]
-        errors = {
-            key: ["An integer is not a content key a list can be filtered on."]
-            for key, _ in filters
-            if _INTEGER.match(key)
-        }
+        errors = {}
+        for key, values in filters:
+            if "\x00" in key or any("\x00" in value for value in values):
+                # PostgreSQL text cannot hold NUL: a 400 on every database.
+                errors[key] = ["A query parameter cannot contain a NUL character."]
+            elif _INTEGER.match(key):
+                errors[key] = [
+                    "An integer is not a content key a list can be filtered on."
+                ]
         if errors:
             raise ValidationError(errors, code="invalid")
         for index, (key, values) in enumerate(filters):

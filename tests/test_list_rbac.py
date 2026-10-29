@@ -419,3 +419,16 @@ def test_resource_rows_are_never_listed_through_an_unfiltered_backend():
     with pytest.raises(ImproperlyConfigured):
         view(request)
     assert Resource.objects.filter(content__name="in-a").exists()
+
+
+@pytest.mark.django_db
+@test_context
+def test_filtered_list_refuses_a_nul_in_a_parameter():
+    # PostgreSQL text cannot hold NUL: a 400 on every database, not a 500.
+    profile("keep", rbac_context="b")
+    path = reverse("filtered-partner-profiles-list")
+    Given.http.force_authenticate(user_with((READER, "b")))
+    When.http.get(path, {"a\x00b": "k"})
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    When.http.get(path, {"name": "k\x00"})
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
