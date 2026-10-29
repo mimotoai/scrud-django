@@ -13,7 +13,7 @@ from scoped_rbac import access
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import drf_error, view_permission
 
-from scrud_django.exceptions import RbacContextInvalidError
+from scrud_django.exceptions import RbacContextInvalidError, RequestBodyMissingError
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
@@ -36,6 +36,19 @@ from scrud_django.workflow import (
 # The methods whose lookup, authorization, preconditions, workflow check and
 # write run in one transaction with the row locked (`ResourceViewMixin.dispatch`).
 LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
+
+
+# The methods whose body is the resource to store.
+BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+
+def check_body_present(request):
+    """Raise `RequestBodyMissingError` (400) for a POST, PUT or PATCH with an
+    empty body (no ``Content-Length``, or 0), which DRF reads as ``{}``: a
+    POST would store an empty resource, a PUT wipe the stored content. A body
+    that is not JSON is left to the parser (415, or 400)."""
+    if request.method in BODY_METHODS and request.stream is None:
+        raise RequestBodyMissingError()
 
 
 def check_written_contexts(request):
@@ -334,9 +347,12 @@ class ResourceViewMixin:
         return Response(serializer.data)
 
     def check_permissions(self, request):
-        """Refuse a body whose ``rbac_context`` cannot be stored
-        (`check_written_contexts`, 400) before scoped-rbac's request check,
-        which would refuse an empty list with 403 for everyone."""
+        """Refuse an empty body (`check_body_present`) and a body whose
+        ``rbac_context`` cannot be stored (`check_written_contexts`), with
+        400, before scoped-rbac's request check (which would authorize an
+        empty body as ``{}`` and refuse an empty context list with 403 for
+        everyone): they depend on the body alone."""
+        check_body_present(request)
         check_written_contexts(request)
         super().check_permissions(request)
 

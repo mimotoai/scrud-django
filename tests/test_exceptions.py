@@ -193,6 +193,19 @@ def test_invalid_workflow_policy_is_400_under_any_handler(handler):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("handler", HANDLERS)
+def test_an_empty_body_is_400_under_any_handler(handler):
+    reverse("todos-list")
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    with with_handler(handler):
+        response = client_for(admin).post(
+            reverse("todos-list"), content_type="application/json"
+        )
+    assert response.status_code == 400, response.content
+    json.loads(response.content)
+
+
+@pytest.mark.django_db
 def test_scrud_handler_body_for_an_invalid_workflow_policy():
     reverse("todos-list")
     workflow_policy_resource_type()

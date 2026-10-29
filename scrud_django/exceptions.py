@@ -110,6 +110,24 @@ class WorkflowPolicyInvalidError(ScrudException):
         self.title = "Invalid workflow policy"
 
 
+class RequestBodyMissingError(ScrudException):
+    """A POST or PUT (or PATCH) with an empty body. DRF reads one as ``{}``,
+    which would create an empty resource or wipe the stored one."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "body_missing"
+
+    def __init__(self, message=None):
+        super().__init__(
+            message
+            if message is not None
+            else "A POST or PUT needs a JSON object as its body; this request has none."
+        )
+        self.type = "https://api.openteams.com/http-problem/body-missing"
+        self.title = "Missing request body"
+
+
 class StoredPolicyReference:
     """A stored ``WorkflowPolicy`` resource, as a workflow error names it: by its
     detail URL, never its content, which a writer refused because of it may not
