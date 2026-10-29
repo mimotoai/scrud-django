@@ -12,15 +12,15 @@ from .fixtures import RESOURCE_ENDPOINT_LIST_NAME
 def test_unauthenticated_fails(partner_profiles):
     url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
     When.http.get(url)
-    # Then.http.status_code_is(status.HTTP_401_UNAUTHORIZED)
-    # Expecting 403 due to the authentication scheme we're using
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    # scoped-rbac 0.11's problem-details handler maps an unauthenticated request to 401
+    Then.http.status_code_is(status.HTTP_401_UNAUTHORIZED)
 
 
 @pytest.mark.django_db
 @test_context
 def test_unauthorized_fails(partner_profiles, login_no_roles):
     url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
+    Given.http.force_authenticate(login_no_roles)
     When.http.get(url)
     Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
 
