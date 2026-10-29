@@ -41,8 +41,9 @@ NESTED_DEFAULTED = "tests://SchemaDefaults/Nested"
 
 
 @contextmanager
-def throwaway_type(type_uri, slug, properties):
-    """A resource type served at ``/<slug>/`` whose schema has `properties`."""
+def throwaway_type(type_uri, slug, properties, **schema):
+    """A resource type served at ``/<slug>/`` whose schema has `properties`
+    (and the other keywords of `schema`)."""
     from . import urls as test_urls
 
     registration = ResourceTypeRegistration(
@@ -53,6 +54,7 @@ def throwaway_type(type_uri, slug, properties):
             "$schema": JSON_SCHEMA,
             "type": "object",
             "properties": properties,
+            **schema,
         },
         uses_reversion=False,
         register_service=False,
@@ -104,6 +106,26 @@ def nested_defaulted_type(db):
                 "type": "object",
                 "properties": {"flag": {"type": "string", "default": "x"}},
             },
+        },
+    ) as resource_type:
+        yield resource_type
+
+
+CONDITIONAL_DEFAULTED = "tests://SchemaDefaults/Conditional"
+
+
+@pytest.fixture
+def conditional_defaulted_type(db):
+    # "kind" defaults to "a"; a body of kind "a" needs "x", any other "y".
+    with throwaway_type(
+        CONDITIONAL_DEFAULTED,
+        "conditional-defaulted",
+        {"kind": {"default": "a"}, "x": {}, "y": {}},
+        **{
+            "$schema": "http://json-schema.org/draft-07/schema",
+            "if": {"properties": {"kind": {"const": "a"}}, "required": ["kind"]},
+            "then": {"required": ["x"]},
+            "else": {"required": ["y"]},
         },
     ) as resource_type:
         yield resource_type
@@ -245,3 +267,23 @@ def test_the_json_validator_leaves_its_data_unchanged(nested_defaulted_type):
     data = {"name": "x", "meta": {}}
     JsonValidator()(data, SimpleNamespace(resource_type=nested_defaulted_type))
     assert data == {"name": "x", "meta": {}}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_default_does_not_decide_validity(conditional_defaulted_type):
+    # The body is validated as it is stored: without "kind", the "if" does not
+    # hold, so "y" is required. With the default applied, "x" would be.
+    Given.http.force_authenticate(writer_of(CONDITIONAL_DEFAULTED))
+    When.http.post("/conditional-defaulted/", {"x": 1}, format="json")
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    body = Http.response.json()
+    assert body["type"] == "https://api.openteams.com/http-problem/json-invalid"
+    assert not stored(conditional_defaulted_type).exists()
+
+    When.http.post("/conditional-defaulted/", {"y": 1}, format="json")
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    assert stored(conditional_defaulted_type).get().content == {"y": 1}
+
+    When.http.post("/conditional-defaulted/", {"kind": "a", "x": 1}, format="json")
+    Then.http.status_code_is(status.HTTP_201_CREATED)

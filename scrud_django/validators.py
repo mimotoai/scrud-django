@@ -84,12 +84,16 @@ def compile_json_schema(content):
     """Compile JSON Schema `content` with fastjsonschema, resolving ``$ref`` only
     within it. Raises ``JsonSchemaInvalidError`` if it does not compile, a
     ``$ref`` to anything else (a URL, a file, another document) included. The
-    content is not changed."""
+    content is not changed. The validator applies no ``default``
+    (``use_default=False``): it validates the data as it is, and leaves it as
+    it is."""
     content = copy.deepcopy(content)
     if isinstance(content, dict):
         content.pop("$id", None)
     try:
-        return fastjsonschema.compile(content, handlers=RefuseEveryScheme())
+        return fastjsonschema.compile(
+            content, handlers=RefuseEveryScheme(), use_default=False
+        )
     except Exception as e:
         raise JsonSchemaInvalidError(f"The JSON Schema does not compile: {e}") from e
 
@@ -101,10 +105,11 @@ class JsonValidator:
     closed: every write of its type is refused with ``JsonSchemaInvalidError``
     (400).
 
-    JSON Schema ``default`` values are not applied: fastjsonschema fills them
-    into the data it validates, so it validates a deep copy of `data`, and
-    `data` (the body that is stored) is left as it was sent, nested objects
-    included."""
+    JSON Schema ``default`` values are not applied: the validator is compiled
+    with ``use_default=False`` (`compile_json_schema`), so it validates `data`,
+    the body that is stored, exactly as it was sent (a default can neither
+    make it valid, for example through ``if``/``then``, nor be stored), and
+    leaves it unchanged."""
 
     requires_context = True
 
@@ -115,7 +120,7 @@ class JsonValidator:
         if context.resource_type.type_uri in JSON_SCHEMA_TYPE_URIS:
             compile_json_schema(data)
         validate = self.validator_for(context.resource_type)
-        validate(copy.deepcopy(data))
+        validate(data)
         return data
 
     def is_json_schema(self, schema):
