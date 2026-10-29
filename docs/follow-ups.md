@@ -1,43 +1,5 @@
 # Follow-ups
 
-<a id="list-not-rbac-filtered"></a>
-## list-not-rbac-filtered: `ResourceViewMixin.list` is not RBAC-filtered
-
-`scrud_django.mixins.view_mixins.ResourceViewMixin.list` pages
-`Resource.objects.filter(resource_type=...)` directly, never through
-`self.filter_queryset()`, so scoped-rbac's `RbacFilter` never runs on it. This
-predates the `modernize-uv` branch (same code at `develop`).
-
-Impact: any user who passes the view-level check for `http.GET` on a type's list
-(a grant in any context) sees every resource of that type, in every context.
-Since the switch to scrudful, detail routes authorize per object through `get_object()`. A
-resource can therefore be listed to a user who gets 404 for it on its detail URL.
-
-The same hole exposes stored `WorkflowPolicy` content, CEL conditions included,
-of other contexts: `WorkflowPolicy` is a scrud type, so its list is not
-filtered either, and a user with `http.GET` on `WorkflowPolicy` in any one
-context lists every policy of every context. That makes the 0.12.0 rule that
-errors give a stored policy's URL, or a generic error, instead of its content
-moot until this is fixed.
-
-**The library is not safe for multi-tenant use until this is fixed.** Do not
-rely on RBAC contexts to keep resources, or workflow policies, apart from
-users who may list their type.
-
-Suggested fix: build the list from
-`self.filter_queryset(self.get_queryset())`, as DRF's `ListModelMixin` does,
-so that `RbacFilter` → `access.filter_authorized` scopes it. `Resource` has no
-`rbac_context` column (its contexts come from `ResourceMixin.rbac_contexts`), so
-the list is filtered per object in Python. Conditional grants are capped by
-`SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` (default 10 000; past it
-`ConditionalListTooLarge`, a 400). Decide whether to raise the cap, add an
-`rbac_context` column to `Resource`, or paginate before filtering. Add a test in
-which a user with GET only in another context lists an empty page.
-
-Fix [list-validators-side-channel](#list-validators-side-channel) at the same
-time: once the list is filtered, its `ETag` and `Last-Modified` must not still
-come from the newest resource of the type in any context.
-
 <a id="stored-invalid-workflow-policy"></a>
 ## stored-invalid-workflow-policy: a policy stored before 0.12.0 can still fail every write in its context
 
@@ -122,21 +84,6 @@ Suggested fix: drop the call parentheses (`super().resource_type`), noting that
 fails, read the value from the base class explicitly. Add a test with a
 serializer whose `_resource_type` is `None`.
 
-<a id="content-contains-sqlite"></a>
-## content-contains-sqlite: `content__contains` is unsupported on SQLite
-
-`scrud_django.views.ResourceViewSetGenericFilter` filters its queryset
-with `content__contains=query_filter`. Django's `JSONField` `contains` lookup
-raises `NotSupportedError` on SQLite. This predates the `modernize-uv` branch.
-
-Impact: listing through this view with a database that lacks JSON containment
-(SQLite, which the test settings use) raises `NotSupportedError`. PostgreSQL
-works. No test currently reaches this path.
-
-Suggested fix: on SQLite, filter in Python after fetching, or translate each
-query parameter to a `content__<key>=value` key lookup. Add a test that lists
-with a query parameter; it should fail with `NotSupportedError` first.
-
 <a id="authorize-write-not-atomic"></a>
 ## authorize-write-not-atomic: authorization and the write are not one transaction
 
@@ -172,6 +119,11 @@ locked instance to the write instead of looking it up again. SQLite ignores
 `select_for_update`, so a test needs PostgreSQL or a deliberately interleaved
 write (patch `ResourceRegistration.update` to change the row before it writes,
 and expect 412).
+
+Under a read-replica router, the `get_object_or_404` and
+`get_resource_type_for` reads inside `ResourceRegistration.update` and
+`delete` also go to `db_for_read`, outside the locked transaction, and may be
+stale.
 
 <a id="scrudful-errors-not-problem-json"></a>
 ## scrudful-errors-not-problem-json: scrudful's 412/428 bodies are not problem details
@@ -232,27 +184,6 @@ It is also a large body for every rejected write.
 Suggested fix: give default policies a URL too (for example the type's), and
 send it instead; then assert that no workflow error body has CEL in it.
 
-<a id="list-validators-side-channel"></a>
-## list-validators-side-channel: list ETag and Last-Modified leak the newest resource
-
-The list routes' `ETag` and `Last-Modified` come from the resource type
-(`list_etag_func` / `list_last_modified_func` in
-`scrud_django/mixins/view_mixins.py`), and every write copies the written
-resource's ETag and time onto its type (`ResourceRegistration.register` and `ResourceRegistration.update` in
-`scrud_django.registration`).
-
-Impact: a user who may list a type learns the ETag and modification time of
-the newest resource of that type in **any** context, and can tell when a
-resource they cannot see changes (304 versus 200 with `If-None-Match`). Today
-the list is not filtered at all
-([list-not-rbac-filtered](#list-not-rbac-filtered)); once it is, this remains.
-
-Suggested fix: fix together with list-not-rbac-filtered: compute the list's
-validators from the page the user actually gets (for example a hash of its
-items' ETags and their newest `modified_at`). Add a test in which a write to a
-resource in a context the lister cannot read leaves their list's `ETag`
-unchanged.
-
 <a id="public-type-metadata"></a>
 ## public-type-metadata: services, collection schemas and contexts are public
 
@@ -302,20 +233,6 @@ Suggested fix: give `ResourceSerializer` a `contexts_from` that returns
 `rbac_contexts_of(body)`, so both sides read the body the same way; add a test
 that a default-context writer may POST a JSON-LD context document.
 
-<a id="empty-context-list"></a>
-## empty-context-list: `"rbac_context": []` puts a resource in no context
-
-`rbac_contexts_of` reads an empty list as no contexts. scoped-rbac grants a
-resource with no context to superusers only.
-
-Impact: through the API, scoped-rbac's request check refuses a body with
-`"rbac_context": []` for everyone, superusers included, so a client cannot
-create such a resource. Only server code (`ResourceRegistration`) can store one,
-and superusers can then read it. It fails closed.
-
-Suggested fix: decide whether `[]` should be the default context or a 400, and
-test it.
-
 <a id="root-manage-py-memory-db"></a>
 ## root-manage-py-memory-db: the root `manage.py` uses the in-memory test database
 
@@ -337,40 +254,33 @@ Suggested fix: catch `PackageNotFoundError` and fall back to `"0+unknown"`, and
 test importing with the distribution metadata missing.
 
 <a id="resource-no-to-cel"></a>
-## resource-no-to-cel: CEL-conditional grants fail on scrud resources
+## resource-no-to-cel: operators get the `Resource` model instance on object checks
 
-`Resource` has neither `to_cel()` nor `cel_resource()`. scoped-rbac's object
-checks pass the model instance to a grant's CEL condition, and
-`scoped_rbac.cel.evaluate` raises `TypeError: CEL data must be a mapping, not
-Resource`. The request-level checks read the body (a mapping), so only the
-object checks are affected; the post-save check of creates and updates reads
-the stored content, so it is not affected either.
+`ResourceMixin.to_cel()` (added with the RBAC-filtered lists) gives a CEL
+condition the resource's content (`{}` when it is not a mapping), so a
+CEL-conditional grant now reads the content on a detail route's object check
+and on a list's per-object check alike
+(`tests/test_list_rbac.py::test_conditional_grant_lists_matching_resources_and_outright_ones_are_uncapped`
+checks a conditional `http.GET` on both). A conditional-only `http.GET` grant
+still cannot read a detail route (403): scoped-rbac's request check refuses a
+grant it cannot decide without the object, while the list, which checks each
+object, shows the matching resources.
 
-Impact: when a role's `http.PUT` grant on a scrud type has a CEL condition,
-for example `{"condition": "name == \"x\""}`, every PUT whose body meets it is
-a 500. A conditional `http.GET` grant cannot read a detail route
-(403). Unconditional grants and the `scrud_workflow` operator are not affected.
-
-Operators are affected too. On a detail route's object check an operator
-receives the `Resource` model instance, not a mapping, so an adopter's operator
-that reads the body (`resource.get("name")`) raises `AttributeError` (a 500)
-on every GET, PUT and DELETE of a detail route its grant conditions. (Where
-the workflow check authorizes a transition, operators get the read-only body
+Operators are still affected. On a detail route's object check, and on a
+list's per-object check, an operator receives the `Resource` model instance,
+not a mapping, so an adopter's operator that reads the body
+(`resource.get("name")`) raises `AttributeError` (a 500) on every GET, PUT and
+DELETE of a detail route, and every list, its grant conditions. (Where the
+workflow check authorizes a transition, operators get the read-only body
 mapping `TransitionCheck`, so creates are not affected:
 `tests/test_custom_operators.py`.)
 
-The workflow check, which authorizes a `TransitionCheck` in every context of
-a write, passes it as a `scoped_rbac.policy.RequestResource` whose CEL fields
-are the body, so a CEL condition there reads the body as the request check
-does (`tests/test_workflow_edge_cases.py::test_cel_conditioned_post_on_a_workflow_type_reads_the_body`).
-Only the object check is affected.
-
-Suggested fix: add `ResourceMixin.to_cel()` returning the content when it is a
-mapping (else `{}`), and test a CEL-conditional GET and PUT on a detail route.
-For operators, pass the object check a `scoped_rbac.policy.RequestResource`
+Suggested fix: pass the object checks a `scoped_rbac.policy.RequestResource`
 whose instance is a read-only mapping over the content (as `TransitionCheck`
-is), or document that operators get the model instance there; test a
-body-reading operator on a detail-route PUT.
+is), for example through a `ResourceMixin.cel_resource(request)` (which
+`scoped_rbac.access.cel_resource`, and so the list filter, reads too), or
+document that operators get the model instance there; test a CEL-conditional
+PUT and a body-reading operator on a detail-route PUT and on a list.
 
 <a id="schema-defaults-not-stored"></a>
 ## schema-defaults-not-stored: JSON Schema `default` values are never stored
@@ -566,23 +476,44 @@ support. Separately, `scrud_django.registration.write_db` asks the router
 without an `instance=` hint, so a router that routes by instance hints could
 send a resource's save to a different alias from the transaction.
 
+`ResourceContext` rows are written on the database of their resource's save
+(`Resource.save_base`), so they follow `Resource`.
+
 Suggested fix: route `Resource` and `ResourceType` (and the other scrud_django
 models) to one alias and say so in the README; or save the type row with
 `using=write_db()` inside `ResourceRegistration`. Test: PostgreSQL, two aliases
 on one database, and a router that routes only `Resource`.
 
-<a id="update-does-not-bump-type-etag"></a>
-## update-does-not-bump-type-etag: `ResourceRegistration.update` leaves the resource type's etag unchanged
+<a id="list-last-modified-deletes"></a>
+## list-last-modified-deletes: a list's `Last-Modified` does not move on a deletion
 
-`scrud_django.registration.ResourceRegistration.update` sets the new etag and
-modification time on the `ResourceType` it got from `get_resource_type_for`,
-but saves `resource.resource_type`, a different instance loaded through the
-foreign key. The type's etag and `modified_at` therefore do not change on an
-update (verified on PostgreSQL), and anything that uses them as collection
-validators, such as the list's `ETag`/`Last-Modified`, misses updates. This
-predates this release. Suggested fix: bump and save one instance (for example
-`resource.resource_type`), and add a test that a PUT changes the list `ETag`.
-Separately, under a read-replica router the `get_object_or_404` and
-`get_resource_type_for` reads inside `update` and `delete` go to
-`db_for_read`, outside the locked transaction, and may be stale (related to
-[authorize-write-not-atomic](#authorize-write-not-atomic)).
+A list's `Last-Modified` is the newest `modified_at` of the resources the
+requester may list (`ResourceViewMixin.list_last_modified`). Deleting a
+resource, or moving it out of the requester's contexts, does not make it
+newer; deleting the newest one makes it older. A client that revalidates with
+`If-Modified-Since` alone can get 304 for a list that lost resources. The
+list's `ETag` (`list_etag`: the page's resources, the count and the query
+parameters) does change, and `If-None-Match` takes precedence over
+`If-Modified-Since` (RFC 9110 §13.2.2).
+
+Impact: stale list caches for clients that send only `If-Modified-Since`. No
+information about unreadable resources leaks either way.
+
+Suggested fix: keep a per-context "last change" stamp (for example on
+`ResourceContext`, or a table of deletions per context) and take the newest
+over the requester's readable contexts, or send no `Last-Modified` on lists.
+Test: delete the newest listed resource and expect a 200 to
+`If-Modified-Since` set to the previous `Last-Modified`.
+
+<a id="generic-view-list-validators"></a>
+## generic-view-list-validators: `GenericViewMixin`'s list validators are the type's
+
+`scrud_django.mixins.view_mixins.GenericViewMixin` (for models of your own)
+still gives its list the resource type's `etag` and `modified_at` as `ETag` and
+`Last-Modified`. Writes of your own model do not change them (only
+`ResourceRegistration` writes do), so a list served through it can answer 304
+after it changed. `ResourceViewMixin`'s lists no longer use them.
+
+Suggested fix: give `GenericViewMixin` the same `list_etag` /
+`list_last_modified` over `filter_queryset(get_queryset())` as
+`ResourceViewMixin`, or none; test a write followed by `If-None-Match`.

@@ -42,7 +42,7 @@ extensions = [
 
 todo_include_todos = True
 
-# Heading anchors, so that links such as follow-ups.md#list-not-rbac-filtered
+# Heading anchors, so that links such as follow-ups.md#authorize-write-not-atomic
 # resolve (see _ext/myst_slugs.py).
 myst_heading_anchors = 2
 myst_heading_slug_func = 'myst_slugs.follow_up_slug'

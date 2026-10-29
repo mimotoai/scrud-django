@@ -31,20 +31,72 @@ django-scoped-rbac 0.11. It has several breaking changes.
    (`scrud_django.decorators`, `settings`, `wsgi`, `asgi`), what
    `GenericViewMixin` subclasses must now provide, and the exception handler
    and error body changes.
-9. Read the security caveat below: lists are not filtered per resource, so do
-   not use the library for multi-tenant deployments yet.
+9. Run `manage.py migrate`. Migration `0008_resourcecontext` creates the
+   `ResourceContext` table and fills it from every stored resource (one row
+   per context; it reads every resource once, so plan for it on large
+   tables). Lists are filtered by these rows: code that writes `Resource` rows
+   with `QuerySet.update()`, `bulk_create()` or `bulk_update()` must save them
+   with `save()` instead, or their lists go stale (see Lists below).
+10. Lists now show only what the requester may read (see Lists below). Give
+    users who list a type `http.GET` on the type itself, in each context whose
+    resources they should see, as well as on its list type; check your roles
+    if they grant only the list type somewhere.
+11. Clients: a body whose `rbac_context` is `[]` now gets 400 (it got 403),
+    and lists of `ResourceViewSetGenericFilter` filter on their query
+    parameters as JSON key lookups (see Lists below).
 
-### Security caveat: lists are not filtered per resource
+### Lists
 
-List endpoints do not check each resource's RBAC context. A user who may list a
-resource type (a grant in any context) sees every resource of that type in the
-list, including resources in contexts where they have no access, and which
-their detail URL hides from them with a 404. Do not rely on RBAC contexts to
-keep resources of one type apart from users who may list that type. The same
-goes for stored `WorkflowPolicy` resources (CEL conditions included): a user who
-may list them sees those of every context. The library is not safe for
-multi-tenant use until this is fixed. See
-[list-not-rbac-filtered](follow-ups.md#list-not-rbac-filtered).
+* List endpoints are RBAC-filtered. A list shows exactly the resources the
+  detail route shows the requester: those on which `http.GET` on the
+  resource's type is allowed in **any** of the resource's usable contexts (not
+  a reserved one), with a CEL condition evaluated against the resource's
+  content. The list type's `http.GET`
+  (`https://api.openteams.com/json-schema/ResourceCollection?contents_type=...`)
+  is still the check that opens the list (403 without it in any context); it
+  no longer decides which resources are shown. Before, a user who could list a
+  type saw every resource of it, in every context, stored `WorkflowPolicy`
+  resources (CEL conditions included) among them.
+* A resource with no usable context (`"rbac_context": []` stored server-side,
+  or only reserved contexts) is listed, as it is read, by superusers only. A
+  resource whose `rbac_context` is a reserved context (`"__x"`, `"*"`) is
+  never listed, as its detail route is a 404 to everyone. (A context reserved
+  only once normalised, such as `"\u200b__x"`, which only server code can
+  store, can still be listed to superusers and to a user whose grant applies
+  in every context, while its detail route is a 404, as in scoped-rbac.)
+* Each resource's contexts are stored as `scrud_django.models.ResourceContext`
+  rows, kept in step by `Resource.save()` (and by raw saves: `loaddata`,
+  reversion's revert) in the same transaction. Lists find the resources of the
+  contexts that grant `http.GET` outright in SQL; only the resources of
+  contexts whose grant is conditional are checked one by one, at most
+  `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` of them (default 10 000; past it
+  the list is a 400, `conditional_list_too_large`). Resources granted outright
+  do not count. `QuerySet.update()`, `bulk_create()` and `bulk_update()` do not
+  update the rows.
+* The filter is `scrud_django.filters.ResourceRbacFilter`, which
+  `ResourceViewSet` and `ResourceViewSetGenericFilter` now set as their
+  `filter_backends` (it is scoped-rbac's `RbacFilter` for detail lookups). A
+  `ResourceViewMixin` view whose `filter_backends` holds no `RbacFilter` raises
+  `ImproperlyConfigured` on its list instead of listing every resource.
+  `ResourceViewMixin.list` now builds its page from
+  `filter_queryset(get_queryset())`, so the view's filter backends run.
+* A list's `ETag` and `Last-Modified` come from what the requester gets: the
+  `ETag` is a hash of the page's resources (their keys and ETags, in order),
+  the list's count and the query parameters; `Last-Modified` is the newest
+  `modified_at` of the resources the requester may list (none for an empty
+  list). A write to a resource they cannot read no longer changes them, so
+  `If-None-Match` no longer tells when such a resource changes. They used to be
+  the resource type's, which every write of the type changed. A deletion does
+  not change `Last-Modified`
+  ([list-last-modified-deletes](follow-ups.md#list-last-modified-deletes)).
+* `ResourceViewSetGenericFilter` lists filter on their query parameters with
+  JSON key lookups, which SQLite supports too (they used `content__contains`,
+  which raised `NotSupportedError` there): `?key=value` keeps the resources
+  whose content's top-level `key` is the string `value`; every value of a
+  repeated parameter must match; a key is always a key, never a lookup
+  (`?name__startswith=x` matches the key `"name__startswith"`); `page`,
+  `page_size` and `format` are not filters (they used to be, so a paginated
+  filtered list matched nothing); an integer key is a 400.
 
 ### Requirements and packaging
 
@@ -85,6 +137,18 @@ Conditional request handling now comes from scrudful 0.8.
   `rbac_context`, or with any other value there (for example a JSON-LD context
   document's `{"@id": ...}` term definition), belong to the default context `""`.
 * Unauthenticated requests now get 401.
+* A POST or PUT body whose `rbac_context` is an empty list gets 400
+  (`https://api.openteams.com/http-problem/rbac-context-invalid`, "Invalid
+  rbac_context"), and nothing is stored or changed. It used to get 403 from
+  scoped-rbac's request check, superusers included. Leave `rbac_context` out,
+  or give `""`, for the default context. Server code (`ResourceRegistration`)
+  may still store `[]`: the resource is then in no context, and only
+  superusers can read or list it. A context longer than 2048 characters gets
+  the same 400 through the API and a `ValueError` from `Resource.save()`.
+* A grant's CEL condition reads a resource's content on a detail route's
+  object check (`ResourceMixin.to_cel()`); it raised `TypeError` (a 500)
+  before. Operators still get the `Resource` instance there
+  ([resource-no-to-cel](follow-ups.md#resource-no-to-cel)).
 * Request bodies must be JSON. `ResourceViewSet` and
   `ResourceViewSetGenericFilter` set `parser_classes = [RbacJSONParser]`
   (`scoped_rbac.rest`): a form-encoded or multipart body gets 415, and a JSON
@@ -136,6 +200,9 @@ Conditional request handling now comes from scrudful 0.8.
   400 for a body that is not a JSON object. This also applies to downstream
   serializers that use `GenericViewMixin`, and breaks bulk (list) creates
   through them.
+* `ResourceRegistration.update` now saves the resource type's new `etag` and
+  `modified_at` (it set them on one instance and saved another, so they did
+  not change on an update).
 * `ResourceViewMixin.get_instance(request, slug)` now returns `get_object()`
   and ignores `slug`. scrudful reads the validators (ETag, Last-Modified) from
   the same object, so an override of `get_instance` no longer affects them.
