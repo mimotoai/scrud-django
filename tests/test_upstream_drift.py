@@ -40,8 +40,9 @@ PP_LIST = TYPE_URI_LIST_PARTNER_PROFILES
 
 
 def code_names(function):
-    """Every name the code of `function` (and the functions nested in it)
-    uses, in order."""
+    """The names the code of `function` (and the functions nested in it)
+    uses, as a sorted tuple without repeats: the order the compiler records
+    them in differs between Python versions."""
     names = []
 
     def walk(code):
@@ -51,54 +52,49 @@ def code_names(function):
                 walk(const)
 
     walk(function.__code__)
-    return tuple(names)
+    return tuple(sorted(set(names)))
 
 
 def test_drfs_get_object_is_what_resource_view_mixin_re_implements():
     assert code_names(GenericAPIView.get_object) == (
-        "filter_queryset",
-        "get_queryset",
-        "lookup_url_kwarg",
-        "lookup_field",
-        "kwargs",
         "__class__",
         "__name__",
-        "get_object_or_404",
         "check_object_permissions",
+        "filter_queryset",
+        "get_object_or_404",
+        "get_queryset",
+        "kwargs",
+        "lookup_field",
+        "lookup_url_kwarg",
         "request",
     )
 
 
 def test_scoped_rbacs_per_object_filter_is_what_scrud_re_implements():
     assert code_names(access._filter_per_object) == (
-        "conditional_list_max_rows",
-        "enumerate",
-        "iterator",
-        "_CANDIDATE_CHUNK_SIZE",
+        "AnyOf",
         "ConditionalListTooLarge",
+        "_CANDIDATE_CHUNK_SIZE",
         "all",
-        "map",
-        "append",
-        "pk",
-        "filter",
-        "usable_contexts",
-        "unrestricted",
         "any",
-        "conditional_anywhere",
-        "conditional",
         "append",
         "cel_resource",
-        "outright",
-        "should_allow",
+        "conditional",
+        "conditional_anywhere",
+        "conditional_list_max_rows",
+        "enumerate",
+        "filter",
         "isinstance",
-        "AnyOf",
-        "any",
-        "options",
-        "isinstance",
+        "iterator",
         "list",
-        "tuple",
-        "all",
         "map",
+        "options",
+        "outright",
+        "pk",
+        "should_allow",
+        "tuple",
+        "unrestricted",
+        "usable_contexts",
     )
 
 
