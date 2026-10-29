@@ -111,4 +111,14 @@ Conditional request handling now comes from scrudful 0.8.
 
 ### Known issues
 
-See [follow-ups](follow-ups.md) for known issues.
+See [follow-ups](follow-ups.md) for known issues. In particular:
+
+* The default workflow policy is enforced only for resources in the default
+  context. In any other context a user can move a resource to a state, or into
+  another context, that the policy would forbid
+  ([workflow-context-hop](follow-ups.md#workflow-context-hop)).
+* An empty body sent as `application/json` is read as `{}`
+  ([empty-json-body](follow-ups.md#empty-json-body)).
+* Search-index and workflow-action side effects of a write that is rolled back
+  with 403 are not undone
+  ([post-save-side-effects](follow-ups.md#post-save-side-effects)).

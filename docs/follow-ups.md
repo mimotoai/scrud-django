@@ -27,6 +27,31 @@ Fix [list-validators-side-channel](#list-validators-side-channel) at the same
 time: once the list is filtered, its `ETag` and `Last-Modified` must not still
 come from the newest resource of the type in any context.
 
+<a id="workflow-context-hop"></a>
+## workflow-context-hop: the workflow policy is not enforced outside the default context
+
+`scrud_django/validators.py:104-108` and `:128` (`WorkflowValidator.__call__`)
+apply the default workflow policy only when the **new body** is in the default
+context, and read only the new body's contexts. The `scrud_workflow` operator
+(`scrud_django/permissions.py:22-28`) returns `True` for anything that is not a
+`TransitionCheck`. In any other context there is therefore no initial-state
+check, no transition validity check and no transition authorization. This
+predates the `modernize-uv` branch.
+
+Impact: a user can move a resource out of the context whose policy restricts
+them. Example: a user who may only cancel a ToDo in `""` but has write in `"w"`
+sends `PUT {"status": "done", "rbac_context": "w"}` and gets 200; the resource
+is stored as `done` in `"w"`. The post-save check passes because the user may
+write in `"w"`, and the old context's policy is never consulted.
+
+Suggested fix: validate under the policies of **both** the stored contexts and
+the new ones (all-of); in each context with no policy, fall back to the
+defaults; and authorize the transition in the old contexts too. See
+[workflow-validator-undefined-state](#workflow-validator-undefined-state),
+whose fix must be done together with this one. Tests: the PUT above must be
+400 or 403 and leave the stored resource unchanged; a create in `"w"` with an
+initial state the default policy forbids is 400.
+
 <a id="workflow-validator-undefined-state"></a>
 ## workflow-validator-undefined-state: a stored WorkflowPolicy breaks every write of its type
 
@@ -36,7 +61,9 @@ writes `self.workflow_policies`, which is never defined, and keys it on
 stored policy for the resource type, from every context, and applies all of
 them. `scrud_django/mixins/resource_mixin.py:134-148` (`get_workflow_policy`,
 run by `Resource.save()`) takes `.first()` policy of the type from any context
-for a resource in the default context, and reads `.content` of a
+for a resource in the default context (since the `""` fix, a resource in the
+default context goes through this cross-context `.first()` lookup whenever any
+stored policy of the type exists), and reads `.content` of a
 `.first()` that is `None` when the resource's own context has no policy. This
 predates the `modernize-uv` branch.
 
@@ -62,11 +89,14 @@ ToDo directly in state "done", which the default policy forbids.
 
 Suggested fix:
 
-* Scope the policy lookup to the resource's own context, in the validator and
+* Scope the policy lookup per context, in the validator and
   in `get_workflow_policy` alike (`rbac_contexts_of`, so absent, `None` and `""`
   are the default context), and fall back to the default policies when that
   context has none. Never use `.first()` of the type across contexts, and never
-  dereference a `.first()` that can be `None`.
+  dereference a `.first()` that can be `None`. Scoping to the destination
+  context alone is not enough: it still allows the context hop in
+  [workflow-context-hop](#workflow-context-hop). The lookup must cover the
+  stored contexts **and** the new ones.
 * Validate a `WorkflowPolicy` on write: compile its conditions and answer 400
   for invalid CEL, so a bad policy is never stored.
 * Treat POST (and PUT/DELETE) on `WorkflowPolicy` as an admin-level grant in
@@ -252,6 +282,9 @@ in the default context (`rbac_contexts_of`). scoped-rbac's write-side default
 `contexts_from` (`access.body_contexts`) instead passes that dict to the policy
 as the context to authorize.
 
+The same goes for `"rbac_context": null`: a default-context writer gets 403
+for a body with `null` there and 201 when the key is absent.
+
 Impact: only an asymmetry. No role grants a dict context, so the write is
 refused unless the user is a superuser, and the post-save check then requires
 the default context. It fails closed.
@@ -340,5 +373,38 @@ actions) inside the write. The post-save context check of creates and updates
 on a 403, but an action's effects outside the database (mail, queues, HTTP
 calls) are not undone.
 
+The haystack search index is another such effect: `RealtimeSignalProcessor`
+indexes on `post_save` inside the transaction, so a write rolled back with 403
+stays in the search index.
+
 Suggested fix: have actions that leave the database run on
-`transaction.on_commit`, and document it for `SCRUD_WORKFLOW` actions.
+`transaction.on_commit`, and document it for `SCRUD_WORKFLOW` actions. For
+search, use a processor that indexes on commit or queues the update.
+
+<a id="empty-json-body"></a>
+## empty-json-body: an empty body with Content-Type application/json parses as `{}`
+
+`RbacJSONParser` returns `{}` for an empty body sent as `application/json`.
+
+Impact: a POST creates an empty resource and a PUT wipes the resource's
+content; authorization is still checked, in the default context `""`. The
+release note "a JSON body that is not an object gets 400" does not cover it.
+
+Suggested fix: answer 400 for an empty body on POST and PUT. Test: PUT with no
+body leaves the stored content unchanged.
+
+<a id="post-save-permissions-direct"></a>
+## post-save-permissions-direct: the post-save check bypasses `IsAuthorized` overrides
+
+`check_post_save_permissions` (`scrud_django/mixins/view_mixins.py`) calls
+`access.may_act_in` directly rather than going through the permission class, so
+a custom `IsAuthorized` subclass that overrides permission methods is only
+partly honoured by the post-save check.
+
+The `GenericViewMixin` docstring (`scrud_django/mixins/view_mixins.py`) also
+used to point at `ResourceViewMixin.save_checked`, which is specific to
+`Resource`; it now names the check without that reference.
+
+Suggested fix: route the post-save check through the permission class's own
+method (or document that it uses `may_act_in`), and test a subclass that denies
+a context.

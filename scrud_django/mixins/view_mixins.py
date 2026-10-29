@@ -232,9 +232,10 @@ class GenericViewMixin:
     scrud viewsets do: a form or multipart body can name ``rbac_context`` more
     than once, and scoped-rbac authorizes the request by its last value only.
     A ``create``/``update`` should also check, before the write commits, that
-    every context the saved object is in is one the request may write in (as
-    ``ResourceViewMixin.save_checked`` does, or scoped-rbac's
-    ``AccessControlledModelViewSet.perform_create``/``perform_update``).
+    every context the saved object is in is one the request may write in, as
+    scoped-rbac's ``AccessControlledModelViewSet.perform_create``/
+    ``perform_update`` do. (``ResourceViewMixin.save_checked`` does the same,
+    but only for ``Resource``.)
     """
 
     # The detail route's URL keyword, as the detail stubs below take it.
