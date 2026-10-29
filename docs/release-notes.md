@@ -44,7 +44,8 @@ django-scoped-rbac 0.11. It has several breaking changes.
    with `save()` instead, or their lists go stale (see Lists below).
    Migration `0009_resourceremoval` creates the (empty) `ResourceRemoval`
    table, which records when a resource leaves a context, so that lists'
-   `Last-Modified` moves on removals from then on.
+   `Last-Modified` moves on removals from then on;
+   `0010_resource_base_manager` changes model options only (no SQL).
 10. Lists now show only what the requester may read (see Lists below). Give
     users who list a type `http.GET` on the type itself, in each context whose
     resources they should see, as well as on its list type; check your roles
@@ -87,8 +88,9 @@ django-scoped-rbac 0.11. It has several breaking changes.
     `super()`; a `GenericViewMixin` view without a `queryset` attribute opens
     its write transaction on the default database unless it overrides
     `locked_write_database()`. A `GenericViewMixin` view locks the row with a
-    query of its own (the model's base manager filtered by the URL's lookup),
-    not through its queryset, so a queryset with `distinct()`, an annotation
+    query of its own (the model's base manager filtered by the URL's lookup;
+    a `lookup_field` only the view's queryset has, an annotation, is first
+    read as keys through that queryset), not through its queryset, so a queryset with `distinct()`, an annotation
     or a `select_related` of a nullable relation keeps working on PostgreSQL
     (which refuses `FOR UPDATE` on those). Server code that updates or deletes a resource
     should go through `ResourceRegistration.update` / `delete`, which lock it
@@ -482,8 +484,10 @@ Conditional request handling now comes from scrudful 0.8.
   `locked_write_database()` (`router.db_for_write` of its `queryset`'s model;
   the default database without a `queryset` attribute), its `get_object`
   locking the row the URL names first (`lock_object_row`, a query of its own,
-  whatever the view's queryset; `filter_queryset` only routes the lookup to
-  that database), and gives its list the validators of
+  whatever the view's queryset; an annotated `lookup_field` is resolved to
+  keys through the view's queryset first, and a lookup that then finds a row
+  the lock did not take is a 404; `filter_queryset` only routes the lookup
+  to that database), and gives its list the validators of
   `list_queryset()` (it gave the resource type's `etag` and `modified_at`,
   which a write of your model never changed, so a changed list could answer
   304). Its list needs an `RbacFilter` among its `filter_backends`
@@ -506,8 +510,10 @@ Conditional request handling now comes from scrudful 0.8.
   time a resource left that context. `Resource.save()` (raw saves included)
   stamps the contexts its content left, and a `post_delete` receiver every
   context of a deleted resource (`Model.delete()`, `ResourceRegistration`),
-  in the write's transaction. `Resource.objects` is a `ResourceQuerySet`,
-  whose `delete()` stamps the contexts of all the resources it deletes once,
+  in the write's transaction. `Resource.objects`, and the base manager
+  (`Meta.base_manager_name`, migration `0010_resource_base_manager`, which
+  Django's own bulk paths use), is a `ResourceQuerySet`, whose `delete()`
+  stamps the contexts of all the resources it deletes on its database once,
   by type then context, when it ends (so that two concurrent bulk deletes
   cannot deadlock on the stamps). Stamps are never pruned: there is one per
   type and context ever left, and removing one could make a list's
