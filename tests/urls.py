@@ -1,3 +1,4 @@
+from django.contrib import admin
 from django.urls import include, path
 from scoped_rbac.permissions import IsAuthorized
 
@@ -6,7 +7,10 @@ from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
 
 from .resource_types import json_resource_types
 
-urlpatterns = [path("", include("scrud_django.urls"))]
+urlpatterns = [
+    path("admin/", admin.site.urls),
+    path("", include("scrud_django.urls")),
+]
 urlpatterns.extend(registration.resource_types(*json_resource_types()))
 
 # The partner profiles list again, served by ResourceViewSetGenericFilter, whose
