@@ -86,6 +86,27 @@ Before you submit a merge request, check that it meets these guidelines:
 1. The merge request should include tests.
 2. If the merge request adds functionality, the docs should be updated. Put your new functionality into a function with a docstring.
 3. The change should work for Python 3.11, 3.12 and 3.13.
+4. A merge request that changes the package (`scrud_django/`, or the published
+   parts of `pyproject.toml`) must raise the version; see "Releasing" below.
+
+### Releasing
+
+Releases are published to PyPI from CI. The merge request that changes the
+package sets the version to release:
+
+```{sourceCode} console
+$ uv version --bump minor   # or: uv version 1.0.0
+```
+
+and commits `pyproject.toml` and `uv.lock`. The `version-check` job fails the
+merge request if the version is not above the target branch's and every release
+on PyPI. When the merge request lands on `develop`, the `publish` job tags
+`vX.Y.Z`, creates a GitLab release and uploads to PyPI, but only if that version
+is not on PyPI yet; a merge that leaves the version alone publishes nothing. The
+`package` job builds the distribution and checks that its README renders on every
+pipeline. The upload uses the protected, masked CI/CD variable
+`UV_PYPI_ACCESS_TOKEN`. Never run `uv publish` locally. See
+`scripts/release.py` for the checks.
 
 
 ### Code of Conduct

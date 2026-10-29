@@ -77,7 +77,11 @@ uv run python manage.py runserver
 ```
 
 CI is `.gitlab-ci.yml` (lint, migrations check, docs build, tests with coverage
-on 3.11-3.13). Run the lint and test commands above before committing.
+on 3.11-3.13, a package build/README check, a version-bump check on merge
+requests). Run the lint and test commands above before committing. Publishing to
+PyPI runs in CI when a merge to `develop` carries a version not yet on PyPI
+(`scripts/release.py`); never run `uv publish` locally or create release tags by
+hand.
 
 ## Test conventions
 
