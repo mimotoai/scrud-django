@@ -265,7 +265,11 @@ Conditional request handling now comes from scrudful 0.8.
   through them.
 * `ResourceRegistration.update` now saves the resource type's new `etag` and
   `modified_at` (it set them on one instance and saved another, so they did
-  not change on an update).
+  not change on an update). Every write (`register`, `register_instance`,
+  `update`, `delete` and the API's) saves only those two columns of the type
+  row: it used to save the whole row as the write had read it, so a copy read
+  through a lagging replica, or before a re-registration of the type
+  committed, wrote the old `schema`, `context` or `schema_uri` back.
 * `ResourceRegistration.update` and `delete` read the resource with its row
   locked and its type on the write database (`type_db()`), never through the
   router's `db_for_read` (a read replica could be stale), and write that

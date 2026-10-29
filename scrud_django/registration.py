@@ -57,6 +57,15 @@ def get_resource_type_for(slug, using=None):
     return get_list_or_404(queryset, slug=slug)[0]
 
 
+def save_type_etag(resource_type, using):
+    """Save `resource_type`'s ``etag`` and ``modified_at``, and only those,
+    on database `using`. The instance may have been read earlier (through
+    the read router, or before a re-registration committed): its other
+    columns (``schema``, ``context``, ``schema_uri``...) are not written
+    back."""
+    resource_type.save(using=using, update_fields=["etag", "modified_at"])
+
+
 def get_locked_resource(resource_type, slug, using):
     """The `Resource` of `resource_type` with primary key `slug` (404 if
     none), read on database `using` with its row locked
@@ -243,7 +252,7 @@ class ResourceRegistration:
                 resource.save(using=db)
             # The type's row in the same transaction, whatever the router
             # says for ResourceType (scrud_django.E004 reports a split).
-            resource.resource_type.save(using=db)
+            save_type_etag(resource.resource_type, db)
         return resource
 
     @staticmethod
@@ -301,7 +310,7 @@ class ResourceRegistration:
                 reversion.set_comment('Change Resource')
         else:
             resource.save(using=using)
-        resource_type.save(using=using)
+        save_type_etag(resource_type, using)
         return resource
 
     @staticmethod
@@ -338,7 +347,7 @@ class ResourceRegistration:
         resource.delete(using=using)
         resource_type.etag = uuid4().hex
         resource_type.modified_at = timezone.now()
-        resource_type.save(using=using)
+        save_type_etag(resource_type, using)
 
 
 JSON_SCHEMA_REGISTRATION_ = None

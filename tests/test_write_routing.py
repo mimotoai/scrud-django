@@ -200,3 +200,66 @@ def test_split_write_routing_is_an_error(router, models):
         # Registered without a tag: `manage.py check` runs it, no database
         # needed.
         assert write_routing_errors() == found
+
+
+# The type row's etag bump saves only etag and modified_at: a copy of the
+# type read earlier (a lagging replica, or before a re-registration
+# committed) must not write its other columns back.
+
+NEW_SCHEMA_URI = "http://schema.example/new"
+
+
+@contextmanager
+def a_stale_todo_type():
+    """The ToDo type as stored (its ``schema_uri`` just changed) and a copy
+    read before that change."""
+    reverse("todos-list")
+    stored = ResourceType.objects.get(slug="todos")
+    stale = ResourceType.objects.get(pk=stored.pk)
+    ResourceType.objects.filter(pk=stored.pk).update(schema_uri=NEW_SCHEMA_URI)
+    yield stale
+
+
+def assert_bumped_and_kept(stale):
+    stored = ResourceType.objects.get(pk=stale.pk)
+    assert stored.schema_uri == NEW_SCHEMA_URI
+    assert stored.etag == stale.etag
+
+
+@pytest.mark.django_db
+def test_server_side_writes_bump_only_the_types_etag():
+    with a_stale_todo_type() as stale:
+        todo = ResourceRegistration.register_instance(
+            Resource(content=dict(NOT_STARTED), resource_type=stale)
+        )
+        assert_bumped_and_kept(stale)
+        with mock.patch.object(
+            registration, "get_resource_type_for", return_value=stale
+        ):
+            ResourceRegistration.update(dict(NOT_STARTED), "todos", str(todo.pk))
+            assert_bumped_and_kept(stale)
+            ResourceRegistration.delete("todos", str(todo.pk))
+            assert_bumped_and_kept(stale)
+
+
+@pytest.mark.django_db
+def test_api_writes_bump_only_the_types_etag():
+    from scrud_django.mixins.view_mixins import ResourceViewMixin
+
+    client = admin_client()
+    with (
+        a_stale_todo_type() as stale,
+        mock.patch.object(ResourceViewMixin, "get_resource_type", return_value=stale),
+    ):
+        response = client.post(reverse("todos-list"), NOT_STARTED, format="json")
+        assert response.status_code == 201, response.content
+        assert_bumped_and_kept(stale)
+        url = response["Location"]
+        response = client.put(
+            url, NOT_STARTED, format="json", HTTP_IF_MATCH=response["ETag"]
+        )
+        assert response.status_code == 200, response.content
+        assert_bumped_and_kept(stale)
+        response = client.delete(url, HTTP_IF_MATCH=response["ETag"])
+        assert response.status_code == 204, response.content
+        assert_bumped_and_kept(stale)
