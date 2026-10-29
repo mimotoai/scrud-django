@@ -1,13 +1,16 @@
-"""scrud-django re-implements three upstream functions, two to give object checks a
-`ResourceCheck`: DRF's ``GenericAPIView.get_object`` (as
-``ResourceViewMixin.get_object``) and scoped-rbac's private
-``access._filter_per_object`` (as
-``filters.filter_readable_resources_per_object``), and DRF's
-``GenericAPIView.filter_queryset`` (as ``ListValidatorsMixin.filter_queryset``,
-which narrows a list by the object check after the RBAC filter). These tests fail when
-upstream drifts from what was re-implemented: the names the upstream code
-uses are pinned, and the re-implementations must give upstream's results
-where upstream's behaviour is the one wanted.
+"""scrud-django re-implements three upstream functions: DRF's
+``GenericAPIView.get_object`` (as ``ResourceViewMixin.get_object``) and
+scoped-rbac's private ``access._filter_per_object`` (as
+``filters.filter_readable_resources_per_object``), to give object checks a
+`ResourceCheck`, and DRF's ``GenericAPIView.filter_queryset`` (as
+``ListValidatorsMixin.filter_queryset``, which narrows a list by the object
+check right after the RBAC filter). It also relies on upstream internals:
+DRF's ``Request.data`` reading ``_full_data`` (``read_only_body``) and the
+``error`` / ``error_body_func`` attributes of scrudful's ``ScrudfulViewFunc``
+(``gate_uniform_errors``). These tests fail when upstream drifts from what
+was re-implemented or relied on: the names the upstream code uses are
+pinned, and the re-implementations must give upstream's results where
+upstream's behaviour is the one wanted.
 
 When one fails after an upgrade, read the upstream change, port it into the
 re-implementation if it applies, and update the pin."""
@@ -247,3 +250,54 @@ def test_resource_view_mixins_lookup_agrees_with_drfs():
     assert seen[(reader, str(hidden.pk))] == "404"
     assert seen[(superuser, "999999")] == "404"
     assert seen[(superuser, "not-a-number")] == "404"
+
+
+def test_scrudfuls_view_func_keeps_error_and_error_body_func_in_its_dict():
+    # view_mixins.gate_uniform_errors turns the ScrudfulViewFunc instances
+    # scrudful_viewset installed into UniformErrorsViewFunc (reassigning
+    # __class__), reading their "error" and "error_body_func" from the
+    # instance __dict__ into the properties that gate them per request.
+    from scrudful.rest_framework import ScrudfulViewFunc
+
+    assert code_names(ScrudfulViewFunc.__init__) == (
+        "TypeError",
+        "_check_error",
+        "_check_sync",
+        "_from_viewset",
+        "bool",
+        "callable",
+        "check_error_body_func",
+        "check_validators",
+        "context_link_or_func",
+        "context_rel_or_func",
+        "context_type_or_func",
+        "creates",
+        "error",
+        "error_body_func",
+        "etag_func",
+        "functools",
+        "last_modified_func",
+        "location_func",
+        "object_validators",
+        "schema_link_or_func",
+        "schema_rel_or_func",
+        "schema_type_or_func",
+        "update_wrapper",
+        "view_method",
+    )
+    assert "__slots__" not in vars(ScrudfulViewFunc)
+    for name in ("error", "error_body_func"):
+        assert name not in vars(ScrudfulViewFunc), name
+
+    def view(self, request):
+        return None
+
+    from scoped_rbac import problems
+
+    handler = ScrudfulViewFunc(
+        view,
+        error=problems.problem_entity(),
+        error_body_func=problems.conditional_problem,
+    )
+    assert handler.__dict__["error"] is handler.error
+    assert handler.__dict__["error_body_func"] is handler.error_body_func
