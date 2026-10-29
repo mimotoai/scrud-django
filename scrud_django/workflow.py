@@ -45,7 +45,9 @@ class WorkflowPolicy:
     state must be valid, and the transition authorized, in each of them.
 
     Constructing a policy checks it and raises ``ImproperlyConfigured`` for a
-    state condition that does not compile, a transition that is not an object
+    policy that is not an object, ``initial_states``, ``states`` or
+    ``transitions`` that are present but not objects, a state condition that is
+    not a string or does not compile, a transition that is not an object
     with ``from`` and ``to`` naming defined states or whose name starts with
     ``__`` (reserved), or a ``restrict_update`` that is not a list of defined
     state names. These are the checks a
@@ -58,6 +60,10 @@ class WorkflowPolicy:
         ``WorkflowPolicy`` resource it comes from, or ``None`` for a policy from
         settings, whose type URI is `default_for` (``None``: the content's
         ``resource_type``)."""
+        if not isinstance(policy, Mapping):
+            raise ImproperlyConfigured(
+                f"Invalid workflow policy: it must be an object, not {policy!r}."
+            )
         self.policy = policy
         self.resource = resource
         self.default_for = default_for
@@ -173,23 +179,42 @@ class WorkflowPolicy:
 
         return None
 
-    def compile_state_expressions(self):
-        initial_states = self.policy.get("initial_states", {})
-        for name, condition in initial_states.items():
-            self.initial_state_expressions[name] = self.compile_expression(condition)
-        self.state_expressions = dict(self.initial_state_expressions)
-        states = self.policy.get("states", {})
-        for name, condition in states.items():
-            self.state_expressions[name] = self.compile_expression(condition)
+    def mapping_of(self, key, what):
+        """The policy's `key` (``{}`` when absent), which must be an object (of
+        `what`)."""
+        value = self.policy.get(key, {})
+        if not isinstance(value, Mapping):
+            raise ImproperlyConfigured(
+                f"Invalid workflow {key}: it must be an object of {what}, not "
+                f"{value!r}."
+            )
+        return value
 
-    def compile_expression(self, state_condition):
+    def compile_state_expressions(self):
+        what = "state names to CEL conditions"
+        initial_states = self.mapping_of("initial_states", what)
+        for name, condition in initial_states.items():
+            self.initial_state_expressions[name] = self.compile_expression(
+                condition, name
+            )
+        self.state_expressions = dict(self.initial_state_expressions)
+        states = self.mapping_of("states", what)
+        for name, condition in states.items():
+            self.state_expressions[name] = self.compile_expression(condition, name)
+
+    def compile_expression(self, state_condition, name=None):
+        if not isinstance(state_condition, str):
+            raise ImproperlyConfigured(
+                f"Invalid workflow state condition for {name!r}: it must be a CEL "
+                f"expression (a string), not {state_condition!r}."
+            )
         try:
             return compile_expression(state_condition, CEL_ENVIRONMENT)
         except InvalidExpression as e:
             raise ImproperlyConfigured(f"Invalid workflow state condition: {e}") from e
 
     def compile_allowed_transitions(self):
-        transitions = self.policy.get("transitions", {})
+        transitions = self.mapping_of("transitions", "transition names to transitions")
 
         def as_list(x):
             return [x] if not isinstance(x, list) else x  # noqa: E731

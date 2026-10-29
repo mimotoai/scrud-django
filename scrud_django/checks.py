@@ -48,8 +48,10 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
     - ``scrud_django.E005`` for each that does not pass ``WorkflowPolicy``'s
       checks (a state condition that does not compile, a malformed transition
       or one naming an undefined state, a reserved transition name, an invalid
-      ``restrict_update``), as a policy stored before 0.12.0 or server-side
-      may not: every write of its type in its contexts fails with
+      ``restrict_update``, or ``initial_states``, ``states``, ``transitions``
+      or conditions of the wrong type), as a policy stored before 0.12.0 or
+      server-side may not, or that cannot be checked at all (any other error
+      compiling it is reported, never raised): every write of its type in its contexts fails with
       ``ImproperlyConfigured`` (a 500) until it is fixed or deleted;
     - ``scrud_django.W001`` for each policy stored with a list ``rbac_context``
       (before 0.12.0, or server-side). It applies in each of those contexts, and
@@ -91,18 +93,24 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
             for context in contexts:
                 key = (type_uri, context)
                 by_type_and_context.setdefault(key, []).append(policy.pk)
+            where = (
+                f"in context {contexts[0]!r}"
+                if len(contexts) == 1
+                else f"in contexts {contexts!r}"
+            )
+            problem = None
             try:
                 WorkflowPolicy(content)
             except ImproperlyConfigured as error:
-                where = (
-                    f"in context {contexts[0]!r}"
-                    if len(contexts) == 1
-                    else f"in contexts {contexts!r}"
-                )
+                problem = f"does not pass WorkflowPolicy's checks: {error}"
+            except Exception as error:  # noqa: BLE001
+                # Never fail `check --database` or `migrate` on one policy.
+                problem = f"could not be checked: {type(error).__name__}: {error}"
+            if problem is not None:
                 found.append(
                     checks.Error(
                         f"WorkflowPolicy pk {policy.pk} for {type_uri!r} {where} "
-                        f"does not pass WorkflowPolicy's checks: {error}",
+                        f"{problem}",
                         hint=(
                             "Fix it (a PUT through the API checks it) or delete "
                             "it: until then every write of its type in its "

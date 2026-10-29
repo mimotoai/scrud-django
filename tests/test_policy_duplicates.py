@@ -300,6 +300,44 @@ STORED_INVALID_POLICIES = [
         "names, not 'any'.",
         id="restrict-update-string",
     ),
+    # Shapes the WorkflowPolicy schema refuses, so only server-side code (or
+    # an earlier version) stores them.
+    pytest.param(
+        dict(PERMISSIVE_POLICY, initial_states=["x"]),
+        "Invalid workflow initial_states: it must be an object of state names "
+        "to CEL conditions, not ['x'].",
+        id="initial-states-list",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, initial_states=None),
+        "Invalid workflow initial_states: it must be an object of state names "
+        "to CEL conditions, not None.",
+        id="initial-states-null",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, states="nope"),
+        "Invalid workflow states: it must be an object of state names to CEL "
+        "conditions, not 'nope'.",
+        id="states-string",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, transitions=["t"]),
+        "Invalid workflow transitions: it must be an object of transition names "
+        "to transitions, not ['t'].",
+        id="transitions-list",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, initial_states={"a": 3}),
+        "Invalid workflow state condition for 'a': it must be a CEL expression "
+        "(a string), not 3.",
+        id="condition-number",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, states={"a": None}),
+        "Invalid workflow state condition for 'a': it must be a CEL expression "
+        "(a string), not None.",
+        id="condition-null",
+    ),
 ]
 
 
@@ -322,6 +360,45 @@ def test_system_check_reports_an_invalid_stored_policy(content, reason):
     # A database check: `check --database` and `migrate` run it.
     assert found[0] in checks.run_checks(databases=["default"])
     assert found[0] not in checks.run_checks()
+
+
+@pytest.mark.django_db
+def test_system_check_reports_a_policy_it_cannot_check(monkeypatch):
+    # Whatever compiling a stored policy raises, the check reports it (E005)
+    # rather than failing `manage.py check --database` and `migrate`.
+    from scrud_django import workflow
+
+    broken = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(workflow.WorkflowPolicy, "__init__", boom)
+    found = scrud_checks.check_stored_workflow_policies(None, databases=["default"])
+    assert [(m.id, m.level) for m in found] == [("scrud_django.E005", checks.ERROR)]
+    assert found[0].msg == (
+        f"WorkflowPolicy pk {broken.pk} for {TODO!r} in context 'p' could not be "
+        "checked: RuntimeError: unexpected"
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("content,reason", STORED_INVALID_POLICIES)
+def test_a_write_under_an_invalid_stored_policy_names_it(content, reason):
+    # The writes it governs still fail (500), with an ImproperlyConfigured
+    # that names the policy and its check, not an AttributeError.
+    from django.core.exceptions import ImproperlyConfigured
+
+    invalid = store_policy(dict(content, rbac_context="p"))
+    reverse("todos-list")
+    with pytest.raises(ImproperlyConfigured) as excinfo:
+        admin_client().post(
+            reverse("todos-list"), {"title": "t", "rbac_context": "p"}, format="json"
+        )
+    assert str(excinfo.value).startswith(
+        f"Stored WorkflowPolicy pk {invalid.pk} is invalid (scrud_django.E005): "
+        f"{reason}"
+    ), excinfo.value
 
 
 class ReadReplicaRouter:

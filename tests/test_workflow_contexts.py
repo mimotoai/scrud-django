@@ -601,6 +601,53 @@ def test_policy_with_a_non_string_context_is_refused(admin_login, rbac_context):
     assert Resource.objects.count() == before
 
 
+# Shapes the WorkflowPolicy schema refuses; with a schema that lets them
+# through, WorkflowPolicy's own checks refuse them, with the reason.
+MALFORMED_POLICIES = [
+    pytest.param(
+        dict(PERMISSIVE_POLICY, initial_states=["x"]),
+        "Invalid workflow initial_states: it must be an object",
+        id="initial-states-list",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, states="nope"),
+        "Invalid workflow states: it must be an object",
+        id="states-string",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, transitions=["t"]),
+        "Invalid workflow transitions: it must be an object",
+        id="transitions-list",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, initial_states={"a": 3}),
+        "Invalid workflow state condition for 'a': it must be a CEL expression",
+        id="condition-number",
+    ),
+]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("policy,reason", MALFORMED_POLICIES)
+@test_context
+def test_a_malformed_policy_is_refused_past_a_relaxed_schema(
+    admin_login, policy, reason
+):
+    workflow_policy_resource_type()
+    schema = ResourceType.objects.get(type_uri=WORKFLOW_POLICY).schema
+    relaxed = json.loads(json.dumps(schema.content))
+    for key in ("initial_states", "states", "transitions"):
+        relaxed["properties"][key] = {}
+    ResourceRegistration.update(
+        content=relaxed, register_type="json-schema", slug=str(schema.pk)
+    )
+    before = Resource.objects.count()
+    Given.http.force_authenticate(admin_login)
+    post_policy(policy)
+    assert_policy_refused(reason)
+    assert Resource.objects.count() == before
+
+
 @pytest.mark.django_db
 @pytest.mark.parametrize("name", ["__SAME_STATE__", "__INITIALIZE__", "__mine"])
 @test_context
