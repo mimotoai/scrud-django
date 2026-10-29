@@ -1,12 +1,12 @@
 import pytest
-from safetydance_test import Given, Then, scripted_test
+from safetydance_django.test import *  # noqa: F403, F401
 
 from .factories import ResourceFactory, ResourceTypeFactory
 from .steps import *  # noqa: F403, F401
 
 
 @pytest.mark.django_db
-@scripted_test
+@test_context
 def test_resource():
     """Resource test."""
     step_name = 'resource'
@@ -15,7 +15,7 @@ def test_resource():
 
 
 @pytest.mark.django_db
-@scripted_test
+@test_context
 def test_resource_type():
     """Resource type test."""
     step_name = 'resource_type'

@@ -2,14 +2,13 @@ import pytest
 from django.urls import reverse
 from rest_framework import status
 from safetydance_django.test import *  # noqa: F403, F401
-from safetydance_test import Then, When, scripted_test
 
 from .fixtures import *  # noqa: F401, F403
 from .fixtures import RESOURCE_ENDPOINT_LIST_NAME
 
 
 @pytest.mark.django_db
-@scripted_test
+@test_context
 def test_unauthenticated_fails(partner_profiles):
     url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
     When.http.get(url)
@@ -19,7 +18,7 @@ def test_unauthenticated_fails(partner_profiles):
 
 
 @pytest.mark.django_db
-@scripted_test
+@test_context
 def test_unauthorized_fails(partner_profiles, login_no_roles):
     url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
     When.http.get(url)
@@ -27,7 +26,7 @@ def test_unauthorized_fails(partner_profiles, login_no_roles):
 
 
 @pytest.mark.django_db
-@scripted_test
+@test_context
 def test_unauthenticated_authorized_post(partner_profiles):
     url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
     from django.contrib.auth.models import AnonymousUser
@@ -37,7 +36,6 @@ def test_unauthenticated_authorized_post(partner_profiles):
     dummy_request = APIRequestFactory().post(url, {})
     dummy_request.user = AnonymousUser()
     policy = policy_for(dummy_request)
-
 
     When.http.post(
         url,
