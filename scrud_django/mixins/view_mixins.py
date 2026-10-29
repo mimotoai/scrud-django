@@ -4,7 +4,7 @@ from urllib.parse import urlencode
 
 import reversion
 from django.core.exceptions import ImproperlyConfigured
-from django.db import router
+from django.db import transaction
 from django.db.models import Max
 from rest_framework import status
 from rest_framework.response import Response
@@ -22,6 +22,9 @@ from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
+    lock_if_workflow_policy,
+    type_db,
+    write_db,
 )
 from scrud_django.serializers import ResourceSerializer
 from scrud_django.validators import check_policy_is_unique
@@ -29,6 +32,10 @@ from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     lock_workflow_policy_type,
 )
+
+# The methods whose lookup, authorization, preconditions, workflow check and
+# write run in one transaction with the row locked (`ResourceViewMixin.dispatch`).
+LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 
 
 def check_written_contexts(request):
@@ -116,16 +123,62 @@ class ResourceViewMixin:
                 request=request,
             )
 
+    # The database of the request's locked write transaction (`dispatch`), or
+    # ``None`` outside one.
+    locked_write_db: str | None = None
+
+    def dispatch(self, request, *args, **kwargs):
+        """For PUT, PATCH and DELETE, run the whole request in one transaction
+        on `write_db`: DRF's permission check, the ``WorkflowPolicy`` type lock
+        (`initial`), the lookup with the row locked (`get_queryset`),
+        scrudful's precondition evaluation (If-Match, If-Unmodified-Since)
+        against that row, the workflow check and the write of that same
+        instance. A concurrent write of the row waits for it to commit, and
+        then evaluates its own preconditions and transition against what it
+        committed. A response that is not a success (an error, a 412)
+        rolls the transaction back. Other methods are not wrapped."""
+        if request.method not in LOCKED_WRITE_METHODS:
+            return super().dispatch(request, *args, **kwargs)
+        db = write_db()
+        with transaction.atomic(using=db):
+            self.locked_write_db = db
+            try:
+                response = super().dispatch(request, *args, **kwargs)
+            finally:
+                self.locked_write_db = None
+            if not 200 <= response.status_code < 300:
+                transaction.set_rollback(True, using=db)
+        return response
+
+    def initial(self, request, *args, **kwargs):
+        """DRF's, then, inside a locked write (`dispatch`), the
+        ``WorkflowPolicy`` type lock (`lock_if_workflow_policy`) before the
+        row is read: every ``WorkflowPolicy`` write locks the type row and then
+        the policy's row, in that order, so two cannot deadlock."""
+        super().initial(request, *args, **kwargs)
+        if self.locked_write_db is not None:
+            lock_if_workflow_policy(self.get_resource_type(), self.locked_write_db)
+
     def get_resource_type(self):
-        return get_resource_type_for(self.resource_type_name)
+        """The view's resource type. Inside a locked write it is read on the
+        type's write database (`type_db`), not through the read router."""
+        using = type_db() if self.locked_write_db is not None else None
+        return get_resource_type_for(self.resource_type_name, using=using)
 
     def get_queryset(self):
-        return Resource.objects.filter(resource_type=self.get_resource_type())
+        """The type's resources. Inside a locked write (`dispatch`) they are
+        read on the write database with their rows locked
+        (``select_for_update``) until the request's transaction ends."""
+        queryset = Resource.objects.filter(resource_type=self.get_resource_type())
+        if self.locked_write_db is not None:
+            queryset = queryset.using(self.locked_write_db).select_for_update()
+        return queryset
 
     def get_instance(self, request, slug: str):
         """The resource named by the URL: DRF's ``get_object()``, filtered and
         permission-checked (an unreadable resource is a 404). scrudful already
-        looked it up for the validators; the same instance is returned."""
+        looked it up for the validators; the same instance is returned. For a
+        PUT or DELETE its row is locked (`dispatch`)."""
         return self.get_object()
 
     def get_serializer(self, *args, **kwargs):
@@ -213,7 +266,7 @@ class ResourceViewMixin:
             ),
             queryset=self.get_queryset(),
         )
-        db = router.db_for_write(Resource)
+        db = write_db()
         if self.get_resource_type().type_uri == WORKFLOW_POLICY_TYPE_URI:
             save = self.serialized_policy_save(save, db)
         try:
@@ -239,18 +292,21 @@ class ResourceViewMixin:
         )
 
     def update(self, request, slug: str):
-        """Update a Resource."""
+        """Update a Resource: the locked instance (`dispatch`), checked and
+        written in the request's transaction."""
         instance = self.get_instance(request, slug)
         self.check_every_context_of_policy(request, instance)
         serializer = self.get_serializer(
             data=request.data, instance=instance, many=False
         )
         serializer.is_valid(raise_exception=True)
+        db = self.locked_write_db or write_db()
         instance = self.save_checked(
-            lambda: ResourceRegistration.update(
-                content=request.data,
-                register_type=self.resource_type_name,
-                slug=slug,
+            lambda: ResourceRegistration.update_locked(
+                instance,
+                request.data,
+                resource_type=self.get_resource_type(),
+                using=db,
             ),
             instance=instance,
         )
@@ -258,12 +314,13 @@ class ResourceViewMixin:
         return Response(serializer.data)
 
     def destroy(self, request, slug: str):
-        """Delete a Resource."""
+        """Delete a Resource: the locked instance (`dispatch`)."""
         instance = self.get_instance(request, slug)
         self.check_every_context_of_policy(request, instance)
-        ResourceRegistration.delete(
-            register_type=self.resource_type_name,
-            slug=slug,
+        ResourceRegistration.delete_locked(
+            instance,
+            resource_type=self.get_resource_type(),
+            using=self.locked_write_db or write_db(),
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
 

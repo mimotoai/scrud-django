@@ -84,47 +84,6 @@ Suggested fix: drop the call parentheses (`super().resource_type`), noting that
 fails, read the value from the base class explicitly. Add a test with a
 serializer whose `_resource_type` is `None`.
 
-<a id="authorize-write-not-atomic"></a>
-## authorize-write-not-atomic: authorization and the write are not one transaction
-
-`ResourceViewMixin.update` and `destroy` (`scrud_django.mixins.view_mixins`)
-first call `get_object()`, which scopes the lookup with `RbacFilter`, runs
-`check_object_permissions`, and lets scrudful evaluate `If-Match` /
-`If-Unmodified-Since` against that object. Then they call
-`ResourceRegistration.update` / `delete` (`scrud_django/registration.py`),
-which fetches the row again by primary key and writes it inside its own
-`transaction.atomic()`. The workflow check (`WorkflowValidator`, a serializer
-validator) also runs before the write transaction, against the prior state that
-`get_object()` read. The check and the write are not in the same
-transaction, and the row is not locked between them.
-
-Impact: a concurrent write that lands between the two can be overwritten even
-though the request's `If-Match` named the earlier ETag (a lost update). Worse,
-the workflow transition is validated against the prior state read at
-`get_object()`, outside the write transaction, so a concurrent change can let a
-forbidden transition commit. The reviewer reproduced `canceled` -> `done` that
-way: the check saw the earlier state and allowed a transition that the state
-actually stored does not permit. A write
-that changes the resource's `rbac_context` in that window can also be followed
-by a write the caller was only authorized for under the old context. The window
-is short, and the tests (SQLite, one request at a time) do not exercise it.
-
-Suggested fix: `select_for_update` the row inside the write transaction and
-re-run the workflow check (and the precondition check) on the locked row. In
-general, run the lookup, the authorization, the precondition check and
-the write in one transaction, and lock the row. For example, enable
-`ATOMIC_REQUESTS` (or wrap `update`/`destroy` in `transaction.atomic()`), have
-`get_queryset()` use `select_for_update()` for PUT and DELETE, and pass the
-locked instance to the write instead of looking it up again. SQLite ignores
-`select_for_update`, so a test needs PostgreSQL or a deliberately interleaved
-write (patch `ResourceRegistration.update` to change the row before it writes,
-and expect 412).
-
-Under a read-replica router, the `get_object_or_404` and
-`get_resource_type_for` reads inside `ResourceRegistration.update` and
-`delete` also go to `db_for_read`, outside the locked transaction, and may be
-stale.
-
 <a id="scrudful-errors-not-problem-json"></a>
 ## scrudful-errors-not-problem-json: scrudful's 412/428 bodies are not problem details
 
@@ -365,12 +324,6 @@ Impact: on those isolation levels, concurrent creates can still store
 duplicates. They fail closed (writes of the type in that context are
 `ImproperlyConfigured`) and the `scrud_django.E002` database check reports
 them.
-
-The type lock serializes concurrent writes of one policy, but does not check
-their preconditions again: a DELETE (or PUT) whose `If-Match` named the ETag
-before a concurrent PUT waits for the lock and then succeeds against the new
-version. That is the lost update of
-[authorize-write-not-atomic](#authorize-write-not-atomic), not a new case.
 
 Suggested fix: document READ COMMITTED as the supported isolation level, or
 re-run the re-check in a fresh transaction (or a `SELECT ... FOR UPDATE` on the

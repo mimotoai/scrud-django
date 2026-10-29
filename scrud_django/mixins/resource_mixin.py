@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 
-from django.db import models
+from django.db import models, router
 from django.db.models import JSONField
 from django.utils.translation import gettext_lazy as _
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
@@ -88,7 +88,7 @@ class ResourceMixin(ScrudfulMixin):
     def save(
         self, force_insert=False, force_update=False, using=None, update_fields=None
     ) -> None:
-        transition_data = self.get_transition_data()
+        transition_data = self.get_transition_data(using)
         action = 'CREATE' if self._state.adding else 'UPDATE'
         super().save(
             force_insert=force_insert,
@@ -117,11 +117,15 @@ class ResourceMixin(ScrudfulMixin):
         )
         return res
 
-    def get_transition_data(self):
+    def get_transition_data(self, using=None):
+        """The `TransitionData` ``scrud_post_save`` reports for this save, from
+        the stored row (read on the database the save writes to, `using` or
+        the router's for this instance, not a read replica) to the content."""
         if self._state.adding:
             prior_data = None
         else:
-            prior_version = self.__class__.objects.filter(pk=self.pk)
+            db = using or router.db_for_write(type(self), instance=self)
+            prior_version = self.__class__.objects.using(db).filter(pk=self.pk)
             prior_data = prior_version.first().content
         workflow = self.get_workflow_policy()
         if workflow is None:

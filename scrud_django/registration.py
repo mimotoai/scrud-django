@@ -35,8 +35,32 @@ def lock_if_workflow_policy(resource_type, using):
         lock_workflow_policy_type(using)
 
 
-def get_resource_type_for(slug):
-    return get_list_or_404(ResourceType.objects.order_by("-revision"), slug=slug)[0]
+def type_db():
+    """The database `ResourceType` rows are written to
+    (``router.db_for_write(ResourceType)``). A write reads its resource type
+    there, never through ``db_for_read`` (a replica may be stale)."""
+    return router.db_for_write(ResourceType)
+
+
+def get_resource_type_for(slug, using=None):
+    """The latest revision of the resource type `slug` (404 if none), read on
+    database `using` (``None``: as the router reads it)."""
+    queryset = ResourceType.objects.order_by("-revision")
+    if using is not None:
+        queryset = queryset.using(using)
+    return get_list_or_404(queryset, slug=slug)[0]
+
+
+def get_locked_resource(resource_type, slug, using):
+    """The `Resource` of `resource_type` with primary key `slug` (404 if
+    none), read on database `using` with its row locked
+    (``select_for_update``) until the caller's transaction there ends. Take
+    `lock_if_workflow_policy` first."""
+    return get_object_or_404(
+        Resource.objects.using(using).select_for_update(),
+        resource_type=resource_type,
+        pk=int(slug),
+    )
 
 
 class ResourceTypeRegistration:
@@ -216,10 +240,14 @@ class ResourceRegistration:
             # reversion.set_comment('Change Resource_type')
         return resource
 
-    # @staticmethod
+    @staticmethod
     def update(content: str, register_type: str, slug: str) -> Resource:
         """
         Update resource content for the given resource type name and slug.
+
+        In one transaction on `write_db`: take `lock_if_workflow_policy`, read
+        the resource with its row locked (`get_locked_resource`) and write it
+        (`update_locked`). Nothing is read through the read router.
 
         Parameters
         ----------
@@ -234,36 +262,50 @@ class ResourceRegistration:
         """
         db = write_db()
         with transaction.atomic(using=db):
-            resource_type = get_resource_type_for(register_type)
+            resource_type = get_resource_type_for(register_type, using=type_db())
             lock_if_workflow_policy(resource_type, db)
-
             # note: for now slug is used as ID
-            resource = get_object_or_404(
-                Resource, resource_type=resource_type, pk=int(slug)
+            resource = get_locked_resource(resource_type, slug, db)
+            return ResourceRegistration.update_locked(
+                resource, content, resource_type=resource_type, using=db
             )
-            # One instance of the type: the one whose etag is bumped is saved.
-            resource.resource_type = resource_type
 
-            resource.content = content
-            resource.etag = uuid4().hex
-            resource.modified_at = timezone.now()
-            resource_type.etag = resource.etag
-            resource_type.modified_at = resource.modified_at
-            if resource_type.uses_reversion:
-                with reversion.create_revision():
-                    resource.save()
-                    reversion.set_comment('Change Resource')
-            else:
-                resource.save()
-            # with reversion.create_revision():
-            resource_type.save()
-            # reversion.set_comment('Change Resource_type')
+    @staticmethod
+    def update_locked(
+        resource: Resource, content, *, resource_type: ResourceType, using: str
+    ) -> Resource:
+        """
+        Write `content` to `resource`, a row the caller read on database
+        `using`, inside its transaction there, after it took
+        `lock_if_workflow_policy` and then locked the row
+        (`get_locked_resource`), in that order. `resource_type` is the
+        resource's type, whose etag is bumped. The instance is saved as it is:
+        the row is not read again, so what the caller checked is what is
+        written over. `update` and the API's PUT use it.
+        """
+        resource.resource_type = resource_type
+        resource.content = content
+        resource.etag = uuid4().hex
+        resource.modified_at = timezone.now()
+        resource_type.etag = resource.etag
+        resource_type.modified_at = resource.modified_at
+        if resource_type.uses_reversion:
+            with reversion.create_revision():
+                resource.save(using=using)
+                reversion.set_comment('Change Resource')
+        else:
+            resource.save(using=using)
+        resource_type.save()
         return resource
 
     @staticmethod
     def delete(register_type: str, slug: str):
         """
         Delete resource for the given resource type name and slug.
+
+        In one transaction on `write_db`: take `lock_if_workflow_policy`, read
+        the resource with its row locked (`get_locked_resource`) and delete it
+        (`delete_locked`).
 
         Parameters
         ----------
@@ -273,18 +315,24 @@ class ResourceRegistration:
         """
         db = write_db()
         with transaction.atomic(using=db):
-            resource_type = get_resource_type_for(register_type)
+            resource_type = get_resource_type_for(register_type, using=type_db())
             lock_if_workflow_policy(resource_type, db)
-
             # note: for now slug is used as ID
-            resource = get_object_or_404(
-                Resource, resource_type=resource_type, pk=int(slug)
+            resource = get_locked_resource(resource_type, slug, db)
+            ResourceRegistration.delete_locked(
+                resource, resource_type=resource_type, using=db
             )
 
-            resource.delete()
-            resource_type.etag = uuid4().hex
-            resource_type.modified_at = timezone.now()
-            resource_type.save()
+    @staticmethod
+    def delete_locked(resource: Resource, *, resource_type: ResourceType, using: str):
+        """
+        Delete `resource`, read and locked as for `update_locked`, and bump
+        `resource_type`'s etag. `delete` and the API's DELETE use it.
+        """
+        resource.delete(using=using)
+        resource_type.etag = uuid4().hex
+        resource_type.modified_at = timezone.now()
+        resource_type.save()
 
 
 JSON_SCHEMA_REGISTRATION_ = None

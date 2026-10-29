@@ -53,6 +53,11 @@ django-scoped-rbac 0.11. It has several breaking changes.
     a transaction: reversion's `Version.revert()` called outside
     `transaction.atomic()` now raises `TransactionManagementError` (wrap it, or
     use `Revision.revert()`, which is atomic).
+13. A PUT or DELETE now holds its resource's row lock until its response is
+    ready (see Conditional requests below). Subclasses of `ResourceViewMixin`
+    that override `dispatch`, `initial` or `get_queryset` must call `super()`;
+    server code that updates or deletes a resource should go through
+    `ResourceRegistration.update` / `delete`, which lock it the same way.
 
 ### Lists
 
@@ -141,6 +146,21 @@ Conditional request handling now comes from scrudful 0.8.
   `application/schema+json`.
 * A failed precondition returns 412 with a JSON body.
 * OPTIONS bodies use scrudful's Semantic HTTP format, with `x-rdf-context`.
+* A PUT or DELETE runs in one transaction on the database the router gives
+  for `Resource` writes: the permission check, the lookup with the resource's
+  row locked (`SELECT ... FOR UPDATE`), the object authorization, the
+  `If-Match` / `If-Unmodified-Since` evaluation, the workflow check and the
+  write of that same row. A concurrent write of the resource waits until the
+  first commits, then evaluates its preconditions, authorization and workflow
+  transition against what was committed: an `If-Match` the first write made
+  stale is a 412 (a DELETE used to succeed and a PUT to overwrite the other
+  write), and a transition the stored state no longer allows (for example
+  `canceled` -> `done`) is refused with 400 (it used to commit). A response
+  that is not a success rolls the whole request back. The lock is held until
+  the response is ready, so concurrent writes of one resource now queue
+  behind each other; a `WorkflowPolicy` write takes the `WorkflowPolicy` type
+  lock before the row's, as before. SQLite ignores the row lock; its writes
+  are serialized anyway.
 
 ### Authorization
 
@@ -223,6 +243,20 @@ Conditional request handling now comes from scrudful 0.8.
 * `ResourceRegistration.update` now saves the resource type's new `etag` and
   `modified_at` (it set them on one instance and saved another, so they did
   not change on an update).
+* `ResourceRegistration.update` and `delete` read the resource with its row
+  locked and its type on the write database (`type_db()`), never through the
+  router's `db_for_read` (a read replica could be stale), and write that
+  instance (new `ResourceRegistration.update_locked` and `delete_locked`, for
+  a row the caller read with `get_locked_resource` after
+  `lock_if_workflow_policy`, in that order, in its transaction on
+  `write_db()`). `get_resource_type_for(slug, using=None)` takes the database
+  to read. `ResourceViewMixin` gains `dispatch`, `initial` and
+  `locked_write_db` (the locked write of a PUT, PATCH or DELETE), and its
+  `get_queryset` locks the rows it reads during one; its `update` and
+  `destroy` no longer call `ResourceRegistration.update` / `delete`. A
+  subclass that overrides `dispatch`, `initial` or `get_queryset` must call
+  `super()`. The prior state `scrud_post_save` reports is read on the save's
+  database (`ResourceMixin.get_transition_data(using)`).
 * `ResourceViewMixin.get_instance(request, slug)` now returns `get_object()`
   and ignores `slug`. scrudful reads the validators (ETag, Last-Modified) from
   the same object, so an override of `get_instance` no longer affects them.
