@@ -5,7 +5,7 @@
       "Bash(uv run pytest:*)",
       "Bash(uv run ruff:*)",
       "Bash(uv run python manage.py check:*)",
-      "Bash(uv run python manage.py makemigrations:*)",
+      "Bash(uv run python manage.py makemigrations scrud_django --check:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)"
