@@ -5,13 +5,39 @@
 This release moves scrud-django to Django 5.2, uv, scrudful 0.8 and
 django-scoped-rbac 0.11. It has several breaking changes.
 
+### Upgrading
+
+1. Use Python 3.11 or newer and Django 5.2.
+2. `INSTALLED_APPS`: remove `django_jsonfield_backport`; make sure
+   `django.contrib.auth`, `django.contrib.contenttypes`, `rest_framework`,
+   `reversion`, `scoped_rbac` and `scrud_django` are listed, and `haystack` if
+   you use search.
+3. `REST_FRAMEWORK`: set `DEFAULT_PERMISSION_CLASSES` to
+   `["scoped_rbac.permissions.IsAuthorized"]` and `EXCEPTION_HANDLER` to
+   `scrud_django.exceptions.scrud_exception_handler` (see the README).
+4. Extras: install `scrud-django[search]` if you use haystack search.
+5. Migrations of your own that import `django_jsonfield_backport.models.JSONField`
+   must import `django.db.models.JSONField` instead, before you uninstall the
+   backport.
+6. Clients must send JSON bodies (form and multipart bodies get 415). Give your
+   own `GenericViewMixin` views `parser_classes = [RbacJSONParser]`.
+7. Workflow policies: check your stored `WorkflowPolicy` resources (at most one
+   per type and context; transition names must not start with `__`;
+   `restrict_update` must be a list), and your
+   `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` (run `manage.py check`).
+8. Read the security caveat below: lists are not filtered per resource, so do
+   not use the library for multi-tenant deployments yet.
+
 ### Security caveat: lists are not filtered per resource
 
 List endpoints do not check each resource's RBAC context. A user who may list a
 resource type (a grant in any context) sees every resource of that type in the
 list, including resources in contexts where they have no access, and which
 their detail URL hides from them with a 404. Do not rely on RBAC contexts to
-keep resources of one type apart from users who may list that type. See
+keep resources of one type apart from users who may list that type. The same
+goes for stored `WorkflowPolicy` resources (CEL conditions included): a user who
+may list them sees those of every context. The library is not safe for
+multi-tenant use until this is fixed. See
 [list-not-rbac-filtered](follow-ups.md#list-not-rbac-filtered).
 
 ### Requirements and packaging
@@ -91,7 +117,37 @@ Conditional request handling now comes from scrudful 0.8.
 * `GenericViewMixin` subclasses must provide the DRF `get_queryset()` and a
   lookup instead of `get_instance`.
 * `scrud_exception_handler` keeps scrud-django's own error bodies and passes
-  every other exception to scoped-rbac's problem details handler.
+  every other exception to scoped-rbac's problem details handler. Through it,
+  non-scrud errors use scoped-rbac's uniform problem details project-wide, not
+  only on scrud views: for example a DRF `ValidationError`'s field messages
+  become "This value is not valid." and a 404 has a different body shape.
+  scrud-django's own errors (`ScrudException` and subclasses) are
+  `APIException`s whose `detail` is an `ErrorDetail` with a code, so they render
+  as a 400 problem under DRF's own handler and scoped-rbac's handler too; only
+  `scrud_exception_handler` sends their full body (`policy`, `prior_state`,
+  `proposed_state`).
+* `GenericSerializerMixin.to_internal_value` (and so `SerializerMixin`) answers
+  400 for a body that is not a JSON object. This also applies to downstream
+  serializers that use `GenericViewMixin`, and breaks bulk (list) creates
+  through them.
+* `ResourceViewMixin.get_instance(request, slug)` now returns `get_object()`
+  and ignores `slug`. scrudful reads the validators (ETag, Last-Modified) from
+  the same object, so an override of `get_instance` no longer affects them.
+* `GenericViewMixin` subclasses must put scoped-rbac's `AccessControlledAPIView`
+  before `GenericAPIView` in their bases, so that `get_object()` is scoped and
+  permission-checked.
+* `WorkflowValidator.apply`, `default_policies` and `cached_policies` are
+  removed. A subclass that overrides `apply` is silently ignored. Default
+  policies are built once in `scrud_django.conf`
+  (`default_workflow_policies()`), and stored ones come from
+  `scrud_django.workflow.workflow_policy_for`.
+* `WorkflowTransitionError.policy` may be a stored-policy reference (an object
+  with the policy's URL) rather than a dict, and is `None` in a generic error.
+* A JSON Schema's `$ref` may point only inside the schema (`#/...`). A remote,
+  `file:` or relative `$ref` is refused with 400
+  (`https://api.openteams.com/http-problem/json-schema-invalid`) when a JSON
+  Schema is written, and a stored schema that does not compile fails closed:
+  every write of its type is a 400 with a generic detail.
 * The envelope's `last_modified` (and the search index's `modified_at`) no
   longer depend on `USE_TZ`. With `USE_TZ = False`, a stored modification time
   is naive and in `TIME_ZONE`; it used to be read as UTC, so the envelope
@@ -120,6 +176,22 @@ Conditional request handling now comes from scrudful 0.8.
   one policy lookup; the `WorkflowValidator` and
   `ResourceMixin.get_workflow_policy` (which picks the policy whose transition
   `scrud_post_save` reports) both use it.
+* `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` is validated once, by a system
+  check (`scrud_django.E001`, run by `manage.py check`), and a default must pass
+  the same transition and `restrict_update` checks as a stored policy. An
+  invalid default makes only writes of its own type fail. A string
+  `restrict_update` used to be read as a substring test; it is now an error (it
+  must be a list of defined state names). Give policy content (mappings) rather
+  than a function that builds `WorkflowPolicy` objects, which cannot be isolated
+  per type
+  ([eager-callable-default-policies](follow-ups.md#eager-callable-default-policies)).
+* A workflow-conditioned grant (`scrud_workflow` operator) no longer allows a
+  write in a context where no workflow policy applies: the write is refused
+  with 403. Unconditional and CEL grants are unaffected. A CEL condition on a
+  grant that authorizes a transition now reads the request body, as in
+  scoped-rbac's request check.
+* A reserved transition name (one that starts with `__`) is refused, in stored
+  policies and in defaults.
 * A `WorkflowPolicy` is checked when it is created or updated, and refused with
   400 (nothing is stored) when a state condition is not valid CEL, a transition
   is not an object with `from` and `to` naming defined states, a transition's
@@ -128,7 +200,7 @@ Conditional request handling now comes from scrudful 0.8.
   present but not a string.
 * There is at most one stored `WorkflowPolicy` per resource type and context. A
   create, or an update moving a policy into a context, that would make a second
-  one is refused with 400; update or delete the existing policy instead. If
+  one is refused with 400 (not 409), without naming the existing policy; update or delete the existing policy instead. If
   several were stored before (or past the API), none is picked: writes of the
   type in that context fail with `ImproperlyConfigured` until all but one are
   deleted. The `WorkflowPolicy`

@@ -20,11 +20,14 @@ uv add "scrud-django[search]"
 
 ### Required
 
-Add `rest_framework`, `reversion`, `scoped_rbac` and `scrud_django` to `INSTALLED_APPS`:
+Add `django.contrib.auth`, `django.contrib.contenttypes`, `rest_framework`,
+`reversion`, `scoped_rbac` and `scrud_django` to `INSTALLED_APPS`:
 
 ```python
 INSTALLED_APPS = [
   ...
+  'django.contrib.auth',
+  'django.contrib.contenttypes',
   'rest_framework',
   'reversion',
   'scoped_rbac',
@@ -57,9 +60,31 @@ REST_FRAMEWORK = {
 }
 ```
 
+Request bodies must be JSON: a form or multipart body gets 415.
+
 DRF's own default permission is `AllowAny`. The scrud-django viewsets set
 `IsAuthorized` themselves, but any other view in your project (and any view you
 build on scoped-rbac) relies on `DEFAULT_PERMISSION_CLASSES` to fail closed.
+
+### Search (optional)
+
+With the `search` extra, also add `haystack` to `INSTALLED_APPS` and configure a
+connection, for example:
+
+```python
+HAYSTACK_CONNECTIONS = {
+    "default": {
+        "ENGINE": "haystack.backends.whoosh_backend.WhooshEngine",
+        "PATH": BASE_DIR / "whoosh_index",
+    },
+}
+```
+
+### Upgrading
+
+Version 0.12.0 has breaking changes (Django 5.2, uv, scrudful 0.8, scoped-rbac
+0.11, JSON-only bodies, workflow policies in every context). Read the
+[0.12.0 release notes](docs/release-notes.md) before upgrading.
 
 ## Development Get Started
 

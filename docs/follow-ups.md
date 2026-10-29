@@ -3,7 +3,7 @@
 <a id="list-not-rbac-filtered"></a>
 ## list-not-rbac-filtered: `ResourceViewMixin.list` is not RBAC-filtered
 
-`scrud_django/mixins/view_mixins.py:204` (`ResourceViewMixin.list`) pages
+`scrud_django.mixins.view_mixins.ResourceViewMixin.list` pages
 `Resource.objects.filter(resource_type=...)` directly, never through
 `self.filter_queryset()`, so scoped-rbac's `RbacFilter` never runs on it. This
 predates the `modernize-uv` branch (same code at `develop`).
@@ -12,6 +12,17 @@ Impact: any user who passes the view-level check for `http.GET` on a type's list
 (a grant in any context) sees every resource of that type, in every context.
 Since the switch to scrudful, detail routes authorize per object through `get_object()`. A
 resource can therefore be listed to a user who gets 404 for it on its detail URL.
+
+The same hole exposes stored `WorkflowPolicy` content, CEL conditions included,
+of other contexts: `WorkflowPolicy` is a scrud type, so its list is not
+filtered either, and a user with `http.GET` on `WorkflowPolicy` in any one
+context lists every policy of every context. That makes the 0.12.0 rule that
+errors give a stored policy's URL, or a generic error, instead of its content
+moot until this is fixed.
+
+**The library is not safe for multi-tenant use until this is fixed.** Do not
+rely on RBAC contexts to keep resources, or workflow policies, apart from
+users who may list their type.
 
 Suggested fix: build the list from
 `self.filter_queryset(self.get_queryset())`, as DRF's `ListModelMixin` does,
@@ -46,7 +57,7 @@ name it.
 <a id="workflow-validator-defaulted-copy"></a>
 ## workflow-validator-defaulted-copy: the workflow check reads the schema-defaulted copy of the body
 
-`WorkflowValidator.__call__` (`scrud_django/validators.py:111`) reads the
+`WorkflowValidator.__call__` (`scrud_django.validators`) reads the
 contexts and state from the data DRF passes to validators, which is a copy of
 the body that `JsonValidator` has filled with the schema's `default` values.
 The view stores `request.data` without them (see
@@ -67,7 +78,7 @@ body as sent, which is what is stored), and test a type whose schema defaults
 
 For an update, `WorkflowValidator` checks every context of the stored resource
 and of the body as a transition from the stored content
-(`scrud_django/validators.py:135-139`). A context the resource enters is
+(`WorkflowValidator.__call__` in `scrud_django.validators`). A context the resource enters is
 checked the same way, so a state that is not an initial state there can be
 carried in. Example: a user who holds `__SAME_STATE__` (but not `finish`) in
 "v" and write in "w" moves a "done" ToDo from "w" to "v" without changing it;
@@ -83,8 +94,8 @@ above (400) and a move of a "not started" ToDo (200).
 ## workflow-policy-error-detail: an invalid WorkflowPolicy is refused without saying why
 
 A `WorkflowPolicy` that fails `WorkflowPolicy`'s checks raises a DRF
-`ValidationError({"workflow_policy": [...]})` (`WorkflowValidator.validate_policy`,
-`scrud_django/validators.py:129`). scoped-rbac's problem-details handler gives
+`ValidationError({"workflow_policy": [...]})`
+(`scrud_django.validators.WorkflowValidator.validate_policy`). scoped-rbac's problem-details handler gives
 uniform field errors, so the 400 carries only
 `{"workflow_policy": [{"code": "invalid", "message": "This value is not valid."}]}`,
 not the reason (for example which condition does not compile).
@@ -97,7 +108,7 @@ its own `type` and the `ImproperlyConfigured` message as `detail`), which
 <a id="cached-property-called"></a>
 ## cached-property-called: `SerializerMixin.resource_type` calls a `cached_property` value
 
-`scrud_django/mixins/serializer_mixins.py:71` (`SerializerMixin.resource_type`)
+`scrud_django.mixins.serializer_mixins.SerializerMixin.resource_type`
 evaluates `super().resource_type()`. `resource_type` is a `cached_property`, so
 `super().resource_type` already returns the value and calling it fails. This
 predates the `modernize-uv` branch.
@@ -114,7 +125,7 @@ serializer whose `_resource_type` is `None`.
 <a id="content-contains-sqlite"></a>
 ## content-contains-sqlite: `content__contains` is unsupported on SQLite
 
-`scrud_django/views.py:55-57` (`ResourceViewSetGenericFilter.list`) filters
+`scrud_django.views.ResourceViewSetGenericFilter` filters its queryset
 with `content__contains=query_filter`. Django's `JSONField` `contains` lookup
 raises `NotSupportedError` on SQLite. This predates the `modernize-uv` branch.
 
@@ -129,22 +140,31 @@ with a query parameter; it should fail with `NotSupportedError` first.
 <a id="authorize-write-not-atomic"></a>
 ## authorize-write-not-atomic: authorization and the write are not one transaction
 
-`ResourceViewMixin.update` and `destroy` (`scrud_django/mixins/view_mixins.py`)
+`ResourceViewMixin.update` and `destroy` (`scrud_django.mixins.view_mixins`)
 first call `get_object()`, which scopes the lookup with `RbacFilter`, runs
 `check_object_permissions`, and lets scrudful evaluate `If-Match` /
 `If-Unmodified-Since` against that object. Then they call
 `ResourceRegistration.update` / `delete` (`scrud_django/registration.py`),
 which fetches the row again by primary key and writes it inside its own
-`transaction.atomic()`. The check and the write are not in the same
+`transaction.atomic()`. The workflow check (`WorkflowValidator`, a serializer
+validator) also runs before the write transaction, against the prior state that
+`get_object()` read. The check and the write are not in the same
 transaction, and the row is not locked between them.
 
 Impact: a concurrent write that lands between the two can be overwritten even
-though the request's `If-Match` named the earlier ETag (a lost update). A write
+though the request's `If-Match` named the earlier ETag (a lost update). Worse,
+the workflow transition is validated against the prior state read at
+`get_object()`, outside the write transaction, so a concurrent change can let a
+forbidden transition commit. The reviewer reproduced `canceled` -> `done` that
+way: the check saw the earlier state and allowed a transition that the state
+actually stored does not permit. A write
 that changes the resource's `rbac_context` in that window can also be followed
 by a write the caller was only authorized for under the old context. The window
 is short, and the tests (SQLite, one request at a time) do not exercise it.
 
-Suggested fix: run the lookup, the authorization, the precondition check and
+Suggested fix: `select_for_update` the row inside the write transaction and
+re-run the workflow check (and the precondition check) on the locked row. In
+general, run the lookup, the authorization, the precondition check and
 the write in one transaction, and lock the row. For example, enable
 `ATOMIC_REQUESTS` (or wrap `update`/`destroy` in `transaction.atomic()`), have
 `get_queryset()` use `select_for_update()` for PUT and DELETE, and pass the
@@ -177,8 +197,8 @@ change in the release notes.
 <a id="envelope-link-describedby"></a>
 ## envelope-link-describedby: the envelope `link` field disagrees with the `Link` header
 
-`scrud_django/headers.py:40` (`get_link_header_for`) builds the `link` field of
-each envelope (`scrud_django/mixins/serializer_mixins.py`, used in list pages)
+`scrud_django.headers.get_link_header_for` builds the `link` field of
+each envelope (`scrud_django.mixins.serializer_mixins`, used in list pages)
 with `rel="describedBy"; type="application/json"` for the schema. The `Link`
 header that scrudful sends on the same resource uses `rel="describedby"` with
 `type="application/schema+json"`.
@@ -196,7 +216,7 @@ consumers would see a changed value, so note it in the release notes.
 <a id="workflow-error-embeds-policy"></a>
 ## workflow-error-embeds-policy: workflow errors from a default policy embed the whole policy
 
-`scrud_django/exceptions.py` (`WorkflowTransitionError.response_data`) puts the
+`scrud_django.exceptions.WorkflowTransitionError.response_data` puts the
 policy in every 400 for an invalid state or transition (`policy`, and `detail`
 when the error has no message). Since 0.12.0 an error caused by a **stored**
 `WorkflowPolicy` gives that resource's absolute URL instead, which RBAC
@@ -218,8 +238,8 @@ send it instead; then assert that no workflow error body has CEL in it.
 The list routes' `ETag` and `Last-Modified` come from the resource type
 (`list_etag_func` / `list_last_modified_func` in
 `scrud_django/mixins/view_mixins.py`), and every write copies the written
-resource's ETag and time onto its type (`scrud_django/registration.py:184-185`
-and `224-225`).
+resource's ETag and time onto its type (`ResourceRegistration.register` and `ResourceRegistration.update` in
+`scrud_django.registration`).
 
 Impact: a user who may list a type learns the ETag and modification time of
 the newest resource of that type in **any** context, and can tell when a
@@ -237,7 +257,7 @@ unchanged.
 ## public-type-metadata: services, collection schemas and contexts are public
 
 `get_service_list`, `ResourceCollectionSchemaView` and
-`ResourceCollectionContextView` (`scrud_django/views.py:101-221`) are
+`ResourceCollectionContextView` (`scrud_django.views`) are
 `AllowAny`. `services/` lists every registered type; `collections-json-schema/<slug>/`
 embeds the type's whole JSON Schema; and both collection views answer 404 for
 an unknown slug and 200 for a known one.
@@ -286,11 +306,12 @@ that a default-context writer may POST a JSON-LD context document.
 ## empty-context-list: `"rbac_context": []` puts a resource in no context
 
 `rbac_contexts_of` reads an empty list as no contexts. scoped-rbac grants a
-resource with no context to superusers only, and refuses to write one for
-anyone else.
+resource with no context to superusers only.
 
-Impact: none beyond superusers being able to create resources nobody else can
-see. It fails closed.
+Impact: through the API, scoped-rbac's request check refuses a body with
+`"rbac_context": []` for everyone, superusers included, so a client cannot
+create such a resource. Only server code (`ResourceRegistration`) can store one,
+and superusers can then read it. It fails closed.
 
 Suggested fix: decide whether `[]` should be the default context or a 400, and
 test it.
@@ -308,8 +329,8 @@ use `demo/manage.py` for a persistent server (as `CLAUDE.md` describes).
 <a id="version-uninstalled"></a>
 ## version-uninstalled: `scrud_django.__version__` needs the package installed
 
-`scrud_django/__init__.py:12` sets `__version__ = version("scrud-django")`,
-which raises `PackageNotFoundError` when the package is imported from a source
+`scrud_django.__version__` is set from `version("scrud-django")` in the
+package's `__init__`, which raises `PackageNotFoundError` when the package is imported from a source
 tree that is not installed (for example a checkout on `PYTHONPATH`).
 
 Suggested fix: catch `PackageNotFoundError` and fall back to `"0+unknown"`, and
@@ -400,3 +421,96 @@ partly honoured by the post-save check.
 Suggested fix: route the post-save check through the permission class's own
 method (or document that it uses `may_act_in`), and test a subclass that denies
 a context.
+
+<a id="duplicate-workflow-policies"></a>
+## duplicate-workflow-policies: duplicate policies cause a fail-closed 500, because nothing in the database prevents them
+
+At most one stored `WorkflowPolicy` per resource type and context is enforced
+by `WorkflowValidator.validate_policy` (`scrud_django.validators`) only.
+`Resource` has no type or context columns, so there is no unique constraint,
+and two concurrent POSTs can both pass the check. Duplicates stored before
+0.12.0 are the same. `scrud_django.workflow.workflow_policy_for` then picks none
+and raises `ImproperlyConfigured`, a 500 for every create or update of that
+type in that context until an admin deletes all but one.
+
+Suggested fix: a system check or management command that lists duplicate
+policies (as for [stored-invalid-workflow-policy](#stored-invalid-workflow-policy)),
+or an indexed type and context column on `Resource` with a unique constraint.
+Test: store two policies for one type and context with
+`ResourceRegistration.register` and expect the check to name both.
+
+<a id="eager-callable-default-policies"></a>
+## eager-callable-default-policies: a callable default that raises fails every type
+
+`SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` is checked per type
+(`scrud_django.conf.DefaultWorkflowPolicies`, system check
+`scrud_django.E001`), and one invalid default only affects its own type, when
+the setting gives policy content (mappings) or `WorkflowPolicy` objects that
+were built successfully. A dotted-path function that builds `WorkflowPolicy`
+objects eagerly and raises on an invalid one cannot be isolated: the setting
+cannot be loaded, E001 reports it, and every type's default fails.
+
+Suggested fix: document that the setting should give mappings, not
+`WorkflowPolicy` objects built by a function. Test: a function that raises
+yields one E001 for the setting.
+
+<a id="create-error-echoes-body"></a>
+## create-error-echoes-body: a create's workflow error echoes the body as `prior_state`
+
+On a create, `WorkflowValidator.transition_for` and
+`ResourceMixin.get_transition_data` build
+`TransitionData(None, data, "__INITIALIZE__")`, which puts the whole request
+body in `prior_state`. An unauthorized-create error under a readable stored
+policy or a settings default policy therefore sends the body back in
+`WorkflowTransitionError.response_data`. The client sent it, so it learns
+nothing new; but a large body is echoed, and it is not the prior state.
+
+Suggested fix: send `prior_state: null` for a create. Test: an unauthorized
+create gives a body with `prior_state` null.
+
+<a id="delete-no-workflow-check"></a>
+## delete-no-workflow-check: DELETE is not checked against the workflow
+
+`ResourceViewMixin.destroy` checks object and request RBAC but runs no
+workflow check: a user who may `http.DELETE` a resource may delete it in any
+state, whatever `restrict_update` says. This is a design choice (a policy
+governs updates), recorded here so it is not mistaken for an oversight.
+
+Suggested fix: if deletes must follow the workflow, add a delete transition to
+the policy model and authorize it in `destroy`.
+
+<a id="django-admin-bypass"></a>
+## django-admin-bypass: the Django admin registers Resource and bypasses RBAC and workflow
+
+`scrud_django/admin.py` registers `Resource` and `ResourceType` with the Django
+admin. Staff who may change them there write resources without scoped-rbac's
+checks, workflow validation or JSON Schema validation, and see every context.
+
+Suggested fix: unregister `Resource` (and `ResourceType`) in projects that
+expose the admin to non-superusers, or make the admin read-only; decide whether
+the library should register them at all.
+
+<a id="policy-grants-are-admin"></a>
+## policy-grants-are-admin: CEL cost, ReDoS and JSONPath cost need an administrative grant to exploit
+
+Workflow state conditions are CEL evaluated by `scoped_rbac.cel`; a condition
+can be expensive (a regular expression with catastrophic backtracking, a large
+comprehension), as can a JSONPath expression in a type's configuration. A
+`WorkflowPolicy`, a role's CEL condition or a type's JSON Schema can only be
+written by someone with an administrative grant, so this is not reachable by
+ordinary writers. There is no cost limit.
+
+Suggested fix: if untrusted users may hold those grants, bound CEL evaluation
+(time or cost) and reject patterns that scoped-rbac or `re` cannot run in
+bounded time.
+
+<a id="policy-recompiled-per-write"></a>
+## policy-recompiled-per-write: a stored policy is compiled again on every write
+
+`scrud_django.workflow.workflow_policy_for` builds a `WorkflowPolicy` from the
+stored content (compiling every CEL condition) for each context of each write.
+Settings default policies are built once; stored ones are not cached.
+
+Impact: CPU per write grows with the number of conditions and the number of
+contexts. Suggested fix: cache the compiled policy by the stored resource's
+ETag and modification time, as `validator_for` does for JSON Schema validators.
