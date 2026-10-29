@@ -44,16 +44,28 @@ class ResourceMixin(ScrudfulMixin):
         return self.content.get("rbac_context", None)
 
     # A resource whose content names no ``rbac_context`` belongs to the default
-    # context (""), where scoped-rbac also authorizes its creation.
+    # context (""), where scoped-rbac also authorizes its creation. Only a string
+    # (or a list or tuple of strings) names a context: any other value is content
+    # that merely uses the key, such as a JSON-LD context document's term
+    # definition ``"rbac_context": {"@id": "openteams:RBACContext"}``. Taken as a
+    # context, such a value is one no role grants, which hid those documents
+    # from everyone but superusers.
     @property
     def rbac_contexts(self):
         """The contexts scoped-rbac checks this resource in (its object checks
         read ``rbac_contexts`` before ``rbac_context``): the content's
-        ``rbac_context``, else ``DEFAULT_CONTEXT``, the context scoped-rbac
-        authorizes a POST that names none in. Without it a resource that names
-        none would have no context, which no role grants."""
+        ``rbac_context`` when it is a string or a list or tuple of strings, else
+        ``DEFAULT_CONTEXT``, the context scoped-rbac authorizes a POST that names
+        none in. Without it a resource that names none would have no context,
+        which no role grants."""
         context = self.rbac_context
-        return [DEFAULT_CONTEXT if context is None else context]
+        if isinstance(context, str):
+            return [context]
+        if isinstance(context, (list, tuple)) and all(
+            isinstance(item, str) for item in context
+        ):
+            return list(context)
+        return [DEFAULT_CONTEXT]
 
     def save(
         self, force_insert=False, force_update=False, using=None, update_fields=None

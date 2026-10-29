@@ -32,8 +32,10 @@ Conditional request handling now comes from scrudful 0.8.
   Still set `"DEFAULT_PERMISSION_CLASSES": ["scoped_rbac.permissions.IsAuthorized"]`
   in `REST_FRAMEWORK` so that your other views fail closed too (see the README).
 * Detail routes enforce object-level RBAC through scoped-rbac. An object the
-  user cannot read now gives 404. Resources with no `rbac_context` belong to the
-  default context `""`.
+  user cannot read now gives 404. A resource's `rbac_context` names its context
+  only when it is a string or a list of strings. Resources with no
+  `rbac_context`, or with any other value there (for example a JSON-LD context
+  document's `{"@id": ...}` term definition), belong to the default context `""`.
 * Unauthenticated requests now get 401.
 
 ### API changes

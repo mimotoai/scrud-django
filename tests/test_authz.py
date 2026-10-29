@@ -105,3 +105,22 @@ def test_scrud_viewsets_set_is_authorized():
 
     for viewset in (ResourceViewSet, ResourceViewSetGenericFilter):
         assert viewset.__dict__["permission_classes"] == [IsAuthorized], viewset
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("type_slug", ["todos", "workflow-policies"])
+@test_context
+def test_json_ld_context_document_is_readable(type_slug, regular_login):
+    # A JSON-LD context document defines the term ``rbac_context`` as a dict
+    # (e.g. {"@id": "openteams:RBACContext"}); that is not an RBAC context, so
+    # the document is in the default context, where regular_login's role grants.
+    from scrud_django.headers import get_context_uri_for
+    from scrud_django.registration import get_resource_type_for
+
+    resource_type = get_resource_type_for(type_slug)
+    assert isinstance(resource_type.context.content["rbac_context"], dict)
+    # The URL the type's rel="http://www.w3.org/ns/json-ld#context" Link names.
+    url = get_context_uri_for(resource_type, None)
+    Given.http.force_authenticate(regular_login)
+    When.http.get(url)
+    Then.http.status_code_is(status.HTTP_200_OK)
