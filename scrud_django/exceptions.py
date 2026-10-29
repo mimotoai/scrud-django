@@ -132,6 +132,25 @@ class RequestBodyMissingError(ScrudException):
         self.title = "Missing request body"
 
 
+class RequestBodyTooDeepError(ScrudException):
+    """A POST or PUT (or PATCH) body nested deeper than
+    ``scrud_django.mixins.view_mixins.MAX_BODY_DEPTH`` levels (objects and
+    arrays): code that walks a body recursively (reversion's serializer, an
+    operator) would fail on it with ``RecursionError``, a 500."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "body_too_deep"
+
+    def __init__(self, max_depth):
+        super().__init__(
+            f"A request body may be nested at most {max_depth} levels deep "
+            "(objects and arrays)."
+        )
+        self.type = "https://api.openteams.com/http-problem/body-too-deep"
+        self.title = "Request body too deeply nested"
+
+
 class StoredPolicyReference:
     """A stored ``WorkflowPolicy`` resource, as a workflow error names it: by its
     detail URL, never its content, which a writer refused because of it may not

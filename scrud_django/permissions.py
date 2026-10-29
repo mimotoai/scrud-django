@@ -1,5 +1,5 @@
 import copy
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 
 
 class TransitionCheck(Mapping):
@@ -84,33 +84,31 @@ class ReadOnlyMapping(Mapping):
         return f"{type(self).__name__}({dict(self._items)!r})"
 
 
-class ReadOnlyList(Sequence):
+class ReadOnlyList(tuple):
     """A read-only view of a JSON array's items (read-only too,
-    `read_only`). It compares equal to a ``list`` or ``tuple`` with the same
-    items, and ``copy.copy``/``copy.deepcopy`` give it back."""
+    `read_only`): a ``tuple``, so that code reading an array as a ``list`` or
+    ``tuple`` (scoped-rbac's ``access.body_contexts``, for one) reads it. It
+    compares equal to a ``list`` or ``tuple`` with the same items, a slice is
+    one too, and ``copy.copy``/``copy.deepcopy`` give it back. Like a
+    ``list`` it is not hashable."""
 
-    __slots__ = ("_items",)
-
-    def __init__(self, items):
-        object.__setattr__(self, "_items", tuple(items))
+    __slots__ = ()
 
     def __getitem__(self, index):
         if isinstance(index, slice):
-            return ReadOnlyList(self._items[index])
-        return self._items[index]
-
-    def __len__(self):
-        return len(self._items)
+            return ReadOnlyList(tuple.__getitem__(self, index))
+        return tuple.__getitem__(self, index)
 
     def __eq__(self, other):
-        if isinstance(other, (list, tuple, ReadOnlyList)):
-            return list(self._items) == list(other)
+        if isinstance(other, (list, tuple)):
+            return tuple(self) == tuple(other)
         return NotImplemented
 
-    __hash__ = None
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
 
-    def __setattr__(self, name, value):
-        raise AttributeError(f"{type(self).__name__} is read-only")
+    __hash__ = None
 
     def __copy__(self):
         return self
@@ -119,37 +117,76 @@ class ReadOnlyList(Sequence):
         return self
 
     def __repr__(self):
-        return f"{type(self).__name__}({list(self._items)!r})"
+        return f"{type(self).__name__}({list(self)!r})"
+
+
+def _containers(value, is_container):
+    """Every container in `value` (itself included, as `is_container`
+    says), each once, children before their parents: an explicit stack, so
+    that content nested deeper than the interpreter's recursion limit (a
+    body the JSON parser read) is walked without recursion."""
+    order, seen, stack = [], set(), [(value, False)]
+    while stack:
+        node, children_done = stack.pop()
+        if children_done:
+            order.append(node)
+            continue
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        stack.append((node, True))
+        items = node.values() if isinstance(node, Mapping) else node
+        stack.extend((item, False) for item in items if is_container(item))
+    return order
+
+
+def _convert(value, is_container, mapping, sequence):
+    """`value` with each container (`is_container`) rebuilt bottom-up, a
+    mapping by `mapping` and any other container by `sequence`, each given
+    its converted items."""
+    if not is_container(value):
+        return value
+    converted = {}
+
+    def item(child):
+        return converted[id(child)] if is_container(child) else child
+
+    for node in _containers(value, is_container):
+        if isinstance(node, Mapping):
+            converted[id(node)] = mapping({k: item(v) for k, v in node.items()})
+        else:
+            converted[id(node)] = sequence(item(v) for v in node)
+    return converted[id(value)]
+
+
+def _is_json_container(value):
+    return isinstance(value, (Mapping, list, tuple))
 
 
 def read_only(value):
     """`value` (JSON content) as read-only views at every level: a mapping
     as a `ReadOnlyMapping`, a list or tuple as a `ReadOnlyList`, anything else
-    (a string, number, boolean or ``None``) as it is."""
-    if isinstance(value, Mapping):
-        return ReadOnlyMapping({key: read_only(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
-        return ReadOnlyList(read_only(item) for item in value)
-    return value
+    (a string, number, boolean or ``None``) as it is. Built without
+    recursion, however deep the content."""
+    return _convert(value, _is_json_container, ReadOnlyMapping, ReadOnlyList)
 
 
 def writable(value):
     """`value` with `read_only`'s views (and any mapping or sequence) back
-    as plain ``dict``s and ``list``s: a fresh copy."""
-    if isinstance(value, Mapping):
-        return {key: writable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, ReadOnlyList)):
-        return [writable(item) for item in value]
-    return value
+    as plain ``dict``s and ``list``s: a fresh copy, built without
+    recursion."""
+    return _convert(value, _is_json_container, dict, list)
 
 
 class BodyCheck(ReadOnlyMapping):
     """A request body as a check reads it: read-only at every level
     (`read_only`), so that an operator or a permission class cannot change
     what is stored, with `to_cel` a plain copy for a CEL condition.
-    `ResourceViewMixin.check_permissions` gives it to scoped-rbac's request
+    `ResourceViewMixin.check_permissions` and
+    `GenericViewMixin.check_permissions` give it to scoped-rbac's request
     check as the body, and the workflow check where no transition is
-    asked."""
+    asked. Its arrays are `ReadOnlyList` tuples, which scoped-rbac's
+    ``access.body_contexts`` reads as a list of contexts."""
 
     __slots__ = ()
 

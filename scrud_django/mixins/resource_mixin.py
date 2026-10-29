@@ -6,7 +6,6 @@ from django.utils.translation import gettext_lazy as _
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.models.resource_type import ResourceType
-from scrud_django.permissions import ReadOnlyList
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     TransitionData,
@@ -24,8 +23,8 @@ workflow_policy_type_uri = WORKFLOW_POLICY_TYPE_URI
 
 def rbac_contexts_of(content):
     """The contexts a resource's `content` is in: its ``rbac_context`` when it is
-    a string or a list or tuple of strings (or a read-only view of one, as
-    checks read the body), else ``DEFAULT_CONTEXT``, the
+    a string or a list or tuple of strings (a read-only view of an array, as
+    checks read the body, is a tuple), else ``DEFAULT_CONTEXT``, the
     context scoped-rbac authorizes a POST that names none in. Without it a
     resource that names none would have no context, which no role grants.
     Absent, ``None`` and ``""`` are all the default context. The one reading of
@@ -34,7 +33,7 @@ def rbac_contexts_of(content):
     context = content.get("rbac_context") if isinstance(content, Mapping) else None
     if isinstance(context, str):
         return [context]
-    if isinstance(context, (list, tuple, ReadOnlyList)) and all(
+    if isinstance(context, (list, tuple)) and all(
         isinstance(item, str) for item in context
     ):
         return list(context)

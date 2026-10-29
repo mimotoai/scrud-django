@@ -20,6 +20,7 @@ from .factories import UserFactory
 
 TODO = "tests://ToDo"
 PP = "tests://PartnerProfiles"
+PP_LIST = "https://api.openteams.com/json-schema/ResourceCollection?contents_type=" + PP
 NOT_STARTED = {
     "title": "ok",
     "status": "not started",
@@ -195,3 +196,123 @@ def test_transition_check_is_read_only_at_every_level():
     check.to_cel()["nested"]["a"] = 2  # a copy
     assert body == {"nested": {"a": 1}, "tags": ["t"]}
     assert check["nested"] == {"a": 1}
+
+
+def test_read_only_arrays_are_tuples_for_scoped_rbacs_building_blocks():
+    # access.body_contexts (scoped-rbac's default contexts_from) reads an
+    # array of contexts only as a list or tuple.
+    from scoped_rbac import access
+
+    from scrud_django.permissions import BodyCheck
+
+    body = BodyCheck({"rbac_context": ["a", "b"]})
+    assert isinstance(body["rbac_context"], tuple)
+    assert access.body_contexts(body) == ["a", "b"]
+    assert body["rbac_context"] == ["a", "b"]
+    assert body["rbac_context"][:1] == ["a"]
+
+
+LD = "http://www.w3.org/ns/json-ld#context"
+
+
+@pytest.mark.django_db
+def test_a_contexts_from_delegating_to_scoped_rbac_reads_several_contexts():
+    reverse("todos-list")
+    role = Role(definition={"http.POST": [LD]}, etag=uuid4().hex, modified_at=now())
+    role.save()
+    user = UserFactory()
+    for context in ("a", "b"):
+        RoleAssignment(
+            user=user,
+            role=role,
+            rbac_context=context,
+            etag=uuid4().hex,
+            modified_at=now(),
+        ).save()
+    client = APIClient()
+    client.force_authenticate(user)
+    response = client.post(
+        reverse("body-contexts-json-ld-list"),
+        {"@context": {}, "rbac_context": ["a", "b"]},
+        format="json",
+    )
+    assert response.status_code == 201, response.content
+    response = client.post(
+        reverse("body-contexts-json-ld-list"),
+        {"@context": {}, "rbac_context": ["a", "c"]},
+        format="json",
+    )
+    assert response.status_code == 403, response.content
+
+
+def nested(depth):
+    """A JSON text of `depth` nested arrays."""
+    return "[" * depth + "]" * depth
+
+
+@pytest.mark.django_db
+def test_a_body_nested_past_the_limit_is_400_and_one_within_it_is_stored():
+    # A body nested about 1000 levels (one the JSON parser reads) is a 400
+    # body-too-deep, before any check: Python code that walks it recursively
+    # (reversion's serializer, an operator) would fail with RecursionError, a
+    # 500. One within MAX_BODY_DEPTH is checked through the read-only views,
+    # stored and read back.
+    from scrud_django.mixins.view_mixins import MAX_BODY_DEPTH
+
+    reverse("todos-list")
+    client = user_with({"http.GET": [PP], "http.POST": {PP: MUTATOR}})
+    before = Resource.objects.count()
+    for depth in (990, MAX_BODY_DEPTH):
+        body = '{"name": "deep", "rbac_context": "q", "x": ' + nested(depth) + "}"
+        response = client.generic(
+            "POST",
+            reverse("partner-profiles-list"),
+            body,
+            content_type="application/json",
+        )
+        assert response.status_code == 400, response.content[:200]
+        assert response.json()["type"] == (
+            "https://api.openteams.com/http-problem/body-too-deep"
+        )
+    assert Resource.objects.count() == before
+    # The object holding the arrays is one level: MAX_BODY_DEPTH in all.
+    body = (
+        '{"name": "deep", "rbac_context": "q", "x": ' + nested(MAX_BODY_DEPTH - 1) + "}"
+    )
+    response = client.generic(
+        "POST", reverse("partner-profiles-list"), body, content_type="application/json"
+    )
+    assert response.status_code == 201, response.content[:200]
+    stored = Resource.objects.latest("pk")
+    reader = user_with({"http.GET": [PP, PP_LIST]})
+    assert (
+        reader.get(reverse("partner-profiles-detail", args=[stored.pk])).status_code
+        == 200
+    )
+    assert reader.get(reverse("partner-profiles-list")).status_code == 200
+
+
+def test_read_only_views_of_deep_content_are_built_without_recursion():
+    from scrud_django.permissions import (
+        ReadOnlyList,
+        ReadOnlyMapping,
+        read_only,
+        writable,
+    )
+
+    value = "leaf"
+    for depth in range(5000):
+        value = {"k": value} if depth % 2 else [value]
+    view, plain = read_only(value), writable(read_only(value))
+    with pytest.raises(TypeError):
+        view["k"] = 1
+    levels = 0
+    while view != "leaf":
+        if isinstance(view, ReadOnlyList):
+            assert isinstance(plain, list)
+            view, plain = view[0], plain[0]
+        else:
+            assert isinstance(view, ReadOnlyMapping) and isinstance(plain, dict)
+            view, plain = view["k"], plain["k"]
+        levels += 1
+    assert (levels, plain) == (5000, "leaf")

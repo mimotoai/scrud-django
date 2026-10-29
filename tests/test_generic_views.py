@@ -352,3 +352,76 @@ def test_a_write_locks_the_row_whatever_the_views_queryset(queryset, method):
         request, slug=str(note.pk)
     )
     assert response.status_code in (200, 204), response.data
+
+
+def note_writer(*contexts, condition=None):
+    """A client whose user may GET and PUT notes in each of `contexts` (the
+    PUT conditioned on `condition`, if given)."""
+    user = UserFactory()
+    put = {NOTE: condition} if condition is not None else [NOTE]
+    role = Role(
+        definition={"http.GET": [NOTE, NOTE_LIST], "http.PUT": put},
+        etag=uuid4().hex,
+        modified_at=now(),
+    )
+    role.save()
+    for context in contexts:
+        RoleAssignment(
+            user=user,
+            role=role,
+            rbac_context=context,
+            etag=uuid4().hex,
+            modified_at=now(),
+        ).save()
+    client = APIClient()
+    client.force_authenticate(user)
+    return client
+
+
+def rewriting(resource, configuration):
+    """An adopter's operator that tries to rewrite the body's text (and a
+    nested value), and allows."""
+    for change in (
+        lambda: resource.__setitem__("text", "MUTATED"),
+        lambda: resource["nested"].__setitem__("evil", True),
+    ):
+        try:
+            change()
+        except (TypeError, AttributeError, KeyError):
+            pass
+    return True
+
+
+@pytest.mark.django_db
+def test_a_generic_views_request_check_reads_a_read_only_body():
+    from django.conf import settings
+    from django.test import override_settings
+
+    note = a_note("before", rbac_context="a")
+    operators = dict(settings.SCOPED_RBAC, OPERATORS={"rewriting": rewriting})
+    with override_settings(SCOPED_RBAC=operators):
+        client = note_writer("a", condition={"condition": {"operator": "rewriting"}})
+        response = client.put(
+            detail(note),
+            {"text": "after", "rbac_context": "a", "nested": {"a": 1}},
+            format="json",
+            HTTP_IF_MATCH=quote_etag(Note.objects.get(pk=note.pk).etag),
+        )
+    assert response.status_code == 200, response.content
+    assert Note.objects.get(pk=note.pk).text == "after"
+
+
+@pytest.mark.django_db
+def test_a_generic_views_body_naming_several_contexts_is_checked_in_each():
+    # scoped-rbac's default contexts_from (access.body_contexts) reads the
+    # read-only array of contexts as a tuple: PUT is needed in each.
+    note = a_note("before", rbac_context="a")
+    for contexts, status_code in ((("a",), 403), (("a", "b"), 200)):
+        client = note_writer(*contexts)
+        response = client.put(
+            detail(note),
+            {"text": "after", "rbac_context": ["a", "b"]},
+            format="json",
+            HTTP_IF_MATCH=quote_etag(Note.objects.get(pk=note.pk).etag),
+        )
+        assert response.status_code == status_code, response.content

@@ -8,7 +8,7 @@ import reversion
 from django.core.exceptions import FieldError, ImproperlyConfigured, ValidationError
 from django.db import DEFAULT_DB_ALIAS, router, transaction
 from django.db.models import Max
-from django.http import Http404
+from django.http import Http404, QueryDict
 from rest_framework import status
 from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
@@ -18,7 +18,11 @@ from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import AccessAPIError, drf_error
 from scrudful.rest_framework import ScrudfulViewFunc
 
-from scrud_django.exceptions import RbacContextInvalidError, RequestBodyMissingError
+from scrud_django.exceptions import (
+    RbacContextInvalidError,
+    RequestBodyMissingError,
+    RequestBodyTooDeepError,
+)
 from scrud_django.filters import (
     filter_by_object_checks,
     object_check_requirement,
@@ -68,6 +72,40 @@ def check_body_present(request, view=None):
         raise RequestBodyMissingError()
 
 
+# The deepest a POST, PUT or PATCH body may be nested (objects and arrays,
+# the outermost one counted): far deeper than resources need, far below what
+# Python code walking it recursively can follow (about 800 levels).
+MAX_BODY_DEPTH = 100
+
+
+def body_depth(data, limit=None):
+    """How deeply `data` (a parsed JSON body) nests objects and arrays (0 for
+    a scalar), counted without recursion; past `limit`, ``limit + 1``."""
+    deepest, stack = 0, [(data, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, Mapping):
+            items = node.values()
+        elif isinstance(node, (list, tuple)):
+            items = node
+        else:
+            continue
+        deepest = max(deepest, depth)
+        if limit is not None and deepest > limit:
+            return deepest
+        stack.extend((item, depth + 1) for item in items)
+    return deepest
+
+
+def check_body_depth(request):
+    """Raise `RequestBodyTooDeepError` (400) for a POST, PUT or PATCH body
+    nested deeper than `MAX_BODY_DEPTH`."""
+    if request.method not in BODY_METHODS:
+        return
+    if body_depth(request.data, MAX_BODY_DEPTH) > MAX_BODY_DEPTH:
+        raise RequestBodyTooDeepError(MAX_BODY_DEPTH)
+
+
 def check_written_contexts(request):
     """Raise `RbacContextInvalidError` (400) when a POST, PUT or PATCH body's
     ``rbac_context`` is an empty list, which would store the resource in no
@@ -98,11 +136,18 @@ def read_only_body(request):
     copy for a JSON array, which scoped-rbac's request check passes on as a
     ``list``): the permission classes and the operators of their grants'
     conditions read the body, and cannot change what is then stored. The
-    body is restored after. (DRF's ``Request.data`` reads ``_full_data``.)"""
+    body is restored after. A form body (a ``QueryDict``, on a view that
+    parses one) is left as it is. (DRF's ``Request.data`` reads
+    ``_full_data``.)"""
     if request.method not in BODY_METHODS:
         yield
         return
     data = request.data
+    if isinstance(data, QueryDict):
+        # A form body (a view that accepts one): its several values per key
+        # are read through QueryDict's own methods; left as it is.
+        yield
+        return
     if isinstance(data, Mapping):
         checked = BodyCheck(data)
     elif isinstance(data, list):
@@ -663,9 +708,11 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         ``rbac_context`` cannot be stored (`check_written_contexts`), with
         400, before scoped-rbac's request check (which would authorize an
         empty body as ``{}`` and refuse an empty context list with 403 for
-        everyone): they depend on the body alone. The request check then
-        reads the body as a `BodyCheck` (`read_only_body`)."""
+        everyone), and a body nested deeper than `MAX_BODY_DEPTH`
+        (`check_body_depth`): they depend on the body alone. The request
+        check then reads the body as a `BodyCheck` (`read_only_body`)."""
         check_body_present(request, self)
+        check_body_depth(request)
         check_written_contexts(request)
         with read_only_body(request):
             super().check_permissions(request)
@@ -817,6 +864,13 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
             return set(rows.select_for_update().values_list("pk", flat=True))
         except (TypeError, ValueError, ValidationError):
             return None
+
+    def check_permissions(self, request):
+        """DRF's, with the body read as a `BodyCheck` (`read_only_body`) by
+        the permission classes and their grants' operators, as on the scrud
+        views: they cannot change what the view then stores."""
+        with read_only_body(request):
+            super().check_permissions(request)
 
     def get_resource_type(self):
         """The view's resource type (``resource_type_name``), read once per
