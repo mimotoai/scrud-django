@@ -7,11 +7,12 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.db.models import Max
 from rest_framework import status
+from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
-from scoped_rbac.permissions import IsAuthorized, drf_error
+from scoped_rbac.permissions import drf_error
 
 from scrud_django.exceptions import RbacContextInvalidError, RequestBodyMissingError
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
@@ -19,6 +20,7 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
 from scrud_django.models.resource import MAX_CONTEXT_LENGTH
 from scrud_django.paginations import StandardResultsSetPagination
+from scrud_django.permissions import resource_check
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
@@ -36,14 +38,6 @@ from scrud_django.workflow import (
 # The methods whose lookup, authorization, preconditions, workflow check and
 # write run in one transaction with the row locked (`ResourceViewMixin.dispatch`).
 LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
-
-
-def overrides_has_object_permission(permission):
-    """Whether `permission`'s class overrides ``IsAuthorized``'s
-    ``has_object_permission``."""
-    return (
-        type(permission).has_object_permission is not IsAuthorized.has_object_permission
-    )
 
 
 # The methods whose body is the resource to store.
@@ -210,6 +204,22 @@ class ResourceViewMixin:
             queryset = queryset.using(self.locked_write_db).select_for_update()
         return queryset
 
+    def get_object(self):
+        """DRF's ``get_object()`` (the filtered queryset, the lookup by
+        ``lookup_field``, a 404 if missing), except that the object check is
+        given the resource as a `ResourceCheck`, a read-only mapping over its
+        content: ``check_object_permissions``, every ``has_object_permission``
+        and ``has_context_permission`` it calls, and the readability check of
+        a denied resource (404 or 403), so that an operator reads the content
+        as on the request check. The `Resource` is returned."""
+        queryset = self.filter_queryset(self.get_queryset())
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        obj = get_object_or_404(
+            queryset, **{self.lookup_field: self.kwargs[lookup_url_kwarg]}
+        )
+        self.check_object_permissions(self.request, resource_check(obj))
+        return obj
+
     def get_instance(self, request, slug: str):
         """The resource named by the URL: DRF's ``get_object()``, filtered and
         permission-checked (an unreadable resource is a 404). scrudful already
@@ -243,32 +253,19 @@ class ResourceViewMixin:
         write, in each of those contexts.
 
         It asks each permission itself, so that an ``IsAuthorized`` subclass's
-        overrides apply:
-
-        - its ``contexts_for(obj)`` names the contexts, and its
-          ``has_context_permission(request, view, content, context)`` decides
-          each. Its ``obj`` there is the stored content (a mapping), not the
-          ``Resource``, so that conditions, operators included, read the
-          content as on the request check;
-        - a ``has_object_permission`` it overrides must also allow the saved
-          ``Resource`` (DRF's object-level hook, with the object DRF's own
-          object check gives it);
-        - a resource with no usable context is left to its
-          ``has_object_permission`` (superusers only, as scoped-rbac's object
-          checks leave it)."""
-        resource = access.body_mapping(obj.content)
+        overrides apply, giving it the saved resource as a `ResourceCheck`, as
+        the detail route's object check does: its ``has_object_permission``
+        must allow it (as scoped-rbac's own post-save check asks; superusers
+        only for a resource in no usable context), and its
+        ``has_context_permission`` must allow it in each context its
+        ``contexts_for`` names."""
+        check = resource_check(obj)
         for leaf in self.get_post_save_permissions():
-            contexts = access.usable_contexts(leaf.contexts_for(obj))
-            if not contexts:
-                allowed = leaf.has_object_permission(request, self, obj)
-            else:
-                allowed = all(
-                    leaf.has_context_permission(request, self, resource, context)
-                    for context in contexts
-                ) and (
-                    not overrides_has_object_permission(leaf)
-                    or leaf.has_object_permission(request, self, obj)
-                )
+            contexts = access.usable_contexts(leaf.contexts_for(check))
+            allowed = leaf.has_object_permission(request, self, check) and all(
+                leaf.has_context_permission(request, self, check, context)
+                for context in contexts
+            )
             if not allowed:
                 raise access.AccessDenied()
 

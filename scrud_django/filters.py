@@ -20,6 +20,7 @@ from scoped_rbac.policy import Permission
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
 from scrud_django.models import Resource, ResourceContext
+from scrud_django.permissions import resource_check
 
 # Rows fetched per chunk while conditional candidates are evaluated one by one,
 # as scoped-rbac's ``access._CANDIDATE_CHUNK_SIZE``.
@@ -84,7 +85,8 @@ def filter_readable_resources(queryset, request, permission):
       ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``; the others with a row in a
       context that may grant it by a condition (or any, for a condition that
       applies in every context) are evaluated one by one with the resource as
-      the condition's resource (``access.cel_resource``), as
+      the condition's resource (``access.cel_resource`` of its
+      `ResourceCheck`, as the detail route's object check gives it), as
       ``access._filter_per_object`` does. More candidates than the cap raise
       ``access.ConditionalListTooLarge``.
 
@@ -139,10 +141,80 @@ def _conditionally_allowed(candidates, request, policy, permission, scope, conte
         evaluated = [c for c in usable if scope.conditional_anywhere or c in contexts]
         if not evaluated:
             continue
-        resource = access.cel_resource(request, obj)
+        resource = access.cel_resource(request, resource_check(obj))
         if any(policy.should_allow(permission, c, resource) for c in evaluated):
             allowed.append(obj.pk)
     return allowed
+
+
+def filter_readable_resources_per_object(queryset, request, permission, contexts_for):
+    """`queryset` (of `Resource`) restricted to the resources `permission` is
+    allowed on as an ``IsAuthorized`` whose ``contexts_for`` is overridden
+    allows them on the detail route: ``scoped_rbac.access.filter_authorized``
+    with a custom `contexts_for` (one ``contexts_for``, or several each of
+    which must allow a resource, an ``access.AnyOf`` any option of which
+    suffices), evaluated per resource as ``access._filter_per_object`` does,
+    except that each ``contexts_for`` and each condition is given the resource
+    as a `ResourceCheck`, as the detail route's object check gives it. A
+    superuser whose grants are unrestricted gets every resource not stored in
+    a reserved context; otherwise every resource examined counts against
+    ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``."""
+    policy = policy_for(request)
+    scope = policy.list_scope(permission, exclude=(SOME_CONTEXT,))
+    queryset = _not_stored_in_reserved_context(queryset)
+    user = access.request_user(request)
+    if scope.unrestricted and user is not None and user.is_superuser:
+        return queryset
+    if not (
+        scope.unrestricted
+        or scope.outright
+        or scope.conditional
+        or scope.conditional_anywhere
+    ):
+        return queryset.none()
+    contexts_fors = access.non_default_contexts_for(contexts_for)
+
+    def allowed(check, contexts, resource):
+        contexts = access.usable_contexts(contexts)
+        if not contexts:
+            return False
+        if scope.unrestricted or any(c in scope.outright for c in contexts):
+            return True
+        conditional = [
+            c for c in contexts if scope.conditional_anywhere or c in scope.conditional
+        ]
+        if not conditional:
+            return False
+        if not resource:
+            resource.append(access.cel_resource(request, check))
+        return any(policy.should_allow(permission, c, resource[0]) for c in conditional)
+
+    max_rows = conditional_list_max_rows()
+    allowed_pks = []
+    bounded = queryset.order_by()[: max_rows + 1]
+    for count, obj in enumerate(
+        bounded.iterator(chunk_size=CANDIDATE_CHUNK_SIZE), start=1
+    ):
+        if count > max_rows:
+            raise access.ConditionalListTooLarge()
+        if access.stored_in_reserved_context(obj):
+            continue
+        check = resource_check(obj)
+        resource = []  # the resource's CEL resource, built once if needed
+
+        def allows(contexts_for, check=check, resource=resource):
+            if isinstance(contexts_for, access.AnyOf):
+                return any(
+                    all(map(allows, option))
+                    if isinstance(option, (list, tuple))
+                    else allows(option)
+                    for option in contexts_for.options
+                )
+            return allowed(check, contexts_for(check), resource)
+
+        if all(map(allows, contexts_fors)):
+            allowed_pks.append(obj.pk)
+    return queryset.filter(pk__in=allowed_pks)
 
 
 class ResourceRbacFilter(RbacFilter):
@@ -156,8 +228,9 @@ class ResourceRbacFilter(RbacFilter):
 
     A detail lookup (inside ``get_object()``) and any other method are
     ``RbacFilter``'s. A view whose ``IsAuthorized`` overrides ``contexts_for``
-    is listed per object with those contexts (``access.filter_authorized``),
-    with the item type's permission."""
+    is listed per object with those contexts
+    (`filter_readable_resources_per_object`), with the item type's
+    permission."""
 
     def filter_queryset_for_get(self, request, queryset, view):
         if self.is_detail_request(request, view) or not issubclass(
@@ -167,13 +240,9 @@ class ResourceRbacFilter(RbacFilter):
         permission = Permission(http_action_iri_for(request), view.resource_type_iri)
         contexts_for = self.contexts_for(view)
         try:
-            if contexts_for is not None:
-                return access.filter_authorized(
-                    queryset,
-                    policy_for(request),
-                    permission,
-                    request=request,
-                    contexts_for=contexts_for,
+            if access.non_default_contexts_for(contexts_for) is not None:
+                return filter_readable_resources_per_object(
+                    queryset, request, permission, contexts_for
                 )
             return filter_readable_resources(queryset, request, permission)
         except access.ConditionalListTooLarge as exc:

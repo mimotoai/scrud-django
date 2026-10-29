@@ -79,10 +79,11 @@ class ResourceMixin(ScrudfulMixin):
         return rbac_contexts_of(self.content)
 
     def to_cel(self):
-        """What a grant's CEL condition reads for this resource (scoped-rbac
-        calls ``to_cel()`` on the resource of an object check or a list's
-        per-object check): its content when it is a mapping, else ``{}``.
-        Operator conditions still get the resource itself."""
+        """What a grant's CEL condition reads for this resource: its content
+        when it is a mapping, else ``{}``. The scrud views' object checks and
+        list filter give conditions a `scrud_django.permissions.ResourceCheck`
+        (whose ``to_cel()`` is the same), so that operators get a read-only
+        mapping over the content too."""
         return self.content if isinstance(self.content, Mapping) else {}
 
     def save(
