@@ -50,7 +50,10 @@ If you mount URLs yourself, include `scoped_rbac.semantic_urls`, for example
 
 Configure Django REST Framework to authorize with scoped-rbac and to answer
 errors as [RFC 7807](https://tools.ietf.org/html/rfc7807) problem details while
-keeping scrud-django's own validation and workflow error bodies:
+keeping scrud-django's own validation and workflow error bodies (the scrud
+views' other errors, precondition failures included, are problem details while
+scoped-rbac's `SCOPED_RBAC["UNIFORM_ERRORS"]` is on, its default, and DRF's
+native `{"detail": ...}` bodies when it is off):
 
 ```python
 REST_FRAMEWORK = {
@@ -67,7 +70,8 @@ type's schema, stored and checked against its workflow policy exactly as it
 was sent, so send every value you want stored.
 
 If you use `DATABASE_ROUTERS`, route the writes of `scrud_django`'s models
-(`Resource`, `ResourceType`, `ResourceContext`) to one database alias:
+(`Resource`, `ResourceType`, `ResourceContext`, `ResourceRemoval`) to one
+database alias:
 scrud-django writes a resource, its context rows and its type's row in one
 transaction there, and the `scrud_django.E004` system check reports a split.
 Routing these models by instance hint is not supported.

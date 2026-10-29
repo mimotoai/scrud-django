@@ -44,7 +44,8 @@ re-check read stale rows
 
 Decision: a list's `Last-Modified` moves when a resource leaves a context in
 which the requester may list every resource; where they read only some (a
-conditional grant), it does not, and the `ETag` is the validator to use.
+conditional grant), it does not, and the `ETag` is the validator to use. The
+stamps are kept, never pruned.
 
 A resource that is deleted, or saved with content no longer in a context,
 stamps that context for its type (`scrud_django.models.ResourceRemoval`), and
@@ -70,6 +71,13 @@ pins the conditional case.
 Possible change, if wanted: store a removed resource's content with its stamp
 so that the condition can be evaluated on it, at the cost of keeping deleted
 content.
+
+Stamps are not pruned (no command removes them): there is one row per type
+and context a resource ever left, which grows with the number of contexts
+in use, not with the number of removals. Removing a stamp could move a
+list's `Last-Modified` back to before a removal and answer 304 for a list
+that lost a resource; a stamp of a context nobody reads anymore costs one
+small row.
 
 <a id="public-type-metadata"></a>
 ## public-type-metadata: services, collection schemas and contexts are public

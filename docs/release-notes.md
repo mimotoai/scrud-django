@@ -65,9 +65,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
     a transaction: reversion's `Version.revert()` called outside
     `transaction.atomic()` now raises `TransactionManagementError` (wrap it, or
     use `Revision.revert()`, which is atomic).
-13. If you use `DATABASE_ROUTERS`, route `Resource`, `ResourceType` and
-    `ResourceContext` writes to one alias: `manage.py check` now reports a
-    split as `scrud_django.E004`.
+13. If you use `DATABASE_ROUTERS`, route `Resource`, `ResourceType`,
+    `ResourceContext` and `ResourceRemoval` writes to one alias, and migrate
+    them all there: `manage.py check` now reports a split as
+    `scrud_django.E004`.
 14. Run your database at READ COMMITTED, the supported transaction isolation
     level (`manage.py check --database <alias>`, for the alias your router
     gives for `Resource` writes, reports another as `scrud_django.W002`). Give
@@ -82,17 +83,22 @@ django-scoped-rbac 0.11. It has several breaking changes.
     scrud's views and on your `GenericViewMixin` views alike (see Conditional
     requests below). Subclasses of `ResourceViewMixin` that override
     `dispatch`, `initial` or `get_queryset`, and `GenericViewMixin` subclasses
-    that override `dispatch` or `filter_queryset`, must call `super()`; a
-    `GenericViewMixin` view without a `queryset` attribute opens its write
-    transaction on the default database unless it overrides
-    `locked_write_database()`. Server code that updates or deletes a resource
+    that override `dispatch`, `get_object` or `filter_queryset`, must call
+    `super()`; a `GenericViewMixin` view without a `queryset` attribute opens
+    its write transaction on the default database unless it overrides
+    `locked_write_database()`. A `GenericViewMixin` view locks the row with a
+    query of its own (the model's base manager filtered by the URL's lookup),
+    not through its queryset, so a queryset with `distinct()`, an annotation
+    or a `select_related` of a nullable relation keeps working on PostgreSQL
+    (which refuses `FOR UPDATE` on those). Server code that updates or deletes a resource
     should go through `ResourceRegistration.update` / `delete`, which lock it
     the same way.
 17. `GenericViewMixin` lists: their `ETag` and `Last-Modified` now come from
     what the requester may list (see API changes below), so the view needs an
-    `RbacFilter` among its `filter_backends` (its list is otherwise
-    `ImproperlyConfigured`), and its `list` should serve `list_page()` (or
-    `list_queryset()` without a paginator).
+    `RbacFilter` among its `filter_backends` (`manage.py check` reports one
+    without as `scrud_django.E006`, and its list is `ImproperlyConfigured`),
+    and its `list` should serve `list_page()` (or `list_queryset()` without a
+    paginator).
 18. Clients: JSON Schema `default` values are not applied; send every value
     you want stored (and that a workflow state condition reads); a default
     no longer makes a body valid either. A POST or PUT with an empty body, or
@@ -105,9 +111,11 @@ django-scoped-rbac 0.11. It has several breaking changes.
     there (not `http.POST`) must allow `__INITIALIZE__` if it is conditioned
     on `scrud_workflow`; `scrud_post_save` (and so workflow actions) reports
     such a move as `__INITIALIZE__`.
-19. Clients: a 400 (malformed `If-Match` or `If-None-Match`), 412 or 428 is
+19. Clients: with `SCOPED_RBAC["UNIFORM_ERRORS"]` on (scoped-rbac's
+    default), a 400 (malformed `If-Match` or `If-None-Match`), 412 or 428 is
     now problem details served as `application/problem+json` (it was
-    `{"detail": ...}` as `application/json`), and a list envelope's `link`
+    `{"detail": ...}` as `application/json`; with uniform errors off it still
+    is), and a list envelope's `link`
     now spells the schema link `rel="describedby"` with
     `type="application/schema+json"`, as the `Link` header does (see
     Conditional requests below).
@@ -115,15 +123,20 @@ django-scoped-rbac 0.11. It has several breaking changes.
     below): every object check (the detail route's, the post-save check and a
     list's per-object check) now gives their `has_object_permission`,
     `has_context_permission` and `contexts_for` a
-    `scrud_django.permissions.ResourceCheck`, a read-only mapping over the
-    resource's content whose attribute reads are the resource's (`obj.content`,
-    `obj.rbac_contexts`, `obj.pk` work as before), not the `Resource` itself:
-    use `obj.resource` where you need the instance (an `isinstance(obj,
-    Resource)` test is false). They now also decide the post-save check (their
-    `has_object_permission` and `has_context_permission` in every context)
-    and the workflow check (their `has_context_permission`, given the
-    `TransitionCheck` of the transition in each context). Your operators get
-    the `ResourceCheck` on object checks (they got the `Resource`).
+    `scrud_django.permissions.ResourceCheck`, a mapping over the resource's
+    content that is read-only at every level (nested objects and arrays are
+    read-only views that compare equal to `dict`s and `list`s), whose
+    attribute reads are the resource's (`obj.rbac_contexts`, `obj.pk` work as
+    before; `obj.content` is a copy), not the `Resource` itself: use
+    `obj.resource` where you need the instance (an `isinstance(obj,
+    Resource)` test is false). Like a `dict` it is not hashable; memoize on
+    `obj.resource.pk`. They now also decide the post-save check (their
+    `has_object_permission` and `has_context_permission` in every context),
+    and they can refuse a workflow transition the policy allows, but not
+    grant one it refuses (their `has_context_permission` is given the
+    `TransitionCheck` of the transition in each context, whose mapping is the
+    request body as sent, not the stored resource). Your operators get the
+    `ResourceCheck` on object checks (they got the `Resource`).
 21. Django admin: `Resource` and `ResourceType` are now shown to superusers
     only. Staff who are not superusers no longer see them, whatever model
     permissions they hold (a write there bypasses RBAC, the workflow and JSON
@@ -226,9 +239,10 @@ Conditional request handling now comes from scrudful 0.8.
   `application/schema+json`. A list envelope's `link` is now the same value
   as the resource's `Link` header (it used `rel="describedBy"` and
   `type="application/json"`).
-* scrudful's own 400 (a malformed `If-Match` or `If-None-Match`), 412 (a
-  failed precondition) and 428 (a missing one), which it answers before the
-  view runs, are RFC 9457 problem details served as
+* While `SCOPED_RBAC["UNIFORM_ERRORS"]` is on for DRF (scoped-rbac's
+  default), scrudful's own 400 (a malformed `If-Match` or `If-None-Match`),
+  412 (a failed precondition) and 428 (a missing one), which it answers
+  before the view runs, are RFC 9457 problem details served as
   `application/problem+json` with the problem-details `Link`s, as
   scoped-rbac's own viewsets answer them: `type` `about:blank`, the reason
   phrase as `title`, `status`, scrudful's `detail` (a 428 also has
@@ -237,7 +251,11 @@ Conditional request handling now comes from scrudful 0.8.
   `{"detail": ...}` as `application/json`. (scrud-django's own errors have
   `https://api.openteams.com/http-problem/...` types and no `code`; the other
   errors, through `scrud_exception_handler`, are scoped-rbac's, with
-  `about:blank` and a `code`, as these are.)
+  `about:blank` and a `code`, as these are.) With uniform errors off, they
+  and every other error of the scrud views keep their native
+  `{"detail": ...}` bodies as `application/json`, without the
+  problem-details `Link`s, as scoped-rbac's own viewsets have it (the setting
+  is read per request).
 * OPTIONS bodies use scrudful's Semantic HTTP format, with `x-rdf-context`.
 * A PUT or DELETE runs in one transaction on the database the router gives
   for `Resource` writes: the permission check, the lookup with the resource's
@@ -265,9 +283,9 @@ Conditional request handling now comes from scrudful 0.8.
   that the second writer waits and then gets its 412 or 400. A
   `GenericViewMixin` view (a model of your own) runs its PUT, PATCH and
   DELETE the same way, on the database the router gives for its
-  `queryset`'s model, with the lookup's row locked: two concurrent writes
-  with the same `If-Match` used to both pass (a DELETE then a PUT even
-  re-inserted the row).
+  `queryset`'s model, with the row the URL names locked before the lookup:
+  two concurrent writes with the same `If-Match` used to both pass (a DELETE
+  then a PUT even re-inserted the row).
 * READ COMMITTED is the supported transaction isolation level (PostgreSQL's
   default, and Django's for MySQL): a write that waited for a lock then sees
   what the write it waited for committed. A new database check,
@@ -307,10 +325,13 @@ Conditional request handling now comes from scrudful 0.8.
   superusers can read or list it. A context longer than 2048 characters gets
   the same 400 through the API and a `ValueError` from `Resource.save()`.
 * Object checks give the permission class and the grants' conditions the
-  stored resource as a `scrud_django.permissions.ResourceCheck`: a read-only
-  mapping over its content (`{}` for content that is not a JSON object), whose
-  `to_cel()` is the content, whose attribute reads are the resource's, and
-  whose `resource` is the `Resource` itself. That is so on the detail route
+  stored resource as a `scrud_django.permissions.ResourceCheck`: a mapping
+  over its content (`{}` for content that is not a JSON object), read-only at
+  every level (`ReadOnlyMapping` and `ReadOnlyList` views, equal to the
+  `dict`s and `list`s they view; `copy.copy` and `copy.deepcopy` work; not
+  hashable, like a `dict`), whose `to_cel()` is a plain copy of the content,
+  whose `content` attribute is a copy, whose other attribute reads are the
+  resource's, and whose `resource` is the `Resource` itself. That is so on the detail route
   (GET, PUT and DELETE: `ResourceViewMixin.get_object` passes it to
   `check_object_permissions`, and so to `has_object_permission`,
   `has_context_permission`, `contexts_for` and the 404-or-403 readability
@@ -337,13 +358,18 @@ Conditional request handling now comes from scrudful 0.8.
   superusers only for a resource in no usable context) and its
   `has_context_permission` in every context `contexts_for` names, both given
   the saved resource as a `ResourceCheck`, as on the detail route.
-* The workflow check authorizes each transition through the view's permission
-  classes too: each `IsAuthorized`'s `has_context_permission(request, view,
-  check, context)`, given the `TransitionCheck` of the transition in that
-  context, must allow it (it asked the policy directly, so an override was not
-  asked). A serializer used without a view still asks the policy. A refusal
-  there is the workflow check's 400 (`workflow-transition-invalid`, "The user
-  isn't authorized to perform this state transition"), before the save.
+* The workflow check asks the view's permission classes too: the request's
+  policy must allow each transition, and then each `IsAuthorized`'s
+  `has_context_permission(request, view, check, context)`, given the
+  `TransitionCheck` of the transition in that context, must allow it as well
+  (an override was not asked). An `IsAuthorized` subclass can therefore
+  refuse a transition, never grant one the policy refuses: in this check
+  `obj`'s mapping is the request body as the writer sent it, not the stored
+  resource, so a shortcut that trusts its fields (an owner, say) would be
+  trusting the writer. A serializer used without a view asks the policy
+  alone. A refusal is the workflow check's 400 (`workflow-transition-invalid`,
+  "The user isn't authorized to perform this state transition"), before the
+  save.
 * The Django admin shows `Resource` and `ResourceType` to superusers only
   (`scrud_django.admin.SuperuserOnlyAdmin`): staff who are not superusers see
   neither, whatever model permissions they hold. A write in the admin
@@ -431,8 +457,8 @@ Conditional request handling now comes from scrudful 0.8.
   database, a `WorkflowPolicy` write waited on its own lock forever (or until
   `lock_timeout`, a 500). A new system check, `scrud_django.E004` (run by
   `manage.py check`, no database needed), is an error when the router sends
-  `Resource`, `ResourceType` and `ResourceContext` writes to different
-  aliases. Routing these models by instance hint is not supported: the API's
+  `Resource`, `ResourceType`, `ResourceContext` and `ResourceRemoval` writes
+  to different aliases. Routing these models by instance hint is not supported: the API's
   writes open their transaction, and look the resource up, on the alias the
   router gives without a hint (there is no instance yet), so a resource a
   router places elsewhere by instance is a 404 to PUT and DELETE, and a POST
@@ -445,18 +471,26 @@ Conditional request handling now comes from scrudful 0.8.
   the same object, so an override of `get_instance` no longer affects them.
 * `GenericViewMixin` and `ResourceViewMixin` share three new bases in
   `scrud_django.mixins.view_mixins`: `ScrudfulMeta`, the `Meta` both read
-  (validators, Links, problem-details errors, list validators);
+  (validators, Links, problem-details errors, list validators; a fourth,
+  `UniformErrorsMixin`, makes its `as_view` turn the class's scrudful
+  handlers into `UniformErrorsViewFunc`s, whose problem-details errors apply
+  only while uniform errors are on);
   `LockedWriteMixin` (`dispatch`, `locked_write_database()`, `locked()`,
   `locked_write_db`); and `ListValidatorsMixin` (`list_queryset()`,
   `list_page()`, `list_etag()`, `list_last_modified()`). `GenericViewMixin`
   now runs a PUT, PATCH or DELETE in one transaction on
   `locked_write_database()` (`router.db_for_write` of its `queryset`'s model;
-  the default database without a `queryset` attribute) with the lookup's rows
-  locked by its `filter_queryset`, and gives its list the validators of
+  the default database without a `queryset` attribute), its `get_object`
+  locking the row the URL names first (`lock_object_row`, a query of its own,
+  whatever the view's queryset; `filter_queryset` only routes the lookup to
+  that database), and gives its list the validators of
   `list_queryset()` (it gave the resource type's `etag` and `modified_at`,
   which a write of your model never changed, so a changed list could answer
   304). Its list needs an `RbacFilter` among its `filter_backends`
-  (`ImproperlyConfigured` otherwise) and should serve `list_page()`. Its
+  (`ImproperlyConfigured` otherwise; the new system check
+  `scrud_django.E006`, run by `manage.py check`, reports a `ResourceViewMixin`
+  or `GenericViewMixin` viewset routed for `list` without one) and should
+  serve `list_page()`. Its
   `Last-Modified` does not move on a deletion (no removal stamps for models of
   your own); its `ETag` does.
 * `ResourceViewMixin.get_object` is DRF's lookup with the object check given
@@ -471,14 +505,20 @@ Conditional request handling now comes from scrudful 0.8.
   `0009_resourceremoval`): one row per resource type and context, the last
   time a resource left that context. `Resource.save()` (raw saves included)
   stamps the contexts its content left, and a `post_delete` receiver every
-  context of a deleted resource (`Model.delete()`, `QuerySet.delete()`,
-  `ResourceRegistration`), in the write's transaction.
+  context of a deleted resource (`Model.delete()`, `ResourceRegistration`),
+  in the write's transaction. `Resource.objects` is a `ResourceQuerySet`,
+  whose `delete()` stamps the contexts of all the resources it deletes once,
+  by type then context, when it ends (so that two concurrent bulk deletes
+  cannot deadlock on the stamps). Stamps are never pruned: there is one per
+  type and context ever left, and removing one could make a list's
+  `Last-Modified` go back, answering 304 for a list that lost a resource.
   `ResourceViewMixin.list_last_modified` reads them through
   `scrud_django.filters.readable_removal`. `QuerySet.update()` and the bulk
   methods stamp nothing, as they sync no context rows.
 * `ResourceSerializer.update` (`serializer.save()` on an existing resource)
-  writes through `ResourceRegistration.update_locked` in a transaction on the
-  instance's database, after the `WorkflowPolicy` type lock; it read
+  writes through `ResourceRegistration.update_locked` in a transaction on
+  `write_db(instance)` (the router's database for resource writes), after the
+  `WorkflowPolicy` type lock; it read
   `instance.slug`, which a `Resource` does not have (`AttributeError`).
   `SerializerMixin.resource_type` falls back to `Meta.resource_type_slug`
   (it raised `TypeError` without a `resource_type` keyword).
