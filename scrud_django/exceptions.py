@@ -135,6 +135,19 @@ class WorkflowTransitionError(ScrudException):
         return data
 
 
+class HiddenWorkflowTransitionError(WorkflowTransitionError):
+    """A workflow error under a stored policy the requester may not read: the
+    same status, ``type`` and ``title``, a generic message, and no policy or
+    states."""
+
+    MESSAGE = (
+        "The request is not allowed by a workflow policy that applies to this resource."
+    )
+
+    def __init__(self):
+        super().__init__(None, None, None, message=self.MESSAGE)
+
+
 class WorkflowInvalidInitialStateError(WorkflowTransitionError):
     def __init__(self, policy, proposed_state):
         super().__init__(

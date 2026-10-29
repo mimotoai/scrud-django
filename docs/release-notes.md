@@ -132,9 +132,12 @@ Conditional request handling now comes from scrudful 0.8.
   ([stored-invalid-workflow-policy](follow-ups.md#stored-invalid-workflow-policy)).
 * A workflow error caused by a stored `WorkflowPolicy` now gives that policy's
   absolute URL in `policy` (and in `detail`, where the policy used to be)
-  instead of its content: the writer may not be allowed to read a policy from
-  another context the resource is in. Errors from a settings default policy
-  still embed the policy
+  instead of its content. When the writer may not read that policy (no
+  `http.GET` on `WorkflowPolicy` in its context), for example because it is
+  another context's policy the resource is also in, the error is generic: the
+  same status, `type` and `title`, a generic `message` and `detail`, and
+  `policy`, `prior_state` and `proposed_state` null. Errors from a settings
+  default policy still embed the policy
   ([workflow-error-embeds-policy](follow-ups.md#workflow-error-embeds-policy)).
 * A `WorkflowPolicy` governs every resource of its type in its context, for
   every user there. Treat `http.POST`, `http.PUT` and `http.DELETE` on

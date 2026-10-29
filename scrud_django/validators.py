@@ -1,5 +1,6 @@
 import copy
 import logging
+from contextlib import contextmanager
 
 import fastjsonschema
 from django.core.exceptions import ImproperlyConfigured
@@ -9,6 +10,7 @@ from scoped_rbac.permissions import http_action_iri_for, policy_for
 from scoped_rbac.policy import Permission
 
 from scrud_django.exceptions import (
+    HiddenWorkflowTransitionError,
     JsonSchemaInvalidError,
     JsonValidationError,
     WorkflowTransitionError,
@@ -189,14 +191,39 @@ class WorkflowValidator:
             policies = [(c, workflow_policy_for(resource_type, c)) for c in contexts]
         else:
             policies = [(None, default_workflow_policy_for(resource_type))]
-        transitions = [
-            (c, policy, self.transition_for(policy, data, instance))
-            for c, policy in policies
-            if policy is not None
-        ]
+        request = context.context["request"]
+        transitions = []
+        for c, policy in policies:
+            if policy is None:
+                continue
+            with self.errors_hidden_unless_readable(policy, request):
+                transitions.append(
+                    (c, policy, self.transition_for(policy, data, instance))
+                )
         for c, policy, transition_data in transitions:
-            self.authorize(policy, transition_data, c, context)
+            with self.errors_hidden_unless_readable(policy, request):
+                self.authorize(policy, transition_data, c, context)
         return data
+
+    @contextmanager
+    def errors_hidden_unless_readable(self, workflow_policy, request):
+        """A workflow error under a stored policy the requester may not read
+        (``http.GET`` on ``WorkflowPolicy`` in none of its contexts) becomes a
+        `HiddenWorkflowTransitionError`, which names neither the policy nor
+        its states: the resource may be in a context of someone else's.
+        Errors under readable policies and settings defaults are unchanged."""
+        try:
+            yield
+        except WorkflowTransitionError as e:
+            stored = workflow_policy.resource
+            if stored is not None and not access.may_read(
+                request,
+                WORKFLOW_POLICY_TYPE_URI,
+                access.body_mapping(stored.content),
+                stored.rbac_contexts,
+            ):
+                raise HiddenWorkflowTransitionError() from e
+            raise
 
     def validate_policy(self, data):
         try:

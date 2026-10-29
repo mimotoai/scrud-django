@@ -19,6 +19,7 @@ from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
 from rest_framework import status
+from rest_framework.test import APIClient
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
@@ -440,28 +441,90 @@ def assert_references_stored_policy(stored):
     assert SECRET not in Http.response.content.decode(), body
 
 
+GENERIC_WORKFLOW_MESSAGE = (
+    "The request is not allowed by a workflow policy that applies to this resource."
+)
+
+
+def assert_generic_workflow_error(stored):
+    """The error names nothing of `stored`, a policy of a context in which the
+    writer may not read ``WorkflowPolicy``: not its URL, states or content."""
+    body = Http.response.json()
+    assert body == {
+        "type": WORKFLOW_ERROR,
+        "title": "Invalid workflow transition",
+        "detail": GENERIC_WORKFLOW_MESSAGE,
+        "policy": None,
+        "prior_state": None,
+        "proposed_state": None,
+        "message": GENERIC_WORKFLOW_MESSAGE,
+        "status": 400,
+    }, body
+    content = Http.response.content.decode()
+    assert SECRET not in content
+    assert reverse("workflow-policies-detail", args=[stored.pk]) not in content
+
+
+# May read stored policies in "b".
+READ_POLICIES = {"http.GET": [WORKFLOW_POLICY]}
+
+
 @pytest.mark.django_db
 @test_context
-def test_unauthorized_transition_error_references_stored_policy_by_url():
+def test_unauthorized_transition_under_an_unreadable_policy_is_generic():
     # Writer in "a" only; the resource is also in "b", whose stored policy
-    # makes the update a same-state change the writer may not make there.
+    # makes the update a same-state change the writer may not make there. The
+    # writer may not read policies in "b": the error says nothing of it.
     stored = store_policy(SECRET_POLICY)
     user = user_with((TODO_WRITER, "a"))
     resource = todo(rbac_context=["a", "b"])
     Given.http.force_authenticate(user)
     put_todo(resource, dict(NOT_STARTED, rbac_context="a"))
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_generic_workflow_error(stored)
+    assert_unchanged(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_unauthorized_transition_error_references_stored_policy_by_url():
+    # As above, but the writer may read policies in "b".
+    stored = store_policy(SECRET_POLICY)
+    user = user_with((TODO_WRITER, "a"), (READ_POLICIES, "b"))
+    resource = todo(rbac_context=["a", "b"])
+    Given.http.force_authenticate(user)
+    put_todo(resource, dict(NOT_STARTED, rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
     assert_references_stored_policy(stored)
+    body = Http.response.json()
+    assert (body["prior_state"], body["proposed_state"]) == (
+        "not started",
+        "not started",
+    ), body
+    assert_unchanged(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_invalid_transition_under_an_unreadable_policy_is_generic():
+    # SECRET_POLICY has no transitions: "not started" -> "in progress" is
+    # invalid there. The writer may write in "b" but not read its policies.
+    stored = store_policy(SECRET_POLICY)
+    user = user_with((TODO_WRITER, "a"), (TODO_WRITER, "b"))
+    resource = todo(rbac_context=["a", "b"])
+    Given.http.force_authenticate(user)
+    put_todo(resource, dict(NOT_STARTED, status="in progress", rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_generic_workflow_error(stored)
     assert_unchanged(resource)
 
 
 @pytest.mark.django_db
 @test_context
 def test_invalid_transition_error_references_stored_policy_by_url():
-    # SECRET_POLICY has no transitions: "not started" -> "in progress" is
-    # invalid there, an error whose detail used to be the policy itself.
+    # As above, but the writer may read policies in "b".
     stored = store_policy(SECRET_POLICY)
-    user = user_with((TODO_WRITER, "a"), (TODO_WRITER, "b"))
+    user = user_with((TODO_WRITER, "a"), (TODO_WRITER, "b"), (READ_POLICIES, "b"))
     resource = todo(rbac_context=["a", "b"])
     Given.http.force_authenticate(user)
     put_todo(resource, dict(NOT_STARTED, status="in progress", rbac_context="a"))
@@ -469,6 +532,76 @@ def test_invalid_transition_error_references_stored_policy_by_url():
     assert_references_stored_policy(stored)
     assert Http.response.json()["detail"] == Http.response.json()["policy"]
     assert_unchanged(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_invalid_initial_state_under_an_unreadable_policy_is_generic():
+    stored = store_policy(SECRET_POLICY)
+    user = user_with((TODO_WRITER, "b"))
+    before = Resource.objects.count()
+    Given.http.force_authenticate(user)
+    post_todo(dict(NOT_STARTED, status="done", rbac_context="b"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_generic_workflow_error(stored)
+    assert Resource.objects.count() == before
+
+
+@pytest.mark.django_db
+@test_context
+def test_errors_under_a_readable_policy_keep_their_body():
+    # The writer's own context, where they may read its policy.
+    stored = store_policy(SECRET_POLICY)
+    user = user_with((TODO_WRITER, "b"), (READ_POLICIES, "b"))
+    Given.http.force_authenticate(user)
+    post_todo(dict(NOT_STARTED, status="done", rbac_context="b"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_references_stored_policy(stored)
+    body = Http.response.json()
+    assert body["message"] == "The request is not a valid initial state."
+    assert body["detail"] == body["message"]
+
+
+PP = "tests://PartnerProfiles"
+LOCKING_PP_POLICY = {
+    "resource_type": PP,
+    "initial_states": {"open": 'state == "open"'},
+    "states": {"locked": 'state == "locked"', "secret-b-state": "false"},
+    "transitions": {"lock": {"from": "open", "to": "locked"}},
+    "restrict_update": ["locked"],
+}
+
+
+@pytest.mark.django_db
+def test_editing_a_shared_resource_does_not_leak_the_other_contexts_policy():
+    # The reviewer's probe: an "a"-only user edits a partner profile in
+    # ["a", "b"]; "b"'s stored policy refuses it.
+    workflow_policy_resource_type()
+    reverse("partner-profiles-list")
+    policy_b = store_policy(dict(LOCKING_PP_POLICY, rbac_context="b"))
+    shared = ResourceRegistration.register(
+        {"name": "S", "state": "open", "rbac_context": ["a", "b"]}, "partner-profiles"
+    )
+    a_user = user_with(({m: [PP] for m in ("http.GET", "http.PUT")}, "a"))
+    client = APIClient()
+    client.force_authenticate(a_user)
+    response = client.put(
+        reverse("partner-profiles-detail", args=[shared.pk]),
+        {"name": "S2", "state": "open", "rbac_context": "a"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(shared.etag),
+    )
+    assert response.status_code == 400, response.content
+    body = response.json()
+    assert body["type"] == WORKFLOW_ERROR
+    assert body["message"] == GENERIC_WORKFLOW_MESSAGE
+    assert (body["policy"], body["prior_state"], body["proposed_state"]) == (
+        None,
+        None,
+        None,
+    )
+    assert "secret-b-state" not in response.content.decode()
+    assert f"/workflow-policies/{policy_b.pk}/" not in response.content.decode()
 
 
 @pytest.mark.django_db
