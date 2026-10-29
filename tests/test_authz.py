@@ -97,7 +97,7 @@ def test_anonymous_delete_fails_closed_with_permissive_default(
 
 def test_scrud_viewsets_set_is_authorized():
     # Both scrud viewsets carry the permission themselves, whatever the project's
-    # DEFAULT_PERMISSION_CLASSES (ResourceViewSetGenericFilter has no test route).
+    # DEFAULT_PERMISSION_CLASSES.
     from scoped_rbac.permissions import IsAuthorized
 
     from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter

@@ -44,6 +44,15 @@ django-scoped-rbac 0.11. It has several breaking changes.
 11. Clients: a body whose `rbac_context` is `[]` now gets 400 (it got 403),
     and lists of `ResourceViewSetGenericFilter` filter on their query
     parameters as JSON key lookups (see Lists below).
+12. Backups and fixtures: `dumpdata` / `loaddata` of `scrud_django` round-trip.
+    A dump may hold the `ResourceContext` rows or leave them out
+    (`dumpdata scrud_django --exclude scrud_django.ResourceContext`, which
+    makes it smaller); either way, loading rebuilds each resource's rows from
+    its content, and a dumped row that disagrees with the content is dropped.
+    A raw save of a `Resource` (`loaddata`, reversion's revert) must run inside
+    a transaction: reversion's `Version.revert()` called outside
+    `transaction.atomic()` now raises `TransactionManagementError` (wrap it, or
+    use `Revision.revert()`, which is atomic).
 
 ### Lists
 
@@ -51,7 +60,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
   detail route shows the requester: those on which `http.GET` on the
   resource's type is allowed in **any** of the resource's usable contexts (not
   a reserved one), with a CEL condition evaluated against the resource's
-  content. The list type's `http.GET`
+  content (a grant that is only conditional lists the matching resources,
+  while the detail route answers 403 until the user also holds an outright
+  `http.GET` somewhere: scoped-rbac's request check refuses a grant it cannot
+  decide without the object). The list type's `http.GET`
   (`https://api.openteams.com/json-schema/ResourceCollection?contents_type=...`)
   is still the check that opens the list (403 without it in any context); it
   no longer decides which resources are shown. Before, a user who could list a
@@ -65,13 +77,20 @@ django-scoped-rbac 0.11. It has several breaking changes.
   store, can still be listed to superusers and to a user whose grant applies
   in every context, while its detail route is a 404, as in scoped-rbac.)
 * Each resource's contexts are stored as `scrud_django.models.ResourceContext`
-  rows, kept in step by `Resource.save()` (and by raw saves: `loaddata`,
-  reversion's revert) in the same transaction. Lists find the resources of the
-  contexts that grant `http.GET` outright in SQL; only the resources of
-  contexts whose grant is conditional are checked one by one, at most
+  rows, kept in step by `Resource.save()` (a new instance saved over an
+  existing key included) and by raw saves (`loaddata`, reversion's revert,
+  which must run inside a transaction), in the same transaction as the
+  resource's row. A context longer than 2048 characters is refused on every
+  save path (`ValueError`). Lists find the resources of the contexts that
+  grant `http.GET` outright in SQL; only the resources of contexts whose grant
+  is conditional are checked one by one, at most
   `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` of them (default 10 000; past it
   the list is a 400, `conditional_list_too_large`). Resources granted outright
-  do not count. `QuerySet.update()`, `bulk_create()` and `bulk_update()` do not
+  do not count. The cap counts the candidates before a
+  `ResourceViewSetGenericFilter` list's query parameters narrow them, so such
+  a list can be a 400 even when few resources match: counting after them
+  would let the 400 tell how many resources the user cannot read match a
+  filter. `QuerySet.update()`, `bulk_create()` and `bulk_update()` do not
   update the rows.
 * The filter is `scrud_django.filters.ResourceRbacFilter`, which
   `ResourceViewSet` and `ResourceViewSetGenericFilter` now set as their
@@ -96,7 +115,8 @@ django-scoped-rbac 0.11. It has several breaking changes.
   repeated parameter must match; a key is always a key, never a lookup
   (`?name__startswith=x` matches the key `"name__startswith"`); `page`,
   `page_size` and `format` are not filters (they used to be, so a paginated
-  filtered list matched nothing); an integer key is a 400.
+  filtered list matched nothing); an integer key, or a NUL character in a key
+  or value, is a 400.
 
 ### Requirements and packaging
 
