@@ -1,4 +1,5 @@
 import hashlib
+from collections.abc import Mapping
 from urllib.parse import urlencode
 
 import reversion
@@ -12,8 +13,11 @@ from scoped_rbac import access
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import drf_error, view_permission
 
+from scrud_django.exceptions import RbacContextInvalidError
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
+from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
+from scrud_django.models.resource import MAX_CONTEXT_LENGTH
 from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.registration import (
     ResourceRegistration,
@@ -25,6 +29,29 @@ from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     lock_workflow_policy_type,
 )
+
+
+def check_written_contexts(request):
+    """Raise `RbacContextInvalidError` (400) when a POST, PUT or PATCH body's
+    ``rbac_context`` is an empty list, which would store the resource in no
+    context (only a superuser could read it; a server-side
+    ``ResourceRegistration`` may still store one), or names a context longer
+    than a ``ResourceContext`` row holds."""
+    if request.method not in ("POST", "PUT", "PATCH"):
+        return
+    data = request.data
+    if not isinstance(data, Mapping):
+        return
+    context = data.get("rbac_context")
+    if isinstance(context, (list, tuple)) and not context:
+        raise RbacContextInvalidError(
+            "rbac_context must name at least one context; leave it out (or give "
+            '"") for the default context.'
+        )
+    if any(len(c) > MAX_CONTEXT_LENGTH for c in rbac_contexts_of(data)):
+        raise RbacContextInvalidError(
+            f"An rbac_context may be at most {MAX_CONTEXT_LENGTH} characters long."
+        )
 
 
 class ResourceViewMixin:
@@ -245,6 +272,13 @@ class ResourceViewMixin:
         instance = self.get_instance(request, slug)
         serializer = self.get_serializer(instance=instance, many=False)
         return Response(serializer.data)
+
+    def check_permissions(self, request):
+        """Refuse a body whose ``rbac_context`` cannot be stored
+        (`check_written_contexts`, 400) before scoped-rbac's request check,
+        which would refuse an empty list with 403 for everyone."""
+        check_written_contexts(request)
+        super().check_permissions(request)
 
     def list_queryset(self):
         """The list's resources: ``filter_queryset(get_queryset())``, so that
