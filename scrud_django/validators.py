@@ -1,5 +1,6 @@
 import copy
 import logging
+from collections.abc import Mapping
 from contextlib import contextmanager
 
 import fastjsonschema
@@ -98,7 +99,12 @@ class JsonValidator:
     JSON Schema type is itself a schema, and must compile
     (`compile_json_schema`). A stored schema that does not compile fails
     closed: every write of its type is refused with ``JsonSchemaInvalidError``
-    (400)."""
+    (400).
+
+    JSON Schema ``default`` values are not applied: fastjsonschema fills them
+    into the data it validates, so it validates a deep copy of `data`, and
+    `data` (the body that is stored) is left as it was sent, nested objects
+    included."""
 
     requires_context = True
 
@@ -109,7 +115,7 @@ class JsonValidator:
         if context.resource_type.type_uri in JSON_SCHEMA_TYPE_URIS:
             compile_json_schema(data)
         validate = self.validator_for(context.resource_type)
-        data = validate(data)
+        validate(copy.deepcopy(data))
         return data
 
     def is_json_schema(self, schema):
@@ -212,6 +218,7 @@ class WorkflowValidator:
     def __call__(self, data, context):
         resource_type = context.resource_type
         instance = context.instance
+        data = self.body_of(data, context)
         if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
             self.validate_policy(data, instance)
         stored_contexts = (
@@ -252,6 +259,16 @@ class WorkflowValidator:
                 if policy is None:
                     self.authorize_without_policy(c, context, data)
         return data
+
+    @staticmethod
+    def body_of(data, context):
+        """What the check reads: the body as sent (the serializer's
+        ``initial_data``, which is what is stored), not `data`, the copy DRF
+        passes to validators, which another validator may have changed (a
+        JSON Schema default filled in, for example). `data` when the
+        serializer has no mapping ``initial_data``."""
+        initial_data = getattr(context, "initial_data", None)
+        return initial_data if isinstance(initial_data, Mapping) else data
 
     def request_of(self, context):
         """The request of the serializer `context`; the workflow check

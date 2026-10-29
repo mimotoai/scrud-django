@@ -206,12 +206,13 @@ def test_json_todo_post_in_a_permitted_context_is_created():
     assert created.rbac_contexts == ["attacker"]
 
 
-# A throwaway type whose schema gives ``rbac_context`` a default. fastjsonschema
-# fills the default in, but DRF runs a serializer's validators on a copy of the
-# body (``Serializer.run_validators``), and scrud stores the body itself: the
-# default never reaches the stored resource, which stays in the context the
-# request was authorized in. Should it ever be stored, the post-save check
-# answers 403 instead (as for a write moved after authorization, below).
+# A throwaway type whose schema gives ``rbac_context`` a default. JSON Schema
+# defaults are never applied: ``JsonValidator`` validates a deep copy of the
+# body, and scrud stores the body itself, so the default never reaches the
+# stored resource, which stays in the context the request was authorized in
+# (and the workflow check reads that body too: tests/test_schema_defaults.py).
+# Should it ever be stored, the post-save check answers 403 instead (as for a
+# write moved after authorization, below).
 DEFAULTED_TYPE = "tests://ContextDefaulted"
 
 
