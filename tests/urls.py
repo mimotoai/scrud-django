@@ -58,3 +58,40 @@ urlpatterns.extend(
         ),
     ]
 )
+
+
+class LockedDenyingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` that overrides ``has_object_permission``
+    (DRF's object-level hook) to refuse a resource whose content has
+    ``"locked": true``."""
+
+    def has_object_permission(self, request, view, obj):
+        content = getattr(obj, "content", None)
+        if isinstance(content, dict) and content.get("locked") is True:
+            return False
+        return super().has_object_permission(request, view, obj)
+
+
+class LockedDenyingResourceViewSet(ResourceViewSet):
+    permission_classes = [LockedDenyingIsAuthorized]
+
+
+# The JSON-LD contexts again, authorized by LockedDenyingIsAuthorized.
+urlpatterns.extend(
+    [
+        path(
+            "locking/json-ld/",
+            LockedDenyingResourceViewSet.as_view(
+                {"post": "create"}, resource_type_name="json-ld"
+            ),
+            name="locking-json-ld-list",
+        ),
+        path(
+            "locking/json-ld/<slug>/",
+            LockedDenyingResourceViewSet.as_view(
+                {"get": "retrieve", "put": "update"}, resource_type_name="json-ld"
+            ),
+            name="locking-json-ld-detail",
+        ),
+    ]
+)

@@ -410,3 +410,42 @@ def test_the_post_save_check_of_an_update_goes_through_the_permission_class():
         HTTP_IF_MATCH=quote_etag(own.etag),
     )
     Then.http.status_code_is(status.HTTP_200_OK)
+
+
+JSON_LD_TYPE = "http://www.w3.org/ns/json-ld#context"
+
+
+@pytest.mark.django_db
+@test_context
+def test_the_post_save_check_asks_an_overridden_has_object_permission():
+    # tests/urls.py: LockedDenyingIsAuthorized.has_object_permission refuses
+    # content with "locked": true. On a POST the post-save check is the only
+    # object check; on a PUT the request-time one saw the old content.
+    reverse("json-ld-list")
+    writer = user_with({m: [JSON_LD_TYPE] for m in ALL_METHODS}, DEFAULT_CONTEXT)
+    Given.http.force_authenticate(writer)
+    before = Resource.objects.count()
+    When.http.post(reverse("locking-json-ld-list"), {"locked": True}, format="json")
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.count() == before
+
+    open_one = ResourceRegistration.register({"locked": False}, "json-ld")
+    When.http.put(
+        reverse("locking-json-ld-detail", args=[open_one.pk]),
+        {"locked": True},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(open_one.etag),
+    )
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.get(pk=open_one.pk).content == {"locked": False}
+    assert Resource.objects.count() == before + 1
+
+    When.http.put(
+        reverse("locking-json-ld-detail", args=[open_one.pk]),
+        {"locked": False, "note": "still open"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(open_one.etag),
+    )
+    Then.http.status_code_is(status.HTTP_200_OK)
+    When.http.post(reverse("locking-json-ld-list"), {"locked": False}, format="json")
+    Then.http.status_code_is(status.HTTP_201_CREATED)

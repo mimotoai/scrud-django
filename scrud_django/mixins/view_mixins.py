@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access
 from scoped_rbac.filters import RbacFilter
-from scoped_rbac.permissions import drf_error
+from scoped_rbac.permissions import IsAuthorized, drf_error
 
 from scrud_django.exceptions import RbacContextInvalidError, RequestBodyMissingError
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
@@ -36,6 +36,14 @@ from scrud_django.workflow import (
 # The methods whose lookup, authorization, preconditions, workflow check and
 # write run in one transaction with the row locked (`ResourceViewMixin.dispatch`).
 LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
+
+
+def overrides_has_object_permission(permission):
+    """Whether `permission`'s class overrides ``IsAuthorized``'s
+    ``has_object_permission``."""
+    return (
+        type(permission).has_object_permission is not IsAuthorized.has_object_permission
+    )
 
 
 # The methods whose body is the resource to store.
@@ -220,12 +228,19 @@ class ResourceViewMixin:
         write, in each of those contexts.
 
         It asks each permission itself, so that an ``IsAuthorized`` subclass's
-        overrides apply: its ``contexts_for(obj)`` names the contexts, and its
-        ``has_context_permission(request, view, content, context)`` decides
-        each, with the stored content (a mapping) as what a condition reads,
-        operators included, as on the request check. A resource with no usable
-        context is left to its ``has_object_permission`` (superusers only, as
-        scoped-rbac's object checks leave it)."""
+        overrides apply:
+
+        - its ``contexts_for(obj)`` names the contexts, and its
+          ``has_context_permission(request, view, content, context)`` decides
+          each. Its ``obj`` there is the stored content (a mapping), not the
+          ``Resource``, so that conditions, operators included, read the
+          content as on the request check;
+        - a ``has_object_permission`` it overrides must also allow the saved
+          ``Resource`` (DRF's object-level hook, with the object DRF's own
+          object check gives it);
+        - a resource with no usable context is left to its
+          ``has_object_permission`` (superusers only, as scoped-rbac's object
+          checks leave it)."""
         resource = access.body_mapping(obj.content)
         for leaf in self.get_post_save_permissions():
             contexts = access.usable_contexts(leaf.contexts_for(obj))
@@ -235,6 +250,9 @@ class ResourceViewMixin:
                 allowed = all(
                     leaf.has_context_permission(request, self, resource, context)
                     for context in contexts
+                ) and (
+                    not overrides_has_object_permission(leaf)
+                    or leaf.has_object_permission(request, self, obj)
                 )
             if not allowed:
                 raise access.AccessDenied()
