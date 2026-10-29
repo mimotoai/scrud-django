@@ -1,13 +1,42 @@
-from dataclasses import dataclass
+from collections.abc import Mapping
 
 
-@dataclass
-class TransitionCheck:
+class TransitionCheck(Mapping):
     """The workflow transition a write makes in one context, as the
-    `WorkflowValidator` authorizes it: its name, or ``None`` where no workflow
-    policy applies (there is no transition to authorize)."""
+    `WorkflowValidator` authorizes it.
 
-    transition: str | None
+    `transition` is its name, or ``None`` where no workflow policy applies
+    (there is no transition to authorize). As a mapping it is the request body
+    (read-only), so an operator other than ``scrud_workflow`` reads it as it
+    reads the body in scoped-rbac's request check; ``scrud_workflow`` recognises
+    it by its type."""
+
+    __slots__ = ("_transition", "_body")
+
+    def __init__(self, transition, body=None):
+        object.__setattr__(self, "_transition", transition)
+        object.__setattr__(
+            self, "_body", dict(body) if isinstance(body, Mapping) else {}
+        )
+
+    @property
+    def transition(self):
+        return self._transition
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f"TransitionCheck is read-only; cannot set {name!r}")
+
+    def __getitem__(self, key):
+        return self._body[key]
+
+    def __iter__(self):
+        return iter(self._body)
+
+    def __len__(self):
+        return len(self._body)
+
+    def __repr__(self):
+        return f"TransitionCheck({self._transition!r})"
 
 
 def authorized_transitions(resource, configuration):

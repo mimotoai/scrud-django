@@ -189,7 +189,10 @@ Conditional request handling now comes from scrudful 0.8.
   write in a context where no workflow policy applies: the write is refused
   with 403. Unconditional and CEL grants are unaffected. A CEL condition on a
   grant that authorizes a transition now reads the request body, as in
-  scoped-rbac's request check.
+  scoped-rbac's request check. The workflow check passes operators a
+  `scrud_django.permissions.TransitionCheck`, a read-only mapping over the
+  request body with a `transition` attribute: your own operators read it as
+  the body, as they do in scoped-rbac's request check.
 * A reserved transition name (one that starts with `__`) is refused, in stored
   policies and in defaults.
 * A `WorkflowPolicy` is checked when it is created or updated, and refused with

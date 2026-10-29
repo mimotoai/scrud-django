@@ -318,16 +318,18 @@ class WorkflowValidator:
     ):
         """Whether the request's action on the type is allowed in `rbac_context`
         (``None``: no context, superusers only, as scoped-rbac's object checks)
-        on a `TransitionCheck` of `transition`, which the ``scrud_workflow``
-        operator reads; a CEL condition reads the body `data`, as scoped-rbac's
-        request check does. Without `transition_check`, on the body alone."""
+        on a `TransitionCheck` of `transition`: the ``scrud_workflow`` operator
+        reads its transition, any other operator reads it as the body `data` (it
+        is a mapping over it), and a CEL condition reads the body, as in
+        scoped-rbac's request check. Without `transition_check`, on the body
+        alone."""
         request = self.request_of(context)
         permission = Permission(
             http_action_iri_for(request), context.resource_type.type_uri
         )
         body = access.body_mapping(data)
         resource = (
-            RequestResource(TransitionCheck(transition), body)
+            RequestResource(TransitionCheck(transition, body), body)
             if transition_check
             else body
         )
