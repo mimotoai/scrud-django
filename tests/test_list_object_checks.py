@@ -225,3 +225,21 @@ def test_only_a_class_overriding_an_object_check_lists_object_by_object():
         view(IsAuthorized | ContextDenyingIsAuthorized)
     )
     assert requirement is not None and len(requirement) == 1
+
+
+@pytest.mark.django_db
+def test_an_object_check_that_raises_refuses_that_object_only():
+    # A has_object_permission that raises PermissionDenied refuses that
+    # resource, as on its detail route, not the whole list.
+    raising, shown = profile("raise", "a"), profile("shown", "a")
+    client = client_with((PP_READER, "a"))
+    detail = reverse("raising-partner-profiles-detail", args=[raising.pk])
+    assert client.get(detail).status_code == 403
+    assert (
+        client.get(
+            reverse("raising-partner-profiles-detail", args=[shown.pk])
+        ).status_code
+        == 200
+    )
+    response = client.get(reverse("raising-partner-profiles-list"))
+    assert listed(response) == ["shown"]

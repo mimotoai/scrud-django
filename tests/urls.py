@@ -4,7 +4,9 @@ from django.contrib import admin
 from django.urls import include, path
 from django.utils.timezone import now
 from rest_framework import serializers, status, viewsets
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
+from scoped_rbac import access
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import IsAuthorized
 from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
@@ -363,4 +365,57 @@ urlpatterns.append(
         OwnerResourceViewSet.as_view({"put": "update"}, resource_type_name="todos"),
         name="owner-todos-detail",
     )
+)
+
+
+class BodyContextsIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` whose ``contexts_from`` delegates to
+    scoped-rbac's own building block, ``access.body_contexts``."""
+
+    def contexts_from(self, view, content):
+        return access.body_contexts(content)
+
+
+class BodyContextsResourceViewSet(ResourceViewSet):
+    permission_classes = [BodyContextsIsAuthorized]
+
+
+class RaisingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` whose ``has_object_permission`` raises
+    ``PermissionDenied`` (a DRF idiom) for a resource named "raise"."""
+
+    def has_object_permission(self, request, view, obj):
+        if obj.get("name") == "raise":
+            raise PermissionDenied("nope")
+        return super().has_object_permission(request, view, obj)
+
+
+class RaisingResourceViewSet(ResourceViewSet):
+    permission_classes = [RaisingIsAuthorized]
+
+
+urlpatterns.extend(
+    [
+        path(
+            "body-contexts/json-ld/",
+            BodyContextsResourceViewSet.as_view(
+                {"post": "create"}, resource_type_name="json-ld"
+            ),
+            name="body-contexts-json-ld-list",
+        ),
+        path(
+            "raising/partner-profiles/",
+            RaisingResourceViewSet.as_view(
+                {"get": "list"}, resource_type_name="partner-profiles"
+            ),
+            name="raising-partner-profiles-list",
+        ),
+        path(
+            "raising/partner-profiles/<slug>/",
+            RaisingResourceViewSet.as_view(
+                {"get": "retrieve"}, resource_type_name="partner-profiles"
+            ),
+            name="raising-partner-profiles-detail",
+        ),
+    ]
 )

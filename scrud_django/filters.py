@@ -8,6 +8,7 @@ them in SQL. `ResourceContentFilter` filters a list on query parameters.
 import re
 from contextlib import contextmanager
 
+from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.db.models import (
     BooleanField,
     Case,
@@ -19,7 +20,12 @@ from django.db.models import (
     When,
 )
 from django.db.models.fields.json import KeyTransform
-from rest_framework.exceptions import ValidationError
+from django.http import Http404
+from rest_framework.exceptions import (
+    NotAuthenticated,
+    PermissionDenied,
+    ValidationError,
+)
 from rest_framework.filters import BaseFilterBackend
 from rest_framework.settings import api_settings
 from scoped_rbac import access
@@ -36,6 +42,10 @@ from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
 from scrud_django.models import Resource, ResourceContext, ResourceRemoval
 from scrud_django.permissions import resource_check
+
+# What an object check may raise to refuse one object (DRF's and Django's
+# idioms): a list leaves that object out, as its detail route refuses it.
+REFUSALS = (PermissionDenied, NotAuthenticated, Http404, DjangoPermissionDenied)
 
 # Rows fetched per chunk while conditional candidates are evaluated one by one,
 # as scoped-rbac's ``access._CANDIDATE_CHUNK_SIZE``.
@@ -297,7 +307,8 @@ def filter_by_object_checks(queryset, request, view, requirement, object_for_che
     `view`'s object check allows, as the detail route asks it: each
     ``IsAuthorized`` of `requirement` (`object_check_requirement`; any option
     of an ``access.AnyOf`` suffices) must allow
-    ``has_object_permission(request, view, object_for_checks(obj))``, with
+    ``has_object_permission(request, view, object_for_checks(obj))`` (one that
+    raises a refusal, `REFUSALS`, refuses that object only), with
     the request's method (GET or HEAD) on the view's item type
     (`as_detail_route`). An object stored in a context reserved once
     normalised is left out (its detail route is a 404). Every object examined
@@ -312,7 +323,11 @@ def filter_by_object_checks(queryset, request, view, requirement, object_for_che
                 else meets(option, check)
                 for option in entry.options
             )
-        return entry.has_object_permission(request, view, check)
+        try:
+            return entry.has_object_permission(request, view, check)
+        except REFUSALS:
+            # Raised for this object, the detail route refuses it alone.
+            return False
 
     max_rows = conditional_list_max_rows()
     allowed_pks = []
