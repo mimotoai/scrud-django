@@ -50,12 +50,18 @@ def overrides_has_object_permission(permission):
 BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
 
-def check_body_present(request):
-    """Raise `RequestBodyMissingError` (400) for a POST, PUT or PATCH with an
-    empty body (no ``Content-Length``, or 0), which DRF reads as ``{}``: a
-    POST would store an empty resource, a PUT wipe the stored content. A body
-    that is not JSON is left to the parser (415, or 400)."""
-    if request.method in BODY_METHODS and request.stream is None:
+def check_body_present(request, view=None):
+    """Raise `RequestBodyMissingError` (400) for a POST, PUT or PATCH that
+    `view` serves (one it does not is left to its 405) whose body DRF does not
+    read: an empty one, or one without a ``Content-Length`` (0 or absent, as
+    for a chunked body). DRF reads it as ``{}``: a POST would store an empty
+    resource, a PUT wipe the stored content. A body that is not JSON is left
+    to the parser (415, or 400)."""
+    if request.method not in BODY_METHODS:
+        return
+    if view is not None and request.method not in view.allowed_methods:
+        return
+    if request.stream is None:
         raise RequestBodyMissingError()
 
 
@@ -375,7 +381,7 @@ class ResourceViewMixin:
         400, before scoped-rbac's request check (which would authorize an
         empty body as ``{}`` and refuse an empty context list with 403 for
         everyone): they depend on the body alone."""
-        check_body_present(request)
+        check_body_present(request, self)
         check_written_contexts(request)
         super().check_permissions(request)
 

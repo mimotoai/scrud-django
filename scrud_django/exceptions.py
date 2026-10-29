@@ -111,8 +111,10 @@ class WorkflowPolicyInvalidError(ScrudException):
 
 
 class RequestBodyMissingError(ScrudException):
-    """A POST or PUT (or PATCH) with an empty body. DRF reads one as ``{}``,
-    which would create an empty resource or wipe the stored one."""
+    """A POST or PUT (or PATCH) with an empty body, or a body without a
+    ``Content-Length`` (chunked), which DRF does not read. DRF reads either
+    as ``{}``, which would create an empty resource or wipe the stored
+    one."""
 
     status_code = 400
     default_detail = "Bad Request"
@@ -122,7 +124,9 @@ class RequestBodyMissingError(ScrudException):
         super().__init__(
             message
             if message is not None
-            else "A POST or PUT needs a JSON object as its body; this request has none."
+            else "A POST or PUT needs a JSON object as its body, sent with a "
+            "Content-Length header; this request has an empty body or no "
+            "Content-Length."
         )
         self.type = "https://api.openteams.com/http-problem/body-missing"
         self.title = "Missing request body"

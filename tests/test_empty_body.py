@@ -26,6 +26,10 @@ from .steps import *  # noqa: F403, F401
 JSON_LD = "http://www.w3.org/ns/json-ld#context"
 BODY_MISSING = "https://api.openteams.com/http-problem/body-missing"
 ALL_METHODS = ("http.GET", "http.POST", "http.PUT", "http.DELETE")
+BODY_MISSING_DETAIL = (
+    "A POST or PUT needs a JSON object as its body, sent with a Content-Length "
+    "header; this request has an empty body or no Content-Length."
+)
 
 
 def json_ld_writer():
@@ -52,8 +56,7 @@ def assert_body_missing():
     assert body == {
         "type": BODY_MISSING,
         "title": "Missing request body",
-        "detail": "A POST or PUT needs a JSON object as its body; this request has "
-        "none.",
+        "detail": BODY_MISSING_DETAIL,
         "status": 400,
     }, body
     assert Http.response["Content-Type"].startswith("application/problem+json")
@@ -108,3 +111,41 @@ def test_an_empty_object_is_still_a_body():
     When.http.post(reverse("json-ld-list"), data="{}", content_type="application/json")
     Then.http.status_code_is(status.HTTP_201_CREATED)
     assert Http.response.json() == {}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_body_without_a_content_length_is_refused():
+    # A chunked body (no Content-Length): DRF does not read it and would see
+    # {}. Refused as having no body the server reads.
+    reverse("json-ld-list")
+    before = Resource.objects.count()
+    Given.http.force_authenticate(json_ld_writer())
+    Http.response = Http.api_client.generic(
+        "POST",
+        reverse("json-ld-list"),
+        '{"name": "x"}',
+        content_type="application/json",
+        CONTENT_LENGTH="",
+        HTTP_TRANSFER_ENCODING="chunked",
+    )
+    assert_body_missing()
+    assert Resource.objects.count() == before
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_unrouted_method_is_405_whatever_its_body():
+    reverse("json-ld-list")
+    stored = ResourceRegistration.register({"name": "kept"}, "json-ld")
+    detail = reverse("json-ld-detail", args=[stored.pk])
+    Given.http.force_authenticate(json_ld_writer())
+    for method, url in (("PATCH", detail), ("PUT", reverse("json-ld-list"))):
+        for body in ("", '{"name": "x"}'):
+            Http.response = Http.api_client.generic(
+                method, url, body, content_type="application/json"
+            )
+            Then.http.status_code_is(status.HTTP_405_METHOD_NOT_ALLOWED)
+    When.http.post(detail, content_type="application/json")
+    Then.http.status_code_is(status.HTTP_405_METHOD_NOT_ALLOWED)
+    assert Resource.objects.get(pk=stored.pk).content == {"name": "kept"}
