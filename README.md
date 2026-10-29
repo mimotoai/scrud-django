@@ -61,10 +61,10 @@ REST_FRAMEWORK = {
 ```
 
 Request bodies must be JSON: a form or multipart body gets 415, and a POST or
-PUT with an empty body 400. JSON Schema `default` values are not applied: a
-resource is validated against its type's schema, then stored (and checked
-against its workflow policy) exactly as it was sent, so send every value you
-want stored.
+PUT with an empty body, or without a `Content-Length` (chunked), 400. JSON
+Schema `default` values are not applied: a resource is validated against its
+type's schema, stored and checked against its workflow policy exactly as it
+was sent, so send every value you want stored.
 
 If you use `DATABASE_ROUTERS`, route the writes of `scrud_django`'s models
 (`Resource`, `ResourceType`, `ResourceContext`) to one database alias:

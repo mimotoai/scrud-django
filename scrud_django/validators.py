@@ -201,7 +201,8 @@ class WorkflowValidator:
     context. A context an update moves the resource into (one the body names
     and the stored resource is not in) is checked as a create there: the body
     must be a valid initial state and the user authorized for
-    ``__INITIALIZE__``. All of them must pass. A resource in no context is checked under
+    ``__INITIALIZE__`` by the request's method (``http.PUT``, not
+    ``http.POST``). All of them must pass. A resource in no context is checked under
     the settings default, and only a superuser may make its transition, as
     scoped-rbac's object checks allow. In a context where no policy applies, a
     grant conditioned on ``scrud_workflow`` allows nothing

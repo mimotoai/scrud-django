@@ -73,18 +73,23 @@ django-scoped-rbac 0.11. It has several breaking changes.
     server code that updates or deletes a resource should go through
     `ResourceRegistration.update` / `delete`, which lock it the same way.
 17. Clients: JSON Schema `default` values are not applied; send every value
-    you want stored (and that a workflow state condition reads). A POST or
-    PUT with an empty body gets 400 (`body-missing`). A refused
+    you want stored (and that a workflow state condition reads); a default
+    no longer makes a body valid either. A POST or PUT with an empty body, or
+    with no `Content-Length` (a chunked body), gets 400 (`body-missing`). A refused
     `WorkflowPolicy` write's 400 is a `workflow-policy-invalid` problem whose
     `detail` says why, and a workflow error caused by a settings default
     policy names it as `{"resource_type": ..., "default": true}` instead of
     embedding it (see Workflows below). A PUT that moves a resource into a
-    context must be an initial state there, and needs `__INITIALIZE__` there
-    if the grant is conditioned on `scrud_workflow`.
-18. Your own `IsAuthorized` subclasses on scrud views: their
-    `has_context_permission` (and, for a resource in no context,
-    `has_object_permission`) now also decides the post-save check (see
-    Authorization below).
+    context must be an initial state there, and the user's `http.PUT` grant
+    there (not `http.POST`) must allow `__INITIALIZE__` if it is conditioned
+    on `scrud_workflow`; `scrud_post_save` (and so workflow actions) reports
+    such a move as `__INITIALIZE__`.
+18. Your own `IsAuthorized` subclasses on scrud views now also decide the
+    post-save check (see Authorization below): their
+    `has_context_permission`, called there with the stored content (a
+    mapping, not the `Resource`) as `obj`, so an override must not read
+    `obj.content` there; and an overridden `has_object_permission`, called
+    with the saved `Resource`.
 
 ### Lists
 
@@ -249,10 +254,13 @@ Conditional request handling now comes from scrudful 0.8.
 * A create or update is checked again after the save, before it commits: the
   request's method must be allowed in **every** context the stored resource is
   in, or the write is rolled back with 403. The check asks the view's
-  permission classes (each `IsAuthorized`'s `has_context_permission`, with the
-  stored content as what a condition reads, and its `has_object_permission`
-  for a resource in no context), so an `IsAuthorized` subclass's overrides
-  apply to it; it used to ask the policy directly.
+  permission classes, so an `IsAuthorized` subclass's overrides apply to it
+  (it used to ask the policy directly): each `IsAuthorized`'s
+  `has_context_permission` in every context, given the stored content as a
+  mapping in place of the object (so that conditions, operators included,
+  read the content as on the request check); an `IsAuthorized` subclass's
+  overridden `has_object_permission`, given the saved `Resource`; and
+  `has_object_permission` for a resource in no context.
 * A write is authorized in the contexts its body is stored in: a body whose
   `rbac_context` is absent, `null` or not a string (or a list of strings), for
   example a JSON-LD context document's `{"@id": ...}` term definition, is
@@ -358,8 +366,11 @@ Conditional request handling now comes from scrudful 0.8.
   a `DefaultPolicyReference` (a settings default, given as
   `{"resource_type": "<type URI>", "default": true}`), or `None` in a generic
   error. `WorkflowPolicy` takes `default_for`, the type URI a settings
-  default is for (`DefaultWorkflowPolicies` sets it, also on a
-  `WorkflowPolicy` given in the setting that has none).
+  default is for (`DefaultWorkflowPolicies` sets it; a `WorkflowPolicy`
+  object given in the setting is kept as a copy per type, so
+  `default_workflow_policy_for` no longer returns the configured object
+  itself). `ResourceMixin.workflow_context_and_policy()` gives the context
+  `get_workflow_policy`'s policy is for.
   `WorkflowValidator.transition_for` takes `entering`, and
   `ResourceSerializer` has a `contexts_from`.
 * A JSON Schema's `$ref` may point only inside the schema (`#/...`). A remote,
@@ -367,19 +378,23 @@ Conditional request handling now comes from scrudful 0.8.
   (`https://api.openteams.com/http-problem/json-schema-invalid`) when a JSON
   Schema is written, and a stored schema that does not compile fails closed:
   every write of its type is a 400 with a generic detail.
-* JSON Schema `default` values are never applied. fastjsonschema fills them
-  into the data it validates; `JsonValidator` now validates a deep copy of the
-  body, so the stored body is the body as sent. A default nested in an object
-  the body gave used to be stored (the copy DRF validates shared it); a
-  top-level one was dropped but seen by the workflow check, which now reads
-  the body as sent (the serializer's `initial_data`), so it checks the
-  contexts and the state the resource is stored with.
-* A POST or PUT whose body is empty gets 400
+* JSON Schema `default` values are never applied. fastjsonschema filled them
+  into the data it validated; JSON Schema validators are now compiled with
+  `use_default=False`, so a body is validated, and stored, exactly as sent: a
+  default can neither be stored nor make a body valid (for example through
+  `if`/`then`). A default nested in an object the body gave used to be
+  stored (the copy DRF validates shared it); a top-level one was dropped but
+  seen by the workflow check, which now reads the body as sent (the
+  serializer's `initial_data`), so it checks the contexts and the state the
+  resource is stored with.
+* A POST or PUT whose body is empty, or has no `Content-Length` (a chunked
+  body, which DRF does not read), gets 400
   (`https://api.openteams.com/http-problem/body-missing`, "Missing request
   body", `scrud_django.exceptions.RequestBodyMissingError`), before
-  authorization; nothing is stored or changed. DRF read an empty body as
+  authorization; nothing is stored or changed. DRF read such a body as
   `{}`, so a POST created an empty resource and a PUT wiped the stored
-  content. `{}` is still a body.
+  content. `{}` is still a body. A method the route does not serve still
+  gets 405, whatever its body.
 * The envelope's `last_modified` (and the search index's `modified_at`) no
   longer depend on `USE_TZ`. With `USE_TZ = False`, a stored modification time
   is naive and in `TIME_ZONE`; it used to be read as UTC, so the envelope
@@ -405,9 +420,15 @@ Conditional request handling now comes from scrudful 0.8.
   policy of every context the resource is in. In a context the update moves it
   into (one the body names that it is not stored in), it is checked as a
   create: the body must be a valid initial state under that context's policy,
-  and the user authorized for `__INITIALIZE__` there. So a resource cannot be
-  carried into a context in a state nobody there could have created or moved
-  it to (a "done" ToDo into a context where the writer may not "finish").
+  and the user authorized for `__INITIALIZE__` there, by the request's
+  method (`http.PUT`: a user who may only `http.POST` there cannot move a
+  resource in, and an unconditional `http.PUT` grant there allows any move
+  in of a resource in an initial state). So a resource cannot be carried into
+  a context in a state nobody there could have created or moved it to (a
+  "done" ToDo into a context where the writer may not "finish").
+  `scrud_post_save`'s `transition_data` (which workflow actions read)
+  reports such a move as `__INITIALIZE__` (no prior state) when the policy it
+  reports under is that of an entered context.
 * `scrud_django.workflow.workflow_policy_for(resource_type, context)` is the
   one policy lookup; the `WorkflowValidator` and
   `ResourceMixin.get_workflow_policy` (which picks the policy whose transition
@@ -451,7 +472,9 @@ Conditional request handling now comes from scrudful 0.8.
   `prior_state` `None` and `proposed_state` its initial state (it used to be
   `None` and the content).
 * A `WorkflowPolicy` is checked when it is created or updated, and refused with
-  400 (nothing is stored), a
+  400 (nothing is stored; `initial_states`, `states` and `transitions` that
+  are not objects, and conditions that are not strings, are refused by the
+  `WorkflowPolicy` schema and by `WorkflowPolicy` itself), a
   `https://api.openteams.com/http-problem/workflow-policy-invalid` problem
   ("Invalid workflow policy", `WorkflowPolicyInvalidError`, code
   `workflow_policy_invalid` under any exception handler) whose `detail` says
@@ -481,7 +504,9 @@ Conditional request handling now comes from scrudful 0.8.
   The database system check (`manage.py check --database default`, also run
   by `migrate`) reports them (`scrud_django.E002`), policies whose
   `resource_type` is not a string (`scrud_django.E003`), policies that fail
-  the checks a `WorkflowPolicy` write makes (`scrud_django.E005`: stored by an
+  the checks a `WorkflowPolicy` write makes, or cannot be checked at all
+  (`scrud_django.E005`, reported, never raised, so `check` and `migrate`
+  complete: stored by an
   earlier version or server-side, through `ResourceRegistration`, which does
   not check them; every write of the type in their contexts fails with
   `ImproperlyConfigured`, a 500, naming the policy, until it is fixed or

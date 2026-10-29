@@ -138,9 +138,12 @@ PUT and a body-reading operator on a detail-route PUT and on a list.
 The post-save check (`ResourceViewMixin.check_post_save_permissions`) asks
 each permission's `has_context_permission` with the stored content, a
 mapping, in place of the object, so that operators read the content there as
-on the request check. Once operators get a mapping on object checks, it can
-pass the resource itself, as scoped-rbac's own `check_post_save_permissions`
-does.
+on the request check, and calls `has_object_permission` with the saved
+`Resource` only when an `IsAuthorized` subclass overrides it (the default one
+would give operators the instance). Once operators get a mapping on object
+checks, it can pass the resource itself to both and call
+`has_object_permission` unconditionally, as scoped-rbac's own
+`check_post_save_permissions` does.
 
 <a id="eager-callable-default-policies"></a>
 ## eager-callable-default-policies: a callable default that raises fails every type
