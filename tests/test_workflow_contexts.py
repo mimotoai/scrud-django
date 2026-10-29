@@ -801,3 +801,33 @@ def test_default_policy_errors_still_embed_the_policy(todo_creator_login):
     assert_workflow_error()
     assert Http.response.json()["policy"] == default
     assert Http.response.json()["detail"] == default
+
+
+@pytest.mark.django_db
+@test_context
+def test_admin_of_one_context_cannot_update_or_delete_a_shared_legacy_policy():
+    # A policy in ["a", "b"] (stored server-side; the API takes one context)
+    # applies in both: updating or deleting it needs rights in each.
+    shared = store_policy(dict(PERMISSIVE_POLICY, rbac_context=["a", "b"]))
+    Given.http.force_authenticate(a_policy_admin("a"))
+    put_policy(shared, dict(PERMISSIVE_POLICY, rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    When.http.delete(
+        f"/workflow-policies/{shared.pk}/", HTTP_IF_MATCH=quote_etag(shared.etag)
+    )
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert_unchanged(shared)
+
+
+@pytest.mark.django_db
+@test_context
+def test_admin_of_every_context_may_delete_a_shared_legacy_policy():
+    shared = store_policy(dict(PERMISSIVE_POLICY, rbac_context=["a", "b"]))
+    admin = a_policy_admin("a")
+    assign(admin, {"http.DELETE": [WORKFLOW_POLICY]}, "b")
+    Given.http.force_authenticate(admin)
+    When.http.delete(
+        f"/workflow-policies/{shared.pk}/", HTTP_IF_MATCH=quote_etag(shared.etag)
+    )
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert policy_resources() == []

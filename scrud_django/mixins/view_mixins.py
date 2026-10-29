@@ -14,6 +14,7 @@ from scrud_django.registration import (
     get_resource_type_for,
 )
 from scrud_django.serializers import ResourceSerializer
+from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
 
 
 class ResourceViewMixin:
@@ -129,6 +130,19 @@ class ResourceViewMixin:
             if not allowed:
                 raise access.AccessDenied()
 
+    def check_every_context_of_policy(self, request, instance):
+        """For a ``WorkflowPolicy``, deny (403) an update or delete unless the
+        request's action is allowed in **every** context the stored policy
+        applies to: it governs each of them. The object check is any-of; a
+        policy written through the API has one context, but one stored with a
+        list (before 0.12.0, or server-side) has several."""
+        if instance.resource_type.type_uri != WORKFLOW_POLICY_TYPE_URI:
+            return
+        try:
+            self.check_post_save_permissions(request, instance)
+        except access.AccessError as exc:
+            raise drf_error(exc, request) from exc
+
     def save_checked(self, save, instance=None):
         """Run `save` (which returns the saved resource) in a transaction and
         check the resource as stored before it commits: a reserved context is a
@@ -171,6 +185,7 @@ class ResourceViewMixin:
     def update(self, request, slug: str):
         """Update a Resource."""
         instance = self.get_instance(request, slug)
+        self.check_every_context_of_policy(request, instance)
         serializer = self.get_serializer(
             data=request.data, instance=instance, many=False
         )
@@ -188,7 +203,8 @@ class ResourceViewMixin:
 
     def destroy(self, request, slug: str):
         """Delete a Resource."""
-        self.get_instance(request, slug)
+        instance = self.get_instance(request, slug)
+        self.check_every_context_of_policy(request, instance)
         ResourceRegistration.delete(
             register_type=self.resource_type_name,
             slug=slug,

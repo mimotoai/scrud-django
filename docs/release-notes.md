@@ -228,6 +228,10 @@ Conditional request handling now comes from scrudful 0.8.
   `policy`, `prior_state` and `proposed_state` null. Errors from a settings
   default policy still embed the policy
   ([workflow-error-embeds-policy](follow-ups.md#workflow-error-embeds-policy)).
+* Updating or deleting a stored `WorkflowPolicy` needs `http.PUT` or
+  `http.DELETE` on `WorkflowPolicy` in **every** context it applies to (403
+  otherwise). The API now stores a policy in one context; this matters for a
+  policy stored earlier with a list `rbac_context`.
 * A `WorkflowPolicy` governs every resource of its type in its context, for
   every user there. Treat `http.POST`, `http.PUT` and `http.DELETE` on
   `http://api.openteams.com/json-ld/WorkflowPolicy` as an administrative grant.
