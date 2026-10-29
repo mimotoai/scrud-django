@@ -12,3 +12,6 @@ class Note(models.Model):
     rbac_context = models.CharField(max_length=255, default="")
     etag = models.CharField(max_length=40)
     modified_at = models.DateTimeField()
+    # Nullable, so that a queryset may select_related it (an outer join). A
+    # model of this unmigrated app: it cannot refer to a migrated one.
+    author = models.ForeignKey(Person, null=True, blank=True, on_delete=models.SET_NULL)

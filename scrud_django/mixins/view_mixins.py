@@ -3,7 +3,7 @@ from collections.abc import Mapping
 from urllib.parse import urlencode
 
 import reversion
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import DEFAULT_DB_ALIAS, router, transaction
 from django.db.models import Max
 from rest_framework import status
@@ -614,9 +614,11 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
     - a PUT, PATCH or DELETE runs in one transaction with the row locked
       (`LockedWriteMixin`): the transaction opens on
       `locked_write_database` (where the ``queryset``'s model is written) and
-      `filter_queryset` locks the rows the lookup reads, so scrudful's
-      preconditions, the object check and your ``update``/``destroy`` see one
-      row, and a response that is not a success rolls the write back;
+      `get_object` locks the row the URL names (`lock_object_row`, a plain
+      query, whatever the view's queryset is) before it looks it up, so
+      scrudful's preconditions, the object check and your
+      ``update``/``destroy`` see one row, and a response that is not a
+      success rolls the write back;
     - the list's ``ETag`` and ``Last-Modified`` describe what the requester
       may list (`ListValidatorsMixin`): an ``RbacFilter`` must be among the
       ``filter_backends``, and ``list`` should serve `list_page` (or
@@ -645,10 +647,44 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
         return router.db_for_write(queryset.model)
 
     def filter_queryset(self, queryset):
-        """DRF's, inside a locked write (`dispatch`) with the rows read on its
-        database and locked (`locked`): the lookup of a PUT, PATCH or DELETE
-        locks its row."""
-        return self.locked(super().filter_queryset(queryset))
+        """DRF's, inside a locked write (`dispatch`) read on its database (the
+        row itself is locked by `lock_object_row`, not through this
+        queryset)."""
+        queryset = super().filter_queryset(queryset)
+        if self.locked_write_db is not None:
+            queryset = queryset.using(self.locked_write_db)
+        return queryset
+
+    def get_object(self):
+        """DRF's ``get_object()``; inside a locked write (`dispatch`) the row
+        is locked first (`lock_object_row`), so that the lookup, scrudful's
+        preconditions, the object check and the write read the row as the
+        last writer committed it."""
+        if self.locked_write_db is not None:
+            self.lock_object_row()
+        return super().get_object()
+
+    def lock_object_row(self):
+        """Lock (``select_for_update``) the rows of the view's model that the
+        URL's lookup names, on the locked write's database, with a plain
+        query of the model's base manager: PostgreSQL refuses
+        ``FOR UPDATE`` on a queryset with ``DISTINCT``, ``GROUP BY`` or the
+        nullable side of an outer join, which the view's own queryset may
+        have. The lookup that follows reads the row after the lock is held.
+        A lookup value the field cannot take locks nothing (the lookup then
+        answers 404). A row the requester may not read is locked for the
+        length of their request, as for resources."""
+        model = self.get_queryset().model
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        rows = model._base_manager.using(self.locked_write_db).select_for_update()
+        try:
+            list(
+                rows.filter(
+                    **{self.lookup_field: self.kwargs[lookup_url_kwarg]}
+                ).values_list("pk", flat=True)
+            )
+        except (TypeError, ValueError, ValidationError):
+            pass
 
     def get_resource_type(self):
         return get_resource_type_for(self.resource_type_name)
