@@ -3,6 +3,7 @@ from django.urls import include, path
 from scoped_rbac.permissions import IsAuthorized
 
 from scrud_django import registration
+from scrud_django.permissions import TransitionCheck
 from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
 
 from .resource_types import json_resource_types
@@ -172,6 +173,47 @@ urlpatterns.extend(
                 {"get": "retrieve"}, resource_type_name="partner-profiles"
             ),
             name="teams-partner-profiles-detail",
+        ),
+    ]
+)
+
+
+class NoCancelIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` that decides by the workflow transition
+    itself: it never allows ``cancel`` (the ``TransitionCheck`` the workflow
+    check gives it), whatever the user's grants."""
+
+    def has_context_permission(self, request, view, obj, context):
+        if isinstance(obj, TransitionCheck) and obj.transition == "cancel":
+            return False
+        return super().has_context_permission(request, view, obj, context)
+
+
+class NoCancelResourceViewSet(ResourceViewSet):
+    permission_classes = [NoCancelIsAuthorized]
+
+
+class ContextDenyingToDoViewSet(ResourceViewSet):
+    permission_classes = [ContextDenyingIsAuthorized]
+
+
+# The ToDos again, authorized by NoCancelIsAuthorized and by
+# ContextDenyingIsAuthorized.
+urlpatterns.extend(
+    [
+        path(
+            "no-cancel/todos/<slug>/",
+            NoCancelResourceViewSet.as_view(
+                {"put": "update"}, resource_type_name="todos"
+            ),
+            name="no-cancel-todos-detail",
+        ),
+        path(
+            "denying/todos/",
+            ContextDenyingToDoViewSet.as_view(
+                {"post": "create"}, resource_type_name="todos"
+            ),
+            name="denying-todos-list",
         ),
     ]
 )

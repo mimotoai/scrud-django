@@ -239,11 +239,19 @@ class ResourceViewMixin:
             return response
         return serializer.save()
 
+    def get_rbac_permissions(self):
+        """Every ``IsAuthorized`` (or subclass) of ``get_permissions()``,
+        nested ones (DRF's ``&``, ``|``, ``~``) included: the permissions the
+        workflow check (``WorkflowValidator``) authorizes a transition
+        through."""
+        return self._rbac_permissions()
+
     def get_post_save_permissions(self):
         """The permissions `check_post_save_permissions` applies to a saved
         resource: as scoped-rbac's ``AccessControlledModelViewSet``, every
-        ``IsAuthorized`` of ``get_permissions()``, nested ones included."""
-        return self._rbac_permissions()
+        ``IsAuthorized`` of ``get_permissions()``, nested ones included
+        (`get_rbac_permissions`)."""
+        return self.get_rbac_permissions()
 
     def check_post_save_permissions(self, request, obj):
         """Deny (``access.AccessDenied``) unless the request's action (POST for

@@ -7,7 +7,7 @@ import fastjsonschema
 from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac import access
 from scoped_rbac.permissions import drf_error, http_action_iri_for, policy_for
-from scoped_rbac.policy import Permission, RequestResource
+from scoped_rbac.policy import Permission
 
 from scrud_django.exceptions import (
     HiddenWorkflowTransitionError,
@@ -18,7 +18,7 @@ from scrud_django.exceptions import (
 )
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import ResourceType
-from scrud_django.permissions import TransitionCheck
+from scrud_django.permissions import TransitionCheck, resource_check
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     WorkflowPolicy,
@@ -187,6 +187,14 @@ def check_policy_is_unique(content, pk=None):
             )
 
 
+def rbac_permissions_of(view):
+    """The ``IsAuthorized`` (or subclass) permissions of `view` (nested ones
+    included: ``ResourceViewMixin.get_rbac_permissions``), or ``[]`` for no
+    view or one without them."""
+    get_rbac_permissions = getattr(view, "get_rbac_permissions", None)
+    return list(get_rbac_permissions()) if callable(get_rbac_permissions) else []
+
+
 class WorkflowValidator:
     """Checks a create or update of a resource against the workflow policy of
     every context concerned (`workflow_policy_for`: the context's stored policy,
@@ -302,7 +310,7 @@ class WorkflowValidator:
             if stored is not None and not access.may_read(
                 request,
                 WORKFLOW_POLICY_TYPE_URI,
-                access.body_mapping(stored.content),
+                resource_check(stored),
                 stored.rbac_contexts,
             ):
                 raise HiddenWorkflowTransitionError() from e
@@ -372,19 +380,29 @@ class WorkflowValidator:
         reads its transition, any other operator reads it as the body `data` (it
         is a mapping over it), and a CEL condition reads the body, as in
         scoped-rbac's request check. Without `transition_check`, on the body
-        alone."""
+        alone.
+
+        With a view in the serializer context (the scrud views'), each of its
+        ``IsAuthorized`` permissions (`rbac_permissions_of`) must allow it:
+        ``has_context_permission(request, view, check, rbac_context)``, so an
+        ``IsAuthorized`` subclass decides the transition as it decides the
+        object and post-save checks. Without one (a serializer used outside
+        the views), the request's policy decides."""
         request = self.request_of(context)
         permission = Permission(
             http_action_iri_for(request), context.resource_type.type_uri
         )
         body = access.body_mapping(data)
-        resource = (
-            RequestResource(TransitionCheck(transition, body), body)
-            if transition_check
-            else body
-        )
+        resource = TransitionCheck(transition, body) if transition_check else body
         if rbac_context is None:
             return access.may_act_on(request, permission, resource, [])
+        view = getattr(context, "context", {}).get("view")
+        leaves = rbac_permissions_of(view)
+        if leaves:
+            return all(
+                leaf.has_context_permission(request, view, resource, rbac_context)
+                for leaf in leaves
+            )
         return policy_for(request).should_allow(
             permission, rbac_context, resource=resource
         )
