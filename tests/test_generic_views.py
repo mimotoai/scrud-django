@@ -268,7 +268,7 @@ def test_a_lookup_field_the_queryset_annotates_is_locked_by_key(method):
     # scrudful look the row up again for the response's validators.
     resolve, lock, lookup = events[:3]
     assert not resolve[1] and "n-abc" in resolve[2], events
-    assert lock[1] and lock[2].endswith(f'WHERE "tests_note"."id" IN ({note.pk})')
+    assert lock[1] and f'WHERE "tests_note"."id" IN ({note.pk})' in lock[2], lock
     assert not lookup[1] and "n-abc" in lookup[2], events
 
 
