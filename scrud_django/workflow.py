@@ -1,4 +1,3 @@
-import logging
 from dataclasses import dataclass
 from itertools import product
 
@@ -15,8 +14,6 @@ from scrud_django.exceptions import (
     WorkflowInvalidStateError,
     WorkflowTransitionError,
 )
-
-logger = logging.getLogger(__name__)
 
 CEL_ENVIRONMENT = new_environment({})
 

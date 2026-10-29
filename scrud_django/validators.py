@@ -1,7 +1,7 @@
 import fastjsonschema
 from scoped_rbac.permissions import http_action_iri_for, policy_for
-from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 from scoped_rbac.policy import Permission
+from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.conf import default_workflow_policies
 from scrud_django.exceptions import JsonValidationError, WorkflowTransitionError
@@ -63,11 +63,11 @@ class JsonValidator:
                 logging.error(e)
                 return lambda r: r
 
-            def validate(content, handlers={}, formats={}):
+            def validate(content, handlers=None, formats=None):
                 try:
                     return validation_func(content)
                 except fastjsonschema.JsonSchemaException as e:
-                    raise JsonValidationError(e)
+                    raise JsonValidationError(e) from e
 
             validator = ValidatorEntry(resource_type, validate)
             self.validators[resource_type.type_uri] = validator

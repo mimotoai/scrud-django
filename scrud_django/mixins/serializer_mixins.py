@@ -39,9 +39,7 @@ class GenericSerializerMixin:
         request = self._context.get("request", None)
         if request is None and context is not None:
             request = context.get("request", None)
-        last_modified = http_date(
-            instance.modified_at.replace(tzinfo=UTC).timestamp()
-        )
+        last_modified = http_date(instance.modified_at.replace(tzinfo=UTC).timestamp())
         return {
             'href': self.link_to_self(instance, request),
             'last_modified': last_modified,

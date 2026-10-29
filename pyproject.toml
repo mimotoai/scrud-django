@@ -70,3 +70,9 @@ quote-style = "preserve"
 select = ["E", "F", "W", "I", "UP", "B"]
 # Line length is left to the formatter.
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use the safetydance star-import idiom (`from safetydance_django.test import *`,
+# `from .steps import *`), which raises F403/F405, and re-declare imported step names
+# as nested steps (F811).
+"tests/**" = ["F403", "F405", "F811"]

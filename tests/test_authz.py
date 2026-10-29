@@ -35,7 +35,7 @@ def test_unauthenticated_authorized_post(partner_profiles):
 
     dummy_request = APIRequestFactory().post(url, {})
     dummy_request.user = AnonymousUser()
-    policy = policy_for(dummy_request)
+    policy_for(dummy_request)
 
     When.http.post(
         url,
