@@ -18,7 +18,7 @@ from scrud_django.exceptions import (
 )
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import ResourceType
-from scrud_django.permissions import TransitionCheck, resource_check
+from scrud_django.permissions import BodyCheck, TransitionCheck, resource_check
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     WorkflowPolicy,
@@ -397,7 +397,10 @@ class WorkflowValidator:
             http_action_iri_for(request), context.resource_type.type_uri
         )
         body = access.body_mapping(data)
-        resource = TransitionCheck(transition, body) if transition_check else body
+        # Read-only at every level: an operator cannot change what is stored.
+        resource = (
+            TransitionCheck(transition, body) if transition_check else BodyCheck(body)
+        )
         if rbac_context is None:
             return access.may_act_on(request, permission, resource, [])
         if not policy_for(request).should_allow(

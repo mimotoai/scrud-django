@@ -153,3 +153,24 @@ by fastjsonschema's exception text, which quotes parts of the schema (a refused
 send, and no fetched content is included (remote `$ref`s are refused before
 any fetch). The text is fastjsonschema's and may change between its versions.
 A stored schema that does not compile gives other writers a generic detail.
+
+<a id="request-body-generic-views"></a>
+## request-body-generic-views: a GenericViewMixin view's request check gets the body itself
+
+Decision: the scrud views give scoped-rbac's request check a read-only body
+(`BodyCheck`); views of your own models keep scoped-rbac's behaviour, which
+passes the parsed body itself.
+
+`ResourceViewMixin.check_permissions` gives the permission classes, and so
+the operators of their grants' conditions, a `BodyCheck` as the request's
+`data` (`scrud_django.mixins.view_mixins.read_only_body`), so that an
+operator cannot change what is stored. scoped-rbac's `IsAuthorized` itself
+passes `request.data` (the parsed `dict`) to operators, and its default
+`contexts_from` (`access.body_contexts`) reads an array of contexts only as
+a `list`, so the same wrapping would break a `GenericViewMixin` view whose
+body names several contexts: it is not applied there. There, an operator
+that writes to the body changes what the view then stores; operators are
+the adopter's own code. The fix belongs upstream (a read-only body in
+scoped-rbac's request check, with `body_contexts` reading any sequence);
+`tests/test_custom_operators.py::test_an_operator_cannot_change_what_is_stored`
+is the test to extend to a `GenericViewMixin` view.

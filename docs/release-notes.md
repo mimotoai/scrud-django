@@ -150,7 +150,15 @@ django-scoped-rbac 0.11. It has several breaking changes.
     grant one it refuses (their `has_context_permission` is given the
     `TransitionCheck` of the transition in each context, whose mapping is the
     request body as sent, not the stored resource). Your operators get the
-    `ResourceCheck` on object checks (they got the `Resource`). Lists ask
+    `ResourceCheck` on object checks (they got the `Resource`). On the
+    request check of a POST or PUT, the permission classes (their
+    `has_permission` and `contexts_from`) and your operators now read the
+    body as a `scrud_django.permissions.BodyCheck`, read-only at every level
+    like the others (they got the parsed `dict`, and an operator that wrote
+    to it changed what was stored): a `contexts_from` of your own (a
+    permission's or a serializer's) that tests `isinstance(value, list)`
+    must accept the read-only array too (`collections.abc.Sequence`, not
+    `str`). Lists ask
     them too: on a view whose `IsAuthorized` subclass overrides
     `has_object_permission` or `has_context_permission`, a list keeps only
     the resources its `has_object_permission` allows (see Lists below), so
@@ -391,6 +399,19 @@ Conditional request handling now comes from scrudful 0.8.
   body (`resource.get("name")`) raised `AttributeError`, a 500, on every
   detail route and list its grant conditioned. (scoped-rbac's request check
   of a GET or DELETE still gives operators `None`: there is no body.)
+* The request check of a POST or PUT (scoped-rbac's `IsAuthorized`), the
+  workflow check's `TransitionCheck` and its check where no transition
+  applies read the body through read-only views at every level
+  (`scrud_django.permissions.BodyCheck`; `ResourceViewMixin.check_permissions`
+  gives it as the request's `data` while the permissions are asked,
+  `scrud_django.mixins.view_mixins.read_only_body`, and restores the body
+  after): neither a permission class nor an operator can change what is
+  stored (an operator that wrote to the body, or to a nested object of a
+  `TransitionCheck`, changed it). A CEL condition reads a plain copy
+  (`to_cel()`). `rbac_contexts_of` reads a read-only array of contexts as a
+  list. Your `GenericViewMixin` views' request check still passes the body
+  itself, as scoped-rbac does
+  ([request-body-generic-views](follow-ups.md#request-body-generic-views)).
 * Request bodies must be JSON. `ResourceViewSet` and
   `ResourceViewSetGenericFilter` set `parser_classes = [RbacJSONParser]`
   (`scoped_rbac.rest`): a form-encoded or multipart body gets 415, and a JSON
@@ -688,10 +709,13 @@ Conditional request handling now comes from scrudful 0.8.
   grant that authorizes a transition now reads the request body, as in
   scoped-rbac's request check. The workflow check passes operators (and the
   permission classes' `has_context_permission`) a
-  `scrud_django.permissions.TransitionCheck`, a read-only mapping over the
-  request body with a `transition` attribute (its `to_cel()` is the body, for
-  CEL): your own operators read it as the body, as they do in scoped-rbac's
-  request check. It is a `collections.abc.Mapping`, not a `dict`, as the
+  `scrud_django.permissions.TransitionCheck`, a mapping over the request
+  body, read-only at every level as a `ResourceCheck` is (nested objects and
+  arrays are read-only views), with a `transition` attribute (its `to_cel()`
+  is a plain copy of the body, for CEL): your own operators read it as the
+  body, as they do in scoped-rbac's request check, and cannot change what is
+  stored through it (a nested object was the body's own, so an operator
+  could). It is a `collections.abc.Mapping`, not a `dict`, as the
   `ResourceCheck` of an object check is: an operator that tests
   `isinstance(resource, dict)` denies them (a 403 on every write of the types
   its grant covers), so test `isinstance(resource, Mapping)`.
@@ -834,4 +858,7 @@ limit on administrators' conditions
 default policies
 ([eager-callable-default-policies](follow-ups.md#eager-callable-default-policies))
 and the JSON Schema compiler's message in a 400
-([schema-error-echoes-compiler-text](follow-ups.md#schema-error-echoes-compiler-text)).
+([schema-error-echoes-compiler-text](follow-ups.md#schema-error-echoes-compiler-text)),
+and the request body your `GenericViewMixin` views' request check passes to
+operators
+([request-body-generic-views](follow-ups.md#request-body-generic-views)).

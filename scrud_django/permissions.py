@@ -8,8 +8,10 @@ class TransitionCheck(Mapping):
 
     `transition` is its name, or ``None`` where no workflow policy applies
     (there is no transition to authorize). As a mapping it is the request body
-    (read-only), so an operator other than ``scrud_workflow`` reads it as it
-    reads the body in scoped-rbac's request check; ``scrud_workflow`` recognises
+    (read-only at every level, as `ResourceCheck`: nested objects and arrays
+    are read-only views, so an operator cannot change what is stored), so an
+    operator other than ``scrud_workflow`` reads it as it reads the body in
+    scoped-rbac's request check (`BodyCheck`); ``scrud_workflow`` recognises
     it by its type.
 
     The permission classes' ``has_context_permission`` gets it in the
@@ -22,7 +24,7 @@ class TransitionCheck(Mapping):
     def __init__(self, transition, body=None):
         object.__setattr__(self, "_transition", transition)
         object.__setattr__(
-            self, "_body", dict(body) if isinstance(body, Mapping) else {}
+            self, "_body", read_only(body)._items if isinstance(body, Mapping) else {}
         )
 
     @property
@@ -42,8 +44,9 @@ class TransitionCheck(Mapping):
         return len(self._body)
 
     def to_cel(self):
-        """What a CEL condition reads: the body, as a dict."""
-        return dict(self._body)
+        """What a CEL condition reads: the body, as a plain ``dict`` (a
+        copy)."""
+        return writable(self._body)
 
     def __repr__(self):
         return f"TransitionCheck({self._transition!r})"
@@ -138,6 +141,25 @@ def writable(value):
     if isinstance(value, (list, tuple, ReadOnlyList)):
         return [writable(item) for item in value]
     return value
+
+
+class BodyCheck(ReadOnlyMapping):
+    """A request body as a check reads it: read-only at every level
+    (`read_only`), so that an operator or a permission class cannot change
+    what is stored, with `to_cel` a plain copy for a CEL condition.
+    `ResourceViewMixin.check_permissions` gives it to scoped-rbac's request
+    check as the body, and the workflow check where no transition is
+    asked."""
+
+    __slots__ = ()
+
+    def __init__(self, body):
+        super().__init__(read_only(body)._items if isinstance(body, Mapping) else {})
+
+    def to_cel(self):
+        """What a CEL condition reads: the body, as a plain ``dict`` (a
+        copy)."""
+        return writable(self._items)
 
 
 class ResourceCheck(ReadOnlyMapping):

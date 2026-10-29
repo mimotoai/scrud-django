@@ -1,5 +1,7 @@
+import copy
 import hashlib
 from collections.abc import Mapping
+from contextlib import contextmanager
 from urllib.parse import urlencode
 
 import reversion
@@ -27,7 +29,7 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
 from scrud_django.models.resource import MAX_CONTEXT_BYTES, context_fits
 from scrud_django.paginations import StandardResultsSetPagination
-from scrud_django.permissions import resource_check
+from scrud_django.permissions import BodyCheck, resource_check
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
@@ -87,6 +89,32 @@ def check_written_contexts(request):
         raise RbacContextInvalidError(
             f"An rbac_context may be at most {MAX_CONTEXT_BYTES} bytes long in UTF-8."
         )
+
+
+@contextmanager
+def read_only_body(request):
+    """While the block runs, `request`'s ``data`` (a POST, PUT or PATCH body)
+    is a `BodyCheck`, read-only at every level, for a JSON object (a deep
+    copy for a JSON array, which scoped-rbac's request check passes on as a
+    ``list``): the permission classes and the operators of their grants'
+    conditions read the body, and cannot change what is then stored. The
+    body is restored after. (DRF's ``Request.data`` reads ``_full_data``.)"""
+    if request.method not in BODY_METHODS:
+        yield
+        return
+    data = request.data
+    if isinstance(data, Mapping):
+        checked = BodyCheck(data)
+    elif isinstance(data, list):
+        checked = copy.deepcopy(data)
+    else:
+        yield
+        return
+    request._full_data = checked
+    try:
+        yield
+    finally:
+        request._full_data = data
 
 
 class ScrudfulMeta:
@@ -635,10 +663,12 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         ``rbac_context`` cannot be stored (`check_written_contexts`), with
         400, before scoped-rbac's request check (which would authorize an
         empty body as ``{}`` and refuse an empty context list with 403 for
-        everyone): they depend on the body alone."""
+        everyone): they depend on the body alone. The request check then
+        reads the body as a `BodyCheck` (`read_only_body`)."""
         check_body_present(request, self)
         check_written_contexts(request)
-        super().check_permissions(request)
+        with read_only_body(request):
+            super().check_permissions(request)
 
     def list_last_modified(self):
         """The list's Last-Modified: the newest ``modified_at`` of every

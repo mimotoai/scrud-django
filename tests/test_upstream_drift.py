@@ -83,6 +83,19 @@ def test_drfs_filter_queryset_is_what_list_validators_mixin_re_implements():
     )
 
 
+def test_drfs_request_data_reads_full_data():
+    # view_mixins.read_only_body gives scoped-rbac's request check a
+    # read-only body by setting the request's _full_data for its length.
+    from rest_framework.request import Request
+
+    assert code_names(Request.data.fget) == (
+        "_full_data",
+        "_hasattr",
+        "_load_data_and_files",
+        "wrap_attributeerrors",
+    )
+
+
 def test_scoped_rbacs_per_object_filter_is_what_scrud_re_implements():
     assert code_names(access._filter_per_object) == (
         "AnyOf",
