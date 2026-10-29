@@ -5,6 +5,7 @@ mapping, on the detail route (GET, PUT, DELETE), in the post-save check and
 in a list's per-object check alike, so a list shows what the detail route
 shows."""
 
+import copy
 from collections.abc import Mapping
 from uuid import uuid4
 
@@ -299,3 +300,39 @@ def test_a_list_by_overridden_contexts_shows_what_the_detail_route_shows(conditi
         if client.get(detail(r, "teams-partner-profiles")).status_code == 200
     }
     assert readable == expected
+
+
+def test_a_resource_check_is_read_only_at_every_level_and_copyable():
+    content = {"name": "ok", "nested": {"k": 1, "list": [1, {"x": 2}]}, "tags": ["a"]}
+    resource = Resource(pk=3, content=content)
+    check = ResourceCheck(resource)
+    with pytest.raises(TypeError):
+        check["nested"]["k"] = 2
+    with pytest.raises(TypeError):
+        check["tags"][0] = "b"
+    with pytest.raises(AttributeError):
+        check["tags"].append("b")
+    with pytest.raises(TypeError):
+        check["nested"]["list"][1]["x"] = 3
+    # The content attribute is a copy: changing it leaves the resource as is.
+    check.content["name"] = "evil"
+    check.content["nested"]["k"] = 2
+    assert resource.content == {
+        "name": "ok",
+        "nested": {"k": 1, "list": [1, {"x": 2}]},
+        "tags": ["a"],
+    }
+    # The views compare equal to the plain values, and copy.
+    assert check == resource.content
+    assert check["tags"] == ["a"] and check["nested"]["list"] == [1, {"x": 2}]
+    assert dict(check) == resource.content
+    assert copy.copy(check) == check and copy.deepcopy(check) == check
+    assert copy.deepcopy(check["nested"]) == {"k": 1, "list": [1, {"x": 2}]}
+    # CEL reads plain dicts and lists, its own copy.
+    cel = check.to_cel()
+    assert type(cel) is dict and type(cel["nested"]["list"]) is list
+    cel["nested"]["k"] = 9
+    assert check["nested"]["k"] == 1
+    # Like a dict, it is not hashable (memoize on obj.resource.pk instead).
+    with pytest.raises(TypeError):
+        hash(check)
