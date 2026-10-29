@@ -244,3 +244,166 @@ def test_raw_saves_keep_rows_in_step():
     assert loaded.object.content["rbac_context"] == ["c", "d"]
     loaded.save()
     assert rows_of(resource) == {"c", "d"}
+
+
+def a_reader_lists(resource):
+    """Whether a user who reads partner profiles only in "a" lists `resource`."""
+    from .test_list_rbac import READER, user_with
+
+    Given.http.force_authenticate(user_with((READER, "a")))
+    When.http.get(reverse(RESOURCE_ENDPOINT_LIST_NAME))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    hrefs = {entry["href"] for entry in Http.response.json()["content"]}
+    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": resource.pk})
+    return "http://testserver" + url in hrefs
+
+
+def replacement_for(resource, contexts):
+    """A new instance with `resource`'s pk (Django UPDATEs its row)."""
+    return Resource(
+        pk=resource.pk,
+        resource_type=get_resource_type_for("partner-profiles"),
+        content={"name": "moved", "slug": "m", "rbac_context": contexts},
+        etag="e" * 32,
+        modified_at=resource.modified_at,
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_new_instance_saved_over_an_existing_pk_leaves_its_old_contexts():
+    resource = register({"rbac_context": "a"})
+    assert a_reader_lists(resource)
+    replacement_for(resource, "b").save()
+    assert rows_of(resource) == {"b"}
+    assert not a_reader_lists(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_register_instance_over_an_existing_pk_leaves_its_old_contexts():
+    resource = register({"rbac_context": "a"})
+    ResourceRegistration.register_instance(replacement_for(resource, ["b", "c"]))
+    assert rows_of(resource) == {"b", "c"}
+    assert not a_reader_lists(resource)
+
+
+def flush():
+    """``manage.py flush`` inside the test's transaction. PostgreSQL refuses to
+    TRUNCATE a table with deferred constraint checks pending: run them first."""
+    from django.core.management import call_command
+
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    call_command("flush", interactive=False, inhibit_post_migrate=True, verbosity=0)
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL DEFERRED")
+
+
+def every_resource_matches_its_rows():
+    from scrud_django.mixins.resource_mixin import rbac_contexts_of
+
+    for resource in Resource.objects.all():
+        assert rows_of(resource) == set(rbac_contexts_of(resource.content)), (
+            resource.pk,
+            resource.content,
+        )
+
+
+@pytest.mark.django_db
+def test_dumpdata_flush_loaddata_round_trips(tmp_path):
+    from django.core.management import call_command
+
+    first = register({"rbac_context": "a"})
+    ResourceRegistration.update(
+        {"name": "n", "rbac_context": ["b", "c"]}, "partner-profiles", first.pk
+    )
+    register({"rbac_context": "a"})
+    register({"rbac_context": []})
+    # Row keys no longer follow resource order once rows were re-synced.
+    ResourceRegistration.update(
+        {"name": "n", "rbac_context": "a"}, "partner-profiles", first.pk
+    )
+    before = {r.pk: rows_of(r) for r in Resource.objects.all()}
+    dump = tmp_path / "scrud.json"
+    call_command("dumpdata", "scrud_django", output=str(dump), verbosity=0)
+    # A dump whose rows disagree with the content (taken while out of step):
+    # the content decides.
+    data = json.loads(dump.read_text())
+    for item in data:
+        if item["model"] == "scrud_django.resourcecontext" and (
+            item["fields"]["resource"] == first.pk
+        ):
+            item["fields"]["rbac_context"] = "stale"
+    dump.write_text(json.dumps(data))
+
+    flush()
+    assert not Resource.objects.exists()
+    call_command("loaddata", str(dump), verbosity=0)
+    assert {r.pk: rows_of(r) for r in Resource.objects.all()} == before
+    every_resource_matches_its_rows()
+    # Loading it again changes nothing.
+    call_command("loaddata", str(dump), verbosity=0)
+    assert {r.pk: rows_of(r) for r in Resource.objects.all()} == before
+    every_resource_matches_its_rows()
+
+
+@pytest.mark.django_db
+def test_raw_save_outside_a_transaction_is_refused(monkeypatch):
+    # A raw save (loaddata, reversion's Version.revert()) syncs the rows in
+    # post_save: outside a transaction the row would commit without them.
+    from django.core import serializers
+    from django.db.transaction import TransactionManagementError
+
+    resource = register({"rbac_context": "a"})
+    data = json.loads(serializers.serialize("json", [resource]))
+    data[0]["fields"]["content"]["rbac_context"] = "b"
+    (loaded,) = serializers.deserialize("json", json.dumps(data))
+    from django.db import connections
+
+    monkeypatch.setattr(connections["default"], "in_atomic_block", False)
+    with pytest.raises(TransactionManagementError):
+        loaded.save()
+    monkeypatch.undo()
+    resource.refresh_from_db()
+    assert resource.content["rbac_context"] == "a"
+    assert rows_of(resource) == {"a"}
+
+
+@pytest.mark.django_db
+def test_raw_save_of_an_overlong_context_is_refused():
+    from django.core import serializers
+
+    resource = register({"rbac_context": "a"})
+    data = json.loads(serializers.serialize("json", [resource]))
+    data[0]["fields"]["content"]["rbac_context"] = "x" * 2049
+    (loaded,) = serializers.deserialize("json", json.dumps(data))
+    with pytest.raises(ValueError, match="2048"):
+        loaded.save()
+    resource.refresh_from_db()
+    assert resource.content["rbac_context"] == "a"
+    assert rows_of(resource) == {"a"}
+
+
+@pytest.mark.django_db
+def test_dump_without_context_rows_loads_them_from_the_content(tmp_path):
+    from django.core.management import call_command
+
+    register({"rbac_context": ["a", "b"]})
+    register({})
+    before = {r.pk: rows_of(r) for r in Resource.objects.all()}
+    dump = tmp_path / "scrud.json"
+    call_command(
+        "dumpdata",
+        "scrud_django",
+        exclude=["scrud_django.ResourceContext"],
+        output=str(dump),
+        verbosity=0,
+    )
+    assert "scrud_django.resourcecontext" not in dump.read_text()
+    flush()
+    call_command("loaddata", str(dump), verbosity=0)
+    assert {r.pk: rows_of(r) for r in Resource.objects.all()} == before
+    every_resource_matches_its_rows()

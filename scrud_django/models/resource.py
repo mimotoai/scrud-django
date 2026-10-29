@@ -7,7 +7,8 @@ This will support queries, such as:
 
 import reversion
 from django.db import models, router, transaction
-from django.db.models.signals import post_save
+from django.db.models import Q
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 
 from scrud_django.mixins.resource_mixin import ResourceMixin, rbac_contexts_of
@@ -35,19 +36,23 @@ class Resource(ResourceMixin):
         `ResourceContext` rows (`sync_resource_contexts`), unless
         `update_fields` leaves ``content`` out. ``Model.save()`` (and so
         `ResourceRegistration`, the admin and any server code that saves a
-        resource) comes through here; a raw save (``loaddata``, reversion's
-        revert, which call ``Model.save_base`` past this override) is synced by
-        `sync_raw_save`. ``QuerySet.update()``, ``bulk_create()`` and
-        ``bulk_update()`` are not: rows written that way keep stale context
-        rows, which lists filter by."""
+        resource) comes through here. A raw save (``loaddata``, reversion's
+        revert, which call ``Model.save_base`` past this override) is checked
+        by `check_raw_save` and synced by `sync_raw_save`.
+        ``QuerySet.update()``, ``bulk_create()`` and ``bulk_update()`` are not:
+        rows written that way keep stale context rows, which lists filter by.
+
+        The stored rows are always read, except for ``force_insert`` (e.g.
+        ``objects.create()``): a new instance given an existing ``pk`` updates
+        that row, and its old contexts must go."""
         if raw:
-            # sync_raw_save syncs it (post_save).
+            # check_raw_save (pre_save) and sync_raw_save (post_save).
             return super().save_base(
                 *args, raw=raw, using=using, update_fields=update_fields, **kwargs
             )
         using = using or router.db_for_write(type(self), instance=self)
         sync = update_fields is None or "content" in update_fields
-        adding = self._state.adding
+        inserting = bool(kwargs.get("force_insert"))
         if sync:
             check_contexts(self.content)
         with transaction.atomic(using=using, savepoint=False):
@@ -55,7 +60,7 @@ class Resource(ResourceMixin):
                 *args, raw=raw, using=using, update_fields=update_fields, **kwargs
             )
             if sync:
-                sync_resource_contexts(self, using, adding=adding)
+                sync_resource_contexts(self, using, inserting=inserting)
 
 
 class ResourceContext(models.Model):
@@ -63,7 +68,12 @@ class ResourceContext(models.Model):
     ``rbac_contexts_of(resource.content)`` (none for ``"rbac_context": []``),
     as stored, reserved contexts included. Lists filter resources by these rows
     in SQL (`scrud_django.filters.ResourceRbacFilter`). `Resource.save()`
-    keeps them in step with the content."""
+    keeps them in step with the content.
+
+    The content decides: a dump may hold these rows or leave them out
+    (``dumpdata scrud_django --exclude scrud_django.ResourceContext``);
+    ``loaddata`` rebuilds them from each resource's content either way
+    (`sync_raw_save`, `make_room_for_raw_row`, `resync_after_raw_row`)."""
 
     resource = models.ForeignKey(
         Resource, on_delete=models.CASCADE, related_name="rbac_context_rows"
@@ -92,15 +102,16 @@ def check_contexts(content):
             )
 
 
-def sync_resource_contexts(resource, using, *, adding=False):
+def sync_resource_contexts(resource, using, *, inserting=False):
     """Make `resource`'s `ResourceContext` rows on database `using` the
     contexts of its content: delete the rows of contexts it left, add those of
-    contexts it entered. A resource just added has no rows to read."""
+    contexts it entered. A resource just inserted (`inserting`: a forced
+    insert) has no rows to read."""
     wanted = set(rbac_contexts_of(resource.content))
     rows = ResourceContext.objects.using(using)
     existing = (
         set()
-        if adding
+        if inserting
         else set(rows.filter(resource=resource).values_list("rbac_context", flat=True))
     )
     stale = existing - wanted
@@ -116,11 +127,72 @@ def sync_resource_contexts(resource, using, *, adding=False):
         )
 
 
+def require_transaction(using, what):
+    """Raise ``TransactionManagementError`` unless database `using` is inside
+    a transaction: a raw save's rows are synced by a signal after the row is
+    written, which commits them together only inside one."""
+    if not transaction.get_connection(using).in_atomic_block:
+        raise transaction.TransactionManagementError(
+            f"{what} must run inside transaction.atomic(using={using!r}), so that "
+            "the resource's ResourceContext rows commit with it (reversion's "
+            "Revision.revert() and loaddata do; wrap Version.revert() yourself)."
+        )
+
+
+def _content_saved(update_fields):
+    return update_fields is None or "content" in update_fields
+
+
+@receiver(pre_save, sender=Resource, dispatch_uid="scrud_django.check_raw_save")
+def check_raw_save(sender, instance, raw, using, update_fields, **kwargs):
+    """Refuse a raw save of a resource (``loaddata``, reversion's revert)
+    outside a transaction (`require_transaction`), or with a context longer
+    than a row holds (`check_contexts`), before the row is written."""
+    if raw and _content_saved(update_fields):
+        require_transaction(using, "A raw save of a Resource")
+        check_contexts(instance.content)
+
+
 @receiver(post_save, sender=Resource, dispatch_uid="scrud_django.sync_raw_save")
 def sync_raw_save(sender, instance, raw, using, update_fields, **kwargs):
     """Keep the `ResourceContext` rows of a resource saved raw
     (``Model.save_base(raw=True)``: ``loaddata``, reversion's revert) in step,
-    on the database of the save. Other saves are synced by
-    `Resource.save_base`."""
-    if raw and (update_fields is None or "content" in update_fields):
+    on the database of the save, in the transaction `check_raw_save`
+    required. Other saves are synced by `Resource.save_base`."""
+    if raw and _content_saved(update_fields):
         sync_resource_contexts(instance, using)
+
+
+@receiver(
+    pre_save, sender=ResourceContext, dispatch_uid="scrud_django.load_context_row"
+)
+def make_room_for_raw_row(sender, instance, raw, using, **kwargs):
+    """A `ResourceContext` loaded raw (``loaddata`` of a dump that holds the
+    rows) replaces the row with its key and the row of its resource and
+    context, so it never collides with the rows `sync_raw_save` made for the
+    resources loaded before it. The resources whose rows it displaced are
+    synced again after it (`resync_after_raw_row`)."""
+    if not raw:
+        return
+    require_transaction(using, "Loading a ResourceContext")
+    rows = ResourceContext.objects.using(using).filter(
+        Q(pk=instance.pk)
+        | Q(resource_id=instance.resource_id, rbac_context=instance.rbac_context)
+    )
+    instance._scrud_displaced = set(rows.values_list("resource_id", flat=True))
+    rows.delete()
+
+
+@receiver(
+    post_save, sender=ResourceContext, dispatch_uid="scrud_django.resync_context_row"
+)
+def resync_after_raw_row(sender, instance, raw, using, **kwargs):
+    """After a `ResourceContext` is loaded raw, make the rows of its resource,
+    and of any resource whose row it displaced, the contexts of their content
+    again: the content decides, whatever the dump's rows say. A resource not
+    loaded yet is synced when it is (`sync_raw_save`)."""
+    if not raw:
+        return
+    resource_ids = {instance.resource_id, *getattr(instance, "_scrud_displaced", ())}
+    for resource in Resource.objects.using(using).filter(pk__in=resource_ids):
+        sync_resource_contexts(resource, using)
