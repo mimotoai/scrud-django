@@ -40,7 +40,7 @@ dev = [
 ]
 docs = [
     "sphinx",
-    "myst-parser",
+    "myst-parser>=5.1,<6",
     "sphinx-rtd-theme",
 ]
 
@@ -62,7 +62,7 @@ python_files = ["tests.py", "test_*.py", "*_tests.py"]
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-extend-exclude = ["docs/superpowers"]
+extend-exclude = ["docs/superpowers", ".uv-cache"]
 
 [tool.ruff.format]
 quote-style = "preserve"

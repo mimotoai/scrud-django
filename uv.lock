@@ -1095,7 +1095,7 @@ dev = [
     { name = "scrud-django", extras = ["search"] },
 ]
 docs = [
-    { name = "myst-parser" },
+    { name = "myst-parser", specifier = ">=5.1,<6" },
     { name = "sphinx" },
     { name = "sphinx-rtd-theme" },
 ]
