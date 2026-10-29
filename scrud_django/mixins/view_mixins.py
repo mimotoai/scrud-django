@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access
 from scoped_rbac.filters import RbacFilter
-from scoped_rbac.permissions import drf_error, view_permission
+from scoped_rbac.permissions import drf_error
 
 from scrud_django.exceptions import RbacContextInvalidError, RequestBodyMissingError
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
@@ -215,20 +215,25 @@ class ResourceViewMixin:
     def check_post_save_permissions(self, request, obj):
         """Deny (``access.AccessDenied``) unless the request's action (POST for
         a create, PUT for an update) is allowed in **every** context the saved
-        `obj` is in, for each post-save permission, with its stored content as
-        the resource a condition reads. ``rbac_contexts`` is any-of for reads:
-        a write may land the resource only where the writer may write, in each
-        of those contexts. A resource with no usable context is left to
-        superusers, as scoped-rbac's object checks leave it."""
-        permission = view_permission(request, self)
+        `obj` is in, for each post-save permission. ``rbac_contexts`` is any-of
+        for reads: a write may land the resource only where the writer may
+        write, in each of those contexts.
+
+        It asks each permission itself, so that an ``IsAuthorized`` subclass's
+        overrides apply: its ``contexts_for(obj)`` names the contexts, and its
+        ``has_context_permission(request, view, content, context)`` decides
+        each, with the stored content (a mapping) as what a condition reads,
+        operators included, as on the request check. A resource with no usable
+        context is left to its ``has_object_permission`` (superusers only, as
+        scoped-rbac's object checks leave it)."""
         resource = access.body_mapping(obj.content)
         for leaf in self.get_post_save_permissions():
             contexts = access.usable_contexts(leaf.contexts_for(obj))
             if not contexts:
-                allowed = access.may_act_on(request, permission, obj, [])
+                allowed = leaf.has_object_permission(request, self, obj)
             else:
                 allowed = all(
-                    access.may_act_in(request, permission, context, resource)
+                    leaf.has_context_permission(request, self, resource, context)
                     for context in contexts
                 )
             if not allowed:

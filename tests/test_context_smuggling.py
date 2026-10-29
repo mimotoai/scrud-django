@@ -330,3 +330,83 @@ def test_update_moved_to_a_context_the_writer_cannot_write_is_403():
     own.refresh_from_db()
     assert own.content == stored
     assert own.rbac_contexts == [DEFAULT_CONTEXT]
+
+
+PP = "tests://PartnerProfiles"
+
+
+def partner_profile_writer(*contexts):
+    user = UserFactory()
+    for context in contexts:
+        role = Role(
+            definition={m: [PP] for m in ALL_METHODS},
+            etag=uuid4().hex,
+            modified_at=now(),
+        )
+        role.save()
+        RoleAssignment(
+            user=user,
+            role=role,
+            rbac_context=context,
+            etag=uuid4().hex,
+            modified_at=now(),
+        ).save()
+    return user
+
+
+@pytest.mark.django_db
+@test_context
+def test_the_post_save_check_of_a_create_goes_through_the_permission_class():
+    # tests/urls.py: ContextDenyingIsAuthorized.has_context_permission refuses
+    # "denied"; the request check (has_permission) does not ask it, the
+    # post-save check must.
+    reverse("partner-profiles-list")
+    before = Resource.objects.count()
+    Given.http.force_authenticate(partner_profile_writer("denied", "ok"))
+    When.http.post(
+        reverse("denying-partner-profiles-list"),
+        {"name": "x", "rbac_context": "denied"},
+        format="json",
+    )
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.count() == before
+
+    When.http.post(
+        reverse("denying-partner-profiles-list"),
+        {"name": "x", "rbac_context": "ok"},
+        format="json",
+    )
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    # The user's grants allow "denied": IsAuthorized itself lets it through.
+    When.http.post(
+        reverse("partner-profiles-list"),
+        {"name": "x", "rbac_context": "denied"},
+        format="json",
+    )
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+
+
+@pytest.mark.django_db
+@test_context
+def test_the_post_save_check_of_an_update_goes_through_the_permission_class():
+    reverse("partner-profiles-list")
+    own = ResourceRegistration.register(
+        {"name": "x", "rbac_context": "ok"}, "partner-profiles"
+    )
+    Given.http.force_authenticate(partner_profile_writer("denied", "ok"))
+    When.http.put(
+        reverse("denying-partner-profiles-detail", args=[own.pk]),
+        {"name": "y", "rbac_context": "denied"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(own.etag),
+    )
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.get(pk=own.pk).content == own.content
+
+    When.http.put(
+        reverse("partner-profiles-detail", args=[own.pk]),
+        {"name": "y", "rbac_context": "denied"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(own.etag),
+    )
+    Then.http.status_code_is(status.HTTP_200_OK)
