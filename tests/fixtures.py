@@ -1,18 +1,18 @@
 import json
 import os
-from datetime import UTC
 from http import server
 from multiprocessing import Process
 from uuid import uuid4
 
 import pytest
 from django.urls import reverse
-from django.utils.http import http_date, quote_etag
+from django.utils.http import quote_etag
 from django.utils.timezone import now
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.registration import ResourceRegistration
+from scrud_django.utils import http_date_for
 
 from .factories import UserFactory
 from .rbac_defaults import TYPE_URI_PARTNER_PROFILES
@@ -49,7 +49,7 @@ RESOURCE_ENDPOINT_LIST_NAME = f"{RESOURCE_ENDPOINT_PREFIX}-list"
 
 
 def last_modified_for(resource):
-    return http_date(resource.modified_at.replace(tzinfo=UTC).timestamp())
+    return http_date_for(resource.modified_at)
 
 
 def serialize_page(resources):

@@ -1,14 +1,21 @@
 """Conditional requests (RFC 9110 §13) on scrud resources, served by scrudful."""
 
 import json
+import time
 
 import pytest
+from django.test import override_settings
 from django.urls import reverse
-from django.utils.http import quote_etag
+from django.utils import timezone
+from django.utils.http import parse_http_date, quote_etag
 from safetydance_django.test import *  # noqa: F403, F401
 
 from .fixtures import *  # noqa
-from .fixtures import RESOURCE_ENDPOINT_DETAIL_NAME, last_modified_for
+from .fixtures import (
+    RESOURCE_ENDPOINT_DETAIL_NAME,
+    RESOURCE_ENDPOINT_LIST_NAME,
+    last_modified_for,
+)
 from .steps import *  # noqa: F403, F401
 
 
@@ -183,3 +190,42 @@ def test_put_with_only_if_unmodified_since_succeeds(
     )
     Then.http.status_code_is(200)
     And.http.resource_json_is(partner_profile_post_data)
+
+
+@pytest.mark.django_db
+@test_context
+def test_last_modified_agrees_with_envelope_when_use_tz_is_false(
+    admin_login, partner_profile_post_data
+):
+    # With USE_TZ=False, modified_at is a naive datetime in TIME_ZONE. scrudful
+    # reads it so for the Last-Modified header; the envelope, the search index
+    # and last_modified_for must read it the same way, not as UTC.
+    from scrud_django.registration import ResourceRegistration
+    from scrud_django.search_indexes import ResourceIndex
+
+    with override_settings(USE_TZ=False, TIME_ZONE="America/Chicago"):
+        reverse(RESOURCE_ENDPOINT_LIST_NAME)
+        resource = ResourceRegistration.register(
+            content=partner_profile_post_data, register_type="partner-profiles"
+        )
+        resource.refresh_from_db()
+        assert timezone.is_naive(resource.modified_at)
+        href = "http://testserver" + reverse(
+            RESOURCE_ENDPOINT_DETAIL_NAME, args=[resource.id]
+        )
+        Given.http.force_authenticate(admin_login)
+        When.http.get(href)
+        Then.http.status_code_is(200)
+        header = Http.response["Last-Modified"]
+        # The header is the true instant of the write.
+        assert abs(parse_http_date(header) - time.time()) < 60, header
+
+        When.http.get(reverse(RESOURCE_ENDPOINT_LIST_NAME))
+        Then.http.status_code_is(200)
+        envelopes = {
+            entry["href"]: entry
+            for entry in json.loads(Http.response.content)["content"]
+        }
+        assert envelopes[href]["last_modified"] == header
+        assert last_modified_for(resource) == header
+        assert ResourceIndex().prepare(resource)["modified_at"] == header

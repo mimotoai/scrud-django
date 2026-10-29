@@ -1,15 +1,15 @@
 import json
 from collections.abc import Mapping
-from datetime import UTC
 from functools import cached_property
 
-from django.utils.http import http_date, quote_etag
+from django.utils.http import quote_etag
 from rest_framework.exceptions import ValidationError
 from rest_framework.reverse import reverse
 from rest_framework.settings import api_settings
 
 from scrud_django.headers import get_link_header_for
 from scrud_django.registration import get_resource_type_for
+from scrud_django.utils import http_date_for
 
 
 class GenericSerializerMixin:
@@ -42,7 +42,7 @@ class GenericSerializerMixin:
         request = self._context.get("request", None)
         if request is None and context is not None:
             request = context.get("request", None)
-        last_modified = http_date(instance.modified_at.replace(tzinfo=UTC).timestamp())
+        last_modified = http_date_for(instance.modified_at)
         return {
             'href': self.link_to_self(instance, request),
             'last_modified': last_modified,
