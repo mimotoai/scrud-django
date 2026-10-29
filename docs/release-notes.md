@@ -22,9 +22,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
 6. Clients must send JSON bodies (form and multipart bodies get 415). Give your
    own `GenericViewMixin` views `parser_classes = [RbacJSONParser]`.
 7. Workflow policies: check your stored `WorkflowPolicy` resources (at most one
-   per type and context, in one context each, reported by
-   `manage.py check --database default`; transition names must not start with
-   `__`; `restrict_update` must be a list), and your
+   per type and context, in one context each, and each passing the checks a
+   write now makes, reported by `manage.py check --database default` as
+   `scrud_django.E002`, `E003`, `E005` and `W001`; transition names must not
+   start with `__`; `restrict_update` must be a list), and your
    `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` (run `manage.py check`; give
    policies as mappings).
 8. Code: read "API changes" below for the removed modules
@@ -71,6 +72,19 @@ django-scoped-rbac 0.11. It has several breaking changes.
     that override `dispatch`, `initial` or `get_queryset` must call `super()`;
     server code that updates or deletes a resource should go through
     `ResourceRegistration.update` / `delete`, which lock it the same way.
+17. Clients: JSON Schema `default` values are not applied; send every value
+    you want stored (and that a workflow state condition reads). A POST or
+    PUT with an empty body gets 400 (`body-missing`). A refused
+    `WorkflowPolicy` write's 400 is a `workflow-policy-invalid` problem whose
+    `detail` says why, and a workflow error caused by a settings default
+    policy names it as `{"resource_type": ..., "default": true}` instead of
+    embedding it (see Workflows below). A PUT that moves a resource into a
+    context must be an initial state there, and needs `__INITIALIZE__` there
+    if the grant is conditioned on `scrud_workflow`.
+18. Your own `IsAuthorized` subclasses on scrud views: their
+    `has_context_permission` (and, for a resource in no context,
+    `has_object_permission`) now also decides the post-save check (see
+    Authorization below).
 
 ### Lists
 
@@ -234,7 +248,20 @@ Conditional request handling now comes from scrudful 0.8.
   `GenericViewMixin` views the same `parser_classes`.
 * A create or update is checked again after the save, before it commits: the
   request's method must be allowed in **every** context the stored resource is
-  in, or the write is rolled back with 403.
+  in, or the write is rolled back with 403. The check asks the view's
+  permission classes (each `IsAuthorized`'s `has_context_permission`, with the
+  stored content as what a condition reads, and its `has_object_permission`
+  for a resource in no context), so an `IsAuthorized` subclass's overrides
+  apply to it; it used to ask the policy directly.
+* A write is authorized in the contexts its body is stored in: a body whose
+  `rbac_context` is absent, `null` or not a string (or a list of strings), for
+  example a JSON-LD context document's `{"@id": ...}` term definition, is
+  authorized in the default context `""`, where it is stored and read
+  (`ResourceSerializer.contexts_from`, which `IsAuthorized` uses). A
+  default-context writer used to get 403 for `"rbac_context": null` or a dict
+  (scoped-rbac's default authorized that value as the context). A list with
+  a member that is not a string is stored in `""` too, but is still refused:
+  scoped-rbac's request check also needs the method in each member of a list.
 * `"rbac_context": ""` now means the default context everywhere, exactly as
   leaving the key out does. Before, a body with `"rbac_context": ""` skipped the
   default workflow policy, so its initial-state check, transition validity and
@@ -326,13 +353,33 @@ Conditional request handling now comes from scrudful 0.8.
   policies are built once in `scrud_django.conf`
   (`default_workflow_policies()`), and stored ones come from
   `scrud_django.workflow.workflow_policy_for`.
-* `WorkflowTransitionError.policy` may be a stored-policy reference (an object
-  with the policy's URL) rather than a dict, and is `None` in a generic error.
+* `WorkflowTransitionError.policy` is a reference, never a policy's content:
+  a `StoredPolicyReference` (a stored policy, given in the body as its URL),
+  a `DefaultPolicyReference` (a settings default, given as
+  `{"resource_type": "<type URI>", "default": true}`), or `None` in a generic
+  error. `WorkflowPolicy` takes `default_for`, the type URI a settings
+  default is for (`DefaultWorkflowPolicies` sets it, also on a
+  `WorkflowPolicy` given in the setting that has none).
+  `WorkflowValidator.transition_for` takes `entering`, and
+  `ResourceSerializer` has a `contexts_from`.
 * A JSON Schema's `$ref` may point only inside the schema (`#/...`). A remote,
   `file:` or relative `$ref` is refused with 400
   (`https://api.openteams.com/http-problem/json-schema-invalid`) when a JSON
   Schema is written, and a stored schema that does not compile fails closed:
   every write of its type is a 400 with a generic detail.
+* JSON Schema `default` values are never applied. fastjsonschema fills them
+  into the data it validates; `JsonValidator` now validates a deep copy of the
+  body, so the stored body is the body as sent. A default nested in an object
+  the body gave used to be stored (the copy DRF validates shared it); a
+  top-level one was dropped but seen by the workflow check, which now reads
+  the body as sent (the serializer's `initial_data`), so it checks the
+  contexts and the state the resource is stored with.
+* A POST or PUT whose body is empty gets 400
+  (`https://api.openteams.com/http-problem/body-missing`, "Missing request
+  body", `scrud_django.exceptions.RequestBodyMissingError`), before
+  authorization; nothing is stored or changed. DRF read an empty body as
+  `{}`, so a POST created an empty resource and a PUT wiped the stored
+  content. `{}` is still a body.
 * The envelope's `last_modified` (and the search index's `modified_at`) no
   longer depend on `USE_TZ`. With `USE_TZ = False`, a stored modification time
   is naive and in `TIME_ZONE`; it used to be read as UTC, so the envelope
@@ -355,8 +402,12 @@ Conditional request handling now comes from scrudful 0.8.
 * A create must be a valid initial state under the policy of every context it
   names. An update must be a valid transition, and the user must be authorized
   for it (the `scrud_workflow` operator's `authorized_transitions`), under the
-  policy of every context the resource is in and every context the body names.
-  So moving a resource between contexts needs the transition in both.
+  policy of every context the resource is in. In a context the update moves it
+  into (one the body names that it is not stored in), it is checked as a
+  create: the body must be a valid initial state under that context's policy,
+  and the user authorized for `__INITIALIZE__` there. So a resource cannot be
+  carried into a context in a state nobody there could have created or moved
+  it to (a "done" ToDo into a context where the writer may not "finish").
 * `scrud_django.workflow.workflow_policy_for(resource_type, context)` is the
   one policy lookup; the `WorkflowValidator` and
   `ResourceMixin.get_workflow_policy` (which picks the policy whose transition
@@ -400,15 +451,22 @@ Conditional request handling now comes from scrudful 0.8.
   `prior_state` `None` and `proposed_state` its initial state (it used to be
   `None` and the content).
 * A `WorkflowPolicy` is checked when it is created or updated, and refused with
-  400 (nothing is stored) when a state condition is not valid CEL, a transition
-  is not an object with `from` and `to` naming defined states, a transition's
-  name starts with `__` (reserved for `__INITIALIZE__` and `__SAME_STATE__`),
-  `restrict_update` is not a list of defined state names, or `rbac_context` is
-  present but not a string.
+  400 (nothing is stored), a
+  `https://api.openteams.com/http-problem/workflow-policy-invalid` problem
+  ("Invalid workflow policy", `WorkflowPolicyInvalidError`, code
+  `workflow_policy_invalid` under any exception handler) whose `detail` says
+  why (for example which condition does not compile), when a state condition
+  is not valid CEL, a transition is not an object with `from` and `to` naming
+  defined states, a transition's name starts with `__` (reserved for
+  `__INITIALIZE__` and `__SAME_STATE__`), `restrict_update` is not a list of
+  defined state names, or `rbac_context` is present but not a string. (It
+  used to be a field error, `{"workflow_policy": [...]}`, which scoped-rbac's
+  problem details render as "This value is not valid.", without the reason.)
 * There is at most one stored `WorkflowPolicy` per resource type and context. A
   create, or an update moving a policy into a context, that would make a second
-  one is refused with 400 (not 409), without naming the existing policy;
-  update or delete the existing policy instead. `WorkflowPolicy` writes lock the
+  one is refused with 400 (not 409, the same `workflow-policy-invalid`
+  problem), without naming the existing policy; update or delete the
+  existing policy instead. `WorkflowPolicy` writes lock the
   `WorkflowPolicy` resource type's row (`select_for_update`) and check again
   after the save, so of two concurrent writes the second is refused. Every
   `WorkflowPolicy` write through `ResourceRegistration` (`register`,
@@ -422,22 +480,33 @@ Conditional request handling now comes from scrudful 0.8.
   that context fail with `ImproperlyConfigured` until all but one are deleted.
   The database system check (`manage.py check --database default`, also run
   by `migrate`) reports them (`scrud_django.E002`), policies whose
-  `resource_type` is not a string (`scrud_django.E003`), and policies stored
-  with a list `rbac_context` (`scrud_django.W001`). The `WorkflowPolicy`
-  schema now also declares `restrict_update` as an array of strings. These
-  checks catch the policy errors known to make later writes fail; they do not
-  prove that a policy which passes them is usable. A policy stored by an
-  earlier version is not rechecked
-  ([stored-invalid-workflow-policy](follow-ups.md#stored-invalid-workflow-policy)).
+  `resource_type` is not a string (`scrud_django.E003`), policies that fail
+  the checks a `WorkflowPolicy` write makes (`scrud_django.E005`: stored by an
+  earlier version or server-side, through `ResourceRegistration`, which does
+  not check them; every write of the type in their contexts fails with
+  `ImproperlyConfigured`, a 500, naming the policy, until it is fixed or
+  deleted), and policies stored with a list `rbac_context`
+  (`scrud_django.W001`). The `WorkflowPolicy` schema now also declares
+  `restrict_update` as an array of strings. These checks catch the policy
+  errors known to make later writes fail; they do not prove that a policy
+  which passes them is usable.
+* A stored `WorkflowPolicy` is compiled once per version (its pk, ETag and
+  `modified_at`), not on every write: `scrud_django.workflow.STORED_POLICY_CACHE`
+  keeps up to `STORED_POLICY_CACHE_SIZE` (256) compiled policies per process,
+  least recently used first out. The stored policies are still read on every
+  write.
 * A workflow error caused by a stored `WorkflowPolicy` now gives that policy's
   absolute URL in `policy` (and in `detail`, where the policy used to be)
   instead of its content. When the writer may not read that policy (no
   `http.GET` on `WorkflowPolicy` in its context), for example because it is
   another context's policy the resource is also in, the error is generic: the
   same status, `type` and `title`, a generic `message` and `detail`, and
-  `policy`, `prior_state` and `proposed_state` null. Errors from a settings
-  default policy still embed the policy
-  ([workflow-error-embeds-policy](follow-ups.md#workflow-error-embeds-policy)).
+  `policy`, `prior_state` and `proposed_state` null. A workflow error caused
+  by a settings default policy names it by reference too, never by its
+  content (its CEL conditions and every role's transitions used to be in
+  `policy` and `detail`): `{"resource_type": "<type URI>", "default": true}`,
+  the type the default is for, marked as the default. No workflow error body
+  carries a policy's conditions or transitions.
 * Updating or deleting a stored `WorkflowPolicy` needs `http.PUT` or
   `http.DELETE` on `WorkflowPolicy` in **every** context it applies to (403
   otherwise). The API now stores a policy in one context; this matters for a
@@ -487,8 +556,6 @@ Conditional request handling now comes from scrudful 0.8.
 
 See [follow-ups](follow-ups.md) for known issues. In particular:
 
-* An empty body sent as `application/json` is read as `{}`
-  ([empty-json-body](follow-ups.md#empty-json-body)).
 * `GenericViewMixin` views (models of your own) get no locked write
   transaction: two concurrent writes with the same `If-Match` can both pass
   ([generic-view-writes-not-locked](follow-ups.md#generic-view-writes-not-locked)).

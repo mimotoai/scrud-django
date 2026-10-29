@@ -1,72 +1,5 @@
 # Follow-ups
 
-<a id="stored-invalid-workflow-policy"></a>
-## stored-invalid-workflow-policy: a policy stored before 0.12.0 can still fail every write in its context
-
-Since 0.12.0 a `WorkflowPolicy` is compiled when it is written, and one whose
-state conditions are not valid CEL, or whose transitions are malformed or name
-undefined states, is refused with 400. A policy stored by an earlier version is
-not checked again: `scrud_django.workflow.workflow_policy_for` compiles it when
-a resource of its type is written in the policy's context, and the
-`ImproperlyConfigured` it raises is a 500 for every create or update of that
-type in that context (no longer in other contexts).
-
-Suggested fix: a system check or management command that compiles every stored
-`WorkflowPolicy` and reports the invalid ones, run on upgrade. Test: store an
-invalid policy with `ResourceRegistration.register` and expect the check to
-name it.
-
-<a id="workflow-validator-defaulted-copy"></a>
-## workflow-validator-defaulted-copy: the workflow check reads the schema-defaulted copy of the body
-
-`WorkflowValidator.__call__` (`scrud_django.validators`) reads the
-contexts and state from the data DRF passes to validators, which is a copy of
-the body that `JsonValidator` has filled with the schema's `default` values.
-The view stores `request.data` without them (see
-[schema-defaults-not-stored](#schema-defaults-not-stored)). A schema default for
-`rbac_context` (or for a property a state condition reads) can therefore make
-the workflow check run under a different context or state than the one stored.
-
-Impact: none with the shipped schemas, which give `rbac_context` no default.
-A type whose schema does could have its transitions checked in the wrong
-context.
-
-Suggested fix: have the validator read the serializer's `initial_data` (the
-body as sent, which is what is stored), and test a type whose schema defaults
-`rbac_context`.
-
-<a id="workflow-move-in-same-state"></a>
-## workflow-move-in-same-state: moving a resource into a context is checked as a transition, not as a creation there
-
-For an update, `WorkflowValidator` checks every context of the stored resource
-and of the body as a transition from the stored content
-(`WorkflowValidator.__call__` in `scrud_django.validators`). A context the resource enters is
-checked the same way, so a state that is not an initial state there can be
-carried in. Example: a user who holds `__SAME_STATE__` (but not `finish`) in
-"v" and write in "w" moves a "done" ToDo from "w" to "v" without changing it;
-"done" → "done" is `__SAME_STATE__` under "v"'s policy, so it is allowed, and
-"v" now has a "done" ToDo nobody there finished.
-
-Suggested fix: for the contexts in new − stored, require
-`validate_initial_state` and authorize `__INITIALIZE__` there (as a create),
-in addition to the transition checks in the stored contexts. Test the move
-above (400) and a move of a "not started" ToDo (200).
-
-<a id="workflow-policy-error-detail"></a>
-## workflow-policy-error-detail: an invalid WorkflowPolicy is refused without saying why
-
-A `WorkflowPolicy` that fails `WorkflowPolicy`'s checks raises a DRF
-`ValidationError({"workflow_policy": [...]})`
-(`scrud_django.validators.WorkflowValidator.validate_policy`). scoped-rbac's problem-details handler gives
-uniform field errors, so the 400 carries only
-`{"workflow_policy": [{"code": "invalid", "message": "This value is not valid."}]}`,
-not the reason (for example which condition does not compile).
-
-Suggested fix: raise a `ScrudException` subclass (an RFC 9457 problem with
-its own `type` and the `ImproperlyConfigured` message as `detail`), which
-`scrud_exception_handler` passes through, and assert the detail in
-`tests/test_workflow_contexts.py::test_invalid_policy_is_refused_on_create`.
-
 <a id="cached-property-called"></a>
 ## cached-property-called: `SerializerMixin.resource_type` calls a `cached_property` value
 
@@ -124,25 +57,6 @@ Suggested fix: use `"describedby"` and `"application/schema+json"` in
 an envelope's `link` with the detail response's `Link` header. Envelope
 consumers would see a changed value, so note it in the release notes.
 
-<a id="workflow-error-embeds-policy"></a>
-## workflow-error-embeds-policy: workflow errors from a default policy embed the whole policy
-
-`scrud_django.exceptions.WorkflowTransitionError.response_data` puts the
-policy in every 400 for an invalid state or transition (`policy`, and `detail`
-when the error has no message). Since 0.12.0 an error caused by a **stored**
-`WorkflowPolicy` gives that resource's absolute URL instead, which RBAC
-protects (`tests/test_workflow_contexts.py::test_unauthorized_transition_error_references_stored_policy_by_url`).
-An error caused by a settings default policy
-(`SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`) still embeds the policy, CEL
-conditions included (`test_default_policy_errors_still_embed_the_policy`).
-
-Impact: any user who may write a resource of a type with a default policy
-learns that whole policy, including conditions and transitions for other roles.
-It is also a large body for every rejected write.
-
-Suggested fix: give default policies a URL too (for example the type's), and
-send it instead; then assert that no workflow error body has CEL in it.
-
 <a id="public-type-metadata"></a>
 ## public-type-metadata: services, collection schemas and contexts are public
 
@@ -171,26 +85,6 @@ a public secret key and debug pages.
 
 Suggested fix: read these from the environment in the demo (with
 development-only defaults), or leave the warning as the only guard.
-
-<a id="write-side-dict-context"></a>
-## write-side-dict-context: a dict `rbac_context` in a body is checked as a context
-
-On the read side a non-string `rbac_context` (for example a JSON-LD context
-document's `{"@id": ...}` term definition) is not a context: the resource is
-in the default context (`rbac_contexts_of`). scoped-rbac's write-side default
-`contexts_from` (`access.body_contexts`) instead passes that dict to the policy
-as the context to authorize.
-
-The same goes for `"rbac_context": null`: a default-context writer gets 403
-for a body with `null` there and 201 when the key is absent.
-
-Impact: only an asymmetry. No role grants a dict context, so the write is
-refused unless the user is a superuser, and the post-save check then requires
-the default context. It fails closed.
-
-Suggested fix: give `ResourceSerializer` a `contexts_from` that returns
-`rbac_contexts_of(body)`, so both sides read the body the same way; add a test
-that a default-context writer may POST a JSON-LD context document.
 
 <a id="root-manage-py-memory-db"></a>
 ## root-manage-py-memory-db: the root `manage.py` uses the in-memory test database
@@ -241,48 +135,12 @@ is), for example through a `ResourceMixin.cel_resource(request)` (which
 document that operators get the model instance there; test a CEL-conditional
 PUT and a body-reading operator on a detail-route PUT and on a list.
 
-<a id="schema-defaults-not-stored"></a>
-## schema-defaults-not-stored: JSON Schema `default` values are never stored
-
-fastjsonschema fills a schema's `default` values into the data it validates,
-but DRF runs a serializer's validators on a copy of the body
-(`Serializer.run_validators`), and `ResourceSerializer` stores the body itself.
-Top-level defaults are therefore validated and dropped; a default nested in an
-object the body supplies is shared with the copy, so it is stored.
-
-Impact: inconsistent. A client cannot rely on schema defaults. If defaults are
-ever stored (for example by storing the validator's output), a default
-`rbac_context` would land a resource in a context other than the one the
-request was authorized in; the post-save check added in 0.12.0 then answers
-403 (`tests/test_context_smuggling.py::test_schema_default_context_is_not_stored`
-documents the current behaviour).
-
-Suggested fix: decide whether defaults are applied. If they are, store the
-validator's output and keep the post-save check.
-
-<a id="empty-json-body"></a>
-## empty-json-body: an empty body is read as `{}`
-
-An empty request body sent as `application/json` is read as `{}`.
-
-Impact: a POST creates an empty resource and a PUT wipes the resource's
-content; authorization is still checked, in the default context `""`. The
-release note "a JSON body that is not an object gets 400" does not cover it.
-
-Suggested fix: answer 400 for an empty body on POST and PUT. Test: PUT with no
-body leaves the stored content unchanged.
-
-<a id="post-save-permissions-direct"></a>
-## post-save-permissions-direct: the post-save check bypasses `IsAuthorized` overrides
-
-`check_post_save_permissions` (`scrud_django/mixins/view_mixins.py`) calls
-`access.may_act_in` directly rather than going through the permission class, so
-a custom `IsAuthorized` subclass that overrides permission methods is only
-partly honoured by the post-save check.
-
-Suggested fix: route the post-save check through the permission class's own
-method (or document that it uses `may_act_in`), and test a subclass that denies
-a context.
+The post-save check (`ResourceViewMixin.check_post_save_permissions`) asks
+each permission's `has_context_permission` with the stored content, a
+mapping, in place of the object, so that operators read the content there as
+on the request check. Once operators get a mapping on object checks, it can
+pass the resource itself, as scoped-rbac's own `check_post_save_permissions`
+does.
 
 <a id="eager-callable-default-policies"></a>
 ## eager-callable-default-policies: a callable default that raises fails every type
@@ -339,17 +197,6 @@ ordinary writers. There is no cost limit.
 Suggested fix: if untrusted users may hold those grants, bound CEL evaluation
 (time or cost) and reject patterns that scoped-rbac or `re` cannot run in
 bounded time.
-
-<a id="policy-recompiled-per-write"></a>
-## policy-recompiled-per-write: a stored policy is compiled again on every write
-
-`scrud_django.workflow.workflow_policy_for` builds a `WorkflowPolicy` from the
-stored content (compiling every CEL condition) for each context of each write.
-Settings default policies are built once; stored ones are not cached.
-
-Impact: CPU per write grows with the number of conditions and the number of
-contexts. Suggested fix: cache the compiled policy by the stored resource's
-ETag and modification time, as `validator_for` does for JSON Schema validators.
 
 <a id="schema-error-echoes-compiler-text"></a>
 ## schema-error-echoes-compiler-text: a refused JSON Schema's 400 echoes fastjsonschema's message
@@ -426,6 +273,25 @@ calls `serializer.save()` on an existing resource hits it.
 Suggested fix: write through `ResourceRegistration.update_locked` with the
 serializer's (locked) instance, or remove the method. Test: a serializer
 given an instance and valid data saves it.
+
+<a id="workflow-check-permissions-direct"></a>
+## workflow-check-permissions-direct: the workflow check asks the policy, not the permission class
+
+`WorkflowValidator.allowed` (`scrud_django.validators`) authorizes a
+transition in each context with `policy_for(request).should_allow` (and
+`access.may_act_on` for a resource in no context), not through the view's
+`IsAuthorized` (or subclass). An override of `has_context_permission` is
+therefore not asked whether the user may make a transition in a context.
+
+Impact: small. The object check and the post-save check do ask the permission
+class, so a write is still refused when it reads or lands in a context the
+override denies; only an override that decides by the transition itself (the
+`TransitionCheck` it would be given) is not honoured.
+
+Suggested fix: authorize through each `IsAuthorized` leaf's
+`has_context_permission(request, view, TransitionCheck(...), context)` when
+the serializer context has a view, keeping the policy call for serializers
+used without one; test a subclass that refuses one transition.
 
 # Decided
 

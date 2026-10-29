@@ -42,7 +42,7 @@ extensions = [
 
 todo_include_todos = True
 
-# Heading anchors, so that links such as follow-ups.md#empty-json-body
+# Heading anchors, so that links such as follow-ups.md#resource-no-to-cel
 # resolve (see _ext/myst_slugs.py).
 myst_heading_anchors = 2
 myst_heading_slug_func = 'myst_slugs.follow_up_slug'
