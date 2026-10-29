@@ -10,7 +10,7 @@ You can contribute in many ways:
 
 ### Report Bugs
 
-Report bugs at https://github.com/openteamsinc/scrud-django/issues.
+Report bugs at https://gitlab.com/dcharbon/scrud-django/-/issues.
 
 If you are reporting a bug, please include:
 
@@ -20,12 +20,12 @@ If you are reporting a bug, please include:
 
 ### Fix Bugs
 
-Look through the GitHub issues for bugs. Anything tagged with "bug" and "help
+Look through the GitLab issues for bugs. Anything tagged with "bug" and "help
 wanted" is open to whoever wants to implement it.
 
 ### Implement Features
 
-Look through the GitHub issues for features. Anything tagged with "enhancement"
+Look through the GitLab issues for features. Anything tagged with "enhancement"
 and "help wanted" is open to whoever wants to implement it.
 
 ### Write Documentation
@@ -36,7 +36,7 @@ articles, and such.
 
 ### Submit Feedback
 
-The best way to send feedback is to file an issue at https://github.com/openteamsinc/scrud-django/issues.
+The best way to send feedback is to file an issue at https://gitlab.com/dcharbon/scrud-django/-/issues.
 
 If you are proposing a feature:
 
@@ -49,36 +49,43 @@ If you are proposing a feature:
 
 Ready to contribute? Here's how to set up `scrud-django` for local development.
 
-1. Fork the `scrud-django` repo on GitHub.
+1. Fork the `scrud-django` repo on GitLab.
 2. Clone your fork locally:
 ```{sourceCode} console
-$ git clone git@github.com:your_name_here/scrud-django.git
+$ git clone git@gitlab.com:your_name_here/scrud-django.git
 ```
-3. Install your local copy into a virtual environment. Assuming want to use conda environment, this is how you set up your fork for local development:
-    ```{sourceCode} console
-        $ conda env create -n scrud-django-dev --file docker/environment-dev.yml
-        $ make develop
-    ```
+3. Install your local copy with [uv](https://docs.astral.sh/uv/):
+```{sourceCode} console
+$ cd scrud-django
+$ uv sync
+$ uv run pre-commit install
+```
 4. Create a branch for local development:
 ```{sourceCode} console
-    $ git checkout -b name-of-your-bugfix-or-feature
+$ git checkout -b name-of-your-bugfix-or-feature
 ```
-5. Commit your changes and push your branch to GitHub. When you commit a change, as it uses git pre-commit, it will run flake8, mypy, black and isort before commit any change:
+5. Run the checks before you commit:
 ```{sourceCode} console
-    $ git add .
-    $ git commit -m "Your detailed description of your changes."
-    $ git push origin name-of-your-bugfix-or-feature
+$ make lint
+$ make test
+$ make migrations-check
 ```
-6. Submit a pull request through the GitHub website.
+6. Commit your changes and push your branch to GitLab:
+```{sourceCode} console
+$ git add .
+$ git commit -m "Your detailed description of your changes."
+$ git push origin name-of-your-bugfix-or-feature
+```
+7. Submit a merge request through the GitLab website.
 
-Pull Request Guidelines
------------------------
+Merge Request Guidelines
+------------------------
 
-Before you submit a pull request, check that it meets these guidelines:
+Before you submit a merge request, check that it meets these guidelines:
 
-1. The pull request should include tests.
-2. If the pull request adds functionality, the docs should be updated. Put your new functionality into a function with a docstring.
-3. The pull request should work for Python 3.8 or newer.
+1. The merge request should include tests.
+2. If the merge request adds functionality, the docs should be updated. Put your new functionality into a function with a docstring.
+3. The change should work for Python 3.11, 3.12 and 3.13.
 
 
 ### Code of Conduct
