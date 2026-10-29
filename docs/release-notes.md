@@ -74,6 +74,12 @@ django-scoped-rbac 0.11. It has several breaking changes.
     resources they belong to, with rows that disagree with the content, can
     fail with `IntegrityError`: dump `Resource` first (`dumpdata scrud_django`
     does by default) or leave the context rows out of the dump.
+    `loaddata` refuses (`ValueError`) a resource whose context is longer than
+    2048 bytes in UTF-8 (see Lists below), so a 0.11 dump holding one does
+    not load: before dumping, give such resources a shorter context (or
+    delete them) in the 0.11 database, or migrate it first (`migrate` keeps
+    them and `check --database` names them as `scrud_django.W003`), fix them
+    there and dump that.
     A raw save of a `Resource` (`loaddata`, reversion's revert) must run inside
     a transaction: reversion's `Version.revert()` called outside
     `transaction.atomic()` now raises `TransactionManagementError` (wrap it, or
@@ -116,7 +122,9 @@ django-scoped-rbac 0.11. It has several breaking changes.
 18. Clients: JSON Schema `default` values are not applied; send every value
     you want stored (and that a workflow state condition reads); a default
     no longer makes a body valid either. A POST or PUT with an empty body, or
-    with no `Content-Length` (a chunked body), gets 400 (`body-missing`). A refused
+    with no `Content-Length` (a chunked body), gets 400 (`body-missing`), and
+    one nested more than 100 levels deep (objects and arrays) gets 400
+    (`body-too-deep`). A refused
     `WorkflowPolicy` write's 400 is a `workflow-policy-invalid` problem whose
     `detail` says why, and a workflow error caused by a settings default
     policy names it as `{"resource_type": ..., "default": true}` instead of
@@ -155,10 +163,12 @@ django-scoped-rbac 0.11. It has several breaking changes.
     `has_permission` and `contexts_from`) and your operators now read the
     body as a `scrud_django.permissions.BodyCheck`, read-only at every level
     like the others (they got the parsed `dict`, and an operator that wrote
-    to it changed what was stored): a `contexts_from` of your own (a
-    permission's or a serializer's) that tests `isinstance(value, list)`
-    must accept the read-only array too (`collections.abc.Sequence`, not
-    `str`). Lists ask
+    to it changed what was stored). Its arrays are read-only `tuple`s
+    (`ReadOnlyList`), which scoped-rbac's `access.body_contexts` reads as a
+    list of contexts; a `contexts_from` of your own (a permission's or a
+    serializer's) that tests `isinstance(value, list)` alone must accept a
+    `tuple` too. Your `GenericViewMixin` views' request check reads it the
+    same way. Lists ask
     them too: on a view whose `IsAuthorized` subclass overrides
     `has_object_permission` or `has_context_permission`, a list keeps only
     the resources its `has_object_permission` allows (see Lists below), so
@@ -237,7 +247,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
   given to the permission class's `has_object_permission` as the detail
   route gives it (a `ResourceCheck`, with the request's `http.GET` on the
   item type; the view's `action` reads `"retrieve"` while it is asked), and
-  only those it allows are listed, superusers' lists included. Every
+  only those it allows are listed, superusers' lists included. A
+  `has_object_permission` that raises `PermissionDenied`,
+  `NotAuthenticated` or `Http404` for a resource refuses that resource
+  only, as on its detail route (`scrud_django.filters.REFUSALS`). Every
   resource it examines counts against
   `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`, outright-readable ones
   included (past it, the list is a 400 `conditional_list_too_large`). Its
@@ -402,16 +415,18 @@ Conditional request handling now comes from scrudful 0.8.
 * The request check of a POST or PUT (scoped-rbac's `IsAuthorized`), the
   workflow check's `TransitionCheck` and its check where no transition
   applies read the body through read-only views at every level
-  (`scrud_django.permissions.BodyCheck`; `ResourceViewMixin.check_permissions`
-  gives it as the request's `data` while the permissions are asked,
-  `scrud_django.mixins.view_mixins.read_only_body`, and restores the body
-  after): neither a permission class nor an operator can change what is
-  stored (an operator that wrote to the body, or to a nested object of a
+  (`scrud_django.permissions.BodyCheck`; `ResourceViewMixin` and
+  `GenericViewMixin`'s `check_permissions` give it as the request's `data`
+  while the permissions are asked,
+  `scrud_django.mixins.view_mixins.read_only_body`, and restore the body
+  after; a form body, on a view that parses one, is left as it is): neither
+  a permission class nor an operator can change what is stored (an
+  operator that wrote to the body, or to a nested object of a
   `TransitionCheck`, changed it). A CEL condition reads a plain copy
-  (`to_cel()`). `rbac_contexts_of` reads a read-only array of contexts as a
-  list. Your `GenericViewMixin` views' request check still passes the body
-  itself, as scoped-rbac does
-  ([request-body-generic-views](follow-ups.md#request-body-generic-views)).
+  (`to_cel()`). The read-only arrays (`ReadOnlyList`) are `tuple`s, so
+  scoped-rbac's `access.body_contexts` and `rbac_contexts_of` read an array
+  of contexts as before, and the read-only views (`read_only`,
+  `writable`) are built without recursion, however deep the content.
 * Request bodies must be JSON. `ResourceViewSet` and
   `ResourceViewSetGenericFilter` set `parser_classes = [RbacJSONParser]`
   (`scoped_rbac.rest`): a form-encoded or multipart body gets 415, and a JSON
@@ -647,7 +662,13 @@ Conditional request handling now comes from scrudful 0.8.
   body", `scrud_django.exceptions.RequestBodyMissingError`), before
   authorization; nothing is stored or changed. DRF read such a body as
   `{}`, so a POST created an empty resource and a PUT wiped the stored
-  content. `{}` is still a body. A method the route does not serve still
+  content. `{}` is still a body. A POST or PUT body nested more than
+  `scrud_django.mixins.view_mixins.MAX_BODY_DEPTH` (100) levels deep,
+  objects and arrays, gets 400
+  (`https://api.openteams.com/http-problem/body-too-deep`, "Request body too
+  deeply nested", `RequestBodyTooDeepError`), before authorization: code
+  that walks a body recursively (reversion's serializer, an operator) failed
+  on one a few hundred levels deep with `RecursionError`, a 500. A method the route does not serve still
   gets 405, whatever its body.
 * The envelope's `last_modified` (and the search index's `modified_at`) no
   longer depend on `USE_TZ`. With `USE_TZ = False`, a stored modification time
@@ -858,7 +879,4 @@ limit on administrators' conditions
 default policies
 ([eager-callable-default-policies](follow-ups.md#eager-callable-default-policies))
 and the JSON Schema compiler's message in a 400
-([schema-error-echoes-compiler-text](follow-ups.md#schema-error-echoes-compiler-text)),
-and the request body your `GenericViewMixin` views' request check passes to
-operators
-([request-body-generic-views](follow-ups.md#request-body-generic-views)).
+([schema-error-echoes-compiler-text](follow-ups.md#schema-error-echoes-compiler-text)).
