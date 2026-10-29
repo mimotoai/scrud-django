@@ -121,11 +121,21 @@ Conditional request handling now comes from scrudful 0.8.
   one policy lookup; the `WorkflowValidator` and
   `ResourceMixin.get_workflow_policy` (which picks the policy whose transition
   `scrud_post_save` reports) both use it.
-* A `WorkflowPolicy` is compiled when it is created or updated. One with a state
-  condition that is not valid CEL, or with a transition that is not an object
-  with `from` and `to` naming defined states, is refused with 400 and nothing is
-  stored. A policy stored by an earlier version is not rechecked
+* A `WorkflowPolicy` is checked when it is created or updated, and refused with
+  400 (nothing is stored) when a state condition is not valid CEL, a transition
+  is not an object with `from` and `to` naming defined states, or
+  `restrict_update` is not a list of defined state names. The `WorkflowPolicy`
+  schema now also declares `restrict_update` as an array of strings. These
+  checks catch the policy errors known to make later writes fail; they do not
+  prove that a policy which passes them is usable. A policy stored by an
+  earlier version is not rechecked
   ([stored-invalid-workflow-policy](follow-ups.md#stored-invalid-workflow-policy)).
+* A workflow error caused by a stored `WorkflowPolicy` now gives that policy's
+  absolute URL in `policy` (and in `detail`, where the policy used to be)
+  instead of its content: the writer may not be allowed to read a policy from
+  another context the resource is in. Errors from a settings default policy
+  still embed the policy
+  ([workflow-error-embeds-policy](follow-ups.md#workflow-error-embeds-policy)).
 * A `WorkflowPolicy` governs every resource of its type in its context, for
   every user there. Treat `http.POST`, `http.PUT` and `http.DELETE` on
   `http://api.openteams.com/json-ld/WorkflowPolicy` as an administrative grant.

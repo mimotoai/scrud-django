@@ -43,6 +43,57 @@ Suggested fix: a system check or management command that compiles every stored
 invalid policy with `ResourceRegistration.register` and expect the check to
 name it.
 
+<a id="workflow-validator-defaulted-copy"></a>
+## workflow-validator-defaulted-copy: the workflow check reads the schema-defaulted copy of the body
+
+`WorkflowValidator.__call__` (`scrud_django/validators.py:111`) reads the
+contexts and state from the data DRF passes to validators, which is a copy of
+the body that `JsonValidator` has filled with the schema's `default` values.
+The view stores `request.data` without them (see
+[schema-defaults-not-stored](#schema-defaults-not-stored)). A schema default for
+`rbac_context` (or for a property a state condition reads) can therefore make
+the workflow check run under a different context or state than the one stored.
+
+Impact: none with the shipped schemas, which give `rbac_context` no default.
+A type whose schema does could have its transitions checked in the wrong
+context.
+
+Suggested fix: have the validator read the serializer's `initial_data` (the
+body as sent, which is what is stored), and test a type whose schema defaults
+`rbac_context`.
+
+<a id="workflow-move-in-same-state"></a>
+## workflow-move-in-same-state: moving a resource into a context is checked as a transition, not as a creation there
+
+For an update, `WorkflowValidator` checks every context of the stored resource
+and of the body as a transition from the stored content
+(`scrud_django/validators.py:135-139`). A context the resource enters is
+checked the same way, so a state that is not an initial state there can be
+carried in. Example: a user who holds `__SAME_STATE__` (but not `finish`) in
+"v" and write in "w" moves a "done" ToDo from "w" to "v" without changing it;
+"done" → "done" is `__SAME_STATE__` under "v"'s policy, so it is allowed, and
+"v" now has a "done" ToDo nobody there finished.
+
+Suggested fix: for the contexts in new − stored, require
+`validate_initial_state` and authorize `__INITIALIZE__` there (as a create),
+in addition to the transition checks in the stored contexts. Test the move
+above (400) and a move of a "not started" ToDo (200).
+
+<a id="workflow-policy-error-detail"></a>
+## workflow-policy-error-detail: an invalid WorkflowPolicy is refused without saying why
+
+A `WorkflowPolicy` that fails `WorkflowPolicy`'s checks raises a DRF
+`ValidationError({"workflow_policy": [...]})` (`WorkflowValidator.validate_policy`,
+`scrud_django/validators.py:129`). scoped-rbac's problem-details handler gives
+uniform field errors, so the 400 carries only
+`{"workflow_policy": [{"code": "invalid", "message": "This value is not valid."}]}`,
+not the reason (for example which condition does not compile).
+
+Suggested fix: raise a `ScrudException` subclass (an RFC 9457 problem with
+its own `type` and the `ImproperlyConfigured` message as `detail`), which
+`scrud_exception_handler` passes through, and assert the detail in
+`tests/test_workflow_contexts.py::test_invalid_policy_is_refused_on_create`.
+
 <a id="cached-property-called"></a>
 ## cached-property-called: `SerializerMixin.resource_type` calls a `cached_property` value
 
@@ -143,20 +194,23 @@ an envelope's `link` with the detail response's `Link` header. Envelope
 consumers would see a changed value, so note it in the release notes.
 
 <a id="workflow-error-embeds-policy"></a>
-## workflow-error-embeds-policy: workflow error bodies embed the whole policy
+## workflow-error-embeds-policy: workflow errors from a default policy embed the whole policy
 
-`scrud_django/exceptions.py:69-77` (`WorkflowTransitionError.response_data`)
-puts the full workflow policy, CEL conditions included, in every 400 for an
-invalid state or transition (`data["policy"] = self.policy`; the `TODO` above
-it meant to send a URL).
+`scrud_django/exceptions.py` (`WorkflowTransitionError.response_data`) puts the
+policy in every 400 for an invalid state or transition (`policy`, and `detail`
+when the error has no message). Since 0.12.0 an error caused by a **stored**
+`WorkflowPolicy` gives that resource's absolute URL instead, which RBAC
+protects (`tests/test_workflow_contexts.py::test_unauthorized_transition_error_references_stored_policy_by_url`).
+An error caused by a settings default policy
+(`SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`) still embeds the policy, CEL
+conditions included (`test_default_policy_errors_still_embed_the_policy`).
 
-Impact: any user who may write a resource of the type learns the complete
-policy, including conditions and transitions for other roles. It is also a
-large body for every rejected write.
+Impact: any user who may write a resource of a type with a default policy
+learns that whole policy, including conditions and transitions for other roles.
+It is also a large body for every rejected write.
 
-Suggested fix: reference the policy by URL (its `workflow-policies` detail URL,
-or the type's for a default policy) instead of embedding it, and add a test
-that asserts the error body has no CEL in it.
+Suggested fix: give default policies a URL too (for example the type's), and
+send it instead; then assert that no workflow error body has CEL in it.
 
 <a id="list-validators-side-channel"></a>
 ## list-validators-side-channel: list ETag and Last-Modified leak the newest resource
@@ -277,8 +331,17 @@ a 500. A conditional `http.GET` grant cannot read a detail route
 (403). Unconditional grants and operator conditions (`scrud_workflow`) are not
 affected.
 
+Since 0.12.0 the workflow check also authorizes a `TransitionCheck`
+(`scrud_django/permissions.py:5`) in **every** context of a workflow write,
+stored and new. A CEL-conditioned `http.PUT` (or `http.POST`) grant on a type
+with a workflow policy now meets a `TransitionCheck`, which is not a mapping
+either: a `TypeError` and a 500 in every such context, not only on the object
+check.
+
 Suggested fix: add `ResourceMixin.to_cel()` returning the content when it is a
-mapping (else `{}`), and test a CEL-conditional GET and PUT on a detail route.
+mapping (else `{}`), and `TransitionCheck.to_cel()` (for example
+`{"transition": <name>}`), and test a CEL-conditional GET and PUT on a detail
+route, and a CEL-conditional PUT on a type with a workflow.
 
 <a id="schema-defaults-not-stored"></a>
 ## schema-defaults-not-stored: JSON Schema `default` values are never stored
