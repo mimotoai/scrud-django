@@ -3,7 +3,7 @@
 <a id="list-not-rbac-filtered"></a>
 ## list-not-rbac-filtered: `ResourceViewMixin.list` is not RBAC-filtered
 
-`scrud_django/mixins/view_mixins.py:146` (`ResourceViewMixin.list`) pages
+`scrud_django/mixins/view_mixins.py:204` (`ResourceViewMixin.list`) pages
 `Resource.objects.filter(resource_type=...)` directly, never through
 `self.filter_queryset()`, so scoped-rbac's `RbacFilter` never runs on it. This
 predates the `modernize-uv` branch (same code at `develop`).
@@ -23,22 +23,60 @@ the list is filtered per object in Python. Conditional grants are capped by
 `rbac_context` column to `Resource`, or paginate before filtering. Add a test in
 which a user with GET only in another context lists an empty page.
 
+Fix [list-validators-side-channel](#list-validators-side-channel) at the same
+time: once the list is filtered, its `ETag` and `Last-Modified` must not still
+come from the newest resource of the type in any context.
+
 <a id="workflow-validator-undefined-state"></a>
-## workflow-validator-undefined-state: `WorkflowValidator` uses undefined attributes
+## workflow-validator-undefined-state: a stored WorkflowPolicy breaks every write of its type
 
-`scrud_django/validators.py:93-98` (`WorkflowValidator`) reads and writes
-`self.workflow_policies`, which is never defined, and keys it on
-`policy.version`, which `Resource` does not have. This predates the
-`modernize-uv` branch.
+`scrud_django/validators.py:86-102` (`WorkflowValidator.__call__`) reads and
+writes `self.workflow_policies`, which is never defined, and keys it on
+`policy.version`, which `Resource` does not have. It also loads **every**
+stored policy for the resource type, from every context, and applies all of
+them. `scrud_django/mixins/resource_mixin.py:134-148` (`get_workflow_policy`,
+run by `Resource.save()`) takes `.first()` policy of the type from any context
+for a resource in the default context, and reads `.content` of a
+`.first()` that is `None` when the resource's own context has no policy. This
+predates the `modernize-uv` branch.
 
-Impact: when a resource type has a stored workflow policy, validating a write
-raises `AttributeError`. No test currently reaches this path, so the suite does
-not notice. Types that rely only on the default policies are unaffected.
+Impact (a denial of service any policy writer can cause):
 
-Suggested fix: initialise `self.workflow_policies = {}` in `__init__` and key the
-cache on a field `Resource` really has (for example `(policy.id, policy.modified_at)`
-or the content hash). Add a test that stores a workflow policy for a type and
-writes a resource of that type; it should fail with `AttributeError` first.
+* Any user who may POST a `WorkflowPolicy` (`http.POST` on
+  `http://api.openteams.com/json-ld/WorkflowPolicy`) in **their own** context
+  can store a policy for a type, for example `tests://ToDo`. From then on every
+  create or update of that type, by every user and in every context, fails with
+  a 500 (`AttributeError: 'WorkflowValidator' object has no attribute
+  'workflow_policies'`).
+* A stored policy whose state conditions are not valid CEL is accepted (201:
+  nothing compiles it on write). Every save of a resource of that type then
+  raises `ImproperlyConfigured` from `get_workflow_policy` (and, once the
+  `AttributeError` is fixed, from the validator too): again a 500 for everyone.
+
+The naive fix makes it worse. Defining `self.workflow_policies = {}` and a
+`version` turns the 500 into cross-context policy injection: the validator
+applies every stored policy of the type, so a permissive policy stored in
+"attacker" (for example `"initial_states": {"any": "true"}`) replaces the
+default policy everywhere. A user in the default context can then create a
+ToDo directly in state "done", which the default policy forbids.
+
+Suggested fix:
+
+* Scope the policy lookup to the resource's own context, in the validator and
+  in `get_workflow_policy` alike (`rbac_contexts_of`, so absent, `None` and `""`
+  are the default context), and fall back to the default policies when that
+  context has none. Never use `.first()` of the type across contexts, and never
+  dereference a `.first()` that can be `None`.
+* Validate a `WorkflowPolicy` on write: compile its conditions and answer 400
+  for invalid CEL, so a bad policy is never stored.
+* Treat POST (and PUT/DELETE) on `WorkflowPolicy` as an admin-level grant in
+  the docs and default roles: a policy governs every resource of its type in
+  its context.
+
+Tests: a user with POST on WorkflowPolicy only in "attacker" stores a
+permissive ToDo policy; a ToDo create in "" still gets the default policy (400
+for an initial "done"), and does not 500. A policy with invalid CEL is a 400 on
+write.
 
 <a id="cached-property-called"></a>
 ## cached-property-called: `SerializerMixin.resource_type` calls a `cached_property` value
@@ -138,3 +176,169 @@ Suggested fix: use `"describedby"` and `"application/schema+json"` in
 `get_link_header_for`, matching scrudful's header, and add a test that compares
 an envelope's `link` with the detail response's `Link` header. Envelope
 consumers would see a changed value, so note it in the release notes.
+
+<a id="workflow-error-embeds-policy"></a>
+## workflow-error-embeds-policy: workflow error bodies embed the whole policy
+
+`scrud_django/exceptions.py:69-77` (`WorkflowTransitionError.response_data`)
+puts the full workflow policy, CEL conditions included, in every 400 for an
+invalid state or transition (`data["policy"] = self.policy`; the `TODO` above
+it meant to send a URL).
+
+Impact: any user who may write a resource of the type learns the complete
+policy, including conditions and transitions for other roles. It is also a
+large body for every rejected write.
+
+Suggested fix: reference the policy by URL (its `workflow-policies` detail URL,
+or the type's for a default policy) instead of embedding it, and add a test
+that asserts the error body has no CEL in it.
+
+<a id="list-validators-side-channel"></a>
+## list-validators-side-channel: list ETag and Last-Modified leak the newest resource
+
+The list routes' `ETag` and `Last-Modified` come from the resource type
+(`list_etag_func` / `list_last_modified_func` in
+`scrud_django/mixins/view_mixins.py`), and every write copies the written
+resource's ETag and time onto its type (`scrud_django/registration.py:184-185`
+and `224-225`).
+
+Impact: a user who may list a type learns the ETag and modification time of
+the newest resource of that type in **any** context, and can tell when a
+resource they cannot see changes (304 versus 200 with `If-None-Match`). Today
+the list is not filtered at all
+([list-not-rbac-filtered](#list-not-rbac-filtered)); once it is, this remains.
+
+Suggested fix: fix together with list-not-rbac-filtered: compute the list's
+validators from the page the user actually gets (for example a hash of its
+items' ETags and their newest `modified_at`). Add a test in which a write to a
+resource in a context the lister cannot read leaves their list's `ETag`
+unchanged.
+
+<a id="public-type-metadata"></a>
+## public-type-metadata: services, collection schemas and contexts are public
+
+`get_service_list`, `ResourceCollectionSchemaView` and
+`ResourceCollectionContextView` (`scrud_django/views.py:101-221`) are
+`AllowAny`. `services/` lists every registered type; `collections-json-schema/<slug>/`
+embeds the type's whole JSON Schema; and both collection views answer 404 for
+an unknown slug and 200 for a known one.
+
+Impact: an anonymous client can enumerate every resource type and read every
+schema. That may be intended (clients need schemas to build requests), but it
+has not been decided.
+
+Suggested fix: decide. If the metadata is public by design, say so in the
+README; if not, give these views `IsAuthorized` (or a grant on the type) and
+answer an unknown slug the same as a forbidden one.
+
+<a id="demo-settings-not-deployable"></a>
+## demo-settings-not-deployable: the demo hard-codes its secret key and DEBUG
+
+`demo/demo/settings.py` has a committed `SECRET_KEY`, `DEBUG = True` and
+`ALLOWED_HOSTS = ['*']`. The file now says it must not be deployed.
+
+Impact: none for the library; a deployment copied from the demo would run with
+a public secret key and debug pages.
+
+Suggested fix: read these from the environment in the demo (with
+development-only defaults), or leave the warning as the only guard.
+
+<a id="write-side-dict-context"></a>
+## write-side-dict-context: a dict `rbac_context` in a body is checked as a context
+
+On the read side a non-string `rbac_context` (for example a JSON-LD context
+document's `{"@id": ...}` term definition) is not a context: the resource is
+in the default context (`rbac_contexts_of`). scoped-rbac's write-side default
+`contexts_from` (`access.body_contexts`) instead passes that dict to the policy
+as the context to authorize.
+
+Impact: only an asymmetry. No role grants a dict context, so the write is
+refused unless the user is a superuser, and the post-save check then requires
+the default context. It fails closed.
+
+Suggested fix: give `ResourceSerializer` a `contexts_from` that returns
+`rbac_contexts_of(body)`, so both sides read the body the same way; add a test
+that a default-context writer may POST a JSON-LD context document.
+
+<a id="empty-context-list"></a>
+## empty-context-list: `"rbac_context": []` puts a resource in no context
+
+`rbac_contexts_of` reads an empty list as no contexts. scoped-rbac grants a
+resource with no context to superusers only, and refuses to write one for
+anyone else.
+
+Impact: none beyond superusers being able to create resources nobody else can
+see. It fails closed.
+
+Suggested fix: decide whether `[]` should be the default context or a 400, and
+test it.
+
+<a id="root-manage-py-memory-db"></a>
+## root-manage-py-memory-db: the root `manage.py` uses the in-memory test database
+
+`manage.py` at the repository root configures `tests.settings.SETTINGS`, whose
+database is SQLite `:memory:`. `migrate` and `runserver` run, but nothing they
+write persists. It is only useful for `makemigrations --check`.
+
+Suggested fix: say so in `manage.py`'s docstring, or point it at the demo, and
+use `demo/manage.py` for a persistent server (as `CLAUDE.md` describes).
+
+<a id="version-uninstalled"></a>
+## version-uninstalled: `scrud_django.__version__` needs the package installed
+
+`scrud_django/__init__.py:12` sets `__version__ = version("scrud-django")`,
+which raises `PackageNotFoundError` when the package is imported from a source
+tree that is not installed (for example a checkout on `PYTHONPATH`).
+
+Suggested fix: catch `PackageNotFoundError` and fall back to `"0+unknown"`, and
+test importing with the distribution metadata missing.
+
+<a id="resource-no-to-cel"></a>
+## resource-no-to-cel: CEL-conditional grants fail on scrud resources
+
+`Resource` has neither `to_cel()` nor `cel_resource()`. scoped-rbac's object
+checks pass the model instance to a grant's CEL condition, and
+`scoped_rbac.cel.evaluate` raises `TypeError: CEL data must be a mapping, not
+Resource`. The request-level checks read the body (a mapping), so only the
+object checks are affected; the post-save check of creates and updates reads
+the stored content, so it is not affected either.
+
+Impact: when a role's `http.PUT` grant on a scrud type has a CEL condition,
+for example `{"condition": "name == \"x\""}`, every PUT whose body meets it is
+a 500. A conditional `http.GET` grant cannot read a detail route
+(403). Unconditional grants and operator conditions (`scrud_workflow`) are not
+affected.
+
+Suggested fix: add `ResourceMixin.to_cel()` returning the content when it is a
+mapping (else `{}`), and test a CEL-conditional GET and PUT on a detail route.
+
+<a id="schema-defaults-not-stored"></a>
+## schema-defaults-not-stored: JSON Schema `default` values are never stored
+
+fastjsonschema fills a schema's `default` values into the data it validates,
+but DRF runs a serializer's validators on a copy of the body
+(`Serializer.run_validators`), and `ResourceSerializer` stores the body itself.
+Top-level defaults are therefore validated and dropped; a default nested in an
+object the body supplies is shared with the copy, so it is stored.
+
+Impact: inconsistent. A client cannot rely on schema defaults. If defaults are
+ever stored (for example by storing the validator's output), a default
+`rbac_context` would land a resource in a context other than the one the
+request was authorized in; the post-save check added in 0.12.0 then answers
+403 (`tests/test_context_smuggling.py::test_schema_default_context_is_not_stored`
+documents the current behaviour).
+
+Suggested fix: decide whether defaults are applied. If they are, store the
+validator's output and keep the post-save check.
+
+<a id="post-save-side-effects"></a>
+## post-save-side-effects: post-save receivers run before the write is checked
+
+`Resource.save()` sends `scrud_post_save` (which runs the configured workflow
+actions) inside the write. The post-save context check of creates and updates
+(`ResourceViewMixin.save_checked`) runs after it and rolls the database back
+on a 403, but an action's effects outside the database (mail, queues, HTTP
+calls) are not undone.
+
+Suggested fix: have actions that leave the database run on
+`transaction.on_commit`, and document it for `SCRUD_WORKFLOW` actions.

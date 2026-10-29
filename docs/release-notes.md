@@ -18,6 +18,10 @@ keep resources of one type apart from users who may list that type. See
 
 * Python 3.11 or newer and Django 5.2 are required.
 * `django_jsonfield_backport` is no longer used. Remove it from `INSTALLED_APPS`.
+  If your project has migrations of its own that import
+  `django_jsonfield_backport.models.JSONField`, change those imports to
+  `django.db.models.JSONField` before you uninstall the backport; otherwise
+  those migrations no longer import.
 * django-haystack and Whoosh are no longer installed by default; they are in
   the `search` extra. If `haystack` is in your `INSTALLED_APPS`, install
   `scrud-django[search]`.
@@ -49,6 +53,20 @@ Conditional request handling now comes from scrudful 0.8.
   `rbac_context`, or with any other value there (for example a JSON-LD context
   document's `{"@id": ...}` term definition), belong to the default context `""`.
 * Unauthenticated requests now get 401.
+* Request bodies must be JSON. `ResourceViewSet` and
+  `ResourceViewSetGenericFilter` set `parser_classes = [RbacJSONParser]`
+  (`scoped_rbac.rest`): a form-encoded or multipart body gets 415, and a JSON
+  body that is not an object (for example a list) gets 400. A form body could
+  name `rbac_context` twice; scoped-rbac authorized the request by the last
+  value while the resource was stored in both contexts. Give your own
+  `GenericViewMixin` views the same `parser_classes`.
+* A create or update is checked again after the save, before it commits: the
+  request's method must be allowed in **every** context the stored resource is
+  in, or the write is rolled back with 403.
+* `"rbac_context": ""` now means the default context everywhere, exactly as
+  leaving the key out does. Before, a body with `"rbac_context": ""` skipped the
+  default workflow policy, so its initial-state check, transition validity and
+  transition authorization did not apply.
 
 ### API changes
 
@@ -70,6 +88,11 @@ Conditional request handling now comes from scrudful 0.8.
   lookup instead of `get_instance`.
 * `scrud_exception_handler` keeps scrud-django's own error bodies and passes
   every other exception to scoped-rbac's problem details handler.
+* The envelope's `last_modified` (and the search index's `modified_at`) no
+  longer depend on `USE_TZ`. With `USE_TZ = False`, a stored modification time
+  is naive and in `TIME_ZONE`; it used to be read as UTC, so the envelope
+  disagreed with the `Last-Modified` header whenever `TIME_ZONE` was not UTC.
+  Both now read it in `TIME_ZONE` (`scrud_django.utils.http_date_for`).
 
 ### Workflows
 
@@ -79,6 +102,12 @@ Conditional request handling now comes from scrudful 0.8.
   have, still counts as not matching.
 * An invalid workflow state condition (one that does not compile) now raises
   `django.core.exceptions.ImproperlyConfigured` when the policy is loaded.
+* CEL equality differs from `celpy` in a few cases. Equality between
+  different numeric types and between unrelated types is now defined: `1 == 1.0`
+  and `3 != "x"` are true where they used to be evaluation errors (which
+  counted as not matching), while `true == 1` is false. Resource data that CEL
+  cannot represent (a mapping that is not a `dict`, a tuple, a `Decimal`, or an
+  integer of 2**64 or more) now makes the condition not match.
 
 ### Known issues
 

@@ -89,10 +89,9 @@ def test_anonymous_delete_fails_closed_with_permissive_default(
 ):
     url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
     When.http.delete(url, HTTP_IF_MATCH=quote_etag(partner_profiles.etag))
-    assert Http.response.status_code in (
-        status.HTTP_401_UNAUTHORIZED,
-        status.HTTP_403_FORBIDDEN,
-    ), Http.response.status_code
+    # The anonymous user holds no grant: IsAuthorized denies the request before
+    # any object lookup, and DRF answers an unauthenticated denial with 401.
+    Then.http.status_code_is(status.HTTP_401_UNAUTHORIZED)
     assert Resource.objects.filter(pk=partner_profiles.pk).exists()
 
 

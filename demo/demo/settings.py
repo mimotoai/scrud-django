@@ -13,11 +13,12 @@ https://docs.djangoproject.com/en/3.1/ref/settings/
 import os
 from pathlib import Path
 
-# from decouple import Csv, config
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve(strict=True).parent.parent
 
+
+# DO NOT DEPLOY these settings. They are for running the demo locally: the
+# secret key is public, DEBUG is on and every host is allowed.
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/3.1/howto/deployment/checklist/
@@ -134,30 +135,3 @@ REST_FRAMEWORK = {
 # https://docs.djangoproject.com/en/3.1/howto/static-files/
 
 STATIC_URL = '/static/'
-
-# CORS
-
-# CORS_ORIGIN_WHITELIST = config(
-# "CORS_ORIGIN_WHITELIST",
-# cast=Csv(),
-# default='''http://127.0.0.1:8000, http://localhost:8000, http://0.0.0.0:8000,
-# http://127.0.0.1:3000, http://localhost:3000, http://0.0.0.0:3000''',
-# )
-
-# CORS_ALLOW_HEADERS = [
-# *default_headers,
-# "x-timezone",
-# "If-Unmodified-Since",
-# "If-Match",
-# "Cache-Control",
-# ]
-
-# CORS_EXPOSE_HEADERS = ["ETag", "Link", "Location"]
-
-# CORS_ALLOWED_ORIGINS = ["http://localhost:3000/", "http://127.0.0.1:3000/"]
-
-# CORS_ALLOWED_ORIGIN_REGEXES = [
-# r"^http://[1-z.0-9]+\.*(:3000)/$",
-# ]
-
-# CORS_ALLOW_ALL_ORIGINS = True
