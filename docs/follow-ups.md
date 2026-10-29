@@ -260,24 +260,6 @@ documents the current behaviour).
 Suggested fix: decide whether defaults are applied. If they are, store the
 validator's output and keep the post-save check.
 
-<a id="post-save-side-effects"></a>
-## post-save-side-effects: post-save receivers run before the write is checked
-
-`Resource.save()` sends `scrud_post_save` (which runs the configured workflow
-actions) inside the write. The post-save context check of creates and updates
-(`ResourceViewMixin.save_checked`) runs after it and rolls the database back
-on a 403, but an action's effects outside the database (mail, queues, HTTP
-calls) are not undone.
-
-The haystack search index is another such effect. The library ships no signal
-processor, but haystack's `RealtimeSignalProcessor` (as `tests/settings.py`
-configures it) indexes on `post_save` inside the transaction, so a write rolled
-back with 403 stays in the search index.
-
-Suggested fix: have actions that leave the database run on
-`transaction.on_commit`, and document it for `SCRUD_WORKFLOW` actions. For
-search, use a processor that indexes on commit or queues the update.
-
 <a id="empty-json-body"></a>
 ## empty-json-body: an empty body is read as `{}`
 

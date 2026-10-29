@@ -88,7 +88,22 @@ HAYSTACK_CONNECTIONS = {
         "PATH": BASE_DIR / "whoosh_index",
     },
 }
+HAYSTACK_SIGNAL_PROCESSOR = "scrud_django.search.OnCommitSignalProcessor"
 ```
+
+`OnCommitSignalProcessor` updates the index when a write commits. haystack's
+own `RealtimeSignalProcessor` indexes inside the write, so a write that
+scrud-django then rolls back (for example with 403, when the stored resource
+lands in a context the writer may not write in) would stay in the index.
+
+### Workflow actions
+
+`SCRUD_WORKFLOW_ACTIONS` lists dotted paths to mappings of type URI to
+`{"on_save": callable, "on_delete": callable}`. An action runs when the write
+of a resource of its type commits, never for a write that is rolled back. The
+`scrud_post_save` and `scrud_post_delete` signals fire inside the write; a
+receiver whose work leaves the database should wrap it in
+`transaction.on_commit`.
 
 ### Upgrading
 

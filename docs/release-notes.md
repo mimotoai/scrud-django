@@ -59,7 +59,12 @@ django-scoped-rbac 0.11. It has several breaking changes.
 14. Run your database at READ COMMITTED, the supported transaction isolation
     level (`manage.py check --database default` reports another as
     `scrud_django.W002`).
-15. A PUT or DELETE now holds its resource's row lock until its response is
+15. Search: set `HAYSTACK_SIGNAL_PROCESSOR =
+    "scrud_django.search.OnCommitSignalProcessor"`. Workflow actions
+    (`SCRUD_WORKFLOW_ACTIONS`) now run after the write commits; move one that
+    must run inside the write, or veto it, to a `scrud_post_save` receiver
+    (see Side effects on commit below).
+16. A PUT or DELETE now holds its resource's row lock until its response is
     ready (see Conditional requests below). Subclasses of `ResourceViewMixin`
     that override `dispatch`, `initial` or `get_queryset` must call `super()`;
     server code that updates or deletes a resource should go through
@@ -431,12 +436,31 @@ Conditional request handling now comes from scrudful 0.8.
   cannot represent (a mapping that is not a `dict`, a tuple, a `Decimal`, or an
   integer of 2**64 or more) now makes the condition not match.
 
+### Side effects on commit
+
+* The `SCRUD_WORKFLOW_ACTIONS` of a resource's type (`on_save`, `on_delete`)
+  now run when the write commits (`transaction.on_commit` on the write's
+  database), not inside it: a write that is rolled back (the post-save check's
+  403, a 412, any error) runs none of them. Outside a transaction they run at
+  once, as before. An action that raises is logged and does not fail the
+  response: the write has committed. An action can no longer veto a write by
+  raising, nor read the write's uncommitted state; do that in a
+  `scrud_post_save` receiver.
+* `scrud_post_save` and `scrud_post_delete` themselves still fire inside the
+  write, before the post-save check, with the same arguments
+  (`transition_data` included): a receiver may read or change the database in
+  the write's transaction, and the post-save check sees what it did. A
+  receiver whose work leaves the database (mail, queues, HTTP calls) should
+  wrap it in `transaction.on_commit`.
+* New `scrud_django.search.OnCommitSignalProcessor` for haystack: it updates
+  the search index when the write commits, so a write rolled back with 403
+  stays out of the index. haystack's `RealtimeSignalProcessor` indexes inside
+  the write; set `HAYSTACK_SIGNAL_PROCESSOR` to the new processor (see the
+  README).
+
 ### Known issues
 
 See [follow-ups](follow-ups.md) for known issues. In particular:
 
 * An empty body sent as `application/json` is read as `{}`
   ([empty-json-body](follow-ups.md#empty-json-body)).
-* Search-index and workflow-action side effects of a write that is rolled back
-  with 403 are not undone
-  ([post-save-side-effects](follow-ups.md#post-save-side-effects)).

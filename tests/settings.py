@@ -85,6 +85,6 @@ SETTINGS: dict[str, Any] = dict(
             "PATH": os.path.join(os.path.dirname(__file__), "whoosh_index"),
         },
     },
-    HAYSTACK_SIGNAL_PROCESSOR="haystack.signals.RealtimeSignalProcessor",
+    HAYSTACK_SIGNAL_PROCESSOR="scrud_django.search.OnCommitSignalProcessor",
     SCRUD_WORKFLOW_ACTIONS=["tests.workflow_actions.actions"],
 )
