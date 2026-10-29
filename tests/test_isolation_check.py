@@ -59,6 +59,8 @@ def test_only_the_resource_write_database_is_checked():
 
 @pytest.mark.django_db
 def test_sqlite_is_not_asked():
+    if connections["default"].vendor != "sqlite":
+        pytest.skip("SQLite only")
     assert scrud_checks.transaction_isolation("default") is None
 
 
