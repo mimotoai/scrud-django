@@ -111,3 +111,28 @@ def test_condition_on_missing_property_is_no_match():
     assert policy.determine_state(data, policy.initial_state_expressions) == "open"
     assert policy.determine_state({}, policy.initial_state_expressions) is None
     assert policy.validate(data) == data
+
+
+@pytest.mark.parametrize(
+    "restrict_update", [5, True, None, "start", ["unknown"], [5], {"start": 1}]
+)
+def test_invalid_restrict_update_is_a_configuration_error(restrict_update):
+    policy = {
+        "initial_states": {"start": 'status == "START"'},
+        "states": {},
+        "transitions": {},
+        "restrict_update": restrict_update,
+    }
+    with pytest.raises(ImproperlyConfigured):
+        WorkflowPolicy(policy)
+
+
+def test_restrict_update_may_be_absent_or_a_list_of_states():
+    policy = {
+        "initial_states": {"start": 'status == "START"'},
+        "states": {},
+        "transitions": {},
+    }
+    WorkflowPolicy(policy)
+    WorkflowPolicy(dict(policy, restrict_update=[]))
+    WorkflowPolicy(dict(policy, restrict_update=["start"]))

@@ -14,7 +14,12 @@
     },
     "initial_states": { "$ref": "#/definitions/StateDefinitionObject" },
     "states": { "$ref": "#/definitions/StateDefinitionObject" },
-    "transitions": { "$ref": "#/definitions/TransitionDefinitionObject" }
+    "transitions": { "$ref": "#/definitions/TransitionDefinitionObject" },
+    "restrict_update": {
+      "type": "array",
+      "description": "States whose content may not be updated in place (no same-state update).",
+      "items": { "type": "string" }
+    }
   },
   "required": ["resource_type", "initial_states", "states", "transitions"],
   "definitions": {

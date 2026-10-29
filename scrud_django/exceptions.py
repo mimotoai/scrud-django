@@ -1,3 +1,4 @@
+from django.urls import NoReverseMatch, reverse
 from rest_framework.exceptions import APIException
 from rest_framework.views import exception_handler as drf_exception_handler
 from scoped_rbac.rest import exception_handler as scoped_rbac_exception_handler
@@ -52,11 +53,36 @@ class JsonValidationError(ScrudException):
         return data
 
 
+class StoredPolicyReference:
+    """A stored ``WorkflowPolicy`` resource, as a workflow error names it: by its
+    detail URL, never its content, which a writer refused because of it may not
+    be allowed to read."""
+
+    def __init__(self, resource):
+        self.resource = resource
+
+    def url(self, request=None):
+        try:
+            path = reverse(
+                self.resource.resource_type.route_name_detail(),
+                args=[self.resource.pk],
+            )
+        except NoReverseMatch:
+            return None
+        return request.build_absolute_uri(path) if request is not None else path
+
+    def __repr__(self):
+        return f"StoredPolicyReference(pk={self.resource.pk!r})"
+
+
 class WorkflowTransitionError(ScrudException):
     status_code = 400
     default_detail = "Bad Request"
 
     def __init__(self, policy, prior_state, proposed_state, message=None):
+        """`policy` is the policy's content (a policy from settings) or a
+        `StoredPolicyReference` (a stored policy), which the body gives as its
+        URL."""
         super().__init__()
         self.type = "http://api.openteams.com/http-problem/workflow-transition-invalid"
         self.title = "Invalid workflow transition"
@@ -66,11 +92,17 @@ class WorkflowTransitionError(ScrudException):
         self.proposed_state = proposed_state
         self.message = message if message is not None else self.title
 
+    def policy_data(self, context):
+        if isinstance(self.policy, StoredPolicyReference):
+            request = context.get("request") if isinstance(context, dict) else None
+            return self.policy.url(request)
+        return self.policy
+
     def response_data(self, context):
         data = super().response_data(context)
-        # TODO make this work correctly
-        # data["policy"] = reverse('workflow-policies', {"id": self.policy.id})
-        data["policy"] = self.policy
+        if self.detail is self.policy:
+            data["detail"] = self.policy_data(context)
+        data["policy"] = self.policy_data(context)
         data["prior_state"] = self.prior_state
         data["proposed_state"] = self.proposed_state
         data["message"] = self.message

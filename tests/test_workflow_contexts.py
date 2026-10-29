@@ -11,6 +11,7 @@ resource is in **and** every context the body names.
 """
 
 import json
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -37,6 +38,7 @@ from .steps import *  # noqa: F403, F401
 TODO = "tests://ToDo"
 WORKFLOW_POLICY = "http://api.openteams.com/json-ld/WorkflowPolicy"
 WORKFLOW_ERROR = "http://api.openteams.com/http-problem/workflow-transition-invalid"
+JSON_INVALID = "https://api.openteams.com/http-problem/json-invalid"
 ALL_METHODS = ("http.GET", "http.POST", "http.PUT", "http.DELETE")
 
 NOT_STARTED = {
@@ -299,18 +301,40 @@ def test_policy_lookup_reads_the_policy_contexts_as_resources_do():
     }
 
 
+def set_modified_at(resource, modified_at):
+    Resource.objects.filter(pk=resource.pk).update(modified_at=modified_at)
+
+
 @pytest.mark.django_db
 def test_most_recently_modified_policy_wins():
     older = store_policy(
         dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"older": "true"})
     )
-    store_policy(
+    newer = store_policy(
         dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"newer": "true"})
     )
+    # Explicit times: two registrations can share a clock tick.
+    t = now()
+    set_modified_at(older, t - timedelta(hours=1))
+    set_modified_at(newer, t)
     assert workflow_policy_for(TODO, "p").policy["initial_states"] == {"newer": "true"}
 
-    ResourceRegistration.update(dict(older.content), "workflow-policies", str(older.pk))
+    set_modified_at(older, t + timedelta(hours=1))
     assert workflow_policy_for(TODO, "p").policy["initial_states"] == {"older": "true"}
+
+
+@pytest.mark.django_db
+def test_same_modification_time_the_later_policy_wins():
+    first = store_policy(
+        dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"first": "true"})
+    )
+    second = store_policy(
+        dict(PERMISSIVE_POLICY, rbac_context="p", initial_states={"second": "true"})
+    )
+    t = now()
+    set_modified_at(first, t)
+    set_modified_at(second, t)
+    assert workflow_policy_for(TODO, "p").policy["initial_states"] == {"second": "true"}
 
 
 INVALID_POLICIES = [
@@ -330,6 +354,16 @@ INVALID_POLICIES = [
         dict(PERMISSIVE_POLICY, transitions={"go": [{"from": "any", "to": "any"}]}),
         id="transition-list",
     ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, restrict_update=["nowhere"]),
+        id="restrict-update-undefined-state",
+    ),
+]
+
+# ``restrict_update`` must be a list of state names; the schema refuses others.
+SCHEMA_INVALID_POLICIES = [
+    pytest.param(dict(PERMISSIVE_POLICY, restrict_update=value), id=repr(value))
+    for value in (5, True, None, "any", [5])
 ]
 
 
@@ -367,3 +401,91 @@ def test_invalid_policy_is_refused_on_update(regular_login, policy):
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
     assert "workflow_policy" in Http.response.json()["errors"], Http.response.json()
     assert_unchanged(stored)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("policy", SCHEMA_INVALID_POLICIES)
+@test_context
+def test_schema_invalid_policy_is_refused(regular_login, policy):
+    reverse("todos-list")
+    before = Resource.objects.count()
+    Given.http.force_authenticate(regular_login)
+    When.http.post(
+        "/workflow-policies/", data=json.dumps(policy), content_type="application/json"
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert Http.response.json()["type"] == JSON_INVALID, Http.response.json()
+    assert Resource.objects.count() == before
+
+
+# A secret only context "b" may read: its stored policy must not reach a writer
+# who is refused because of it.
+SECRET = "SECRET-B"
+SECRET_POLICY = {
+    "rbac_context": "b",
+    "resource_type": TODO,
+    "initial_states": {
+        "not started": f'status == "not started" || title == "{SECRET}"',
+    },
+    "states": {"in progress": f'status == "in progress" || title == "{SECRET}"'},
+    "transitions": {},
+}
+
+
+def assert_references_stored_policy(stored):
+    body = Http.response.json()
+    assert_workflow_error()
+    url = "http://testserver" + reverse("workflow-policies-detail", args=[stored.pk])
+    assert body["policy"] == url, body
+    assert SECRET not in Http.response.content.decode(), body
+
+
+@pytest.mark.django_db
+@test_context
+def test_unauthorized_transition_error_references_stored_policy_by_url():
+    # Writer in "a" only; the resource is also in "b", whose stored policy
+    # makes the update a same-state change the writer may not make there.
+    stored = store_policy(SECRET_POLICY)
+    user = user_with((TODO_WRITER, "a"))
+    resource = todo(rbac_context=["a", "b"])
+    Given.http.force_authenticate(user)
+    put_todo(resource, dict(NOT_STARTED, rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_references_stored_policy(stored)
+    assert_unchanged(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_invalid_transition_error_references_stored_policy_by_url():
+    # SECRET_POLICY has no transitions: "not started" -> "in progress" is
+    # invalid there, an error whose detail used to be the policy itself.
+    stored = store_policy(SECRET_POLICY)
+    user = user_with((TODO_WRITER, "a"), (TODO_WRITER, "b"))
+    resource = todo(rbac_context=["a", "b"])
+    Given.http.force_authenticate(user)
+    put_todo(resource, dict(NOT_STARTED, status="in progress", rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_references_stored_policy(stored)
+    assert Http.response.json()["detail"] == Http.response.json()["policy"]
+    assert_unchanged(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_default_policy_errors_still_embed_the_policy(todo_creator_login):
+    default = workflow_policy_for(TODO, DEFAULT_CONTEXT).policy
+    resource = todo()
+    Given.http.force_authenticate(todo_creator_login)
+    put_todo(resource, dict(NOT_STARTED, status="done"))  # "finish": cancel-only
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_workflow_error()
+    assert Http.response.json()["policy"] == default
+
+    Given.http.force_authenticate(user_with((TODO_WRITER, DEFAULT_CONTEXT)))
+    done = todo(status="done")
+    put_todo(done, dict(NOT_STARTED))  # no transition out of "done"
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_workflow_error()
+    assert Http.response.json()["policy"] == default
+    assert Http.response.json()["detail"] == default

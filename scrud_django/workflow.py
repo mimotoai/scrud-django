@@ -11,6 +11,7 @@ from scoped_rbac.cel import (
 )
 
 from scrud_django.exceptions import (
+    StoredPolicyReference,
     WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
     WorkflowTransitionError,
@@ -34,19 +35,36 @@ class WorkflowPolicy:
     every context the resource is in and every context it is moved to: the new
     state must be valid, and the transition authorized, in each of them.
 
-    Constructing a policy compiles it: an invalid state condition, or a
-    transition that is not an object with ``from`` and ``to`` naming defined
-    states, raises ``ImproperlyConfigured``.
+    Constructing a policy checks it and raises ``ImproperlyConfigured`` for a
+    state condition that does not compile, a transition that is not an object
+    with ``from`` and ``to`` naming defined states, or a ``restrict_update``
+    that is not a list of defined state names. These are the checks a
+    ``WorkflowPolicy`` write must pass; they are not a proof that every write
+    under the policy succeeds.
     """
 
-    def __init__(self, policy):
+    def __init__(self, policy, resource=None):
+        """`policy` is the policy's content; `resource` the stored
+        ``WorkflowPolicy`` resource it comes from, or ``None`` for a policy from
+        settings."""
         self.policy = policy
+        self.resource = resource
         self.initial_state_expressions = {}
         self.state_expressions = {}
         # from state -> to state -> transition name
         self.allowed_transitions = {}
         self.compile_state_expressions()
         self.compile_allowed_transitions()
+        self.restrict_update = self.compile_restrict_update()
+
+    @property
+    def reference(self):
+        """What a workflow error names as its policy: a stored policy by
+        reference (its URL, which RBAC protects; the writer may not be allowed
+        to read it), a policy from settings by its content."""
+        if self.resource is None:
+            return self.policy
+        return StoredPolicyReference(self.resource)
 
     def validate(self, proposed_data, prior_data=None):
         if prior_data is None:
@@ -58,7 +76,7 @@ class WorkflowPolicy:
     def validate_initial_state(self, data):
         proposed_state = self.determine_state(data, self.initial_state_expressions)
         if proposed_state is None:
-            raise WorkflowInvalidInitialStateError(self.policy, proposed_state)
+            raise WorkflowInvalidInitialStateError(self.reference, proposed_state)
 
     def validate_transition(self, proposed_data, prior_data):
         """Given a proposed state and a previous state determine if the proposed
@@ -84,25 +102,27 @@ class WorkflowPolicy:
             # fallback and determine if the proposed_data matches any defined state
             proposed_state = self.determine_state(proposed_data, self.state_expressions)
             if proposed_state is None:
-                raise WorkflowInvalidStateError(self.policy)
+                raise WorkflowInvalidStateError(self.reference)
             else:
                 if prior_state == proposed_state:
-                    if proposed_state not in self.policy.get('restrict_update', []):
+                    if proposed_state not in self.restrict_update:
                         return TransitionData(
                             proposed_state, prior_state, "__SAME_STATE__"
                         )
                     raise WorkflowTransitionError(
-                        self.policy,
+                        self.reference,
                         prior_state,
                         proposed_state,
                         message='Update not allowed on this state',
                     )
-                raise WorkflowTransitionError(self.policy, proposed_state, prior_state)
+                raise WorkflowTransitionError(
+                    self.reference, proposed_state, prior_state
+                )
         elif (
             prior_state not in self.allowed_transitions
             or proposed_state not in self.allowed_transitions[prior_state]
         ):
-            raise WorkflowTransitionError(self.policy, proposed_state, prior_state)
+            raise WorkflowTransitionError(self.reference, proposed_state, prior_state)
 
         return TransitionData(
             proposed_state,
@@ -168,6 +188,20 @@ class WorkflowPolicy:
                 source_transitions = self.allowed_transitions.setdefault(source, {})
                 source_transitions[target] = transition_name
 
+    def compile_restrict_update(self):
+        """The states whose content may not change in place: ``restrict_update``,
+        absent or a list of defined state names."""
+        restrict_update = self.policy.get("restrict_update", [])
+        if not isinstance(restrict_update, list) or not all(
+            isinstance(state, str) and state in self.state_expressions
+            for state in restrict_update
+        ):
+            raise ImproperlyConfigured(
+                "Invalid workflow restrict_update: it must be a list of defined "
+                f"state names, not {restrict_update!r}."
+            )
+        return frozenset(restrict_update)
+
 
 def _type_uri(resource_type):
     return getattr(resource_type, "type_uri", resource_type)
@@ -205,5 +239,5 @@ def workflow_policy_for(resource_type, context):
     ).order_by("-modified_at", "-pk")
     for policy in stored:
         if context in rbac_contexts_of(policy.content):
-            return WorkflowPolicy(policy.content)
+            return WorkflowPolicy(policy.content, resource=policy)
     return default_workflow_policy_for(type_uri)

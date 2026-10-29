@@ -96,8 +96,9 @@ class WorkflowValidator:
     the settings default, and only a superuser may make its transition, as
     scoped-rbac's object checks allow.
 
-    A ``WorkflowPolicy`` resource is itself compiled when it is written: an
-    invalid policy is a 400 rather than a policy that breaks every later write.
+    A ``WorkflowPolicy`` resource is itself checked when it is written (see
+    `WorkflowPolicy`): a policy that fails those checks is a 400 and is not
+    stored. Policies stored before those checks existed are not rechecked.
     """
 
     requires_context = True
@@ -154,7 +155,7 @@ class WorkflowValidator:
             )
         if not allowed:
             raise WorkflowTransitionError(
-                workflow_policy.policy,
+                workflow_policy.reference,
                 transition_data.prior_state,
                 transition_data.proposed_state,
                 message="The user isn't authorized to perform this state transition on this resource.",
