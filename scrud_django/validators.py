@@ -187,7 +187,10 @@ class WorkflowValidator:
     each of them that has a policy, a create must be a valid initial state and
     an update a valid transition, and the user must be authorized for the
     transition (a `TransitionCheck` for the ``scrud_workflow`` operator) in that
-    context. All of them must pass. A resource in no context is checked under
+    context. A context an update moves the resource into (one the body names
+    and the stored resource is not in) is checked as a create there: the body
+    must be a valid initial state and the user authorized for
+    ``__INITIALIZE__``. All of them must pass. A resource in no context is checked under
     the settings default, and only a superuser may make its transition, as
     scoped-rbac's object checks allow. In a context where no policy applies, a
     grant conditioned on ``scrud_workflow`` allows nothing
@@ -211,11 +214,10 @@ class WorkflowValidator:
         instance = context.instance
         if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
             self.validate_policy(data, instance)
-        contexts = rbac_contexts_of(data)
-        if instance is not None:
-            contexts = list(
-                dict.fromkeys(rbac_contexts_of(instance.content) + contexts)
-            )
+        stored_contexts = (
+            rbac_contexts_of(instance.content) if instance is not None else []
+        )
+        contexts = list(dict.fromkeys(stored_contexts + rbac_contexts_of(data)))
         if contexts:
             policies = [(c, workflow_policy_for(resource_type, c)) for c in contexts]
         else:
@@ -230,9 +232,17 @@ class WorkflowValidator:
         for c, policy in policies:
             if policy is None:
                 continue
+            # A context the resource enters (not one it is stored in) has
+            # no prior state there: the write creates it there.
+            entering = instance is not None and c is not None
+            entering = entering and c not in stored_contexts
             with self.errors_hidden_unless_readable(policy, request):
                 transitions.append(
-                    (c, policy, self.transition_for(policy, data, instance))
+                    (
+                        c,
+                        policy,
+                        self.transition_for(policy, data, instance, entering),
+                    )
                 )
         for c, policy, transition_data in transitions:
             with self.errors_hidden_unless_readable(policy, request):
@@ -292,8 +302,13 @@ class WorkflowValidator:
             raise WorkflowPolicyInvalidError(str(e)) from e
         check_policy_is_unique(data, instance.pk if instance is not None else None)
 
-    def transition_for(self, workflow_policy, data, instance):
-        if instance is None:
+    def transition_for(self, workflow_policy, data, instance, entering=False):
+        """The `TransitionData` of writing `data` under `workflow_policy`: a
+        create's ``__INITIALIZE__`` (`data` must be an initial state) when
+        there is no stored `instance`, or when the write moves the resource
+        into this context (`entering`); else the transition from the stored
+        content."""
+        if instance is None or entering:
             return workflow_policy.initial_transition(data)
         return workflow_policy.determine_transition(data, instance.content)
 

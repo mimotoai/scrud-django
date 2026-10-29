@@ -216,6 +216,89 @@ def test_move_between_contexts_that_allow_the_transition():
     assert Resource.objects.get(pk=resource.pk).content == moved
 
 
+def workflow_writer(*transitions):
+    """GET ToDos, and PUT one only to make `transitions`."""
+    return {
+        "http.GET": [TODO],
+        "http.PUT": {
+            TODO: {
+                "condition": {
+                    "operator": "scrud_workflow",
+                    "authorized_transitions": list(transitions),
+                }
+            }
+        },
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_moving_into_a_context_is_checked_as_a_creation_there():
+    # The follow-up's example: __SAME_STATE__ (and __INITIALIZE__) in "v", but
+    # not "finish"; a writer in "w". "done" -> "done" is __SAME_STATE__ under
+    # "v"'s policy, but "done" is no initial state there: nobody in "v"
+    # finished it, so it may not be carried in.
+    user = user_with(
+        (TODO_WRITER, "w"), (workflow_writer("__SAME_STATE__", "__INITIALIZE__"), "v")
+    )
+    resource = todo(rbac_context="w", status="done")
+    Given.http.force_authenticate(user)
+    put_todo(resource, dict(NOT_STARTED, status="done", rbac_context="v"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_workflow_error()
+    body = Http.response.json()
+    assert body["message"] == "The request is not a valid initial state.", body
+    assert (body["prior_state"], body["proposed_state"]) == (None, None), body
+    assert_unchanged(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_moving_an_initial_state_into_a_context_is_allowed():
+    user = user_with(
+        (TODO_WRITER, "w"), (workflow_writer("__SAME_STATE__", "__INITIALIZE__"), "v")
+    )
+    resource = todo(rbac_context="w")
+    moved = dict(NOT_STARTED, rbac_context="v")
+    Given.http.force_authenticate(user)
+    put_todo(resource, moved)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert Resource.objects.get(pk=resource.pk).content == moved
+
+
+@pytest.mark.django_db
+@test_context
+def test_moving_into_a_context_needs_initialize_there():
+    # __SAME_STATE__ alone in "v": entering "v" is a creation there, which
+    # needs __INITIALIZE__.
+    user = user_with((TODO_WRITER, "w"), (workflow_writer("__SAME_STATE__"), "v"))
+    resource = todo(rbac_context="w")
+    Given.http.force_authenticate(user)
+    put_todo(resource, dict(NOT_STARTED, rbac_context="v"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_workflow_error()
+    body = Http.response.json()
+    assert body["message"] == (
+        "The user isn't authorized to perform this state transition on this resource."
+    ), body
+    assert (body["prior_state"], body["proposed_state"]) == (None, "not started")
+    assert_unchanged(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_staying_in_a_context_is_still_a_transition_there():
+    # Stored in "v" and "w" (server-side), the body keeps "v": "v" is not
+    # entered, so __SAME_STATE__ there suffices for a "done" ToDo.
+    user = user_with((TODO_WRITER, "w"), (workflow_writer("__SAME_STATE__"), "v"))
+    resource = todo(rbac_context=["v", "w"], status="done")
+    kept = dict(NOT_STARTED, status="done", rbac_context="v", title="Buy oat milk")
+    Given.http.force_authenticate(user)
+    put_todo(resource, kept)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert Resource.objects.get(pk=resource.pk).content == kept
+
+
 @pytest.mark.django_db
 @test_context
 def test_default_policy_authorizes_transitions_in_other_contexts():
