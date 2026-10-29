@@ -155,6 +155,32 @@ class JsonValidator:
         return validator.validate
 
 
+def check_policy_is_unique(content, pk=None):
+    """Refuse (400, ``{"workflow_policy": [...]}``) the ``WorkflowPolicy``
+    `content` (of the resource `pk`, ``None`` for a create) when another
+    stored policy for its type applies in one of its contexts. Run by
+    `WorkflowValidator.validate_policy`, and again after the save under
+    `lock_workflow_policy_type` (``ResourceViewMixin.save_checked``), so that
+    of two concurrent writes the second is refused."""
+    resource_type = content.get("resource_type")
+    for rbac_context in rbac_contexts_of(content):
+        others = [
+            policy
+            for policy in stored_policies_for(resource_type, rbac_context)
+            if policy.pk != pk
+        ]
+        if others:
+            raise ValidationError(
+                {
+                    "workflow_policy": [
+                        f"A WorkflowPolicy for {resource_type!r} already exists "
+                        f"in context {rbac_context!r}; update or delete it "
+                        "instead."
+                    ]
+                }
+            )
+
+
 class WorkflowValidator:
     """Checks a create or update of a resource against the workflow policy of
     every context concerned (`workflow_policy_for`: the context's stored policy,
@@ -272,18 +298,7 @@ class WorkflowValidator:
             WorkflowPolicy(data)
         except ImproperlyConfigured as e:
             raise ValidationError({"workflow_policy": [str(e)]}) from e
-        resource_type = data.get("resource_type")
-        for rbac_context in rbac_contexts_of(data):
-            others = [
-                policy
-                for policy in stored_policies_for(resource_type, rbac_context)
-                if instance is None or policy.pk != instance.pk
-            ]
-            if others:
-                refuse(
-                    f"A WorkflowPolicy for {resource_type!r} already exists in "
-                    f"context {rbac_context!r}; update or delete it instead."
-                )
+        check_policy_is_unique(data, instance.pk if instance is not None else None)
 
     def transition_for(self, workflow_policy, data, instance):
         if instance is None:

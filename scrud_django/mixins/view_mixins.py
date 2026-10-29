@@ -14,7 +14,11 @@ from scrud_django.registration import (
     get_resource_type_for,
 )
 from scrud_django.serializers import ResourceSerializer
-from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
+from scrud_django.validators import check_policy_is_unique
+from scrud_django.workflow import (
+    WORKFLOW_POLICY_TYPE_URI,
+    lock_workflow_policy_type,
+)
 
 
 class ResourceViewMixin:
@@ -143,6 +147,22 @@ class ResourceViewMixin:
         except access.AccessError as exc:
             raise drf_error(exc, request) from exc
 
+    def serialized_policy_save(self, save, db):
+        """`save` for a ``WorkflowPolicy``: inside the write's transaction,
+        take `lock_workflow_policy_type`, save, and re-check that the saved
+        policy is the only one for its type in its contexts
+        (`check_policy_is_unique`, 400 and rolled back otherwise). The
+        validator's check ran before the lock; a concurrent write of the same
+        type and context committed since is seen here."""
+
+        def locked_save():
+            lock_workflow_policy_type(db)
+            saved = save()
+            check_policy_is_unique(saved.content, saved.pk)
+            return saved
+
+        return locked_save
+
     def save_checked(self, save, instance=None):
         """Run `save` (which returns the saved resource) in a transaction and
         check the resource as stored before it commits: a reserved context is a
@@ -160,6 +180,8 @@ class ResourceViewMixin:
             queryset=self.get_queryset(),
         )
         db = router.db_for_write(Resource)
+        if self.get_resource_type().type_uri == WORKFLOW_POLICY_TYPE_URI:
+            save = self.serialized_policy_save(save, db)
         try:
             if instance is None:
                 return check.create(save, db=db)

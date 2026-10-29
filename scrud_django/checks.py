@@ -32,3 +32,63 @@ def check_default_workflow_policies(app_configs, **kwargs):
         )
         for type_uri, error in defaults.errors.items()
     ]
+
+
+def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
+    """A database check (``manage.py check --database default``, and
+    ``migrate``) of the stored ``WorkflowPolicy`` resources:
+
+    - ``scrud_django.E002`` for each resource type and context with more than
+      one: `workflow_policy_for` picks none, so the writes they govern fail
+      until all but one are deleted;
+    - ``scrud_django.W001`` for each policy stored with a list ``rbac_context``
+      (before 0.12.0, or server-side). It applies in each of those contexts, and
+      updating or deleting it needs rights in all of them.
+    """
+    from django.db.utils import OperationalError, ProgrammingError
+
+    from scrud_django.mixins.resource_mixin import rbac_contexts_of
+    from scrud_django.models import Resource
+    from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
+
+    found = []
+    for alias in databases or ():
+        try:
+            stored = list(
+                Resource.objects.using(alias)
+                .filter(resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI)
+                .order_by("pk")
+            )
+        except (OperationalError, ProgrammingError):
+            continue  # Not migrated yet.
+        by_type_and_context = {}
+        listed = []
+        for policy in stored:
+            content = policy.content if isinstance(policy.content, dict) else {}
+            for context in rbac_contexts_of(content):
+                key = (content.get("resource_type"), context)
+                by_type_and_context.setdefault(key, []).append(policy.pk)
+            if isinstance(content.get("rbac_context"), (list, tuple)):
+                listed.append(policy)
+        for (type_uri, context), pks in by_type_and_context.items():
+            if len(pks) > 1:
+                found.append(
+                    checks.Error(
+                        f"{len(pks)} WorkflowPolicy resources apply to "
+                        f"{type_uri!r} in context {context!r} (pks {pks}); there "
+                        "must be at most one.",
+                        hint="Delete all but one of them.",
+                        id="scrud_django.E002",
+                    )
+                )
+        for policy in listed:
+            found.append(
+                checks.Warning(
+                    f"WorkflowPolicy pk {policy.pk} has a list rbac_context "
+                    f"{list(policy.content['rbac_context'])!r}; a policy has one "
+                    "context.",
+                    hint="Replace it with one policy per context.",
+                    id="scrud_django.W001",
+                )
+            )
+    return found

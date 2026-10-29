@@ -260,6 +260,21 @@ def stored_policies_for(resource_type, context):
     return [policy for policy in stored if context in rbac_contexts_of(policy.content)]
 
 
+def lock_workflow_policy_type(using):
+    """Lock the ``WorkflowPolicy`` resource type's rows (``select_for_update``)
+    on database `using`, inside the caller's transaction: ``WorkflowPolicy``
+    writes take it before they re-check uniqueness, so they run one at a
+    time. (SQLite ignores the lock; its writes are serialized anyway.)"""
+    from scrud_django.models import ResourceType
+
+    list(
+        ResourceType.objects.using(using)
+        .select_for_update()
+        .filter(type_uri=WORKFLOW_POLICY_TYPE_URI)
+        .order_by("pk")
+    )
+
+
 def workflow_policy_for(resource_type, context):
     """The `WorkflowPolicy` in effect for `resource_type` (a `ResourceType` or its
     type URI) in `context`, or ``None`` when the type has no workflow there.

@@ -422,23 +422,6 @@ Suggested fix: route the post-save check through the permission class's own
 method (or document that it uses `may_act_in`), and test a subclass that denies
 a context.
 
-<a id="duplicate-workflow-policies"></a>
-## duplicate-workflow-policies: duplicate policies cause a fail-closed 500, because nothing in the database prevents them
-
-At most one stored `WorkflowPolicy` per resource type and context is enforced
-by `WorkflowValidator.validate_policy` (`scrud_django.validators`) only.
-`Resource` has no type or context columns, so there is no unique constraint,
-and two concurrent POSTs can both pass the check. Duplicates stored before
-0.12.0 are the same. `scrud_django.workflow.workflow_policy_for` then picks none
-and raises `ImproperlyConfigured`, a 500 for every create or update of that
-type in that context until an admin deletes all but one.
-
-Suggested fix: a system check or management command that lists duplicate
-policies (as for [stored-invalid-workflow-policy](#stored-invalid-workflow-policy)),
-or an indexed type and context column on `Resource` with a unique constraint.
-Test: store two policies for one type and context with
-`ResourceRegistration.register` and expect the check to name both.
-
 <a id="eager-callable-default-policies"></a>
 ## eager-callable-default-policies: a callable default that raises fails every type
 
