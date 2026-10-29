@@ -63,6 +63,20 @@ class JsonValidationError(ScrudException):
         return data
 
 
+class JsonSchemaInvalidError(ScrudException):
+    """A JSON Schema that does not compile: refused when it is written, and
+    refusing writes of its type when it is stored (validation fails closed)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "json_schema_invalid"
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.type = "https://api.openteams.com/http-problem/json-schema-invalid"
+        self.title = "Invalid JSON Schema"
+
+
 class StoredPolicyReference:
     """A stored ``WorkflowPolicy`` resource, as a workflow error names it: by its
     detail URL, never its content, which a writer refused because of it may not

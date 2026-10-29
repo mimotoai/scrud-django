@@ -1,3 +1,6 @@
+import copy
+import logging
+
 import fastjsonschema
 from django.core.exceptions import ImproperlyConfigured
 from rest_framework.exceptions import ValidationError
@@ -5,7 +8,11 @@ from scoped_rbac import access
 from scoped_rbac.permissions import http_action_iri_for, policy_for
 from scoped_rbac.policy import Permission
 
-from scrud_django.exceptions import JsonValidationError, WorkflowTransitionError
+from scrud_django.exceptions import (
+    JsonSchemaInvalidError,
+    JsonValidationError,
+    WorkflowTransitionError,
+)
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import ResourceType
 from scrud_django.permissions import TransitionCheck
@@ -16,6 +23,8 @@ from scrud_django.workflow import (
     default_workflow_policy_for,
     workflow_policy_for,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ValidatorEntry:
@@ -35,23 +44,77 @@ class ValidatorEntry:
         )
 
 
+JSON_SCHEMA_TYPE_URIS = (
+    "http://json-schema.org/draft-04/schema",
+    "http://json-schema.org/draft-06/schema",
+    "http://json-schema.org/draft-07/schema",
+)
+
+
+class RefusedRemoteRef(fastjsonschema.JsonSchemaDefinitionException):
+    pass
+
+
+def refuse_remote_ref(uri):
+    raise RefusedRemoteRef(
+        f"$ref {uri!r} is not allowed: a $ref must point into the schema itself "
+        "(start with '#')."
+    )
+
+
+class RefuseEveryScheme(dict):
+    """fastjsonschema's ``handlers``: it fetches a ``$ref`` outside the schema
+    with the handler for its URI scheme, else with ``urlopen``. This mapping has
+    a handler for every scheme (``http``, ``file``, none...), which refuses."""
+
+    def __contains__(self, scheme):
+        return True
+
+    def __getitem__(self, scheme):
+        return refuse_remote_ref
+
+    def get(self, scheme, default=None):
+        return refuse_remote_ref
+
+
+def compile_json_schema(content):
+    """Compile JSON Schema `content` with fastjsonschema, resolving ``$ref`` only
+    within it. Raises ``JsonSchemaInvalidError`` if it does not compile, a
+    ``$ref`` to anything else (a URL, a file, another document) included. The
+    content is not changed."""
+    content = copy.deepcopy(content)
+    if isinstance(content, dict):
+        content.pop("$id", None)
+    try:
+        return fastjsonschema.compile(content, handlers=RefuseEveryScheme())
+    except Exception as e:
+        raise JsonSchemaInvalidError(f"The JSON Schema does not compile: {e}") from e
+
+
 class JsonValidator:
+    """Validates a body against its type's JSON Schema. A body written to a
+    JSON Schema type is itself a schema, and must compile
+    (`compile_json_schema`). A stored schema that does not compile fails
+    closed: every write of its type is refused with ``JsonSchemaInvalidError``
+    (400)."""
+
     requires_context = True
 
     def __init__(self):
         self.validators = {}
 
     def __call__(self, data, context):
+        if context.resource_type.type_uri in JSON_SCHEMA_TYPE_URIS:
+            compile_json_schema(data)
         validate = self.validator_for(context.resource_type)
         data = validate(data)
         return data
 
     def is_json_schema(self, schema):
-        return schema is not None and schema.resource_type.type_uri in [
-            "http://json-schema.org/draft-04/schema",
-            "http://json-schema.org/draft-06/schema",
-            "http://json-schema.org/draft-07/schema",
-        ]
+        return (
+            schema is not None
+            and schema.resource_type.type_uri in JSON_SCHEMA_TYPE_URIS
+        )
 
     def validator_for(self, resource_type):
         schema = resource_type.schema
@@ -60,21 +123,30 @@ class JsonValidator:
         validator = self.validators.get(resource_type.type_uri, None)
         if validator is None or not validator.matches(resource_type):
             try:
-                content = schema.content
-                if "$id" in content:
-                    del content["$id"]
-                validation_func = fastjsonschema.compile(content)
-            except Exception as e:
-                import logging
+                validation_func = compile_json_schema(schema.content)
+            except JsonSchemaInvalidError as error:
+                # The writer of a resource may not be the schema's author: the
+                # reason is logged, not sent.
+                logger.error(
+                    "The JSON Schema of %s does not compile, so its writes are "
+                    "refused: %s",
+                    resource_type.type_uri,
+                    error.detail,
+                )
 
-                logging.error(e)
-                return lambda r: r
+                def validate(content):
+                    raise JsonSchemaInvalidError(
+                        "The JSON Schema of this resource type does not compile, "
+                        "so it cannot be validated."
+                    )
 
-            def validate(content, handlers=None, formats=None):
-                try:
-                    return validation_func(content)
-                except fastjsonschema.JsonSchemaException as e:
-                    raise JsonValidationError(e) from e
+            else:
+
+                def validate(content):
+                    try:
+                        return validation_func(content)
+                    except fastjsonschema.JsonSchemaException as e:
+                        raise JsonValidationError(e) from e
 
             validator = ValidatorEntry(resource_type, validate)
             self.validators[resource_type.type_uri] = validator
