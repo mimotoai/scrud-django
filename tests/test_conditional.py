@@ -161,6 +161,31 @@ def assert_precondition_problem(status, title, code, detail=None):
 
 @pytest.mark.django_db
 @test_context
+def test_envelope_link_is_the_detail_link_header(partner_profiles, regular_login):
+    # A list envelope's "link" is the Link header the resource's detail
+    # response carries: the schema as rel="describedby" with type
+    # application/schema+json, and the JSON-LD context.
+    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
+    href = "http://testserver" + url
+    Given.http.force_authenticate(regular_login)
+    When.http.get(url)
+    Then.http.status_code_is(200)
+    header = Http.response["Link"]
+    When.http.get(reverse(RESOURCE_ENDPOINT_LIST_NAME))
+    Then.http.status_code_is(200)
+    envelopes = {
+        entry["href"]: entry for entry in json.loads(Http.response.content)["content"]
+    }
+    link = envelopes[href]["link"]
+    assert link == header
+    schema_url = _detail_url_of(partner_profiles.resource_type.schema)
+    assert link.startswith(
+        f'<{schema_url}>; rel="describedby"; type="application/schema+json", '
+    ), link
+
+
+@pytest.mark.django_db
+@test_context
 def test_failed_if_match_is_412_with_problem_details(
     partner_profiles, admin_login, partner_profile_post_data
 ):
