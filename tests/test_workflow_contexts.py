@@ -299,6 +299,54 @@ def test_staying_in_a_context_is_still_a_transition_there():
     assert Resource.objects.get(pk=resource.pk).content == kept
 
 
+@pytest.fixture
+def reported_transitions():
+    """The ``transition_data`` of each ToDo ``scrud_post_save``, in order."""
+    from scrud_django.scrud_signals import scrud_post_save
+
+    reported = []
+
+    def record(sender, resource_type_uri=None, transition_data=None, **kwargs):
+        if resource_type_uri == TODO:
+            reported.append(transition_data)
+
+    scrud_post_save.connect(record, weak=False, dispatch_uid="test-reported")
+    try:
+        yield reported
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-reported")
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_move_into_a_context_is_reported_as_a_creation_there(
+    reported_transitions,
+):
+    # scrud_post_save reports the transition under the policy of the first
+    # context the content names: entered, it is a creation there, as the
+    # workflow check checked it.
+    from scrud_django.workflow import TransitionData
+
+    user = user_with((TODO_WRITER, "w"), (TODO_WRITER, "v"))
+    resource = todo(rbac_context="w")
+    Given.http.force_authenticate(user)
+    reported_transitions.clear()
+    put_todo(resource, dict(NOT_STARTED, rbac_context="v"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert reported_transitions == [
+        TransitionData("not started", None, "__INITIALIZE__")
+    ]
+
+    # Staying in "v" is a transition there again.
+    resource.refresh_from_db()
+    reported_transitions.clear()
+    put_todo(resource, dict(NOT_STARTED, status="in progress", rbac_context="v"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert reported_transitions == [
+        TransitionData("in progress", "not started", "start")
+    ]
+
+
 @pytest.mark.django_db
 @test_context
 def test_default_policy_authorizes_transitions_in_other_contexts():

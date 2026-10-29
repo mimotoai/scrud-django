@@ -120,17 +120,27 @@ class ResourceMixin(ScrudfulMixin):
     def get_transition_data(self, using=None):
         """The `TransitionData` ``scrud_post_save`` reports for this save, from
         the stored row (read on the database the save writes to, `using` or
-        the router's for this instance, not a read replica) to the content."""
+        the router's for this instance, not a read replica) to the content,
+        under the policy `get_workflow_policy` picks. A create, and an update
+        whose picked context is one the stored resource was not in (a move
+        into it), are reported as ``__INITIALIZE__`` there (no prior state, the
+        initial state the content is in), as the ``WorkflowValidator`` checks
+        them."""
         if self._state.adding:
             prior_data = None
         else:
             db = using or router.db_for_write(type(self), instance=self)
             prior_version = self.__class__.objects.using(db).filter(pk=self.pk)
             prior_data = prior_version.first().content
-        workflow = self.get_workflow_policy()
+        context, workflow = self.workflow_context_and_policy()
         if workflow is None:
             return None
-        if prior_data is None:
+        entering = (
+            prior_data is not None
+            and context is not None
+            and context not in rbac_contexts_of(prior_data)
+        )
+        if prior_data is None or entering:
             # A create has no prior state; its proposed state is the initial
             # state the content is in (``None`` if none: this is a report, the
             # `WorkflowValidator` validates).
@@ -160,14 +170,20 @@ class ResourceMixin(ScrudfulMixin):
         it is deterministic. A context with neither is skipped; ``None`` when
         none has one. Validation and authorization are the
         `WorkflowValidator`'s, which checks every context."""
+        return self.workflow_context_and_policy()[1]
+
+    def workflow_context_and_policy(self):
+        """``(context, policy)`` of `get_workflow_policy`: the context whose
+        policy it is (``None`` for a resource in no context), or
+        ``(None, None)``."""
         contexts = self.rbac_contexts
         if not contexts:
-            return default_workflow_policy_for(self.resource_type)
+            return None, default_workflow_policy_for(self.resource_type)
         for context in contexts:
             policy = workflow_policy_for(self.resource_type, context)
             if policy is not None:
-                return policy
-        return None
+                return context, policy
+        return None, None
 
     class Meta:
         abstract = True
