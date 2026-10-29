@@ -4,12 +4,17 @@ SCRUD-Django - Semantic Create, Read, Update and Delete Django application.
 
 import base64
 import datetime
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 from django.utils.timezone import datetime as ddt
 from rest_framework.reverse import reverse
 
-__version__ = version("scrud-django")
+try:
+    __version__ = version("scrud-django")
+except PackageNotFoundError:
+    # Imported from a source tree that is not installed (e.g. a checkout on
+    # PYTHONPATH): there is no distribution metadata to read the version from.
+    __version__ = "0+unknown"
 
 
 class ScrudServices:
