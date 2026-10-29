@@ -1,14 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(uv sync:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uv run ruff:*)",
-      "Bash(uv run python manage.py check:*)",
-      "Bash(uv run python manage.py makemigrations scrud_django --check:*)",
-      "Bash(git status:*)",
-      "Bash(git diff:*)",
-      "Bash(git log:*)"
+      "Bash(uv run ruff check .)",
+      "Bash(uv run ruff format --check .)",
+      "Bash(uv run python manage.py makemigrations scrud_django --check --dry-run)",
+      "Bash(uv run python manage.py check)",
+      "Bash(uv run --group docs sphinx-build -W -b html docs docs/_build)",
+      "Bash(git status)",
+      "Bash(git diff)",
+      "Bash(git diff --stat)",
+      "Bash(git diff --cached)",
+      "Bash(git log --oneline -20)"
     ]
   }
 }

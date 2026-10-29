@@ -27,18 +27,32 @@ through `uv run` so the project environment is used. The default uv or system
 Python may be 3.14, which is unsupported, so always use `uv run` and leave
 `.python-version` at 3.13.
 
-| Task | Make target | Raw command |
-| --- | --- | --- |
-| Install | | `uv sync` |
-| All tests | `make test` | `uv run pytest` |
-| One test | | `uv run pytest tests/test_rest.py::test_resource_get_list` |
-| Lint (check only) | `make lint` | `uv run ruff check . && uv run ruff format --check .` |
-| Format and autofix | `make format` | `uv run ruff check --fix . && uv run ruff format .` |
-| Migrations check | `make migrations-check` | `uv run python manage.py makemigrations scrud_django --check --dry-run` |
-| Docs (warnings are errors) | `make docs` | `uv run --group docs sphinx-build -W -b html docs docs/_build` |
+Run these directly. Each of the first block is pre-approved in
+`.claude/settings.json` (an exact-match allow rule, or `uv run pytest:*`) and
+runs without a prompt:
 
-`ruff format .` touches the whole repo, so after `make format` check
-`git diff --stat` and revert changes to files you did not mean to edit.
+```bash
+uv run pytest -q
+uv run pytest tests/test_rest.py::test_resource_get_list   # one test
+uv run ruff check .
+uv run ruff format --check .
+uv run python manage.py makemigrations scrud_django --check --dry-run
+uv run --group docs sphinx-build -W -b html docs docs/_build   # warnings are errors
+```
+
+These write files or touch the environment, so they prompt. Run them on the
+files you touched only; `ruff format .` and `ruff check --fix .` over the whole
+repo rewrite files you did not mean to edit, and `uv sync` can rewrite the
+environment:
+
+```bash
+uv run ruff check --fix <files>
+uv run ruff format <files>
+uv sync
+```
+
+The `Makefile` (`make test`, `make lint`, `make format`, `make docs`,
+`make migrations-check`) is for humans; Claude should use the raw commands.
 
 Demo app (API root at http://127.0.0.1:8000/api/):
 
@@ -48,8 +62,8 @@ uv run python manage.py migrate
 uv run python manage.py runserver
 ```
 
-CI is `.gitlab-ci.yml` (lint, migrations check, tests on 3.11-3.13). Run
-`make lint` and `make test` before committing.
+CI is `.gitlab-ci.yml` (lint, migrations check, docs build, tests with coverage
+on 3.11-3.13). Run the lint and test commands above before committing.
 
 ## Test conventions
 
@@ -79,8 +93,10 @@ See `tests/test_conditional.py` for the idiom.
 - Settings come from one place: `tests/settings.py::SETTINGS`. `conftest.py` and
   the root `manage.py` both call `settings.configure(**SETTINGS)`; there is no
   settings module on disk and no `DJANGO_SETTINGS_MODULE`. Add settings there.
+- Request bodies are JSON-only (`parser_classes = [RbacJSONParser]` in
+  `scrud_django/views.py`): form or multipart bodies get 415.
 - Tests run on in-memory SQLite only. Code the tests exercise must work on SQLite.
-- Migrations must keep `make migrations-check` clean. If a model change needs a
+- Migrations must keep the migrations check above clean. If a model change needs a
   migration, generate it with `uv run python manage.py makemigrations scrud_django`
   and commit it with the model change.
 - The `api.openteams.com` IRIs (JSON-LD contexts, schema and type identifiers)
