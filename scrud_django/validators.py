@@ -200,7 +200,12 @@ class WorkflowValidator:
             policies = [(c, workflow_policy_for(resource_type, c)) for c in contexts]
         else:
             policies = [(None, default_workflow_policy_for(resource_type))]
-        request = self.request_of(context)
+        # The request is needed only where a policy applies; without one (a
+        # serializer used outside a request) there is no user whose grants a
+        # context without a policy could condition.
+        request = context.context.get("request")
+        if request is None and any(p is not None for _, p in policies):
+            self.request_of(context)
         transitions = []
         for c, policy in policies:
             if policy is None:
@@ -212,9 +217,10 @@ class WorkflowValidator:
         for c, policy, transition_data in transitions:
             with self.errors_hidden_unless_readable(policy, request):
                 self.authorize(policy, transition_data, c, context, data)
-        for c, policy in policies:
-            if policy is None:
-                self.authorize_without_policy(c, context, data)
+        if request is not None:
+            for c, policy in policies:
+                if policy is None:
+                    self.authorize_without_policy(c, context, data)
         return data
 
     def request_of(self, context):

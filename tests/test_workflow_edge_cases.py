@@ -127,6 +127,17 @@ def test_workflow_validator_without_a_request_names_it():
         serializer.is_valid()
 
 
+@pytest.mark.django_db
+def test_serializer_without_a_request_validates_a_type_without_a_workflow():
+    reverse("todos-list")
+    serializer = ResourceSerializer(
+        data={"name": "n", "rbac_context": "q"},
+        resource_type=ResourceType.objects.get(type_uri=PP),
+    )
+    assert serializer.is_valid(), serializer.errors
+    assert serializer.validated_data == {"name": "n", "rbac_context": "q"}
+
+
 # M-1: the post-save check requires every context the stored resource is in.
 
 
