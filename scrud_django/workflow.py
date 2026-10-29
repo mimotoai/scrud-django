@@ -135,8 +135,11 @@ class WorkflowPolicy:
         First match is returned. Later revisions of this class may enable partial
         orders based on state conditions referencing each other, meaning the "most"
         matching expression in the first matched partial order will be the ultimate
-        match.
+        match. Data that is not a mapping (content stored before 0.12.0 could be
+        a list) is in no state: ``None``.
         """
+        if not isinstance(data, Mapping):
+            return None
         for name, condition in state_expressions.items():
             # Evaluation errors, such as a property missing from the provided data,
             # count as not matching.

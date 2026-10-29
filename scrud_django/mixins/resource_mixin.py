@@ -133,11 +133,16 @@ class ResourceMixin(ScrudfulMixin):
             return None
 
     def get_workflow_policy(self):
-        """The policy whose transition the ``scrud_post_save`` signal reports: that
-        of the first of the resource's (new) contexts that has one
-        (`workflow_policy_for`), or the settings default when the resource is in
-        no context. Validation and authorization are the `WorkflowValidator`'s,
-        which checks every context."""
+        """The policy whose transition the ``scrud_post_save`` signal reports.
+
+        For a resource in several contexts it is the policy in effect
+        (`workflow_policy_for`: the stored policy there, else the settings
+        default) in the **first** context its content names, in the order of
+        its ``rbac_context`` list; for one in a single context, that context's;
+        for one in no context, the settings default. Its content decides, so
+        it is deterministic. A context with neither is skipped; ``None`` when
+        none has one. Validation and authorization are the
+        `WorkflowValidator`'s, which checks every context."""
         contexts = self.rbac_contexts
         if not contexts:
             return default_workflow_policy_for(self.resource_type)

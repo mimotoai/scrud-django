@@ -331,17 +331,14 @@ a 500. A conditional `http.GET` grant cannot read a detail route
 (403). Unconditional grants and operator conditions (`scrud_workflow`) are not
 affected.
 
-Since 0.12.0 the workflow check also authorizes a `TransitionCheck`
-(`scrud_django/permissions.py:5`) in **every** context of a workflow write,
-stored and new. A CEL-conditioned `http.PUT` (or `http.POST`) grant on a type
-with a workflow policy now meets a `TransitionCheck`, which is not a mapping
-either: a `TypeError` and a 500 in every such context, not only on the object
-check.
+The workflow check, which authorizes a `TransitionCheck` in every context of
+a write, passes it as a `scoped_rbac.policy.RequestResource` whose CEL fields
+are the body, so a CEL condition there reads the body as the request check
+does (`tests/test_workflow_edge_cases.py::test_cel_conditioned_post_on_a_workflow_type_reads_the_body`).
+Only the object check is affected.
 
 Suggested fix: add `ResourceMixin.to_cel()` returning the content when it is a
-mapping (else `{}`), and `TransitionCheck.to_cel()` (for example
-`{"transition": <name>}`), and test a CEL-conditional GET and PUT on a detail
-route, and a CEL-conditional PUT on a type with a workflow.
+mapping (else `{}`), and test a CEL-conditional GET and PUT on a detail route.
 
 <a id="schema-defaults-not-stored"></a>
 ## schema-defaults-not-stored: JSON Schema `default` values are never stored

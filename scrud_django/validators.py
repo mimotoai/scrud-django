@@ -6,8 +6,8 @@ import fastjsonschema
 from django.core.exceptions import ImproperlyConfigured
 from rest_framework.exceptions import ValidationError
 from scoped_rbac import access
-from scoped_rbac.permissions import http_action_iri_for, policy_for
-from scoped_rbac.policy import Permission
+from scoped_rbac.permissions import drf_error, http_action_iri_for, policy_for
+from scoped_rbac.policy import Permission, RequestResource
 
 from scrud_django.exceptions import (
     HiddenWorkflowTransitionError,
@@ -168,7 +168,13 @@ class WorkflowValidator:
     transition (a `TransitionCheck` for the ``scrud_workflow`` operator) in that
     context. All of them must pass. A resource in no context is checked under
     the settings default, and only a superuser may make its transition, as
-    scoped-rbac's object checks allow.
+    scoped-rbac's object checks allow. In a context where no policy applies, a
+    grant conditioned on ``scrud_workflow`` allows nothing
+    (`authorize_without_policy`: 403). The operator reads the
+    `TransitionCheck`; a CEL condition reads the body.
+
+    An error under a stored policy the requester may not read names neither
+    the policy nor its states (`errors_hidden_unless_readable`).
 
     A ``WorkflowPolicy`` resource is itself checked when it is written (see
     `WorkflowPolicy`): a policy that fails those checks is a 400 and is not
@@ -191,7 +197,7 @@ class WorkflowValidator:
             policies = [(c, workflow_policy_for(resource_type, c)) for c in contexts]
         else:
             policies = [(None, default_workflow_policy_for(resource_type))]
-        request = context.context["request"]
+        request = self.request_of(context)
         transitions = []
         for c, policy in policies:
             if policy is None:
@@ -202,8 +208,22 @@ class WorkflowValidator:
                 )
         for c, policy, transition_data in transitions:
             with self.errors_hidden_unless_readable(policy, request):
-                self.authorize(policy, transition_data, c, context)
+                self.authorize(policy, transition_data, c, context, data)
+        for c, policy in policies:
+            if policy is None:
+                self.authorize_without_policy(c, context, data)
         return data
+
+    def request_of(self, context):
+        """The request of the serializer `context`; the workflow check
+        authorizes it. Raises ``ImproperlyConfigured`` without one."""
+        request = getattr(context, "context", {}).get("request")
+        if request is None:
+            raise ImproperlyConfigured(
+                "WorkflowValidator needs the request in the serializer context "
+                "(context={'request': request}) to authorize workflow transitions."
+            )
+        return request
 
     @contextmanager
     def errors_hidden_unless_readable(self, workflow_policy, request):
@@ -237,25 +257,53 @@ class WorkflowValidator:
             return TransitionData(None, data, "__INITIALIZE__")
         return workflow_policy.determine_transition(data, instance.content)
 
-    def authorize(self, workflow_policy, transition_data, rbac_context, context):
+    def authorize(
+        self, workflow_policy, transition_data, rbac_context, context, data=None
+    ):
         """Raise unless the user may make `transition_data`'s transition in
         `rbac_context` (``None``: the resource is in no context)."""
-        request = context.context["request"]
-        permission = Permission(
-            http_action_iri_for(request), context.resource_type.type_uri
-        )
-        transition = TransitionCheck(transition_data.transition)
-        if rbac_context is None:
-            # No context: only a superuser (as scoped-rbac's object checks).
-            allowed = access.may_act_on(request, permission, transition, [])
-        else:
-            allowed = policy_for(request).should_allow(
-                permission, rbac_context, resource=transition
-            )
-        if not allowed:
+        if not self.allowed(context, rbac_context, transition_data.transition, data):
             raise WorkflowTransitionError(
                 workflow_policy.reference,
                 transition_data.prior_state,
                 transition_data.proposed_state,
                 message="The user isn't authorized to perform this state transition on this resource.",
             )
+
+    def authorize_without_policy(self, rbac_context, context, data):
+        """Where no workflow policy applies there is no transition: a grant
+        conditioned on ``scrud_workflow`` allows nothing there (its operator
+        gets a `TransitionCheck` whose transition is ``None``), and the write
+        is refused with 403 (``PermissionDenied``) when such a grant is the
+        reason it would otherwise be allowed. Where the user holds no grant at
+        all, or an unconditional or CEL one, the object and post-save checks
+        decide, as before."""
+        if self.allowed(context, rbac_context, None, data):
+            return
+        if not self.allowed(context, rbac_context, data=data, transition_check=False):
+            return
+        raise drf_error(access.AccessDenied(), self.request_of(context))
+
+    def allowed(
+        self, context, rbac_context, transition=None, data=None, transition_check=True
+    ):
+        """Whether the request's action on the type is allowed in `rbac_context`
+        (``None``: no context, superusers only, as scoped-rbac's object checks)
+        on a `TransitionCheck` of `transition`, which the ``scrud_workflow``
+        operator reads; a CEL condition reads the body `data`, as scoped-rbac's
+        request check does. Without `transition_check`, on the body alone."""
+        request = self.request_of(context)
+        permission = Permission(
+            http_action_iri_for(request), context.resource_type.type_uri
+        )
+        body = access.body_mapping(data)
+        resource = (
+            RequestResource(TransitionCheck(transition), body)
+            if transition_check
+            else body
+        )
+        if rbac_context is None:
+            return access.may_act_on(request, permission, resource, [])
+        return policy_for(request).should_allow(
+            permission, rbac_context, resource=resource
+        )
