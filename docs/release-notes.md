@@ -235,8 +235,10 @@ Conditional request handling now comes from scrudful 0.8.
   `WorkflowPolicy` write through `ResourceRegistration` (`register`,
   `register_instance`, `update`, `delete`, which the API's create, update and
   delete use) takes that lock first, inside its transaction on the database
-  the router gives for `Resource` writes, before it writes the policy's row, so
-  concurrent writes of one policy cannot deadlock. A write that saves a
+  the router gives for `Resource` writes, which must also be the one it gives
+  for `ResourceType` ([split-resource-routing](follow-ups.md#split-resource-routing)),
+  before it writes the policy's row, so concurrent writes of one policy cannot
+  deadlock. A write that saves a
   `Resource` directly, bypassing `ResourceRegistration`, takes no lock. If several
   were stored before (or past the API), none is picked: writes of the type in
   that context fail with `ImproperlyConfigured` until all but one are deleted.

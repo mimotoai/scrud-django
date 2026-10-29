@@ -546,3 +546,43 @@ reveals nothing they did not send, and no fetched content is included (remote
 `$ref`s are refused before any fetch). Recorded only: the text is
 fastjsonschema's and may change between its versions. A stored schema that
 does not compile gives other writers a generic detail.
+
+<a id="split-resource-routing"></a>
+## split-resource-routing: `Resource` and `ResourceType` must be routed to the same database
+
+`ResourceRegistration` opens its transaction, and takes the `WorkflowPolicy`
+lock (`select_for_update` on the `WorkflowPolicy` resource type's row), on
+`router.db_for_write(Resource)`. The resource type's etag update in the same
+write is routed by `router.db_for_write(ResourceType)`. A router that sends
+`Resource` to one alias and `ResourceType` to another is not supported. If the
+two aliases are the same physical database, a `WorkflowPolicy` create (API or
+`register`) or delete (API or `ResourceRegistration.delete`) updates the type
+row on the second connection while its own transaction on the first holds the
+lock. It waits on itself until `lock_timeout` (a 500), or forever when no
+timeout is set; PostgreSQL cannot detect it as a deadlock, and every other
+`WorkflowPolicy` write waits behind it. If they are different databases, the
+`Resource.resource_type` foreign key crosses databases, which Django does not
+support. Separately, `scrud_django.registration.write_db` asks the router
+without an `instance=` hint, so a router that routes by instance hints could
+send a resource's save to a different alias from the transaction.
+
+Suggested fix: route `Resource` and `ResourceType` (and the other scrud_django
+models) to one alias and say so in the README; or save the type row with
+`using=write_db()` inside `ResourceRegistration`. Test: PostgreSQL, two aliases
+on one database, and a router that routes only `Resource`.
+
+<a id="update-does-not-bump-type-etag"></a>
+## update-does-not-bump-type-etag: `ResourceRegistration.update` leaves the resource type's etag unchanged
+
+`scrud_django.registration.ResourceRegistration.update` sets the new etag and
+modification time on the `ResourceType` it got from `get_resource_type_for`,
+but saves `resource.resource_type`, a different instance loaded through the
+foreign key. The type's etag and `modified_at` therefore do not change on an
+update (verified on PostgreSQL), and anything that uses them as collection
+validators, such as the list's `ETag`/`Last-Modified`, misses updates. This
+predates this release. Suggested fix: bump and save one instance (for example
+`resource.resource_type`), and add a test that a PUT changes the list `ETag`.
+Separately, under a read-replica router the `get_object_or_404` and
+`get_resource_type_for` reads inside `update` and `delete` go to
+`db_for_read`, outside the locked transaction, and may be stale (related to
+[authorize-write-not-atomic](#authorize-write-not-atomic)).
