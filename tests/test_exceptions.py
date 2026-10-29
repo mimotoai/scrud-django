@@ -185,8 +185,8 @@ def test_scrud_handler_body_for_a_stored_policy_error():
         "title": "Invalid workflow transition",
         "detail": url,
         "policy": url,
-        "prior_state": "in progress",
-        "proposed_state": "not started",
+        "prior_state": "not started",
+        "proposed_state": "in progress",
         "message": "Invalid workflow transition",
         "status": 400,
     }

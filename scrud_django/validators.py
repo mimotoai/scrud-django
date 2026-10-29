@@ -20,7 +20,6 @@ from scrud_django.models import ResourceType
 from scrud_django.permissions import TransitionCheck
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
-    TransitionData,
     WorkflowPolicy,
     default_workflow_policy_for,
     stored_policies_for,
@@ -288,8 +287,7 @@ class WorkflowValidator:
 
     def transition_for(self, workflow_policy, data, instance):
         if instance is None:
-            workflow_policy.validate_initial_state(data)
-            return TransitionData(None, data, "__INITIALIZE__")
+            return workflow_policy.initial_transition(data)
         return workflow_policy.determine_transition(data, instance.content)
 
     def authorize(

@@ -80,9 +80,17 @@ class WorkflowPolicy:
         return proposed_data
 
     def validate_initial_state(self, data):
+        """The initial state `data` is in; raises
+        ``WorkflowInvalidInitialStateError`` if it is in none."""
         proposed_state = self.determine_state(data, self.initial_state_expressions)
         if proposed_state is None:
             raise WorkflowInvalidInitialStateError(self.reference, proposed_state)
+        return proposed_state
+
+    def initial_transition(self, data):
+        """The ``__INITIALIZE__`` `TransitionData` of a create of `data`: no
+        prior state, its initial state as the proposed one."""
+        return TransitionData(self.validate_initial_state(data), None, "__INITIALIZE__")
 
     def validate_transition(self, proposed_data, prior_data):
         """Given a proposed state and a previous state determine if the proposed
@@ -122,13 +130,13 @@ class WorkflowPolicy:
                         message='Update not allowed on this state',
                     )
                 raise WorkflowTransitionError(
-                    self.reference, proposed_state, prior_state
+                    self.reference, prior_state, proposed_state
                 )
         elif (
             prior_state not in self.allowed_transitions
             or proposed_state not in self.allowed_transitions[prior_state]
         ):
-            raise WorkflowTransitionError(self.reference, proposed_state, prior_state)
+            raise WorkflowTransitionError(self.reference, prior_state, proposed_state)
 
         return TransitionData(
             proposed_state,

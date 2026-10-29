@@ -195,6 +195,13 @@ Conditional request handling now comes from scrudful 0.8.
   the body, as they do in scoped-rbac's request check.
 * A reserved transition name (one that starts with `__`) is refused, in stored
   policies and in defaults.
+* Workflow error bodies give `prior_state` (the stored resource's state) and
+  `proposed_state` (the body's) the right way round; an invalid transition
+  used to swap them. A create has no prior state: its errors give
+  `prior_state` null (it used to be the whole request body), and the
+  `transition_data` that `scrud_post_save` sends for a create has
+  `prior_state` `None` and `proposed_state` its initial state (it used to be
+  `None` and the content).
 * A `WorkflowPolicy` is checked when it is created or updated, and refused with
   400 (nothing is stored) when a state condition is not valid CEL, a transition
   is not an object with `from` and `to` naming defined states, a transition's

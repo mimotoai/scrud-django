@@ -80,8 +80,10 @@ class TestCustomDjangoSignals(TestCase):
         self.assertTrue(self.signal_was_called)
         self.assertEqual(new_resource.resource_type.type_uri, self.type_uri)
         self.assertEqual(new_resource.__class__, self.sender)
-        # Assert Transition data is sent with the signal
-        self.assertEqual(self.prior_state, initial_content)
+        # Assert Transition data is sent with the signal: a create has no prior
+        # state, and its proposed state is its initial state.
+        self.assertIsNone(self.prior_state)
+        self.assertEqual(self.proposed_state, "not started")
 
         # For Update
         self.signal_was_called = False

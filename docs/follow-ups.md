@@ -454,20 +454,6 @@ Suggested fix: document that the setting should give mappings, not
 `WorkflowPolicy` objects built by a function. Test: a function that raises
 yields one E001 for the setting.
 
-<a id="create-error-echoes-body"></a>
-## create-error-echoes-body: a create's workflow error echoes the body as `prior_state`
-
-On a create, `WorkflowValidator.transition_for` and
-`ResourceMixin.get_transition_data` build
-`TransitionData(None, data, "__INITIALIZE__")`, which puts the whole request
-body in `prior_state`. An unauthorized-create error under a readable stored
-policy or a settings default policy therefore sends the body back in
-`WorkflowTransitionError.response_data`. The client sent it, so it learns
-nothing new; but a large body is echoed, and it is not the prior state.
-
-Suggested fix: send `prior_state: null` for a create. Test: an unauthorized
-create gives a body with `prior_state` null.
-
 <a id="delete-no-workflow-check"></a>
 ## delete-no-workflow-check: DELETE is not checked against the workflow
 

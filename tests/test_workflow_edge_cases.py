@@ -366,3 +366,110 @@ def test_cel_conditioned_post_on_a_workflow_type_reads_the_body():
         format="json",
     )
     assert response.status_code == 403, response.content
+
+
+# Error bodies: ``prior_state`` is the stored state, ``proposed_state`` the new
+# one; a create has no prior state.
+
+LOCKING_PP_POLICY = {
+    "resource_type": PP,
+    "initial_states": {"open": 'state == "open"'},
+    "states": {"locked": 'state == "locked"'},
+    "transitions": {"lock": {"from": "open", "to": "locked"}},
+}
+
+
+def states(response):
+    body = response.json()
+    assert body["type"] == WORKFLOW_ERROR, body
+    return body["prior_state"], body["proposed_state"]
+
+
+@pytest.mark.django_db
+def test_invalid_transition_error_names_prior_then_proposed_state():
+    store_policy(dict(LOCKING_PP_POLICY, rbac_context="q"))
+    resource = locked_profile()
+    response = put(
+        admin(),
+        resource,
+        {"name": "n", "state": "open", "rbac_context": "q"},
+        "partner-profiles",
+    )
+    assert response.status_code == 400, response.content
+    assert states(response) == ("locked", "open")
+
+
+@pytest.mark.django_db
+def test_transition_from_no_state_error_names_no_prior_state():
+    store_policy(dict(LOCKING_PP_POLICY, rbac_context=""))
+    stored = register([{"name": "n"}], "partner-profiles")
+    response = put(admin(), stored, {"name": "n", "state": "open"}, "partner-profiles")
+    assert response.status_code == 400, response.content
+    assert states(response) == (None, "open")
+
+
+@pytest.mark.django_db
+def test_unauthorized_transition_error_names_prior_then_proposed_state():
+    store_policy(dict(LOCKING_PP_POLICY, rbac_context="q"))
+    resource = register(
+        {"name": "n", "state": "open", "rbac_context": "q"}, "partner-profiles"
+    )
+    user = user_with(
+        (
+            {
+                "http.GET": [PP, "http://api.openteams.com/json-ld/WorkflowPolicy"],
+                **conditioned("http.PUT", []),
+            },
+            "q",
+        )
+    )
+    response = put(
+        user,
+        resource,
+        {"name": "n", "state": "locked", "rbac_context": "q"},
+        "partner-profiles",
+    )
+    assert response.status_code == 400, response.content
+    assert states(response) == ("open", "locked")
+
+
+@pytest.mark.django_db
+def test_unauthorized_create_error_has_no_prior_state():
+    store_policy(dict(LOCKING_PP_POLICY, rbac_context="q"))
+    user = user_with(
+        (
+            {
+                "http.GET": ["http://api.openteams.com/json-ld/WorkflowPolicy"],
+                **conditioned("http.POST", []),
+            },
+            "q",
+        )
+    )
+    response = client_for(user).post(
+        reverse("partner-profiles-list"),
+        {"name": "n", "state": "open", "rbac_context": "q"},
+        format="json",
+    )
+    assert response.status_code == 400, response.content
+    assert states(response) == (None, "open")
+
+
+@pytest.mark.django_db
+def test_create_transition_data_has_no_prior_state(reported_data):
+    register(dict(NOT_STARTED), "todos")
+    assert [(d.prior_state, d.proposed_state, d.transition) for d in reported_data] == [
+        (None, "not started", "__INITIALIZE__")
+    ]
+
+
+@pytest.fixture
+def reported_data():
+    data = []
+
+    def record(sender, instance, transition_data, **kwargs):
+        if transition_data is not None:
+            data.append(transition_data)
+
+    scrud_post_save.connect(record)
+    yield data
+    scrud_post_save.disconnect(record)

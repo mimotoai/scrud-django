@@ -119,8 +119,14 @@ class ResourceMixin(ScrudfulMixin):
         workflow = self.get_workflow_policy()
         if workflow is None:
             return None
-        elif prior_data is None:
-            return TransitionData(None, self.content, "__INITIALIZE__")
+        if prior_data is None:
+            # A create has no prior state; its proposed state is the initial
+            # state the content is in (``None`` if none: this is a report, the
+            # `WorkflowValidator` validates).
+            initial_state = workflow.determine_state(
+                self.content, workflow.initial_state_expressions
+            )
+            return TransitionData(initial_state, None, "__INITIALIZE__")
         try:
             return workflow.determine_transition(self.content, prior_data)
         except (
