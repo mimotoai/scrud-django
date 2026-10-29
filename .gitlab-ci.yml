@@ -8,7 +8,8 @@ workflow:
     - if: $CI_COMMIT_BRANCH
     - if: $CI_COMMIT_TAG
 
-image: ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+# Pinned to uv 0.9 so that build-system's `uv_build>=0.9,<0.10` keeps matching.
+image: ghcr.io/astral-sh/uv:0.9-python3.13-bookworm-slim
 
 stages:
   - lint
@@ -51,7 +52,7 @@ docs:
 
 test:
   stage: test
-  image: ghcr.io/astral-sh/uv:python$PYTHON-bookworm-slim
+  image: ghcr.io/astral-sh/uv:0.9-python$PYTHON-bookworm-slim
   variables:
     # .python-version says 3.13; with downloads off, uv must use this image's.
     UV_PYTHON: "$PYTHON"
@@ -59,6 +60,7 @@ test:
     matrix:
       - PYTHON: ["3.11", "3.12", "3.13"]
   cache:
+    when: always
     key:
       files: [uv.lock]
       prefix: test-$PYTHON
