@@ -5,16 +5,17 @@ may list, a PUT or DELETE run in one transaction with the row locked, and
 scrudful's precondition errors as problem details."""
 
 import json
+from contextlib import contextmanager
 from unittest import mock
 from uuid import uuid4
 
 import pytest
 from django.db import DEFAULT_DB_ALIAS, connection, transaction
-from django.db.models import Count, QuerySet
+from django.db.models import Count, F, QuerySet, TextField, Value
+from django.db.models.functions import Concat
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
-from rest_framework import generics
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from scoped_rbac.models import Role, RoleAssignment
 
@@ -165,41 +166,133 @@ def test_a_delete_whose_if_match_a_concurrent_write_made_stale_is_412():
     assert Note.objects.filter(pk=note.pk).exists()
 
 
+@contextmanager
+def evaluated_note_queries():
+    """Record each ``Note`` queryset the database evaluates (not merely
+    builds): ``(database, select_for_update, SQL)``, in order."""
+    events = []
+    original = QuerySet._fetch_all
+
+    def fetch_all(self):
+        if self.model is Note and self._result_cache is None:
+            events.append(
+                (self.db, bool(self.query.select_for_update), str(self.query))
+            )
+        return original(self)
+
+    with mock.patch.object(QuerySet, "_fetch_all", fetch_all):
+        yield events
+
+
+def where_pk_is(pk):
+    return f'WHERE "tests_note"."id" = {pk}'
+
+
+def write(client, method, url, etag, body=None):
+    if method == "put":
+        return client.put(
+            url, body or {"text": "y"}, format="json", HTTP_IF_MATCH=quote_etag(etag)
+        )
+    return client.delete(url, HTTP_IF_MATCH=quote_etag(etag))
+
+
 @pytest.mark.django_db
 @pytest.mark.parametrize("method", ["put", "delete"])
 def test_the_row_is_locked_on_the_write_database_before_the_lookup(method):
-    # The row is locked with a query of its own (select_for_update on the
-    # model's base manager, filtered by the URL's lookup), then looked up
-    # through the view's queryset, unlocked, on the same database.
+    # The row the URL names is locked with a query of its own, which runs
+    # (select_for_update on the model's base manager, filtered to that row),
+    # then looked up through the view's queryset, unlocked, on the same
+    # database.
     note = a_note()
-    events = []
-    original_lock = QuerySet.select_for_update
-    original_lookup = generics.get_object_or_404
-
-    def select_for_update(self, *args, **kwargs):
-        if self.model is Note:
-            events.append(("lock", self.db))
-        return original_lock(self, *args, **kwargs)
-
-    def get_object_or_404(queryset, *args, **kwargs):
-        if queryset.model is Note:
-            events.append(
-                ("lookup", queryset.db, bool(queryset.query.select_for_update))
-            )
-        return original_lookup(queryset, *args, **kwargs)
-
-    with (
-        mock.patch.object(QuerySet, "select_for_update", select_for_update),
-        mock.patch.object(generics, "get_object_or_404", get_object_or_404),
-    ):
-        response = getattr(superuser_client(), method)(
-            detail(note),
-            *([{"text": "y"}] if method == "put" else []),
-            format="json",
-            HTTP_IF_MATCH=quote_etag(note.etag),
-        )
+    a_note("another")
+    with evaluated_note_queries() as events:
+        response = write(superuser_client(), method, detail(note), note.etag)
     assert response.status_code in (200, 204), response.content
-    assert events[:2] == [("lock", "default"), ("lookup", "default", False)], events
+    (lock_db, lock_for_update, lock_sql), (lookup_db, lookup_for_update, _) = events[:2]
+    assert (lock_db, lock_for_update) == ("default", True), events
+    assert where_pk_is(note.pk) in lock_sql, lock_sql
+    assert lock_sql.startswith('SELECT "tests_note"."id" AS "pk" FROM "tests_note" '), (
+        lock_sql
+    )
+    assert (lookup_db, lookup_for_update) == ("default", False), events
+
+
+class NotesByCode:
+    """A view whose ``lookup_field`` is an annotation of its queryset
+    (``code``, "n-" and the text), which the model's base manager cannot
+    filter by."""
+
+    def __new__(cls):
+        from .urls import NoteViewSet
+
+        class ByCode(NoteViewSet):
+            lookup_field = "code"
+
+            def get_queryset(self):
+                return Note.objects.annotate(
+                    code=Concat(Value("n-"), F("text"), output_field=TextField())
+                )
+
+        return ByCode
+
+
+def by_code(view, method, code, etag, body=None):
+    factory = APIRequestFactory()
+    if method == "put":
+        request = factory.put(
+            f"/notes/{code}/",
+            json.dumps(body or {"text": "abc"}),
+            content_type="application/json",
+            HTTP_IF_MATCH=quote_etag(etag),
+        )
+    else:
+        request = factory.delete(f"/notes/{code}/", HTTP_IF_MATCH=quote_etag(etag))
+    force_authenticate(request, user=UserFactory(is_superuser=True, is_staff=True))
+    action = "update" if method == "put" else "destroy"
+    return view.as_view({method: action})(request, slug=code)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("method", ["put", "delete"])
+def test_a_lookup_field_the_queryset_annotates_is_locked_by_key(method):
+    # The base manager cannot filter by an annotation: the key is read
+    # through the view's queryset (unlocked), the row locked by its key,
+    # then looked up as usual.
+    note = a_note("abc")
+    a_note("other")
+    with evaluated_note_queries() as events:
+        response = by_code(NotesByCode(), method, "n-abc", note.etag)
+    assert response.status_code in (200, 204), response.data
+    # The key is resolved through the view's queryset (unlocked), the row
+    # locked by that key, then looked up (unlocked). A successful PUT has
+    # scrudful look the row up again for the response's validators.
+    resolve, lock, lookup = events[:3]
+    assert not resolve[1] and "n-abc" in resolve[2], events
+    assert lock[1] and lock[2].endswith(f'WHERE "tests_note"."id" IN ({note.pk})')
+    assert not lookup[1] and "n-abc" in lookup[2], events
+
+
+@pytest.mark.django_db
+def test_a_row_that_stops_matching_before_its_lock_is_404():
+    # The key "n-abc" resolves to `first`; before the lock is taken another
+    # writer renames it and gives "abc" to `second`. The lookup then finds
+    # `second`, a row this request did not lock: 404, nothing written.
+    first = a_note("abc")
+    second = a_note("xyz")
+    original = QuerySet.select_for_update
+
+    def concurrent_rename(self, *args, **kwargs):
+        if self.model is Note and Note.objects.get(pk=first.pk).text == "abc":
+            Note.objects.filter(pk=first.pk).update(text="renamed")
+            Note.objects.filter(pk=second.pk).update(text="abc")
+        return original(self, *args, **kwargs)
+
+    with mock.patch.object(QuerySet, "select_for_update", concurrent_rename):
+        response = by_code(NotesByCode(), "put", "n-abc", second.etag, {"text": "mine"})
+    assert response.status_code == 404, response.data
+    # Nothing written: the 404 rolls the request back, the rename with it.
+    assert Note.objects.get(pk=first.pk).text == "abc"
+    assert Note.objects.get(pk=second.pk).text == "xyz"
 
 
 @pytest.mark.django_db

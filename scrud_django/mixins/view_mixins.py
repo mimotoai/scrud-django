@@ -3,9 +3,10 @@ from collections.abc import Mapping
 from urllib.parse import urlencode
 
 import reversion
-from django.core.exceptions import ImproperlyConfigured, ValidationError
+from django.core.exceptions import FieldError, ImproperlyConfigured, ValidationError
 from django.db import DEFAULT_DB_ALIAS, router, transaction
 from django.db.models import Max
+from django.http import Http404
 from rest_framework import status
 from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
@@ -659,10 +660,16 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
         """DRF's ``get_object()``; inside a locked write (`dispatch`) the row
         is locked first (`lock_object_row`), so that the lookup, scrudful's
         preconditions, the object check and the write read the row as the
-        last writer committed it."""
-        if self.locked_write_db is not None:
-            self.lock_object_row()
-        return super().get_object()
+        last writer committed it. A lookup that finds a row the lock did not
+        take (one that came to match the URL after the key was read) is a
+        404."""
+        if self.locked_write_db is None:
+            return super().get_object()
+        locked = self.lock_object_row()
+        obj = super().get_object()
+        if locked is not None and obj.pk not in locked:
+            raise Http404
+        return obj
 
     def lock_object_row(self):
         """Lock (``select_for_update``) the rows of the view's model that the
@@ -670,21 +677,31 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
         query of the model's base manager: PostgreSQL refuses
         ``FOR UPDATE`` on a queryset with ``DISTINCT``, ``GROUP BY`` or the
         nullable side of an outer join, which the view's own queryset may
-        have. The lookup that follows reads the row after the lock is held.
-        A lookup value the field cannot take locks nothing (the lookup then
-        answers 404). A row the requester may not read is locked for the
-        length of their request, as for resources."""
-        model = self.get_queryset().model
+        have. A ``lookup_field`` the base manager cannot filter by (an
+        annotation of the view's queryset) is first resolved to keys through
+        the view's filtered queryset, unlocked, and those keys are locked.
+        Returns the set of locked keys, or ``None`` when the lookup value is
+        one the field cannot take (nothing is locked; the lookup then answers
+        404). The lookup that follows reads the row after the lock is held. A
+        row the requester may not read is locked for the length of their
+        request, as for resources."""
         lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
-        rows = model._base_manager.using(self.locked_write_db).select_for_update()
+        lookup = {self.lookup_field: self.kwargs[lookup_url_kwarg]}
+        queryset = self.get_queryset()
+        rows = queryset.model._base_manager.using(self.locked_write_db)
         try:
-            list(
-                rows.filter(
-                    **{self.lookup_field: self.kwargs[lookup_url_kwarg]}
-                ).values_list("pk", flat=True)
-            )
+            try:
+                rows = rows.filter(**lookup)
+            except FieldError:
+                keys = (
+                    self.filter_queryset(queryset)
+                    .filter(**lookup)
+                    .values_list("pk", flat=True)
+                )
+                rows = rows.filter(pk__in=list(keys))
+            return set(rows.select_for_update().values_list("pk", flat=True))
         except (TypeError, ValueError, ValidationError):
-            pass
+            return None
 
     def get_resource_type(self):
         return get_resource_type_for(self.resource_type_name)
