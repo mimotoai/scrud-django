@@ -53,7 +53,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
     a transaction: reversion's `Version.revert()` called outside
     `transaction.atomic()` now raises `TransactionManagementError` (wrap it, or
     use `Revision.revert()`, which is atomic).
-13. A PUT or DELETE now holds its resource's row lock until its response is
+13. If you use `DATABASE_ROUTERS`, route `Resource`, `ResourceType` and
+    `ResourceContext` writes to one alias: `manage.py check` now reports a
+    split as `scrud_django.E004`.
+14. A PUT or DELETE now holds its resource's row lock until its response is
     ready (see Conditional requests below). Subclasses of `ResourceViewMixin`
     that override `dispatch`, `initial` or `get_queryset` must call `super()`;
     server code that updates or deletes a resource should go through
@@ -257,6 +260,19 @@ Conditional request handling now comes from scrudful 0.8.
   subclass that overrides `dispatch`, `initial` or `get_queryset` must call
   `super()`. The prior state `scrud_post_save` reports is read on the save's
   database (`ResourceMixin.get_transition_data(using)`).
+* Database routing: `ResourceRegistration` saves a resource, its
+  `ResourceContext` rows and its resource type's row on one database, the one
+  its transaction is on (`write_db()`, `router.db_for_write(Resource)`, given
+  the resource as the router's `instance` hint when there is one). It used to
+  save the type row wherever the router sent `ResourceType` writes: with
+  `Resource` and `ResourceType` routed to two aliases of one PostgreSQL
+  database, a `WorkflowPolicy` write waited on its own lock forever (or until
+  `lock_timeout`, a 500). A new system check, `scrud_django.E004` (run by
+  `manage.py check`, no database needed), is an error when the router sends
+  `Resource`, `ResourceType` and `ResourceContext` writes to different
+  aliases. The check asks the routers without an instance hint; a router that
+  routes these models by instance must still keep each resource, its context
+  rows and its type on one alias.
 * `ResourceViewMixin.get_instance(request, slug)` now returns `get_object()`
   and ignores `slug`. scrudful reads the validators (ETag, Last-Modified) from
   the same object, so an override of `get_instance` no longer affects them.
@@ -354,12 +370,11 @@ Conditional request handling now comes from scrudful 0.8.
   `WorkflowPolicy` resource type's row (`select_for_update`) and check again
   after the save, so of two concurrent writes the second is refused. Every
   `WorkflowPolicy` write through `ResourceRegistration` (`register`,
-  `register_instance`, `update`, `delete`, which the API's create, update and
-  delete use) takes that lock first, inside its transaction on the database
-  the router gives for `Resource` writes, which must also be the one it gives
-  for `ResourceType` ([split-resource-routing](follow-ups.md#split-resource-routing)),
-  before it writes the policy's row, so concurrent writes of one policy cannot
-  deadlock. A write that saves a
+  `register_instance`, `update`, `delete`, and the API's create, update and
+  delete) takes that lock first, inside its transaction on the database
+  the router gives for `Resource` writes (see "Database routing" under API
+  changes), before it reads or writes the policy's row, so concurrent writes
+  of one policy cannot deadlock. A write that saves a
   `Resource` directly, bypassing `ResourceRegistration`, takes no lock. If several
   were stored before (or past the API), none is picked: writes of the type in
   that context fail with `ImproperlyConfigured` until all but one are deleted.

@@ -16,11 +16,17 @@ from scrud_django.models import Resource, ResourceType
 from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI, lock_workflow_policy_type
 
 
-def write_db():
+def write_db(instance=None):
     """The database `ResourceRegistration` writes resources to
-    (``router.db_for_write(Resource)``): its transactions open there, so that
-    the ``WorkflowPolicy`` lock and the writes share one transaction."""
-    return router.db_for_write(Resource)
+    (``router.db_for_write(Resource)``, with `instance` as the router's
+    ``instance`` hint when there is one): its transactions open there, and the
+    resource, its ``ResourceContext`` rows and its type's row are all saved
+    there, so that the ``WorkflowPolicy`` lock and the writes share one
+    transaction. Route ``Resource``, ``ResourceType`` and ``ResourceContext``
+    writes to one alias (the ``scrud_django.E004`` check)."""
+    if instance is None:
+        return router.db_for_write(Resource)
+    return router.db_for_write(Resource, instance=instance)
 
 
 def lock_if_workflow_policy(resource_type, using):
@@ -222,7 +228,7 @@ class ResourceRegistration:
         Resource
 
         """
-        db = write_db()
+        db = write_db(resource)
         with transaction.atomic(using=db):
             lock_if_workflow_policy(resource.resource_type, db)
             resource.etag = uuid4().hex
@@ -231,13 +237,13 @@ class ResourceRegistration:
             resource.resource_type.modified_at = resource.modified_at
             if resource.resource_type.uses_reversion:
                 with reversion.create_revision():
-                    resource.save()
+                    resource.save(using=db)
                     reversion.set_comment('Add Resource')
             else:
-                resource.save()
-            # with reversion.create_revision():
-            resource.resource_type.save()
-            # reversion.set_comment('Change Resource_type')
+                resource.save(using=db)
+            # The type's row in the same transaction, whatever the router
+            # says for ResourceType (scrud_django.E004 reports a split).
+            resource.resource_type.save(using=db)
         return resource
 
     @staticmethod
@@ -295,7 +301,7 @@ class ResourceRegistration:
                 reversion.set_comment('Change Resource')
         else:
             resource.save(using=using)
-        resource_type.save()
+        resource_type.save(using=using)
         return resource
 
     @staticmethod
@@ -332,7 +338,7 @@ class ResourceRegistration:
         resource.delete(using=using)
         resource_type.etag = uuid4().hex
         resource_type.modified_at = timezone.now()
-        resource_type.save()
+        resource_type.save(using=using)
 
 
 JSON_SCHEMA_REGISTRATION_ = None

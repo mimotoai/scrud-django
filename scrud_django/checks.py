@@ -105,3 +105,35 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
                 )
             )
     return found
+
+
+def check_write_routing(app_configs, **kwargs):
+    """An Error (``scrud_django.E004``) when the database router sends writes
+    of ``Resource``, ``ResourceType`` and ``ResourceContext`` to different
+    aliases (asked without an instance hint). ``ResourceRegistration`` writes
+    a resource, its context rows and its type's row in one transaction, on the
+    ``Resource`` alias, and the ``WorkflowPolicy`` lock is taken there: on two
+    aliases of one database, a write would wait on its own lock; on two
+    databases, the ``Resource.resource_type`` foreign key would cross them.
+    Not a database check: it reads the routers only."""
+    from django.db import router
+
+    from scrud_django.models import Resource, ResourceContext, ResourceType
+
+    aliases = {
+        model.__name__: router.db_for_write(model)
+        for model in (Resource, ResourceType, ResourceContext)
+    }
+    if len(set(aliases.values())) <= 1:
+        return []
+    routed = ", ".join(f"{name} -> {alias!r}" for name, alias in aliases.items())
+    return [
+        checks.Error(
+            f"scrud_django's models are written to different databases: {routed}.",
+            hint=(
+                "Route Resource, ResourceType and ResourceContext writes to one "
+                "database alias (DATABASE_ROUTERS)."
+            ),
+            id="scrud_django.E004",
+        )
+    ]

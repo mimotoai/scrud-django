@@ -14,11 +14,13 @@ class ScrudConfig(AppConfig):
         from scrud_django.checks import (
             check_default_workflow_policies,
             check_stored_workflow_policies,
+            check_write_routing,
         )
         from scrud_django.permissions import authorized_transitions
 
         register_operator("scrud_workflow", authorized_transitions)
         checks.register(check_default_workflow_policies)
         checks.register(check_stored_workflow_policies, checks.Tags.database)
+        checks.register(check_write_routing)
 
         self.processor = ScrudSignalProcessor()

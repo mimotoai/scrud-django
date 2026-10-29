@@ -62,6 +62,11 @@ REST_FRAMEWORK = {
 
 Request bodies must be JSON: a form or multipart body gets 415.
 
+If you use `DATABASE_ROUTERS`, route the writes of `scrud_django`'s models
+(`Resource`, `ResourceType`, `ResourceContext`) to one database alias:
+scrud-django writes a resource, its context rows and its type's row in one
+transaction there, and the `scrud_django.E004` system check reports a split.
+
 DRF's own default permission is `AllowAny`. The scrud-django viewsets set
 `IsAuthorized` themselves, but any other view in your project (and any view you
 build on scoped-rbac) relies on `DEFAULT_PERMISSION_CLASSES` to fail closed.
