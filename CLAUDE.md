@@ -76,12 +76,13 @@ uv run python manage.py migrate
 uv run python manage.py runserver
 ```
 
-CI is `.gitlab-ci.yml` (lint, migrations check, docs build, tests with coverage
-on 3.11-3.13, the suite on PostgreSQL 14 via `SCRUD_TEST_PG_*` (`test-postgres`),
-a package build/README check, a version-bump check on merge requests). Run the lint and test commands above before committing. Publishing to
-PyPI runs in CI when a merge to `develop` carries a version not yet on PyPI
-(`scripts/release.py`); never run `uv publish` locally or create release tags by
-hand.
+CI is `.gitlab-ci.yml`: lint, migrations check, docs build, tests with
+coverage on 3.11-3.13, the suite on PostgreSQL 14 via `SCRUD_TEST_PG_*`
+(`test-postgres`), a package build/README check, and a version-bump check on
+merge requests. Run the lint and test commands above before committing.
+Publishing to PyPI runs in CI when a merge to `develop` carries a version not
+yet on PyPI (`scripts/release.py`); never run `uv publish` locally or create
+release tags by hand.
 
 ## Test conventions
 
@@ -116,7 +117,11 @@ See `tests/test_conditional.py` for the idiom.
   `scrud_django/views.py`): form or multipart bodies get 415.
 - Tests run on in-memory SQLite unless `SCRUD_TEST_PG_HOST` is set (CI's
   `test-postgres`; see `tests/settings.py`). Code the tests exercise must work
-  on both.
+  on both. The root `manage.py` reads the same settings: with
+  `SCRUD_TEST_PG_HOST` exported it uses that PostgreSQL server's real
+  database (`SCRUD_TEST_PG_NAME`, default `scrud`, not pytest's `test_`
+  copy), so a `migrate` or a write there persists. Unset it (or point it at a
+  throwaway server) before running `manage.py`.
 - Migrations must keep the migrations check above clean. If a model change needs a
   migration, generate it with `uv run python manage.py makemigrations scrud_django`
   and commit it with the model change.

@@ -48,6 +48,61 @@ urlpatterns = [
 If you mount URLs yourself, include `scoped_rbac.semantic_urls`, for example
 `path("semantic/", include("scoped_rbac.semantic_urls"))`.
 
+### Registering resource types
+
+`scrud_django.urls` serves the built-in types (JSON Schemas, JSON-LD
+contexts, indexing and workflow policies). Register each type of your own
+with `registration.json_resource_type`, which stores the type, its JSON
+Schema and its JSON-LD context (as resources) and returns the URLs of its
+list (`<slug>/`: GET, HEAD, POST) and detail (`<slug>/<pk>/`: GET, HEAD,
+PUT, DELETE) routes, named `<slug>-list` and `<slug>-detail`:
+
+```python
+from django.urls import include, path
+from scrud_django import registration
+
+NOTE = "https://example.com/json-ld/Note"
+
+urlpatterns = [
+    path("api/", include("scrud_django.urls")),
+    path(
+        "api/",
+        include(
+            registration.resource_types(
+                registration.json_resource_type(
+                    resource_type_uri=NOTE,
+                    slug="notes",
+                    schema_func=lambda: {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                    context_func=lambda: {
+                        "@context": {"text": "https://schema.org/text"}
+                    },
+                ),
+            )
+        ),
+    ),
+]
+```
+
+`schema_func` and `context_func` return the document (a `dict`, or its JSON
+text, for example read from a file of your package, as the demo's
+`demo/demo/urls.py` does). A POST or PUT body is validated against the
+schema, whose `$ref`s may only point inside it (`#/...`). The registration
+runs when the URLconf is imported: before the first `migrate` it logs that
+it failed and registers nothing, which is expected. Pass
+`viewset_class=ResourceViewSetGenericFilter` (`scrud_django.views`) for a
+list that filters on its query parameters (`?text=...`).
+
+Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
+`http.POST`, `http.PUT`, `http.DELETE`) and `http.GET` on its list type,
+`https://api.openteams.com/json-schema/ResourceCollection?contents_type=<type URI>`
+(`scrud_django.collection_type_uri_for`), in each context whose resources a
+user may list. A resource's context is its content's `rbac_context` (the
+default context `""` without one).
+
 Configure Django REST Framework to authorize with scoped-rbac and to answer
 errors as [RFC 7807](https://tools.ietf.org/html/rfc7807) problem details while
 keeping scrud-django's own validation and workflow error bodies (the scrud
@@ -171,4 +226,7 @@ only) are for running it locally, and with DEBUG off it needs a key of its
 own.
 
 The `manage.py` at the repository root runs on the in-memory test settings
-(nothing persists): use it for `check` and the migrations check only.
+(nothing persists): use it for `check` and the migrations check only. With
+`SCRUD_TEST_PG_HOST` set (see `tests/settings.py`) it uses that PostgreSQL
+server's `SCRUD_TEST_PG_NAME` database (default `scrud`) instead, where
+writes persist.
