@@ -565,8 +565,10 @@ Conditional request handling now comes from scrudful 0.8.
   in the write's transaction. `Resource.objects`, and the base manager
   (`Meta.base_manager_name`, migration `0010_resource_base_manager`, which
   Django's own bulk paths use), is a `ResourceQuerySet`, whose `delete()`
-  stamps the contexts of all the resources it deletes on its database once,
-  by type then context, when it ends (so that two concurrent bulk deletes
+  stamps the contexts of all the resources it deletes on the database it
+  deletes on (its `using()` alias, else the router's `db_for_write`, as
+  Django's own `delete()`; not a read replica) once, by type then context,
+  when it ends (so that two concurrent bulk deletes
   cannot deadlock on the stamps). Stamps are never pruned: there is one per
   type and context ever left, and removing one could make a list's
   `Last-Modified` go back, answering 304 for a list that lost a resource.

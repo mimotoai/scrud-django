@@ -54,10 +54,15 @@ class ResourceQuerySet(models.QuerySet):
         bulk paths use it. A deletion on another database while it runs (a
         signal receiver's) is stamped there at once. Only a deletion of many
         resources through a ``Collector`` built by hand, outside a queryset,
-        still stamps them one by one."""
-        with transaction.atomic(using=self.db, savepoint=False):
+        still stamps them one by one.
+
+        It runs on the database Django's ``delete()`` deletes on: the
+        queryset's ``using()`` alias, else the router's ``db_for_write`` (not
+        ``self.db``, which is ``db_for_read`` there: a read replica)."""
+        db = self._db or router.db_for_write(self.model, **self._hints)
+        with transaction.atomic(using=db, savepoint=False):
             pending = set()
-            token = _PENDING_STAMPS.set((self.db, pending))
+            token = _PENDING_STAMPS.set((db, pending))
             try:
                 result = super().delete()
             finally:
@@ -66,7 +71,7 @@ class ResourceQuerySet(models.QuerySet):
             for type_id, context in pending:
                 contexts_by_type.setdefault(type_id, set()).add(context)
             for type_id in sorted(contexts_by_type):
-                stamp_removals(type_id, sorted(contexts_by_type[type_id]), self.db)
+                stamp_removals(type_id, sorted(contexts_by_type[type_id]), db)
         return result
 
     delete.alters_data = True

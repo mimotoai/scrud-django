@@ -308,3 +308,45 @@ def test_a_deletion_on_another_database_during_a_bulk_delete_stamps_there(
     finally:
         post_delete.disconnect(delete_elsewhere, sender=Resource)
     assert calls == [(["z"], "other"), (["a"], "default")]
+
+
+class ReplicaRouter:
+    """Reads from a replica ("other"), writes to "default"."""
+
+    def db_for_read(self, model, **hints):
+        return "other"
+
+    def db_for_write(self, model, **hints):
+        return "default"
+
+    def allow_relation(self, *args, **kwargs):
+        return True
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_a_bulk_delete_under_a_replica_router_stamps_once_on_the_write_database(
+    monkeypatch,
+):
+    # A queryset without using() reads on the replica, and deletes on the
+    # write database (Django's delete() is a write): its stamps are taken
+    # together there, once, in one order, as without a router.
+    from django.db import router
+
+    from scrud_django.models import resource as resource_module
+
+    first = profile("first", rbac_context="b")
+    second = profile("second", rbac_context=["c", "a"])
+    calls = []
+    original = resource_module.stamp_removals
+
+    def recording(resource_type_id, contexts, using):
+        calls.append((resource_type_id, list(contexts), using))
+        return original(resource_type_id, contexts, using)
+
+    monkeypatch.setattr(resource_module, "stamp_removals", recording)
+    monkeypatch.setattr(router, "routers", [ReplicaRouter()])
+    queryset = Resource.objects.filter(pk__in=[first.pk, second.pk])
+    assert queryset.db == "other"
+    queryset.delete()
+    assert calls == [(first.resource_type_id, ["a", "b", "c"], "default")]
+    assert not Resource.objects.using("default").filter(pk=first.pk).exists()
