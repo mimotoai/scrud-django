@@ -138,7 +138,14 @@ django-scoped-rbac 0.11. It has several breaking changes.
     grant one it refuses (their `has_context_permission` is given the
     `TransitionCheck` of the transition in each context, whose mapping is the
     request body as sent, not the stored resource). Your operators get the
-    `ResourceCheck` on object checks (they got the `Resource`).
+    `ResourceCheck` on object checks (they got the `Resource`). Lists ask
+    them too: on a view whose `IsAuthorized` subclass overrides
+    `has_object_permission` or `has_context_permission`, a list keeps only
+    the resources its `has_object_permission` allows (see Lists below), so
+    it shows what the detail route shows; every resource of such a list then
+    counts against `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` (a 400 past
+    it), and its `Last-Modified` no longer moves when a resource is removed
+    (its `ETag` does). The same holds for your `GenericViewMixin` lists.
 21. Django admin: `Resource` and `ResourceType` are now shown to superusers
     only. Staff who are not superusers no longer see them, whatever model
     permissions they hold (a write there bypasses RBAC, the workflow and JSON
@@ -195,6 +202,24 @@ django-scoped-rbac 0.11. It has several breaking changes.
   with those contexts, each given the `ResourceCheck`
   (`scrud_django.filters.filter_readable_resources_per_object`), so its list
   agrees with its detail route too.
+* A view whose `IsAuthorized` (a subclass of your own) overrides
+  `has_object_permission` or `has_context_permission` may refuse what the
+  grants allow, which SQL cannot see. Its list is narrowed further, right
+  after the RBAC filter (before query parameter filters): each resource is
+  given to the permission class's `has_object_permission` as the detail
+  route gives it (a `ResourceCheck`, with the request's `http.GET` on the
+  item type; the view's `action` reads `"retrieve"` while it is asked), and
+  only those it allows are listed, superusers' lists included. Every
+  resource it examines counts against
+  `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`, outright-readable ones
+  included (past it, the list is a 400 `conditional_list_too_large`). Its
+  `ETag` and `Last-Modified` come from what it lists; a removal does not
+  move its `Last-Modified` (the class may have refused the resource that
+  left), its `ETag` changes
+  ([list-last-modified-deletes](follow-ups.md#list-last-modified-deletes)).
+  `GenericViewMixin` lists are narrowed the same way, each object given as
+  it is. A permission class that overrides neither is listed in SQL as
+  before.
 * A list's `ETag` and `Last-Modified` come from what the requester gets: the
   `ETag` is a hash of the page's resources (their keys and ETags, in order),
   the list's count and the query parameters; `Last-Modified` is the newest
@@ -479,7 +504,12 @@ Conditional request handling now comes from scrudful 0.8.
   only while uniform errors are on);
   `LockedWriteMixin` (`dispatch`, `locked_write_database()`, `locked()`,
   `locked_write_db`); and `ListValidatorsMixin` (`list_queryset()`,
-  `list_page()`, `list_etag()`, `list_last_modified()`). `GenericViewMixin`
+  `list_page()`, `list_etag()`, `list_last_modified()`, and
+  `filter_queryset()`, which runs the `filter_backends` itself to narrow a
+  list by an overriding permission class's object check right after the
+  `RbacFilter`, with `lists_by_object_checks()` and `object_for_checks()`;
+  `scrud_django.filters.object_check_requirement` and
+  `filter_by_object_checks` do the work). `GenericViewMixin`
   now runs a PUT, PATCH or DELETE in one transaction on
   `locked_write_database()` (`router.db_for_write` of its `queryset`'s model;
   the default database without a `queryset` attribute), its `get_object`

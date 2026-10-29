@@ -6,6 +6,7 @@ them in SQL. `ResourceContentFilter` filters a list on query parameters.
 """
 
 import re
+from contextlib import contextmanager
 
 from django.db.models import (
     BooleanField,
@@ -24,7 +25,12 @@ from rest_framework.settings import api_settings
 from scoped_rbac import access
 from scoped_rbac.conf import conditional_list_max_rows
 from scoped_rbac.filters import RbacFilter
-from scoped_rbac.permissions import AccessAPIError, http_action_iri_for, policy_for
+from scoped_rbac.permissions import (
+    AccessAPIError,
+    IsAuthorized,
+    http_action_iri_for,
+    policy_for,
+)
 from scoped_rbac.policy import Permission
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
@@ -226,6 +232,105 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
     return queryset.filter(pk__in=allowed_pks)
 
 
+def overrides_object_checks(permission):
+    """Whether `permission` (an ``IsAuthorized``) overrides
+    ``has_object_permission`` or ``has_context_permission``: its object check
+    may then refuse what the grants allow, which the SQL filter cannot see."""
+    cls = type(permission)
+    return (
+        cls.has_object_permission is not IsAuthorized.has_object_permission
+        or cls.has_context_permission is not IsAuthorized.has_context_permission
+    )
+
+
+def _requirement_leaves(requirement):
+    for entry in requirement:
+        if isinstance(entry, access.AnyOf):
+            for option in entry.options:
+                yield from _requirement_leaves(
+                    option if isinstance(option, (list, tuple)) else [option]
+                )
+        else:
+            yield entry
+
+
+def object_check_requirement(view):
+    """What `view`'s permissions require of an object as far as RBAC is
+    concerned (``AccessControlledAPIView.rbac_requirement``: entries that must
+    all allow it, an ``access.AnyOf`` of alternatives for DRF's ``|``), when
+    an ``IsAuthorized`` in it overrides ``has_object_permission`` or
+    ``has_context_permission`` (`overrides_object_checks`); else ``None``,
+    and the list is decided by the grants (and ``contexts_for``) alone. A
+    view without ``rbac_requirement`` requires each of its ``IsAuthorized``
+    permissions."""
+    rbac_requirement = getattr(view, "rbac_requirement", None)
+    if callable(rbac_requirement):
+        requirement = list(rbac_requirement())
+    else:
+        permissions = getattr(view, "get_permissions", None)
+        permissions = permissions() if callable(permissions) else []
+        requirement = [p for p in permissions if isinstance(p, IsAuthorized)]
+    if any(map(overrides_object_checks, _requirement_leaves(requirement))):
+        return requirement
+    return None
+
+
+@contextmanager
+def as_detail_route(view):
+    """`view` as its detail route has it while the block runs: its
+    ``action`` is ``"retrieve"``, so that ``resource_type_iri_for`` (and so
+    ``IsAuthorized``'s object check) names the item type, not the list type."""
+    missing = object()
+    previous = view.__dict__.get("action", missing)
+    view.action = "retrieve"
+    try:
+        yield view
+    finally:
+        if previous is missing:
+            del view.action
+        else:
+            view.action = previous
+
+
+def filter_by_object_checks(queryset, request, view, requirement, object_for_checks):
+    """`queryset` (a list, already RBAC-filtered) restricted to the objects
+    `view`'s object check allows, as the detail route asks it: each
+    ``IsAuthorized`` of `requirement` (`object_check_requirement`; any option
+    of an ``access.AnyOf`` suffices) must allow
+    ``has_object_permission(request, view, object_for_checks(obj))``, with
+    the request's method (GET or HEAD) on the view's item type
+    (`as_detail_route`). An object stored in a context reserved once
+    normalised is left out (its detail route is a 404). Every object examined
+    counts against ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``: past it,
+    ``access.ConditionalListTooLarge``."""
+
+    def meets(entry, check):
+        if isinstance(entry, access.AnyOf):
+            return any(
+                all(meets(e, check) for e in option)
+                if isinstance(option, (list, tuple))
+                else meets(option, check)
+                for option in entry.options
+            )
+        return entry.has_object_permission(request, view, check)
+
+    max_rows = conditional_list_max_rows()
+    allowed_pks = []
+    bounded = queryset.order_by()[: max_rows + 1]
+    with as_detail_route(view):
+        for count, obj in enumerate(
+            bounded.iterator(chunk_size=CANDIDATE_CHUNK_SIZE), start=1
+        ):
+            if count > max_rows:
+                raise access.ConditionalListTooLarge()
+            if access.stored_in_reserved_context(obj):
+                continue
+            check = object_for_checks(obj)
+            if all(meets(entry, check) for entry in requirement):
+                allowed_pks.append(obj.pk)
+    return queryset.filter(pk__in=allowed_pks)
+
+
 def readable_removal(request, view, resource_type, using=None):
     """The newest `ResourceRemoval` stamp of `resource_type` a list `view`'s
     ``Last-Modified`` takes for `request` (``None`` for none): of the contexts
@@ -235,9 +340,12 @@ def readable_removal(request, view, resource_type, using=None):
     plainly reserved for a grant in every context, else the contexts that
     grant it outright. A context that grants it only by a condition is left
     out: the resource that left may be one the condition refuses. Without
-    `ResourceRbacFilter` among the view's ``filter_backends``, or with an
+    `ResourceRbacFilter` among the view's ``filter_backends``, with an
     ``IsAuthorized`` that overrides ``contexts_for`` (whose contexts are not
-    the stamped ones), there is none. Read on database `using` (the list's)."""
+    the stamped ones), or with one that overrides ``has_object_permission``
+    or ``has_context_permission`` (`object_check_requirement`: it may refuse
+    the resource that left), there is none. Read on database `using` (the
+    list's)."""
     backends = getattr(view, "filter_backends", ())
     if not any(
         isinstance(backend, type) and issubclass(backend, ResourceRbacFilter)
@@ -245,6 +353,8 @@ def readable_removal(request, view, resource_type, using=None):
     ):
         return None
     if access.non_default_contexts_for(RbacFilter.contexts_for(view)) is not None:
+        return None
+    if object_check_requirement(view) is not None:
         return None
     stamps = ResourceRemoval.objects.filter(resource_type=resource_type)
     if using is not None:
@@ -273,7 +383,10 @@ class ResourceRbacFilter(RbacFilter):
     ``RbacFilter``'s. A view whose ``IsAuthorized`` overrides ``contexts_for``
     is listed per object with those contexts
     (`filter_readable_resources_per_object`), with the item type's
-    permission."""
+    permission. A view whose ``IsAuthorized`` overrides
+    ``has_object_permission`` or ``has_context_permission`` is narrowed
+    further, after this filter, by its view
+    (``ListValidatorsMixin.filter_queryset``, `filter_by_object_checks`)."""
 
     def filter_queryset_for_get(self, request, queryset, view):
         if self.is_detail_request(request, view) or not issubclass(

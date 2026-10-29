@@ -1,8 +1,10 @@
-"""scrud-django re-implements two upstream functions to give object checks a
+"""scrud-django re-implements three upstream functions, two to give object checks a
 `ResourceCheck`: DRF's ``GenericAPIView.get_object`` (as
 ``ResourceViewMixin.get_object``) and scoped-rbac's private
 ``access._filter_per_object`` (as
-``filters.filter_readable_resources_per_object``). These tests fail when
+``filters.filter_readable_resources_per_object``), and DRF's
+``GenericAPIView.filter_queryset`` (as ``ListValidatorsMixin.filter_queryset``,
+which narrows a list by the object check after the RBAC filter). These tests fail when
 upstream drifts from what was re-implemented: the names the upstream code
 uses are pinned, and the re-implementations must give upstream's results
 where upstream's behaviour is the one wanted.
@@ -66,6 +68,17 @@ def test_drfs_get_object_is_what_resource_view_mixin_re_implements():
         "kwargs",
         "lookup_field",
         "lookup_url_kwarg",
+        "request",
+    )
+
+
+def test_drfs_filter_queryset_is_what_list_validators_mixin_re_implements():
+    # ListValidatorsMixin.filter_queryset runs each filter backend itself, to
+    # narrow a list by the object check right after the RBAC filter.
+    assert code_names(GenericAPIView.filter_queryset) == (
+        "filter_backends",
+        "filter_queryset",
+        "list",
         "request",
     )
 

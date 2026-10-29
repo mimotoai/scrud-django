@@ -60,7 +60,8 @@ urlpatterns.extend(
         path(
             "denying/partner-profiles/",
             ContextDenyingResourceViewSet.as_view(
-                {"post": "create"}, resource_type_name="partner-profiles"
+                {"get": "list", "head": "list", "post": "create"},
+                resource_type_name="partner-profiles",
             ),
             name="denying-partner-profiles-list",
         ),
@@ -98,7 +99,8 @@ urlpatterns.extend(
         path(
             "locking/json-ld/",
             LockedDenyingResourceViewSet.as_view(
-                {"post": "create"}, resource_type_name="json-ld"
+                {"get": "list", "head": "list", "post": "create"},
+                resource_type_name="json-ld",
             ),
             name="locking-json-ld-list",
         ),
@@ -139,7 +141,7 @@ urlpatterns.extend(
         path(
             "recording/partner-profiles/",
             RecordingResourceViewSet.as_view(
-                {"post": "create"}, resource_type_name="partner-profiles"
+                {"get": "list", "post": "create"}, resource_type_name="partner-profiles"
             ),
             name="recording-partner-profiles-list",
         ),
@@ -299,6 +301,41 @@ urlpatterns.extend(
                 {"get": "retrieve", "put": "update", "delete": "destroy"}
             ),
             name="generic-notes-detail",
+        ),
+    ]
+)
+
+
+class ContextDenyingNoteViewSet(NoteViewSet):
+    """The notes again, authorized by ContextDenyingIsAuthorized."""
+
+    permission_classes = [ContextDenyingIsAuthorized]
+
+
+class PagedContextDenyingNoteViewSet(ContextDenyingNoteViewSet):
+    """The notes again, authorized by ContextDenyingIsAuthorized, listed from
+    `list_queryset` (as a GenericViewMixin list should serve it)."""
+
+    def list(self, request):
+        return Response(self.get_serializer(self.list_queryset(), many=True).data)
+
+
+urlpatterns.extend(
+    [
+        path(
+            "generic/denying-notes/",
+            ContextDenyingNoteViewSet.as_view({"get": "list", "head": "list"}),
+            name="generic-denying-notes-list",
+        ),
+        path(
+            "generic/denying-notes/<slug>/",
+            ContextDenyingNoteViewSet.as_view({"get": "retrieve"}),
+            name="generic-denying-notes-detail",
+        ),
+        path(
+            "generic/denying-notes-from-list-queryset/",
+            PagedContextDenyingNoteViewSet.as_view({"get": "list", "head": "list"}),
+            name="generic-denying-notes-from-list-queryset",
         ),
     ]
 )

@@ -62,9 +62,10 @@ resources, the count, the query parameters) changes, and `If-None-Match`
 takes precedence (RFC 9110 §13.2.2).
 
 The same holds, for the same reason, for a view whose `IsAuthorized`
-overrides `contexts_for` (its contexts are not the stamped ones), and for
-`GenericViewMixin` lists (models of your own have no stamps): a deletion
-changes their `ETag`, not their `Last-Modified`.
+overrides `contexts_for` (its contexts are not the stamped ones) or
+`has_object_permission` or `has_context_permission` (it may have refused the
+resource that left), and for `GenericViewMixin` lists (models of your own
+have no stamps): a deletion changes their `ETag`, not their `Last-Modified`.
 `tests/test_list_removals.py::test_a_removal_a_condition_decides_does_not_move_last_modified`
 pins the conditional case.
 

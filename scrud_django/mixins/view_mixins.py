@@ -13,11 +13,15 @@ from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
-from scoped_rbac.permissions import drf_error
+from scoped_rbac.permissions import AccessAPIError, drf_error
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django.exceptions import RbacContextInvalidError, RequestBodyMissingError
-from scrud_django.filters import readable_removal
+from scrud_django.filters import (
+    filter_by_object_checks,
+    object_check_requirement,
+    readable_removal,
+)
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
@@ -256,7 +260,64 @@ class ListValidatorsMixin:
     whose ``Meta`` (`ScrudfulMeta`) gives scrudful `list_etag` and
     `list_last_modified`. A write to an object the requester cannot list
     changes neither. A ``list`` should serve `list_page` (or `list_queryset`
-    without a paginator), so that the validators describe what it sends."""
+    without a paginator), so that the validators describe what it sends.
+
+    A list (`filter_queryset` of a GET or HEAD outside ``get_object()``) of
+    a view whose ``IsAuthorized`` overrides ``has_object_permission`` or
+    ``has_context_permission`` keeps only the objects that object check
+    allows, as the detail route asks it (`filter_by_object_checks`, given
+    `object_for_checks`), so that it shows what the detail route shows."""
+
+    # True while ``get_object()`` runs: its lookup is not a list.
+    _scrud_in_get_object = False
+
+    def object_for_checks(self, obj):
+        """`obj` as the detail route gives it to the object check: itself
+        (`ResourceViewMixin` gives a `ResourceCheck`)."""
+        return obj
+
+    def lists_by_object_checks(self):
+        """The RBAC requirement a list's objects are each checked against
+        (`scrud_django.filters.object_check_requirement`), for a GET or HEAD
+        outside ``get_object()``; ``None`` for none."""
+        if self._scrud_in_get_object:
+            return None
+        if self.request.method not in ("GET", "HEAD"):
+            return None
+        return object_check_requirement(self)
+
+    def filter_queryset(self, queryset):
+        """DRF's (each of ``filter_backends`` in turn), except that a list
+        whose objects are each checked (`lists_by_object_checks`) is
+        narrowed by that check right after the first ``RbacFilter`` (after
+        them all without one): before other backends, such as query
+        parameter filters, so that the count against
+        ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`` (a 400 past it) does not
+        depend on them."""
+        requirement = self.lists_by_object_checks()
+        if requirement is None:
+            return super().filter_queryset(queryset)
+        narrowed = False
+        for backend in list(self.filter_backends):
+            queryset = backend().filter_queryset(self.request, queryset, self)
+            if (
+                not narrowed
+                and isinstance(backend, type)
+                and issubclass(backend, RbacFilter)
+            ):
+                queryset = self._narrow_by_object_checks(queryset, requirement)
+                narrowed = True
+        if not narrowed:
+            queryset = self._narrow_by_object_checks(queryset, requirement)
+        return queryset
+
+    def _narrow_by_object_checks(self, queryset, requirement):
+        try:
+            return filter_by_object_checks(
+                queryset, self.request, self, requirement, self.object_for_checks
+            )
+        except access.ConditionalListTooLarge as exc:
+            raise AccessAPIError(exc) from exc
 
     def list_queryset(self):
         """The list's objects: ``filter_queryset(get_queryset())``, so that
@@ -372,13 +433,21 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         and ``has_context_permission`` it calls, and the readability check of
         a denied resource (404 or 403), so that an operator reads the content
         as on the request check. The `Resource` is returned."""
-        queryset = self.filter_queryset(self.get_queryset())
+        previous, self._scrud_in_get_object = self._scrud_in_get_object, True
+        try:
+            queryset = self.filter_queryset(self.get_queryset())
+        finally:
+            self._scrud_in_get_object = previous
         lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
         obj = get_object_or_404(
             queryset, **{self.lookup_field: self.kwargs[lookup_url_kwarg]}
         )
-        self.check_object_permissions(self.request, resource_check(obj))
+        self.check_object_permissions(self.request, self.object_for_checks(obj))
         return obj
+
+    def object_for_checks(self, obj):
+        """`obj` as object checks get it: a `ResourceCheck`."""
+        return resource_check(obj)
 
     def get_instance(self, request, slug: str):
         """The resource named by the URL: DRF's ``get_object()``, filtered and
@@ -663,13 +732,17 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
         last writer committed it. A lookup that finds a row the lock did not
         take (one that came to match the URL after the key was read) is a
         404."""
-        if self.locked_write_db is None:
-            return super().get_object()
-        locked = self.lock_object_row()
-        obj = super().get_object()
-        if locked is not None and obj.pk not in locked:
-            raise Http404
-        return obj
+        previous, self._scrud_in_get_object = self._scrud_in_get_object, True
+        try:
+            if self.locked_write_db is None:
+                return super().get_object()
+            locked = self.lock_object_row()
+            obj = super().get_object()
+            if locked is not None and obj.pk not in locked:
+                raise Http404
+            return obj
+        finally:
+            self._scrud_in_get_object = previous
 
     def lock_object_row(self):
         """Lock (``select_for_update``) the rows of the view's model that the
