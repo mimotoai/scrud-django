@@ -1,10 +1,12 @@
 import fastjsonschema
+from scoped_rbac import access
 from scoped_rbac.permissions import http_action_iri_for, policy_for
 from scoped_rbac.policy import Permission
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.conf import default_workflow_policies
 from scrud_django.exceptions import JsonValidationError, WorkflowTransitionError
+from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource, ResourceType
 from scrud_django.permissions import TransitionCheck
 from scrud_django.registration import workflow_policy_resource_type
@@ -100,7 +102,7 @@ class WorkflowValidator:
                     )
                 self.apply(workflow_policy, data, context)
         elif (
-            data.get("rbac_context", None) is None
+            DEFAULT_CONTEXT in rbac_contexts_of(data)
             and resource_type.type_uri in self.default_policies
         ):
             workflow_policy = self.default_policies[resource_type.type_uri]
@@ -121,11 +123,18 @@ class WorkflowValidator:
         permission = Permission(
             http_action_iri_for(request), context.resource_type.type_uri
         )
-        if not permissions_policy.should_allow(
-            permission,
-            data.get("rbac_context", DEFAULT_CONTEXT),
-            resource=TransitionCheck(transition_data.transition),
-        ):
+        transition = TransitionCheck(transition_data.transition)
+        # The transition must be allowed in every context the resource is in.
+        contexts = rbac_contexts_of(data)
+        if contexts:
+            allowed = all(
+                permissions_policy.should_allow(permission, c, resource=transition)
+                for c in contexts
+            )
+        else:
+            # No context: only a superuser (as scoped-rbac's object checks).
+            allowed = access.may_act_on(request, permission, transition, [])
+        if not allowed:
             raise WorkflowTransitionError(
                 workflow_policy.policy,
                 transition_data.prior_state,

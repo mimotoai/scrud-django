@@ -1,3 +1,5 @@
+from collections.abc import Mapping
+
 from django.db import models
 from django.db.models import JSONField
 from django.utils.translation import gettext_lazy as _
@@ -16,6 +18,24 @@ from scrud_django.workflow import (
 from ..scrud_signals import scrud_post_delete, scrud_post_save
 
 workflow_policy_type_uri = "http://api.openteams.com/json-ld/WorkflowPolicy"
+
+
+def rbac_contexts_of(content):
+    """The contexts a resource's `content` is in: its ``rbac_context`` when it is
+    a string or a list or tuple of strings, else ``DEFAULT_CONTEXT``, the
+    context scoped-rbac authorizes a POST that names none in. Without it a
+    resource that names none would have no context, which no role grants.
+    Absent, ``None`` and ``""`` are all the default context. The one reading of
+    a resource's contexts: object checks (``Resource.rbac_contexts``) and the
+    workflow checks (``WorkflowValidator``) both use it."""
+    context = content.get("rbac_context") if isinstance(content, Mapping) else None
+    if isinstance(context, str):
+        return [context]
+    if isinstance(context, (list, tuple)) and all(
+        isinstance(item, str) for item in context
+    ):
+        return list(context)
+    return [DEFAULT_CONTEXT]
 
 
 class ScrudfulMixin(models.Model):
@@ -53,19 +73,9 @@ class ResourceMixin(ScrudfulMixin):
     @property
     def rbac_contexts(self):
         """The contexts scoped-rbac checks this resource in (its object checks
-        read ``rbac_contexts`` before ``rbac_context``): the content's
-        ``rbac_context`` when it is a string or a list or tuple of strings, else
-        ``DEFAULT_CONTEXT``, the context scoped-rbac authorizes a POST that names
-        none in. Without it a resource that names none would have no context,
-        which no role grants."""
-        context = self.rbac_context
-        if isinstance(context, str):
-            return [context]
-        if isinstance(context, (list, tuple)) and all(
-            isinstance(item, str) for item in context
-        ):
-            return list(context)
-        return [DEFAULT_CONTEXT]
+        read ``rbac_contexts`` before ``rbac_context``): `rbac_contexts_of` its
+        content."""
+        return rbac_contexts_of(self.content)
 
     def save(
         self, force_insert=False, force_update=False, using=None, update_fields=None
@@ -127,7 +137,8 @@ class ResourceMixin(ScrudfulMixin):
             content__resource_type=self.resource_type.type_uri,
         )
         dflt_workflow_policies = default_workflow_policies()
-        if workflow.exists() and self.rbac_context is None:
+        # The default context however the content names it (absent, None, "").
+        if workflow.exists() and DEFAULT_CONTEXT in self.rbac_contexts:
             return WorkflowPolicy(workflow.first().content)
         elif workflow.exists() and self.rbac_context:
             return WorkflowPolicy(
