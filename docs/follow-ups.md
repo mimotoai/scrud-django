@@ -302,34 +302,6 @@ Suggested fix: route the post-save check through the permission class's own
 method (or document that it uses `may_act_in`), and test a subclass that denies
 a context.
 
-<a id="policy-recheck-isolation"></a>
-## policy-recheck-isolation: the policy uniqueness re-check assumes READ COMMITTED
-
-A `WorkflowPolicy` write takes `lock_workflow_policy_type` and, after its
-save, re-checks that it is the only policy for its type in its context
-(`ResourceViewMixin.serialized_policy_save`). A writer blocked on the lock
-sees the policy the first writer committed only if its re-check reads
-committed data: true under PostgreSQL's default READ COMMITTED. Under
-PostgreSQL REPEATABLE READ or SERIALIZABLE, or MySQL's default REPEATABLE
-READ, the blocked writer's snapshot may predate the other commit, so the
-re-check misses the duplicate (PostgreSQL SERIALIZABLE may instead fail the
-transaction with a serialization error, a 500).
-
-`stored_policies_for` reads through the write database
-(`router.db_for_write(Resource)`), so a read-replica router does not make the
-re-check read stale rows
-(`tests/test_policy_duplicates.py::test_policy_lookup_reads_the_write_database`).
-
-Impact: on those isolation levels, concurrent creates can still store
-duplicates. They fail closed (writes of the type in that context are
-`ImproperlyConfigured`) and the `scrud_django.E002` database check reports
-them.
-
-Suggested fix: document READ COMMITTED as the supported isolation level, or
-re-run the re-check in a fresh transaction (or a `SELECT ... FOR UPDATE` on the
-policy rows, which PostgreSQL reads at the latest committed version). Test:
-needs PostgreSQL with two connections.
-
 <a id="eager-callable-default-policies"></a>
 ## eager-callable-default-policies: a callable default that raises fails every type
 
@@ -443,3 +415,37 @@ after it changed. `ResourceViewMixin`'s lists no longer use them.
 Suggested fix: give `GenericViewMixin` the same `list_etag` /
 `list_last_modified` over `filter_queryset(get_queryset())` as
 `ResourceViewMixin`, or none; test a write followed by `If-None-Match`.
+
+# Decided
+
+<a id="policy-recheck-isolation"></a>
+## policy-recheck-isolation: concurrency control assumes READ COMMITTED
+
+Decision: READ COMMITTED is the supported isolation level; the
+`scrud_django.W002` database check warns about any other.
+
+A write blocked on a resource's row lock (a PUT or DELETE) or on the
+`WorkflowPolicy` type lock reads, once it gets the lock, what the writer it
+waited for committed: its precondition, its workflow check and the
+`WorkflowPolicy` uniqueness re-check
+(`ResourceViewMixin.serialized_policy_save`) see that write. That holds under
+READ COMMITTED, PostgreSQL's default and Django's MySQL backend's default.
+
+Above it, on PostgreSQL 14 (REPEATABLE READ or SERIALIZABLE, set with
+`OPTIONS["isolation_level"]`), the second of two concurrent `WorkflowPolicy`
+writes that would make a duplicate fails with "could not serialize access
+due to concurrent update" when it gets the type lock: a 500, and no
+duplicate is stored. Concurrent PUTs or DELETEs of one resource fail the same
+way instead of answering 412 or 400. Reading the candidate policies with
+`SELECT ... FOR UPDATE` in the re-check changes neither outcome on
+PostgreSQL, so the re-check does not do it. On MySQL or MariaDB at REPEATABLE
+READ (the server default, which Django's backend overrides unless
+`OPTIONS["isolation_level"]` says otherwise), the re-check reads its
+snapshot and can miss a concurrent duplicate (not tested here). Duplicates
+fail closed (writes of the type in that context are `ImproperlyConfigured`)
+and the `scrud_django.E002` database check reports them.
+
+`stored_policies_for` reads through the write database
+(`router.db_for_write(Resource)`), so a read-replica router does not make the
+re-check read stale rows
+(`tests/test_policy_duplicates.py::test_policy_lookup_reads_the_write_database`).

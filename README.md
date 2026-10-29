@@ -67,6 +67,11 @@ If you use `DATABASE_ROUTERS`, route the writes of `scrud_django`'s models
 scrud-django writes a resource, its context rows and its type's row in one
 transaction there, and the `scrud_django.E004` system check reports a split.
 
+Run the database at READ COMMITTED, the supported transaction isolation level
+(PostgreSQL's default; Django's MySQL backend uses it unless
+`OPTIONS["isolation_level"]` says otherwise). `manage.py check --database
+default` warns about another (`scrud_django.W002`).
+
 DRF's own default permission is `AllowAny`. The scrud-django viewsets set
 `IsAuthorized` themselves, but any other view in your project (and any view you
 build on scoped-rbac) relies on `DEFAULT_PERMISSION_CLASSES` to fail closed.

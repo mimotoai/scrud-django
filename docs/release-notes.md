@@ -56,7 +56,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
 13. If you use `DATABASE_ROUTERS`, route `Resource`, `ResourceType` and
     `ResourceContext` writes to one alias: `manage.py check` now reports a
     split as `scrud_django.E004`.
-14. A PUT or DELETE now holds its resource's row lock until its response is
+14. Run your database at READ COMMITTED, the supported transaction isolation
+    level (`manage.py check --database default` reports another as
+    `scrud_django.W002`).
+15. A PUT or DELETE now holds its resource's row lock until its response is
     ready (see Conditional requests below). Subclasses of `ResourceViewMixin`
     that override `dispatch`, `initial` or `get_queryset` must call `super()`;
     server code that updates or deletes a resource should go through
@@ -164,6 +167,18 @@ Conditional request handling now comes from scrudful 0.8.
   behind each other; a `WorkflowPolicy` write takes the `WorkflowPolicy` type
   lock before the row's, as before. SQLite ignores the row lock; its writes
   are serialized anyway.
+* READ COMMITTED is the supported transaction isolation level (PostgreSQL's
+  default, and Django's for MySQL): a write that waited for a lock then sees
+  what the write it waited for committed. A new database check,
+  `scrud_django.W002` (`manage.py check --database <alias>`, also run by
+  `migrate`), warns when transactions on the database scrud-django writes
+  resources to run above it. On PostgreSQL at REPEATABLE READ or
+  SERIALIZABLE, the second of two concurrent writes of one resource (or of two
+  `WorkflowPolicy` writes that would make a duplicate) fails with a
+  serialization error, a 500, instead of a 412 or 400; on MySQL or MariaDB at
+  REPEATABLE READ, the `WorkflowPolicy` uniqueness re-check can miss a
+  concurrent duplicate
+  ([policy-recheck-isolation](follow-ups.md#policy-recheck-isolation)).
 
 ### Authorization
 

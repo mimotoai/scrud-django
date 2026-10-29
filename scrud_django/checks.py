@@ -137,3 +137,84 @@ def check_write_routing(app_configs, **kwargs):
             id="scrud_django.E004",
         )
     ]
+
+
+# The isolation levels scrud-django's concurrency control is written for: a
+# statement sees what other transactions committed before it started.
+SUPPORTED_ISOLATION_LEVELS = ("read committed", "read uncommitted")
+
+# How to ask each backend for the isolation level of a transaction, in order
+# (MySQL before 5.7.20 and MariaDB before 11.1 know only ``tx_isolation``).
+ISOLATION_QUERIES = {
+    "postgresql": ["SHOW transaction_isolation"],
+    "mysql": [
+        "SELECT @@SESSION.transaction_isolation",
+        "SELECT @@SESSION.tx_isolation",
+    ],
+}
+
+
+def transaction_isolation(alias):
+    """The isolation level of a transaction on database `alias`, in lower
+    case with spaces (``"read committed"``), asked inside one (PostgreSQL
+    applies ``OPTIONS["isolation_level"]`` per transaction). ``None`` for a
+    backend this does not ask (SQLite, whose writes are serialized anyway) or
+    when the level cannot be read."""
+    from django.db import DatabaseError, connections, transaction
+
+    connection = connections[alias]
+    for sql in ISOLATION_QUERIES.get(connection.vendor, ()):
+        try:
+            with transaction.atomic(using=alias), connection.cursor() as cursor:
+                cursor.execute(sql)
+                row = cursor.fetchone()
+        except DatabaseError:
+            continue
+        if row and row[0]:
+            return str(row[0]).replace("-", " ").lower()
+    return None
+
+
+def check_isolation_level(app_configs, databases=None, **kwargs):
+    """A database check: a Warning (``scrud_django.W002``) when transactions
+    on the database scrud-django writes resources to
+    (``router.db_for_write(Resource)``), among `databases`, run above READ
+    COMMITTED, the supported level. Under it, a write blocked on a row or the
+    ``WorkflowPolicy`` lock reads what the writer it waited for committed. At
+    REPEATABLE READ or SERIALIZABLE, PostgreSQL fails that write with a
+    serialization error (a 500); MySQL and MariaDB read their snapshot, so the
+    ``WorkflowPolicy`` uniqueness re-check can miss a concurrent duplicate.
+    Django's MySQL backend uses READ COMMITTED unless
+    ``OPTIONS["isolation_level"]`` says otherwise."""
+    from django.db import router
+
+    from scrud_django.models import Resource
+
+    write = router.db_for_write(Resource)
+    found = []
+    for alias in databases or ():
+        if alias != write:
+            continue
+        level = transaction_isolation(alias)
+        if level is None or level in SUPPORTED_ISOLATION_LEVELS:
+            continue
+        found.append(
+            checks.Warning(
+                f"Transactions on database {alias!r}, where scrud-django writes "
+                f"resources, run at {level.upper()}; scrud-django supports READ "
+                "COMMITTED. Concurrent writes of one resource, or of "
+                "WorkflowPolicy resources, can fail with a serialization error "
+                "(a 500) instead of a 412 or 400, and on MySQL or MariaDB two "
+                "WorkflowPolicy resources can be stored for one type and "
+                "context.",
+                hint=(
+                    f'Use READ COMMITTED: leave DATABASES[{alias!r}]["OPTIONS"]'
+                    '["isolation_level"] out (or set it to read committed: '
+                    'psycopg.IsolationLevel.READ_COMMITTED, or "read committed" '
+                    "on MySQL), and keep the server's default isolation level "
+                    "at read committed."
+                ),
+                id="scrud_django.W002",
+            )
+        )
+    return found
