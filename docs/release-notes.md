@@ -197,6 +197,13 @@ django-scoped-rbac 0.11. It has several breaking changes.
     only. Staff who are not superusers no longer see them, whatever model
     permissions they hold (a write there bypasses RBAC, the workflow and JSON
     Schema validation).
+22. Roles: a grant conditioned on `scrud_workflow` now allows workflow
+    transitions only (see Workflows below); it no longer gives `http.GET`
+    (detail or list) or `http.DELETE`. Roles that should read need their own
+    `http.GET` grant on the type, and roles that should delete their own
+    `http.DELETE` grant. Check roles with an action of `"*"` conditioned on
+    `scrud_workflow` in particular, and make each `authorized_transitions` a
+    list of transition names.
 
 ### Lists
 
@@ -762,7 +769,22 @@ Conditional request handling now comes from scrudful 0.8.
   (`setting_changed`, which `override_settings` sends). A function that returned
   different policies over time must be replaced by stored `WorkflowPolicy`
   resources or a restart.
-* A workflow-conditioned grant (`scrud_workflow` operator) no longer allows a
+* A workflow-conditioned grant (`scrud_workflow` operator) grants workflow
+  transitions and nothing else (it fails closed). It allows the other checks
+  of a POST or PUT on a scrud resource view that the workflow check covers
+  (the request check, a PUT's object check, and the post-save check once the
+  workflow check has authorized the write), and refuses everywhere else: a
+  GET or HEAD (detail or list: the list leaves such resources out, as the
+  detail route refuses them), a DELETE, a write the workflow check does not
+  cover (your own views), and the readability that tells a 403 from a 404.
+  It used to allow all of those, so a "may only cancel" role, whose grant
+  of every action (`"*"`) on a type is conditioned on `scrud_workflow` with
+  `"authorized_transitions": ["cancel"]`, read, listed and deleted every
+  resource of the type in its context. Its `authorized_transitions` must be a
+  list of transition names: a string (which was a substring test), a mapping
+  (a key test) or a list holding anything but strings is an invalid
+  condition, which refuses everywhere (a 403) and is logged.
+* A workflow-conditioned grant no longer allows a
   write in a context where no workflow policy applies: the write is refused
   with 403. Unconditional and CEL grants are unaffected. A CEL condition on a
   grant that authorizes a transition now reads the request body, as in

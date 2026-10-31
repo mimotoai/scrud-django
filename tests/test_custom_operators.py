@@ -554,14 +554,28 @@ def test_current_transition_is_the_workflow_checks_and_none_outside_it():
     assert current_transition() is None
 
 
-def test_scrud_workflow_allows_outside_the_workflow_check_only_what_it_lists():
-    from scrud_django.permissions import _checking_transition, authorized_transitions
+def test_scrud_workflow_allows_a_covered_writes_checks_and_what_it_lists():
+    from scrud_django.permissions import (
+        _checking_transition,
+        _checking_write,
+        _not_checking_write,
+        authorized_transitions,
+    )
 
     configuration = {"authorized_transitions": ["start"]}
     body = {"title": "x"}
-    # Outside the workflow check (the request and object checks): allowed,
+    # Outside the workflow check and a covered write's checks (a GET, a
+    # DELETE, a list, a readability check): refused (fail closed).
+    assert authorized_transitions(body, configuration) is False
+    with _not_checking_write():
+        assert authorized_transitions(body, configuration) is False
+    # The other checks of a POST or PUT the workflow check covers: allowed,
     # the workflow check decides the transition.
-    assert authorized_transitions(body, configuration) is True
+    with _checking_write():
+        assert authorized_transitions(body, configuration) is True
+        # A readability check inside such a write is refused again.
+        with _not_checking_write():
+            assert authorized_transitions(body, configuration) is False
     with _checking_transition("start"):
         assert authorized_transitions(body, configuration) is True
     with _checking_transition("finish"):
@@ -570,7 +584,7 @@ def test_scrud_workflow_allows_outside_the_workflow_check_only_what_it_lists():
     with _checking_transition(None):
         assert authorized_transitions(body, configuration) is False
         assert authorized_transitions(body, {}) is False
-    assert authorized_transitions(body, configuration) is True
+    assert authorized_transitions(body, configuration) is False
 
 
 class TransitionLeaf:

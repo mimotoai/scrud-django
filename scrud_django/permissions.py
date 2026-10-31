@@ -9,6 +9,7 @@ workflow check the body as sent. A check (a permission class, an operator, a
 is stored, and is a bug in that check, not something scrud-django guards.
 """
 
+import logging
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -19,12 +20,25 @@ from scoped_rbac.permissions import IsAuthorized, custom_contexts_for
 
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 
-# What `_transition` holds outside the workflow check.
+logger = logging.getLogger(__name__)
+
+# What `_transition` holds outside the workflow check and the checks of a
+# write it covers: ``scrud_workflow`` refuses there (fail closed).
 _OUTSIDE = object()
 
+# What it holds during the other checks of a POST or PUT that the workflow
+# check covers (`_checking_write`): its request check, a PUT's object check,
+# and its post-save check once the workflow check has authorized it.
+_WRITE = object()
+
 # The transition the workflow check is authorizing, while it asks the policy
-# and the view's permission classes about it (`_checking_transition`).
+# and the view's permission classes about it (`_checking_transition`); else
+# `_OUTSIDE` or `_WRITE`.
 _transition = ContextVar("scrud_django_transition", default=_OUTSIDE)
+
+# The attribute of a request that records that the workflow check authorized
+# its write (`_mark_workflow_authorized`).
+_WORKFLOW_AUTHORIZED = "_scrud_workflow_authorized"
 
 
 def current_transition():
@@ -41,20 +55,52 @@ def current_transition():
     ``if current_transition() == "cancel": return False``. In the workflow
     check its ``obj`` is the request body as sent (a ``dict``)."""
     transition = _transition.get()
-    return None if transition is _OUTSIDE else transition
+    return None if transition is _OUTSIDE or transition is _WRITE else transition
 
 
 @contextmanager
+def _transition_state(state):
+    """`_transition` is `state` while the block runs, and is reset when the
+    block ends, however it ends."""
+    token = _transition.set(state)
+    try:
+        yield
+    finally:
+        _transition.reset(token)
+
+
 def _checking_transition(transition):
     """While the block runs, the workflow check is authorizing `transition`
     (``None``: a context where no workflow policy applies): what
     `current_transition` and the ``scrud_workflow`` operator read. Reset
     when the block ends, however it ends."""
-    token = _transition.set(transition)
-    try:
-        yield
-    finally:
-        _transition.reset(token)
+    return _transition_state(transition)
+
+
+def _checking_write():
+    """While the block runs, the checks of a POST or PUT that the workflow
+    check covers are asked (its request check, a PUT's object check, its
+    post-save check): ``scrud_workflow`` allows there, as the workflow check
+    authorizes the transition itself. Reset when the block ends."""
+    return _transition_state(_WRITE)
+
+
+def _not_checking_write():
+    """While the block runs, no write's check is asked (e.g. whether a
+    refused resource is readable): ``scrud_workflow`` refuses. Reset when the
+    block ends."""
+    return _transition_state(_OUTSIDE)
+
+
+def _mark_workflow_authorized(request):
+    """Record that the workflow check authorized `request`'s write in every
+    context concerned (`_workflow_authorized`)."""
+    setattr(request, _WORKFLOW_AUTHORIZED, True)
+
+
+def _workflow_authorized(request):
+    """Whether the workflow check authorized `request`'s write."""
+    return getattr(request, _WORKFLOW_AUTHORIZED, False) is True
 
 
 def content_of(resource):
@@ -142,16 +188,28 @@ def checks_read_content(view):
 
 
 def authorized_transitions(resource, configuration):
-    """The ``scrud_workflow`` operator: in the workflow check, allows the
-    transition it authorizes (`current_transition`) when it is in the
-    configuration's ``authorized_transitions``, and denies every other one,
-    including where no workflow policy applies (there is no transition), so
-    a grant conditioned on it allows no write there.
+    """The ``scrud_workflow`` operator: a grant conditioned on it grants
+    workflow transitions, and nothing else (it fails closed).
 
-    Outside the workflow check (scoped-rbac's request check, the object and
-    post-save checks) it allows: the transition is only known to the
-    `WorkflowValidator`, which authorizes it in every context of the write;
-    otherwise the workflow validation would run twice. `resource` (the body,
+    - In the workflow check it allows the transition it authorizes
+      (`current_transition`) when that is in the configuration's
+      ``authorized_transitions``, and denies every other one, including where
+      no workflow policy applies (there is no transition), so a grant
+      conditioned on it allows no write there.
+    - In the other checks of a POST or PUT that the workflow check covers (a
+      scrud resource view's request check, a PUT's object check, and the
+      post-save check of a write the workflow check authorized) it allows: the
+      transition is only known to the `WorkflowValidator`, which authorizes it
+      in every context of the write; otherwise the workflow validation would
+      run twice.
+    - Anywhere else it denies: a GET or HEAD (detail or list), a DELETE, a
+      write the workflow check does not cover (e.g. on a view of your own),
+      and whether a refused resource is readable (403 or 404). A role that
+      should read needs its own ``http.GET`` grant.
+
+    ``authorized_transitions`` must be a list of strings; anything else (a
+    string, a mapping, a list with a non-string in it) is an invalid
+    condition, which denies everywhere and is logged. `resource` (the body,
     or the stored content) is not read.
 
     To use this `scoped_rbac.policy.Operator`, define an operator condition that
@@ -162,9 +220,19 @@ def authorized_transitions(resource, configuration):
     The name for the initial transition is `__INITIALIZE__`, and for an update
     that stays in the same state `__SAME_STATE__`.
     """
+    transitions = configuration.get("authorized_transitions")
+    if not (
+        isinstance(transitions, list) and all(isinstance(t, str) for t in transitions)
+    ):
+        logger.error(
+            "A scrud_workflow condition's authorized_transitions must be a list "
+            "of transition names (strings), not %r: the condition denies.",
+            transitions,
+        )
+        return False
     transition = _transition.get()
-    if transition is _OUTSIDE:
+    if transition is _WRITE:
         return True
-    return transition is not None and transition in (
-        configuration.get("authorized_transitions") or []
-    )
+    if transition is _OUTSIDE or transition is None:
+        return False
+    return transition in transitions

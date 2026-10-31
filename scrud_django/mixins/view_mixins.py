@@ -31,7 +31,14 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
 from scrud_django.models.resource import MAX_CONTEXT_BYTES, context_fits
 from scrud_django.paginations import StandardResultsSetPagination
-from scrud_django.permissions import checks_read_content, content_of, reading_content
+from scrud_django.permissions import (
+    _checking_write,
+    _not_checking_write,
+    _workflow_authorized,
+    checks_read_content,
+    content_of,
+    reading_content,
+)
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
@@ -53,6 +60,10 @@ LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 
 # The methods whose body is the resource to store.
 BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+# The methods of a resource view whose write the workflow check
+# (``WorkflowValidator``) covers.
+WORKFLOW_METHODS = frozenset({"POST", "PUT"})
 
 
 def check_body_present(request, view=None):
@@ -452,6 +463,39 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         if self.locked_write_db is not None:
             lock_if_workflow_policy(self.get_resource_type(), self.locked_write_db)
 
+    def checks_workflow(self, request):
+        """Whether `request` is a write the workflow check
+        (``WorkflowValidator``) covers: a POST or PUT the view serves."""
+        return request.method in WORKFLOW_METHODS and (
+            request.method in self.allowed_methods
+        )
+
+    def write_checks(self, request, authorized=False):
+        """The block in which a check of `request` runs: for a write the
+        workflow check covers (`checks_workflow`), with the ``scrud_workflow``
+        operator allowing (the workflow check decides the transition); with
+        `authorized` (the post-save check), only once the workflow check has
+        authorized the write. Anywhere else ``scrud_workflow`` refuses."""
+        if self.checks_workflow(request) and (
+            not authorized or _workflow_authorized(request)
+        ):
+            return _checking_write()
+        return _not_checking_write()
+
+    def check_object_permissions(self, request, obj):
+        """DRF's object check, with ``scrud_workflow`` allowing for a PUT the
+        workflow check covers and refusing for anything else
+        (`write_checks`). Whether a refused resource is readable (scoped-rbac's
+        ``is_readable``, 404 or 403) is asked outside it (`is_readable`)."""
+        with self.write_checks(request):
+            super().check_object_permissions(request, obj)
+
+    def is_readable(self, request, obj):
+        """scoped-rbac's, with ``scrud_workflow`` refusing: a grant
+        conditioned on it never makes a resource readable."""
+        with _not_checking_write():
+            return super().is_readable(request, obj)
+
     def get_resource_type(self):
         """The view's resource type, read once per request and database (the
         filter, the serializer, the validators, the Links and the write all
@@ -579,7 +623,8 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         if instance.resource_type.type_uri != WORKFLOW_POLICY_TYPE_URI:
             return
         try:
-            self.check_post_save_permissions(request, instance)
+            with self.write_checks(request):
+                self.check_post_save_permissions(request, instance)
         except access.AccessError as exc:
             raise drf_error(exc, request) from exc
 
@@ -599,6 +644,13 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
 
         return locked_save
 
+    def recheck_saved(self, obj):
+        """`check_post_save_permissions` of the saved `obj`, with
+        ``scrud_workflow`` allowing only once the workflow check has
+        authorized the write (`write_checks`)."""
+        with self.write_checks(self.request, authorized=True):
+            self.check_post_save_permissions(self.request, obj)
+
     def save_checked(self, save, instance=None):
         """Run `save` (which returns the saved resource) in a transaction and
         check the resource as stored before it commits: a reserved context is a
@@ -610,9 +662,7 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         check = access.SaveCheck(
             self.request,
             written_contexts=lambda obj: obj.rbac_contexts,
-            recheck=lambda obj, _moved_to: self.check_post_save_permissions(
-                self.request, obj
-            ),
+            recheck=lambda obj, _moved_to: self.recheck_saved(obj),
             queryset=self.get_queryset(),
         )
         # The request's locked write transaction, if any (`dispatch`); else
@@ -693,7 +743,8 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         check_body_present(request, self)
         check_body_depth(request)
         check_written_contexts(request)
-        super().check_permissions(request)
+        with self.write_checks(request):
+            super().check_permissions(request)
 
     def list_last_modified(self):
         """The list's Last-Modified: the newest ``modified_at`` of every

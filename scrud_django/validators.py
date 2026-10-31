@@ -18,7 +18,13 @@ from scrud_django.exceptions import (
 )
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import ResourceType
-from scrud_django.permissions import _checking_transition, content_of, reading_content
+from scrud_django.permissions import (
+    _checking_transition,
+    _checking_write,
+    _mark_workflow_authorized,
+    content_of,
+    reading_content,
+)
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     WorkflowPolicy,
@@ -274,6 +280,9 @@ class WorkflowValidator:
             for c, policy in policies:
                 if policy is None:
                     self.authorize_without_policy(c, context, data)
+            # The post-save check lets a grant conditioned on scrud_workflow
+            # allow only a write authorized here.
+            _mark_workflow_authorized(request)
         return data
 
     @staticmethod
@@ -382,7 +391,8 @@ class WorkflowValidator:
         asks), and every operator and CEL condition reads the body `data`
         as sent, a ``dict`` (``{}`` for a body that is not a JSON object), as in
         scoped-rbac's request check. Without `transition_check`, on the body
-        alone, outside the workflow check (``scrud_workflow`` allows there).
+        alone, as the write's request and post-save checks ask it
+        (``scrud_workflow`` allows there).
 
         The request's policy must allow it, and, with a view in the
         serializer context (the scrud views'), so must each of the view's
@@ -399,7 +409,8 @@ class WorkflowValidator:
         )
         body = plain_body(data)
         if not transition_check:
-            return self.allowed_on(request, permission, rbac_context, body, context)
+            with _checking_write():
+                return self.allowed_on(request, permission, rbac_context, body, context)
         with _checking_transition(transition):
             return self.allowed_on(request, permission, rbac_context, body, context)
 
