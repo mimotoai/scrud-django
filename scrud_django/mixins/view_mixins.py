@@ -85,8 +85,26 @@ def check_body_present(request, view=None):
 
 # The deepest a POST, PUT or PATCH body may be nested (objects and arrays,
 # the outermost one counted): far deeper than resources need, far below what
-# Python code walking it recursively can follow (about 800 levels).
+# Python code walking it recursively can follow (about 800 levels), and as
+# deep as MySQL's JSON type stores.
 MAX_BODY_DEPTH = 100
+
+# The deepest MariaDB stores a resource's content: its JSON column's
+# ``JSON_VALID`` check refuses a document nested 32 levels or more.
+MARIADB_MAX_BODY_DEPTH = 31
+
+
+def max_body_depth():
+    """The deepest a body may be nested: `MAX_BODY_DEPTH`, or
+    `MARIADB_MAX_BODY_DEPTH` when resources are written to MariaDB
+    (``router.db_for_write(Resource)``), which could not store a deeper one
+    (a 500)."""
+    from django.db import connections
+
+    connection = connections[router.db_for_write(Resource)]
+    if connection.vendor == "mysql" and connection.mysql_is_mariadb:
+        return MARIADB_MAX_BODY_DEPTH
+    return MAX_BODY_DEPTH
 
 
 def body_depth(data, limit=None):
@@ -110,11 +128,12 @@ def body_depth(data, limit=None):
 
 def check_body_depth(request):
     """Raise `RequestBodyTooDeepError` (400) for a POST, PUT or PATCH body
-    nested deeper than `MAX_BODY_DEPTH`."""
+    nested deeper than `max_body_depth`."""
     if request.method not in BODY_METHODS:
         return
-    if body_depth(request.data, MAX_BODY_DEPTH) > MAX_BODY_DEPTH:
-        raise RequestBodyTooDeepError(MAX_BODY_DEPTH)
+    limit = max_body_depth()
+    if body_depth(request.data, limit) > limit:
+        raise RequestBodyTooDeepError(limit)
 
 
 def body_has_nul(data):
@@ -775,7 +794,7 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         ``rbac_context`` cannot be stored (`check_written_contexts`), with
         400, before scoped-rbac's request check (which would authorize an
         empty body as ``{}`` and refuse an empty context list with 403 for
-        everyone), a body nested deeper than `MAX_BODY_DEPTH`
+        everyone), a body nested deeper than `max_body_depth`
         (`check_body_depth`) and one with a NUL character in a string
         (`check_body_nul`): they depend on the body alone. scoped-rbac's
         request check then reads the body itself (``request.data``). A method

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from django.conf import settings
+from django.db import connection
 from django.test import override_settings
 from django.urls import reverse
 from django.utils.http import quote_etag
@@ -250,10 +251,13 @@ def test_a_body_nested_past_the_limit_is_400_and_one_within_it_is_stored():
     # A body nested about 1000 levels (one the JSON parser reads) is a 400
     # body-too-deep, before any check: Python code that walks it recursively
     # (reversion's serializer, an operator) would fail with RecursionError, a
-    # 500. One within MAX_BODY_DEPTH is checked (its operator gets plain
-    # dicts and lists at every level), stored and read back.
-    from scrud_django.mixins.view_mixins import MAX_BODY_DEPTH
+    # 500. One within the limit (MAX_BODY_DEPTH; MARIADB_MAX_BODY_DEPTH on
+    # MariaDB, test_the_depth_limit_is_what_the_database_stores) is checked
+    # (its operator gets plain dicts and lists at every level), stored and
+    # read back.
+    from scrud_django.mixins.view_mixins import max_body_depth
 
+    MAX_BODY_DEPTH = max_body_depth()
     reverse("todos-list")
     plain = {"condition": {"operator": "plain_at_every_level"}}
     client = user_with({"http.GET": [PP], "http.POST": {PP: plain}})
@@ -290,6 +294,42 @@ def test_a_body_nested_past_the_limit_is_400_and_one_within_it_is_stored():
         == 200
     )
     assert reader.get(reverse("partner-profiles-list")).status_code == 200
+
+
+@pytest.mark.django_db
+def test_the_depth_limit_is_what_the_database_stores():
+    # MySQL's JSON type stores MAX_BODY_DEPTH (100) levels. MariaDB's JSON
+    # column refuses 32 levels (its JSON_VALID check, an IntegrityError):
+    # there a deeper body is a 400, never a 500.
+    from scrud_django.mixins.view_mixins import (
+        MARIADB_MAX_BODY_DEPTH,
+        MAX_BODY_DEPTH,
+        max_body_depth,
+    )
+
+    mariadb = connection.vendor == "mysql" and connection.mysql_is_mariadb
+    assert MAX_BODY_DEPTH == 100 and MARIADB_MAX_BODY_DEPTH == 31
+    limit = max_body_depth()
+    assert limit == (MARIADB_MAX_BODY_DEPTH if mariadb else MAX_BODY_DEPTH)
+    reverse("todos-list")
+    client = user_with({"http.GET": [PP], "http.POST": [PP]})
+    before = Resource.objects.count()
+    for depth, status in ((limit + 1, 400), (32, 400 if mariadb else 201)):
+        body = '{"name": "deep", "rbac_context": "q", "x": ' + nested(depth - 1) + "}"
+        response = client.generic(
+            "POST",
+            reverse("partner-profiles-list"),
+            body,
+            content_type="application/json",
+        )
+        assert response.status_code == status, (depth, response.content[:200])
+        if status == 400:
+            problem = response.json()
+            assert problem["type"] == (
+                "https://api.openteams.com/http-problem/body-too-deep"
+            )
+            assert f"at most {limit} levels" in problem["detail"], problem
+    assert Resource.objects.count() == before + (0 if mariadb else 1)
 
 
 # An adopter's operator that evaluates CEL itself, the pattern scoped-rbac's

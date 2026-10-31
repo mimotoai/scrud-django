@@ -135,8 +135,9 @@ class RequestBodyMissingError(ScrudException):
 class RequestBodyTooDeepError(ScrudException):
     """A POST or PUT (or PATCH) body nested deeper than
     ``scrud_django.mixins.view_mixins.MAX_BODY_DEPTH`` levels (objects and
-    arrays): code that walks a body recursively (reversion's serializer, an
-    operator) would fail on it with ``RecursionError``, a 500."""
+    arrays; ``MARIADB_MAX_BODY_DEPTH`` on MariaDB): code that walks a body
+    recursively (reversion's serializer, an operator) would fail on it with
+    ``RecursionError``, and MariaDB would not store it, a 500."""
 
     status_code = 400
     default_detail = "Bad Request"
