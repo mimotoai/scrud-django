@@ -1,7 +1,8 @@
 # Pipelines run for merge requests, tags and the default branch. A branch push
 # gets its own pipeline only when it has no open merge request. `lint`, `docs`,
-# `package`, `test` and `test-postgres` run in all of them, `version-check` in
-# merge requests, and `publish` (PyPI) only on the default branch.
+# `package`, `test`, `test-postgres` and `test-mysql` run in all of them,
+# `version-check` in merge requests, and `publish` (PyPI) only on the default
+# branch.
 #
 # Releasing: a merge request that changes the package sets the version to
 # release (`uv version --bump minor`, `uv version 1.0.0`); merging it to the
@@ -120,6 +121,68 @@ test-postgres:
   script:
     - uv run --locked python -V
     - uv run --locked pytest -q -rs
+  after_script:
+    - uv cache prune --ci
+
+# The suite on MySQL 8.4 and MariaDB 11.4, the other supported databases, in
+# their default (case- and accent-insensitive) collations, where the
+# two-connection races run as on PostgreSQL. tests/settings.py points both
+# database aliases at the service when SCRUD_TEST_MYSQL_HOST is set (utf8mb4,
+# READ COMMITTED). The driver, mysqlclient, is not a dev dependency: it
+# builds against the client library, so the job installs the build packages
+# and adds it to the locked environment with `--with`.
+test-mysql:
+  stage: test
+  parallel:
+    matrix:
+      - DATABASE_IMAGE: ["mysql:8.4", "mariadb:11.4"]
+  services:
+    - name: $DATABASE_IMAGE
+      alias: mysql
+  variables:
+    MYSQL_ROOT_PASSWORD: scrud
+    MARIADB_ROOT_PASSWORD: scrud
+    SCRUD_TEST_MYSQL_HOST: mysql
+    SCRUD_TEST_MYSQL_PASSWORD: scrud
+    MYSQLCLIENT: mysqlclient==2.3.0
+  cache:
+    when: always
+    key:
+      files: [uv.lock]
+      prefix: test-mysql
+    paths:
+      - .uv-cache
+  script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends build-essential default-libmysqlclient-dev pkg-config > /dev/null
+    - uv run --locked --with "$MYSQLCLIENT" python -V
+    # The service may still be starting: wait for it (up to 2 minutes).
+    - |
+      uv run --locked --with "$MYSQLCLIENT" python - <<'EOF'
+      import os
+      import time
+
+      import MySQLdb
+
+      for attempt in range(60):
+          try:
+              connection = MySQLdb.connect(
+                  host=os.environ["SCRUD_TEST_MYSQL_HOST"],
+                  user="root",
+                  password=os.environ["SCRUD_TEST_MYSQL_PASSWORD"],
+              )
+          except MySQLdb.OperationalError as error:
+              print("waiting for the database:", error)
+              time.sleep(2)
+          else:
+              cursor = connection.cursor()
+              cursor.execute("SELECT VERSION(), @@collation_server")
+              print("database:", cursor.fetchone())
+              break
+      else:
+          raise SystemExit("the database did not start")
+      EOF
+    - uv run --locked --with "$MYSQLCLIENT" pytest -q -rs
   after_script:
     - uv cache prune --ci
 
