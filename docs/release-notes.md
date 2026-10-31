@@ -624,6 +624,16 @@ Conditional request handling now comes from scrudful 0.8.
 
 ### API changes
 
+* A list's collection schema (`collections-json-schema/<slug>/`, its
+  `describedby`) is now a valid JSON Schema that the list's body validates
+  against. Its `content` was `{"properties": {"type": "array", ...}}`, which
+  no validator compiles. It now types the body as an object and `content` as
+  an array of envelope objects, types `next` and `previous` as a URL or
+  `null`, describes each envelope's `link`, and no longer lists `first` and
+  `last`, which a list never sends. The type's schema embedded as an
+  envelope's `content` drops its `$id`, and its own `#` references point
+  into the collection schema (they did not resolve). A type without a schema
+  allows any content (`{}`; it was `{"type": "any"}`, not valid draft-04).
 * `scrud_django.decorators` is removed. Use `scrudful.rest_framework` instead.
 * `scrud_django.settings`, `scrud_django.wsgi` and `scrud_django.asgi` are
   removed: the package no longer ships a Django project. Use your own project's
