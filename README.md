@@ -37,8 +37,11 @@ INSTALLED_APPS = [
 ]
 ```
 
-Include the scrud-django URLs. They include the scoped-rbac semantic URLs
-(`semantic/`) that serve each resource type's schema and JSON-LD context:
+Include the scrud-django URLs. They include scoped-rbac's semantic URLs
+(`semantic/`), which serve the schemas and JSON-LD contexts of scoped-rbac's
+own Role, RoleAssignment and Policy resources (the role endpoints' `Link`
+headers point there); a scrud resource type's schema and context are its
+`json-schema/<id>/` and `json-ld/<id>/` resources:
 
 ```python
 urlpatterns = [
@@ -314,9 +317,11 @@ receiver whose work leaves the database should wrap it in
 ### Upgrading
 
 Version 0.12.0 has breaking changes (Django 5.2, uv, scrudful 0.8, scoped-rbac
-0.11, JSON-only bodies, workflow policies in every context, RBAC-filtered
-lists with new migrations to run, problem details for precondition errors, a
-superuser-only admin). Read the
+0.11, JSON-only bodies, object-level RBAC on detail routes, RBAC-filtered
+lists with new migrations to run, workflow policies in every context, 428
+for a missing precondition and new ETags, problem details for errors, a
+superuser-only admin). Stop every 0.11 process before you migrate. Work
+through the Upgrading list of the
 [0.12.0 release notes](https://gitlab.com/dcharbon/scrud-django/-/blob/develop/docs/release-notes.md) before upgrading.
 
 ## Development Get Started
@@ -343,10 +348,18 @@ Build the documentation with `make docs`.
 ```bash
 cd demo
 uv run python manage.py migrate
+uv run python manage.py createsuperuser
 uv run python manage.py runserver
 ```
 
-The API root is at http://127.0.0.1:8000/api/. The demo reads
+The API root is at http://127.0.0.1:8000/api/. Resource routes need a login
+(anonymous requests get 401): log in to the browsable API at
+http://127.0.0.1:8000/api-auth/login/ (the API root's "Log in" link) with
+the superuser, or send Basic auth, for example
+`curl -u <user>:<password> http://127.0.0.1:8000/api/partner-profiles/`.
+The superuser may do everything; other users need scoped-rbac roles
+(`api/roles/`, `api/role-assignments/`). The Django admin is at
+http://127.0.0.1:8000/admin/. The demo reads
 `DJANGO_SECRET_KEY`, `DJANGO_DEBUG` and `DJANGO_ALLOWED_HOSTS` from the
 environment; its defaults (a public development key, DEBUG on, localhost
 only) are for running it locally, and with DEBUG off it needs a key of its

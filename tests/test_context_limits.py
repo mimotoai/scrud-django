@@ -163,7 +163,7 @@ def test_the_database_check_reports_a_context_too_long_for_a_row():
 @pytest.mark.django_db
 def test_loading_a_dumped_resource_whose_context_is_over_2048_bytes_is_refused():
     # A 0.11 dump can hold one (within the old 2048-character limit): the
-    # release notes' Upgrading 12 says to shorten it before dumping.
+    # release notes' Upgrading 15 says to shorten it before dumping.
     from django.core import serializers
     from django.db import transaction
 

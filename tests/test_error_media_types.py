@@ -1,9 +1,11 @@
-"""The scrud views' errors follow ``SCOPED_RBAC["UNIFORM_ERRORS"]``, as
-scoped-rbac's own viewsets do: on (the default), every error, scrudful's own
-400/412/428 included, is a problem details object served as
-``application/problem+json`` with the problem-details Links; off, every error
-keeps DRF's (and scrudful's) native ``{"detail": ...}`` as
-``application/json``, with no problem-details Link."""
+"""The scrud views' errors that are not scrud-django's own (401, 403, 404,
+412, 415, 428 here) follow ``SCOPED_RBAC["UNIFORM_ERRORS"]``, as scoped-rbac's
+own viewsets do: on (the default), each, scrudful's own 400/412/428 included,
+is a problem details object served as ``application/problem+json`` with the
+problem-details Links; off, each keeps DRF's (and scrudful's) native
+``{"detail": ...}`` as ``application/json``, with no problem-details Link.
+scrud-django's own errors (``ScrudException``) are problem details without
+those Links either way, and are not tested here."""
 
 from uuid import uuid4
 

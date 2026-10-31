@@ -7,73 +7,126 @@ django-scoped-rbac 0.11. It has several breaking changes.
 
 ### Upgrading
 
+Work through these in order: the first group before you deploy 0.12.0, the
+second while you deploy it, then your roles, your code and your clients.
+Each item points to the section below that has the details.
+
+#### Before you deploy
+
 1. Use Python 3.11 or newer and Django 5.2.
-2. `INSTALLED_APPS`: remove `django_jsonfield_backport`; make sure
+2. Dependencies: install `scrud-django[search]` if you use haystack search
+   (django-haystack and Whoosh are no longer installed by default).
+   scrud-django also no longer installs django-cors-headers,
+   python-decouple, python-dotenv, rdflib or safetydance-test: declare
+   those your project uses yourself (a project with `corsheaders` in
+   `INSTALLED_APPS` otherwise fails to start).
+3. Migrations of your own that import `django_jsonfield_backport.models.JSONField`
+   must import `django.db.models.JSONField` instead, before you uninstall the
+   backport.
+4. `INSTALLED_APPS`: remove `django_jsonfield_backport`; make sure
    `django.contrib.auth`, `django.contrib.contenttypes`, `rest_framework`,
    `reversion`, `scoped_rbac` and `scrud_django` are listed, and `haystack` if
    you use search.
-3. `REST_FRAMEWORK`: set `DEFAULT_PERMISSION_CLASSES` to
+5. `REST_FRAMEWORK`: set `DEFAULT_PERMISSION_CLASSES` to
    `["scoped_rbac.permissions.IsAuthorized"]` and `EXCEPTION_HANDLER` to
    `scrud_django.exceptions.scrud_exception_handler` (see the README).
-4. Extras: install `scrud-django[search]` if you use haystack search.
-5. Migrations of your own that import `django_jsonfield_backport.models.JSONField`
-   must import `django.db.models.JSONField` instead, before you uninstall the
-   backport.
-6. Clients must send JSON bodies (form and multipart bodies get 415). Give your
-   own `GenericViewMixin` views `parser_classes = [RbacJSONParser]`.
-7. Workflow policies: your stored `WorkflowPolicy` resources must be at most
-   one per type and context, in one context each, and each must pass the
-   checks a write now makes (transition names must not start with `__`;
-   `restrict_update` must be a list). In this order:
-   1. run `manage.py migrate` (step 9). While scrud_django's migrations are
-      not all applied, the database check of stored policies reports
-      nothing, so a plain `migrate` of a 0.11 database goes through;
-   2. run `manage.py check --database <alias>`, for the alias your router
-      gives for `Resource` writes. It reports the policies to fix as
-      `scrud_django.E002`, `E003`, `E005` (errors) and `W001` (a warning);
-   3. fix or delete each one it reports, through the API (a PUT checks a
-      fixed policy) or `ResourceRegistration` (`delete`, `update`), and run
-      the check again. Until then every write of the type in their contexts
-      fails with `ImproperlyConfigured` (a 500), and later `migrate` runs on
-      that database stop on the errors (`migrate --skip-checks` gets past
-      them).
+6. Search: if you use haystack, set `HAYSTACK_SIGNAL_PROCESSOR =
+   "scrud_django.search.OnCommitSignalProcessor"`. Workflow actions
+   (`SCRUD_WORKFLOW_ACTIONS`, a list or tuple; any other shape fails at
+   startup) now run after the write commits; move one that must run inside
+   the write, or veto it, to a `scrud_post_save` receiver (see Side effects
+   on commit below).
+7. Run your database at READ COMMITTED, the supported transaction isolation
+   level (`manage.py check --database <alias>`, for the alias your router
+   gives for `Resource` writes, reports another as `scrud_django.W002`). Give
+   a file SQLite database that takes concurrent writes
+   `"OPTIONS": {"transaction_mode": "IMMEDIATE"}`.
+8. MySQL and MariaDB: use mysqlclient, InnoDB and a utf8mb4 database (MariaDB
+   stores resource content as text in the database's character set) and
+   connection, at READ COMMITTED (step 7). On MariaDB, clients must keep
+   request bodies within 31 levels of nesting (see API changes below). A
+   MySQL or MariaDB database migrated with a pre-release 0.12 build must be
+   recreated: its context columns compare inexactly, and nothing detects it.
+9. If you use `DATABASE_ROUTERS`, route `Resource`, `ResourceType`,
+   `ResourceContext` and `ResourceRemoval` writes to one alias, and migrate
+   them all there: `manage.py check` now reports a split as
+   `scrud_django.E004`.
 
-   Check your `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` too
-   (`manage.py check`, `scrud_django.E001`; give policies as mappings).
-8. Code: read "API changes" below for the removed modules
-   (`scrud_django.decorators`, `settings`, `wsgi`, `asgi`), what
-   `GenericViewMixin` subclasses must now provide, and the exception handler
-   and error body changes.
-9. Stop every 0.11 process before you run `migrate`, and run none against
-   the migrated database (no rolling deploy across this upgrade): 0.11 code
-   does not keep `ResourceContext` rows, so a resource it moves stays listed
-   in the context it left (to readers of that context), one it creates is
-   listed to superusers only, and its deletes fail (a 500). If one did
-   write, `manage.py scrud_sync_contexts --check` lists the resources whose
-   rows disagree with their content (exit status 1), and
-   `manage.py scrud_sync_contexts` re-syncs them (see Lists below).
-   Run `manage.py migrate`. Migration `0008_resourcecontext` creates the
-   `ResourceContext` table and fills it from every stored resource (one row
-   per context; it reads every resource once, so plan for it on large
-   tables). Lists are filtered by these rows: code that writes `Resource` rows
-   with `QuerySet.update()`, `bulk_create()` or `bulk_update()` must save them
-   with `save()` instead, or their lists go stale (see Lists below).
-   Migration `0009_resourceremoval` creates the (empty) `ResourceRemoval`
-   table, which records when a resource leaves a context, so that lists'
-   `Last-Modified` moves on removals from then on;
-   `0010_resource_base_manager` changes model options only (no SQL). Then
-   run the database check of step 7. A resource stored with a context longer
-   than 2048 bytes in UTF-8 gets no row for that context (see Lists below):
-   the check reports it as `scrud_django.W003`; give it a shorter context or
-   delete it.
-10. Lists now show only what the requester may read (see Lists below). Give
-    users who list a type `http.GET` on the type itself, in each context whose
-    resources they should see, as well as on its list type; check your roles
-    if they grant only the list type somewhere.
-11. Clients: a body whose `rbac_context` is `[]` now gets 400 (it got 403),
-    and lists of `ResourceViewSetGenericFilter` filter on their query
-    parameters as JSON key lookups (see Lists below).
-12. Backups and fixtures: `dumpdata` / `loaddata` of `scrud_django` round-trip,
+#### Deploying
+
+10. Stop every 0.11 process before you run `migrate`, and run none against
+    the migrated database (no rolling deploy across this upgrade): 0.11 code
+    does not keep `ResourceContext` rows, so a resource it moves stays listed
+    in the context it left (to readers of that context), one it creates is
+    listed to superusers only, and its deletes fail (a 500). If one did
+    write, `manage.py scrud_sync_contexts --check` lists the resources whose
+    rows disagree with their content (exit status 1), and
+    `manage.py scrud_sync_contexts` re-syncs them (see Lists below).
+    Run `manage.py migrate`. Migration `0008_resourcecontext` creates the
+    `ResourceContext` table and fills it from every stored resource (one row
+    per context; it reads every resource once, so plan for it on large
+    tables). Lists are filtered by these rows: code that writes `Resource` rows
+    with `QuerySet.update()`, `bulk_create()` or `bulk_update()` must save them
+    with `save()` instead, or their lists go stale (see Lists below).
+    Migration `0009_resourceremoval` creates the (empty) `ResourceRemoval`
+    table, which records when a resource leaves a context, so that lists'
+    `Last-Modified` moves on removals from then on;
+    `0010_resource_base_manager` changes model options only (no SQL). Then
+    run the database check of step 11. A resource stored with a context longer
+    than 2048 bytes in UTF-8 gets no row for that context (see Lists below):
+    the check reports it as `scrud_django.W003`; give it a shorter context or
+    delete it.
+11. Workflow policies: your stored `WorkflowPolicy` resources must be at most
+    one per type and context, in one context each, and each must pass the
+    checks a write now makes (transition names must not start with `__`;
+    `restrict_update` must be a list). In this order:
+    1. run `manage.py migrate` (step 10). While scrud_django's migrations are
+       not all applied, the database check of stored policies reports
+       nothing, so a plain `migrate` of a 0.11 database goes through;
+    2. run `manage.py check --database <alias>`, for the alias your router
+       gives for `Resource` writes. It reports the policies to fix as
+       `scrud_django.E002`, `E003`, `E005` (errors) and `W001` (a warning);
+    3. fix or delete each one it reports, through the API (a PUT checks a
+       fixed policy) or `ResourceRegistration` (`delete`, `update`), and run
+       the check again. Until then every write of the type in their contexts
+       fails with `ImproperlyConfigured` (a 500), and later `migrate` runs on
+       that database stop on the errors (`migrate --skip-checks` gets past
+       them).
+
+    Check your `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` too
+    (`manage.py check`, `scrud_django.E001`; give policies as mappings). A
+    dotted-path function given there is now called once per process, so one
+    whose result changes over time needs stored policies or a restart.
+    State conditions now run on scoped-rbac's CEL engine, whose equality
+    differs from `celpy`'s in a few cases (see Workflows below).
+
+#### Roles and administration
+
+12. Detail routes and lists now check each resource (see Authorization and
+    Lists below). In 0.11 a user with a method on a type in any context could
+    read, overwrite or delete every resource of the type. Now a GET needs
+    `http.GET` on the type in one of the resource's contexts (a 404
+    otherwise); a PUT or DELETE needs its method in one of them (refused, it
+    is a 404, or a 403 if the user may read the resource), and a PUT needs
+    it, after the save, in every context the resource ends up in (a 403, and
+    nothing changes); a `WorkflowPolicy` resource's PUT or DELETE needs it in
+    every context the policy is in. A list shows only what the requester may read: give users who
+    list a type `http.GET` on the type itself, in each context whose
+    resources they should see, as well as on its list type. Check your roles
+    if they grant a method in one context and expect it to reach resources
+    stored in another, or grant only the list type somewhere.
+13. Roles: a grant conditioned on `scrud_workflow` now allows workflow
+    transitions only (see Workflows below); it no longer gives `http.GET`
+    (detail or list) or `http.DELETE`. Roles that should read need their own
+    `http.GET` grant on the type, and roles that should delete their own
+    `http.DELETE` grant. Check roles with an action of `"*"` conditioned on
+    `scrud_workflow` in particular, and make each `authorized_transitions` a
+    list of transition names.
+14. Django admin: `Resource` and `ResourceType` are now shown to superusers
+    only. Staff who are not superusers no longer see them, whatever model
+    permissions they hold (a write there bypasses RBAC, the workflow and JSON
+    Schema validation).
+15. Backups and fixtures: `dumpdata` / `loaddata` of `scrud_django` round-trip,
     except that every loaded resource gets a new `ETag` and `Last-Modified`
     (as does a reversion revert; see Conditional requests below), so clients
     refetch it once after a restore.
@@ -99,21 +152,18 @@ django-scoped-rbac 0.11. It has several breaking changes.
     a transaction: reversion's `Version.revert()` called outside
     `transaction.atomic()` now raises `TransactionManagementError` (wrap it, or
     use `Revision.revert()`, which is atomic).
-13. If you use `DATABASE_ROUTERS`, route `Resource`, `ResourceType`,
-    `ResourceContext` and `ResourceRemoval` writes to one alias, and migrate
-    them all there: `manage.py check` now reports a split as
-    `scrud_django.E004`.
-14. Run your database at READ COMMITTED, the supported transaction isolation
-    level (`manage.py check --database <alias>`, for the alias your router
-    gives for `Resource` writes, reports another as `scrud_django.W002`). Give
-    a file SQLite database that takes concurrent writes
-    `"OPTIONS": {"transaction_mode": "IMMEDIATE"}`.
-15. Search: set `HAYSTACK_SIGNAL_PROCESSOR =
-    "scrud_django.search.OnCommitSignalProcessor"`. Workflow actions
-    (`SCRUD_WORKFLOW_ACTIONS`) now run after the write commits; move one that
-    must run inside the write, or veto it, to a `scrud_post_save` receiver
-    (see Side effects on commit below).
-16. A PUT or DELETE now holds its row lock until its response is ready, on
+
+#### Your code
+
+16. Code: read "API changes" below for what is removed (the modules
+    `scrud_django.decorators`, `settings`, `wsgi` and `asgi`,
+    `utils.get_string_or_evaluate`, `ScrudServices`' validators,
+    `registration.save_type_etag`, `WorkflowValidator.apply` and
+    `permissions.TransitionCheck`), what `GenericViewMixin` subclasses must
+    now provide, and the exception handler and error body changes. If you
+    mount scrud-django's views without including `scrud_django.urls`, include
+    `scoped_rbac.semantic_urls` once.
+17. A PUT or DELETE now holds its row lock until its response is ready, on
     scrud's views and on your `GenericViewMixin` views alike (see Conditional
     requests below). Subclasses of `ResourceViewMixin` that override
     `dispatch`, `initial` or `get_queryset`, and `GenericViewMixin` subclasses
@@ -123,9 +173,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
     `locked_write_database()`. A `GenericViewMixin` view locks the row with a
     query of its own (the model's base manager filtered by the URL's lookup;
     a `lookup_field` only the view's queryset has, an annotation, is first
-    read as keys through that queryset), not through its queryset, so a queryset with `distinct()`, an annotation
-    or a `select_related` of a nullable relation keeps working on PostgreSQL
-    (which refuses `FOR UPDATE` on those). Server code that updates or deletes a resource
+    read as keys through that queryset), not through its queryset, so a
+    queryset with `distinct()`, an annotation or a `select_related` of a
+    nullable relation keeps working on PostgreSQL (which refuses
+    `FOR UPDATE` on those). Server code that updates or deletes a resource
     should go through `ResourceRegistration.update` / `delete`, which lock it
     the same way. Server code that locks a `WorkflowPolicy` resource's row
     itself (`select_for_update()`) and then saves or deletes it must call
@@ -136,36 +187,13 @@ django-scoped-rbac 0.11. It has several breaking changes.
     (both in `scrud_django.registration`; the README has the full example).
     Otherwise it deadlocks with an API write of the policy (see Workflows
     below).
-17. `GenericViewMixin` lists: their `ETag` and `Last-Modified` now come from
+18. `GenericViewMixin` lists: their `ETag` and `Last-Modified` now come from
     what the requester may list (see API changes below), so the view needs an
     `RbacFilter` among its `filter_backends` (`manage.py check` reports one
     without as `scrud_django.E006`, and its list is `ImproperlyConfigured`),
     and its `list` should serve `list_page()` (or `list_queryset()` without a
     paginator).
-18. Clients: JSON Schema `default` values are not applied; send every value
-    you want stored (and that a workflow state condition reads); a default
-    no longer makes a body valid either. A POST or PUT with an empty body, or
-    with no `Content-Length` (a chunked body), gets 400 (`body-missing`), and
-    one nested more than 100 levels deep (objects and arrays) gets 400
-    (`body-too-deep`), as does one with a NUL character (`\u0000`) in any
-    string (`body-nul-character`). A refused
-    `WorkflowPolicy` write's 400 is a `workflow-policy-invalid` problem whose
-    `detail` says why, and a workflow error caused by a settings default
-    policy names it as `{"resource_type": ..., "default": true}` instead of
-    embedding it (see Workflows below). A PUT that moves a resource into a
-    context must be an initial state there, and the user's `http.PUT` grant
-    there (not `http.POST`) must allow `__INITIALIZE__` if it is conditioned
-    on `scrud_workflow`; `scrud_post_save` (and so workflow actions) reports
-    such a move as `__INITIALIZE__`.
-19. Clients: with `SCOPED_RBAC["UNIFORM_ERRORS"]` on (scoped-rbac's
-    default), a 400 (malformed `If-Match` or `If-None-Match`), 412 or 428 is
-    now problem details served as `application/problem+json` (it was
-    `{"detail": ...}` as `application/json`; with uniform errors off it still
-    is), and a list envelope's `link`
-    now spells the schema link `rel="describedby"` with
-    `type="application/schema+json"`, as the `Link` header does (see
-    Conditional requests below).
-20. Your own `IsAuthorized` subclasses and operators on scrud views (see
+19. Your own `IsAuthorized` subclasses and operators on scrud views (see
     Authorization below) get plain data, as scoped-rbac's own checks give it
     (its issue #55 was closed by deciding not to guard checks). Every object
     check (the detail route's, the post-save check and a list's per-object
@@ -185,11 +213,12 @@ django-scoped-rbac 0.11. It has several breaking changes.
     and gets a 500, failing closed). A `contexts_for` of your own gets the
     `dict`: call `resource_contexts(obj)` where you called
     `super().contexts_for(obj)`, which reads attributes a `dict` does not
-    have (an `AttributeError`, a 500, failing closed). The request check of a POST or PUT gives the permission
-    classes (their `has_permission` and `contexts_from`) and your operators
-    the parsed body itself (`request.data`), and the workflow check gives
-    their `has_context_permission` and your operators the body as sent: a
-    check must only read what it gets (`body.get("owner")`, never
+    have (an `AttributeError`, a 500, failing closed). The request check of a
+    POST or PUT gives the permission classes (their `has_permission` and
+    `contexts_from`) and your operators the parsed body itself
+    (`request.data`), and the workflow check gives their
+    `has_context_permission` and your operators the body as sent: a check
+    must only read what it gets (`body.get("owner")`, never
     `body.pop("owner")`), since one that changes it changes what is stored,
     a bug in that check which nothing guards. An operator that evaluates CEL
     itself passes the object it got (already plain `dict`s and `list`s). In
@@ -219,28 +248,76 @@ django-scoped-rbac 0.11. It has several breaking changes.
     counts against `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` (a 400 past
     it), and its `Last-Modified` no longer moves when a resource is removed
     (its `ETag` does). The same holds for your `GenericViewMixin` lists.
-21. Django admin: `Resource` and `ResourceType` are now shown to superusers
-    only. Staff who are not superusers no longer see them, whatever model
-    permissions they hold (a write there bypasses RBAC, the workflow and JSON
-    Schema validation).
-22. Roles: a grant conditioned on `scrud_workflow` now allows workflow
-    transitions only (see Workflows below); it no longer gives `http.GET`
-    (detail or list) or `http.DELETE`. Roles that should read need their own
-    `http.GET` grant on the type, and roles that should delete their own
-    `http.DELETE` grant. Check roles with an action of `"*"` conditioned on
-    `scrud_workflow` in particular, and make each `authorized_transitions` a
-    list of transition names.
-23. Code that reads a `ResourceType`'s `etag` or `modified_at` to see whether
+20. Code that reads a `ResourceType`'s `etag` or `modified_at` to see whether
     its resources changed must read a list's `ETag` and `Last-Modified`
     instead: writes of resources no longer change them (see API changes
     below).
-24. MySQL and MariaDB: use mysqlclient, InnoDB and a utf8mb4 database (MariaDB
-    stores resource content as text in the database's character set) and
-    connection, at READ COMMITTED (step 14). On MariaDB, clients must keep
-    request bodies within 31 levels of nesting (see API changes below). A
-    MySQL or MariaDB database migrated with a pre-release 0.12 build must be
-    recreated: its context columns compare inexactly, and nothing detects it.
-25. Clients: a POST to a list now evaluates `If-Match`,
+21. Your resource types' JSON Schemas: a `$ref` may only point inside the
+    schema (`#/...`). A type whose stored schema has another `$ref` (remote,
+    `file:` or relative) refuses every write of its resources with 400 until
+    the schema is changed, and JSON Schema `default` values are no longer
+    applied (see API changes below).
+
+#### Clients
+
+22. Clients must send JSON bodies (form and multipart bodies get 415). Give
+    your own `GenericViewMixin` views `parser_classes = [RbacJSONParser]`.
+23. Clients: a PUT or DELETE without `If-Match` or `If-Unmodified-Since`
+    gets 428 (it got 400 with `{"missing-required-headers": [...]}`), and
+    either header is now enough (both were required). ETags lost their
+    version suffix, so every `ETag` a client kept from 0.11 is stale: its
+    `If-Match` gets 412 and its `If-None-Match` a 200, so refetch first.
+    `services/` sends no `Last-Modified` (revalidate it with
+    `If-None-Match`), and OPTIONS bodies use scrudful's Semantic HTTP
+    format (see Conditional requests below). An unauthenticated request
+    gets 401, and a resource the client may not read is a 404 for every
+    method (step 12; see Authorization below). The Role and RoleAssignment
+    endpoints serve scoped-rbac 0.11's shapes (see API changes below).
+24. Clients: workflow policies now apply in every context, not only `""`
+    (see Workflows below). A create whose body is not a valid initial state
+    under the policy of each context it names, or an update that is not a
+    valid transition, or one the user may not make, in each context the
+    resource is in, gets 400 (a ToDo
+    with no `status` outside `""`, say); a body with `"rbac_context": ""` is
+    checked as one without `rbac_context` (it skipped the default policy). A
+    PUT that moves a resource into a context must be an initial state there,
+    and the user's `http.PUT` grant there (not `http.POST`) must allow
+    `__INITIALIZE__` if it is conditioned on `scrud_workflow`;
+    `scrud_post_save` (and so workflow actions) reports such a move as
+    `__INITIALIZE__`. A write that only a `scrud_workflow`-conditioned grant
+    allows, in a context where no workflow policy applies, gets 403.
+    Workflow error bodies changed: a stored policy is given as its URL in
+    `policy` and `detail` (it was its content), and a settings default
+    policy as `{"resource_type": ..., "default": true}`; `prior_state` and
+    `proposed_state` are no longer swapped, and a create's `prior_state` is
+    null; and the error is generic (`policy`, `prior_state` and
+    `proposed_state` null) when the writer may not read the policy, or the
+    stored resource. A refused `WorkflowPolicy` write's 400 is a
+    `workflow-policy-invalid` problem whose `detail` says why.
+25. Clients: on the scrud resource views, a body whose `rbac_context` is
+    `[]` now gets 400 (it got 403), and lists of
+    `ResourceViewSetGenericFilter` filter on their query parameters as JSON
+    key lookups (see Lists below).
+26. Clients: JSON Schema `default` values are not applied; send every value
+    you want stored (and that a workflow state condition reads); a default
+    no longer makes a body valid either. On the scrud resource views, a POST
+    or PUT with an empty body, or with no `Content-Length` (a chunked body),
+    gets 400 (`body-missing`), and one nested more than 100 levels deep
+    (objects and arrays) gets 400 (`body-too-deep`), as does one with a NUL
+    character (`\u0000`) in any string (`body-nul-character`). A DELETE of
+    a resource a type uses as its schema, context or indexing policy gets
+    409 (`resource-in-use`; it was a 500).
+27. Clients: with `SCOPED_RBAC["UNIFORM_ERRORS"]` on (scoped-rbac's
+    default), a 400 (malformed `If-Match` or `If-None-Match`), 412 or 428 is
+    now problem details served as `application/problem+json` (it was
+    `{"detail": ...}` as `application/json`; with uniform errors off it still
+    is), and so is every other error that is not scrud-django's own, on
+    every view `scrud_exception_handler` handles (step 5): for example a
+    validation error's field messages become "This value is not valid." (see
+    API changes below). A list envelope's `link` now spells the schema link
+    `rel="describedby"` with `type="application/schema+json"`, as the `Link`
+    header does (see Conditional requests below).
+28. Clients: a POST to a list now evaluates `If-Match`,
     `If-Unmodified-Since` and `If-None-Match` against the list (see
     Conditional requests below). Drop `If-None-Match: *` from creates (it
     now always fails with 412, since the list exists), and send `If-Match`
@@ -401,8 +478,11 @@ django-scoped-rbac 0.11. It has several breaking changes.
   `django.db.models.JSONField` before you uninstall the backport; otherwise
   those migrations no longer import.
 * django-haystack and Whoosh are no longer installed by default; they are in
-  the `search` extra. If `haystack` is in your `INSTALLED_APPS`, install
-  `scrud-django[search]`.
+  the `search` extra (Whoosh as whoosh-reloaded). If `haystack` is in your
+  `INSTALLED_APPS`, install `scrud-django[search]`.
+* scrud-django no longer installs django-cors-headers, python-decouple,
+  python-dotenv, rdflib or safetydance-test (0.11 did); declare
+  them yourself if you use them.
 
 ### Conditional requests
 
@@ -468,14 +548,22 @@ Conditional request handling now comes from scrudful 0.8.
   phrase as `title`, `status`, scrudful's `detail` (a 428 also has
   `accepted-precondition-headers`) and a `code` (`malformed_precondition`,
   `precondition_failed`, `precondition_required`). They were
-  `{"detail": ...}` as `application/json`. (scrud-django's own errors have
-  `https://api.openteams.com/http-problem/...` types and no `code`; the other
-  errors, through `scrud_exception_handler`, are scoped-rbac's, with
-  `about:blank` and a `code`, as these are.) With uniform errors off, they
-  and every other error of the scrud views keep their native
-  `{"detail": ...}` bodies as `application/json`, without the
-  problem-details `Link`s, as scoped-rbac's own viewsets have it (the setting
-  is read per request).
+  `{"detail": ...}` as `application/json`. (The other errors that are not
+  scrud-django's own, through `scrud_exception_handler`, are scoped-rbac's,
+  with `about:blank` and a `code`, as these are.) With uniform errors off,
+  they and those other errors keep their native bodies (`{"detail": ...}`,
+  or field errors such as `{"non_field_errors": [...]}` for a body that is
+  not a JSON object) as `application/json`, without the problem-details
+  `Link`s, as scoped-rbac's own viewsets have it (the setting is read per
+  request). scrud-django's own errors (the `body-missing`, `body-too-deep`,
+  `body-nul-character`, `rbac-context-invalid`, `json-invalid`,
+  `json-schema-invalid`, `resource-in-use` and workflow problems) are
+  problem details whatever the setting, served as `application/problem+json`
+  under the JSON renderer, with
+  `https://api.openteams.com/http-problem/...` types
+  (`http://api.openteams.com/http-problem/workflow-transition-invalid` for
+  workflow transitions), no `code` and no problem-details `Link`s, as in
+  0.11.
 * OPTIONS bodies use scrudful's Semantic HTTP format, with `x-rdf-context`.
 * A PUT or DELETE runs in one transaction on the database the router gives
   for `Resource` writes: the permission check, the lookup with the resource's
@@ -535,14 +623,14 @@ Conditional request handling now comes from scrudful 0.8.
   `migrate`), warns when transactions on the database scrud-django writes
   resources to run at any other level, READ UNCOMMITTED included (on MySQL
   and MariaDB it lets the workflow check read a policy whose write is later
-  rolled back). On PostgreSQL at REPEATABLE READ or
-  SERIALIZABLE, the second of two concurrent writes of one resource (or of two
-  `WorkflowPolicy` writes that would make a duplicate) fails with a
-  serialization error, a 500, instead of a 412 or 400, and at REPEATABLE
-  READ two POSTs to a list with the same `If-Match` can both create, with no
-  error; on MySQL or MariaDB at
-  REPEATABLE READ, the `WorkflowPolicy` uniqueness re-check can miss a
-  concurrent duplicate
+  rolled back). On PostgreSQL, the second of two concurrent writes of one
+  resource fails with a serialization error, a 500, instead of a 412 or 400,
+  at REPEATABLE READ and SERIALIZABLE. At REPEATABLE READ, two POSTs to a
+  list with the same `If-Match` can both create, and two `WorkflowPolicy`
+  creates for one type and context can both be stored, with no error; at
+  SERIALIZABLE the second of each fails with a serialization error (a 500)
+  instead of a 412 or 400. On MySQL or MariaDB at REPEATABLE READ, the
+  `WorkflowPolicy` uniqueness re-check can miss a concurrent duplicate
   ([policy-recheck-isolation](follow-ups.md#policy-recheck-isolation)).
 
 ### Authorization
@@ -568,8 +656,11 @@ Conditional request handling now comes from scrudful 0.8.
   403, which revealed that it exists). Object checks only narrow: one that
   allows what the grants refuse makes nothing readable. The same holds for
   `GenericViewMixin` views (`ListValidatorsMixin.object_readable`).
-* Unauthenticated requests now get 401.
-* A POST or PUT body whose `rbac_context` is an empty list gets 400
+* Unauthenticated requests now get 401, through `scrud_exception_handler`
+  (DRF's own handler answers 403 when the first authentication class, such
+  as `SessionAuthentication`, sends no `WWW-Authenticate`).
+* On the scrud resource views, a POST or PUT body whose `rbac_context` is
+  an empty list gets 400
   (`https://api.openteams.com/http-problem/rbac-context-invalid`, "Invalid
   rbac_context"), and nothing is stored or changed. It used to get 403 from
   scoped-rbac's request check, superusers included. Leave `rbac_context` out,
@@ -711,8 +802,13 @@ Conditional request handling now comes from scrudful 0.8.
   `permission_classes = [IsAuthorized]`. A subclass that relied on a different
   `DEFAULT_PERMISSION_CLASSES` must set `permission_classes` itself.
 * `scrud_django.urls` now also mounts scoped-rbac's semantic URLs at
-  `semantic/`, which serve each resource type's schema and JSON-LD context. If
-  you mount URLs yourself, include `scoped_rbac.semantic_urls` once.
+  `semantic/`, which serve the schemas and JSON-LD contexts of scoped-rbac's
+  own resources (Role, RoleAssignment and Policy), which the role endpoints'
+  `Link` headers point to. A scrud resource type's schema and context are its
+  `json-schema/<id>/` and `json-ld/<id>/` resources and its
+  `collections-json-schema/<slug>/` and `collections-json-ld/<slug>/` views,
+  as before. If you mount URLs yourself, include `scoped_rbac.semantic_urls`
+  once.
 * The Role and RoleAssignment endpoints that `scrud_django.urls` includes from
   `scoped_rbac.urls` now serve scoped-rbac 0.11's Role and RoleAssignment
   shapes. Clients of those endpoints must follow scoped-rbac 0.11.
@@ -894,8 +990,10 @@ Conditional request handling now comes from scrudful 0.8.
   seen by the workflow check, which now reads the body as sent (the
   serializer's `initial_data`), so it checks the contexts and the state the
   resource is stored with.
-* A POST or PUT whose body is empty, or has no `Content-Length` (a chunked
-  body, which DRF does not read), gets 400
+* On the scrud resource views (`ResourceViewMixin`; your
+  `GenericViewMixin` views do not make these body checks), a POST or PUT
+  whose body is empty, or has no `Content-Length` (a chunked body, which DRF
+  does not read), gets 400
   (`https://api.openteams.com/http-problem/body-missing`, "Missing request
   body", `scrud_django.exceptions.RequestBodyMissingError`), before
   authorization; nothing is stored or changed. DRF read such a body as
@@ -911,8 +1009,8 @@ Conditional request handling now comes from scrudful 0.8.
   on one a few hundred levels deep with `RecursionError`, a 500. A method the
   route does not serve still gets 405, whatever its body (too deep, an empty
   `rbac_context` list, a form body): its body is neither checked nor parsed.
-* A POST or PUT body with a NUL character (`\u0000`) in any string, a key
-  or a value at any depth, gets 400
+* On the scrud resource views, a POST or PUT body with a NUL character
+  (`\u0000`) in any string, a key or a value at any depth, gets 400
   (`https://api.openteams.com/http-problem/body-nul-character`, "NUL
   character in request body", `RequestBodyNulError`), before authorization,
   on every database. PostgreSQL's `jsonb` cannot hold one: such a POST was a
@@ -1048,7 +1146,7 @@ Conditional request handling now comes from scrudful 0.8.
   lock before it writes the row too, but does not check uniqueness; code that
   locks a policy's row itself (`select_for_update()`) before saving or
   deleting it must call `scrud_django.registration.lock_if_workflow_policy`
-  before that `select_for_update()` (Upgrading 16). If several
+  before that `select_for_update()` (Upgrading 17). If several
   were stored before (or past the API), none is picked: writes of the type in
   that context fail with `ImproperlyConfigured` until all but one are deleted.
   The database system check (`manage.py check --database <alias>`, for the
@@ -1069,7 +1167,7 @@ Conditional request handling now comes from scrudful 0.8.
   check reports nothing, so that `migrate` can create the tables a fix
   needs: migrate, then run `check --database <alias>`, then fix or delete
   the policies it reports (through the API or `ResourceRegistration`;
-  Upgrading step 7). The `WorkflowPolicy` schema now also declares
+  Upgrading step 11). The `WorkflowPolicy` schema now also declares
   `restrict_update` as an array of strings. These checks catch the policy
   errors known to make later writes fail; they do not prove that a policy
   which passes them is usable.

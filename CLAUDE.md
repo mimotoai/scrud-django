@@ -90,11 +90,13 @@ MariaDB suite in CI's image instead
 default-libmysqlclient-dev pkg-config`, on a docker network with the server),
 as the `test-mysql` job does.
 
-Demo app (API root at http://127.0.0.1:8000/api/):
+Demo app (API root at http://127.0.0.1:8000/api/; resource routes need a
+login, at `/api-auth/login/` or with Basic auth):
 
 ```bash
 cd demo
 uv run python manage.py migrate
+uv run python manage.py createsuperuser
 uv run python manage.py runserver
 ```
 
@@ -164,6 +166,12 @@ See `tests/test_conditional.py` for the idiom.
   and commit it with the model change.
 - The `api.openteams.com` IRIs (JSON-LD contexts, schema and type identifiers)
   are part of the API's semantics and stored data. Do not rebrand or "fix" them.
+- Lists filter by `ResourceContext` rows, which `Resource.save()` (raw
+  saves included) keeps in step; `QuerySet.update()`, `bulk_create()` and
+  `bulk_update()` do not. `manage.py scrud_sync_contexts [--check]` compares
+  and re-syncs them, and the `scrud_django.W004` database check reports
+  resources with no row. Tests that write resources should go through
+  `save()` or `ResourceRegistration`.
 - The `demo/` project has its own settings and creates `demo/db.sqlite3`, which
   is gitignored; do not commit it.
 - `ruff format` uses `quote-style = "preserve"`; do not mass-convert quotes.
