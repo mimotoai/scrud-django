@@ -47,18 +47,50 @@ def lock_for_delete(queryset, using):
     ``ResourceContext`` rows (`sync_resource_contexts`, the ``Collector``'s
     cascade), and a delete that took the context rows first deadlocked with
     them on PostgreSQL. Sorted, two deletes of overlapping sets cannot
-    deadlock on the resource rows either."""
+    deadlock on the resource rows either. Returns the keys it locked, in
+    order: a delete must delete those and no others (`delete_locked_keys`),
+    since its own query, run again, would also find rows that came to match
+    since, without their lock."""
     keys = queryset.using(using).values("pk")
     keys.query.select_for_update = False
     keys.query.select_related = False
     keys.query.clear_ordering(force=True)
-    list(
+    return list(
         Resource._base_manager.using(using)
         .filter(pk__in=keys)
         .order_by("pk")
         .select_for_update()
         .values_list("pk", flat=True)
     )
+
+
+# The most keys one ``Collector`` pass of `delete_locked_keys` deletes (a
+# query parameter each; SQLite allows 32766 in one statement).
+DELETE_BATCH_SIZE = 1000
+
+
+def delete_locked_keys(keys, using):
+    """Django's ``QuerySet.delete()`` of the `Resource` rows `keys` (locked by
+    `lock_for_delete`) on database `using`, `DELETE_BATCH_SIZE` at a time;
+    ``(deleted, {label: count})`` over them all. Several batches run in a
+    transaction (a savepoint inside the caller's) so that an error in a later
+    one (a ``ProtectedError``) undoes the earlier ones, as one ``delete()``
+    deletes nothing then."""
+    rows = Resource._base_manager.using(using)
+    batches = [
+        keys[start : start + DELETE_BATCH_SIZE]
+        for start in range(0, len(keys), DELETE_BATCH_SIZE)
+    ]
+    if len(batches) <= 1:
+        return models.QuerySet.delete(rows.filter(pk__in=keys))
+    total, per_model = 0, {}
+    with transaction.atomic(using=using):
+        for batch in batches:
+            deleted, counts = models.QuerySet.delete(rows.filter(pk__in=batch))
+            total += deleted
+            for label, count in counts.items():
+                per_model[label] = per_model.get(label, 0) + count
+    return total, per_model
 
 
 def in_transaction(using):
@@ -92,7 +124,10 @@ class ResourceQuerySet(models.QuerySet):
         one of its own (`in_transaction`).
 
         It first locks the rows it deletes, in primary key order
-        (`lock_for_delete`), as an API write locks its row first.
+        (`lock_for_delete`), as an API write locks its row first, and then
+        deletes exactly those (`delete_locked_keys`): a row that came to match
+        after the lock is left alone, as by a delete that ran a moment
+        earlier.
 
         It runs on the database Django's ``delete()`` deletes on: the
         queryset's ``using()`` alias, else the router's ``db_for_write`` (not
@@ -106,11 +141,11 @@ class ResourceQuerySet(models.QuerySet):
         ):
             return super().delete()  # Django refuses these: TypeError.
         with in_transaction(db):
-            lock_for_delete(self, db)
+            locked = lock_for_delete(self, db)
             pending = set()
             token = _PENDING_STAMPS.set((db, pending))
             try:
-                result = super().delete()
+                result = delete_locked_keys(locked, db)
             finally:
                 _PENDING_STAMPS.reset(token)
             contexts_by_type = {}

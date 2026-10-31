@@ -147,6 +147,50 @@ def test_queryset_delete_inside_a_transaction_keeps_it_usable_after_protected_er
         assert Resource.objects.filter(pk=schema.pk).exists()
 
 
+@pytest.mark.django_db
+def test_a_batched_queryset_delete_deletes_every_locked_row():
+    from scrud_django.models import resource as resource_module
+
+    stored = profiles("a", "b", "c")
+    pks = [r.pk for r in stored]
+    with mock.patch.object(resource_module, "DELETE_BATCH_SIZE", 1):
+        deleted, per_model = Resource.objects.filter(pk__in=pks).delete()
+    assert per_model == {
+        "scrud_django.Resource": 3,
+        "scrud_django.ResourceContext": 3,
+    }, per_model
+    assert deleted == 6
+    assert not Resource.objects.filter(pk__in=pks).exists()
+
+
+@pytest.mark.django_db
+def test_a_protected_row_in_a_later_batch_undoes_the_earlier_ones():
+    from django.db.models import ProtectedError
+    from django.utils import timezone
+
+    from scrud_django.models import ResourceType
+    from scrud_django.models import resource as resource_module
+
+    (plain,) = profiles("a")
+    (schema,) = profiles("b")
+    ResourceType.objects.create(
+        type_uri="tests://UsesTheSchema",
+        slug="uses-the-schema",
+        schema=schema,
+        modified_at=timezone.now(),
+        etag="e",
+        revision="1",
+    )
+    with (
+        transaction.atomic(),
+        mock.patch.object(resource_module, "DELETE_BATCH_SIZE", 1),
+    ):
+        with pytest.raises(ProtectedError):
+            Resource.objects.filter(pk__in=[plain.pk, schema.pk]).delete()
+        # The first batch (plain) was undone, and the transaction is usable.
+        assert Resource.objects.filter(pk__in=[plain.pk, schema.pk]).count() == 2
+
+
 def superuser_admin():
     user = UserFactory(is_staff=True, is_superuser=True)
     user.user_permissions.set(
@@ -332,3 +376,73 @@ def test_a_bulk_delete_of_a_policy_and_its_api_put_do_not_deadlock(committed_typ
     assert not isinstance(deleted, Exception), repr(deleted)
     assert deleted >= 1
     assert status == 404, status
+
+
+@POSTGRESQL
+@pytest.mark.django_db(transaction=True)
+def test_a_queryset_delete_deletes_only_the_rows_it_locked(committed_types):
+    # The bulk delete filters on content and locks what matches (nothing).
+    # A server-side update then moves R into the filtered context and
+    # commits, and an API PUT locks R and pauses. If the Collector ran the
+    # filter again, it would collect R and delete its ResourceContext rows
+    # without R's lock, while the PUT holds R and waits for them: a deadlock.
+    # Deleting only the locked keys leaves R alone, as a delete that ran a
+    # moment earlier would.
+    from scrud_django.models import resource as resource_module
+
+    (stored,) = profiles("x")
+    url = reverse("partner-profiles-detail", args=[stored.pk])
+    client = admin_api_client()
+    connections.close_all()
+    slow = threading.local()
+    original_lock = resource_module.lock_for_delete
+
+    def lock_then_wait(queryset, using):
+        locked = original_lock(queryset, using)
+        if getattr(slow, "on", False):
+            time.sleep(1.0)  # between the lock and the Collector
+        return locked
+
+    results = {}
+
+    def run(name, function, wait):
+        time.sleep(wait)
+        try:
+            results[name] = function()
+        except Exception as exc:  # noqa: BLE001 - reported to the test
+            results[name] = exc
+        finally:
+            connections.close_all()
+
+    def bulk():
+        slow.on = True
+        return Resource.objects.filter(content__rbac_context="y").delete()[0]
+
+    def mover():
+        ResourceRegistration.update(
+            {"name": "x", "rbac_context": "y"}, "partner-profiles", str(stored.pk)
+        )
+
+    def api():
+        with paused_while_locked(pre_save):
+            return client.put(
+                url,
+                {"name": "x", "rbac_context": "z"},
+                format="json",
+                HTTP_IF_MATCH="*",
+            ).status_code
+
+    with mock.patch.object(resource_module, "lock_for_delete", lock_then_wait):
+        threads = [
+            threading.Thread(target=run, args=args)
+            for args in (("bulk", bulk, 0), ("mover", mover, 0.2), ("api", api, 0.4))
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+    assert not isinstance(results["bulk"], Exception), repr(results["bulk"])
+    assert results["bulk"] == 0
+    assert results["mover"] is None, repr(results["mover"])
+    assert results["api"] == 200, results["api"]
+    assert Resource.objects.get(pk=stored.pk).content["rbac_context"] == "z"
