@@ -201,7 +201,9 @@ MALFORMED = [
 
 
 @pytest.mark.parametrize("transitions", MALFORMED, ids=repr)
-def test_a_malformed_authorized_transitions_denies_everywhere(transitions, caplog):
+def test_a_malformed_authorized_transitions_denies_everywhere(
+    transitions, caplog, fresh_malformed_log
+):
     from scrud_django.permissions import (
         _checking_transition,
         _checking_write,
@@ -347,3 +349,79 @@ def test_a_workflow_error_gives_the_stored_state_to_a_writer_who_reads(shape):
     assert problem["policy"].endswith(f"/{policy.pk}/"), problem
     if message is not None:
         assert problem["message"] == message, problem
+
+
+# A malformed authorized_transitions is logged once per configuration per
+# process, not on every evaluation (a list evaluates it once per row).
+
+
+@pytest.fixture
+def fresh_malformed_log():
+    from scrud_django import permissions
+
+    permissions._MALFORMED_REPORTED.clear()
+    yield permissions
+    permissions._MALFORMED_REPORTED.clear()
+
+
+def malformed_records(caplog):
+    return [
+        r
+        for r in caplog.records
+        if r.name == "scrud_django.permissions"
+        and "authorized_transitions must be a list" in r.getMessage()
+    ]
+
+
+def test_a_malformed_configuration_is_logged_once(fresh_malformed_log, caplog):
+    from scrud_django.permissions import (
+        _checking_transition,
+        _checking_write,
+        authorized_transitions,
+    )
+
+    first = {"authorized_transitions": "cancel finish"}
+    second = {"authorized_transitions": {"cancel": False}}
+    with caplog.at_level("ERROR", logger="scrud_django.permissions"):
+        for _ in range(50):
+            assert authorized_transitions({}, first) is False
+            with _checking_write():
+                assert authorized_transitions({}, first) is False
+            with _checking_transition("cancel"):
+                assert authorized_transitions({}, first) is False
+        assert len(malformed_records(caplog)) == 1
+        assert authorized_transitions({}, second) is False
+        assert authorized_transitions({}, second) is False
+        assert authorized_transitions({}, first) is False
+    assert len(malformed_records(caplog)) == 2
+
+
+def test_the_malformed_configurations_remembered_are_bounded(
+    fresh_malformed_log, caplog
+):
+    from scrud_django.permissions import authorized_transitions
+
+    limit = fresh_malformed_log._MALFORMED_REPORTED_MAX
+    with caplog.at_level("ERROR", logger="scrud_django.permissions"):
+        for n in range(limit + 10):
+            assert (
+                authorized_transitions({}, {"authorized_transitions": str(n)}) is False
+            )
+    assert len(fresh_malformed_log._MALFORMED_REPORTED) == limit
+    assert len(malformed_records(caplog)) == limit + 10
+
+
+@pytest.mark.django_db
+def test_a_list_under_a_malformed_condition_logs_once(fresh_malformed_log, caplog):
+    for n in range(5):
+        todo(dict(PLAN, title=f"plan {n}"))
+    client = client_with(
+        (
+            {"http.GET": {TODO: scrud_workflow("cancel finish"), TODO_LIST: True}},
+            "team",
+        )
+    )
+    with caplog.at_level("ERROR", logger="scrud_django.permissions"):
+        response = client.get(reverse("todos-list"))
+    assert listed_titles(response) == []
+    assert len(malformed_records(caplog)) == 1

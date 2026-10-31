@@ -10,6 +10,8 @@ is stored, and is a bug in that check, not something scrud-django guards.
 """
 
 import logging
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -35,6 +37,14 @@ _WRITE = object()
 # and the view's permission classes about it (`_checking_transition`); else
 # `_OUTSIDE` or `_WRITE`.
 _transition = ContextVar("scrud_django_transition", default=_OUTSIDE)
+
+# The malformed ``authorized_transitions`` values already logged (their
+# ``repr``), most recent last, at most `_MALFORMED_REPORTED_MAX` of them: each
+# is logged once per process, not on every evaluation (a list evaluates a
+# condition once per row).
+_MALFORMED_REPORTED = OrderedDict()
+_MALFORMED_REPORTED_MAX = 256
+_MALFORMED_REPORTED_LOCK = threading.Lock()
 
 # The attribute of a request that records that the workflow check authorized
 # its write (`_mark_workflow_authorized`).
@@ -209,7 +219,8 @@ def authorized_transitions(resource, configuration):
 
     ``authorized_transitions`` must be a list of strings; anything else (a
     string, a mapping, a list with a non-string in it) is an invalid
-    condition, which denies everywhere and is logged. `resource` (the body,
+    condition, which denies everywhere and is logged (at ERROR, once per
+    value per process: `_report_malformed`). `resource` (the body,
     or the stored content) is not read.
 
     To use this `scoped_rbac.policy.Operator`, define an operator condition that
@@ -224,11 +235,7 @@ def authorized_transitions(resource, configuration):
     if not (
         isinstance(transitions, list) and all(isinstance(t, str) for t in transitions)
     ):
-        logger.error(
-            "A scrud_workflow condition's authorized_transitions must be a list "
-            "of transition names (strings), not %r: the condition denies.",
-            transitions,
-        )
+        _report_malformed(transitions)
         return False
     transition = _transition.get()
     if transition is _WRITE:
@@ -236,3 +243,24 @@ def authorized_transitions(resource, configuration):
     if transition is _OUTSIDE or transition is None:
         return False
     return transition in transitions
+
+
+def _report_malformed(transitions):
+    """Log (at ERROR) that a ``scrud_workflow`` condition's
+    ``authorized_transitions`` is `transitions`, not a list of names, once
+    per value per process: the most recent `_MALFORMED_REPORTED_MAX` values
+    logged are remembered (a value forgotten since is logged again)."""
+    key = repr(transitions)
+    with _MALFORMED_REPORTED_LOCK:
+        if key in _MALFORMED_REPORTED:
+            _MALFORMED_REPORTED.move_to_end(key)
+            return
+        _MALFORMED_REPORTED[key] = True
+        while len(_MALFORMED_REPORTED) > _MALFORMED_REPORTED_MAX:
+            _MALFORMED_REPORTED.popitem(last=False)
+    logger.error(
+        "A scrud_workflow condition's authorized_transitions must be a list "
+        "of transition names (strings), not %s: the condition denies (logged "
+        "once per value).",
+        key,
+    )

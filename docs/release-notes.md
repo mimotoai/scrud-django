@@ -803,7 +803,8 @@ Conditional request handling now comes from scrudful 0.8.
   resource of the type in its context. Its `authorized_transitions` must be a
   list of transition names: a string (which was a substring test), a mapping
   (a key test) or a list holding anything but strings is an invalid
-  condition, which refuses everywhere (a 403) and is logged.
+  condition, which refuses everywhere (a 403) and is logged at ERROR, once
+  per value per process.
 * A workflow-conditioned grant no longer allows a
   write in a context where no workflow policy applies: the write is refused
   with 403. Unconditional and CEL grants are unaffected. A CEL condition on a
