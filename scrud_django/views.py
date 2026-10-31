@@ -15,25 +15,8 @@ from scrud_django import collection_type_uri_for, services
 from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
 from scrud_django.mixins.view_mixins import ResourceViewMixin, gate_uniform_errors
 from scrud_django.registration import get_resource_type_for
+from scrud_django.renderers import JSONLDRenderer, SchemaJSONRenderer
 from scrud_django.validators import JsonValidator
-
-
-class SchemaJSONRenderer(JSONRenderer):
-    """JSON served as ``application/schema+json`` (a JSON Schema); its own
-    ``?format=schema-json``, so that ``?format=json`` gives
-    ``application/json``."""
-
-    media_type = "application/schema+json"
-    format = "schema-json"
-
-
-class JSONLDRenderer(JSONRenderer):
-    """JSON served as ``application/ld+json`` (a JSON-LD document); its own
-    ``?format=ld-json``, so that ``?format=json`` gives
-    ``application/json``."""
-
-    media_type = "application/ld+json"
-    format = "ld-json"
 
 
 class DocumentMediaTypeMixin:

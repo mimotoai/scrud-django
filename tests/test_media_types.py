@@ -167,3 +167,19 @@ def test_a_scrud_error_on_a_document_route_is_problem_details():
         )
         assert response.status_code == 400, response.content
         assert content_type(response) == "application/problem+json", accept
+
+
+@pytest.mark.django_db
+def test_an_adopters_own_json_renderer_keeps_its_type_on_a_scrud_error():
+    # tests.urls.VndApiRenderer: a JSONRenderer subclass with its own media
+    # type and format. scrud's own errors (here a POST without a body) keep
+    # that type; only the "json" format and the schema and JSON-LD
+    # documents' renderers make them application/problem+json.
+    client = superuser()
+    reverse("partner-profiles-list")
+    response = client.post(
+        reverse("vnd-partner-profiles-list"), b"", content_type="application/json"
+    )
+    assert response.status_code == 400, response.content
+    assert content_type(response) == "application/vnd.api+json"
+    assert response.json()["type"].endswith("/body-missing"), response.content

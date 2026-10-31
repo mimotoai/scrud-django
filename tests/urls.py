@@ -6,6 +6,7 @@ from django.utils.timezone import now
 from rest_framework import serializers, status, viewsets
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from scoped_rbac import access
 from scoped_rbac.filters import RbacFilter
@@ -140,6 +141,28 @@ class ReadRefusingIsAuthorized(IsAuthorized):
 
 class ReadRefusingResourceViewSet(ResourceViewSet):
     permission_classes = [ReadRefusingIsAuthorized]
+
+
+class VndApiRenderer(JSONRenderer):
+    """An adopter's JSON renderer with its own media type and format."""
+
+    media_type = "application/vnd.api+json"
+    format = "vnd.api+json"
+
+
+class VndApiResourceViewSet(ResourceViewSet):
+    renderer_classes = [VndApiRenderer]
+
+
+urlpatterns.append(
+    path(
+        "vnd/partner-profiles/",
+        VndApiResourceViewSet.as_view(
+            {"get": "list", "post": "create"}, resource_type_name="partner-profiles"
+        ),
+        name="vnd-partner-profiles-list",
+    )
+)
 
 
 class RecordingIsAuthorized(IsAuthorized):
