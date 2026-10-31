@@ -19,9 +19,11 @@ class ScrudConfig(AppConfig):
             check_stored_workflow_policies,
             check_write_routing,
         )
+        from scrud_django.models.resource import mark_reversion_reverts
         from scrud_django.permissions import authorized_transitions
 
         register_operator("scrud_workflow", authorized_transitions)
+        mark_reversion_reverts()
         checks.register(check_default_workflow_policies)
         checks.register(check_stored_workflow_policies, checks.Tags.database)
         checks.register(check_overlong_contexts, checks.Tags.database)

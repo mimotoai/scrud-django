@@ -404,6 +404,14 @@ Conditional request handling now comes from scrudful 0.8.
   The `WorkflowPolicy` type lock is `SELECT ... FOR NO KEY UPDATE` where the
   database has it (PostgreSQL), so that a policy deleted outside the API
   while an API write of it waits does not deadlock either.
+* A reversion revert of a resource (`Version.revert()`, `Revision.revert()`,
+  the admin's revert and recover) gives it a fresh `ETag` and
+  `Last-Modified`. It restored the version's, older ones: a client
+  revalidating with `If-Modified-Since` alone got 304 for the changed
+  content, and a list whose newest resource it was, or that it came back
+  into after a deletion, could keep an older `Last-Modified`. `loaddata`
+  keeps a dump's. (scrud-django wraps reversion's `Version.revert` to tell
+  the two apart.)
 * READ COMMITTED is the supported transaction isolation level (PostgreSQL's
   default, and Django's for MySQL): a write that waited for a lock then sees
   what the write it waited for committed. A new database check,
