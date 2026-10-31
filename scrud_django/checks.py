@@ -235,6 +235,63 @@ def check_overlong_contexts(app_configs, databases=None, **kwargs):
     return found
 
 
+def check_context_drift(app_configs, databases=None, **kwargs):
+    """A database check (``manage.py check --database default``, and
+    ``migrate``): a Warning (``scrud_django.W004``) naming the resources, on
+    each migrated database of `databases` (`scrud_migrations_pending`), that
+    have no ``ResourceContext`` row although their content names a context
+    a row can hold: written without ``Resource.save()`` (a 0.11 process still
+    writing after ``migrate``, ``bulk_create()``). Lists leave them out
+    (superusers' lists excepted).
+
+    It runs one anti-join (resources without a row) and reads the content of
+    those only. It cannot see a resource whose rows name a context its
+    content left (a 0.11 process, or ``QuerySet.update()``, moved it): that
+    takes comparing every resource's content with its rows, which
+    ``manage.py scrud_sync_contexts --check`` does, too costly for a check
+    that every ``migrate`` runs."""
+    from django.db.utils import OperationalError, ProgrammingError
+
+    from scrud_django.models import Resource
+    from scrud_django.models.resource import context_rows_of
+
+    found = []
+    for alias in databases or ():
+        if scrud_migrations_pending(alias):
+            continue
+        candidates = (
+            Resource.objects.using(alias)
+            .filter(rbac_context_rows__isnull=True)
+            .order_by("pk")
+            .values_list("pk", "content")
+        )
+        try:
+            pks = [
+                pk for pk, content in candidates.iterator() if context_rows_of(content)
+            ]
+        except (OperationalError, ProgrammingError):
+            continue
+        if not pks:
+            continue
+        shown = ", ".join(map(str, pks[:20])) + (", ..." if len(pks) > 20 else "")
+        found.append(
+            checks.Warning(
+                f"{len(pks)} resources on database {alias!r} have no "
+                f"ResourceContext row although their content names a context (pks "
+                f"[{shown}]): they were written without Resource.save() (a 0.11 "
+                "process still running after migrate, bulk_create()), and lists "
+                "leave them out (superusers' lists excepted).",
+                hint=(
+                    f"Run manage.py scrud_sync_contexts --database {alias}, which "
+                    "also re-syncs resources whose rows name a context they left "
+                    "(this check does not see those)."
+                ),
+                id="scrud_django.W004",
+            )
+        )
+    return found
+
+
 def check_write_routing(app_configs, **kwargs):
     """An Error (``scrud_django.E004``) when the database router sends writes
     of ``Resource``, ``ResourceType``, ``ResourceContext`` and

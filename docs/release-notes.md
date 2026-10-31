@@ -44,7 +44,15 @@ django-scoped-rbac 0.11. It has several breaking changes.
    (`scrud_django.decorators`, `settings`, `wsgi`, `asgi`), what
    `GenericViewMixin` subclasses must now provide, and the exception handler
    and error body changes.
-9. Run `manage.py migrate`. Migration `0008_resourcecontext` creates the
+9. Stop every 0.11 process before you run `migrate`, and run none against
+   the migrated database (no rolling deploy across this upgrade): 0.11 code
+   does not keep `ResourceContext` rows, so a resource it moves stays listed
+   in the context it left (to readers of that context), one it creates is
+   listed to superusers only, and its deletes fail (a 500). If one did
+   write, `manage.py scrud_sync_contexts --check` lists the resources whose
+   rows disagree with their content (exit status 1), and
+   `manage.py scrud_sync_contexts` re-syncs them (see Lists below).
+   Run `manage.py migrate`. Migration `0008_resourcecontext` creates the
    `ResourceContext` table and fills it from every stored resource (one row
    per context; it reads every resource once, so plan for it on large
    tables). Lists are filtered by these rows: code that writes `Resource` rows
@@ -262,7 +270,18 @@ django-scoped-rbac 0.11. It has several breaking changes.
   a list can be a 400 even when few resources match: counting after them
   would let the 400 tell how many resources the user cannot read match a
   filter. `QuerySet.update()`, `bulk_create()` and `bulk_update()` do not
-  update the rows.
+  update the rows. A new management command, `manage.py
+  scrud_sync_contexts [--check] [--database <alias>]`, compares every
+  resource's rows with its content (it reads every resource) and re-syncs
+  those that differ, each in its own transaction with the resource's row
+  locked (so it can run while the API serves), stamping the contexts they
+  left; `--check` changes nothing and exits with status 1 if any differ.
+  Running it again changes nothing. A new database check,
+  `scrud_django.W004` (`check --database`, also run by `migrate`), names the
+  resources that have no row at all though their content names a context
+  (written by a 0.11 process or `bulk_create()`); it cannot see a resource
+  whose rows name a context it left (moved by `QuerySet.update()` or a 0.11
+  process), which takes the command's full comparison.
 * The filter is `scrud_django.filters.ResourceRbacFilter`, which
   `ResourceViewSet` and `ResourceViewSetGenericFilter` now set as their
   `filter_backends` (it is scoped-rbac's `RbacFilter` for detail lookups). A

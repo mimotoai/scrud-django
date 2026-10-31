@@ -156,6 +156,14 @@ scrud-django writes a resource, its context rows and its removal stamps in one
 transaction there, and the `scrud_django.E004` system check reports a split.
 Routing these models by instance hint is not supported.
 
+Lists filter resources by their `ResourceContext` rows, one per context the
+content names, which `Resource.save()` (and so `ResourceRegistration` and the
+API) keeps in step. Rows written with `QuerySet.update()`, `bulk_create()` or
+`bulk_update()` go stale. `manage.py scrud_sync_contexts --check` lists the
+resources whose rows disagree with their content (exit status 1 if any), and
+`manage.py scrud_sync_contexts` re-syncs them; the `scrud_django.W004`
+database check reports resources that have no row at all.
+
 Run the database at READ COMMITTED, the supported transaction isolation level
 (PostgreSQL's default; Django's MySQL backend uses it unless
 `OPTIONS["isolation_level"]` says otherwise). `manage.py check --database

@@ -254,12 +254,64 @@ def check_contexts(content):
             )
 
 
+def context_rows_of(content):
+    """The contexts a resource with `content` has a `ResourceContext` row
+    for: `rbac_contexts_of` its content, as a set, without a context too long
+    for a row (`context_fits`), which only a resource stored before 0.12.0
+    can have (``scrud_django.W003``)."""
+    return {c for c in rbac_contexts_of(content) if context_fits(c)}
+
+
+def find_context_drift(using, batch_size=1000):
+    """``(pk, rows, wanted)`` for each `Resource` on database `using`, in
+    primary key order, whose `ResourceContext` rows (`rows`, a set) are not
+    `context_rows_of` its content (`wanted`): a write that bypassed
+    ``Resource.save()`` (a 0.11 process still writing after ``migrate``,
+    ``QuerySet.update()``, ``bulk_create()``) left them. It reads every
+    resource, `batch_size` at a time."""
+    resources = Resource.objects.using(using).order_by("pk")
+    last = None
+    while True:
+        batch = resources if last is None else resources.filter(pk__gt=last)
+        batch = list(batch.values_list("pk", "content")[:batch_size])
+        if not batch:
+            return
+        last = batch[-1][0]
+        rows = {}
+        for pk, context in (
+            ResourceContext.objects.using(using)
+            .filter(resource_id__in=[pk for pk, _ in batch])
+            .values_list("resource_id", "rbac_context")
+        ):
+            rows.setdefault(pk, set()).add(context)
+        for pk, content in batch:
+            wanted = context_rows_of(content)
+            if rows.get(pk, set()) != wanted:
+                yield pk, rows.get(pk, set()), wanted
+
+
+def resync_contexts(pk, using):
+    """Make the `ResourceContext` rows of the resource `pk` on database
+    `using` its content's (`sync_resource_contexts`), in a transaction of its
+    own with the resource's row locked first, as a write locks it; the
+    contexts it left are stamped (`stamp_removals`). Returns whether the
+    resource still exists."""
+    with transaction.atomic(using=using):
+        resource = (
+            Resource.objects.using(using).select_for_update().filter(pk=pk).first()
+        )
+        if resource is None:
+            return False
+        sync_resource_contexts(resource, using)
+        return True
+
+
 def sync_resource_contexts(resource, using, *, inserting=False):
     """Make `resource`'s `ResourceContext` rows on database `using` the
-    contexts of its content: delete the rows of contexts it left, add those of
-    contexts it entered. A resource just inserted (`inserting`: a forced
-    insert) has no rows to read."""
-    wanted = set(rbac_contexts_of(resource.content))
+    contexts of its content (`context_rows_of`): delete the rows of contexts
+    it left, add those of contexts it entered. A resource just inserted
+    (`inserting`: a forced insert) has no rows to read."""
+    wanted = context_rows_of(resource.content)
     rows = ResourceContext.objects.using(using)
     existing = (
         set()
