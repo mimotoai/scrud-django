@@ -68,24 +68,36 @@ waited for committed: its precondition, its workflow check and the
 (`ResourceViewMixin.serialized_policy_save`) see that write. That holds under
 READ COMMITTED, PostgreSQL's default and Django's MySQL backend's default.
 
-Above it, on PostgreSQL 14 (REPEATABLE READ or SERIALIZABLE, set with
-`OPTIONS["isolation_level"]`), the second of two concurrent `WorkflowPolicy`
-writes that would make a duplicate fails with "could not serialize access
-due to concurrent update" when it gets the type lock: a 500, and no
-duplicate is stored. Concurrent PUTs or DELETEs of one resource fail the same
-way instead of answering 412 or 400. Two POSTs to a list with the same
-`If-Match` both create (201), with no error, at REPEATABLE READ: the
-transaction's snapshot is taken by its first statement, the type lock,
-before it waits, so the second evaluates the list without the first's
-resource (`tests/test_conditional_create.py::test_two_conditional_creates_with_one_etag_give_one_201_and_one_412`
-fails so). Reading the candidate policies with
-`SELECT ... FOR UPDATE` in the re-check changes neither outcome on
-PostgreSQL, so the re-check does not do it. On MySQL or MariaDB at REPEATABLE
+Above it, on PostgreSQL 14 (set with `OPTIONS["isolation_level"]`; probed
+with two concurrent writes, the first paused holding its locks while the
+second was sent):
+
+- Two PUTs or DELETEs of one resource: at REPEATABLE READ and SERIALIZABLE
+  the second fails with "could not serialize access due to concurrent
+  update", a 500, instead of a 412 or 400.
+- Two POSTs to a list with the same `If-Match`: at REPEATABLE READ both
+  create (201), with no error. The transaction's snapshot is taken by its
+  first statement, the type lock, before it waits, so the second evaluates
+  the list without the first's resource
+  (`tests/test_conditional_create.py::test_two_conditional_creates_with_one_etag_give_one_201_and_one_412`
+  fails so). At SERIALIZABLE the second fails with "could not serialize
+  access due to read/write dependencies among transactions", a 500, and
+  creates nothing.
+- Two `WorkflowPolicy` creates for one type and context: the same. At
+  REPEATABLE READ both are stored (201), a duplicate, with no error: the
+  uniqueness re-check (`ResourceViewMixin.serialized_policy_save`) reads a
+  snapshot taken before the first committed. At SERIALIZABLE the second fails with the
+  read/write dependencies error, a 500, and no duplicate is stored.
+
+Reading the candidate policies with `SELECT ... FOR UPDATE` in the re-check
+would not help at REPEATABLE READ: the second's snapshot does not hold the
+first's policy, so there is no row to lock. On MySQL or MariaDB at REPEATABLE
 READ (the server default, which Django's backend overrides unless
 `OPTIONS["isolation_level"]` says otherwise), the re-check reads its
-snapshot and can miss a concurrent duplicate (not tested here). Duplicates
-fail closed (writes of the type in that context are `ImproperlyConfigured`)
-and the `scrud_django.E002` database check reports them.
+snapshot and can miss a concurrent duplicate (not tested here; nor is
+SERIALIZABLE there). Duplicates fail closed (writes of the type in that
+context are `ImproperlyConfigured`) and the `scrud_django.E002` database
+check reports them.
 
 `stored_policies_for` reads through the write database
 (`router.db_for_write(Resource)`), so a read-replica router does not make the

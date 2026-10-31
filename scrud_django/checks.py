@@ -374,13 +374,17 @@ def check_isolation_level(app_configs, databases=None, **kwargs):
     on the database scrud-django writes resources to
     (``router.db_for_write(Resource)``), among `databases`, run at any level
     but READ COMMITTED, the supported level. Under it, a write blocked on a row or the
-    ``WorkflowPolicy`` lock reads what the writer it waited for committed. At
-    REPEATABLE READ or SERIALIZABLE, PostgreSQL fails that write with a
-    serialization error (a 500), and at REPEATABLE READ a conditional POST to
-    a list reads the snapshot its type lock's statement took, so two with
-    the same ``If-Match`` can both create; MySQL and MariaDB read their
-    snapshot, so the ``WorkflowPolicy`` uniqueness re-check can miss a
-    concurrent duplicate.
+    ``WorkflowPolicy`` lock reads what the writer it waited for committed. On
+    PostgreSQL, at REPEATABLE READ or SERIALIZABLE the second of two
+    concurrent writes of one resource fails with a serialization error (a
+    500). At REPEATABLE READ a conditional POST to a list, and a
+    ``WorkflowPolicy`` create, read a snapshot taken before the writer they
+    waited for committed, so two with the same ``If-Match``, or two policies
+    for one type and context, can both be created; at SERIALIZABLE the
+    second of each fails with a serialization error (a 500). MySQL and
+    MariaDB at REPEATABLE READ read their snapshot, so the ``WorkflowPolicy``
+    uniqueness re-check can miss a concurrent duplicate (SERIALIZABLE is not
+    tested there); see ``docs/follow-ups.md#policy-recheck-isolation``.
     At READ UNCOMMITTED, MySQL and MariaDB let those checks read a policy
     that is never committed (PostgreSQL treats it as READ COMMITTED; it is
     warned about all the same). Django's MySQL backend uses READ COMMITTED unless
@@ -403,14 +407,22 @@ def check_isolation_level(app_configs, databases=None, **kwargs):
                 "uniqueness check can read a policy whose write is later rolled "
                 "back."
             )
+        elif level == "repeatable read":
+            consequence = (
+                "On PostgreSQL the second of two concurrent writes of one "
+                "resource fails with a serialization error (a 500) instead of a "
+                "412 or 400, and two POSTs to a list with the same If-Match, or "
+                "two WorkflowPolicy resources for one type and context, can both "
+                "be created, with no error; on MySQL or MariaDB two "
+                "WorkflowPolicy resources can be stored for one type and context."
+            )
         else:
             consequence = (
-                "Concurrent writes of one resource, or of WorkflowPolicy "
-                "resources, can fail with a serialization error (a 500) instead "
-                "of a 412 or 400; on PostgreSQL at REPEATABLE READ two POSTs to "
-                "a list with the same If-Match can both create, with no error; "
-                "and on MySQL or MariaDB two WorkflowPolicy resources can be "
-                "stored for one type and context."
+                "On PostgreSQL the second of two concurrent writes of one "
+                "resource, of two POSTs to a list with the same If-Match, or of "
+                "two WorkflowPolicy resources for one type and context fails "
+                "with a serialization error (a 500) instead of a 412 or 400; on "
+                "MySQL and MariaDB these writes are not tested at this level."
             )
         found.append(
             checks.Warning(
