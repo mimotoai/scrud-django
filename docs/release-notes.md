@@ -141,34 +141,41 @@ django-scoped-rbac 0.11. It has several breaking changes.
     now spells the schema link `rel="describedby"` with
     `type="application/schema+json"`, as the `Link` header does (see
     Conditional requests below).
-20. Your own `IsAuthorized` subclasses on scrud views (see Authorization
-    below): every object check (the detail route's, the post-save check and a
-    list's per-object check) now gives their `has_object_permission`,
-    `has_context_permission` and `contexts_for` a
-    `scrud_django.permissions.ResourceCheck`, a mapping over the resource's
-    content that is read-only at every level (nested objects and arrays are
-    read-only views that compare equal to `dict`s and `list`s), whose
-    attribute reads are the resource's (`obj.rbac_contexts`, `obj.pk` work as
-    before; `obj.content` is a copy), not the `Resource` itself: use
-    `obj.resource` where you need the instance (an `isinstance(obj,
-    Resource)` test is false). Like a `dict` it is not hashable; memoize on
-    `obj.resource.pk`. They now also decide the post-save check (their
-    `has_object_permission` and `has_context_permission` in every context),
-    and they can refuse a workflow transition the policy allows, but not
-    grant one it refuses (their `has_context_permission` is given the
-    `TransitionCheck` of the transition in each context, whose mapping is the
-    request body as sent, not the stored resource). Your operators get the
-    `ResourceCheck` on object checks (they got the `Resource`). On the
-    request check of a POST or PUT, the permission classes (their
-    `has_permission` and `contexts_from`) and your operators now read the
-    body as a `scrud_django.permissions.BodyCheck`, read-only at every level
-    like the others (they got the parsed `dict`, and an operator that wrote
-    to it changed what was stored). Its arrays are read-only `tuple`s
-    (`ReadOnlyList`), which scoped-rbac's `access.body_contexts` reads as a
-    list of contexts; a `contexts_from` of your own (a permission's or a
-    serializer's) that tests `isinstance(value, list)` alone must accept a
-    `tuple` too. Your `GenericViewMixin` views' request check reads it the
-    same way. Lists ask
+20. Your own `IsAuthorized` subclasses and operators on scrud views (see
+    Authorization below) get plain data, as scoped-rbac's own checks give it
+    (its issue #55 was closed by deciding not to guard checks). Every object
+    check (the detail route's, the post-save check and a list's per-object
+    check) gives their `has_object_permission`, `has_context_permission` and
+    `contexts_for`, and your operators, the resource's content: the `dict`
+    the `Resource` holds (`scrud_django.permissions.content_of`; `{}` for
+    content that is not a JSON object), not the `Resource` (0.11 gave the
+    instance). Read its fields (`obj.get("name")`); an override that read
+    `obj.content`, `obj.pk` or `obj.rbac_contexts`, or tested
+    `isinstance(obj, Resource)`, must change. scoped-rbac's default
+    `contexts_for` reads the resource's contexts from that content on the
+    scrud views (`ResourceViewMixin.get_permissions` gives it to each
+    `IsAuthorized` that keeps it, so a `get_permissions` override of yours
+    must call `super()`); a `contexts_for` of your own gets the `dict` and
+    reads it (`scrud_django.mixins.resource_mixin.rbac_contexts_of(obj)`
+    gives the resource's own contexts; `super().contexts_for(obj)` cannot
+    read a `dict`). The request check of a POST or PUT gives the permission
+    classes (their `has_permission` and `contexts_from`) and your operators
+    the parsed body itself (`request.data`), and the workflow check gives
+    their `has_context_permission` and your operators the body as sent: a
+    check must only read what it gets (`body.get("owner")`, never
+    `body.pop("owner")`), since one that changes it changes what is stored,
+    a bug in that check which nothing guards. An operator that evaluates CEL
+    itself passes the object it got (already plain `dict`s and `list`s). In
+    the workflow check, read the transition with
+    `scrud_django.permissions.current_transition()`, which replaces
+    `TransitionCheck.transition`. They now also decide the post-save check
+    (their `has_object_permission` and `has_context_permission` in every
+    context), and they can refuse a workflow transition the policy allows,
+    but not grant one it refuses (their `has_context_permission` is given
+    the request body as sent in each context, not the stored resource).
+    Your `GenericViewMixin` views' request check gives the parsed body the
+    same way (their object checks give your model's instance, as
+    scoped-rbac does). Lists ask
     them too: on a view whose `IsAuthorized` subclass overrides
     `has_object_permission` or `has_context_permission`, a list keeps only
     the resources its `has_object_permission` allows (see Lists below), so
@@ -187,8 +194,8 @@ django-scoped-rbac 0.11. It has several breaking changes.
   detail route shows the requester: those on which `http.GET` on the
   resource's type is allowed in **any** of the resource's usable contexts (not
   a reserved one), with a condition evaluated against the resource as the
-  detail route's object check evaluates it (a `ResourceCheck`: CEL reads the
-  content, an operator gets a read-only mapping over it; a grant that is only
+  detail route's object check evaluates it (on the resource's content, a
+  `dict`, which CEL reads and an operator gets; a grant that is only
   conditional lists the matching resources,
   while the detail route answers 403 until the user also holds an outright
   `http.GET` somewhere: scoped-rbac's request check refuses a grant it cannot
@@ -237,7 +244,7 @@ django-scoped-rbac 0.11. It has several breaking changes.
   `ResourceViewMixin.list` now builds its page from
   `filter_queryset(get_queryset())`, so the view's filter backends run. A
   view whose `IsAuthorized` overrides `contexts_for` is listed per object
-  with those contexts, each given the `ResourceCheck`
+  with those contexts, each given the resource's content
   (`scrud_django.filters.filter_readable_resources_per_object`), so its list
   agrees with its detail route too.
 * A view whose `IsAuthorized` (a subclass of your own) overrides
@@ -245,7 +252,7 @@ django-scoped-rbac 0.11. It has several breaking changes.
   grants allow, which SQL cannot see. Its list is narrowed further, right
   after the RBAC filter (before query parameter filters): each resource is
   given to the permission class's `has_object_permission` as the detail
-  route gives it (a `ResourceCheck`, with the request's `http.GET` on the
+  route gives it (its content, a `dict`, with the request's `http.GET` on the
   item type; the view's `action` reads `"retrieve"` while it is asked), and
   only those it allows are listed, superusers' lists included. A
   `has_object_permission` that raises `PermissionDenied`,
@@ -395,38 +402,37 @@ Conditional request handling now comes from scrudful 0.8.
   `Resource.save()` (on PostgreSQL a longer multibyte context of 2048
   characters or fewer was a 500).
 * Object checks give the permission class and the grants' conditions the
-  stored resource as a `scrud_django.permissions.ResourceCheck`: a mapping
-  over its content (`{}` for content that is not a JSON object), read-only at
-  every level (`ReadOnlyMapping` and `ReadOnlyList` views, equal to the
-  `dict`s and `list`s they view; `copy.copy` and `copy.deepcopy` work; not
-  hashable, like a `dict`), whose `to_cel()` is a plain copy of the content,
-  whose `content` attribute is a copy, whose other attribute reads are the
-  resource's, and whose `resource` is the `Resource` itself. That is so on the detail route
-  (GET, PUT and DELETE: `ResourceViewMixin.get_object` passes it to
-  `check_object_permissions`, and so to `has_object_permission`,
-  `has_context_permission`, `contexts_for` and the 404-or-403 readability
-  check), in the post-save check and in a list's per-object check. A CEL
-  condition reads the content (it raised `TypeError`, a 500, before), and an
-  adopter's operator reads the content as it reads the body on the request
-  check: it got the `Resource` model instance, so an operator that reads the
-  body (`resource.get("name")`) raised `AttributeError`, a 500, on every
-  detail route and list its grant conditioned. (scoped-rbac's request check
-  of a GET or DELETE still gives operators `None`: there is no body.)
-* The request check of a POST or PUT (scoped-rbac's `IsAuthorized`), the
-  workflow check's `TransitionCheck` and its check where no transition
-  applies read the body through read-only views at every level
-  (`scrud_django.permissions.BodyCheck`; `ResourceViewMixin` and
-  `GenericViewMixin`'s `check_permissions` give it as the request's `data`
-  while the permissions are asked,
-  `scrud_django.mixins.view_mixins.read_only_body`, and restore the body
-  after; a form body, on a view that parses one, is left as it is): neither
-  a permission class nor an operator can change what is stored (an
-  operator that wrote to the body, or to a nested object of a
-  `TransitionCheck`, changed it). A CEL condition reads a plain copy
-  (`to_cel()`). The read-only arrays (`ReadOnlyList`) are `tuple`s, so
-  scoped-rbac's `access.body_contexts` and `rbac_contexts_of` read an array
-  of contexts as before, and the read-only views (`read_only`,
-  `writable`) are built without recursion, however deep the content.
+  stored resource's content, the `dict` the `Resource` holds, not a copy
+  (`scrud_django.permissions.content_of`; `{}` for content that is not a
+  JSON object). That is so on the detail route (GET, PUT and DELETE:
+  `ResourceViewMixin.get_object` passes it to `check_object_permissions`,
+  and so to `has_object_permission`, `has_context_permission`,
+  `contexts_for` and the 404-or-403 readability check), in the post-save
+  check and in a list's per-object check. A CEL condition reads the content
+  (it raised `TypeError`, a 500, before), and an adopter's operator gets it
+  as it gets the body on the request check: it got the `Resource` model
+  instance, so an operator that reads the body (`resource.get("name")`)
+  raised `AttributeError`, a 500, on every detail route and list its grant
+  conditioned. (scoped-rbac's request check of a GET or DELETE still gives
+  operators `None`: there is no body.) scoped-rbac's default `contexts_for`
+  reads attributes, which a `dict` does not have: `ResourceViewMixin`'s
+  `get_permissions()` gives each `IsAuthorized` whose class keeps it a
+  `contexts_for` that reads a resource's contexts from its content
+  (`rbac_contexts_of`, as `Resource.rbac_contexts` does). A resource stored
+  in a context reserved once normalised is a 404 before the object check.
+* Checks get plain data, as scoped-rbac's contract has it (its issue #55
+  was closed by deciding not to guard them): scoped-rbac's request check of
+  a POST or PUT gives the permission classes, their `contexts_from` and the
+  grants' operators the parsed body itself (`request.data`), the workflow
+  check gives them the body as sent (the serializer's `initial_data`, the
+  same `dict`), and object checks the stored content. Each is an exact
+  `dict` of plain JSON values, which CEL evaluates: a read-only view, or any
+  other mapping or sequence, evaluates to an undetermined result, which an
+  operator written as `not cel.is_true(expression, {"resource": obj})` turns
+  into an allow. A check must only read what it gets (`obj.get("owner")`,
+  never `obj.pop("owner")`): one that changes the body or the content
+  changes what is stored (or what the response shows), which is a bug in
+  that check, not something scrud-django guards against.
 * Request bodies must be JSON. `ResourceViewSet` and
   `ResourceViewSetGenericFilter` set `parser_classes = [RbacJSONParser]`
   (`scoped_rbac.rest`): a form-encoded or multipart body gets 415, and a JSON
@@ -442,14 +448,15 @@ Conditional request handling now comes from scrudful 0.8.
   `has_object_permission` (as scoped-rbac's own post-save check asks it;
   superusers only for a resource in no usable context) and its
   `has_context_permission` in every context `contexts_for` names, both given
-  the saved resource as a `ResourceCheck`, as on the detail route.
+  the saved resource's content (a `dict`), as on the detail route.
 * The workflow check asks the view's permission classes too: the request's
   policy must allow each transition, and then each `IsAuthorized`'s
-  `has_context_permission(request, view, check, context)`, given the
-  `TransitionCheck` of the transition in that context, must allow it as well
+  `has_context_permission(request, view, body, context)`, given the request
+  body as sent (a `dict`) in that context, with the transition as
+  `scrud_django.permissions.current_transition()`, must allow it as well
   (an override was not asked). An `IsAuthorized` subclass can therefore
   refuse a transition, never grant one the policy refuses: in this check
-  `obj`'s mapping is the request body as the writer sent it, not the stored
+  `obj` is the request body as the writer sent it, not the stored
   resource, so a shortcut that trusts its fields (an owner, say) would be
   trusting the writer. A serializer used without a view asks the policy
   alone. A refusal is the workflow check's 400 (`workflow-transition-invalid`,
@@ -586,8 +593,11 @@ Conditional request handling now comes from scrudful 0.8.
   `Last-Modified` does not move on a deletion (no removal stamps for models of
   your own); its `ETag` does.
 * `ResourceViewMixin.get_object` is DRF's lookup with the object check given
-  a `scrud_django.permissions.ResourceCheck` (see Authorization); it returns
-  the `Resource`, whose `resource_type` is the view's.
+  the resource's content (`scrud_django.permissions.content_of`, see
+  Authorization); it returns the `Resource`, whose `resource_type` is the
+  view's. `ResourceViewMixin.get_permissions()` gives each `IsAuthorized`
+  that keeps scoped-rbac's `contexts_for` one that reads a resource's
+  contexts from that content.
   `ResourceViewMixin.get_resource_type()` (and `GenericViewMixin`'s) reads
   the type once per request and database and returns that instance after
   (`initial` forgets it): a request read it up to 20 times (measured by
@@ -596,8 +606,14 @@ Conditional request handling now comes from scrudful 0.8.
   `IsAuthorized` permissions of the view (nested ones included), which
   `get_post_save_permissions()` returns and the `WorkflowValidator` asks.
   `check_post_save_permissions` calls each permission's
-  `has_object_permission` unconditionally. `TransitionCheck` gains
-  `to_cel()`.
+  `has_object_permission` unconditionally. `scrud_django.permissions.TransitionCheck`
+  is removed (the workflow check gives the body as a `dict`). New
+  `scrud_django.permissions.current_transition()`: the name of the
+  transition the workflow check is authorizing while it asks the policy and
+  the permission classes, `None` anywhere else (outside the workflow check,
+  and where no workflow policy applies); `scrud_django.permissions.checking_transition`
+  sets it for a block (a `contextvars.ContextVar`, reset when the block
+  ends).
 * New `scrud_django.models.ResourceRemoval` (migration
   `0009_resourceremoval`): one row per resource type and context, the last
   time a resource left that context. `Resource.save()` (raw saves included)
@@ -729,17 +745,13 @@ Conditional request handling now comes from scrudful 0.8.
   with 403. Unconditional and CEL grants are unaffected. A CEL condition on a
   grant that authorizes a transition now reads the request body, as in
   scoped-rbac's request check. The workflow check passes operators (and the
-  permission classes' `has_context_permission`) a
-  `scrud_django.permissions.TransitionCheck`, a mapping over the request
-  body, read-only at every level as a `ResourceCheck` is (nested objects and
-  arrays are read-only views), with a `transition` attribute (its `to_cel()`
-  is a plain copy of the body, for CEL): your own operators read it as the
-  body, as they do in scoped-rbac's request check, and cannot change what is
-  stored through it (a nested object was the body's own, so an operator
-  could). It is a `collections.abc.Mapping`, not a `dict`, as the
-  `ResourceCheck` of an object check is: an operator that tests
-  `isinstance(resource, dict)` denies them (a 403 on every write of the types
-  its grant covers), so test `isinstance(resource, Mapping)`.
+  permission classes' `has_context_permission`) the request body as sent, a
+  plain `dict`, as scoped-rbac's request check does, and the transition out
+  of band: the `scrud_workflow` operator, and your permission classes, read
+  it as `scrud_django.permissions.current_transition()` (its name while the
+  workflow check authorizes it; `None` outside the workflow check and where
+  no workflow policy applies). Your own operators read the body as in
+  scoped-rbac's request check, and must not change it.
 * A reserved transition name (one that starts with `__`) is refused, in stored
   policies and in defaults.
 * Workflow error bodies give `prior_state` (the stored resource's state) and

@@ -144,6 +144,24 @@ DRF's own default permission is `AllowAny`. The scrud-django viewsets set
 `IsAuthorized` themselves, but any other view in your project (and any view you
 build on scoped-rbac) relies on `DEFAULT_PERMISSION_CLASSES` to fail closed.
 
+Permission checks get plain data, as scoped-rbac's own do. On a POST or PUT,
+your `IsAuthorized` subclasses (`has_permission`, `contexts_from`) and the
+operators of your grants' conditions get the parsed body itself
+(`request.data`); the workflow check gives their `has_context_permission`
+and operators the body as sent, with the transition it authorizes as
+`scrud_django.permissions.current_transition()`; and every object check (the
+detail route's, the post-save check, a list's per-object check) gives
+`has_object_permission`, `has_context_permission`, `contexts_for` and
+operators the resource's content, the `dict` the `Resource` holds (`{}` for
+content that is not a JSON object). These are exact `dict`s and `list`s, so
+an operator that evaluates CEL itself passes what it got. A check must only
+read them (`obj.get("owner")`, never `obj.pop("owner")`): one that changes
+them changes what is stored, a bug in that check. A `contexts_for` of your
+own reads the content (`scrud_django.mixins.resource_mixin.rbac_contexts_of`
+gives the resource's own contexts), and a `get_permissions` override on a
+scrud view must call `super()`, which makes scoped-rbac's default
+`contexts_for` read a resource's contexts from its content.
+
 Resource type metadata is public by design: the service list (`services/`),
 each type's collection schema (`collections-json-schema/<slug>/`) and
 collection JSON-LD context (`collections-json-ld/<slug>/`) answer anyone,
