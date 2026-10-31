@@ -6,13 +6,21 @@ def pytest_addoption(parser):
         "--reverse",
         action="store_true",
         help="Run the tests in reverse order (the modules, and the tests in "
-        "each), to show that no test depends on one that runs before it.",
+        "each, within each of pytest-django's groups, which keep their "
+        "order), to show that no test depends on one that runs before it.",
     )
 
 
+@pytest.hookimpl(wrapper=True)
 def pytest_collection_modifyitems(config, items):
+    """``--reverse``: reverse the collected tests before pytest-django's
+    ordering runs (this wraps it). Its sort is stable, so each of its groups
+    (database tests, then transactional ones, which flush the database, then
+    the others) runs in reverse, and the groups keep their order: a
+    transactional test never runs first."""
     if config.getoption("--reverse"):
         items.reverse()
+    return (yield)
 
 
 def pytest_configure(config):
