@@ -33,11 +33,21 @@ class TestCustomDjangoSignals(TestCase):
     post_save_trigger = False
     post_delete_trigger = False
 
-    def __init__(self, methodName: str) -> None:
-        super().__init__(methodName=methodName)
+    def setUp(self):
+        # Connected for this test only: pytest builds the TestCase instances
+        # at collection, so receivers connected in __init__ would fire (and
+        # run the ToDo actions again) in every module collected with this one.
         scrud_post_delete.connect(self.handler)
+        self.addCleanup(scrud_post_delete.disconnect, self.handler)
         scrud_post_save.connect(self.handler)
+        self.addCleanup(scrud_post_save.disconnect, self.handler)
         self.signal_processor = ScrudSignalProcessorMock()
+        self.addCleanup(
+            scrud_post_delete.disconnect, self.signal_processor.post_delete_trigger
+        )
+        self.addCleanup(
+            scrud_post_save.disconnect, self.signal_processor.post_save_trigger
+        )
 
     def handler(self, sender, **kwargs):
         self.type_uri = kwargs.get('resource_type_uri')
