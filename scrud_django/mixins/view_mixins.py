@@ -739,10 +739,14 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         empty body as ``{}`` and refuse an empty context list with 403 for
         everyone), and a body nested deeper than `MAX_BODY_DEPTH`
         (`check_body_depth`): they depend on the body alone. scoped-rbac's
-        request check then reads the body itself (``request.data``)."""
-        check_body_present(request, self)
-        check_body_depth(request)
-        check_written_contexts(request)
+        request check then reads the body itself (``request.data``). A method
+        the view does not serve skips the body checks (its body is not
+        parsed), so that it gets its 405 whatever its body, as scoped-rbac's
+        request check leaves it to."""
+        if request.method in self.allowed_methods:
+            check_body_present(request, self)
+            check_body_depth(request)
+            check_written_contexts(request)
         with self.write_checks(request):
             super().check_permissions(request)
 

@@ -715,8 +715,9 @@ Conditional request handling now comes from scrudful 0.8.
   (`https://api.openteams.com/http-problem/body-too-deep`, "Request body too
   deeply nested", `RequestBodyTooDeepError`), before authorization: code
   that walks a body recursively (reversion's serializer, an operator) failed
-  on one a few hundred levels deep with `RecursionError`, a 500. A method the route does not serve still
-  gets 405, whatever its body.
+  on one a few hundred levels deep with `RecursionError`, a 500. A method the
+  route does not serve still gets 405, whatever its body (too deep, an empty
+  `rbac_context` list, a form body): its body is neither checked nor parsed.
 * The envelope's `last_modified` (and the search index's `modified_at`) no
   longer depend on `USE_TZ`. With `USE_TZ = False`, a stored modification time
   is naive and in `TIME_ZONE`; it used to be read as UTC, so the envelope

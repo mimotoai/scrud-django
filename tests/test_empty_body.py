@@ -149,3 +149,33 @@ def test_an_unrouted_method_is_405_whatever_its_body():
     When.http.post(detail, content_type="application/json")
     Then.http.status_code_is(status.HTTP_405_METHOD_NOT_ALLOWED)
     assert Resource.objects.get(pk=stored.pk).content == {"name": "kept"}
+
+
+# Bodies the body checks would refuse (too deep, an empty context list) or the
+# parser would (a form body): a method the route does not serve is still 405.
+UNSERVED_BODIES = (
+    ("application/json", "[" * 150 + "]" * 150),
+    ("application/json", '{"rbac_context": []}'),
+    ("application/x-www-form-urlencoded", "name=x&rbac_context=a"),
+)
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_unrouted_method_is_405_before_the_body_checks():
+    reverse("json-ld-list")
+    stored = ResourceRegistration.register({"name": "kept"}, "json-ld")
+    detail = reverse("json-ld-detail", args=[stored.pk])
+    unserved = (("PATCH", detail), ("POST", detail), ("PUT", reverse("json-ld-list")))
+    for authenticated in (True, False):
+        if authenticated:
+            Given.http.force_authenticate(json_ld_writer())
+        else:
+            Given.http.force_authenticate(None)
+        for method, url in unserved:
+            for content_type, body in UNSERVED_BODIES:
+                Http.response = Http.api_client.generic(
+                    method, url, body, content_type=content_type
+                )
+                Then.http.status_code_is(status.HTTP_405_METHOD_NOT_ALLOWED)
+    assert Resource.objects.get(pk=stored.pk).content == {"name": "kept"}
