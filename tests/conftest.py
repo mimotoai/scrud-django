@@ -53,3 +53,43 @@ def django_db_setup(django_db_setup, django_db_blocker):
     with django_db_blocker.unblock():
         resource_types.json_resource_types()
         registration.workflow_policy_resource_type()
+
+
+# The built-in resource types `scrud_django.registration` caches at module
+# level.
+REGISTRATION_CACHES = [
+    "JSON_SCHEMA_REGISTRATION_",
+    "JSON_SCHEMA_RESOURCE_TYPE_",
+    "JSON_LD_RESOURCE_TYPE_",
+    "JSON_LD_REGISTRATION_",
+    "INDEXING_POLICY_RESOURCE_TYPE_",
+    "INDEXING_POLICY_REGISTRATION_",
+    "WORKFLOW_POLICY_RESOURCE_TYPE_",
+    "WORKFLOW_POLICY_REGISTRATION_",
+]
+
+
+@pytest.fixture
+def committed_types():
+    """The test resource types, committed for other connections to see: use
+    it in every ``@pytest.mark.django_db(transaction=True)`` test that needs
+    them.
+
+    A transactional test's database is flushed after it, which deletes the
+    types `django_db_setup` registered for the session (and the built-in types
+    `registration` caches): they are registered again here, and the caches
+    forgotten before and afterwards, so that the next test registers its own.
+    pytest-django runs transactional tests after the other database tests
+    (with ``--reverse`` too), so those never see the flushed database."""
+    from scrud_django import registration
+    from tests import resource_types
+
+    def forget():
+        for name in REGISTRATION_CACHES:
+            setattr(registration, name, None)
+
+    forget()
+    resource_types.json_resource_types()
+    registration.workflow_policy_resource_type()
+    yield
+    forget()
