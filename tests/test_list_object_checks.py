@@ -244,3 +244,23 @@ def test_an_object_check_that_raises_refuses_that_object_only():
     )
     response = client.get(reverse("raising-partner-profiles-list"))
     assert listed(response) == ["shown"]
+
+
+@pytest.mark.django_db
+def test_an_object_check_that_raises_not_found_hides_that_object_only():
+    # DRF's NotFound (an APIException, not Http404) raised for one resource
+    # hides it on its detail route; the list leaves it out, rather than
+    # answering 404 for every reader.
+    hidden, shown = profile("hide", "a"), profile("shown", "a")
+    client = client_with((PP_READER, "a"))
+    detail = reverse("raising-partner-profiles-detail", args=[hidden.pk])
+    assert client.get(detail).status_code == 404
+    assert (
+        client.get(
+            reverse("raising-partner-profiles-detail", args=[shown.pk])
+        ).status_code
+        == 200
+    )
+    response = client.get(reverse("raising-partner-profiles-list"))
+    assert listed(response) == ["shown"]
+    assert response.json()["count"] == 1

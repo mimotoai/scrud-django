@@ -4,7 +4,7 @@ from django.contrib import admin
 from django.urls import include, path
 from django.utils.timezone import now
 from rest_framework import serializers, status, viewsets
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from scoped_rbac import access
@@ -383,11 +383,14 @@ class BodyContextsResourceViewSet(ResourceViewSet):
 
 class RaisingIsAuthorized(IsAuthorized):
     """An adopter's ``IsAuthorized`` whose ``has_object_permission`` raises
-    ``PermissionDenied`` (a DRF idiom) for a resource named "raise"."""
+    ``PermissionDenied`` (a DRF idiom) for a resource named "raise", and
+    DRF's ``NotFound`` (hiding it) for one named "hide"."""
 
     def has_object_permission(self, request, view, obj):
         if obj.get("name") == "raise":
             raise PermissionDenied("nope")
+        if obj.get("name") == "hide":
+            raise NotFound()
         return super().has_object_permission(request, view, obj)
 
 

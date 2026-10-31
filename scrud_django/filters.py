@@ -23,6 +23,7 @@ from django.db.models.fields.json import KeyTransform
 from django.http import Http404
 from rest_framework.exceptions import (
     NotAuthenticated,
+    NotFound,
     PermissionDenied,
     ValidationError,
 )
@@ -45,7 +46,13 @@ from scrud_django.permissions import checks_read_content, content_of, reading_co
 
 # What an object check may raise to refuse one object (DRF's and Django's
 # idioms): a list leaves that object out, as its detail route refuses it.
-REFUSALS = (PermissionDenied, NotAuthenticated, Http404, DjangoPermissionDenied)
+REFUSALS = (
+    PermissionDenied,
+    NotAuthenticated,
+    NotFound,
+    Http404,
+    DjangoPermissionDenied,
+)
 
 # Rows fetched per chunk while conditional candidates are evaluated one by one,
 # as scoped-rbac's ``access._CANDIDATE_CHUNK_SIZE``.

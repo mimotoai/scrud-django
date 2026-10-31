@@ -272,9 +272,11 @@ django-scoped-rbac 0.11. It has several breaking changes.
   route gives it (its content, a `dict`, with the request's `http.GET` on the
   item type; the view's `action` reads `"retrieve"` while it is asked), and
   only those it allows are listed, superusers' lists included. A
-  `has_object_permission` that raises `PermissionDenied`,
-  `NotAuthenticated` or `Http404` for a resource refuses that resource
-  only, as on its detail route (`scrud_django.filters.REFUSALS`). Every
+  `has_object_permission` that raises DRF's `PermissionDenied`,
+  `NotAuthenticated` or `NotFound`, or Django's `Http404` or
+  `PermissionDenied`, for a resource refuses that resource only, as on its
+  detail route (`scrud_django.filters.REFUSALS`); any other exception
+  fails the whole list. Every
   resource it examines counts against
   `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`, outright-readable ones
   included (past it, the list is a 400 `conditional_list_too_large`). Its
