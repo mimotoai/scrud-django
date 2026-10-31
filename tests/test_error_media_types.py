@@ -86,3 +86,23 @@ def test_errors_keep_their_native_shape_with_uniform_errors_off():
         assert set(body) >= {"detail"}, (status, body)
         assert "type" not in body and "code" not in body, (status, body)
     assert responses[412].json() == {"detail": "Precondition failed."}
+
+
+@pytest.mark.django_db
+def test_the_service_lists_conditional_400_follows_uniform_errors():
+    # services/ is a scrudful function view: its malformed-precondition 400
+    # is problem details while uniform errors are on, as the resource views'.
+    reverse("partner-profiles-list")
+    response = APIClient().get(reverse("services"), HTTP_IF_NONE_MATCH="abc")
+    assert response.status_code == 400, response.content
+    assert response["Content-Type"] == "application/problem+json"
+    assert PROBLEM_SCHEMA in response.get("Link", "")
+    body = response.json()
+    assert body["status"] == 400, body
+    assert isinstance(body["code"], str), body
+    off = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=False)
+    with override_settings(SCOPED_RBAC=off):
+        response = APIClient().get(reverse("services"), HTTP_IF_NONE_MATCH="abc")
+    assert response.status_code == 400, response.content
+    assert response["Content-Type"] == "application/json"
+    assert response.json() == {"detail": "Malformed If-None-Match header."}

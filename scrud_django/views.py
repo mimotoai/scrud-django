@@ -4,13 +4,14 @@ from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from scoped_rbac import problems
 from scoped_rbac.permissions import IsAuthorized
 from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
 from scrudful.rest_framework import scrudful_api_view, scrudful_viewset
 
 from scrud_django import collection_type_uri_for, services
 from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
-from scrud_django.mixins.view_mixins import ResourceViewMixin
+from scrud_django.mixins.view_mixins import ResourceViewMixin, gate_uniform_errors
 from scrud_django.registration import get_resource_type_for
 from scrud_django.validators import JsonValidator
 
@@ -193,6 +194,8 @@ class ResourceCollectionContextView(APIView):
 @scrudful_api_view(
     etag_func=lambda *args, **kwargs: services.etag,
     last_modified_func=lambda *args, **kwargs: services.last_modified,
+    error=problems.problem_entity(),
+    error_body_func=problems.conditional_problem,
 )
 @permission_classes([AllowAny])
 def get_service_list(request, *args, **kwargs):
@@ -200,3 +203,8 @@ def get_service_list(request, *args, **kwargs):
     for type_uri, url_func in services.services.items():
         catalog[type_uri] = url_func(request=request)
     return Response(catalog)
+
+
+# scrudful's 400, 412 and 428 are problem details only while
+# SCOPED_RBAC["UNIFORM_ERRORS"] is on, as on the resource views.
+gate_uniform_errors(get_service_list.cls)

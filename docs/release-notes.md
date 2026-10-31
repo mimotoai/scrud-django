@@ -340,7 +340,8 @@ Conditional request handling now comes from scrudful 0.8.
 * While `SCOPED_RBAC["UNIFORM_ERRORS"]` is on for DRF (scoped-rbac's
   default), scrudful's own 400 (a malformed `If-Match` or `If-None-Match`),
   412 (a failed precondition) and 428 (a missing one), which it answers
-  before the view runs, are RFC 9457 problem details served as
+  before the view runs (on the resource views, your `GenericViewMixin`
+  views and the service list, `services/`), are RFC 9457 problem details served as
   `application/problem+json` with the problem-details `Link`s, as
   scoped-rbac's own viewsets answer them: `type` `about:blank`, the reason
   phrase as `title`, `status`, scrudful's `detail` (a 428 also has
