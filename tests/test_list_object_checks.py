@@ -196,6 +196,8 @@ def test_a_generic_view_list_leaves_out_what_the_permission_class_refuses(route)
     assert sorted(note["text"] for note in response.json()) == ["secret", "shown"]
 
 
+# Importing tests.urls registers resource types.
+@pytest.mark.django_db
 def test_only_a_class_overriding_an_object_check_lists_object_by_object():
     from scoped_rbac.permissions import IsAuthorized
 

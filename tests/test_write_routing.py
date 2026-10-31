@@ -192,6 +192,8 @@ def test_one_write_database_passes_the_check():
         assert scrud_checks.check_write_routing(None) == []
 
 
+# The URLconf registers resource types when it is imported.
+@pytest.mark.django_db
 @pytest.mark.parametrize(
     "router, models",
     [
@@ -206,12 +208,15 @@ def test_one_write_database_passes_the_check():
 )
 def test_split_write_routing_is_an_error(router, models):
     names = [router] if "." in router else [f"tests.test_write_routing.{router}"]
+    # Import the URLconf (it registers resource types) before the writes are
+    # rerouted, as run_checks() would import it otherwise.
+    reverse("todos-list")
     with override_settings(DATABASE_ROUTERS=names):
         found = scrud_checks.check_write_routing(None)
         assert [(m.id, m.level) for m in found] == [("scrud_django.E004", checks.ERROR)]
         assert models in found[0].msg
-        # Registered without a tag: `manage.py check` runs it, no database
-        # needed.
+        # Registered without a tag: `manage.py check` runs it, and the check
+        # itself needs no database.
         assert write_routing_errors() == found
 
 

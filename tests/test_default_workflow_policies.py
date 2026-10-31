@@ -70,6 +70,8 @@ def test_valid_defaults_pass_the_system_check():
     assert check_default_workflow_policies(None) == []
 
 
+# run_checks() imports the URLconf, which registers resource types.
+@pytest.mark.django_db
 def test_invalid_default_is_a_system_check_error():
     with invalid_todo_default():
         errors = check_default_workflow_policies(None)
