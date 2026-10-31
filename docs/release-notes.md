@@ -246,7 +246,9 @@ django-scoped-rbac 0.11. It has several breaking changes.
     now always fails with 412, since the list exists), and send `If-Match`
     only with the list's current `ETag`. Schema and JSON-LD documents are
     now `application/schema+json` and `application/ld+json`; a client that
-    requires `application/json` must send `Accept: application/json`.
+    requires `application/json` must send a plain `Accept: application/json`
+    (or `?format=json`). DRF's content negotiation ignores q-values, so an
+    `Accept` that also lists the `+json` type, at any weight, may get it.
 
 ### Lists
 
@@ -438,9 +440,10 @@ Conditional request handling now comes from scrudful 0.8.
   list's collection context (`collections-json-ld/<slug>/`) and a JSON-LD
   context resource (`json-ld/<id>/`) as `application/ld+json` (on a GET,
   HEAD, or PUT of the resource), with `Vary: Accept`. They were
-  `application/json`. A client that sends `Accept: application/json` still
-  gets the same body as `application/json`; lists, OPTIONS and errors keep
-  their types. The collection context's content is unchanged
+  `application/json`. A client that sends `Accept: application/json` (or
+  `?format=json`) still gets the same body as `application/json`
+  (`?format=schema-json` and `?format=ld-json` name the typed ones); lists,
+  OPTIONS and errors keep their types. The collection context's content is unchanged
   ([collection-context-terms](follow-ups.md#collection-context-terms)).
 * The service list's (`services/`) `ETag` is a hash of the catalog it
   serves, the same in every process and worker that registered the same

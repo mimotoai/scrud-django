@@ -19,15 +19,21 @@ from scrud_django.validators import JsonValidator
 
 
 class SchemaJSONRenderer(JSONRenderer):
-    """JSON served as ``application/schema+json`` (a JSON Schema)."""
+    """JSON served as ``application/schema+json`` (a JSON Schema); its own
+    ``?format=schema-json``, so that ``?format=json`` gives
+    ``application/json``."""
 
     media_type = "application/schema+json"
+    format = "schema-json"
 
 
 class JSONLDRenderer(JSONRenderer):
-    """JSON served as ``application/ld+json`` (a JSON-LD document)."""
+    """JSON served as ``application/ld+json`` (a JSON-LD document); its own
+    ``?format=ld-json``, so that ``?format=json`` gives
+    ``application/json``."""
 
     media_type = "application/ld+json"
+    format = "ld-json"
 
 
 class DocumentMediaTypeMixin:

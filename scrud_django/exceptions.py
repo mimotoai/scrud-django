@@ -1,5 +1,6 @@
 from django.urls import NoReverseMatch, reverse
 from rest_framework.exceptions import APIException
+from rest_framework.renderers import JSONRenderer
 from rest_framework.views import exception_handler as drf_exception_handler
 from scoped_rbac.rest import exception_handler as scoped_rbac_exception_handler
 
@@ -14,7 +15,10 @@ def scrud_exception_handler(exc, context):
     response.data["status"] = response.status_code
     try:
         request = context["request"]
-        if request.accepted_renderer.format == "json":
+        renderer = request.accepted_renderer
+        # A JSON renderer, whatever its format (the schema and JSON-LD
+        # documents' renderers have their own, schema-json and ld-json).
+        if renderer.format == "json" or isinstance(renderer, JSONRenderer):
             response.content_type = "application/problem+json"
             response["Content-Type"] = "application/problem+json"
     except AttributeError:

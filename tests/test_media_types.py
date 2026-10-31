@@ -137,3 +137,33 @@ def test_errors_keep_their_media_type(uniform):
         anonymous = APIClient().get(schema_url)
     assert anonymous.status_code >= 400, anonymous.content
     assert content_type(anonymous) == error_type, anonymous["Content-Type"]
+
+
+@pytest.mark.django_db
+def test_the_format_parameter_names_each_type():
+    client = superuser()
+    for url, media_type in documents():
+        response = client.get(url, {"format": "json"})
+        assert response.status_code == 200, (url, response.content)
+        assert content_type(response) == "application/json", url
+        own = "schema-json" if media_type == SCHEMA_JSON else "ld-json"
+        response = client.get(url, {"format": own})
+        assert response.status_code == 200, (url, response.content)
+        assert content_type(response) == media_type, url
+
+
+@pytest.mark.django_db
+def test_a_scrud_error_on_a_document_route_is_problem_details():
+    # A PUT of a JSON Schema that does not compile: scrud's own 400, served
+    # as problem details whichever renderer negotiation picked.
+    client = superuser()
+    reverse("partner-profiles-list")
+    schema = ResourceRegistration.register({"type": "object"}, "json-schema")
+    url = reverse("json-schema-detail", args=[schema.pk])
+    for accept in (None, "application/json"):
+        headers = {} if accept is None else {"HTTP_ACCEPT": accept}
+        response = client.put(
+            url, {"type": 5}, format="json", HTTP_IF_MATCH="*", **headers
+        )
+        assert response.status_code == 400, response.content
+        assert content_type(response) == "application/problem+json", accept
