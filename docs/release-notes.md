@@ -73,7 +73,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
 11. Clients: a body whose `rbac_context` is `[]` now gets 400 (it got 403),
     and lists of `ResourceViewSetGenericFilter` filter on their query
     parameters as JSON key lookups (see Lists below).
-12. Backups and fixtures: `dumpdata` / `loaddata` of `scrud_django` round-trip.
+12. Backups and fixtures: `dumpdata` / `loaddata` of `scrud_django` round-trip,
+    except that every loaded resource gets a new `ETag` and `Last-Modified`
+    (as does a reversion revert; see Conditional requests below), so clients
+    refetch it once after a restore.
     A dump may hold the `ResourceContext` rows or leave them out
     (`dumpdata scrud_django --exclude scrud_django.ResourceContext`, which
     makes it smaller); either way, loading rebuilds each resource's rows from
@@ -427,14 +430,13 @@ Conditional request handling now comes from scrudful 0.8.
   The `WorkflowPolicy` type lock is `SELECT ... FOR NO KEY UPDATE` where the
   database has it (PostgreSQL), so that a policy deleted outside the API
   while an API write of it waits does not deadlock either.
-* A reversion revert of a resource (`Version.revert()`, `Revision.revert()`,
-  the admin's revert and recover) gives it a fresh `ETag` and
-  `Last-Modified`. It restored the version's, older ones: a client
-  revalidating with `If-Modified-Since` alone got 304 for the changed
-  content, and a list whose newest resource it was, or that it came back
-  into after a deletion, could keep an older `Last-Modified`. `loaddata`
-  keeps a dump's. (scrud-django wraps reversion's `Version.revert` to tell
-  the two apart.)
+* Every raw save of a resource (a reversion revert: `Version.revert()`,
+  `Revision.revert()`, the admin's revert and recover; `loaddata` of a dump
+  or backup) gives it a fresh `ETag` and `Last-Modified`. It kept the saved,
+  older ones: a client revalidating with `If-Modified-Since` alone got 304
+  for content that changed, and a list whose newest resource it was, or
+  that it came back into after a deletion, could keep an older
+  `Last-Modified`. Clients refetch each such resource (and its lists) once.
 * READ COMMITTED is the supported transaction isolation level (PostgreSQL's
   default, and Django's for MySQL): a write that waited for a lock then sees
   what the write it waited for committed. A new database check,

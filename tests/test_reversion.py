@@ -35,11 +35,11 @@ def test_version_update(resource_creator):
     assert versions >= 2
 
 
-# A revert (reversion's Version.revert() or Revision.revert(), the admin's
-# "recover" and "revert") is a new write of old content: it gets a fresh ETag
-# and Last-Modified, never the version's, so a client revalidating with
-# If-Modified-Since, or a list whose newest resource it is, sees the change.
-# loaddata keeps a dump's validators.
+# Every raw save of a resource (reversion's Version.revert() or
+# Revision.revert(), the admin's "recover" and "revert", loaddata of a backup)
+# is a new write of old content: it gets a fresh ETag and Last-Modified,
+# never the stored ones, so a client revalidating with If-Modified-Since, or a
+# list whose newest resource it is, sees the change. Clients refetch once.
 
 
 def stored(resource):
@@ -83,8 +83,13 @@ def test_recovering_a_deleted_resource_gives_it_fresh_validators():
 
 
 @pytest.mark.django_db
-def test_loaddata_keeps_the_dumped_validators(tmp_path):
+def test_loaddata_gives_fresh_validators(tmp_path):
+    # Restoring an older backup has a revert's problem: keeping the dump's
+    # validators moved ETag and Last-Modified back in time, so a client's
+    # If-Modified-Since got 304 for content that changed. The loaded
+    # resource gets new ones instead.
     from django.core.management import call_command
+    from django.utils import timezone
 
     resource = ResourceRegistration.register({"name": "kept"}, "partner-profiles")
     dump = tmp_path / "resource.json"
@@ -95,12 +100,59 @@ def test_loaddata_keeps_the_dumped_validators(tmp_path):
         output=str(dump),
         verbosity=0,
     )
-    Resource.objects.filter(pk=resource.pk).update(content={"name": "changed"})
+    changed = ResourceRegistration.update(
+        {"name": "changed"}, "partner-profiles", str(resource.pk)
+    )
+    before_load = timezone.now()
     call_command("loaddata", str(dump), verbosity=0)
     loaded = stored(resource)
     assert loaded.content == {"name": "kept"}
-    # Django's JSON serializer keeps milliseconds.
-    dumped_at = resource.modified_at.replace(
-        microsecond=resource.modified_at.microsecond // 1000 * 1000
+    assert loaded.etag not in (resource.etag, changed.etag)
+    assert loaded.modified_at >= before_load > changed.modified_at
+
+
+@pytest.mark.django_db
+def test_a_restored_list_is_modified_after_every_removal_stamp(tmp_path):
+    # A dump/flush/load keeps the removal stamps as dumped; the loaded
+    # resources are newer than all of them, so a list's Last-Modified is the
+    # load, never earlier than a stamp or than before the load.
+    from django.core.management import call_command
+    from django.test import Client
+    from django.urls import reverse
+    from django.utils import timezone
+    from django.utils.http import parse_http_date
+
+    from .factories import UserFactory
+    from .test_resource_contexts import flush
+
+    reverse("partner-profiles-list")
+    kept = ResourceRegistration.register(
+        {"name": "kept", "rbac_context": "a"}, "partner-profiles"
     )
-    assert (loaded.etag, loaded.modified_at) == (resource.etag, dumped_at)
+    ResourceRegistration.update(
+        {"name": "kept", "rbac_context": "b"}, "partner-profiles", str(kept.pk)
+    )
+    gone = ResourceRegistration.register(
+        {"name": "gone", "rbac_context": "a"}, "partner-profiles"
+    )
+    ResourceRegistration.delete("partner-profiles", str(gone.pk))
+    client = Client()
+    client.force_login(UserFactory(is_staff=True, is_superuser=True))
+    url = reverse("partner-profiles-list")
+    listed_before = parse_http_date(client.get(url)["Last-Modified"])
+    stamps_before = dict(
+        ResourceRemoval.objects.values_list("rbac_context", "removed_at")
+    )
+    dump = tmp_path / "scrud.json"
+    call_command("dumpdata", "scrud_django", output=str(dump), verbosity=0)
+    flush()
+    before_load = timezone.now()
+    call_command("loaddata", str(dump), verbosity=0)
+    client.force_login(UserFactory(is_staff=True, is_superuser=True))
+    stamps = dict(ResourceRemoval.objects.values_list("rbac_context", "removed_at"))
+    assert set(stamps) == set(stamps_before)
+    newest_stamp = max(stamps.values())
+    for resource in Resource.objects.all():
+        assert resource.modified_at >= before_load > newest_stamp, resource.pk
+    listed = parse_http_date(client.get(url)["Last-Modified"])
+    assert listed >= int(before_load.timestamp()) >= listed_before

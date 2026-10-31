@@ -6,9 +6,7 @@ resource's content (a ``dict``), and DRF's ``GenericAPIView.filter_queryset``
 (as ``ListValidatorsMixin.filter_queryset``, which narrows a list by the
 object check right after the RBAC filter). It also relies on upstream
 internals: the ``error`` / ``error_body_func`` attributes of scrudful's
-``ScrudfulViewFunc`` (``gate_uniform_errors``), and that every reversion
-revert goes through ``Version.revert`` (``mark_reversion_reverts``). These
-tests fail when upstream drifts from what
+``ScrudfulViewFunc`` (``gate_uniform_errors``). These tests fail when upstream drifts from what
 was re-implemented or relied on: the names the upstream code uses are
 pinned, and the re-implementations must give upstream's results where
 upstream's behaviour is the one wanted.
@@ -113,19 +111,6 @@ def test_scoped_rbacs_per_object_filter_is_what_scrud_re_implements():
         "unrestricted",
         "usable_contexts",
     )
-
-
-def test_every_reversion_revert_goes_through_version_revert():
-    # scrud_django.models.resource.mark_reversion_reverts wraps
-    # Version.revert, so that a reverted Resource gets fresh validators:
-    # Revision.revert (and so the admin's revert and recover) must reach it
-    # through _safe_revert, and Version.revert must save the version itself.
-    from reversion import models as reversion_models
-
-    assert "_safe_revert" in code_names(reversion_models.Revision.revert)
-    assert "revert" in code_names(reversion_models._safe_revert)
-    original = reversion_models.Version.revert.__wrapped__
-    assert code_names(original) == ("_object_version", "db", "save")
 
 
 def test_scoped_rbacs_custom_contexts_for_reads_the_permissions_class():

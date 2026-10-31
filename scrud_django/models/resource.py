@@ -6,7 +6,6 @@ This will support queries, such as:
 """
 
 import contextvars
-import functools
 from contextlib import nullcontext
 from uuid import uuid4
 
@@ -405,36 +404,6 @@ def require_transaction(using, what):
         )
 
 
-# True while reversion reverts a version (`Version.revert`, which
-# `Revision.revert` and the admin's revert and recover call): see
-# `mark_reversion_reverts`.
-_REVERTING = contextvars.ContextVar("scrud_reverting", default=False)
-
-
-def mark_reversion_reverts():
-    """Wrap reversion's ``Version.revert`` so that a raw save of a `Resource`
-    knows it is a revert (`_REVERTING`): `check_raw_save` then gives it a
-    fresh ``etag`` and ``modified_at``. reversion saves the version as
-    ``loaddata`` saves a fixture (``Model.save_base(raw=True)``), with the
-    version's validators. Installed once, by the app's ``ready()``."""
-    from reversion.models import Version
-
-    original = Version.revert
-    if getattr(original, "_scrud_marks_reverts", False):
-        return
-
-    @functools.wraps(original)
-    def revert(self, *args, **kwargs):
-        token = _REVERTING.set(True)
-        try:
-            return original(self, *args, **kwargs)
-        finally:
-            _REVERTING.reset(token)
-
-    revert._scrud_marks_reverts = True
-    Version.revert = revert
-
-
 def _content_saved(update_fields):
     return update_fields is None or "content" in update_fields
 
@@ -443,20 +412,20 @@ def _content_saved(update_fields):
 def check_raw_save(sender, instance, raw, using, update_fields, **kwargs):
     """Refuse a raw save of a resource (``loaddata``, reversion's revert)
     outside a transaction (`require_transaction`), or with a context longer
-    than a row holds (`check_contexts`), before the row is written. A revert
-    (`mark_reversion_reverts`) is a new write of old content: it gets a fresh
-    ``etag`` and ``modified_at``, never the version's (older) ones, so that a
-    client revalidating with ``If-Modified-Since``, and a list it is the
-    newest resource of, or is back in, sees the change. ``loaddata`` keeps the
-    dump's."""
+    than a row holds (`check_contexts`), before the row is written. Every raw
+    save is a new write of stored content (a reverted version, a restored
+    backup): it gets a fresh ``etag`` and ``modified_at``, never the saved
+    (older) ones, so that a client revalidating with ``If-Modified-Since``,
+    and a list it is the newest resource of, or is back in after a deletion
+    (whose removal stamp is older), sees the change. Clients refetch it
+    once."""
     if not raw:
         return
     if _content_saved(update_fields):
         require_transaction(using, "A raw save of a Resource")
         check_contexts(instance.content)
-    if _REVERTING.get():
-        instance.etag = uuid4().hex
-        instance.modified_at = timezone.now()
+    instance.etag = uuid4().hex
+    instance.modified_at = timezone.now()
 
 
 @receiver(post_save, sender=Resource, dispatch_uid="scrud_django.sync_raw_save")
