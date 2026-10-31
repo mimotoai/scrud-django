@@ -1,5 +1,6 @@
 import importlib.resources
 
+from django.contrib import admin
 from django.urls import include, path
 from scoped_rbac.rest import UserViewSet
 from scoped_rbac.urls import OpenRouter
@@ -37,4 +38,7 @@ api_urlpatterns.extend(
 
 urlpatterns = [
     path("api/", include(api_urlpatterns)),
+    # Log in to the browsable API (its "Log in" link) and to the admin.
+    path("api-auth/", include("rest_framework.urls")),
+    path("admin/", admin.site.urls),
 ]

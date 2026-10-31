@@ -161,3 +161,6 @@ REST_FRAMEWORK = {
 # https://docs.djangoproject.com/en/3.1/howto/static-files/
 
 STATIC_URL = '/static/'
+
+# After logging in at /api-auth/login/ without a ?next= page.
+LOGIN_REDIRECT_URL = "/api/"
