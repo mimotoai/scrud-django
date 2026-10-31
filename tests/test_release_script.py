@@ -8,9 +8,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-
-pytest.importorskip("tomllib")  # the script needs Python 3.11+ (CI runs it on 3.12)
-from packaging.version import Version  # noqa: E402
+from packaging.version import Version
 
 _PATH = Path(__file__).resolve().parents[1] / "scripts" / "release.py"
 _spec = importlib.util.spec_from_file_location("release_script", _PATH)
@@ -67,11 +65,22 @@ def test_bump_required_by_published_metadata():
 def test_dev_only_pyproject_changes_need_no_bump():
     old = pyproject()
     assert not release.bump_required(["pyproject.toml"], old, pyproject(dev=["x"]))
-    assert not release.bump_required(
-        ["pyproject.toml"], old, pyproject(tool={"pytest": {}})
-    )
+    tool = {"uv": {"build-backend": {"module-root": ""}}, "pytest": {}}
+    assert not release.bump_required(["pyproject.toml"], old, pyproject(tool=tool))
+    tool = {
+        "uv": {"build-backend": {"module-root": ""}, "default-groups": ["dev"]},
+    }
+    assert not release.bump_required(["pyproject.toml"], old, pyproject(tool=tool))
     # The version itself is not a package change.
     assert not release.bump_required(["pyproject.toml"], old, pyproject("2.0.0"))
+
+
+def test_build_backend_changes_need_a_bump():
+    """[tool.uv.build-backend] decides what goes into the wheel and sdist."""
+    old = pyproject()
+    tool = {"uv": {"build-backend": {"module-root": "", "source-exclude": ["x"]}}}
+    assert release.bump_required(["pyproject.toml"], old, pyproject(tool=tool))
+    assert release.bump_required(["pyproject.toml"], old, pyproject(tool={"uv": {}}))
 
 
 def poetry_pyproject(version="0.3.2"):
@@ -149,7 +158,15 @@ def repo(monkeypatch):
         ),
     )
     monkeypatch.setattr(release, "released_versions", lambda: state["released"])
-    monkeypatch.setattr(release, "is_released", lambda v: v in state["released"])
+    # The kinds of file on PyPI per version; a released version has both.
+    state["files"] = {}
+    monkeypatch.setattr(
+        release,
+        "uploaded_packagetypes",
+        lambda v: state["files"].get(
+            v, release.PACKAGETYPES if v in state["released"] else set()
+        ),
+    )
     return state
 
 
@@ -171,9 +188,69 @@ def test_check_bump_skips_non_package_changes(repo, capsys):
     assert "no version bump needed" in capsys.readouterr().out
 
 
+def test_check_bump_validates_a_version_only_change(repo, capsys):
+    """Changing the version publishes it, so it is checked even when nothing
+    else in the package changed."""
+    repo["changed"] = ["pyproject.toml", "docs/intro.md"]
+    repo["released"] = versions("0.2.0", "0.3.0", "0.5.0")
+    repo["head"] = pyproject("0.2.5")
+    assert release.main(["check-bump", "BASE", "TARGET"]) == 1
+    out = capsys.readouterr().out
+    assert "changes the version" in out
+    assert "0.2.5 is not higher than the target branch's version (0.3.0)" in out
+    repo["head"] = pyproject("0.4.0")
+    assert release.main(["check-bump", "BASE", "TARGET"]) == 1
+    out = capsys.readouterr().out
+    assert "0.4.0 is not higher than the latest release on PyPI (0.5.0)" in out
+    repo["head"] = pyproject("0.5.0")
+    assert release.main(["check-bump", "BASE", "TARGET"]) == 1
+    assert "0.5.0 is already on PyPI" in capsys.readouterr().out
+    repo["head"] = pyproject("0.6.0")
+    assert release.main(["check-bump", "BASE", "TARGET"]) == 0
+    assert "0.6.0 will be published" in capsys.readouterr().out
+
+
+def test_check_bump_skips_a_version_the_merge_does_not_change(repo, capsys):
+    """A branch that leaves the version alone keeps the target's when merged,
+    even if the target's moved on since the branch started."""
+    repo["changed"] = ["docs/intro.md"]
+    repo["base"], repo["head"] = pyproject("0.2.0"), pyproject("0.2.0")
+    assert release.main(["check-bump", "BASE", "TARGET"]) == 0
+    assert "no version bump needed" in capsys.readouterr().out
+    # The branch and the target made the same change.
+    repo["head"] = pyproject("0.3.0")
+    assert release.main(["check-bump", "BASE", "TARGET"]) == 0
+    assert "no version bump needed" in capsys.readouterr().out
+
+
 def test_needs_release(repo):
     assert release.main(["needs-release"]) == 0
     repo["head"] = pyproject("0.3.0")
+    assert release.main(["needs-release"]) == release.ALREADY_RELEASED
+
+
+def test_needs_release_refuses_a_version_below_the_latest_release(repo, capsys):
+    repo["head"] = pyproject("0.2.5")
+    status = release.main(["needs-release"])
+    assert status not in (0, release.ALREADY_RELEASED)
+    assert status == 1
+    out = capsys.readouterr().out
+    assert "0.2.5 is lower than the latest release on PyPI (0.3.0)" in out
+    # An older release that is already on PyPI is still just "released".
+    repo["head"] = pyproject("0.2.0")
+    assert release.main(["needs-release"]) == release.ALREADY_RELEASED
+
+
+def test_needs_release_finishes_a_partial_upload(repo, capsys):
+    """An upload that stopped after one file is retried: `uv publish
+    --check-url` skips the file already there."""
+    repo["head"] = pyproject("0.4.0")
+    repo["released"] = versions("0.2.0", "0.3.0", "0.4.0")
+    repo["files"][Version("0.4.0")] = {"sdist"}
+    assert release.main(["needs-release"]) == 0
+    out = capsys.readouterr().out
+    assert "0.4.0 is only partly on PyPI (sdist)" in out
+    repo["files"][Version("0.4.0")] = {"sdist", "bdist_wheel"}
     assert release.main(["needs-release"]) == release.ALREADY_RELEASED
 
 
@@ -303,20 +380,37 @@ def test_released_versions_raises_server_errors(urlopen):
     assert info.value.code == 500
 
 
-def test_is_released_is_true_for_a_published_version(urlopen):
-    assert release.is_released(Version("0.3.0")) is True
+def test_uploaded_packagetypes_of_a_published_version(urlopen):
+    urlopen.outcome = {
+        "urls": [
+            {"filename": "scrud_django-0.3.0.tar.gz", "packagetype": "sdist"},
+            {
+                "filename": "scrud_django-0.3.0-py3-none-any.whl",
+                "packagetype": "bdist_wheel",
+            },
+        ]
+    }
+    assert release.uploaded_packagetypes(Version("0.3.0")) == release.PACKAGETYPES
+    assert release.PACKAGETYPES == {"sdist", "bdist_wheel"}
     assert urlopen.requests == [f"{release.PYPI}/scrud-django/0.3.0/json"]
 
 
-def test_is_released_is_false_for_a_missing_version(urlopen):
+def test_uploaded_packagetypes_of_a_partial_upload(urlopen):
+    urlopen.outcome = {
+        "urls": [{"filename": "scrud_django-0.3.0.tar.gz", "packagetype": "sdist"}]
+    }
+    assert release.uploaded_packagetypes(Version("0.3.0")) == {"sdist"}
+
+
+def test_uploaded_packagetypes_of_a_missing_version(urlopen):
     urlopen.outcome = http_error(404)
-    assert release.is_released(Version("9.9.9")) is False
+    assert release.uploaded_packagetypes(Version("9.9.9")) == set()
 
 
-def test_is_released_raises_server_errors(urlopen):
+def test_uploaded_packagetypes_raises_server_errors(urlopen):
     urlopen.outcome = http_error(500)
     with pytest.raises(urllib.error.HTTPError) as info:
-        release.is_released(Version("0.3.0"))
+        release.uploaded_packagetypes(Version("0.3.0"))
     assert info.value.code == 500
 
 

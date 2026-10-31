@@ -6,18 +6,20 @@ The version to release is set in the merge request (``uv version 0.2.0`` or
 ``check-bump BASE TARGET``
     Merge requests: if the MR changes the package (``scrud_django/``, or
     ``pyproject.toml`` outside the version and the dev-only sections) since
-    ``BASE``, its version must be higher than the ``TARGET`` branch's version
-    and than every release on PyPI.
+    ``BASE``, or changes the version (which publishes it when merged), its
+    version must be higher than the ``TARGET`` branch's version and than every
+    release on PyPI.
 
 ``needs-release``
     Default branch: exit 0 if the version in ``pyproject.toml`` is not on PyPI
-    yet (publish it), 10 if it is (nothing to release); any other status is an
-    error.
+    yet, or only some of its files are (publish it), 10 if it is (nothing to
+    release); any other status is an error. Refuses (exit 1) a version that is
+    not on PyPI and is lower than its latest release.
 
 ``create-release``
     Default branch: create the tag ``vX.Y.Z`` and a GitLab release for the
     current commit, unless they already exist for it. Runs before the upload,
-    so a failed upload can be retried.
+    so a failed upload can be retried from the same commit.
 
 Needs ``packaging`` (run with ``uv run --no-project --with packaging``).
 """
@@ -37,10 +39,13 @@ from packaging.version import Version
 
 PACKAGE = "scrud-django"
 PACKAGE_PATHS = ("scrud_django/",)
-# pyproject.toml sections that don't change what is published.
+# pyproject.toml sections that don't change what is published, except for
+# [tool.uv.build-backend], which decides what goes into the wheel and sdist.
 DEV_ONLY_SECTIONS = ("dependency-groups", "tool")
 PYPI = "https://pypi.org/pypi"
 ALREADY_RELEASED = 10
+# The files `uv build` makes, by PyPI's packagetype: a release has both.
+PACKAGETYPES = frozenset({"sdist", "bdist_wheel"})
 
 
 def version_of(pyproject: dict[str, Any]) -> Version:
@@ -54,6 +59,9 @@ def published_part(pyproject: dict[str, Any]) -> dict[str, Any]:
     part = {k: v for k, v in pyproject.items() if k not in DEV_ONLY_SECTIONS}
     if "project" in part:
         part["project"] = {k: v for k, v in part["project"].items() if k != "version"}
+    part["tool.uv.build-backend"] = (
+        pyproject.get("tool", {}).get("uv", {}).get("build-backend")
+    )
     return part
 
 
@@ -90,16 +98,18 @@ def released_versions() -> list[Version]:
     return [Version(v) for v, files in releases.items() if files]
 
 
-def is_released(version: Version) -> bool:
+def uploaded_packagetypes(version: Version) -> set[str]:
+    """The kinds of file (``sdist``, ``bdist_wheel``) of ``version`` on PyPI."""
     url = f"{PYPI}/{PACKAGE}/{version}/json"
     try:
-        with urllib.request.urlopen(url, timeout=30):
-            return True
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            files = json.load(resp)["urls"]
     except urllib.error.HTTPError as error:
         error.close()
         if error.code == 404:
-            return False
+            return set()
         raise
+    return {file["packagetype"] for file in files}
 
 
 def git(*args: str) -> str:
@@ -118,13 +128,23 @@ def pyproject_at(ref: str | None) -> dict[str, Any]:
 def check_bump(base: str, target: str) -> int:
     changed = git("diff", "--name-only", base, "HEAD").split()
     old, new = pyproject_at(base), pyproject_at(None)
-    version = version_of(new)
-    if not bump_required(changed, old, new):
+    version, target_version = version_of(new), version_of(pyproject_at(target))
+    package_changed = bump_required(changed, old, new)
+    # Merging publishes a version the MR changed, unless the target has it
+    # already. A version the MR left alone stays the target's when merged.
+    version_changed = version not in (version_of(old), target_version)
+    if not package_changed and not version_changed:
         print(f"No package changes since {base}; no version bump needed.")
         return 0
-    error = bump_error(version, version_of(pyproject_at(target)), released_versions())
+    error = bump_error(version, target_version, released_versions())
     if error:
-        print("This merge request changes the package, so it must bump the version.")
+        if package_changed:
+            print(
+                "This merge request changes the package, so it must bump the version."
+            )
+        else:
+            print("This merge request changes the version, which publishes it when")
+            print("merged, so it must be higher than the target's and every release.")
         print(error)
         print("Set the release version with e.g. `uv version --bump minor` or")
         print("`uv version 1.2.0`, and commit pyproject.toml and uv.lock.")
@@ -135,9 +155,24 @@ def check_bump(base: str, target: str) -> int:
 
 def needs_release() -> int:
     version = version_of(pyproject_at(None))
-    if is_released(version):
+    uploaded = uploaded_packagetypes(version)
+    if uploaded >= PACKAGETYPES:
         print(f"{PACKAGE} {version} is already on PyPI; nothing to release.")
         return ALREADY_RELEASED
+    if uploaded:
+        # `uv publish --check-url` skips the files already there.
+        print(
+            f"{PACKAGE} {version} is only partly on PyPI ({', '.join(sorted(uploaded))});"
+        )
+        print("uploading the rest.")
+        return 0
+    latest = max(released_versions(), default=None)
+    if latest is not None and version < latest:
+        print(
+            f"{PACKAGE} {version} is lower than the latest release on PyPI ({latest});"
+        )
+        print("refusing to publish it. Set a higher version in pyproject.toml.")
+        return 1
     print(f"{PACKAGE} {version} is not on PyPI yet; releasing it.")
     return 0
 
