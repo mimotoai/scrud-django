@@ -50,7 +50,8 @@ def test_serializer_save_updates_an_existing_resource():
     stored = Resource.objects.get(pk=resource.pk)
     assert stored.content == {"name": "after"}
     assert stored.etag == saved.etag != old_etag
-    assert stored.resource_type.etag == saved.etag != old_type_etag
+    # A write leaves its type's row alone (nothing reads its etag).
+    assert stored.resource_type.etag == old_type_etag != saved.etag
     assert Resource.objects.count() == count
 
 

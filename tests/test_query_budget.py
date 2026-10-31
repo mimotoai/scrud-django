@@ -95,7 +95,7 @@ def test_a_detail_get_reads_its_resource_type_once(client_and_profiles):
 
 
 @pytest.mark.django_db
-def test_a_put_reads_its_resource_type_once_and_writes_it_once(client_and_profiles):
+def test_a_put_reads_its_resource_type_once_and_never_writes_it(client_and_profiles):
     client, profiles = client_and_profiles
     resource = profiles[0]
     url = reverse("partner-profiles-detail", args=[resource.pk])
@@ -109,5 +109,7 @@ def test_a_put_reads_its_resource_type_once_and_writes_it_once(client_and_profil
         )
     )
     found = own_type_queries(queries, resource.resource_type)
-    assert found == ["SELECT", "UPDATE"], found
+    # Nothing reads the type's etag: a PUT no longer updates (or locks) the
+    # type's row.
+    assert found == ["SELECT"], found
     assert len(queries) <= 25, len(queries)

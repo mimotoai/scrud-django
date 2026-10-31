@@ -20,9 +20,9 @@ def write_db(instance=None):
     """The database `ResourceRegistration` writes resources to
     (``router.db_for_write(Resource)``, with `instance` as the router's
     ``instance`` hint when there is one): its transactions open there, and the
-    resource, its ``ResourceContext`` rows, its ``ResourceRemoval`` stamps
-    and its type's row are all saved there, so that the ``WorkflowPolicy``
-    lock and the writes share one transaction. Route ``Resource``,
+    resource, its ``ResourceContext`` rows and its ``ResourceRemoval`` stamps
+    are all saved there, so that the ``WorkflowPolicy`` lock and the writes
+    share one transaction. Route ``Resource``,
     ``ResourceType``, ``ResourceContext`` and ``ResourceRemoval`` writes to
     one alias (the ``scrud_django.E004`` check)."""
     if instance is None:
@@ -36,8 +36,8 @@ def lock_if_workflow_policy(resource_type, using):
     write's transaction on that same database (``transaction.atomic(using=
     write_db())``; ``select_for_update`` outside a transaction is an error on
     PostgreSQL). `ResourceRegistration`'s writes, and so the API's, then lock
-    the type row before they write the ``Resource`` row and the type row, in
-    that one order: a PUT and a DELETE of the same policy cannot deadlock."""
+    the type row before they write the ``Resource`` row, in that one order: a
+    PUT and a DELETE of the same policy cannot deadlock."""
     if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
         lock_workflow_policy_type(using)
 
@@ -56,15 +56,6 @@ def get_resource_type_for(slug, using=None):
     if using is not None:
         queryset = queryset.using(using)
     return get_list_or_404(queryset, slug=slug)[0]
-
-
-def save_type_etag(resource_type, using):
-    """Save `resource_type`'s ``etag`` and ``modified_at``, and only those,
-    on database `using`. The instance may have been read earlier (through
-    the read router, or before a re-registration committed): its other
-    columns (``schema``, ``context``, ``schema_uri``...) are not written
-    back."""
-    resource_type.save(using=using, update_fields=["etag", "modified_at"])
 
 
 def get_locked_resource(resource_type, slug, using):
@@ -243,17 +234,12 @@ class ResourceRegistration:
             lock_if_workflow_policy(resource.resource_type, db)
             resource.etag = uuid4().hex
             resource.modified_at = timezone.now()
-            resource.resource_type.etag = resource.etag
-            resource.resource_type.modified_at = resource.modified_at
             if resource.resource_type.uses_reversion:
                 with reversion.create_revision():
                     resource.save(using=db)
                     reversion.set_comment('Add Resource')
             else:
                 resource.save(using=db)
-            # The type's row in the same transaction, whatever the router
-            # says for ResourceType (scrud_django.E004 reports a split).
-            save_type_etag(resource.resource_type, db)
         return resource
 
     @staticmethod
@@ -295,7 +281,7 @@ class ResourceRegistration:
         `using`, inside its transaction there, after it took
         `lock_if_workflow_policy` and then locked the row
         (`get_locked_resource`), in that order. `resource_type` is the
-        resource's type, whose etag is bumped. The instance is saved as it is:
+        resource's type (its row is not written). The instance is saved as it is:
         the row is not read again, so what the caller checked is what is
         written over. `update` and the API's PUT use it.
         """
@@ -303,15 +289,12 @@ class ResourceRegistration:
         resource.content = content
         resource.etag = uuid4().hex
         resource.modified_at = timezone.now()
-        resource_type.etag = resource.etag
-        resource_type.modified_at = resource.modified_at
         if resource_type.uses_reversion:
             with reversion.create_revision():
                 resource.save(using=using)
                 reversion.set_comment('Change Resource')
         else:
             resource.save(using=using)
-        save_type_etag(resource_type, using)
         return resource
 
     @staticmethod
@@ -342,13 +325,11 @@ class ResourceRegistration:
     @staticmethod
     def delete_locked(resource: Resource, *, resource_type: ResourceType, using: str):
         """
-        Delete `resource`, read and locked as for `update_locked`, and bump
-        `resource_type`'s etag. `delete` and the API's DELETE use it.
+        Delete `resource`, read and locked as for `update_locked`.
+        `resource_type` is its type (its row is not written). `delete` and the
+        API's DELETE use it.
         """
         resource.delete(using=using)
-        resource_type.etag = uuid4().hex
-        resource_type.modified_at = timezone.now()
-        save_type_etag(resource_type, using)
 
 
 JSON_SCHEMA_REGISTRATION_ = None

@@ -204,6 +204,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
     `http.DELETE` grant. Check roles with an action of `"*"` conditioned on
     `scrud_workflow` in particular, and make each `authorized_transitions` a
     list of transition names.
+23. Code that reads a `ResourceType`'s `etag` or `modified_at` to see whether
+    its resources changed must read a list's `ETag` and `Last-Modified`
+    instead: writes of resources no longer change them (see API changes
+    below).
 
 ### Lists
 
@@ -573,13 +577,18 @@ Conditional request handling now comes from scrudful 0.8.
   400 for a body that is not a JSON object. This also applies to downstream
   serializers that use `GenericViewMixin`, and breaks bulk (list) creates
   through them.
-* `ResourceRegistration.update` now saves the resource type's new `etag` and
-  `modified_at` (it set them on one instance and saved another, so they did
-  not change on an update). Every write (`register`, `register_instance`,
-  `update`, `delete` and the API's) saves only those two columns of the type
-  row: it used to save the whole row as the write had read it, so a copy read
-  through a lagging replica, or before a re-registration of the type
-  committed, wrote the old `schema`, `context` or `schema_uri` back.
+* A write of a resource (`register`, `register_instance`, `update`, `delete`
+  and the API's) no longer saves its resource type's row. It used to set the
+  type's `etag` and `modified_at` to the write's (except on `update`, which
+  saved another instance than the one it set them on) and save the whole row
+  as the write had read it, so a copy read through a lagging replica, or
+  before a re-registration of the type committed, wrote the old `schema`,
+  `context` or `schema_uri` back. Nothing reads the type's `etag` and
+  `modified_at` any more (lists compute their own validators, see Lists
+  below), and the update locked the type's row until the write's
+  transaction ended, so writes of one type queued behind each other. They
+  now change only when the type is registered (`ResourceTypeRegistration`).
+  `registration.save_type_etag` is gone.
 * `ResourceRegistration.update` and `delete` read the resource with its row
   locked and its type on the write database (`type_db()`), never through the
   router's `db_for_read` (a read replica could be stale), and write that
@@ -596,13 +605,13 @@ Conditional request handling now comes from scrudful 0.8.
   `super()`. The prior state `scrud_post_save` reports is read on the save's
   database (`ResourceMixin.get_transition_data(using)`).
 * Database routing: `ResourceRegistration` saves a resource, its
-  `ResourceContext` rows and its resource type's row on one database, the one
+  `ResourceContext` rows and its `ResourceRemoval` stamps on one database, the one
   its transaction is on (`write_db()`, `router.db_for_write(Resource)`, given
-  the resource as the router's `instance` hint when there is one). It used to
-  save the type row wherever the router sent `ResourceType` writes: with
-  `Resource` and `ResourceType` routed to two aliases of one PostgreSQL
-  database, a `WorkflowPolicy` write waited on its own lock forever (or until
-  `lock_timeout`, a 500). A new system check, `scrud_django.E004` (run by
+  the resource as the router's `instance` hint when there is one), and takes
+  the `WorkflowPolicy` type lock there. It used to save the type row wherever
+  the router sent `ResourceType` writes: with `Resource` and `ResourceType`
+  routed to two aliases of one PostgreSQL database, a `WorkflowPolicy` write
+  waited on its own lock forever (or until `lock_timeout`, a 500). A new system check, `scrud_django.E004` (run by
   `manage.py check`, no database needed), is an error when the router sends
   `Resource`, `ResourceType`, `ResourceContext` and `ResourceRemoval` writes
   to different aliases. Routing these models by instance hint is not supported: the API's

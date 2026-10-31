@@ -239,9 +239,9 @@ def check_write_routing(app_configs, **kwargs):
     """An Error (``scrud_django.E004``) when the database router sends writes
     of ``Resource``, ``ResourceType``, ``ResourceContext`` and
     ``ResourceRemoval`` to different aliases (asked without an instance
-    hint). ``ResourceRegistration`` writes a resource, its context rows, its
-    removal stamps and its type's row in one transaction, on the
-    ``Resource`` alias, and the ``WorkflowPolicy`` lock is taken there: on two
+    hint). ``ResourceRegistration`` writes a resource, its context rows and
+    its removal stamps in one transaction, on the ``Resource`` alias, and the
+    ``WorkflowPolicy`` lock is taken there: on two
     aliases of one database, a write would wait on its own lock; on two
     databases, the ``Resource.resource_type`` foreign key would cross them.
     Not a database check: it reads the routers only."""

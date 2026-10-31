@@ -152,7 +152,7 @@ was sent, so send every value you want stored.
 If you use `DATABASE_ROUTERS`, route the writes of `scrud_django`'s models
 (`Resource`, `ResourceType`, `ResourceContext`, `ResourceRemoval`) to one
 database alias:
-scrud-django writes a resource, its context rows and its type's row in one
+scrud-django writes a resource, its context rows and its removal stamps in one
 transaction there, and the `scrud_django.E004` system check reports a split.
 Routing these models by instance hint is not supported.
 

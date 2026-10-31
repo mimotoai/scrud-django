@@ -1,5 +1,6 @@
 """Write routing: `ResourceRegistration` writes a resource, its context rows
-and its type's row on one database, the alias of its transaction; a system
+and its removal stamps on one database, the alias of its transaction, and
+never saves its type's row; a system
 check (``scrud_django.E004``) refuses a router that sends ``Resource``,
 ``ResourceType`` and ``ResourceContext`` writes to different aliases."""
 
@@ -123,18 +124,20 @@ def type_saves():
 
 
 @pytest.mark.django_db(databases=["default", "other"])
-def test_server_side_writes_save_the_type_on_the_transactions_database():
+def test_server_side_writes_never_save_the_type():
     reverse("todos-list")
     todo = ResourceRegistration.register(dict(NOT_STARTED), "todos")
     with routers("TypeSavesElsewhereRouter"), type_saves() as seen:
         ResourceRegistration.register(dict(NOT_STARTED), "todos")
         ResourceRegistration.update(dict(NOT_STARTED), "todos", str(todo.pk))
         ResourceRegistration.delete("todos", str(todo.pk))
-    assert seen == ["default"] * 3
+    # Nothing reads a type's etag: no write saves the type row, on any
+    # database.
+    assert seen == []
 
 
 @pytest.mark.django_db(databases=["default", "other"])
-def test_api_writes_save_the_type_on_the_transactions_database():
+def test_api_writes_never_save_the_type():
     reverse("todos-list")
     todo = ResourceRegistration.register(dict(NOT_STARTED), "todos")
     client = admin_client()
@@ -148,7 +151,9 @@ def test_api_writes_save_the_type_on_the_transactions_database():
         assert response.status_code == 200, response.content
         response = client.delete(url, HTTP_IF_MATCH=response["ETag"])
         assert response.status_code == 204, response.content
-    assert seen == ["default"] * 3
+    # Nothing reads a type's etag: no write saves the type row, on any
+    # database.
+    assert seen == []
 
 
 class LockTaken(Exception):
@@ -220,9 +225,9 @@ def test_split_write_routing_is_an_error(router, models):
         assert write_routing_errors() == found
 
 
-# The type row's etag bump saves only etag and modified_at: a copy of the
-# type read earlier (a lagging replica, or before a re-registration
-# committed) must not write its other columns back.
+# A write never saves its type's row: a copy of the type read earlier (a
+# lagging replica, or before a re-registration committed) must not write its
+# columns back.
 
 NEW_SCHEMA_URI = "http://schema.example/new"
 
@@ -238,30 +243,32 @@ def a_stale_todo_type():
     yield stale
 
 
-def assert_bumped_and_kept(stale):
+def assert_kept(stale, etag):
+    """The stored type kept its new ``schema_uri`` and its `etag`."""
     stored = ResourceType.objects.get(pk=stale.pk)
     assert stored.schema_uri == NEW_SCHEMA_URI
-    assert stored.etag == stale.etag
+    assert stored.etag == etag
 
 
 @pytest.mark.django_db
-def test_server_side_writes_bump_only_the_types_etag():
+def test_server_side_writes_write_nothing_back_to_the_type():
     with a_stale_todo_type() as stale:
+        etag = stale.etag
         todo = ResourceRegistration.register_instance(
             Resource(content=dict(NOT_STARTED), resource_type=stale)
         )
-        assert_bumped_and_kept(stale)
+        assert_kept(stale, etag)
         with mock.patch.object(
             registration, "get_resource_type_for", return_value=stale
         ):
             ResourceRegistration.update(dict(NOT_STARTED), "todos", str(todo.pk))
-            assert_bumped_and_kept(stale)
+            assert_kept(stale, etag)
             ResourceRegistration.delete("todos", str(todo.pk))
-            assert_bumped_and_kept(stale)
+            assert_kept(stale, etag)
 
 
 @pytest.mark.django_db
-def test_api_writes_bump_only_the_types_etag():
+def test_api_writes_write_nothing_back_to_the_type():
     from scrud_django.mixins.view_mixins import ResourceViewMixin
 
     client = admin_client()
@@ -269,15 +276,16 @@ def test_api_writes_bump_only_the_types_etag():
         a_stale_todo_type() as stale,
         mock.patch.object(ResourceViewMixin, "get_resource_type", return_value=stale),
     ):
+        etag = stale.etag
         response = client.post(reverse("todos-list"), NOT_STARTED, format="json")
         assert response.status_code == 201, response.content
-        assert_bumped_and_kept(stale)
+        assert_kept(stale, etag)
         url = response["Location"]
         response = client.put(
             url, NOT_STARTED, format="json", HTTP_IF_MATCH=response["ETag"]
         )
         assert response.status_code == 200, response.content
-        assert_bumped_and_kept(stale)
+        assert_kept(stale, etag)
         response = client.delete(url, HTTP_IF_MATCH=response["ETag"])
         assert response.status_code == 204, response.content
-        assert_bumped_and_kept(stale)
+        assert_kept(stale, etag)

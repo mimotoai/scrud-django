@@ -199,18 +199,20 @@ def test_server_side_empty_context_list_is_stored_superuser_only(
 
 
 @pytest.mark.django_db
-def test_update_bumps_the_resource_types_etag():
+def test_writes_leave_the_resource_types_etag_alone():
+    # Nothing reads a type's etag or modified_at since lists compute their own
+    # validators: a write of a resource no longer updates (or locks) its
+    # type's row.
     resource = register({"rbac_context": "a"})
     before = ResourceType.objects.get(pk=resource.resource_type_id)
     updated = ResourceRegistration.update(
         {"name": "changed"}, "partner-profiles", resource.pk
     )
+    ResourceRegistration.delete("partner-profiles", str(updated.pk))
     after = ResourceType.objects.get(pk=resource.resource_type_id)
-    assert after.etag != before.etag
-    assert after.etag == updated.etag
-    assert after.modified_at == updated.modified_at
-    assert after.modified_at > before.modified_at
-    assert get_resource_type_for("partner-profiles").etag == updated.etag
+    assert updated.etag != resource.etag
+    assert (after.etag, after.modified_at) == (before.etag, before.modified_at)
+    assert get_resource_type_for("partner-profiles").etag == before.etag
 
 
 def test_resource_content_reads_as_cel_fields():
