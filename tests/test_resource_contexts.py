@@ -292,13 +292,21 @@ def test_register_instance_over_an_existing_pk_leaves_its_old_contexts():
 
 def flush():
     """``manage.py flush`` inside the test's transaction. PostgreSQL refuses to
-    TRUNCATE a table with deferred constraint checks pending: run them first."""
+    TRUNCATE a table with deferred constraint checks pending: run them first.
+    On MySQL and MariaDB a TRUNCATE commits the transaction: delete the rows
+    instead (``reset_sequences=False``)."""
     from django.core.management import call_command
 
     if connection.vendor == "postgresql":
         with connection.cursor() as cursor:
             cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
-    call_command("flush", interactive=False, inhibit_post_migrate=True, verbosity=0)
+    call_command(
+        "flush",
+        interactive=False,
+        inhibit_post_migrate=True,
+        reset_sequences=connection.vendor != "mysql",
+        verbosity=0,
+    )
     if connection.vendor == "postgresql":
         with connection.cursor() as cursor:
             cursor.execute("SET CONSTRAINTS ALL DEFERRED")

@@ -66,6 +66,9 @@ def legacy(context):
             )
         ]
     )
+    if resource.pk is None:
+        # MySQL returns no keys from a bulk insert: read them back.
+        resource.pk = Resource.objects.get(etag=resource.etag).pk
     return resource
 
 

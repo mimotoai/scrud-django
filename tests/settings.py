@@ -4,11 +4,17 @@ Used as ``settings.configure(**SETTINGS)`` by both ``tests/conftest.py`` and
 ``manage.py``.
 
 The databases are in-memory SQLite, unless ``SCRUD_TEST_PG_HOST`` names a
-PostgreSQL server (the CI job ``test-postgres``): both aliases then use it,
-with ``SCRUD_TEST_PG_PORT`` (5432), ``SCRUD_TEST_PG_USER`` (postgres),
+PostgreSQL server (the CI job ``test-postgres``) or ``SCRUD_TEST_MYSQL_HOST``
+a MySQL or MariaDB server (``test-mysql``): both aliases then use it, with
+``SCRUD_TEST_PG_PORT`` (5432), ``SCRUD_TEST_PG_USER`` (postgres),
 ``SCRUD_TEST_PG_PASSWORD`` (none) and ``SCRUD_TEST_PG_NAME`` (scrud; the
-"other" alias appends ``_other``). pytest-django creates and drops the test
-databases (``test_`` and those names).
+"other" alias appends ``_other``), or the ``SCRUD_TEST_MYSQL_`` ones
+(port 3306, user root, the same defaults otherwise). MySQL connections use
+utf8mb4 and READ COMMITTED, as scrud-django requires there; its driver,
+mysqlclient, is not a dev dependency (it builds against the MySQL client
+library): add it with ``uv run --with mysqlclient==2.3.0``. pytest-django
+creates and drops the test databases (``test_`` and those names), in the
+server's default character set and collation.
 """
 
 import os
@@ -17,13 +23,27 @@ from typing import Any
 
 def database(alias):
     """The settings of database `alias` ("default" or "other")."""
-    host = os.environ.get("SCRUD_TEST_PG_HOST")
-    if not host:
+    pg_host = os.environ.get("SCRUD_TEST_PG_HOST")
+    mysql_host = os.environ.get("SCRUD_TEST_MYSQL_HOST")
+    if pg_host and mysql_host:
+        raise RuntimeError("Set SCRUD_TEST_PG_HOST or SCRUD_TEST_MYSQL_HOST, not both.")
+    if mysql_host:
+        name = os.environ.get("SCRUD_TEST_MYSQL_NAME", "scrud")
+        return {
+            "ENGINE": "django.db.backends.mysql",
+            "HOST": mysql_host,
+            "PORT": os.environ.get("SCRUD_TEST_MYSQL_PORT", "3306"),
+            "USER": os.environ.get("SCRUD_TEST_MYSQL_USER", "root"),
+            "PASSWORD": os.environ.get("SCRUD_TEST_MYSQL_PASSWORD", ""),
+            "NAME": name if alias == "default" else f"{name}_{alias}",
+            "OPTIONS": {"charset": "utf8mb4", "isolation_level": "read committed"},
+        }
+    if not pg_host:
         return {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
     name = os.environ.get("SCRUD_TEST_PG_NAME", "scrud")
     return {
         "ENGINE": "django.db.backends.postgresql",
-        "HOST": host,
+        "HOST": pg_host,
         "PORT": os.environ.get("SCRUD_TEST_PG_PORT", "5432"),
         "USER": os.environ.get("SCRUD_TEST_PG_USER", "postgres"),
         "PASSWORD": os.environ.get("SCRUD_TEST_PG_PASSWORD", ""),

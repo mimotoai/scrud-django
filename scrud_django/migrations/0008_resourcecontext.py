@@ -5,6 +5,8 @@ from collections.abc import Mapping
 import django.db.models.deletion
 from django.db import migrations, models
 
+import scrud_django.models.fields
+
 BATCH_SIZE = 1000
 
 # The longest context a row is made for, in bytes of UTF-8
@@ -76,7 +78,12 @@ class Migration(migrations.Migration):
                         verbose_name='ID',
                     ),
                 ),
-                ('rbac_context', models.CharField(db_index=True, max_length=2048)),
+                (
+                    'rbac_context',
+                    scrud_django.models.fields.ContextField(
+                        db_index=True, max_length=2048
+                    ),
+                ),
                 (
                     'resource',
                     models.ForeignKey(

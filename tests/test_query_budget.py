@@ -22,7 +22,10 @@ from .rbac_defaults import TYPE_URI_LIST_PARTNER_PROFILES, TYPE_URI_PARTNER_PROF
 
 PP = TYPE_URI_PARTNER_PROFILES
 PP_LIST = TYPE_URI_LIST_PARTNER_PROFILES
-TYPE_TABLE = '"scrud_django_resourcetype"'
+# Quoted as the database quotes them ("x" or `x`).
+QUOTE = connection.ops.quote_name
+TYPE_TABLE = QUOTE("scrud_django_resourcetype")
+ID = QUOTE("id")
 
 
 def own_type_queries(queries, resource_type):
@@ -37,11 +40,11 @@ def own_type_queries(queries, resource_type):
             f"UPDATE {TYPE_TABLE}"
         ):
             continue
-        if f"\"slug\" = '{resource_type.slug}'" in where or where.startswith(
-            f'{TYPE_TABLE}."id" = {resource_type.pk} '
+        if f"{QUOTE('slug')} = '{resource_type.slug}'" in where or where.startswith(
+            f"{TYPE_TABLE}.{ID} = {resource_type.pk} "
         ):
             found.append(sql.split()[0])
-        elif where == f'{TYPE_TABLE}."id" = {resource_type.pk}':
+        elif where == f"{TYPE_TABLE}.{ID} = {resource_type.pk}":
             found.append(sql.split()[0])
     return found
 

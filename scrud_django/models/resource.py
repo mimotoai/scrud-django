@@ -18,16 +18,17 @@ from django.utils import timezone
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
 from scrud_django.mixins.resource_mixin import ResourceMixin, rbac_contexts_of
+from scrud_django.models.fields import ContextField
 from scrud_django.models.resource_type import ResourceType
 
-# The ``rbac_context`` column of `ResourceContext` and `ResourceRemoval`, in
-# characters.
+# The ``rbac_context`` column of `ResourceContext` and `ResourceRemoval`
+# (`ContextField`): in characters, or in bytes on MySQL and MariaDB.
 MAX_CONTEXT_LENGTH = 2048
 
 # The longest context a resource may be stored in, in bytes of UTF-8: its
 # `ResourceContext` and `ResourceRemoval` rows must fit PostgreSQL's btree
 # indexes (about 2700 bytes an entry), which a context of 2048 characters
-# may not.
+# may not, and the ``VARBINARY(2048)`` column on MySQL and MariaDB.
 MAX_CONTEXT_BYTES = 2048
 
 
@@ -243,7 +244,7 @@ class ResourceContext(models.Model):
     resource = models.ForeignKey(
         Resource, on_delete=models.CASCADE, related_name="rbac_context_rows"
     )
-    rbac_context = models.CharField(max_length=MAX_CONTEXT_LENGTH, db_index=True)
+    rbac_context = ContextField(max_length=MAX_CONTEXT_LENGTH, db_index=True)
 
     class Meta:
         constraints = [
@@ -269,7 +270,7 @@ class ResourceRemoval(models.Model):
     resource_type = models.ForeignKey(
         ResourceType, on_delete=models.CASCADE, related_name="removals"
     )
-    rbac_context = models.CharField(max_length=MAX_CONTEXT_LENGTH)
+    rbac_context = ContextField(max_length=MAX_CONTEXT_LENGTH)
     removed_at = models.DateTimeField()
 
     class Meta:

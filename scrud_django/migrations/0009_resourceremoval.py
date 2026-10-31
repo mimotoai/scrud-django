@@ -3,6 +3,8 @@
 import django.db.models.deletion
 from django.db import migrations, models
 
+import scrud_django.models.fields
+
 
 class Migration(migrations.Migration):
     dependencies = [
@@ -22,7 +24,10 @@ class Migration(migrations.Migration):
                         verbose_name='ID',
                     ),
                 ),
-                ('rbac_context', models.CharField(max_length=2048)),
+                (
+                    'rbac_context',
+                    scrud_django.models.fields.ContextField(max_length=2048),
+                ),
                 ('removed_at', models.DateTimeField()),
                 (
                     'resource_type',

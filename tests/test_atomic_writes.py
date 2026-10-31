@@ -226,6 +226,7 @@ def recorded_write_order():
     whether each ran inside a transaction the code under test opened on the
     write database."""
     connection = connections[write_db()]
+    quote = connection.ops.quote_name
     depth = len(connection.atomic_blocks)
     events = []
     original_lock = registration.lock_workflow_policy_type
@@ -236,8 +237,8 @@ def recorded_write_order():
 
     def record(execute, sql, params, many, context):
         if (
-            '"scrud_django_resource"' in sql
-            and '"scrud_django_resourcetype"' not in sql
+            quote("scrud_django_resource") in sql
+            and quote("scrud_django_resourcetype") not in sql
         ):
             kind = sql.split(None, 1)[0].lower()
             events.append((kind, len(connection.atomic_blocks) > depth))

@@ -34,8 +34,9 @@ from scrud_django.workflow import lock_workflow_policy_type
 
 from .factories import UserFactory
 
-RESOURCE_TABLE = '"scrud_django_resource"'
-CONTEXT_TABLE = '"scrud_django_resourcecontext"'
+# Quoted as the database quotes them ("x" or `x`).
+RESOURCE_TABLE = connection.ops.quote_name("scrud_django_resource")
+CONTEXT_TABLE = connection.ops.quote_name("scrud_django_resourcecontext")
 
 
 @contextmanager
@@ -83,7 +84,9 @@ def assert_locked_before_deleted(events):
     assert f"FROM {RESOURCE_TABLE}" in head, locking_select
     # Ordered by the key, the only column it selects (ORDER BY 1).
     order = locking_select.rpartition(" ORDER BY ")[2]
-    assert order.startswith(("1 ASC", f'{RESOURCE_TABLE}."id" ASC')), locking_select
+    assert order.startswith(
+        ("1 ASC", f"{RESOURCE_TABLE}.{connection.ops.quote_name('id')} ASC")
+    ), locking_select
     if connection.features.has_select_for_update:
         assert "FOR UPDATE" in locking_select, locking_select
 

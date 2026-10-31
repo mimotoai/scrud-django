@@ -285,23 +285,32 @@ def stored_policies_for(resource_type, context):
     `ResourceType` or its type URI) whose own contexts (read with
     `rbac_contexts_of`, so a policy that names no ``rbac_context`` is in the
     default context ``""``) include `context`, oldest first. There is at most
-    one, unless policies were stored past the API's check (or before it)."""
+    one, unless policies were stored past the API's check (or before it).
+    The type is compared again in Python, exactly: MariaDB compares the
+    content's ``resource_type`` in SQL as text that pads with spaces."""
     from django.db import router
 
     from scrud_django.mixins.resource_mixin import rbac_contexts_of
     from scrud_django.models import Resource
 
+    type_uri = _type_uri(resource_type)
     # The write database: a write's uniqueness re-check (and the policy a
     # write is checked under) must not read a stale replica.
     stored = (
         Resource.objects.using(router.db_for_write(Resource))
         .filter(
             resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI,
-            content__resource_type=_type_uri(resource_type),
+            content__resource_type=type_uri,
         )
         .order_by("pk")
     )
-    return [policy for policy in stored if context in rbac_contexts_of(policy.content)]
+    return [
+        policy
+        for policy in stored
+        if isinstance(policy.content, dict)
+        and policy.content.get("resource_type") == type_uri
+        and context in rbac_contexts_of(policy.content)
+    ]
 
 
 # How many compiled stored policies `workflow_policy_for` keeps

@@ -9,6 +9,7 @@ the cheap part of it: resources with no row at all though their content
 names a context."""
 
 from unittest import mock
+from uuid import uuid4
 
 import pytest
 from django.core import checks
@@ -40,17 +41,22 @@ def written_around_save(*contents):
     """Resources stored without ``save()`` (as a 0.11 process or
     ``bulk_create()`` writes them): no ``ResourceContext`` rows."""
     resource_type = get_resource_type_for("partner-profiles")
-    return Resource.objects.bulk_create(
+    created = Resource.objects.bulk_create(
         [
             Resource(
                 content=content,
                 resource_type=resource_type,
-                etag="e" * 32,
+                etag=uuid4().hex,
                 modified_at=timezone.now(),
             )
             for content in contents
         ]
     )
+    for resource in created:
+        if resource.pk is None:
+            # MySQL returns no keys from a bulk insert: read them back.
+            resource.pk = Resource.objects.get(etag=resource.etag).pk
+    return created
 
 
 @pytest.fixture

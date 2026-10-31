@@ -6,7 +6,7 @@ them (``scrud_django.E002``, ``E005``), and fixing or deleting them clears
 it.
 
 It runs on a database of its own (alias "upgrade": a file SQLite database,
-or a PostgreSQL database next to the test database), created empty for the
+or a PostgreSQL, MySQL or MariaDB database next to the test database), created empty for the
 test, migrated to 0007 and then forward, and dropped after: the test
 databases pytest-django sets up are not migrated back, and a failure leaves
 nothing behind."""
@@ -43,12 +43,13 @@ def upgrade_database(tmp_path):
     test isolation allows a connection made at run time."""
     default = connections["default"]
     settings_dict = dict(default.settings_dict)
-    postgresql = default.vendor == "postgresql"
-    if postgresql:
+    server = default.vendor in ("postgresql", "mysql")
+    if server:
         settings_dict["NAME"] = f"{default.settings_dict['NAME']}_upgrade"
+        name = default.ops.quote_name(settings_dict["NAME"])
         with default._nodb_cursor() as cursor:
-            cursor.execute(f'DROP DATABASE IF EXISTS "{settings_dict["NAME"]}"')
-            cursor.execute(f'CREATE DATABASE "{settings_dict["NAME"]}"')
+            cursor.execute(f"DROP DATABASE IF EXISTS {name}")
+            cursor.execute(f"CREATE DATABASE {name}")
     else:
         settings_dict["NAME"] = str(tmp_path / "upgrade.sqlite3")
     connection = load_backend(settings_dict["ENGINE"]).DatabaseWrapper(
@@ -60,9 +61,9 @@ def upgrade_database(tmp_path):
     finally:
         connection.close()
         del connections[ALIAS]
-        if postgresql:
+        if server:
             with default._nodb_cursor() as cursor:
-                cursor.execute(f'DROP DATABASE IF EXISTS "{settings_dict["NAME"]}"')
+                cursor.execute(f"DROP DATABASE IF EXISTS {name}")
 
 
 def migrate_to(target):

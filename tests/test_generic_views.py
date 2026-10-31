@@ -184,8 +184,13 @@ def evaluated_note_queries():
         yield events
 
 
+# Quoted as the database quotes them ("x" or `x`).
+NOTE_TABLE = connection.ops.quote_name("tests_note")
+NOTE_ID = f"{NOTE_TABLE}.{connection.ops.quote_name('id')}"
+
+
 def where_pk_is(pk):
-    return f'WHERE "tests_note"."id" = {pk}'
+    return f"WHERE {NOTE_ID} = {pk}"
 
 
 def write(client, method, url, etag, body=None):
@@ -211,9 +216,9 @@ def test_the_row_is_locked_on_the_write_database_before_the_lookup(method):
     (lock_db, lock_for_update, lock_sql), (lookup_db, lookup_for_update, _) = events[:2]
     assert (lock_db, lock_for_update) == ("default", True), events
     assert where_pk_is(note.pk) in lock_sql, lock_sql
-    assert lock_sql.startswith('SELECT "tests_note"."id" AS "pk" FROM "tests_note" '), (
-        lock_sql
-    )
+    assert lock_sql.startswith(
+        f"SELECT {NOTE_ID} AS {connection.ops.quote_name('pk')} FROM {NOTE_TABLE} "
+    ), lock_sql
     assert (lookup_db, lookup_for_update) == ("default", False), events
 
 
@@ -268,7 +273,7 @@ def test_a_lookup_field_the_queryset_annotates_is_locked_by_key(method):
     # scrudful look the row up again for the response's validators.
     resolve, lock, lookup = events[:3]
     assert not resolve[1] and "n-abc" in resolve[2], events
-    assert lock[1] and f'WHERE "tests_note"."id" IN ({note.pk})' in lock[2], lock
+    assert lock[1] and f"WHERE {NOTE_ID} IN ({note.pk})" in lock[2], lock
     assert not lookup[1] and "n-abc" in lookup[2], events
 
 
