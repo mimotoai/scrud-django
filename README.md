@@ -184,6 +184,15 @@ scrud-django writes a resource, its context rows and its removal stamps in one
 transaction there, and the `scrud_django.E004` system check reports a split.
 Routing these models by instance hint is not supported.
 
+Server code that writes a `WorkflowPolicy` resource should go through
+`ResourceRegistration`. Code that locks a policy's row itself
+(`Resource.objects.select_for_update()`) and then saves or deletes it must
+first call `scrud_django.registration.lock_if_workflow_policy(resource.resource_type,
+using)` in the same transaction, on every database: the save or delete takes
+the `WorkflowPolicy` type lock, and taking it after the row's lock deadlocks
+with an API write of the policy. A plain `save()` or `delete()` takes the
+type lock before the row by itself.
+
 Lists filter resources by their `ResourceContext` rows, one per context the
 content names, which `Resource.save()` (and so `ResourceRegistration` and the
 API) keeps in step. Rows written with `QuerySet.update()`, `bulk_create()` or

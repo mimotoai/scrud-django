@@ -127,7 +127,11 @@ django-scoped-rbac 0.11. It has several breaking changes.
     or a `select_related` of a nullable relation keeps working on PostgreSQL
     (which refuses `FOR UPDATE` on those). Server code that updates or deletes a resource
     should go through `ResourceRegistration.update` / `delete`, which lock it
-    the same way.
+    the same way. Server code that locks a `WorkflowPolicy` resource's row
+    itself (`select_for_update()`) and then saves or deletes it must first
+    call `scrud_django.registration.lock_if_workflow_policy(resource.resource_type,
+    using)` in that transaction, on every database; otherwise it deadlocks
+    with an API write of the policy (see Workflows below).
 17. `GenericViewMixin` lists: their `ETag` and `Last-Modified` now come from
     what the requester may list (see API changes below), so the view needs an
     `RbacFilter` among its `filter_backends` (`manage.py check` reports one
@@ -227,7 +231,9 @@ django-scoped-rbac 0.11. It has several breaking changes.
 24. MySQL and MariaDB: use mysqlclient, InnoDB and a utf8mb4 database (MariaDB
     stores resource content as text in the database's character set) and
     connection, at READ COMMITTED (step 14). On MariaDB, clients must keep
-    request bodies within 31 levels of nesting (see API changes below).
+    request bodies within 31 levels of nesting (see API changes below). A
+    MySQL or MariaDB database migrated with a pre-release 0.12 build must be
+    recreated: its context columns compare inexactly, and nothing detects it.
 
 ### Lists
 
@@ -451,7 +457,9 @@ Conditional request handling now comes from scrudful 0.8.
   a `scrud_sync_contexts` repair of a `WorkflowPolicy` take the type lock
   before the policy's row, as the API's writes do (on every database);
   otherwise one of them and an API write of the policy deadlocked
-  (`Deadlock found`, a 500 for the API request).
+  (`Deadlock found`, a 500 for the API request). There a removal stamp is
+  one `INSERT ... ON DUPLICATE KEY UPDATE`, so concurrent first removals from
+  one context do not deadlock either.
 * Every raw save of a resource (a reversion revert: `Version.revert()`,
   `Revision.revert()`, the admin's revert and recover; `loaddata` of a dump
   or backup) gives it a fresh `ETag` and `Last-Modified`. It kept the saved,
@@ -944,7 +952,10 @@ Conditional request handling now comes from scrudful 0.8.
   changes), before it reads or writes the policy's row, so concurrent writes
   of one policy cannot deadlock. A write that saves a
   `Resource` directly (`save()`, bypassing `ResourceRegistration`) takes the
-  lock before it writes the row too, but does not check uniqueness. If several
+  lock before it writes the row too, but does not check uniqueness; code that
+  locks a policy's row itself (`select_for_update()`) before saving or
+  deleting it must call `scrud_django.registration.lock_if_workflow_policy`
+  first (Upgrading 16). If several
   were stored before (or past the API), none is picked: writes of the type in
   that context fail with `ImproperlyConfigured` until all but one are deleted.
   The database system check (`manage.py check --database <alias>`, for the

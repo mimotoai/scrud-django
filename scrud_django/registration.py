@@ -37,7 +37,16 @@ def lock_if_workflow_policy(resource_type, using):
     write_db())``; ``select_for_update`` outside a transaction is an error on
     PostgreSQL). `ResourceRegistration`'s writes, and so the API's, then lock
     the type row before they write the ``Resource`` row, in that one order: a
-    PUT and a DELETE of the same policy cannot deadlock."""
+    PUT and a DELETE of the same policy cannot deadlock.
+
+    Public: server code that locks a ``WorkflowPolicy`` resource's row itself
+    (``Resource.objects.select_for_update()``) and then saves or deletes it
+    must call ``lock_if_workflow_policy(resource.resource_type, using)``
+    first, in the same transaction, on every database. Its save or delete
+    takes this lock too, and taking it after the row's lock deadlocks with an
+    API write of the policy, which holds this lock and waits for the row.
+    A plain ``save()`` or ``delete()`` without a row lock of its own needs
+    nothing: it takes this lock before the row."""
     if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
         lock_workflow_policy_type(using)
 
