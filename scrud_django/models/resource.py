@@ -444,11 +444,22 @@ def stamp_removals(resource_type_id, contexts, using, when=None):
     only moves forward. A context too long for a row (`context_fits`: one
     stored before 0.12.0, which has no `ResourceContext` row and is listed to
     superusers only) is stamped as ``SOME_CONTEXT``, which only superusers'
-    lists read."""
+    lists read.
+
+    On MySQL and MariaDB each stamp is one ``INSERT ... ON DUPLICATE KEY
+    UPDATE`` (`upsert_removal`): there, of concurrent first stamps of one
+    type and context, each INSERT that lost kept a shared lock on the stamp
+    after its savepoint rolled back, and their UPDATEs deadlocked. Elsewhere
+    a stamp is an UPDATE, else an INSERT in a savepoint (a concurrent first
+    stamp's duplicate key falls back to the UPDATE)."""
     when = when or timezone.now()
     rows = ResourceRemoval.objects.using(using)
+    connection = transaction.get_connection(using)
     contexts = {c if context_fits(c) else SOME_CONTEXT for c in contexts}
     for context in sorted(contexts):
+        if connection.vendor == "mysql":
+            upsert_removal(connection, resource_type_id, context, when)
+            continue
         key = {"resource_type_id": resource_type_id, "rbac_context": context}
         if rows.filter(**key, removed_at__lt=when).update(removed_at=when):
             continue
@@ -460,6 +471,38 @@ def stamp_removals(resource_type_id, contexts, using, when=None):
         except IntegrityError:
             # A concurrent removal created it first.
             rows.filter(**key, removed_at__lt=when).update(removed_at=when)
+
+
+def upsert_removal(connection, resource_type_id, context, when):
+    """Stamp `context` of the type `resource_type_id` at `when` on
+    `connection` (MySQL or MariaDB), keeping the later of the stored and the
+    new ``removed_at``: one ``INSERT ... ON DUPLICATE KEY UPDATE removed_at =
+    GREATEST(...)``, which takes the stamp's exclusive lock at once. MySQL
+    names the new row with an alias (it deprecates ``VALUES()`` there);
+    MariaDB has ``VALUES()`` and no alias."""
+    meta = ResourceRemoval._meta
+    quote = connection.ops.quote_name
+    table = quote(meta.db_table)
+    type_column, context_column, when_column = (
+        quote(meta.get_field(name).column)
+        for name in ("resource_type", "rbac_context", "removed_at")
+    )
+    if connection.mysql_is_mariadb:
+        alias, new = "", f"VALUES({when_column})"
+    else:
+        alias, new = " AS incoming", f"incoming.{when_column}"
+    sql = (
+        f"INSERT INTO {table} ({type_column}, {context_column}, {when_column}) "
+        f"VALUES (%s, %s, %s){alias} ON DUPLICATE KEY UPDATE "
+        f"{when_column} = GREATEST({table}.{when_column}, {new})"
+    )
+    params = [
+        resource_type_id,
+        meta.get_field("rbac_context").get_db_prep_save(context, connection),
+        meta.get_field("removed_at").get_db_prep_save(when, connection),
+    ]
+    with connection.cursor() as cursor:
+        cursor.execute(sql, params)
 
 
 def lock_workflow_policy_type_for(resource, using):

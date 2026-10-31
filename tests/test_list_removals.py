@@ -350,3 +350,59 @@ def test_a_bulk_delete_under_a_replica_router_stamps_once_on_the_write_database(
     queryset.delete()
     assert calls == [(first.resource_type_id, ["a", "b", "c"], "default")]
     assert not Resource.objects.using("default").filter(pk=first.pk).exists()
+
+
+@pytest.mark.django_db
+def test_a_stamp_only_moves_forward():
+    from django.db import connection
+
+    from scrud_django.models.resource import stamp_removals
+
+    reverse("partner-profiles-list")
+    type_id = registration_type_id()
+    now = timezone.now().replace(microsecond=0)
+    earlier, later = now - AN_HOUR_AGO, now + AN_HOUR_AGO
+
+    def stamp():
+        return ResourceRemoval.objects.get(
+            resource_type_id=type_id, rbac_context="fwd"
+        ).removed_at
+
+    stamp_removals(type_id, ["fwd"], connection.alias, when=now)
+    assert stamp() == now
+    stamp_removals(type_id, ["fwd"], connection.alias, when=earlier)
+    assert stamp() == now
+    stamp_removals(type_id, ["fwd"], connection.alias, when=later)
+    assert stamp() == later
+    assert ResourceRemoval.objects.filter(rbac_context="fwd").count() == 1
+
+
+@pytest.mark.django_db
+def test_a_stamp_on_mysql_is_one_statement_without_warnings():
+    # One INSERT ... ON DUPLICATE KEY UPDATE per context (concurrent first
+    # stamps deadlocked otherwise), in a form neither server warns about
+    # (MySQL deprecates VALUES() there).
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    from scrud_django.models.resource import stamp_removals
+
+    if connection.vendor != "mysql":
+        pytest.skip("MySQL and MariaDB")
+    reverse("partner-profiles-list")
+    type_id = registration_type_id()
+    for when in (timezone.now(), timezone.now() + AN_HOUR_AGO):
+        with CaptureQueriesContext(connection) as queries:
+            stamp_removals(type_id, ["one"], connection.alias, when=when)
+        statements = [q["sql"] for q in queries]
+        assert len(statements) == 1, statements
+        assert "ON DUPLICATE KEY UPDATE" in statements[0], statements
+        with connection.cursor() as cursor:
+            cursor.execute("SHOW WARNINGS")
+            assert cursor.fetchall() == (), statements
+
+
+def registration_type_id():
+    from scrud_django.registration import get_resource_type_for
+
+    return get_resource_type_for("partner-profiles").pk

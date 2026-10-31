@@ -773,3 +773,63 @@ def test_a_save_moving_a_policy_and_its_api_put_do_not_deadlock(committed_types)
         "pol",
         {"x": "true"},
     )
+
+
+@TWO_WRITERS
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_first_removals_of_a_context_do_not_deadlock(committed_types):
+    # Four transactions each delete a resource of one fresh context, and so
+    # each stamps that context's first removal. All of them reach the stamp
+    # table before any writes it (they find no stamp), then one INSERTs it
+    # and holds it, and the others INSERT it a moment later and wait. On
+    # MySQL and MariaDB each waiter then failed with a duplicate key, kept a
+    # shared lock on the stamp's index record after its savepoint rolled
+    # back, and their fallback UPDATEs deadlocked (1213, a 500 through the
+    # API). One INSERT ... ON DUPLICATE KEY UPDATE takes the record's
+    # exclusive lock at once. (The schedule is set on the SQL, whatever
+    # statements stamp_removals runs.)
+    from scrud_django.models import ResourceRemoval
+
+    first, *_ = stored = profiles("fresh", "fresh", "fresh", "fresh")
+    connections.close_all()
+    table = connection.ops.quote_name(ResourceRemoval._meta.db_table)
+    barrier = threading.Barrier(len(stored))
+    results = {}
+
+    def delete(resource):
+        reached = []
+
+        def schedule(execute, sql, params, many, context):
+            if table in sql:
+                if not reached:
+                    reached.append(True)
+                    barrier.wait(timeout=10)  # everyone found no stamp
+                if sql.startswith("INSERT") and resource is not first:
+                    time.sleep(0.15)  # after the first one's INSERT
+            return execute(sql, params, many, context)
+
+        try:
+            with transaction.atomic(), connection.execute_wrapper(schedule):
+                deleted = Resource.objects.get(pk=resource.pk).delete()[0]
+                if resource is first:
+                    time.sleep(0.6)  # holding the stamp the others wait for
+            results[resource.pk] = deleted
+        except Exception as exc:  # noqa: BLE001 - reported to the test
+            results[resource.pk] = exc
+        finally:
+            connections.close_all()
+
+    threads = [threading.Thread(target=delete, args=(r,)) for r in stored]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    errors = {pk: repr(r) for pk, r in results.items() if isinstance(r, Exception)}
+    assert errors == {}, errors
+    assert len(results) == len(stored), results
+    assert not Resource.objects.filter(pk__in=[r.pk for r in stored]).exists()
+    assert list(
+        ResourceRemoval.objects.filter(rbac_context="fresh").values_list(
+            "rbac_context", flat=True
+        )
+    ) == ["fresh"]
