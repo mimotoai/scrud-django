@@ -22,6 +22,8 @@ from scrud_django.permissions import (
     _checking_transition,
     _checking_write,
     _mark_workflow_authorized,
+    _not_checking_write,
+    checks_read_content,
     content_of,
     reading_content,
 )
@@ -224,8 +226,9 @@ class WorkflowValidator:
     (`authorize_without_policy`: 403). Operators and CEL conditions read the
     body as sent, a ``dict``.
 
-    An error under a stored policy the requester may not read names neither
-    the policy nor its states (`errors_hidden_unless_readable`).
+    An error under a stored policy the requester may not read, or about a
+    stored resource they may not read, names neither the policy nor its
+    states (`errors_hidden_unless_readable`).
 
     A ``WorkflowPolicy`` resource is itself checked when it is written
     (`validate_policy`): a policy that fails those checks, names a context that
@@ -265,7 +268,7 @@ class WorkflowValidator:
             # no prior state there: the write creates it there.
             entering = instance is not None and c is not None
             entering = entering and c not in stored_contexts
-            with self.errors_hidden_unless_readable(policy, request):
+            with self.errors_hidden_unless_readable(policy, request, instance, context):
                 transitions.append(
                     (
                         c,
@@ -274,7 +277,7 @@ class WorkflowValidator:
                     )
                 )
         for c, policy, transition_data in transitions:
-            with self.errors_hidden_unless_readable(policy, request):
+            with self.errors_hidden_unless_readable(policy, request, instance, context):
                 self.authorize(policy, transition_data, c, context, data)
         if request is not None:
             for c, policy in policies:
@@ -307,12 +310,24 @@ class WorkflowValidator:
         return request
 
     @contextmanager
-    def errors_hidden_unless_readable(self, workflow_policy, request):
-        """A workflow error under a stored policy the requester may not read
-        (``http.GET`` on ``WorkflowPolicy`` in none of its contexts) becomes a
-        `HiddenWorkflowTransitionError`, which names neither the policy nor
-        its states: the resource may be in a context of someone else's.
-        Errors under readable policies and settings defaults are unchanged."""
+    def errors_hidden_unless_readable(
+        self, workflow_policy, request, instance=None, context=None
+    ):
+        """A workflow error becomes a `HiddenWorkflowTransitionError`, which
+        names neither the policy nor any state (the same status, ``type`` and
+        ``title``), when the requester may not read what it would reveal:
+
+        - a stored policy they may not read (``http.GET`` on
+          ``WorkflowPolicy`` in none of its contexts): the resource may be in
+          a context of someone else's;
+        - for an update, the stored resource `instance`, when they may not
+          read it (`stored_resource_readable`): the error's prior state, its
+          message and which error it is all tell the stored state, which a
+          grant to write (one conditioned on ``scrud_workflow``, say) does
+          not let them read.
+
+        Other errors (under readable policies and settings defaults, for a
+        create, or for a reader of the resource) are unchanged."""
         try:
             yield
         except WorkflowTransitionError as e:
@@ -324,7 +339,36 @@ class WorkflowValidator:
                 stored.rbac_contexts,
             ):
                 raise HiddenWorkflowTransitionError() from e
+            if instance is not None and not self.stored_resource_readable(
+                request, instance, context
+            ):
+                raise HiddenWorkflowTransitionError() from e
             raise
+
+    @staticmethod
+    def stored_resource_readable(request, instance, context=None):
+        """Whether the requester may read the stored resource `instance` (a
+        ``Resource``), as the detail route decides it tells a 403 from a 404:
+        the view's own ``is_readable`` (``http.GET`` in the resource's
+        contexts, as each of its ``IsAuthorized`` permissions reads them from
+        the content), else ``http.GET`` on the resource's type in one of its
+        contexts. Asked outside any write's checks, so a grant conditioned on
+        ``scrud_workflow`` does not make it readable; no request is no
+        requester to hide anything from."""
+        if request is None:
+            return True
+        view = getattr(context, "context", {}).get("view")
+        content = content_of(instance)
+        with _not_checking_write():
+            if callable(getattr(view, "is_readable", None)):
+                with checks_read_content(view):
+                    return view.is_readable(request, content)
+            return access.may_read(
+                request,
+                instance.resource_type.type_uri,
+                content,
+                instance.rbac_contexts,
+            )
 
     def validate_policy(self, data, instance):
         """Refuse (`WorkflowPolicyInvalidError`, 400, with the reason as its

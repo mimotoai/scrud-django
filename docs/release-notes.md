@@ -888,7 +888,12 @@ Conditional request handling now comes from scrudful 0.8.
   `http.GET` on `WorkflowPolicy` in its context), for example because it is
   another context's policy the resource is also in, the error is generic: the
   same status, `type` and `title`, a generic `message` and `detail`, and
-  `policy`, `prior_state` and `proposed_state` null. A workflow error caused
+  `policy`, `prior_state` and `proposed_state` null. An update's workflow
+  error is generic in the same way when the writer may not read the stored
+  resource (as the detail route decides it: `http.GET` in one of its
+  contexts), for example a writer whose only grant is conditioned on
+  `scrud_workflow`, so that it does not tell them the resource's stored
+  state. A workflow error caused
   by a settings default policy names it by reference too, never by its
   content (its CEL conditions and every role's transitions used to be in
   `policy` and `detail`): `{"resource_type": "<type URI>", "default": true}`,

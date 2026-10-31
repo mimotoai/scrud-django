@@ -249,3 +249,101 @@ def test_a_put_under_a_well_formed_authorized_transitions_cancels():
     response = client.put(detail(stored), canceled, format="json", **if_match(stored))
     assert response.status_code == 200, response.content
     assert Resource.objects.get(pk=stored.pk).content == canceled
+
+
+# Workflow errors do not give a resource's stored state to a writer who may
+# not read the resource: they are the generic error (same status, type and
+# title; no policy, no states), as under a policy the writer may not read.
+
+WFP = "http://api.openteams.com/json-ld/WorkflowPolicy"
+WORKFLOW_ERROR = "http://api.openteams.com/http-problem/workflow-transition-invalid"
+# A policy in "team" the writers below may read (http.GET on WorkflowPolicy
+# there), so that only the resource's readability decides.
+TEAM_POLICY = {
+    "resource_type": TODO,
+    "rbac_context": "team",
+    "initial_states": {"not started": 'status == "not started"'},
+    "states": {
+        "in progress": 'status == "in progress"',
+        "canceled": 'status == "canceled"',
+        "done": 'status == "done"',
+    },
+    "transitions": {
+        "start": {"from": "not started", "to": "in progress"},
+        "cancel": {"from": ["not started", "in progress"], "to": "canceled"},
+    },
+    "restrict_update": ["done"],
+}
+# (stored status, body status, the error's message, its prior_state)
+STATE_ERRORS = {
+    "invalid transition": ("done", "canceled", None, "done"),
+    "restricted update": ("done", "done", "Update not allowed on this state", "done"),
+    "no valid state": (
+        "done",
+        "blocked",
+        "The request does not match a valid state",
+        None,
+    ),
+    "transition not authorized": (
+        "not started",
+        "in progress",
+        "The user isn't authorized to perform this state transition on this resource.",
+        "not started",
+    ),
+}
+
+
+def team_policy():
+    from scrud_django.registration import workflow_policy_resource_type
+
+    workflow_policy_resource_type()
+    reverse("todos-list")
+    return ResourceRegistration.register(dict(TEAM_POLICY), "workflow-policies")
+
+
+def put_state(client, stored, status):
+    body = dict(PLAN, status=status, title="changed")
+    return client.put(detail(stored), body, format="json", HTTP_IF_MATCH="*")
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("shape", list(STATE_ERRORS))
+def test_a_workflow_error_hides_the_stored_state_from_a_writer_who_cannot_read(
+    shape,
+):
+    stored_status, status, _message, _prior = STATE_ERRORS[shape]
+    team_policy()
+    stored = todo(dict(PLAN, status=stored_status))
+    canceller = client_with(
+        (dict(CANCELLER, **{"http.GET": [WFP]}), "team"),
+    )
+    assert canceller.get(detail(stored)).status_code == 403
+    response = put_state(canceller, stored, status)
+    assert response.status_code == 400, response.content
+    problem = response.json()
+    assert problem["type"] == WORKFLOW_ERROR, problem
+    assert problem["title"] == "Invalid workflow transition", problem
+    assert problem["prior_state"] is None, problem
+    assert problem["proposed_state"] is None, problem
+    assert problem["policy"] is None, problem
+    assert stored_status not in response.content.decode(), problem
+    assert Resource.objects.get(pk=stored.pk).content == stored.content
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("shape", list(STATE_ERRORS))
+def test_a_workflow_error_gives_the_stored_state_to_a_writer_who_reads(shape):
+    stored_status, status, message, prior = STATE_ERRORS[shape]
+    policy = team_policy()
+    stored = todo(dict(PLAN, status=stored_status))
+    reader = client_with(
+        (dict(CANCELLER, **{"http.GET": [TODO, WFP]}), "team"),
+    )
+    response = put_state(reader, stored, status)
+    assert response.status_code == 400, response.content
+    problem = response.json()
+    assert problem["type"] == WORKFLOW_ERROR, problem
+    assert problem["prior_state"] == prior, problem
+    assert problem["policy"].endswith(f"/{policy.pk}/"), problem
+    if message is not None:
+        assert problem["message"] == message, problem
