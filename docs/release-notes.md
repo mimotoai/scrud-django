@@ -224,6 +224,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
     its resources changed must read a list's `ETag` and `Last-Modified`
     instead: writes of resources no longer change them (see API changes
     below).
+24. MySQL and MariaDB: use mysqlclient, InnoDB and a utf8mb4 database (MariaDB
+    stores resource content as text in the database's character set) and
+    connection, at READ COMMITTED (step 14). On MariaDB, clients must keep
+    request bodies within 31 levels of nesting (see API changes below).
 
 ### Lists
 
@@ -250,6 +254,13 @@ django-scoped-rbac 0.11. It has several breaking changes.
   only once normalised, such as `"\u200b__x"`, which only server code can
   store, can still be listed to superusers and to a user whose grant applies
   in every context, while its detail route is a 404, as in scoped-rbac.)
+* Contexts match exactly, code point for code point, on every database, as
+  on the detail route. MySQL's and MariaDB's default collations ignore case
+  and accents, and their binary ones ignore trailing spaces, so there the
+  `rbac_context` columns of `ResourceContext` and `ResourceRemoval` hold the
+  context's UTF-8 bytes (`VARBINARY(2048)`): a list, and its
+  `Last-Modified`, never take `"ACME"`, `"acmé"` or `"acme "` for `"acme"`,
+  and a resource can be in contexts that differ only in case.
 * Each resource's contexts are stored as `scrud_django.models.ResourceContext`
   rows, kept in step by `Resource.save()` (a new instance saved over an
   existing key included) and by raw saves (`loaddata`, reversion's revert,
@@ -351,6 +362,11 @@ django-scoped-rbac 0.11. It has several breaking changes.
 ### Requirements and packaging
 
 * Python 3.11 or newer and Django 5.2 are required.
+* Supported databases: SQLite, PostgreSQL, MySQL 8.4+ and MariaDB 11.4+, at
+  READ COMMITTED (`scrud_django.W002` warns about another level). On MySQL
+  and MariaDB use mysqlclient, InnoDB and a utf8mb4 database and connection;
+  migrations `0008` and `0009` store contexts there as `VARBINARY(2048)`
+  (see Lists). CI runs the suite on all four.
 * Minimum versions of the other dependencies: djangorestframework 3.15,
   django-filter 25.1, django-reversion 5.1, jsonpath-ng 1.6 and
   fastjsonschema 2.19; with the `search` extra, django-haystack 3.3 and
@@ -430,7 +446,12 @@ Conditional request handling now comes from scrudful 0.8.
   with it on PostgreSQL (`deadlock detected`, a 500 for the API request).
   The `WorkflowPolicy` type lock is `SELECT ... FOR NO KEY UPDATE` where the
   database has it (PostgreSQL), so that a policy deleted outside the API
-  while an API write of it waits does not deadlock either.
+  while an API write of it waits does not deadlock either. MySQL and MariaDB
+  lack it and check a foreign key at once, so there a delete, a `save()` and
+  a `scrud_sync_contexts` repair of a `WorkflowPolicy` take the type lock
+  before the policy's row, as the API's writes do (on every database);
+  otherwise one of them and an API write of the policy deadlocked
+  (`Deadlock found`, a 500 for the API request).
 * Every raw save of a resource (a reversion revert: `Version.revert()`,
   `Revision.revert()`, the admin's revert and recover; `loaddata` of a dump
   or backup) gives it a fresh `ETag` and `Last-Modified`. It kept the saved,
@@ -780,7 +801,9 @@ Conditional request handling now comes from scrudful 0.8.
   `{}`, so a POST created an empty resource and a PUT wiped the stored
   content. `{}` is still a body. A POST or PUT body nested more than
   `scrud_django.mixins.view_mixins.MAX_BODY_DEPTH` (100) levels deep,
-  objects and arrays, gets 400
+  objects and arrays (`MARIADB_MAX_BODY_DEPTH`, 31, when resources are
+  written to MariaDB, whose JSON column refuses a deeper document, a 500),
+  gets 400
   (`https://api.openteams.com/http-problem/body-too-deep`, "Request body too
   deeply nested", `RequestBodyTooDeepError`), before authorization: code
   that walks a body recursively (reversion's serializer, an operator) failed
@@ -920,7 +943,8 @@ Conditional request handling now comes from scrudful 0.8.
   the router gives for `Resource` writes (see "Database routing" under API
   changes), before it reads or writes the policy's row, so concurrent writes
   of one policy cannot deadlock. A write that saves a
-  `Resource` directly, bypassing `ResourceRegistration`, takes no lock. If several
+  `Resource` directly (`save()`, bypassing `ResourceRegistration`) takes the
+  lock before it writes the row too, but does not check uniqueness. If several
   were stored before (or past the API), none is picked: writes of the type in
   that context fail with `ImproperlyConfigured` until all but one are deleted.
   The database system check (`manage.py check --database <alias>`, for the
@@ -1014,7 +1038,9 @@ Conditional request handling now comes from scrudful 0.8.
 
 ### Known issues
 
-There are no open follow-ups. Limitations kept by a decision are listed, with
+On MariaDB a list's query-parameter filter ignores trailing spaces in the
+value ([mariadb-content-filter-padding](follow-ups.md#mariadb-content-filter-padding)).
+Limitations kept by a decision are listed, with
 the decision, under "Decided" in [follow-ups](follow-ups.md): the supported
 isolation level
 ([policy-recheck-isolation](follow-ups.md#policy-recheck-isolation)), when

@@ -72,6 +72,24 @@ uv sync
 The `Makefile` (`make test`, `make lint`, `make format`, `make docs`,
 `make migrations-check`) is for humans; Claude should use the raw commands.
 
+The suite on PostgreSQL, MySQL or MariaDB (these prompt too; start a
+throwaway container, named for your task, on a free port, and remove it
+after). The MySQL driver, mysqlclient, is not a dev dependency: add it with
+`--with`, never `uv add`:
+
+```bash
+SCRUD_TEST_PG_HOST=localhost SCRUD_TEST_PG_PORT=<port> uv run pytest -q
+SCRUD_TEST_MYSQL_HOST=127.0.0.1 SCRUD_TEST_MYSQL_PORT=<port> \
+  SCRUD_TEST_MYSQL_PASSWORD=<pw> uv run --with mysqlclient==2.3.0 pytest -q
+```
+
+On macOS, mysqlclient builds against Homebrew's MySQL client, which cannot
+log in to MariaDB (it lacks the `mysql_native_password` plugin). Run the
+MariaDB suite in CI's image instead
+(`ghcr.io/astral-sh/uv:0.9-python3.13-bookworm-slim` plus `build-essential
+default-libmysqlclient-dev pkg-config`, on a docker network with the server),
+as the `test-mysql` job does.
+
 Demo app (API root at http://127.0.0.1:8000/api/):
 
 ```bash
@@ -82,7 +100,8 @@ uv run python manage.py runserver
 
 CI is `.gitlab-ci.yml`: lint, migrations check, docs build, tests with
 coverage on 3.11-3.13 (then again with `--reverse`), the suite on PostgreSQL
-14 via `SCRUD_TEST_PG_*` (`test-postgres`), a package build/README/installed-
+14 via `SCRUD_TEST_PG_*` (`test-postgres`) and on MySQL 8.4 and MariaDB 11.4
+via `SCRUD_TEST_MYSQL_*` (`test-mysql`), a package build/README/installed-
 wheel check, and a version check on merge requests. Run the lint and test
 commands above before committing. Publishing to PyPI runs in CI when a merge
 to `develop` carries a version not yet on PyPI (`scripts/release.py`), and
@@ -125,13 +144,21 @@ See `tests/test_conditional.py` for the idiom.
   settings module on disk and no `DJANGO_SETTINGS_MODULE`. Add settings there.
 - Request bodies are JSON-only (`parser_classes = [RbacJSONParser]` in
   `scrud_django/views.py`): form or multipart bodies get 415.
-- Tests run on in-memory SQLite unless `SCRUD_TEST_PG_HOST` is set (CI's
-  `test-postgres`; see `tests/settings.py`). Code the tests exercise must work
-  on both. The root `manage.py` reads the same settings: with
-  `SCRUD_TEST_PG_HOST` exported it uses that PostgreSQL server's real
-  database (`SCRUD_TEST_PG_NAME`, default `scrud`, not pytest's `test_`
-  copy), so a `migrate` or a write there persists. Unset it (or point it at a
-  throwaway server) before running `manage.py`.
+- Tests run on in-memory SQLite unless `SCRUD_TEST_PG_HOST` or
+  `SCRUD_TEST_MYSQL_HOST` is set (CI's `test-postgres` and `test-mysql`; see
+  `tests/settings.py`). Code the tests exercise must work on all four
+  databases. MySQL and MariaDB differ in ways tests trip on: their default
+  collations ignore case, accents and trailing spaces (contexts are stored
+  as bytes, `scrud_django.models.fields.ContextField`); a TRUNCATE (`flush`
+  with its default `reset_sequences`) commits the test's transaction;
+  `bulk_create()` returns no keys on MySQL; SQL text quotes names with
+  backticks (build expected SQL with `connection.ops.quote_name`); and
+  MariaDB's JSON column refuses documents nested 32 levels or more.
+- The root `manage.py` reads the same settings: with `SCRUD_TEST_PG_HOST`
+  (or `SCRUD_TEST_MYSQL_HOST`) exported it uses that server's real database
+  (`SCRUD_TEST_PG_NAME` or `SCRUD_TEST_MYSQL_NAME`, default `scrud`, not
+  pytest's `test_` copy), so a `migrate` or a write there persists. Unset it
+  (or point it at a throwaway server) before running `manage.py`.
 - Migrations must keep the migrations check above clean. If a model change needs a
   migration, generate it with `uv run python manage.py makemigrations scrud_django`
   and commit it with the model change.

@@ -1,9 +1,33 @@
 # Follow-ups
 
-There are no open follow-ups. The entries below are limitations kept by a
-decision; each says what was decided and why. Record a new known issue or
-deferred bug here, above `# Decided`, as a section with an anchor
+Open follow-ups come first; the entries under `# Decided` are limitations
+kept by a decision, each saying what was decided and why. Record a new known
+issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
+
+<a id="mariadb-content-filter-padding"></a>
+## mariadb-content-filter-padding: on MariaDB a list's query-parameter filter ignores trailing spaces
+
+`ResourceContentFilter` (the lists of `ResourceViewSetGenericFilter`) keeps
+the resources whose content's key equals a query parameter's value with a
+JSON key lookup (`KeyTransform`). On MariaDB, Django compares the two
+`JSON_EXTRACT` results as text in a collation that pads with spaces, so
+`?name=foo` also lists a resource whose `name` is `"foo "` (and `?name=foo%20`
+one whose `name` is `"foo"`). Case and accents are compared exactly, and
+SQLite, PostgreSQL and MySQL (whose JSON type compares strings exactly) are
+not affected. It narrows a list that is already RBAC-filtered, so it shows no
+resource the requester may not read. Found in K4 with a throwaway test on
+MariaDB 11.4 (`"foo"`, `"foo "`, `"FOO"` stored; `?name=foo` and
+`?name=foo%20` each listed `"foo"` and `"foo "`).
+
+Fix: on MariaDB, compare the values as bytes (for instance
+`CAST(JSON_UNQUOTE(JSON_EXTRACT(content, path)) AS BINARY)` against the
+value's UTF-8 bytes), or re-check the matches in Python. Test: in
+`tests/test_rest.py`, store resources named `"foo"` and `"foo "` and assert
+that `filtered-partner-profiles-list?name=foo` lists only the first and
+`?name=foo%20` only the second; it fails on MariaDB today and passes on the
+other databases. The same padding applied to `stored_policies_for`'s
+`content__resource_type` lookup, which now re-checks the type in Python.
 
 # Decided
 

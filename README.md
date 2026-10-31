@@ -1,7 +1,8 @@
 # scrud-django
 A Django application for SCRUD REST services. Semantic REST API generation.
 
-Requires Python 3.11+ and Django 5.2.
+Requires Python 3.11+ and Django 5.2. Supported databases: SQLite,
+PostgreSQL, MySQL 8.4+ and MariaDB 11.4+ (see [Databases](#databases)).
 
 ## Installation
 
@@ -47,6 +48,33 @@ urlpatterns = [
 
 If you mount URLs yourself, include `scoped_rbac.semantic_urls`, for example
 `path("semantic/", include("scoped_rbac.semantic_urls"))`.
+
+### Databases
+
+scrud-django supports SQLite, PostgreSQL, MySQL 8.4+ and MariaDB 11.4+. CI
+runs the suite on SQLite, PostgreSQL 14, MySQL 8.4 and MariaDB 11.4.
+
+Run the database at READ COMMITTED, the supported transaction isolation level
+(PostgreSQL's default; Django's MySQL backend, which MariaDB uses too, sets it
+unless `OPTIONS["isolation_level"]` says otherwise). `manage.py check --database
+<alias>`, with the alias your router gives for `Resource` writes (and
+`migrate` of it), warns about another (`scrud_django.W002`). A file SQLite
+database that takes concurrent writes needs
+`"OPTIONS": {"transaction_mode": "IMMEDIATE"}`: otherwise a second concurrent
+writer fails with "database is locked" instead of waiting.
+
+MySQL and MariaDB:
+
+- Use Django's MySQL backend with [mysqlclient](https://pypi.org/project/mysqlclient/),
+  InnoDB tables (the default), and a utf8mb4 database (MariaDB stores a
+  resource's JSON content as text in the database's character set) and
+  connection (Django's default `OPTIONS["charset"]`).
+- Contexts are matched exactly, code point for code point, whatever the
+  database's collation: the `ResourceContext` and `ResourceRemoval` contexts
+  are stored as their UTF-8 bytes (`VARBINARY(2048)`), so `"acme"`,
+  `"ACME"`, `"acmé"` and `"acme "` are four contexts, as on the detail route.
+- On MariaDB a request body may be nested at most 31 levels deep (it is 100
+  elsewhere): MariaDB's JSON column refuses a deeper document.
 
 ### Registering resource types
 
@@ -163,15 +191,6 @@ API) keeps in step. Rows written with `QuerySet.update()`, `bulk_create()` or
 resources whose rows disagree with their content (exit status 1 if any), and
 `manage.py scrud_sync_contexts` re-syncs them; the `scrud_django.W004`
 database check reports resources that have no row at all.
-
-Run the database at READ COMMITTED, the supported transaction isolation level
-(PostgreSQL's default; Django's MySQL backend uses it unless
-`OPTIONS["isolation_level"]` says otherwise). `manage.py check --database
-<alias>`, with the alias your router gives for `Resource` writes (and
-`migrate` of it), warns about another (`scrud_django.W002`). A file SQLite
-database that takes concurrent writes needs
-`"OPTIONS": {"transaction_mode": "IMMEDIATE"}`: otherwise a second concurrent
-writer fails with "database is locked" instead of waiting.
 
 DRF's own default permission is `AllowAny`. The scrud-django viewsets set
 `IsAuthorized` themselves, but any other view in your project (and any view you
@@ -290,4 +309,13 @@ The `manage.py` at the repository root runs on the in-memory test settings
 (nothing persists): use it for `check` and the migrations check only. With
 `SCRUD_TEST_PG_HOST` set (see `tests/settings.py`) it uses that PostgreSQL
 server's `SCRUD_TEST_PG_NAME` database (default `scrud`) instead, where
-writes persist.
+writes persist; likewise `SCRUD_TEST_MYSQL_HOST` for a MySQL or MariaDB
+server.
+
+To run the suite on MySQL or MariaDB, add the driver, which builds against
+the MySQL client library (not a dev dependency):
+
+```bash
+SCRUD_TEST_MYSQL_HOST=127.0.0.1 SCRUD_TEST_MYSQL_PASSWORD=... \
+  uv run --with mysqlclient==2.3.0 pytest
+```
