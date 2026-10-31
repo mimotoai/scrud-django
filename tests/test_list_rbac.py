@@ -327,6 +327,38 @@ def test_list_etag_differs_between_pages():
     assert Http.response["ETag"] != first
 
 
+@pytest.mark.django_db
+@test_context
+def test_page_count_follows_the_page_size_asked_for():
+    for n in range(5):
+        profile(f"p-{n}", rbac_context="b")
+    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
+    Given.http.force_authenticate(user_with((READER, "b")))
+    When.http.get(url, {"page_size": 2})
+    Then.http.status_code_is(status.HTTP_200_OK)
+    body = Http.response.json()
+    assert (body["count"], body["page_count"], len(body["content"])) == (5, 3, 2)
+    When.http.get(url, {"page_size": 5})
+    assert Http.response.json()["page_count"] == 1
+    # Past max_page_size (1000) the size used is the maximum.
+    When.http.get(url, {"page_size": 5000})
+    assert Http.response.json()["page_count"] == 1
+    # Without page_size, the default (100).
+    When.http.get(url)
+    assert Http.response.json()["page_count"] == 1
+
+
+@pytest.mark.django_db
+@test_context
+def test_page_count_of_an_empty_list_is_zero():
+    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
+    Given.http.force_authenticate(user_with((READER, "b")))
+    When.http.get(url, {"page_size": 2})
+    Then.http.status_code_is(status.HTTP_200_OK)
+    body = Http.response.json()
+    assert (body["count"], body["page_count"]) == (0, 0)
+
+
 def list_queries(user, count):
     """The queries of one list request by `user` after storing `count`
     profiles in "b"."""

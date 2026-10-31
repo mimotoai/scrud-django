@@ -243,6 +243,9 @@ django-scoped-rbac 0.11. It has several breaking changes.
 
 ### Lists
 
+* A list's `page_count` is computed with the page size the request used
+  (`?page_size`, at most 1000); it used the default of 100 whatever was
+  asked.
 * List endpoints are RBAC-filtered. A list shows exactly the resources the
   detail route shows the requester, as far as the view's `IsAuthorized`
   permissions (and subclasses of it) decide: those on which `http.GET` on the
