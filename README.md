@@ -149,18 +149,23 @@ your `IsAuthorized` subclasses (`has_permission`, `contexts_from`) and the
 operators of your grants' conditions get the parsed body itself
 (`request.data`); the workflow check gives their `has_context_permission`
 and operators the body as sent, with the transition it authorizes as
-`scrud_django.permissions.current_transition()`; and every object check (the
-detail route's, the post-save check, a list's per-object check) gives
-`has_object_permission`, `has_context_permission`, `contexts_for` and
-operators the resource's content, the `dict` the `Resource` holds (`{}` for
-content that is not a JSON object). These are exact `dict`s and `list`s, so
-an operator that evaluates CEL itself passes what it got. A check must only
-read them (`obj.get("owner")`, never `obj.pop("owner")`): one that changes
-them changes what is stored, a bug in that check. A `contexts_for` of your
-own reads the content (`scrud_django.mixins.resource_mixin.rbac_contexts_of`
-gives the resource's own contexts), and a `get_permissions` override on a
-scrud view must call `super()`, which makes scoped-rbac's default
-`contexts_for` read a resource's contexts from its content.
+`scrud_django.permissions.current_transition()`; and every object check of a
+`Resource` view (the detail route's, the post-save check, a list's
+per-object check) gives `has_object_permission`, `has_context_permission`,
+`contexts_for` and operators the resource's content, the `dict` the
+`Resource` holds (`{}` for content that is not a JSON object). These are
+exact `dict`s and `list`s, so on `Resource` views an operator that evaluates
+CEL itself passes what it got. `GenericViewMixin` views give their object
+checks your model's instance, as scoped-rbac does, so an operator there
+passes the model's `to_cel()` (or `scoped_rbac.access.cel_mapping(None,
+obj)`). A check must only read what it gets (`obj.get("owner")`, never
+`obj.pop("owner")`): one that changes it changes what is stored (or, on a
+read, what the response shows), a bug in that check. Scoped-rbac's default
+`contexts_for` reads a resource's contexts from its content on the scrud
+views, whatever your `get_permissions` returns; a `contexts_for` of your own
+calls `scrud_django.permissions.resource_contexts(obj)` where it would call
+`super().contexts_for(obj)`, which cannot read a `dict` (a 500, failing
+closed).
 
 Resource type metadata is public by design: the service list (`services/`),
 each type's collection schema (`collections-json-schema/<slug>/`) and

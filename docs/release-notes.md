@@ -153,12 +153,15 @@ django-scoped-rbac 0.11. It has several breaking changes.
     `obj.content`, `obj.pk` or `obj.rbac_contexts`, or tested
     `isinstance(obj, Resource)`, must change. scoped-rbac's default
     `contexts_for` reads the resource's contexts from that content on the
-    scrud views (`ResourceViewMixin.get_permissions` gives it to each
-    `IsAuthorized` that keeps it, so a `get_permissions` override of yours
-    must call `super()`); a `contexts_for` of your own gets the `dict` and
-    reads it (`scrud_django.mixins.resource_mixin.rbac_contexts_of(obj)`
-    gives the resource's own contexts; `super().contexts_for(obj)` cannot
-    read a `dict`). The request check of a POST or PUT gives the permission
+    scrud views: each check that gives a permission the content first gives
+    every `IsAuthorized` whose class keeps the default
+    `scrud_django.permissions.resource_contexts` as its `contexts_for`,
+    whatever your `get_permissions` builds (an override of
+    `check_object_permissions` that builds its own permissions bypasses that
+    and gets a 500, failing closed). A `contexts_for` of your own gets the
+    `dict`: call `resource_contexts(obj)` where you called
+    `super().contexts_for(obj)`, which reads attributes a `dict` does not
+    have (an `AttributeError`, a 500, failing closed). The request check of a POST or PUT gives the permission
     classes (their `has_permission` and `contexts_from`) and your operators
     the parsed body itself (`request.data`), and the workflow check gives
     their `has_context_permission` and your operators the body as sent: a
@@ -174,8 +177,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
     but not grant one it refuses (their `has_context_permission` is given
     the request body as sent in each context, not the stored resource).
     Your `GenericViewMixin` views' request check gives the parsed body the
-    same way (their object checks give your model's instance, as
-    scoped-rbac does). Lists ask
+    same way; their object checks give your model's instance, as
+    scoped-rbac does, so an operator there that evaluates CEL itself passes
+    the model's `to_cel()` (or `scoped_rbac.access.cel_mapping(None, obj)`,
+    which reads it; an operator gets no request). Lists ask
     them too: on a view whose `IsAuthorized` subclass overrides
     `has_object_permission` or `has_context_permission`, a list keeps only
     the resources its `has_object_permission` allows (see Lists below), so
@@ -415,10 +420,13 @@ Conditional request handling now comes from scrudful 0.8.
   raised `AttributeError`, a 500, on every detail route and list its grant
   conditioned. (scoped-rbac's request check of a GET or DELETE still gives
   operators `None`: there is no body.) scoped-rbac's default `contexts_for`
-  reads attributes, which a `dict` does not have: `ResourceViewMixin`'s
-  `get_permissions()` gives each `IsAuthorized` whose class keeps it a
-  `contexts_for` that reads a resource's contexts from its content
-  (`rbac_contexts_of`, as `Resource.rbac_contexts` does). A resource stored
+  reads attributes, which a `dict` does not have: each of those checks
+  first gives every `IsAuthorized` whose class keeps it (judged by its class,
+  as scoped-rbac's `custom_contexts_for` judges it, so lists keep their SQL
+  path) `scrud_django.permissions.resource_contexts`, which reads a
+  resource's contexts from its content (`rbac_contexts_of`, as
+  `Resource.rbac_contexts` does), whatever the view's `get_permissions()`
+  returns. A resource stored
   in a context reserved once normalised is a 404 before the object check.
 * Checks get plain data, as scoped-rbac's contract has it (its issue #55
   was closed by deciding not to guard them): scoped-rbac's request check of
@@ -426,10 +434,14 @@ Conditional request handling now comes from scrudful 0.8.
   grants' operators the parsed body itself (`request.data`), the workflow
   check gives them the body as sent (the serializer's `initial_data`, the
   same `dict`), and object checks the stored content. Each is an exact
-  `dict` of plain JSON values, which CEL evaluates: a read-only view, or any
-  other mapping or sequence, evaluates to an undetermined result, which an
-  operator written as `not cel.is_true(expression, {"resource": obj})` turns
-  into an allow. A check must only read what it gets (`obj.get("owner")`,
+  `dict` of plain JSON values, which CEL evaluates. Nested in the data an
+  operator passes CEL (`{"resource": obj}`), a read-only view, or any
+  mapping or sequence other than an exact `dict` or `list`, evaluates to an
+  undetermined result, which an operator written as
+  `not cel.is_true(expression, {"resource": obj})` turns into an allow.
+  This holds on the `Resource` views; a `GenericViewMixin` view's object
+  checks give operators your model's instance, as scoped-rbac does (see
+  Upgrading). A check must only read what it gets (`obj.get("owner")`,
   never `obj.pop("owner")`): one that changes the body or the content
   changes what is stored (or what the response shows), which is a bug in
   that check, not something scrud-django guards against.
@@ -595,9 +607,12 @@ Conditional request handling now comes from scrudful 0.8.
 * `ResourceViewMixin.get_object` is DRF's lookup with the object check given
   the resource's content (`scrud_django.permissions.content_of`, see
   Authorization); it returns the `Resource`, whose `resource_type` is the
-  view's. `ResourceViewMixin.get_permissions()` gives each `IsAuthorized`
-  that keeps scoped-rbac's `contexts_for` one that reads a resource's
-  contexts from that content.
+  view's. New `scrud_django.permissions.resource_contexts(obj)`: a
+  resource's contexts from its content (a mapping), else scoped-rbac's
+  `access.object_contexts(obj)`; the checks that give a permission the
+  content give it to each `IsAuthorized` that keeps scoped-rbac's
+  `contexts_for`, and a `contexts_for` of your own calls it in place of
+  `super().contexts_for(obj)`.
   `ResourceViewMixin.get_resource_type()` (and `GenericViewMixin`'s) reads
   the type once per request and database and returns that instance after
   (`initial` forgets it): a request read it up to 20 times (measured by
@@ -611,9 +626,7 @@ Conditional request handling now comes from scrudful 0.8.
   `scrud_django.permissions.current_transition()`: the name of the
   transition the workflow check is authorizing while it asks the policy and
   the permission classes, `None` anywhere else (outside the workflow check,
-  and where no workflow policy applies); `scrud_django.permissions.checking_transition`
-  sets it for a block (a `contextvars.ContextVar`, reset when the block
-  ends).
+  and where no workflow policy applies).
 * New `scrud_django.models.ResourceRemoval` (migration
   `0009_resourceremoval`): one row per resource type and context, the last
   time a resource left that context. `Resource.save()` (raw saves included)
