@@ -698,6 +698,10 @@ Conditional request handling now comes from scrudful 0.8.
   updated in place. Without `DEBUG`, unchanged ones are no longer rewritten,
   so their `ETag` and `Last-Modified` stay. Copies that `DEBUG` left behind
   are not referenced by any type; delete them through the API if you want.
+* `scrud_django.ScrudServices` (`scrud_django.services`) loses `etag`,
+  `last_modified`, `update_last_modified()`, `get_etag()` and
+  `get_last_modified()`; use `etag_for(request)` and `catalog(request)` (see
+  the `services/` bullet under Conditional requests).
 * `scrud_django.decorators` is removed. Use `scrudful.rest_framework` instead.
 * `scrud_django.settings`, `scrud_django.wsgi` and `scrud_django.asgi` are
   removed: the package no longer ships a Django project. Use your own project's
