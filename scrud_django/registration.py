@@ -41,10 +41,21 @@ def lock_if_workflow_policy(resource_type, using):
 
     Public: server code that locks a ``WorkflowPolicy`` resource's row itself
     (``Resource.objects.select_for_update()``) and then saves or deletes it
-    must call ``lock_if_workflow_policy(resource.resource_type, using)``
-    first, in the same transaction, on every database. Its save or delete
-    takes this lock too, and taking it after the row's lock deadlocks with an
-    API write of the policy, which holds this lock and waits for the row.
+    must call this in the same transaction, on every database, BEFORE the
+    ``select_for_update()``, with the type read without the row lock. Its
+    save or delete takes this lock too, and taking it after the row's lock
+    deadlocks with an API write of the policy, which holds this lock and
+    waits for the row::
+
+        db = write_db()
+        with transaction.atomic(using=db):
+            lock_if_workflow_policy(
+                get_resource_type_for("workflow-policies", using=db), db
+            )
+            policy = Resource.objects.using(db).select_for_update().get(pk=pk)
+            ...
+            policy.save()  # or policy.delete()
+
     A plain ``save()`` or ``delete()`` without a row lock of its own needs
     nothing: it takes this lock before the row."""
     if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:

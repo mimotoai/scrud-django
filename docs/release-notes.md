@@ -128,10 +128,14 @@ django-scoped-rbac 0.11. It has several breaking changes.
     (which refuses `FOR UPDATE` on those). Server code that updates or deletes a resource
     should go through `ResourceRegistration.update` / `delete`, which lock it
     the same way. Server code that locks a `WorkflowPolicy` resource's row
-    itself (`select_for_update()`) and then saves or deletes it must first
-    call `scrud_django.registration.lock_if_workflow_policy(resource.resource_type,
-    using)` in that transaction, on every database; otherwise it deadlocks
-    with an API write of the policy (see Workflows below).
+    itself (`select_for_update()`) and then saves or deletes it must call
+    `scrud_django.registration.lock_if_workflow_policy` in that transaction,
+    on every database, before the `select_for_update()`, with the type read
+    without the row lock:
+    `lock_if_workflow_policy(get_resource_type_for("workflow-policies", using=db), db)`
+    (both in `scrud_django.registration`; the README has the full example).
+    Otherwise it deadlocks with an API write of the policy (see Workflows
+    below).
 17. `GenericViewMixin` lists: their `ETag` and `Last-Modified` now come from
     what the requester may list (see API changes below), so the view needs an
     `RbacFilter` among its `filter_backends` (`manage.py check` reports one
@@ -955,7 +959,7 @@ Conditional request handling now comes from scrudful 0.8.
   lock before it writes the row too, but does not check uniqueness; code that
   locks a policy's row itself (`select_for_update()`) before saving or
   deleting it must call `scrud_django.registration.lock_if_workflow_policy`
-  first (Upgrading 16). If several
+  before that `select_for_update()` (Upgrading 16). If several
   were stored before (or past the API), none is picked: writes of the type in
   that context fail with `ImproperlyConfigured` until all but one are deleted.
   The database system check (`manage.py check --database <alias>`, for the
