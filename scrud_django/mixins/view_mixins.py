@@ -1,5 +1,7 @@
 import hashlib
+import inspect
 from collections.abc import Mapping
+from contextlib import contextmanager
 from urllib.parse import urlencode
 
 import reversion
@@ -10,12 +12,15 @@ from django.http import Http404
 from rest_framework import status
 from rest_framework.exceptions import NotAuthenticated, PermissionDenied
 from rest_framework.generics import get_object_or_404
+from rest_framework.request import clone_request
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import AccessAPIError, drf_error
 from scoped_rbac.rest import AccessControlledAPIView
+from scrudful._django import aware, conditional_response, precondition_headers
+from scrudful.conditional import evaluate_preconditions, http_timestamp, quote_etag
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django.exceptions import (
@@ -63,6 +68,10 @@ from scrud_django.workflow import (
 # write run in one transaction with the row locked (`ResourceViewMixin.dispatch`).
 LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 
+
+# The preconditions a POST to a list evaluates (`list_precondition_response`;
+# If-Modified-Since applies to GET and HEAD only).
+LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
 
 # The methods whose body is the resource to store.
 BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
@@ -528,6 +537,73 @@ class ListValidatorsMixin:
         change it (the ETag does)."""
         return self.list_queryset().aggregate(newest=Max("modified_at"))["newest"]
 
+    @contextmanager
+    def as_list_read(self, request):
+        """The view as a GET of its list route has it while the block runs:
+        its ``request`` a copy of `request` whose method is GET (which the
+        block gets) and its ``action`` ``"list"``, with nothing of the list
+        computed yet (`list_queryset`, `list_page`). All restored, and what
+        the block computed forgotten, when it ends."""
+        cached = ("_scrud_list_queryset", "_scrud_list_page")
+        missing = object()
+        saved = {
+            name: self.__dict__.get(name, missing)
+            for name in ("request", "action", *cached)
+        }
+        for name in cached:
+            self.__dict__.pop(name, None)
+        read = clone_request(request, "GET")
+        self.request, self.action = read, "list"
+        try:
+            yield read
+        finally:
+            for name, value in saved.items():
+                if value is missing:
+                    self.__dict__.pop(name, None)
+                else:
+                    setattr(self, name, value)
+
+    def list_precondition_response(self, request):
+        """The response to a POST to the list whose preconditions fail, or
+        ``None`` to go on with the create. scrudful evaluates none for a
+        create; RFC 9110 requires them evaluated against the target, the
+        list: ``If-Match``, else ``If-Unmodified-Since``, then
+        ``If-None-Match`` (``*`` fails: the list exists), with
+        ``scrudful.conditional.evaluate_preconditions``, against the list's
+        validators as the requester would GET them from this URL
+        (`list_etag` and `list_last_modified` under `as_list_read`). A failed
+        one is scrudful's 412, a malformed one its 400, as the list's
+        handler answers its own (problem details while
+        ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is on). The validators are only
+        computed when a precondition is sent. Call it first in a ``create``
+        of your own (``ResourceViewMixin.create`` does); it is evaluated,
+        not held: a concurrent create may change the list before this one
+        is saved."""
+        headers = precondition_headers(request)
+        if not any(headers.get(name) for name in LIST_PRECONDITIONS):
+            return None
+        with self.as_list_read(request) as read:
+            etag = self.list_etag(read)
+            last_modified = self.list_last_modified()
+        result = evaluate_preconditions(
+            request.method,
+            headers,
+            etag=None if etag is None else quote_etag(etag),
+            last_modified=http_timestamp(aware(last_modified)),
+            require_precondition=False,
+            exists=True,
+        )
+        if result is None:
+            return None
+        # Rendered as the list's handler renders its own 400 and 412 (its
+        # error entity and body function: scrudful gives the create's none).
+        handler = inspect.getattr_static(type(self), "list", None)
+        if isinstance(handler, ScrudfulViewFunc):
+            return handler._early_response(
+                result, request, (self, request, *self.args), dict(self.kwargs)
+            )
+        return conditional_response(result)
+
 
 class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin):
     queryset = Resource.objects.all()
@@ -769,6 +845,11 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
             raise drf_error(exc, self.request) from exc
 
     def create(self, request):
+        """Create a resource from the body, after evaluating the request's
+        preconditions against the list (`list_precondition_response`)."""
+        failed = self.list_precondition_response(request)
+        if failed is not None:
+            return failed
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.save_checked(lambda: self.perform_create(serializer))
@@ -915,7 +996,18 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
       deletion changes the ``ETag``, not ``Last-Modified``;
     - scrudful's 400, 412 and 428 are problem details while
       ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is on (`UniformErrorsMixin`); off,
-      they are scrudful's native ``{"detail": ...}`` bodies.
+      they are scrudful's native ``{"detail": ...}`` bodies;
+    - an object an ``IsAuthorized`` subclass's object check refuses to read
+      is a 404 on the detail route, for every method (`object_readable`).
+
+    Unlike ``ResourceViewMixin``, a ``create`` of your own evaluates no
+    precondition unless it calls `list_precondition_response` first::
+
+        def create(self, request):
+            failed = self.list_precondition_response(request)
+            if failed is not None:
+                return failed
+            ...
     """
 
     # The detail route's URL keyword, as the detail stubs below take it.

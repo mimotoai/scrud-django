@@ -240,6 +240,13 @@ django-scoped-rbac 0.11. It has several breaking changes.
     request bodies within 31 levels of nesting (see API changes below). A
     MySQL or MariaDB database migrated with a pre-release 0.12 build must be
     recreated: its context columns compare inexactly, and nothing detects it.
+25. Clients: a POST to a list now evaluates `If-Match`,
+    `If-Unmodified-Since` and `If-None-Match` against the list (see
+    Conditional requests below). Drop `If-None-Match: *` from creates (it
+    now always fails with 412, since the list exists), and send `If-Match`
+    only with the list's current `ETag`. Schema and JSON-LD documents are
+    now `application/schema+json` and `application/ld+json`; a client that
+    requires `application/json` must send `Accept: application/json`.
 
 ### Lists
 
@@ -402,6 +409,18 @@ Conditional request handling now comes from scrudful 0.8.
 * A PUT or DELETE with no precondition returns 428 instead of 400. Either
   `If-Match` or `If-Unmodified-Since` is enough.
 * ETags no longer carry a version suffix.
+* A POST to a list evaluates its preconditions, as RFC 9110 requires,
+  against the list's `ETag` and `Last-Modified` as the requester would GET
+  them from that URL: `If-Match` (or else `If-Unmodified-Since`) that fails,
+  and `If-None-Match: *` or the list's own `ETag`, are a 412, and a
+  malformed `If-Match` or `If-None-Match` a 400, as on the detail routes,
+  and nothing is created. They were ignored (scrudful evaluates none for a
+  create;
+  [scrudful-create-preconditions](follow-ups.md#scrudful-create-preconditions)).
+  A POST without preconditions is unchanged. A `create` of your own on
+  `GenericViewMixin` should call `list_precondition_response(request)`
+  first. The check is not held until the create commits
+  ([conditional-create-race](follow-ups.md#conditional-create-race)).
 * Schema and JSON-LD documents are served as the media type their `Link`
   gives: a list's collection schema (`collections-json-schema/<slug>/`) and a
   JSON Schema resource (`json-schema/<id>/`) as `application/schema+json`, a
@@ -1104,6 +1123,11 @@ Conditional request handling now comes from scrudful 0.8.
 
 On MariaDB a list's query-parameter filter ignores trailing spaces in the
 value ([mariadb-content-filter-padding](follow-ups.md#mariadb-content-filter-padding)).
+A POST to scoped-rbac's own Role and RoleAssignment lists ignores its
+preconditions
+([scrudful-create-preconditions](follow-ups.md#scrudful-create-preconditions)),
+and two conditional POSTs to a list can both pass
+([conditional-create-race](follow-ups.md#conditional-create-race)).
 Limitations kept by a decision are listed, with
 the decision, under "Decided" in [follow-ups](follow-ups.md): the supported
 isolation level

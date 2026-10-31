@@ -29,6 +29,47 @@ that `filtered-partner-profiles-list?name=foo` lists only the first and
 other databases. The same padding applied to `stored_policies_for`'s
 `content__resource_type` lookup, which now re-checks the type in Python.
 
+<a id="scrudful-create-preconditions"></a>
+## scrudful-create-preconditions: scrudful evaluates no precondition on a create
+
+scrudful's `ScrudfulViewFunc` (and so `scrudful_viewset`'s `create`) never
+evaluates a create's preconditions ("a create never evaluates
+preconditions"): a POST with `If-Match: "nope"`, a past `If-Unmodified-Since`
+or `If-None-Match: *` creates (201). RFC 9110 §13.1.1, §13.1.2 and §13.1.4
+say an origin server MUST evaluate them against the target, the list. scrud
+works around it in its own views: `ListValidatorsMixin.list_precondition_response`
+evaluates them with scrudful's `evaluate_preconditions` against the
+requester's list validators, and `ResourceViewMixin.create` calls it first
+(`tests/test_conditional_create.py`). It renders the failure with the list
+handler's private `ScrudfulViewFunc._early_response`, pinned in
+`tests/test_upstream_drift.py`, since scrudful configures the create's handler
+with no `error_body_func`.
+
+Still affected: scoped-rbac's own `roles/` and `role-assignments/` lists,
+which `scrud_django.urls` mounts, and a `GenericViewMixin` `create` that does
+not call `list_precondition_response`. For the owner to file on scrudful:
+evaluate a create's preconditions against the list validators (and give the
+create's handler the list's error body function). Test: POST
+`reverse("role-list")` as a superuser with `If-Match: "nope"`; expect 412,
+get 201 today.
+
+<a id="conditional-create-race"></a>
+## conditional-create-race: two conditional POSTs to a list can both pass
+
+`list_precondition_response` evaluates a POST's preconditions and then the
+create runs; nothing holds the list between the two. Two POSTs with
+`If-Match` of the same list `ETag`, sent together, can both be evaluated
+before either commits, and both create (201), where one should get 412.
+Unconditional writes are unaffected (any order of them is serializable with
+the conditional one). Fix: when a precondition is sent, evaluate and create
+in one transaction holding a per-type lock (for instance `select_for_update`
+of the `ResourceType` row, taken before any resource row, as
+`lock_if_workflow_policy` orders its locks), and prove it on PostgreSQL,
+MySQL and MariaDB. Test: on PostgreSQL, two threads POST with the same
+`If-Match`, the second paused after its evaluation (a patched
+`list_precondition_response`) until the first commits; expect one 201 and
+one 412, get two 201s today.
+
 # Decided
 
 <a id="policy-recheck-isolation"></a>
