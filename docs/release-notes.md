@@ -19,7 +19,13 @@ Each item points to the section below that has the details.
    scrud-django also no longer installs django-cors-headers,
    python-decouple, python-dotenv, rdflib or safetydance-test: declare
    those your project uses yourself (a project with `corsheaders` in
-   `INSTALLED_APPS` otherwise fails to start).
+   `INSTALLED_APPS` otherwise fails to start). Raise any pins of your own
+   below the new floors, or the install does not resolve:
+   django-scoped-rbac 0.11.1 (below 0.12), scrudful 0.8 (below 0.9),
+   djangorestframework 3.15, django-filter 25.1, django-reversion 5.1,
+   jsonpath-ng 1.6 and fastjsonschema 2.19, and with the `search` extra
+   django-haystack 3.3 and whoosh-reloaded 2.7.5 (see Requirements and
+   packaging below).
 3. Migrations of your own that import `django_jsonfield_backport.models.JSONField`
    must import `django.db.models.JSONField` instead, before you uninstall the
    backport.
@@ -51,6 +57,11 @@ Each item points to the section below that has the details.
    `ResourceContext` and `ResourceRemoval` writes to one alias, and migrate
    them all there: `manage.py check` now reports a split as
    `scrud_django.E004`.
+
+If you will load a dump of the 0.11 database into 0.12 (a backup, a
+fixture), read item 15 first: a resource whose context is longer than 2048
+bytes in UTF-8 must be given a shorter one in the 0.11 database before you
+dump it, or the dump does not load.
 
 #### Deploying
 
@@ -158,8 +169,7 @@ Each item points to the section below that has the details.
 16. Code: read "API changes" below for what is removed (the modules
     `scrud_django.decorators`, `settings`, `wsgi` and `asgi`,
     `utils.get_string_or_evaluate`, `ScrudServices`' validators,
-    `registration.save_type_etag`, `WorkflowValidator.apply` and
-    `permissions.TransitionCheck`), what `GenericViewMixin` subclasses must
+    `WorkflowValidator.apply` and `permissions.TransitionCheck`), what `GenericViewMixin` subclasses must
     now provide, and the exception handler and error body changes. If you
     mount scrud-django's views without including `scrud_django.urls`, include
     `scoped_rbac.semantic_urls` once.
@@ -260,8 +270,14 @@ Each item points to the section below that has the details.
 
 #### Clients
 
-22. Clients must send JSON bodies (form and multipart bodies get 415). Give
-    your own `GenericViewMixin` views `parser_classes = [RbacJSONParser]`.
+22. Clients must send a JSON object as the body of a POST or PUT: form and
+    multipart bodies get 415, and on the scrud resource views (and your
+    views whose serializer uses `GenericSerializerMixin`) a JSON array or
+    scalar, which 0.11 stored, gets 400, a validation error (scoped-rbac's
+    `about:blank` problem with `code` `invalid`, or
+    `{"non_field_errors": ["Expected a JSON object."]}`, or `["No data
+    provided"]` for `null`, with uniform errors off). Give your own `GenericViewMixin` views
+    `parser_classes = [RbacJSONParser]`.
 23. Clients: a PUT or DELETE without `If-Match` or `If-Unmodified-Since`
     gets 428 (it got 400 with `{"missing-required-headers": [...]}`), and
     either header is now enough (both were required). ETags lost their
@@ -841,7 +857,6 @@ Conditional request handling now comes from scrudful 0.8.
   below), and the update locked the type's row until the write's
   transaction ended, so writes of one type queued behind each other. They
   now change only when the type is registered (`ResourceTypeRegistration`).
-  `registration.save_type_etag` is gone.
 * `ResourceRegistration.update` and `delete` read the resource with its row
   locked and its type on the write database (`type_db()`), never through the
   router's `db_for_read` (a read replica could be stale), and write that
