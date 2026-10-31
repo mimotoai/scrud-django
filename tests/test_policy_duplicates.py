@@ -154,6 +154,27 @@ def test_system_check_reports_duplicates_and_list_contexts():
 
 
 @pytest.mark.django_db
+def test_system_check_counts_a_repeated_context_of_one_policy_once():
+    # One policy whose list rbac_context repeats a context is one policy
+    # there (stored_policies_for counts it once, and writes work): W001 for
+    # the list, no E002. With a second policy in that context, E002 names
+    # each policy once.
+    repeated = store_policy(dict(PERMISSIVE_POLICY, rbac_context=["a", "a"]))
+    found = scrud_checks.check_stored_workflow_policies(None, databases=["default"])
+    assert [(m.id, m.level) for m in found] == [("scrud_django.W001", checks.WARNING)]
+    other = store_policy(dict(PERMISSIVE_POLICY, rbac_context="a"))
+    found = scrud_checks.check_stored_workflow_policies(None, databases=["default"])
+    assert [(m.id, m.level) for m in found] == [
+        ("scrud_django.E002", checks.ERROR),
+        ("scrud_django.W001", checks.WARNING),
+    ]
+    assert found[0].msg == (
+        f"2 WorkflowPolicy resources apply to {TODO!r} in context 'a' "
+        f"(pks {[repeated.pk, other.pk]}); there must be at most one."
+    )
+
+
+@pytest.mark.django_db
 def test_system_check_passes_without_duplicates():
     store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
     store_policy(dict(PERMISSIVE_POLICY, rbac_context="q"))

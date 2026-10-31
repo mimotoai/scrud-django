@@ -110,7 +110,9 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
                 )
                 continue
             contexts = rbac_contexts_of(content)
-            for context in contexts:
+            # A context the policy lists twice is one policy there, as
+            # stored_policies_for counts it.
+            for context in dict.fromkeys(contexts):
                 key = (type_uri, context)
                 by_type_and_context.setdefault(key, []).append(policy.pk)
             where = (

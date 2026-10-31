@@ -840,7 +840,8 @@ Conditional request handling now comes from scrudful 0.8.
   that context fail with `ImproperlyConfigured` until all but one are deleted.
   The database system check (`manage.py check --database <alias>`, for the
   alias your router gives for `Resource` writes, also run by `migrate`)
-  reports them (`scrud_django.E002`), policies whose
+  reports them (`scrud_django.E002`; a policy whose list `rbac_context`
+  names a context twice counts once there), policies whose
   `resource_type` is not a string (`scrud_django.E003`), policies that fail
   the checks a `WorkflowPolicy` write makes, or cannot be checked at all
   (`scrud_django.E005`: stored by an earlier version or server-side, through
