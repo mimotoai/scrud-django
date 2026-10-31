@@ -372,11 +372,14 @@ def register_json_schema_resource_type():
     global JSON_SCHEMA_RESOURCE_TYPE_
     global JSON_SCHEMA_REGISTRATION_
     if JSON_SCHEMA_RESOURCE_TYPE_ is None:
+        from scrud_django.views import JsonSchemaViewSet
+
         JSON_SCHEMA_REGISTRATION_ = ResourceTypeRegistration(
             resource_type_uri="http://json-schema.org/draft-04/schema",
             revision="1",
             schema_uri="http://json-schema.org/draft-04/schema",
             slug="json-schema",
+            viewset_class=JsonSchemaViewSet,
         )
         JSON_SCHEMA_RESOURCE_TYPE_ = JSON_SCHEMA_REGISTRATION_.resource_type
     return JSON_SCHEMA_RESOURCE_TYPE_
@@ -386,10 +389,13 @@ def register_json_ld_resource_type():
     global JSON_LD_RESOURCE_TYPE_
     global JSON_LD_REGISTRATION_
     if JSON_LD_RESOURCE_TYPE_ is None:
+        from scrud_django.views import JsonLdViewSet
+
         JSON_LD_REGISTRATION_ = ResourceTypeRegistration(
             resource_type_uri="http://www.w3.org/ns/json-ld#context",
             revision="1",
             slug="json-ld",
+            viewset_class=JsonLdViewSet,
         )
         JSON_LD_RESOURCE_TYPE_ = JSON_LD_REGISTRATION_.resource_type
     return JSON_LD_RESOURCE_TYPE_

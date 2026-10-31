@@ -1,7 +1,9 @@
+from django.utils.cache import patch_vary_headers
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import viewsets
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
+from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from scoped_rbac import problems
@@ -14,6 +16,58 @@ from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
 from scrud_django.mixins.view_mixins import ResourceViewMixin, gate_uniform_errors
 from scrud_django.registration import get_resource_type_for
 from scrud_django.validators import JsonValidator
+
+
+class SchemaJSONRenderer(JSONRenderer):
+    """JSON served as ``application/schema+json`` (a JSON Schema)."""
+
+    media_type = "application/schema+json"
+
+
+class JSONLDRenderer(JSONRenderer):
+    """JSON served as ``application/ld+json`` (a JSON-LD document)."""
+
+    media_type = "application/ld+json"
+
+
+class DocumentMediaTypeMixin:
+    """Serve a view's document (a JSON Schema or a JSON-LD context) as the
+    media type a ``Link`` to it gives (`document_renderer_class`): its
+    renderer comes first in content negotiation for a request that
+    `serves_document`, ahead of the view's other renderers, so that a
+    client accepting anything gets that type and one asking for
+    ``application/json`` gets the same body as ``application/json``. The
+    response varies on ``Accept``. An error is rendered as plain JSON
+    (``application/json``, or the problem details' own type)."""
+
+    document_renderer_class = None
+
+    def serves_document(self, request):
+        """Whether `request`'s response is the document: a GET or HEAD."""
+        return request.method in ("GET", "HEAD")
+
+    def get_renderers(self):
+        renderers = super().get_renderers()
+        if self.document_renderer_class is not None and self.serves_document(
+            self.request
+        ):
+            renderers.insert(0, self.document_renderer_class())
+        return renderers
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        if self.document_renderer_class is not None and self.serves_document(request):
+            patch_vary_headers(response, ["Accept"])
+            if (
+                isinstance(response, Response)
+                and not 200 <= response.status_code < 300
+                and isinstance(
+                    getattr(request, "accepted_renderer", None),
+                    self.document_renderer_class,
+                )
+            ):
+                request.accepted_renderer = JSONRenderer()
+                request.accepted_media_type = JSONRenderer.media_type
+        return super().finalize_response(request, response, *args, **kwargs)
 
 
 @scrudful_viewset
@@ -124,7 +178,29 @@ def embedded_schema(schema, pointer):
     return rebase(schema)
 
 
-class ResourceCollectionSchemaView(APIView):
+class DocumentResourceViewSet(DocumentMediaTypeMixin, ResourceViewSet):
+    """The resource views of a type whose resources are documents (JSON
+    Schemas, JSON-LD contexts): a resource's representation (its detail
+    route's GET, HEAD and PUT) is served as `document_renderer_class`'s
+    media type; the list, of envelopes, stays ``application/json``."""
+
+    def serves_document(self, request):
+        return getattr(self, "action", None) in ("retrieve", "update")
+
+
+class JsonSchemaViewSet(DocumentResourceViewSet):
+    """The ``json-schema`` type's views: its resources are JSON Schemas."""
+
+    document_renderer_class = SchemaJSONRenderer
+
+
+class JsonLdViewSet(DocumentResourceViewSet):
+    """The ``json-ld`` type's views: its resources are JSON-LD contexts."""
+
+    document_renderer_class = JSONLDRenderer
+
+
+class ResourceCollectionSchemaView(DocumentMediaTypeMixin, APIView):
     """The JSON Schema of a resource type's list body (the list's
     ``describedby``): the page envelope of `StandardResultsSetPagination`,
     whose ``content`` is the page's resource envelopes, each with the type's
@@ -132,6 +208,7 @@ class ResourceCollectionSchemaView(APIView):
     type's ``schema_uri``, or any value for a type without a schema."""
 
     permission_classes = [AllowAny]
+    document_renderer_class = SchemaJSONRenderer
 
     def get(self, request, slug: str):
         resource_type = get_resource_type_for(slug)
@@ -202,8 +279,14 @@ class ResourceCollectionSchemaView(APIView):
         return Response(schema)
 
 
-class ResourceCollectionContextView(APIView):
+class ResourceCollectionContextView(DocumentMediaTypeMixin, APIView):
+    """The JSON-LD context of a resource type's list body (served as
+    ``application/ld+json``). Its terms are kept as they were (the
+    ``opententeams:`` prefix of first/previous/next/last included): the
+    ``api.openteams.com`` IRIs are part of the API's semantics."""
+
     permission_classes = [AllowAny]
+    document_renderer_class = JSONLDRenderer
 
     def get(self, request, slug: str):
         resource_type = get_resource_type_for(slug)

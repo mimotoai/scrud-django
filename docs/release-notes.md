@@ -402,6 +402,16 @@ Conditional request handling now comes from scrudful 0.8.
 * A PUT or DELETE with no precondition returns 428 instead of 400. Either
   `If-Match` or `If-Unmodified-Since` is enough.
 * ETags no longer carry a version suffix.
+* Schema and JSON-LD documents are served as the media type their `Link`
+  gives: a list's collection schema (`collections-json-schema/<slug>/`) and a
+  JSON Schema resource (`json-schema/<id>/`) as `application/schema+json`, a
+  list's collection context (`collections-json-ld/<slug>/`) and a JSON-LD
+  context resource (`json-ld/<id>/`) as `application/ld+json` (on a GET,
+  HEAD, or PUT of the resource), with `Vary: Accept`. They were
+  `application/json`. A client that sends `Accept: application/json` still
+  gets the same body as `application/json`; lists, OPTIONS and errors keep
+  their types. The collection context's content is unchanged
+  ([collection-context-terms](follow-ups.md#collection-context-terms)).
 * The service list's (`services/`) `Last-Modified` is the instant its
   catalog last changed. It was that time's local wall-clock time read in
   `TIME_ZONE`, hours off wherever the two zones differ. Its `ETag` changes
@@ -1107,6 +1117,8 @@ the workflow
 limit on administrators' conditions
 ([policy-grants-are-admin](follow-ups.md#policy-grants-are-admin)), callable
 default policies
-([eager-callable-default-policies](follow-ups.md#eager-callable-default-policies))
-and the JSON Schema compiler's message in a 400
-([schema-error-echoes-compiler-text](follow-ups.md#schema-error-echoes-compiler-text)).
+([eager-callable-default-policies](follow-ups.md#eager-callable-default-policies)),
+the JSON Schema compiler's message in a 400
+([schema-error-echoes-compiler-text](follow-ups.md#schema-error-echoes-compiler-text))
+and the collection JSON-LD context's terms
+([collection-context-terms](follow-ups.md#collection-context-terms)).

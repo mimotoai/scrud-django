@@ -177,3 +177,20 @@ by fastjsonschema's exception text, which quotes parts of the schema (a refused
 send, and no fetched content is included (remote `$ref`s are refused before
 any fetch). The text is fastjsonschema's and may change between its versions.
 A stored schema that does not compile gives other writers a generic detail.
+
+<a id="collection-context-terms"></a>
+## collection-context-terms: the collection JSON-LD context keeps its `opententeams:` terms
+
+Decision: kept as it is; the `api.openteams.com` IRIs and the JSON-LD built
+on them are part of the API's semantics and of what clients and stored data
+already use, so a library release does not change them.
+
+`collections-json-ld/<slug>/` (`ResourceCollectionContextView`) defines the
+prefix `openteams` but maps `first`, `previous`, `next` and `last` to
+`opententeams:first` and so on, a prefix nothing defines; and its term
+definitions are the document itself, not wrapped in `@context`. A JSON-LD
+processor therefore does not expand those four terms to
+`https://api.openteams.com/json-ld/...`, and one that expects a context
+document must wrap the body in `{"@context": ...}` itself. 0.12.0 changes only
+the media type it is served as (`application/ld+json`, as its `Link` says).
+`first` and `last` are never sent in a list.
