@@ -1067,6 +1067,10 @@ Conditional request handling now comes from scrudful 0.8.
   can no longer veto a write by raising, nor read the write's uncommitted
   state; do that in a `scrud_post_save` receiver. `OnCommitSignalProcessor`'s
   index errors are logged the same way.
+* `SCRUD_WORKFLOW_ACTIONS` may be a tuple as well as a list (a tuple made
+  every API write a 500). Any other shape (a string, a mapping, `None`), or
+  a path to something other than a mapping, raises `ImproperlyConfigured`
+  at startup.
 * `scrud_post_save` and `scrud_post_delete` themselves still fire inside the
   write, before the post-save check, with the same arguments
   (`transition_data` included): a receiver may read or change the database in

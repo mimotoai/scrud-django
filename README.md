@@ -291,8 +291,9 @@ lands in a context the writer may not write in) would stay in the index.
 
 ### Workflow actions
 
-`SCRUD_WORKFLOW_ACTIONS` lists dotted paths to mappings of type URI to
-`{"on_save": callable, "on_delete": callable}`. An action runs when the write
+`SCRUD_WORKFLOW_ACTIONS` is a list (or tuple) of dotted paths to mappings of
+type URI to `{"on_save": callable, "on_delete": callable}`; a later mapping's
+entry for a type replaces an earlier one's. An action runs when the write
 of a resource of its type commits, never for a write that is rolled back. The
 `scrud_post_save` and `scrud_post_delete` signals fire inside the write; a
 receiver whose work leaves the database should wrap it in

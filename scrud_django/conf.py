@@ -1,5 +1,5 @@
 import copy
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -133,11 +133,25 @@ def workflow_action_settings():
 
 
 def workflow_actions():
+    """Type URI -> ``{"on_save": ..., "on_delete": ...}``: the mappings that
+    ``SCRUD_WORKFLOW_ACTIONS`` names, a sequence (a list or a tuple) of dotted
+    paths, merged in order (a later one replaces an earlier one's entry for
+    a type). Raises ``ImproperlyConfigured`` for a setting that is not such a
+    sequence (a string, a mapping, ``None``...) or a path to anything other
+    than a mapping."""
+    setting = workflow_action_settings()
+    if isinstance(setting, (str, bytes)) or not isinstance(setting, Sequence):
+        raise ImproperlyConfigured(
+            "SCRUD_WORKFLOW_ACTIONS must be a list or tuple of dotted paths to "
+            f"mappings of type URI to actions, not {setting!r}."
+        )
     all_actions = {}
-    actions_strings: list = workflow_action_settings()
-    if isinstance(actions_strings, list):
-        for a_string in actions_strings:
-            actions_by_type_uri: dict = import_string(a_string)
-            for type_uri in list(actions_by_type_uri.keys()):
-                all_actions[type_uri] = actions_by_type_uri.get(type_uri, None)
-        return all_actions
+    for path in setting:
+        actions_by_type_uri = import_string(path)
+        if not isinstance(actions_by_type_uri, Mapping):
+            raise ImproperlyConfigured(
+                f"SCRUD_WORKFLOW_ACTIONS: {path!r} must name a mapping of type URI "
+                f"to actions, not {actions_by_type_uri!r}."
+            )
+        all_actions.update(actions_by_type_uri)
+    return all_actions
