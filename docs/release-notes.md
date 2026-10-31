@@ -417,7 +417,12 @@ Conditional request handling now comes from scrudful 0.8.
   and nothing is created. They were ignored (scrudful evaluates none for a
   create;
   [scrudful-create-preconditions](follow-ups.md#scrudful-create-preconditions)).
-  A POST without preconditions is unchanged. A `create` of your own on
+  A POST without preconditions is unchanged. Computing the list's
+  validators is a GET of the list: past
+  `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` such a POST is the same 400
+  `conditional_list_too_large`, except with only `If-Match: *` (it creates,
+  as an unconditional POST does) or `If-None-Match: *` (a 412), which need
+  no validators. A `create` of your own on
   `GenericViewMixin` should call `list_precondition_response(request)`
   first. The check is not held until the create commits
   ([conditional-create-race](follow-ups.md#conditional-create-race)).

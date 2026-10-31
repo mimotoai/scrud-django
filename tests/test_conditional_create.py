@@ -176,3 +176,57 @@ def test_authorization_comes_before_preconditions():
     reader = client_with(({"http.GET": [PP, PP_LIST]}, "a"))
     response = post(reader, HTTP_IF_MATCH='"nope"')
     assert response.status_code == 403, response.content
+
+
+# Past SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"] the list's validators cannot be
+# computed (a GET of the list is a 400 conditional_list_too_large). A
+# precondition that needs them gets that 400 too; one that does not (an
+# ``If-Match: *`` or ``If-None-Match: *``, decided by the list existing) is
+# evaluated without them.
+
+CONDITIONAL_WRITER = {
+    "http.GET": {PP: {"condition": 'name != "zzz"'}, PP_LIST: True},
+    "http.POST": [PP, PP_LIST],
+}
+
+
+@pytest.fixture
+def capped_writer():
+    for name in ("one", "two", "three"):
+        profile(name)
+    capped = dict(settings.SCOPED_RBAC, CONDITIONAL_LIST_MAX_ROWS=2)
+    with override_settings(SCOPED_RBAC=capped):
+        client = client_with((CONDITIONAL_WRITER, "a"))
+        response = client.get(url())
+        assert response.status_code == 400, response.content
+        assert response.json()["code"] == "conditional_list_too_large"
+        yield client
+
+
+@pytest.mark.django_db
+def test_if_match_any_past_the_cap_creates_as_an_unconditional_post(capped_writer):
+    assert post(capped_writer).status_code == 201
+    response = post(capped_writer, HTTP_IF_MATCH="*")
+    assert response.status_code == 201, response.content
+    assert created() == 2
+
+
+@pytest.mark.django_db
+def test_if_none_match_any_past_the_cap_is_412(capped_writer):
+    response = post(capped_writer, HTTP_IF_NONE_MATCH="*")
+    assert response.status_code == 412, response.content
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_a_precondition_that_needs_the_validators_past_the_cap_is_400(capped_writer):
+    for headers in (
+        {"HTTP_IF_MATCH": '"x"'},
+        {"HTTP_IF_NONE_MATCH": '"x"'},
+        {"HTTP_IF_UNMODIFIED_SINCE": "Thu, 01 Jan 2099 00:00:00 GMT"},
+        {"HTTP_IF_MATCH": "*", "HTTP_IF_NONE_MATCH": '"x"'},
+    ):
+        response = post(capped_writer, **headers)
+        assert response.status_code == 400, (headers, response.content)
+        assert response.json()["code"] == "conditional_list_too_large", headers
+    assert created() == 0

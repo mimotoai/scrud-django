@@ -152,6 +152,16 @@ refuses a resource that its list still shows. Put such a rule in an
 `has_context_permission`), or apply it in a filter backend of the view (or its
 `get_queryset`), for the list to follow it.
 
+A POST to a list evaluates its `If-Match`, `If-Unmodified-Since` and
+`If-None-Match` (RFC 9110) against the list's `ETag` and `Last-Modified` as
+the requester would GET them from that URL: a failed one is a 412 and
+nothing is created. Computing them is a GET of the list, so where that GET
+is a 400 `conditional_list_too_large` (past
+`SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` rows evaluated one by one), so is
+such a POST. `If-Match: *` and `If-None-Match: *` need no validators (the
+list always exists): the first creates as an unconditional POST does, the
+second is always a 412.
+
 A write is checked in the contexts the resource ends up in, every one of
 them, and (by the object check of a PUT or DELETE) in any one context it is
 stored in. Removing a resource from a context, by a PUT whose `rbac_context`

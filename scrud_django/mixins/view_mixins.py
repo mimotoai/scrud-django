@@ -20,7 +20,13 @@ from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import AccessAPIError, drf_error
 from scoped_rbac.rest import AccessControlledAPIView
 from scrudful._django import aware, conditional_response, precondition_headers
-from scrudful.conditional import evaluate_preconditions, http_timestamp, quote_etag
+from scrudful.conditional import (
+    evaluate_preconditions,
+    http_timestamp,
+    parse_etag_list,
+    parse_http_date,
+    quote_etag,
+)
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django.exceptions import (
@@ -72,6 +78,27 @@ LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 # The preconditions a POST to a list evaluates (`list_precondition_response`;
 # If-Modified-Since applies to GET and HEAD only).
 LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
+
+
+def list_validators_needed(headers):
+    """Whether evaluating the preconditions `headers` (lower-case names, as
+    ``scrudful._django.precondition_headers`` gives them) of a POST to a list
+    needs the list's validators (RFC 9110 §13.2.2): an ``If-Match`` that names
+    entity-tags, an ``If-Unmodified-Since`` with a valid date and no
+    ``If-Match``, or an ``If-None-Match`` that names entity-tags. ``*``
+    (either field) is decided by the list existing, a malformed field is a
+    400 and an invalid date is ignored, without them."""
+    if_match = parse_etag_list(headers.get("if-match") or None)
+    if_none_match = parse_etag_list(headers.get("if-none-match") or None)
+    if if_match is None or if_none_match is None:
+        return False
+    if if_match and if_match != ["*"]:
+        return True
+    if_unmodified_since = parse_http_date(headers.get("if-unmodified-since") or None)
+    if not if_match and if_unmodified_since is not None:
+        return True
+    return bool(if_none_match) and if_none_match != ["*"]
+
 
 # The methods whose body is the resource to store.
 BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
@@ -575,16 +602,22 @@ class ListValidatorsMixin:
         one is scrudful's 412, a malformed one its 400, as the list's
         handler answers its own (problem details while
         ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is on). The validators are only
-        computed when a precondition is sent. Call it first in a ``create``
+        computed when a precondition needs them (`list_validators_needed`):
+        ``If-Match: *`` and ``If-None-Match: *`` are decided by the list
+        existing, which it always does. Computing them is a GET of the list:
+        past ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`` it is the same 400
+        (``conditional_list_too_large``). Call it first in a ``create``
         of your own (``ResourceViewMixin.create`` does); it is evaluated,
         not held: a concurrent create may change the list before this one
         is saved."""
         headers = precondition_headers(request)
         if not any(headers.get(name) for name in LIST_PRECONDITIONS):
             return None
-        with self.as_list_read(request) as read:
-            etag = self.list_etag(read)
-            last_modified = self.list_last_modified()
+        etag = last_modified = None
+        if list_validators_needed(headers):
+            with self.as_list_read(request) as read:
+                etag = self.list_etag(read)
+                last_modified = self.list_last_modified()
         result = evaluate_preconditions(
             request.method,
             headers,
