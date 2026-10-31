@@ -141,8 +141,27 @@ def test_the_level_is_read_from_the_connection(vendor, results, expected):
 
 
 @pytest.mark.django_db
-def test_postgresql_at_read_committed_passes():
-    if connections["default"].vendor != "postgresql":
-        pytest.skip("PostgreSQL only")
+def test_a_server_at_read_committed_passes():
+    # PostgreSQL's default; on MySQL and MariaDB, Django's (the test
+    # settings also name it in OPTIONS["isolation_level"]).
+    if connections["default"].vendor == "sqlite":
+        pytest.skip("PostgreSQL, MySQL and MariaDB")
     assert scrud_checks.transaction_isolation("default") == "read committed"
     assert warnings_for(["default"]) == []
+
+
+@pytest.mark.django_db
+def test_mysql_at_repeatable_read_is_a_warning():
+    # The server's own default, which a connection gets with
+    # OPTIONS["isolation_level"] set to None.
+    connection = connections["default"]
+    if connection.vendor != "mysql":
+        pytest.skip("MySQL and MariaDB")
+    with connection.cursor() as cursor:
+        cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+    try:
+        assert scrud_checks.transaction_isolation("default") == "repeatable read"
+        assert [m.id for m in warnings_for(["default"])] == ["scrud_django.W002"]
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
