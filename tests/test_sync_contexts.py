@@ -8,6 +8,8 @@ exits non-zero if any do). The ``scrud_django.W004`` database check finds
 the cheap part of it: resources with no row at all though their content
 names a context."""
 
+from unittest import mock
+
 import pytest
 from django.core import checks
 from django.core.management import CommandError, call_command
@@ -137,3 +139,47 @@ def test_the_database_check_reports_resources_without_rows(drift):
 
     call_command("scrud_sync_contexts", verbosity=0)
     assert check_context_drift(None, databases=["default"]) == []
+
+
+def a_stale_scan(*entries):
+    """`find_context_drift` as a scan that read rows and content apart, while
+    writers committed in between: it yields `entries` whatever is stored."""
+    return lambda using: iter(entries)
+
+
+@pytest.mark.django_db
+def test_check_reports_only_drift_that_holds_under_the_row_lock(drift, capsys):
+    # The scan reads a batch's content and its rows in two statements; a
+    # write that commits between them looks like drift. Each candidate is
+    # read again with its row locked: a resource in step, or one deleted
+    # since, is not reported.
+    from scrud_django.management.commands import scrud_sync_contexts
+
+    missing = max(Resource.objects.values_list("pk", flat=True)) + 100
+    scan = a_stale_scan(
+        (drift["fine"], {"stale"}, {"d"}),
+        (missing, set(), {"x"}),
+    )
+    with mock.patch.object(scrud_sync_contexts, "find_context_drift", scan):
+        call_command("scrud_sync_contexts", "--check")
+        assert "in step" in capsys.readouterr().out
+        call_command("scrud_sync_contexts")
+    out = capsys.readouterr().out
+    assert "in step" in out and "Re-synced" not in out, out
+    assert rows_of(drift["fine"]) == {"d"}
+
+
+@pytest.mark.django_db
+def test_sync_counts_only_the_resources_it_repaired(drift, capsys):
+    from scrud_django.management.commands import scrud_sync_contexts
+
+    scan = a_stale_scan(
+        (drift["fine"], {"stale"}, {"d"}),
+        (drift["created"], set(), {"b", "c"}),
+    )
+    with mock.patch.object(scrud_sync_contexts, "find_context_drift", scan):
+        call_command("scrud_sync_contexts")
+    out = capsys.readouterr().out
+    assert f"pk {drift['created']}:" in out and f"pk {drift['fine']}:" not in out
+    assert "Re-synced 1 resources" in out, out
+    assert rows_of(drift["created"]) == {"b", "c"}

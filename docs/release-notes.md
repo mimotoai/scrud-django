@@ -276,9 +276,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
   update the rows. A new management command, `manage.py
   scrud_sync_contexts [--check] [--database <alias>]`, compares every
   resource's rows with its content (it reads every resource) and re-syncs
-  those that differ, each in its own transaction with the resource's row
-  locked (so it can run while the API serves), stamping the contexts they
-  left; `--check` changes nothing and exits with status 1 if any differ.
+  those that differ, each read again in its own transaction with the
+  resource's row locked (so it can run while the API serves, and reports
+  only drift that holds under the lock), stamping the contexts they left;
+  `--check` changes nothing and exits with status 1 if any differ.
   Running it again changes nothing. A new database check,
   `scrud_django.W004` (`check --database`, also run by `migrate`), names the
   resources that have no row at all though their content names a context

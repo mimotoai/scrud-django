@@ -14,9 +14,10 @@ class Command(BaseCommand):
         "with the contexts its content names, and re-sync those that differ: a "
         "write that bypassed Resource.save() (a 0.11 process still writing "
         "after migrate, QuerySet.update(), bulk_create()) leaves them stale. "
-        "It reads every resource. Each repair runs in its own transaction with "
-        "the resource's row locked, so it may run while the API serves. Safe to "
-        "run again: a resource in step is left alone."
+        "It reads every resource. A resource that differs is read again, and "
+        "repaired, in its own transaction with its row locked, so it may run "
+        "while the API serves and reports only drift that holds under the lock. "
+        "Safe to run again: a resource in step is left alone."
     )
 
     def add_arguments(self, parser):
@@ -37,14 +38,18 @@ class Command(BaseCommand):
         using = database or router.db_for_write(Resource)
         verbosity = options.get("verbosity", 1)
         drifted = []
-        for pk, rows, wanted in find_context_drift(using):
+        for pk, _rows, _wanted in find_context_drift(using):
+            # Read again under the row lock: the scan's two reads can see a
+            # write half done; a resource in step (or deleted) since is skipped.
+            confirmed = resync_contexts(pk, using, repair=not check)
+            if confirmed is None:
+                continue
+            rows, wanted = confirmed
             drifted.append(pk)
             if verbosity >= 1:
                 self.stdout.write(
                     f"pk {pk}: rows {sorted(rows)!r}, content {sorted(wanted)!r}"
                 )
-            if not check:
-                resync_contexts(pk, using)
         if not drifted:
             if verbosity >= 1:
                 self.stdout.write(

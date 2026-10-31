@@ -325,20 +325,32 @@ def find_context_drift(using, batch_size=1000):
                 yield pk, rows.get(pk, set()), wanted
 
 
-def resync_contexts(pk, using):
-    """Make the `ResourceContext` rows of the resource `pk` on database
-    `using` its content's (`sync_resource_contexts`), in a transaction of its
-    own with the resource's row locked first, as a write locks it; the
-    contexts it left are stamped (`stamp_removals`). Returns whether the
-    resource still exists."""
+def resync_contexts(pk, using, *, repair=True):
+    """Check the resource `pk` on database `using` for drift again, in a
+    transaction of its own with its row locked first, as a write locks it:
+    `find_context_drift` reads content and rows in two statements, so a write
+    that committed between them looks like drift. Every save holds that lock
+    while it syncs the rows, so under it the two agree unless the drift is
+    real. Returns ``(rows, wanted)`` if it is (and, with `repair`, makes the
+    rows its content's, `sync_resource_contexts`, stamping the contexts it
+    left), else ``None`` (in step, or deleted since)."""
     with transaction.atomic(using=using):
         resource = (
             Resource.objects.using(using).select_for_update().filter(pk=pk).first()
         )
         if resource is None:
-            return False
-        sync_resource_contexts(resource, using)
-        return True
+            return None
+        rows = set(
+            ResourceContext.objects.using(using)
+            .filter(resource_id=pk)
+            .values_list("rbac_context", flat=True)
+        )
+        wanted = context_rows_of(resource.content)
+        if rows == wanted:
+            return None
+        if repair:
+            sync_resource_contexts(resource, using)
+        return rows, wanted
 
 
 def sync_resource_contexts(resource, using, *, inserting=False):
