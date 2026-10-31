@@ -52,7 +52,11 @@ a single test, which is the usual way to run one while working:
 
 ```bash
 uv run pytest tests/test_rest.py::test_resource_get_list
+uv run pytest -q --reverse
 ```
+
+`--reverse` (from `tests/conftest.py`) runs the suite in reverse order, as CI
+also does.
 
 These write files or touch the environment, so they prompt. Run them on the
 files you touched only; `ruff format .` and `ruff check --fix .` over the whole
@@ -77,12 +81,13 @@ uv run python manage.py runserver
 ```
 
 CI is `.gitlab-ci.yml`: lint, migrations check, docs build, tests with
-coverage on 3.11-3.13, the suite on PostgreSQL 14 via `SCRUD_TEST_PG_*`
-(`test-postgres`), a package build/README check, and a version-bump check on
-merge requests. Run the lint and test commands above before committing.
-Publishing to PyPI runs in CI when a merge to `develop` carries a version not
-yet on PyPI (`scripts/release.py`); never run `uv publish` locally or create
-release tags by hand.
+coverage on 3.11-3.13 (then again with `--reverse`), the suite on PostgreSQL
+14 via `SCRUD_TEST_PG_*` (`test-postgres`), a package build/README/installed-
+wheel check, and a version check on merge requests. Run the lint and test
+commands above before committing. Publishing to PyPI runs in CI when a merge
+to `develop` carries a version not yet on PyPI (`scripts/release.py`), and
+fails for one lower than PyPI's latest; never run `uv publish` locally or
+create release tags by hand.
 
 ## Test conventions
 
@@ -101,6 +106,11 @@ See `tests/test_conditional.py` for the idiom.
   shadow a pytest fixture name, or it collides with the fixture.
 - Test modules star-import safetydance and steps; ruff per-file ignores for
   F403/F405 in `pyproject.toml` exist for that. Keep the idiom.
+- Tests must pass in any order and alone. Connect signal receivers per test
+  (`setUp` with `addCleanup`, or a fixture that disconnects), never in
+  `__init__` or at import: pytest builds `TestCase` instances at collection.
+  Importing the URLconf (`reverse()`, `checks.run_checks()`) registers
+  resource types in the database, so such a test needs `django_db`.
 - Never weaken an assertion to make a test pass. When behaviour changes, add
   explicit new assertions for the new behaviour (status code, headers, body) and
   say why in the commit message.
