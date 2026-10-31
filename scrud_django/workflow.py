@@ -377,6 +377,12 @@ class CompiledPolicyCache:
 STORED_POLICY_CACHE = CompiledPolicyCache()
 
 
+# The attribute of a connection that says its transaction holds
+# `lock_workflow_policy_type` for a block (`registration.type_locked`): the
+# lock is not asked for again there.
+WORKFLOW_POLICY_TYPE_HELD = "_scrud_workflow_policy_type_held"
+
+
 def lock_workflow_policy_type(using):
     """Lock the ``WorkflowPolicy`` resource type's rows (``select_for_update``)
     on database `using`, inside the caller's transaction: ``WorkflowPolicy``
@@ -393,7 +399,11 @@ def lock_workflow_policy_type(using):
 
     from scrud_django.models import ResourceType
 
-    no_key = connections[using].features.has_select_for_no_key_update
+    connection = connections[using]
+    if getattr(connection, WORKFLOW_POLICY_TYPE_HELD, False):
+        # Taken already in this transaction (`registration.type_locked`).
+        return
+    no_key = connection.features.has_select_for_no_key_update
     list(
         ResourceType.objects.using(using)
         .select_for_update(no_key=no_key)

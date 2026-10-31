@@ -61,6 +61,7 @@ from scrud_django.registration import (
     get_resource_type_for,
     lock_if_workflow_policy,
     type_db,
+    type_locked,
     write_db,
 )
 from scrud_django.serializers import ResourceSerializer
@@ -412,6 +413,10 @@ class ListValidatorsMixin:
     # True while ``get_object()`` runs: its lookup is not a list.
     _scrud_in_get_object = False
 
+    # The database the list's validators are read on (`as_list_read`), or
+    # ``None`` to read as the router reads.
+    list_read_db: str | None = None
+
     def object_readable(self, request, obj):
         """Whether `obj` (the object as the object check gets it) is
         readable by `request`'s user, which tells a 404 from a 403 on the
@@ -520,7 +525,10 @@ class ListValidatorsMixin:
                     "scrud_django.filters.ResourceRbacFilter) in its "
                     "filter_backends."
                 )
-            queryset = self.filter_queryset(self.get_queryset())
+            queryset = self.get_queryset()
+            if self.list_read_db is not None:
+                queryset = queryset.using(self.list_read_db)
+            queryset = self.filter_queryset(queryset)
             self._scrud_list_queryset = queryset
         return queryset
 
@@ -565,22 +573,24 @@ class ListValidatorsMixin:
         return self.list_queryset().aggregate(newest=Max("modified_at"))["newest"]
 
     @contextmanager
-    def as_list_read(self, request):
+    def as_list_read(self, request, using=None):
         """The view as a GET of its list route has it while the block runs:
         its ``request`` a copy of `request` whose method is GET (which the
         block gets) and its ``action`` ``"list"``, with nothing of the list
-        computed yet (`list_queryset`, `list_page`). All restored, and what
-        the block computed forgotten, when it ends."""
+        computed yet (`list_queryset`, `list_page`), read on database
+        `using` (`list_read_db`; ``None``: as the router reads), without
+        locking anything. All restored, and what the block computed
+        forgotten, when it ends."""
         cached = ("_scrud_list_queryset", "_scrud_list_page")
         missing = object()
         saved = {
             name: self.__dict__.get(name, missing)
-            for name in ("request", "action", *cached)
+            for name in ("request", "action", "list_read_db", *cached)
         }
         for name in cached:
             self.__dict__.pop(name, None)
         read = clone_request(request, "GET")
-        self.request, self.action = read, "list"
+        self.request, self.action, self.list_read_db = read, "list", using
         try:
             yield read
         finally:
@@ -590,7 +600,7 @@ class ListValidatorsMixin:
                 else:
                     setattr(self, name, value)
 
-    def list_precondition_response(self, request):
+    def list_precondition_response(self, request, using=None):
         """The response to a POST to the list whose preconditions fail, or
         ``None`` to go on with the create. scrudful evaluates none for a
         create; RFC 9110 requires them evaluated against the target, the
@@ -606,16 +616,23 @@ class ListValidatorsMixin:
         ``If-Match: *`` and ``If-None-Match: *`` are decided by the list
         existing, which it always does. Computing them is a GET of the list:
         past ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`` it is the same 400
-        (``conditional_list_too_large``). Call it first in a ``create``
-        of your own (``ResourceViewMixin.create`` does); it is evaluated,
-        not held: a concurrent create may change the list before this one
-        is saved."""
+        (``conditional_list_too_large``). The validators are read on
+        database `using` (``None``: as the router reads).
+
+        Call it first in a ``create`` of your own (``ResourceViewMixin.create``
+        does). Alone it evaluates the list, it does not hold it: a
+        concurrent create may change the list before this one is saved. To
+        hold it, call it with `using` inside a transaction there that first
+        locks a row every conditional create of yours locks (for a resource
+        type, `scrud_django.registration.type_locked`), and create in that
+        transaction, as ``ResourceViewMixin.create`` does when
+        `list_validators_needed`."""
         headers = precondition_headers(request)
         if not any(headers.get(name) for name in LIST_PRECONDITIONS):
             return None
         etag = last_modified = None
         if list_validators_needed(headers):
-            with self.as_list_read(request) as read:
+            with self.as_list_read(request, using) as read:
                 etag = self.list_etag(read)
                 last_modified = self.list_last_modified()
         result = evaluate_preconditions(
@@ -879,10 +896,26 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
 
     def create(self, request):
         """Create a resource from the body, after evaluating the request's
-        preconditions against the list (`list_precondition_response`)."""
-        failed = self.list_precondition_response(request)
-        if failed is not None:
-            return failed
+        preconditions against the list (`list_precondition_response`). When
+        they need the list's validators (`list_validators_needed`), the
+        evaluation and the create run in one transaction on `write_db` that
+        first locks the type's row (`type_locked`), so that two conditional
+        creates of the type run one at a time and the second is evaluated
+        against the list the first left. Other creates take no lock."""
+        if not list_validators_needed(precondition_headers(request)):
+            failed = self.list_precondition_response(request)
+            if failed is not None:
+                return failed
+            return self.create_resource(request)
+        db = write_db()
+        with transaction.atomic(using=db), type_locked(self.get_resource_type(), db):
+            failed = self.list_precondition_response(request, using=db)
+            if failed is not None:
+                return failed
+            return self.create_resource(request)
+
+    def create_resource(self, request):
+        """Validate the body, save it (`save_checked`) and answer 201."""
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.save_checked(lambda: self.perform_create(serializer))
@@ -1034,13 +1067,22 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
       is a 404 on the detail route, for every method (`object_readable`).
 
     Unlike ``ResourceViewMixin``, a ``create`` of your own evaluates no
-    precondition unless it calls `list_precondition_response` first::
+    precondition unless it calls `list_precondition_response` first. To
+    hold the list until the create commits (so that two conditional creates
+    run one at a time), evaluate and create in one transaction that first
+    locks a row every conditional create of yours locks::
 
         def create(self, request):
-            failed = self.list_precondition_response(request)
-            if failed is not None:
-                return failed
-            ...
+            if not list_validators_needed(precondition_headers(request)):
+                failed = self.list_precondition_response(request)
+                ...  # return failed, or create
+            db = self.locked_write_database()
+            with transaction.atomic(using=db):
+                ...  # lock your row (select_for_update)
+                failed = self.list_precondition_response(request, using=db)
+                if failed is not None:
+                    return failed
+                ...  # create
     """
 
     # The detail route's URL keyword, as the detail stubs below take it.

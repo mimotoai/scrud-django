@@ -160,7 +160,9 @@ is a 400 `conditional_list_too_large` (past
 `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` rows evaluated one by one), so is
 such a POST. `If-Match: *` and `If-None-Match: *` need no validators (the
 list always exists): the first creates as an unconditional POST does, the
-second is always a 412.
+second is always a 412. A POST that needs the validators evaluates them and
+creates in one transaction holding its type's `ResourceType` row, so two
+such POSTs with the same `If-Match` give one 201 and one 412.
 
 A write is checked in the contexts the resource ends up in, every one of
 them, and (by the object check of a PUT or DELETE) in any one context it is

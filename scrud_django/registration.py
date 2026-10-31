@@ -1,6 +1,7 @@
 import importlib.resources
 import json
 import logging
+from contextlib import contextmanager
 from uuid import uuid4
 
 import reversion
@@ -13,7 +14,11 @@ from django.utils import timezone
 
 from scrud_django import services
 from scrud_django.models import Resource, ResourceType
-from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI, lock_workflow_policy_type
+from scrud_django.workflow import (
+    WORKFLOW_POLICY_TYPE_HELD,
+    WORKFLOW_POLICY_TYPE_URI,
+    lock_workflow_policy_type,
+)
 
 
 def write_db(instance=None):
@@ -60,6 +65,43 @@ def lock_if_workflow_policy(resource_type, using):
     nothing: it takes this lock before the row."""
     if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
         lock_workflow_policy_type(using)
+
+
+@contextmanager
+def type_locked(resource_type, using):
+    """Lock `resource_type`'s row on database `using` (``select_for_update``,
+    ``FOR NO KEY UPDATE`` where the database has it, as
+    `lock_workflow_policy_type` takes it) until the caller's transaction there
+    ends; call it first inside that transaction. A conditional create
+    (``ResourceViewMixin.create``) takes it so that conditional creates of a
+    type run one at a time. The other writes of the type do not take it
+    first: a foreign key check of a row they insert that refers to the type
+    (a resource, a removal stamp) may wait for it, holding nothing it waits
+    for, and ``FOR NO KEY UPDATE`` does not block PostgreSQL's (``FOR KEY
+    SHARE``).
+
+    For ``WorkflowPolicy`` it is `lock_workflow_policy_type` (the same rows,
+    taken in the same order its writes take them), which then is not taken
+    again while the block runs."""
+    from django.db import connections
+
+    if resource_type.type_uri != WORKFLOW_POLICY_TYPE_URI:
+        no_key = connections[using].features.has_select_for_no_key_update
+        list(
+            ResourceType.objects.using(using)
+            .select_for_update(no_key=no_key)
+            .filter(pk=resource_type.pk)
+        )
+        yield
+        return
+    connection = connections[using]
+    lock_workflow_policy_type(using)
+    previous = getattr(connection, WORKFLOW_POLICY_TYPE_HELD, False)
+    setattr(connection, WORKFLOW_POLICY_TYPE_HELD, True)
+    try:
+        yield
+    finally:
+        setattr(connection, WORKFLOW_POLICY_TYPE_HELD, previous)
 
 
 def type_db():

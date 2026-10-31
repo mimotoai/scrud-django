@@ -422,10 +422,16 @@ Conditional request handling now comes from scrudful 0.8.
   `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` such a POST is the same 400
   `conditional_list_too_large`, except with only `If-Match: *` (it creates,
   as an unconditional POST does) or `If-None-Match: *` (a 412), which need
-  no validators. A `create` of your own on
+  no validators. A POST whose preconditions need the validators evaluates
+  them and creates in one transaction that first locks the type's
+  `ResourceType` row (`FOR NO KEY UPDATE` on PostgreSQL, `FOR UPDATE` on
+  MySQL and MariaDB; `scrud_django.registration.type_locked`), so two such
+  POSTs with the same `If-Match` give one 201 and one 412. Other writes do
+  not take that lock first (a MySQL or MariaDB write that inserts a row
+  referring to the type may wait for it). A `create` of your own on
   `GenericViewMixin` should call `list_precondition_response(request)`
-  first. The check is not held until the create commits
-  ([conditional-create-race](follow-ups.md#conditional-create-race)).
+  first, and, to hold the list the same way, run it with `using=` and the
+  create in such a transaction.
 * Schema and JSON-LD documents are served as the media type their `Link`
   gives: a list's collection schema (`collections-json-schema/<slug>/`) and a
   JSON Schema resource (`json-schema/<id>/`) as `application/schema+json`, a
@@ -1130,9 +1136,7 @@ On MariaDB a list's query-parameter filter ignores trailing spaces in the
 value ([mariadb-content-filter-padding](follow-ups.md#mariadb-content-filter-padding)).
 A POST to scoped-rbac's own Role and RoleAssignment lists ignores its
 preconditions
-([scrudful-create-preconditions](follow-ups.md#scrudful-create-preconditions)),
-and two conditional POSTs to a list can both pass
-([conditional-create-race](follow-ups.md#conditional-create-race)).
+([scrudful-create-preconditions](follow-ups.md#scrudful-create-preconditions)).
 Limitations kept by a decision are listed, with
 the decision, under "Decided" in [follow-ups](follow-ups.md): the supported
 isolation level
