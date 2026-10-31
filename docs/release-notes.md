@@ -70,6 +70,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
     (`dumpdata scrud_django --exclude scrud_django.ResourceContext`, which
     makes it smaller); either way, loading rebuilds each resource's rows from
     its content, and a dumped row that disagrees with the content is dropped.
+    A dump also loads into a database that already holds some of its
+    resources (a staging copy, a partial restore): of two `ResourceRemoval`
+    stamps of one type and context, the later is kept (loading one used to
+    fail with `IntegrityError` there).
     On PostgreSQL, a fixture that lists `ResourceContext` rows before the
     resources they belong to, with rows that disagree with the content, can
     fail with `IntegrityError`: dump `Resource` first (`dumpdata scrud_django`

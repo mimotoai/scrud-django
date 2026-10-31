@@ -489,3 +489,60 @@ def test_a_body_naming_no_context_needs_the_default_context(body):
     When.http.post(reverse("json-ld-list"), body, format="json")
     Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
     assert Resource.objects.count() == before
+
+
+def removal_stamps():
+    from scrud_django.models import ResourceRemoval
+
+    return {
+        (row.resource_type_id, row.rbac_context): row.removed_at
+        for row in ResourceRemoval.objects.all()
+    }
+
+
+@pytest.mark.django_db
+def test_loaddata_into_a_database_holding_the_resource_elsewhere(tmp_path):
+    # A staging copy or a partial restore: the dumped resource is already
+    # stored, in another context. Loading it stamps the context it leaves,
+    # and the dump's own stamp of that context must not collide with it.
+    from django.core.management import call_command
+    from django.utils import timezone
+
+    from scrud_django.models import ResourceRemoval
+    from scrud_django.models.resource import sync_resource_contexts
+
+    resource = register({"rbac_context": "a"})
+    type_id = resource.resource_type_id
+    ResourceRegistration.update({"rbac_context": "b"}, "partner-profiles", resource.pk)
+    ResourceRegistration.update({"rbac_context": "c"}, "partner-profiles", resource.pk)
+    dumped = removal_stamps()
+    assert set(dumped) == {(type_id, "a"), (type_id, "b")}
+    a_pk = ResourceRemoval.objects.get(rbac_context="a").pk
+    dump = tmp_path / "scrud.json"
+    call_command("dumpdata", "scrud_django", output=str(dump), verbosity=0)
+
+    # The target: the resource in "b", no stamps but one of "zz" under the
+    # dump's key for (type, "a").
+    Resource.objects.filter(pk=resource.pk).update(content={"rbac_context": "b"})
+    sync_resource_contexts(Resource.objects.get(pk=resource.pk), "default")
+    ResourceRemoval.objects.all().delete()
+    zz_at = timezone.now() - timezone.timedelta(days=1)
+    ResourceRemoval.objects.create(
+        pk=a_pk, resource_type_id=type_id, rbac_context="zz", removed_at=zz_at
+    )
+    before_load = timezone.now()
+
+    call_command("loaddata", str(dump), verbosity=0)
+
+    stamps = removal_stamps()
+    assert set(stamps) == {(type_id, "a"), (type_id, "b"), (type_id, "zz")}
+    # Django's JSON serializer keeps milliseconds.
+    dumped_a = dumped[(type_id, "a")]
+    dumped_a = dumped_a.replace(microsecond=dumped_a.microsecond // 1000 * 1000)
+    assert stamps[(type_id, "a")] == dumped_a
+    # Leaving "b" now is later than the dump's stamp of it: the later wins.
+    assert stamps[(type_id, "b")] >= before_load > dumped[(type_id, "b")]
+    # The target's stamp the dump's row displaced is kept.
+    assert stamps[(type_id, "zz")] == zz_at
+    assert rows_of(resource) == {"c"}
+    every_resource_matches_its_rows()

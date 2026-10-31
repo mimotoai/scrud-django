@@ -280,15 +280,15 @@ def sync_resource_contexts(resource, using, *, inserting=False):
         )
 
 
-def stamp_removals(resource_type_id, contexts, using):
+def stamp_removals(resource_type_id, contexts, using, when=None):
     """Record on database `using`, in the caller's transaction, that a
-    resource of the type `resource_type_id` left each of `contexts` now
-    (`ResourceRemoval`): the stamp of each type and context only moves
-    forward. A context too long for a row (`context_fits`: one stored before
-    0.12.0, which has no `ResourceContext` row and is listed to superusers
-    only) is stamped as ``SOME_CONTEXT``, which only superusers' lists
-    read."""
-    when = timezone.now()
+    resource of the type `resource_type_id` left each of `contexts` at `when`
+    (now by default) (`ResourceRemoval`): the stamp of each type and context
+    only moves forward. A context too long for a row (`context_fits`: one
+    stored before 0.12.0, which has no `ResourceContext` row and is listed to
+    superusers only) is stamped as ``SOME_CONTEXT``, which only superusers'
+    lists read."""
+    when = when or timezone.now()
     rows = ResourceRemoval.objects.using(using)
     contexts = {c if context_fits(c) else SOME_CONTEXT for c in contexts}
     for context in sorted(contexts):
@@ -414,6 +414,52 @@ def resync_after_raw_row(sender, instance, raw, using, **kwargs):
     resource_ids = {instance.resource_id, *getattr(instance, "_scrud_displaced", ())}
     for resource in Resource.objects.using(using).filter(pk__in=resource_ids):
         sync_resource_contexts(resource, using)
+
+
+@receiver(
+    pre_save, sender=ResourceRemoval, dispatch_uid="scrud_django.load_removal_row"
+)
+def make_room_for_raw_removal(sender, instance, raw, using, **kwargs):
+    """A `ResourceRemoval` loaded raw (``loaddata`` into a database that
+    already holds stamps, say a staging copy or a partial restore) replaces
+    the stamp of its type and context, keeping the later ``removed_at`` (a
+    stamp only moves forward), and the row with its key, whose stamp is
+    stamped again after it (`restamp_after_raw_removal`): so it never
+    collides with a stamp that loading a resource made (`sync_raw_save`
+    stamps the contexts it leaves) or that was already there."""
+    if not raw:
+        return
+    require_transaction(using, "Loading a ResourceRemoval")
+    same_key = Q(
+        resource_type_id=instance.resource_type_id,
+        rbac_context=instance.rbac_context,
+    )
+    rows = ResourceRemoval.objects.using(using).filter(
+        same_key if instance.pk is None else same_key | Q(pk=instance.pk)
+    )
+    displaced = []
+    for row in rows:
+        if (row.resource_type_id, row.rbac_context) == (
+            instance.resource_type_id,
+            instance.rbac_context,
+        ):
+            instance.removed_at = max(instance.removed_at, row.removed_at)
+        else:
+            displaced.append((row.resource_type_id, row.rbac_context, row.removed_at))
+    instance._scrud_displaced = displaced
+    rows.delete()
+
+
+@receiver(
+    post_save, sender=ResourceRemoval, dispatch_uid="scrud_django.restamp_removal"
+)
+def restamp_after_raw_removal(sender, instance, raw, using, **kwargs):
+    """After a `ResourceRemoval` is loaded raw, stamp again the stamps whose
+    row it displaced (`make_room_for_raw_removal`), at their own time."""
+    if not raw:
+        return
+    for type_id, context, when in getattr(instance, "_scrud_displaced", ()):
+        stamp_removals(type_id, [context], using, when=when)
 
 
 @receiver(post_delete, sender=Resource, dispatch_uid="scrud_django.stamp_deletion")
