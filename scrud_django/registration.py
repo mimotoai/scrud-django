@@ -132,6 +132,12 @@ class ResourceTypeRegistration:
                     revision=revision,
                 )
                 self.resource_type.pk = search[0].pk
+                # The stored schema, context and indexing policy are updated
+                # in place below (register_json_file), not stored again on
+                # every process start.
+                self.resource_type.schema = search[0].schema
+                self.resource_type.context = search[0].context
+                self.resource_type.indexing_policy = search[0].indexing_policy
 
         else:
             resource_type = ResourceType(
@@ -436,9 +442,17 @@ def workflow_policy_resource_type():
 
 
 def register_json_file(file_contents_func, previous_revision, resource_type):
+    """The resource of `resource_type` holding the JSON that
+    `file_contents_func` returns (a string or the parsed value):
+    `previous_revision` (the resource registered before, or ``None``)
+    updated with it, or kept as it is when it already holds it (so that a
+    process start writes nothing and changes no validator), else a new
+    one."""
     contents = file_contents_func()
     if type(contents) is str:
         contents = json.loads(contents)
+    if previous_revision and previous_revision.content == contents:
+        return previous_revision
     if previous_revision:
         resource = ResourceRegistration.update(
             contents, resource_type.slug, previous_revision.id

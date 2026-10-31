@@ -641,6 +641,13 @@ Conditional request handling now comes from scrudful 0.8.
   envelope's `content` drops its `$id`, and its own `#` references point
   into the collection schema (they did not resolve). A type without a schema
   allows any content (`{}`; it was `{"type": "any"}`, not valid draft-04).
+* Registering a resource type again, as every process start does, keeps its
+  schema, JSON-LD context and indexing policy resources. Under `DEBUG`, which
+  rewrites the type, each start stored new ones (a development database's
+  `json-schema/` list grew with every `manage.py` command); now they are
+  updated in place. Without `DEBUG`, unchanged ones are no longer rewritten,
+  so their `ETag` and `Last-Modified` stay. Copies that `DEBUG` left behind
+  are not referenced by any type; delete them through the API if you want.
 * `scrud_django.decorators` is removed. Use `scrudful.rest_framework` instead.
 * `scrud_django.settings`, `scrud_django.wsgi` and `scrud_django.asgi` are
   removed: the package no longer ships a Django project. Use your own project's
