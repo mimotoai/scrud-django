@@ -330,6 +330,39 @@ def test_a_save_of_other_resources_takes_no_policy_lock():
     assert "ResourceType" not in locks_in_order(events), events
 
 
+def documented_locked_policy_write(pk, write, pause=0):
+    """The server-side policy write the README and
+    ``lock_if_workflow_policy``'s docstring show: the type lock before the
+    ``select_for_update()``, the type read without the row lock."""
+    from scrud_django.registration import (
+        get_resource_type_for,
+        lock_if_workflow_policy,
+        write_db,
+    )
+
+    db = write_db()
+    with transaction.atomic(using=db):
+        lock_if_workflow_policy(
+            get_resource_type_for("workflow-policies", using=db), db
+        )
+        policy = Resource.objects.using(db).select_for_update().get(pk=pk)
+        time.sleep(pause)  # holding the policy's row
+        if write == "save":
+            policy.content = dict(POLICY, rbac_context="moved")
+            policy.save()
+        else:
+            policy.delete()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("write", ["save", "delete"])
+def test_the_documented_server_side_policy_write_locks_the_type_first(write):
+    stored = a_policy()
+    with recorded_statements() as events:
+        documented_locked_policy_write(stored.pk, write)
+    assert locks_in_order(events)[:2] == ["ResourceType", "Resource"], events
+
+
 @pytest.mark.django_db
 def test_a_sync_repair_of_a_policy_locks_its_type_before_its_row():
     from scrud_django.models.resource import resync_contexts
@@ -787,7 +820,9 @@ def test_concurrent_first_removals_of_a_context_do_not_deadlock(committed_types)
     # back, and their fallback UPDATEs deadlocked (1213, a 500 through the
     # API). One INSERT ... ON DUPLICATE KEY UPDATE takes the record's
     # exclusive lock at once. (The schedule is set on the SQL, whatever
-    # statements stamp_removals runs.)
+    # statements stamp_removals runs; the test asserts that it applied, so
+    # that a stamp written another way fails it rather than passing by
+    # timing.)
     from scrud_django.models import ResourceRemoval
 
     first, *_ = stored = profiles("fresh", "fresh", "fresh", "fresh")
@@ -795,16 +830,19 @@ def test_concurrent_first_removals_of_a_context_do_not_deadlock(committed_types)
     table = connection.ops.quote_name(ResourceRemoval._meta.db_table)
     barrier = threading.Barrier(len(stored))
     results = {}
+    # Per resource: whether its thread reached the barrier at the stamp
+    # table, and whether it delayed an INSERT there (all but the first).
+    reached_barrier = {r.pk: False for r in stored}
+    delayed_insert = {r.pk: False for r in stored}
 
     def delete(resource):
-        reached = []
-
         def schedule(execute, sql, params, many, context):
             if table in sql:
-                if not reached:
-                    reached.append(True)
+                if not reached_barrier[resource.pk]:
+                    reached_barrier[resource.pk] = True
                     barrier.wait(timeout=10)  # everyone found no stamp
                 if sql.startswith("INSERT") and resource is not first:
+                    delayed_insert[resource.pk] = True
                     time.sleep(0.15)  # after the first one's INSERT
             return execute(sql, params, many, context)
 
@@ -827,9 +865,45 @@ def test_concurrent_first_removals_of_a_context_do_not_deadlock(committed_types)
     errors = {pk: repr(r) for pk, r in results.items() if isinstance(r, Exception)}
     assert errors == {}, errors
     assert len(results) == len(stored), results
+    # The forced schedule applied: every thread met the others at the stamp
+    # table, and every one but the first delayed its INSERT there.
+    assert all(reached_barrier.values()), reached_barrier
+    assert {pk for pk, delayed in delayed_insert.items() if delayed} == {
+        r.pk for r in stored if r is not first
+    }, delayed_insert
     assert not Resource.objects.filter(pk__in=[r.pk for r in stored]).exists()
     assert list(
         ResourceRemoval.objects.filter(rbac_context="fresh").values_list(
             "rbac_context", flat=True
         )
     ) == ["fresh"]
+
+
+@TWO_WRITERS
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("write", ["save", "delete"])
+def test_the_documented_server_side_policy_write_and_an_api_put_do_not_deadlock(
+    write, committed_types
+):
+    # The README's pattern holds the policy's row (after the type lock)
+    # while an API PUT of the policy waits for the type lock: the PUT runs
+    # after it. Locking the row first deadlocked (K4-M1), on PostgreSQL too.
+    stored = a_policy()
+    url = reverse("workflow-policies-detail", args=[stored.pk])
+    client = admin_api_client()
+    connections.close_all()
+
+    def server():
+        return documented_locked_policy_write(stored.pk, write, pause=0.6)
+
+    def put():
+        return client.put(
+            url,
+            dict(POLICY, initial_states={"x": "true"}),
+            format="json",
+            HTTP_IF_MATCH="*",
+        ).status_code
+
+    done, status = run_together(server, put, delay=0.2)
+    assert not isinstance(done, Exception), repr(done)
+    assert status == (200 if write == "save" else 404), status
