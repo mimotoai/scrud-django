@@ -13,11 +13,17 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from rest_framework.permissions import AND, NOT, OR
+from scoped_rbac import access
+from scoped_rbac.permissions import IsAuthorized, custom_contexts_for
+
+from scrud_django.mixins.resource_mixin import rbac_contexts_of
+
 # What `_transition` holds outside the workflow check.
 _OUTSIDE = object()
 
 # The transition the workflow check is authorizing, while it asks the policy
-# and the view's permission classes about it (`checking_transition`).
+# and the view's permission classes about it (`_checking_transition`).
 _transition = ContextVar("scrud_django_transition", default=_OUTSIDE)
 
 
@@ -39,7 +45,7 @@ def current_transition():
 
 
 @contextmanager
-def checking_transition(transition):
+def _checking_transition(transition):
     """While the block runs, the workflow check is authorizing `transition`
     (``None``: a context where no workflow policy applies): what
     `current_transition` and the ``scrud_workflow`` operator read. Reset
@@ -62,6 +68,77 @@ def content_of(resource):
     if isinstance(content, Mapping):
         return dict(content)
     return {}
+
+
+def resource_contexts(obj):
+    """The contexts of `obj` as the scrud views' object checks read them: for
+    a resource's content (a mapping, what those checks give) the resource's
+    own contexts (`rbac_contexts_of`, as ``Resource.rbac_contexts``), for
+    anything else scoped-rbac's ``access.object_contexts``. A
+    ``contexts_for`` of your own on a scrud view calls it where it would call
+    ``super().contexts_for(obj)``, which reads attributes a ``dict`` does not
+    have: ``return resource_contexts(obj) + ["extra"]``."""
+    if isinstance(obj, Mapping):
+        return rbac_contexts_of(obj)
+    return access.object_contexts(obj)
+
+
+def _leaves(permission):
+    """The permissions composed into `permission` by DRF's ``&``, ``|`` and
+    ``~`` (their ``op1``/``op2``), or `permission` itself."""
+    if not isinstance(permission, (AND, OR, NOT)):
+        yield permission
+        return
+    for name in ("op1", "op2"):
+        operand = getattr(permission, name, None)
+        if operand is not None:
+            yield from _leaves(operand)
+
+
+def reading_content(permissions):
+    """`permissions` (an iterable of DRF permissions, composed ones
+    included), each ``IsAuthorized`` among them whose class keeps
+    scoped-rbac's ``contexts_for`` given `resource_contexts` as its
+    ``contexts_for``, so that it reads a resource's contexts from the content
+    the scrud views' checks give it. Judged by the class, as scoped-rbac's
+    ``custom_contexts_for`` judges it, so such a permission still counts as
+    keeping the default (a list stays on its SQL path). Idempotent: the same
+    function every time, never a wrapper. Returns the permissions, as a
+    list."""
+    permissions = list(permissions)
+    for permission in permissions:
+        for leaf in _leaves(permission):
+            if isinstance(leaf, IsAuthorized) and custom_contexts_for(leaf) is None:
+                leaf.contexts_for = resource_contexts
+    return permissions
+
+
+@contextmanager
+def checks_read_content(view):
+    """While the block runs, every permission `view.get_permissions()`
+    returns, whatever builds it, goes through `reading_content`: for the
+    checks scoped-rbac and DRF run themselves (the detail route's object
+    check and readability, which call ``get_permissions()`` on their own). A
+    block inside another leaves the outer one in place."""
+    own = view.get_permissions
+    if getattr(own, "_scrud_reads_content", False):
+        yield
+        return
+
+    def get_permissions():
+        return reading_content(own())
+
+    get_permissions._scrud_reads_content = True
+    missing = object()
+    previous = view.__dict__.get("get_permissions", missing)
+    view.get_permissions = get_permissions
+    try:
+        yield
+    finally:
+        if previous is missing:
+            del view.get_permissions
+        else:
+            view.get_permissions = previous
 
 
 def authorized_transitions(resource, configuration):

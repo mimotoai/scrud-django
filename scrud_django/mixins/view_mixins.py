@@ -9,17 +9,11 @@ from django.db.models import Max
 from django.http import Http404
 from rest_framework import status
 from rest_framework.generics import get_object_or_404
-from rest_framework.permissions import AND, NOT, OR
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
-from scoped_rbac.permissions import (
-    AccessAPIError,
-    IsAuthorized,
-    custom_contexts_for,
-    drf_error,
-)
+from scoped_rbac.permissions import AccessAPIError, drf_error
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django.exceptions import (
@@ -37,7 +31,7 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
 from scrud_django.models.resource import MAX_CONTEXT_BYTES, context_fits
 from scrud_django.paginations import StandardResultsSetPagination
-from scrud_django.permissions import content_of
+from scrud_django.permissions import checks_read_content, content_of, reading_content
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
@@ -131,40 +125,6 @@ def check_written_contexts(request):
         raise RbacContextInvalidError(
             f"An rbac_context may be at most {MAX_CONTEXT_BYTES} bytes long in UTF-8."
         )
-
-
-def leaf_permissions(permission):
-    """The permissions composed into `permission` by DRF's ``&``, ``|`` and
-    ``~`` (their ``op1``/``op2``), or `permission` itself, as scoped-rbac's
-    views read them."""
-    operands = [
-        getattr(permission, name, None)
-        for name in ("op1", "op2")
-        if isinstance(permission, (AND, OR, NOT))
-    ]
-    if not operands:
-        yield permission
-        return
-    for operand in operands:
-        if operand is not None:
-            yield from leaf_permissions(operand)
-
-
-def resource_contexts_for(permission):
-    """`permission`'s ``contexts_for`` (an ``IsAuthorized`` whose class keeps
-    scoped-rbac's) for the scrud views' object checks, which give it a
-    resource's content (a ``dict``): its contexts as the `Resource` has them
-    (`rbac_contexts_of` the content, ``Resource.rbac_contexts``), since
-    scoped-rbac's ``access.object_contexts`` reads attributes a ``dict`` does
-    not have; any other object as scoped-rbac reads it."""
-    default = permission.contexts_for
-
-    def contexts_for(obj):
-        if isinstance(obj, Mapping):
-            return rbac_contexts_of(obj)
-        return default(obj)
-
-    return contexts_for
 
 
 class ScrudfulMeta:
@@ -511,17 +471,6 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
             Resource.objects.filter(resource_type=self.get_resource_type())
         )
 
-    def get_permissions(self):
-        """DRF's, with each ``IsAuthorized`` (nested ones included) whose class
-        keeps scoped-rbac's ``contexts_for`` reading a resource's contexts from
-        the content its object checks are given (`resource_contexts_for`)."""
-        permissions = super().get_permissions()
-        for permission in permissions:
-            for leaf in leaf_permissions(permission):
-                if isinstance(leaf, IsAuthorized) and custom_contexts_for(leaf) is None:
-                    leaf.contexts_for = resource_contexts_for(leaf)
-        return permissions
-
     def get_object(self):
         """DRF's ``get_object()`` (the filtered queryset, the lookup by
         ``lookup_field``, a 404 if missing), except that the object check is
@@ -529,8 +478,11 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         resource holds: ``check_object_permissions``, every
         ``has_object_permission`` and ``has_context_permission`` it calls,
         their operators, and the readability check of a denied resource (404
-        or 403), as the request check gives them the body. A resource stored
-        in a context reserved once normalised is a 404 first, as scoped-rbac's
+        or 403), as the request check gives them the body; the permissions
+        those checks build read a resource's contexts from it
+        (`scrud_django.permissions.checks_read_content`, whatever the view's
+        ``get_permissions()`` does). A resource stored in a context reserved
+        once normalised is a 404 first, as scoped-rbac's
         ``check_object_permissions`` answers it for an object of its own. The
         `Resource` is returned."""
         previous, self._scrud_in_get_object = self._scrud_in_get_object, True
@@ -550,7 +502,8 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
             # The content checked below has no rbac_context attribute for
             # scoped-rbac's check_object_permissions to read.
             raise Http404
-        self.check_object_permissions(self.request, self.object_for_checks(obj))
+        with checks_read_content(self):
+            self.check_object_permissions(self.request, self.object_for_checks(obj))
         return obj
 
     def object_for_checks(self, obj):
@@ -608,7 +561,7 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         ``has_context_permission`` must allow it in each context its
         ``contexts_for`` names."""
         check = self.object_for_checks(obj)
-        for leaf in self.get_post_save_permissions():
+        for leaf in reading_content(self.get_post_save_permissions()):
             contexts = access.usable_contexts(leaf.contexts_for(check))
             allowed = leaf.has_object_permission(request, self, check) and all(
                 leaf.has_context_permission(request, self, check, context)

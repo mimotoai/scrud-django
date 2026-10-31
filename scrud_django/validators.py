@@ -18,7 +18,7 @@ from scrud_django.exceptions import (
 )
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import ResourceType
-from scrud_django.permissions import checking_transition, content_of
+from scrud_django.permissions import _checking_transition, content_of, reading_content
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     WorkflowPolicy,
@@ -378,9 +378,8 @@ class WorkflowValidator:
         """Whether the request's action on the type is allowed in `rbac_context`
         (``None``: no context, superusers only, as scoped-rbac's object checks)
         for `transition`: the ``scrud_workflow`` operator, and any permission
-        class, reads it as `current_transition`
-        (``scrud_django.permissions.checking_transition``, only while this
-        check asks), and every operator and CEL condition reads the body `data`
+        class, reads it as `current_transition` (set only while this check
+        asks), and every operator and CEL condition reads the body `data`
         as sent, a ``dict`` (``{}`` for a body that is not a JSON object), as in
         scoped-rbac's request check. Without `transition_check`, on the body
         alone, outside the workflow check (``scrud_workflow`` allows there).
@@ -401,7 +400,7 @@ class WorkflowValidator:
         body = plain_body(data)
         if not transition_check:
             return self.allowed_on(request, permission, rbac_context, body, context)
-        with checking_transition(transition):
+        with _checking_transition(transition):
             return self.allowed_on(request, permission, rbac_context, body, context)
 
     @staticmethod
@@ -420,7 +419,7 @@ class WorkflowValidator:
         view = getattr(context, "context", {}).get("view")
         return all(
             leaf.has_context_permission(request, view, body, rbac_context)
-            for leaf in rbac_permissions_of(view)
+            for leaf in reading_content(rbac_permissions_of(view))
         )
 
 

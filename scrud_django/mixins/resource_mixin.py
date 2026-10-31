@@ -28,8 +28,8 @@ def rbac_contexts_of(content):
     resource that names none would have no context, which no role grants.
     Absent, ``None`` and ``""`` are all the default context. The one reading of
     a resource's contexts: object checks (``Resource.rbac_contexts``, and
-    scoped-rbac's default ``contexts_for`` on the scrud views, which give
-    checks the content), and the workflow checks (``WorkflowValidator``) all
+    ``scrud_django.permissions.resource_contexts``, scoped-rbac's default
+    ``contexts_for`` on the scrud views, which give checks the content), and the workflow checks (``WorkflowValidator``) all
     use it."""
     context = content.get("rbac_context") if isinstance(content, Mapping) else None
     if isinstance(context, str):

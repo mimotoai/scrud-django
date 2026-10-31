@@ -5,6 +5,7 @@ check authorizes a transition (which they read as
 (a ``dict``) on object checks. An operator that evaluates CEL itself reads it
 as scoped-rbac does. A check must only read what it gets: a change is stored."""
 
+from collections.abc import Mapping
 from uuid import uuid4
 
 import pytest
@@ -341,14 +342,21 @@ def client_with(*grants):
 
 def assert_plain_dicts(received):
     """Every object the operator received (``None`` from a request check
-    without a body aside) is an exact ``dict``, its arrays exact lists."""
+    without a body aside) is an exact ``dict``, its objects and arrays exact
+    ``dict``s and ``list``s at every level."""
     objects = [obj for obj in received if obj is not None]
     assert objects, received
     for obj in objects:
         assert type(obj) is dict, type(obj)
-        for value in obj.values():
-            if isinstance(value, (list, tuple)):
-                assert type(value) is list, type(value)
+        stack = [obj]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, Mapping):
+                assert type(node) is dict, type(node)
+                stack.extend(node.values())
+            elif isinstance(node, (list, tuple)):
+                assert type(node) is list, type(node)
+                stack.extend(node)
 
 
 def a_profile(name, context="q"):
@@ -547,19 +555,19 @@ def test_current_transition_is_the_workflow_checks_and_none_outside_it():
 
 
 def test_scrud_workflow_allows_outside_the_workflow_check_only_what_it_lists():
-    from scrud_django.permissions import authorized_transitions, checking_transition
+    from scrud_django.permissions import _checking_transition, authorized_transitions
 
     configuration = {"authorized_transitions": ["start"]}
     body = {"title": "x"}
     # Outside the workflow check (the request and object checks): allowed,
     # the workflow check decides the transition.
     assert authorized_transitions(body, configuration) is True
-    with checking_transition("start"):
+    with _checking_transition("start"):
         assert authorized_transitions(body, configuration) is True
-    with checking_transition("finish"):
+    with _checking_transition("finish"):
         assert authorized_transitions(body, configuration) is False
     # Where no workflow policy applies there is no transition: refused.
-    with checking_transition(None):
+    with _checking_transition(None):
         assert authorized_transitions(body, configuration) is False
         assert authorized_transitions(body, {}) is False
     assert authorized_transitions(body, configuration) is True

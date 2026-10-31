@@ -18,7 +18,7 @@ from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
-from scrud_django.permissions import content_of
+from scrud_django.permissions import content_of, resource_contexts
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
@@ -168,21 +168,32 @@ def test_a_conditional_list_shows_what_the_detail_route_shows(condition):
 def test_operators_get_the_content_as_a_plain_dict():
     ok = profile("ok")
     client = conditional_client(OPERATOR)
+
+    def received():
+        """The objects the operator got since the last call (``None``, from
+        a request check without a body, aside)."""
+        objects = [obj for obj in SEEN if obj is not None]
+        SEEN.clear()
+        for obj in objects:
+            assert type(obj) is dict, type(obj)
+            assert obj == ok.content
+        return objects
+
+    # A GET's and a list's request checks have no body (None): every object
+    # received comes from the detail route's object check, then from the
+    # list's per-object check.
     assert client.get(detail(ok)).status_code == 200
+    assert len(received()) >= 1
     assert listed(client) == {"ok"}
+    assert len(received()) >= 1
+    # A PUT: the request check's body (one call, in "q"), then the object
+    # check's and the post-save check's content (one call, then two).
     body = {"name": "ok", "rbac_context": "q"}
     response = client.put(
         detail(ok), body, format="json", HTTP_IF_MATCH=quote_etag(ok.etag)
     )
     assert response.status_code == 200, response.content
-    # The detail and list object checks and the PUT's object and post-save
-    # checks give the content, as scoped-rbac's request check gives the
-    # parsed body itself: an exact dict, the stored content's fields.
-    seen = [obj for obj in SEEN if obj is not None]
-    assert len(seen) >= 3  # the GET, the list and the PUT
-    for obj in seen:
-        assert type(obj) is dict, type(obj)
-        assert obj == ok.content
+    assert len(received()) >= 4
 
 
 def test_an_object_check_gets_the_stored_content_itself():
@@ -312,3 +323,85 @@ def test_a_resource_stored_in_a_context_reserved_once_normalised_is_missing():
     response = client.delete(detail(hidden), HTTP_IF_MATCH=quote_etag(hidden.etag))
     assert response.status_code == 404, response.content
     assert Resource.objects.get(pk=hidden.pk).content == hidden.content
+
+
+# The user of the get_permissions pattern tests: GET (and list) in "a" and
+# "b", PUT and POST in "a" only.
+PATTERN_GRANTS = (
+    ({"http.GET": [PP, PP_LIST], "http.PUT": [PP], "http.POST": [PP]}, "a"),
+    ({"http.GET": [PP, PP_LIST]}, "b"),
+)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "prefix", ["no-super", "per-action", "appending", "shared", "partner-profiles"]
+)
+def test_every_get_permissions_pattern_reads_the_contents_contexts(prefix):
+    # tests/urls.py: a get_permissions that does not call super(), one with a
+    # branch per action, one that adds a composed IsAuthorized after super()'s,
+    # one that reuses one instance, and the plain view. Each reads a
+    # resource's contexts from the content its checks get (the detail
+    # route's object and readability checks, the list, the post-save check of
+    # each 200 PUT and 201 POST): 200 or 403 as the grants say, never an
+    # error.
+    from .urls import NoSuperResourceViewSet  # noqa: F401  (registers the routes)
+
+    def path(resource=None):
+        if prefix == "partner-profiles":
+            name = "partner-profiles"
+        else:
+            name = f"{prefix}-partner-profiles"
+        if resource is None:
+            return reverse(f"{name}-list")
+        return reverse(f"{name}-detail", args=[resource.pk])
+
+    in_a, in_b = profile("in a", "a"), profile("in b", "b")
+    client = client_with(*PATTERN_GRANTS)
+    for resource in (in_a, in_b):
+        response = client.get(path(resource))
+        assert response.status_code == 200, response.content
+    assert listed(client, path()) == {"in a", "in b"}
+    response = client.put(
+        path(in_a),
+        {"name": "changed", "rbac_context": "a"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(in_a.etag),
+    )
+    assert response.status_code == 200, response.content
+    # Readable in "b", not writable there: the object check refuses, 403.
+    response = client.put(
+        path(in_b),
+        {"name": "changed", "rbac_context": "b"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(in_b.etag),
+    )
+    assert response.status_code == 403, response.content
+    # A create: the request check, then the post-save check of the content.
+    response = client.post(path(), {"name": "new", "rbac_context": "a"}, format="json")
+    assert response.status_code == 201, response.content
+    response = client.post(path(), {"name": "new", "rbac_context": "b"}, format="json")
+    assert response.status_code == 403, response.content
+
+
+@pytest.mark.django_db
+def test_a_reused_permission_instance_is_not_wrapped_again():
+    from .urls import SHARED_IS_AUTHORIZED
+
+    in_a = profile("in a", "a")
+    client = client_with(*PATTERN_GRANTS)
+    url = reverse("shared-partner-profiles-detail", args=[in_a.pk])
+    seen = []
+    for _ in range(5):
+        assert client.get(url).status_code == 200
+        seen.append(vars(SHARED_IS_AUTHORIZED).get("contexts_for"))
+    # One contexts_for, the same every time: no wrapper around the last one.
+    assert all(contexts_for is resource_contexts for contexts_for in seen), seen
+
+
+def test_resource_contexts_reads_the_content_or_the_object():
+    # A contexts_for of your own calls it where it would call super()'s.
+    assert resource_contexts({"rbac_context": ["a", "b"]}) == ["a", "b"]
+    assert resource_contexts({}) == [""]
+    resource = Resource(content={"rbac_context": "a"})
+    assert resource_contexts(resource) == ["a"]

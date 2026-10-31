@@ -5,6 +5,7 @@ from django.urls import include, path
 from django.utils.timezone import now
 from rest_framework import serializers, status, viewsets
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from scoped_rbac import access
 from scoped_rbac.filters import RbacFilter
@@ -419,3 +420,70 @@ urlpatterns.extend(
         ),
     ]
 )
+
+
+# Adopters' get_permissions overrides on scrud views, as DRF allows them.
+
+
+class NoSuperResourceViewSet(ResourceViewSet):
+    """A get_permissions that builds its own permissions, without super()."""
+
+    def get_permissions(self):
+        return [IsAuthorized()]
+
+
+class PerActionResourceViewSet(ResourceViewSet):
+    """A get_permissions with a branch per action: fresh permissions for a
+    write, super()'s otherwise."""
+
+    def get_permissions(self):
+        if self.action in ("update", "destroy"):
+            return [IsAuthorized(), IsAuthenticated()]
+        return super().get_permissions()
+
+
+class AppendingResourceViewSet(ResourceViewSet):
+    """A get_permissions that calls super() and adds another IsAuthorized,
+    composed with DRF's ``&``."""
+
+    def get_permissions(self):
+        return super().get_permissions() + [(IsAuthorized & IsAuthenticated)()]
+
+
+# One IsAuthorized instance every request of SharedResourceViewSet reuses.
+SHARED_IS_AUTHORIZED = IsAuthorized()
+
+
+class SharedResourceViewSet(ResourceViewSet):
+    """A get_permissions that returns the same instance on every call."""
+
+    def get_permissions(self):
+        return [SHARED_IS_AUTHORIZED]
+
+
+for _prefix, _viewset in (
+    ("no-super", NoSuperResourceViewSet),
+    ("per-action", PerActionResourceViewSet),
+    ("appending", AppendingResourceViewSet),
+    ("shared", SharedResourceViewSet),
+):
+    urlpatterns.extend(
+        [
+            path(
+                f"{_prefix}/partner-profiles/",
+                _viewset.as_view(
+                    {"get": "list", "post": "create"},
+                    resource_type_name="partner-profiles",
+                ),
+                name=f"{_prefix}-partner-profiles-list",
+            ),
+            path(
+                f"{_prefix}/partner-profiles/<slug>/",
+                _viewset.as_view(
+                    {"get": "retrieve", "put": "update", "delete": "destroy"},
+                    resource_type_name="partner-profiles",
+                ),
+                name=f"{_prefix}-partner-profiles-detail",
+            ),
+        ]
+    )

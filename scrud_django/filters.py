@@ -41,7 +41,7 @@ from scoped_rbac.policy import Permission
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
 from scrud_django.models import Resource, ResourceContext, ResourceRemoval
-from scrud_django.permissions import content_of
+from scrud_django.permissions import checks_read_content, content_of, reading_content
 
 # What an object check may raise to refuse one object (DRF's and Django's
 # idioms): a list leaves that object out, as its detail route refuses it.
@@ -181,8 +181,9 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
     suffices), evaluated per resource as ``access._filter_per_object`` does,
     except that each ``contexts_for`` and each condition is given the
     resource's content (`content_of`, a ``dict``), as the detail route's object
-    check gives it (``ResourceViewMixin.get_permissions`` makes scoped-rbac's
-    default ``contexts_for`` read a resource's contexts from it). A
+    check gives it (`ResourceRbacFilter` builds `contexts_for` under
+    `checks_read_content`, so scoped-rbac's default reads a resource's
+    contexts from it). A
     superuser whose grants are unrestricted gets every resource not stored in
     a reserved context; otherwise every resource examined counts against
     ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``."""
@@ -331,6 +332,9 @@ def filter_by_object_checks(queryset, request, view, requirement, object_for_che
             # Raised for this object, the detail route refuses it alone.
             return False
 
+    # Each permission reads a resource's contexts from the content
+    # (`reading_content`), whatever the view's get_permissions() built.
+    reading_content(_requirement_leaves(requirement))
     max_rows = conditional_list_max_rows()
     allowed_pks = []
     bounded = queryset.order_by()[: max_rows + 1]
@@ -411,7 +415,10 @@ class ResourceRbacFilter(RbacFilter):
         ):
             return super().filter_queryset_for_get(request, queryset, view)
         permission = Permission(http_action_iri_for(request), view.resource_type_iri)
-        contexts_for = self.contexts_for(view)
+        # A permission that keeps scoped-rbac's contexts_for reads a
+        # resource's contexts from the content it is given.
+        with checks_read_content(view):
+            contexts_for = self.contexts_for(view)
         try:
             if access.non_default_contexts_for(contexts_for) is not None:
                 return filter_readable_resources_per_object(

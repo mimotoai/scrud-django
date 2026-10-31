@@ -113,6 +113,44 @@ def test_scoped_rbacs_per_object_filter_is_what_scrud_re_implements():
     )
 
 
+def test_scoped_rbacs_custom_contexts_for_reads_the_permissions_class():
+    # scrud_django.permissions.reading_content gives a permission that keeps
+    # scoped-rbac's contexts_for an instance-level one: lists stay on their
+    # SQL path only while custom_contexts_for judges a permission by its
+    # class, not by the bound method.
+    from scoped_rbac.permissions import IsAuthorized, custom_contexts_for
+
+    from scrud_django.permissions import reading_content
+
+    assert code_names(custom_contexts_for) == (
+        "IsAuthorized",
+        "access",
+        "contexts_for",
+        "getattr",
+        "object_contexts",
+        "type",
+    )
+    (permission,) = reading_content([IsAuthorized()])
+    assert "contexts_for" in vars(permission)
+    assert custom_contexts_for(permission) is None
+
+
+@pytest.mark.django_db
+def test_a_scrud_view_reading_the_content_lists_by_its_default_contexts():
+    from scrud_django.permissions import checks_read_content
+
+    reverse("partner-profiles-list")
+    view = ResourceViewSet(resource_type_name="partner-profiles")
+    view.action_map = {"get": "list"}
+    request = APIRequestFactory().get("/")
+    force_authenticate(request, user=user_with())
+    view.request = view.initialize_request(request)
+    view.args, view.kwargs, view.format_kwarg = (), {}, None
+    with checks_read_content(view):
+        assert view.rbac_list_contexts_for() is None
+    assert "get_permissions" not in vars(view)
+
+
 def user_with(*grants, **flags):
     user = UserFactory(**flags)
     for definition, context in grants:
