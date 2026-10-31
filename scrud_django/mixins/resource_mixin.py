@@ -23,13 +23,14 @@ workflow_policy_type_uri = WORKFLOW_POLICY_TYPE_URI
 
 def rbac_contexts_of(content):
     """The contexts a resource's `content` is in: its ``rbac_context`` when it is
-    a string or a list or tuple of strings (a read-only view of an array, as
-    checks read the body, is a tuple), else ``DEFAULT_CONTEXT``, the
+    a string or a list or tuple of strings, else ``DEFAULT_CONTEXT``, the
     context scoped-rbac authorizes a POST that names none in. Without it a
     resource that names none would have no context, which no role grants.
     Absent, ``None`` and ``""`` are all the default context. The one reading of
-    a resource's contexts: object checks (``Resource.rbac_contexts``) and the
-    workflow checks (``WorkflowValidator``) both use it."""
+    a resource's contexts: object checks (``Resource.rbac_contexts``, and
+    scoped-rbac's default ``contexts_for`` on the scrud views, which give
+    checks the content), and the workflow checks (``WorkflowValidator``) all
+    use it."""
     context = content.get("rbac_context") if isinstance(content, Mapping) else None
     if isinstance(context, str):
         return [context]
@@ -82,9 +83,8 @@ class ResourceMixin(ScrudfulMixin):
     def to_cel(self):
         """What a grant's CEL condition reads for this resource: its content
         when it is a mapping, else ``{}``. The scrud views' object checks and
-        list filter give conditions a `scrud_django.permissions.ResourceCheck`
-        (whose ``to_cel()`` is the same), so that operators get a read-only
-        mapping over the content too."""
+        list filter give conditions (and operators) the content itself
+        (`scrud_django.permissions.content_of`), the same fields."""
         return self.content if isinstance(self.content, Mapping) else {}
 
     def save(

@@ -2,12 +2,11 @@
 ``GenericAPIView.get_object`` (as ``ResourceViewMixin.get_object``) and
 scoped-rbac's private ``access._filter_per_object`` (as
 ``filters.filter_readable_resources_per_object``), to give object checks a
-`ResourceCheck`, and DRF's ``GenericAPIView.filter_queryset`` (as
-``ListValidatorsMixin.filter_queryset``, which narrows a list by the object
-check right after the RBAC filter). It also relies on upstream internals:
-DRF's ``Request.data`` reading ``_full_data`` (``read_only_body``) and the
-``error`` / ``error_body_func`` attributes of scrudful's ``ScrudfulViewFunc``
-(``gate_uniform_errors``). These tests fail when upstream drifts from what
+resource's content (a ``dict``), and DRF's ``GenericAPIView.filter_queryset``
+(as ``ListValidatorsMixin.filter_queryset``, which narrows a list by the
+object check right after the RBAC filter). It also relies on upstream
+internals: the ``error`` / ``error_body_func`` attributes of scrudful's
+``ScrudfulViewFunc`` (``gate_uniform_errors``). These tests fail when upstream drifts from what
 was re-implemented or relied on: the names the upstream code uses are
 pinned, and the re-implementations must give upstream's results where
 upstream's behaviour is the one wanted.
@@ -86,19 +85,6 @@ def test_drfs_filter_queryset_is_what_list_validators_mixin_re_implements():
     )
 
 
-def test_drfs_request_data_reads_full_data():
-    # view_mixins.read_only_body gives scoped-rbac's request check a
-    # read-only body by setting the request's _full_data for its length.
-    from rest_framework.request import Request
-
-    assert code_names(Request.data.fget) == (
-        "_full_data",
-        "_hasattr",
-        "_load_data_and_files",
-        "wrap_attributeerrors",
-    )
-
-
 def test_scoped_rbacs_per_object_filter_is_what_scrud_re_implements():
     assert code_names(access._filter_per_object) == (
         "AnyOf",
@@ -149,9 +135,11 @@ def request_of(user):
 
 
 def team_of(obj):
-    """A ``contexts_for`` that reads only an attribute, as both a `Resource`
-    and a `ResourceCheck` answer it."""
-    return [obj.content.get("team", "")]
+    """A ``contexts_for`` that reads a resource's ``team``: scoped-rbac gives
+    it the `Resource`, scrud-django's object checks its content (a
+    ``dict``)."""
+    content = obj if isinstance(obj, dict) else obj.content
+    return [content.get("team", "")]
 
 
 @pytest.mark.django_db

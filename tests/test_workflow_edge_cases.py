@@ -350,7 +350,7 @@ def test_unconditional_writer_of_one_context_of_a_shared_resource_is_unaffected(
 @pytest.mark.django_db
 def test_cel_conditioned_post_on_a_workflow_type_reads_the_body():
     # The workflow check authorizes the transition with the body as the fields
-    # a CEL condition reads (it was a TransitionCheck, not a mapping: a 500).
+    # a CEL condition reads (it once gave CEL an object, not a mapping: a 500).
     reverse("todos-list")
     user = user_with(({"http.POST": {TODO: {"condition": 'title == "ok"'}}}, "q"))
     client = client_for(user)

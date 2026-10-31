@@ -1,21 +1,25 @@
-import copy
 import hashlib
 from collections.abc import Mapping
-from contextlib import contextmanager
 from urllib.parse import urlencode
 
 import reversion
 from django.core.exceptions import FieldError, ImproperlyConfigured, ValidationError
 from django.db import DEFAULT_DB_ALIAS, router, transaction
 from django.db.models import Max
-from django.http import Http404, QueryDict
+from django.http import Http404
 from rest_framework import status
 from rest_framework.generics import get_object_or_404
+from rest_framework.permissions import AND, NOT, OR
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
-from scoped_rbac.permissions import AccessAPIError, drf_error
+from scoped_rbac.permissions import (
+    AccessAPIError,
+    IsAuthorized,
+    custom_contexts_for,
+    drf_error,
+)
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django.exceptions import (
@@ -33,7 +37,7 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
 from scrud_django.models.resource import MAX_CONTEXT_BYTES, context_fits
 from scrud_django.paginations import StandardResultsSetPagination
-from scrud_django.permissions import BodyCheck, resource_check
+from scrud_django.permissions import content_of
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
@@ -129,37 +133,38 @@ def check_written_contexts(request):
         )
 
 
-@contextmanager
-def read_only_body(request):
-    """While the block runs, `request`'s ``data`` (a POST, PUT or PATCH body)
-    is a `BodyCheck`, read-only at every level, for a JSON object (a deep
-    copy for a JSON array, which scoped-rbac's request check passes on as a
-    ``list``): the permission classes and the operators of their grants'
-    conditions read the body, and cannot change what is then stored. The
-    body is restored after. A form body (a ``QueryDict``, on a view that
-    parses one) is left as it is. (DRF's ``Request.data`` reads
-    ``_full_data``.)"""
-    if request.method not in BODY_METHODS:
-        yield
+def leaf_permissions(permission):
+    """The permissions composed into `permission` by DRF's ``&``, ``|`` and
+    ``~`` (their ``op1``/``op2``), or `permission` itself, as scoped-rbac's
+    views read them."""
+    operands = [
+        getattr(permission, name, None)
+        for name in ("op1", "op2")
+        if isinstance(permission, (AND, OR, NOT))
+    ]
+    if not operands:
+        yield permission
         return
-    data = request.data
-    if isinstance(data, QueryDict):
-        # A form body (a view that accepts one): its several values per key
-        # are read through QueryDict's own methods; left as it is.
-        yield
-        return
-    if isinstance(data, Mapping):
-        checked = BodyCheck(data)
-    elif isinstance(data, list):
-        checked = copy.deepcopy(data)
-    else:
-        yield
-        return
-    request._full_data = checked
-    try:
-        yield
-    finally:
-        request._full_data = data
+    for operand in operands:
+        if operand is not None:
+            yield from leaf_permissions(operand)
+
+
+def resource_contexts_for(permission):
+    """`permission`'s ``contexts_for`` (an ``IsAuthorized`` whose class keeps
+    scoped-rbac's) for the scrud views' object checks, which give it a
+    resource's content (a ``dict``): its contexts as the `Resource` has them
+    (`rbac_contexts_of` the content, ``Resource.rbac_contexts``), since
+    scoped-rbac's ``access.object_contexts`` reads attributes a ``dict`` does
+    not have; any other object as scoped-rbac reads it."""
+    default = permission.contexts_for
+
+    def contexts_for(obj):
+        if isinstance(obj, Mapping):
+            return rbac_contexts_of(obj)
+        return default(obj)
+
+    return contexts_for
 
 
 class ScrudfulMeta:
@@ -346,7 +351,7 @@ class ListValidatorsMixin:
 
     def object_for_checks(self, obj):
         """`obj` as the detail route gives it to the object check: itself
-        (`ResourceViewMixin` gives a `ResourceCheck`)."""
+        (`ResourceViewMixin` gives the resource's content)."""
         return obj
 
     def lists_by_object_checks(self):
@@ -506,14 +511,28 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
             Resource.objects.filter(resource_type=self.get_resource_type())
         )
 
+    def get_permissions(self):
+        """DRF's, with each ``IsAuthorized`` (nested ones included) whose class
+        keeps scoped-rbac's ``contexts_for`` reading a resource's contexts from
+        the content its object checks are given (`resource_contexts_for`)."""
+        permissions = super().get_permissions()
+        for permission in permissions:
+            for leaf in leaf_permissions(permission):
+                if isinstance(leaf, IsAuthorized) and custom_contexts_for(leaf) is None:
+                    leaf.contexts_for = resource_contexts_for(leaf)
+        return permissions
+
     def get_object(self):
         """DRF's ``get_object()`` (the filtered queryset, the lookup by
         ``lookup_field``, a 404 if missing), except that the object check is
-        given the resource as a `ResourceCheck`, a read-only mapping over its
-        content: ``check_object_permissions``, every ``has_object_permission``
-        and ``has_context_permission`` it calls, and the readability check of
-        a denied resource (404 or 403), so that an operator reads the content
-        as on the request check. The `Resource` is returned."""
+        given the resource's content (`object_for_checks`), the ``dict`` the
+        resource holds: ``check_object_permissions``, every
+        ``has_object_permission`` and ``has_context_permission`` it calls,
+        their operators, and the readability check of a denied resource (404
+        or 403), as the request check gives them the body. A resource stored
+        in a context reserved once normalised is a 404 first, as scoped-rbac's
+        ``check_object_permissions`` answers it for an object of its own. The
+        `Resource` is returned."""
         previous, self._scrud_in_get_object = self._scrud_in_get_object, True
         try:
             queryset = self.filter_queryset(self.get_queryset())
@@ -527,12 +546,18 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         if obj.resource_type_id == resource_type.pk:
             # The type the view read (on the same database), not read again.
             Resource.resource_type.field.set_cached_value(obj, resource_type)
+        if access.stored_in_reserved_context(obj):
+            # The content checked below has no rbac_context attribute for
+            # scoped-rbac's check_object_permissions to read.
+            raise Http404
         self.check_object_permissions(self.request, self.object_for_checks(obj))
         return obj
 
     def object_for_checks(self, obj):
-        """`obj` as object checks get it: a `ResourceCheck`."""
-        return resource_check(obj)
+        """`obj` (a `Resource`) as object checks get it: its content
+        (`scrud_django.permissions.content_of`), the stored ``dict``
+        itself."""
+        return content_of(obj)
 
     def get_instance(self, request, slug: str):
         """The resource named by the URL: DRF's ``get_object()``, filtered and
@@ -575,13 +600,14 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         write, in each of those contexts.
 
         It asks each permission itself, so that an ``IsAuthorized`` subclass's
-        overrides apply, giving it the saved resource as a `ResourceCheck`, as
-        the detail route's object check does: its ``has_object_permission``
+        overrides apply, giving it the saved resource's content
+        (`object_for_checks`), as the detail route's object check does: its
+        ``has_object_permission``
         must allow it (as scoped-rbac's own post-save check asks; superusers
         only for a resource in no usable context), and its
         ``has_context_permission`` must allow it in each context its
         ``contexts_for`` names."""
-        check = resource_check(obj)
+        check = self.object_for_checks(obj)
         for leaf in self.get_post_save_permissions():
             contexts = access.usable_contexts(leaf.contexts_for(check))
             allowed = leaf.has_object_permission(request, self, check) and all(
@@ -709,13 +735,12 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         400, before scoped-rbac's request check (which would authorize an
         empty body as ``{}`` and refuse an empty context list with 403 for
         everyone), and a body nested deeper than `MAX_BODY_DEPTH`
-        (`check_body_depth`): they depend on the body alone. The request
-        check then reads the body as a `BodyCheck` (`read_only_body`)."""
+        (`check_body_depth`): they depend on the body alone. scoped-rbac's
+        request check then reads the body itself (``request.data``)."""
         check_body_present(request, self)
         check_body_depth(request)
         check_written_contexts(request)
-        with read_only_body(request):
-            super().check_permissions(request)
+        super().check_permissions(request)
 
     def list_last_modified(self):
         """The list's Last-Modified: the newest ``modified_at`` of every
@@ -864,13 +889,6 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
             return set(rows.select_for_update().values_list("pk", flat=True))
         except (TypeError, ValueError, ValidationError):
             return None
-
-    def check_permissions(self, request):
-        """DRF's, with the body read as a `BodyCheck` (`read_only_body`) by
-        the permission classes and their grants' operators, as on the scrud
-        views: they cannot change what the view then stores."""
-        with read_only_body(request):
-            super().check_permissions(request)
 
     def get_resource_type(self):
         """The view's resource type (``resource_type_name``), read once per

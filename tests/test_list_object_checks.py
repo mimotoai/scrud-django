@@ -3,8 +3,8 @@
 ``has_context_permission`` (``tests.urls.ContextDenyingIsAuthorized`` refuses
 the context "denied", ``LockedDenyingIsAuthorized`` a resource with
 ``"locked": true``): after the RBAC filter, each listed object is given to the
-permission class as the detail route gives it (a ``ResourceCheck`` for a
-resource, the object itself for a model of your own), with the item type's
+permission class as the detail route gives it (its content, a ``dict``, for
+a resource, the object itself for a model of your own), with the item type's
 ``http.GET``. The list's validators follow what is listed. A view whose
 permission class overrides neither keeps the SQL-only list."""
 
@@ -21,7 +21,6 @@ from rest_framework.test import APIClient
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.models import Resource
-from scrud_django.permissions import ResourceCheck
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
@@ -142,7 +141,7 @@ def test_the_list_validators_follow_what_the_permission_class_lets_through():
 
 
 @pytest.mark.django_db
-def test_the_permission_class_gets_each_listed_resource_as_a_resource_check():
+def test_the_permission_class_gets_each_listed_resource_as_its_content():
     from .urls import RecordingIsAuthorized  # importing it registers the routes
 
     shown = profile("shown", "a")
@@ -152,8 +151,8 @@ def test_the_permission_class_gets_each_listed_resource_as_a_resource_check():
     assert listed(response) == ["shown"]
     seen = [obj for name, obj in RecordingIsAuthorized.SEEN]
     assert seen, RecordingIsAuthorized.SEEN
-    assert all(isinstance(obj, ResourceCheck) for obj in seen)
-    assert {obj.resource.pk for obj in seen} == {shown.pk}
+    assert all(type(obj) is dict for obj in seen), seen
+    assert all(obj == shown.content for obj in seen), seen
 
 
 @pytest.mark.django_db

@@ -41,7 +41,7 @@ from scoped_rbac.policy import Permission
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
 from scrud_django.models import Resource, ResourceContext, ResourceRemoval
-from scrud_django.permissions import resource_check
+from scrud_django.permissions import content_of
 
 # What an object check may raise to refuse one object (DRF's and Django's
 # idioms): a list leaves that object out, as its detail route refuses it.
@@ -110,8 +110,8 @@ def filter_readable_resources(queryset, request, permission):
       ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``; the others with a row in a
       context that may grant it by a condition (or any, for a condition that
       applies in every context) are evaluated one by one with the resource as
-      the condition's resource (``access.cel_resource`` of its
-      `ResourceCheck`, as the detail route's object check gives it), as
+      the condition's resource (its content, `content_of`, as the detail
+      route's object check gives it), as
       ``access._filter_per_object`` does. More candidates than the cap raise
       ``access.ConditionalListTooLarge``.
 
@@ -166,7 +166,7 @@ def _conditionally_allowed(candidates, request, policy, permission, scope, conte
         evaluated = [c for c in usable if scope.conditional_anywhere or c in contexts]
         if not evaluated:
             continue
-        resource = access.cel_resource(request, resource_check(obj))
+        resource = access.cel_resource(request, content_of(obj))
         if any(policy.should_allow(permission, c, resource) for c in evaluated):
             allowed.append(obj.pk)
     return allowed
@@ -179,8 +179,10 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
     with a custom `contexts_for` (one ``contexts_for``, or several each of
     which must allow a resource, an ``access.AnyOf`` any option of which
     suffices), evaluated per resource as ``access._filter_per_object`` does,
-    except that each ``contexts_for`` and each condition is given the resource
-    as a `ResourceCheck`, as the detail route's object check gives it. A
+    except that each ``contexts_for`` and each condition is given the
+    resource's content (`content_of`, a ``dict``), as the detail route's object
+    check gives it (``ResourceViewMixin.get_permissions`` makes scoped-rbac's
+    default ``contexts_for`` read a resource's contexts from it). A
     superuser whose grants are unrestricted gets every resource not stored in
     a reserved context; otherwise every resource examined counts against
     ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``."""
@@ -224,7 +226,7 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
             raise access.ConditionalListTooLarge()
         if access.stored_in_reserved_context(obj):
             continue
-        check = resource_check(obj)
+        check = content_of(obj)
         resource = []  # the resource's CEL resource, built once if needed
 
         def allows(contexts_for, check=check, resource=resource):

@@ -1,12 +1,10 @@
-"""Object checks read the stored resource as a read-only mapping over its
-content (`ResourceCheck`), as the workflow check's `TransitionCheck` is over
-the body: a CEL condition reads its fields, an adopter's operator gets the
-mapping, on the detail route (GET, PUT, DELETE), in the post-save check and
+"""Object checks read the stored resource's content, the ``dict`` itself
+(`content_of`), as the workflow check reads the body: a CEL condition reads
+its fields, an adopter's operator and the permission class get the
+``dict``, on the detail route (GET, PUT, DELETE), in the post-save check and
 in a list's per-object check alike, so a list shows what the detail route
 shows."""
 
-import copy
-from collections.abc import Mapping
 from uuid import uuid4
 
 import pytest
@@ -18,8 +16,9 @@ from django.utils.timezone import now
 from rest_framework.test import APIClient
 from scoped_rbac.models import Role, RoleAssignment
 
+from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
-from scrud_django.permissions import ResourceCheck, TransitionCheck
+from scrud_django.permissions import content_of
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
@@ -166,7 +165,7 @@ def test_a_conditional_list_shows_what_the_detail_route_shows(condition):
 
 
 @pytest.mark.django_db
-def test_operators_get_a_read_only_mapping_over_the_content():
+def test_operators_get_the_content_as_a_plain_dict():
     ok = profile("ok")
     client = conditional_client(OPERATOR)
     assert client.get(detail(ok)).status_code == 200
@@ -176,39 +175,34 @@ def test_operators_get_a_read_only_mapping_over_the_content():
         detail(ok), body, format="json", HTTP_IF_MATCH=quote_etag(ok.etag)
     )
     assert response.status_code == 200, response.content
-    assert SEEN
-    for seen in filter(None, SEEN):
-        assert isinstance(seen, Mapping), seen
-        assert seen.get("name") == "ok"
-    # The detail and list object checks give a ResourceCheck (scoped-rbac's
-    # request check gives the parsed body itself).
-    checks = [seen for seen in SEEN if isinstance(seen, ResourceCheck)]
-    assert len(checks) >= 3  # the GET, the list and the PUT
-    for check in checks:
-        assert isinstance(check.resource, Resource)
-        assert check.resource.pk == ok.pk
-        with pytest.raises(TypeError):
-            check["name"] = "changed"
-        with pytest.raises(AttributeError):
-            check.name = "changed"
+    # The detail and list object checks and the PUT's object and post-save
+    # checks give the content, as scoped-rbac's request check gives the
+    # parsed body itself: an exact dict, the stored content's fields.
+    seen = [obj for obj in SEEN if obj is not None]
+    assert len(seen) >= 3  # the GET, the list and the PUT
+    for obj in seen:
+        assert type(obj) is dict, type(obj)
+        assert obj == ok.content
 
 
-def test_a_resource_check_reads_the_content_and_the_resource():
-    resource = Resource(pk=7, content={"name": "ok", "rbac_context": ["a", "b"]})
-    check = ResourceCheck(resource)
-    assert dict(check) == {"name": "ok", "rbac_context": ["a", "b"]}
-    assert check.to_cel() == {"name": "ok", "rbac_context": ["a", "b"]}
-    assert check.resource is resource
-    # Attribute reads are the resource's: an override written against the
-    # Resource (obj.content, obj.rbac_contexts, obj.pk) keeps working.
-    assert check.content == resource.content
-    assert check.rbac_contexts == ["a", "b"]
-    assert check.pk == 7
-    with pytest.raises(AttributeError):
-        check.content = {}
+def test_an_object_check_gets_the_stored_content_itself():
+    content = {
+        "name": "ok",
+        "nested": {"k": 1, "list": [1, {"x": 2}]},
+        "rbac_context": ["a", "b"],
+    }
+    resource = Resource(pk=7, content=content)
+    checked = content_of(resource)
+    # The dict the resource holds, not a copy or a view: plain dicts and
+    # lists at every level, which CEL reads.
+    assert checked is resource.content
+    assert type(checked["nested"]) is dict and type(checked["nested"]["list"]) is list
+    # Its contexts are the resource's (scoped-rbac's default contexts_for
+    # reads them so on the scrud views).
+    assert rbac_contexts_of(checked) == resource.rbac_contexts == ["a", "b"]
     # Content that is not a JSON object has no fields.
-    assert dict(ResourceCheck(Resource(content=["x"]))) == {}
-    assert ResourceCheck(Resource(content="x")).to_cel() == {}
+    assert content_of(Resource(content=["x"])) == {}
+    assert content_of(Resource(content="x")) == {}
 
 
 @pytest.mark.django_db
@@ -216,7 +210,7 @@ def test_every_object_check_gives_the_permission_class_one_kind_of_object():
     # tests/urls.py: RecordingIsAuthorized records the obj each of its
     # has_object_permission and has_context_permission calls is given. The
     # detail route's object check and the post-save check give the same
-    # kind: a ResourceCheck over the resource. (tests.urls registers the
+    # kind: the resource's content, a dict. (tests.urls registers the
     # resource types: imported here, with database access.)
     from .urls import RecordingIsAuthorized
 
@@ -245,23 +239,19 @@ def test_every_object_check_gives_the_permission_class_one_kind_of_object():
         HTTP_IF_MATCH=quote_etag(created.etag),
     )
     assert response.status_code == 200, response.content
-    # The workflow check gives TransitionChecks (the transition a write
-    # makes); every other object check a ResourceCheck.
-    seen = [
-        (method, obj)
-        for method, obj in RecordingIsAuthorized.SEEN
-        if not isinstance(obj, TransitionCheck)
-    ]
+    # Every check gives a plain dict: the object checks the content, the
+    # workflow check (none for this type) the body.
+    seen = RecordingIsAuthorized.SEEN
     assert {method for method, _ in seen} == {
         "has_object_permission",
         "has_context_permission",
     }
     for method, obj in seen:
-        assert isinstance(obj, ResourceCheck), (method, obj)
-        assert obj.resource.pk == created.pk
+        assert type(obj) is dict, (method, obj)
     # The post-save checks saw what was stored ("x", then "y"), the PUT's
     # object check the stored "x".
     assert {obj["name"] for _, obj in seen} == {"x", "y"}
+    assert {obj["rbac_context"] for _, obj in seen} == {"q"}
 
 
 @pytest.mark.django_db
@@ -302,37 +292,23 @@ def test_a_list_by_overridden_contexts_shows_what_the_detail_route_shows(conditi
     assert readable == expected
 
 
-def test_a_resource_check_is_read_only_at_every_level_and_copyable():
-    content = {"name": "ok", "nested": {"k": 1, "list": [1, {"x": 2}]}, "tags": ["a"]}
-    resource = Resource(pk=3, content=content)
-    check = ResourceCheck(resource)
-    with pytest.raises(TypeError):
-        check["nested"]["k"] = 2
-    with pytest.raises(TypeError):
-        check["tags"][0] = "b"
-    with pytest.raises(AttributeError):
-        check["tags"].append("b")
-    with pytest.raises(TypeError):
-        check["nested"]["list"][1]["x"] = 3
-    # The content attribute is a copy: changing it leaves the resource as is.
-    check.content["name"] = "evil"
-    check.content["nested"]["k"] = 2
-    assert resource.content == {
-        "name": "ok",
-        "nested": {"k": 1, "list": [1, {"x": 2}]},
-        "tags": ["a"],
-    }
-    # The views compare equal to the plain values, and copy.
-    assert check == resource.content
-    assert check["tags"] == ["a"] and check["nested"]["list"] == [1, {"x": 2}]
-    assert dict(check) == resource.content
-    assert copy.copy(check) == check and copy.deepcopy(check) == check
-    assert copy.deepcopy(check["nested"]) == {"k": 1, "list": [1, {"x": 2}]}
-    # CEL reads plain dicts and lists, its own copy.
-    cel = check.to_cel()
-    assert type(cel) is dict and type(cel["nested"]["list"]) is list
-    cel["nested"]["k"] = 9
-    assert check["nested"]["k"] == 1
-    # Like a dict, it is not hashable (memoize on obj.resource.pk instead).
-    with pytest.raises(TypeError):
-        hash(check)
+@pytest.mark.django_db
+def test_a_resource_stored_in_a_context_reserved_once_normalised_is_missing():
+    # Its content, which the object check gets, has no rbac_context attribute
+    # for scoped-rbac's check_object_permissions to read: get_object answers
+    # 404 for it first, to every method, superusers included.
+    hidden = profile("hidden", "​__x")
+    admin = UserFactory(is_superuser=True, is_staff=True)
+    client = APIClient()
+    client.force_authenticate(admin)
+    assert client.get(detail(hidden)).status_code == 404
+    response = client.put(
+        detail(hidden),
+        {"name": "changed", "rbac_context": "q"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(hidden.etag),
+    )
+    assert response.status_code == 404, response.content
+    response = client.delete(detail(hidden), HTTP_IF_MATCH=quote_etag(hidden.etag))
+    assert response.status_code == 404, response.content
+    assert Resource.objects.get(pk=hidden.pk).content == hidden.content

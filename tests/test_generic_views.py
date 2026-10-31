@@ -378,22 +378,26 @@ def note_writer(*contexts, condition=None):
     return client
 
 
+# The type of what each call of the `rewriting` operator got.
+REWRITTEN = []
+
+
 def rewriting(resource, configuration):
-    """An adopter's operator that tries to rewrite the body's text (and a
-    nested value), and allows."""
-    for change in (
-        lambda: resource.__setitem__("text", "MUTATED"),
-        lambda: resource["nested"].__setitem__("evil", True),
-    ):
-        try:
-            change()
-        except (TypeError, AttributeError, KeyError):
-            pass
+    """An adopter's buggy operator that rewrites the body's text (and a
+    nested value), and allows. (The object check gives it the `Note`
+    itself, as scoped-rbac does: left as it is.)"""
+    REWRITTEN.append(type(resource))
+    if isinstance(resource, dict):
+        resource["text"] = "MUTATED"
+        resource["nested"]["evil"] = True
     return True
 
 
 @pytest.mark.django_db
-def test_a_generic_views_request_check_reads_a_read_only_body():
+def test_a_generic_views_request_check_reads_the_body_itself():
+    # scoped-rbac's request check gives operators the parsed body itself, a
+    # plain dict (scoped-rbac issue #55: not guarded): an operator that
+    # changes it changes what the view then stores, a bug in that operator.
     from django.conf import settings
     from django.test import override_settings
 
@@ -408,13 +412,15 @@ def test_a_generic_views_request_check_reads_a_read_only_body():
             HTTP_IF_MATCH=quote_etag(Note.objects.get(pk=note.pk).etag),
         )
     assert response.status_code == 200, response.content
-    assert Note.objects.get(pk=note.pk).text == "after"
+    # The request check's body (a dict), the object check's Note.
+    assert set(REWRITTEN) == {dict, Note}, REWRITTEN
+    assert Note.objects.get(pk=note.pk).text == "MUTATED"
 
 
 @pytest.mark.django_db
 def test_a_generic_views_body_naming_several_contexts_is_checked_in_each():
     # scoped-rbac's default contexts_from (access.body_contexts) reads the
-    # read-only array of contexts as a tuple: PUT is needed in each.
+    # body's array of contexts (a list): PUT is needed in each.
     note = a_note("before", rbac_context="a")
     for contexts, status_code in ((("a",), 403), (("a", "b"), 200)):
         client = note_writer(*contexts)

@@ -15,7 +15,7 @@ from scrudful.rest_framework import scrudful_viewset
 from scrud_django import registration
 from scrud_django.mixins.view_mixins import GenericViewMixin
 from scrud_django.models import ResourceType
-from scrud_django.permissions import TransitionCheck
+from scrud_django.permissions import current_transition
 from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
 
 from .models import Note
@@ -82,11 +82,11 @@ urlpatterns.extend(
 class LockedDenyingIsAuthorized(IsAuthorized):
     """An adopter's ``IsAuthorized`` that overrides ``has_object_permission``
     (DRF's object-level hook) to refuse a resource whose content has
-    ``"locked": true``."""
+    ``"locked": true``: the scrud views' object checks give it the content
+    (a ``dict``)."""
 
     def has_object_permission(self, request, view, obj):
-        content = getattr(obj, "content", None)
-        if isinstance(content, dict) and content.get("locked") is True:
+        if obj.get("locked") is True:
             return False
         return super().has_object_permission(request, view, obj)
 
@@ -162,7 +162,7 @@ urlpatterns.extend(
 class TeamIsAuthorized(IsAuthorized):
     """An adopter's ``IsAuthorized`` whose ``contexts_for`` is a resource's
     ``team`` (``""`` without one), not its ``rbac_context``: it reads the
-    resource as a mapping, as object checks give it (a ``ResourceCheck``)."""
+    resource's content, as object checks give it (a ``dict``)."""
 
     def contexts_for(self, obj):
         return [obj.get("team", "")]
@@ -195,11 +195,11 @@ urlpatterns.extend(
 
 class NoCancelIsAuthorized(IsAuthorized):
     """An adopter's ``IsAuthorized`` that decides by the workflow transition
-    itself: it never allows ``cancel`` (the ``TransitionCheck`` the workflow
-    check gives it), whatever the user's grants."""
+    itself: it never allows ``cancel`` (``current_transition()`` in the
+    workflow check), whatever the user's grants."""
 
     def has_context_permission(self, request, view, obj, context):
-        if isinstance(obj, TransitionCheck) and obj.transition == "cancel":
+        if current_transition() == "cancel":
             return False
         return super().has_context_permission(request, view, obj, context)
 
@@ -346,8 +346,8 @@ urlpatterns.extend(
 class OwnerIsAuthorized(IsAuthorized):
     """An adopter's "owners may do anything" shortcut: allows whatever
     ``obj`` has ``owner`` equal to the user's name, else ``IsAuthorized``.
-    In the workflow check ``obj`` is a ``TransitionCheck`` over the request
-    body, so the shortcut must not widen a transition there."""
+    In the workflow check ``obj`` is the request body, so the shortcut must
+    not widen a transition there."""
 
     def has_context_permission(self, request, view, obj, context):
         if hasattr(obj, "get") and obj.get("owner") == request.user.username:

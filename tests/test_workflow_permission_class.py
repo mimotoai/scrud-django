@@ -1,8 +1,8 @@
 """The workflow check authorizes a transition through the view's permission
 class (each ``IsAuthorized`` of its permissions), as the object and post-save
 checks do, so that an ``IsAuthorized`` subclass's ``has_context_permission``
-decides it too: it gets the `TransitionCheck` of the transition in each
-context."""
+decides it too: in each context it gets the request body (a ``dict``) and
+reads the transition as ``scrud_django.permissions.current_transition()``."""
 
 from uuid import uuid4
 

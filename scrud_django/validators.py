@@ -18,7 +18,7 @@ from scrud_django.exceptions import (
 )
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import ResourceType
-from scrud_django.permissions import BodyCheck, TransitionCheck, resource_check
+from scrud_django.permissions import checking_transition, content_of
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     WorkflowPolicy,
@@ -205,17 +205,18 @@ class WorkflowValidator:
     resource out of a context is checked under that context's policy too. In
     each of them that has a policy, a create must be a valid initial state and
     an update a valid transition, and the user must be authorized for the
-    transition (a `TransitionCheck` for the ``scrud_workflow`` operator) in that
-    context. A context an update moves the resource into (one the body names
-    and the stored resource is not in) is checked as a create there: the body
+    transition (``scrud_django.permissions.current_transition``, which the
+    ``scrud_workflow`` operator reads) in that context. A context an update
+    moves the resource into (one the body names and the stored resource is
+    not in) is checked as a create there: the body
     must be a valid initial state and the user authorized for
     ``__INITIALIZE__`` by the request's method (``http.PUT``, not
     ``http.POST``). All of them must pass. A resource in no context is checked under
     the settings default, and only a superuser may make its transition, as
     scoped-rbac's object checks allow. In a context where no policy applies, a
     grant conditioned on ``scrud_workflow`` allows nothing
-    (`authorize_without_policy`: 403). The operator reads the
-    `TransitionCheck`; a CEL condition reads the body.
+    (`authorize_without_policy`: 403). Operators and CEL conditions read the
+    body as sent, a ``dict``.
 
     An error under a stored policy the requester may not read names neither
     the policy nor its states (`errors_hidden_unless_readable`).
@@ -310,7 +311,7 @@ class WorkflowValidator:
             if stored is not None and not access.may_read(
                 request,
                 WORKFLOW_POLICY_TYPE_URI,
-                resource_check(stored),
+                content_of(stored),
                 stored.rbac_contexts,
             ):
                 raise HiddenWorkflowTransitionError() from e
@@ -359,12 +360,12 @@ class WorkflowValidator:
 
     def authorize_without_policy(self, rbac_context, context, data):
         """Where no workflow policy applies there is no transition: a grant
-        conditioned on ``scrud_workflow`` allows nothing there (its operator
-        gets a `TransitionCheck` whose transition is ``None``), and the write
-        is refused with 403 (``PermissionDenied``) when such a grant is the
-        reason it would otherwise be allowed. Where the user holds no grant at
-        all, or an unconditional or CEL one, the object and post-save checks
-        decide, as before."""
+        conditioned on ``scrud_workflow`` allows nothing there (it is asked
+        with no transition, ``None``), and the write is refused with 403
+        (``PermissionDenied``) when such a grant is the reason it would
+        otherwise be allowed. Where the user holds no grant at all, or an
+        unconditional or CEL one, the object and post-save checks decide, as
+        before."""
         if self.allowed(context, rbac_context, None, data):
             return
         if not self.allowed(context, rbac_context, data=data, transition_check=False):
@@ -376,42 +377,59 @@ class WorkflowValidator:
     ):
         """Whether the request's action on the type is allowed in `rbac_context`
         (``None``: no context, superusers only, as scoped-rbac's object checks)
-        on a `TransitionCheck` of `transition`: the ``scrud_workflow`` operator
-        reads its transition, any other operator reads it as the body `data` (it
-        is a mapping over it), and a CEL condition reads the body, as in
+        for `transition`: the ``scrud_workflow`` operator, and any permission
+        class, reads it as `current_transition`
+        (``scrud_django.permissions.checking_transition``, only while this
+        check asks), and every operator and CEL condition reads the body `data`
+        as sent, a ``dict`` (``{}`` for a body that is not a JSON object), as in
         scoped-rbac's request check. Without `transition_check`, on the body
-        alone.
+        alone, outside the workflow check (``scrud_workflow`` allows there).
 
         The request's policy must allow it, and, with a view in the
         serializer context (the scrud views'), so must each of the view's
         ``IsAuthorized`` permissions (`rbac_permissions_of`):
-        ``has_context_permission(request, view, check, rbac_context)``. An
+        ``has_context_permission(request, view, body, rbac_context)``. An
         ``IsAuthorized`` subclass can therefore refuse a transition, never
-        grant one the policy refuses: its ``obj`` here is the
-        `TransitionCheck`, whose mapping is the request body as the writer
-        sent it (a check written for stored fields, such as an owner, would
-        read the writer's claim). Without a view (a serializer used outside
-        the views), the policy alone decides."""
+        grant one the policy refuses: its ``obj`` here is the request body as
+        the writer sent it (a check written for stored fields, such as an
+        owner, would read the writer's claim). Without a view (a serializer
+        used outside the views), the policy alone decides."""
         request = self.request_of(context)
         permission = Permission(
             http_action_iri_for(request), context.resource_type.type_uri
         )
-        body = access.body_mapping(data)
-        # Read-only at every level: an operator cannot change what is stored.
-        resource = (
-            TransitionCheck(transition, body) if transition_check else BodyCheck(body)
-        )
+        body = plain_body(data)
+        if not transition_check:
+            return self.allowed_on(request, permission, rbac_context, body, context)
+        with checking_transition(transition):
+            return self.allowed_on(request, permission, rbac_context, body, context)
+
+    @staticmethod
+    def allowed_on(request, permission, rbac_context, body, context):
+        """`allowed`'s decision for `body` in `rbac_context`: the policy's,
+        narrowed by each ``IsAuthorized`` of the view."""
         if rbac_context is None:
-            return access.may_act_on(request, permission, resource, [])
+            return access.may_act_on(request, permission, body, [])
         if not policy_for(request).should_allow(
-            permission, rbac_context, resource=resource
+            permission, rbac_context, resource=body
         ):
             return False
         # The view's IsAuthorized permissions may refuse what the policy
-        # allows, never allow what it refuses: here `resource` reads the
-        # request body, which the writer chose.
+        # allows, never allow what it refuses: here `body` is the request
+        # body, which the writer chose.
         view = getattr(context, "context", {}).get("view")
         return all(
-            leaf.has_context_permission(request, view, resource, rbac_context)
+            leaf.has_context_permission(request, view, body, rbac_context)
             for leaf in rbac_permissions_of(view)
         )
+
+
+def plain_body(data):
+    """`data` (a parsed body) as the workflow check gives it to operators and
+    permission classes: itself when it is a ``dict``, a ``dict`` copy of a
+    mapping of another type, ``{}`` for a body that is not a JSON object."""
+    if type(data) is dict:
+        return data
+    if isinstance(data, Mapping):
+        return dict(data)
+    return {}
