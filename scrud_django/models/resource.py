@@ -68,14 +68,19 @@ def lock_for_delete(queryset, using):
 DELETE_BATCH_SIZE = 1000
 
 
-def delete_locked_keys(keys, using):
-    """Django's ``QuerySet.delete()`` of the `Resource` rows `keys` (locked by
-    `lock_for_delete`) on database `using`, `DELETE_BATCH_SIZE` at a time;
-    ``(deleted, {label: count})`` over them all. Several batches run in a
+def delete_locked_keys(queryset, keys, using):
+    """Django's ``QuerySet.delete()`` of the rows of `queryset` among `keys`
+    (the rows `lock_for_delete` locked for it) on database `using`,
+    `DELETE_BATCH_SIZE` at a time; ``(deleted, {label: count})`` over them
+    all. The queryset's own filter is applied again, after every lock is
+    held: the lock's ``id IN (...)`` can take a row that a write it waited for
+    moved out of the filter (PostgreSQL re-checks only the ``IN`` on the new
+    row version), and such a row is left alone, as by a delete that ran a
+    moment later. Only locked rows can match. Several batches run in a
     transaction (a savepoint inside the caller's) so that an error in a later
     one (a ``ProtectedError``) undoes the earlier ones, as one ``delete()``
     deletes nothing then."""
-    rows = Resource._base_manager.using(using)
+    rows = queryset.using(using)
     batches = [
         keys[start : start + DELETE_BATCH_SIZE]
         for start in range(0, len(keys), DELETE_BATCH_SIZE)
@@ -124,9 +129,10 @@ class ResourceQuerySet(models.QuerySet):
 
         It first locks the rows it deletes, in primary key order
         (`lock_for_delete`), as an API write locks its row first, and then
-        deletes exactly those (`delete_locked_keys`): a row that came to match
-        after the lock is left alone, as by a delete that ran a moment
-        earlier.
+        deletes those that still match its filter (`delete_locked_keys`): a
+        row that came to match after the lock is left alone, as by a delete
+        that ran a moment earlier, and so is a row a write the lock waited for
+        moved out of the filter.
 
         It runs on the database Django's ``delete()`` deletes on: the
         queryset's ``using()`` alias, else the router's ``db_for_write`` (not
@@ -144,7 +150,7 @@ class ResourceQuerySet(models.QuerySet):
             pending = set()
             token = _PENDING_STAMPS.set((db, pending))
             try:
-                result = delete_locked_keys(locked, db)
+                result = delete_locked_keys(self, locked, db)
             finally:
                 _PENDING_STAMPS.reset(token)
             contexts_by_type = {}

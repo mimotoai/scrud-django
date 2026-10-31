@@ -446,3 +446,37 @@ def test_a_queryset_delete_deletes_only_the_rows_it_locked(committed_types):
     assert results["mover"] is None, repr(results["mover"])
     assert results["api"] == 200, results["api"]
     assert Resource.objects.get(pk=stored.pk).content["rbac_context"] == "z"
+
+
+@POSTGRESQL
+@pytest.mark.django_db(transaction=True)
+def test_a_queryset_delete_leaves_a_row_moved_out_of_its_filter(committed_types):
+    # R is in "y". An API PUT locks R, moves it to "z" and pauses; a bulk
+    # delete of "y" then waits on R's lock. Once the PUT commits, PostgreSQL
+    # re-checks only the lock's `id IN (...)` on the new row version, so R is
+    # locked although it left "y". The delete must re-apply its filter to the
+    # locked keys and leave R alone, as a delete that ran a moment later would.
+    (stored,) = profiles("y")
+    url = reverse("partner-profiles-detail", args=[stored.pk])
+    client = admin_api_client()
+    connections.close_all()
+
+    def api():
+        with paused_while_locked(pre_save):
+            return client.put(
+                url,
+                {"name": "x", "rbac_context": "z"},
+                format="json",
+                HTTP_IF_MATCH="*",
+            ).status_code
+
+    def bulk():
+        return Resource.objects.filter(content__rbac_context="y").delete()[0]
+
+    status, deleted = run_together(api, bulk, delay=0.3)
+    assert status == 200, status
+    assert not isinstance(deleted, Exception), repr(deleted)
+    assert deleted == 0
+    moved = Resource.objects.filter(pk=stored.pk).first()
+    assert moved is not None, "deleted although it had left the filter"
+    assert moved.content["rbac_context"] == "z"
