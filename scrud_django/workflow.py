@@ -372,14 +372,22 @@ def lock_workflow_policy_type(using):
     """Lock the ``WorkflowPolicy`` resource type's rows (``select_for_update``)
     on database `using`, inside the caller's transaction: ``WorkflowPolicy``
     writes take it before they re-check uniqueness, so they run one at a
-    time. (SQLite ignores the lock: one writer holds the whole database. Give
-    a file database ``OPTIONS["transaction_mode"] = "IMMEDIATE"`` so that a
-    second writer waits instead of failing with "database is locked".)"""
+    time. Where the database has it (PostgreSQL), the lock is ``FOR NO KEY
+    UPDATE``: it still excludes the next policy writer, but not the foreign
+    key check (``FOR KEY SHARE``) of a ``ResourceRemoval`` row a concurrent
+    delete of a policy inserts, which ``FOR UPDATE`` blocked into a
+    deadlock. (SQLite ignores the lock: one writer holds the whole database.
+    Give a file database ``OPTIONS["transaction_mode"] = "IMMEDIATE"`` so
+    that a second writer waits instead of failing with "database is
+    locked".)"""
+    from django.db import connections
+
     from scrud_django.models import ResourceType
 
+    no_key = connections[using].features.has_select_for_no_key_update
     list(
         ResourceType.objects.using(using)
-        .select_for_update()
+        .select_for_update(no_key=no_key)
         .filter(type_uri=WORKFLOW_POLICY_TYPE_URI)
         .order_by("pk")
     )

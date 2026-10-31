@@ -6,6 +6,7 @@ This will support queries, such as:
 """
 
 import contextvars
+from contextlib import nullcontext
 
 import reversion
 from django.db import IntegrityError, models, router, transaction
@@ -36,6 +37,37 @@ def context_fits(context):
     return len(context.encode("utf-8", "surrogatepass")) <= MAX_CONTEXT_BYTES
 
 
+def lock_for_delete(queryset, using):
+    """Lock the `Resource` rows `queryset` selects, on database `using`, in
+    primary key order (``select_for_update``), until the caller's
+    transaction there ends. A delete takes it before Django's ``Collector``
+    runs: the API's locked writes lock a resource's row before its
+    ``ResourceContext`` rows (`sync_resource_contexts`, the ``Collector``'s
+    cascade), and a delete that took the context rows first deadlocked with
+    them on PostgreSQL. Sorted, two deletes of overlapping sets cannot
+    deadlock on the resource rows either."""
+    keys = queryset.using(using).values("pk")
+    keys.query.select_for_update = False
+    keys.query.select_related = False
+    keys.query.clear_ordering(force=True)
+    list(
+        Resource._base_manager.using(using)
+        .filter(pk__in=keys)
+        .order_by("pk")
+        .select_for_update()
+        .values_list("pk", flat=True)
+    )
+
+
+def in_transaction(using):
+    """A block in a transaction on database `using`: the caller's, if it is in
+    one (no savepoint, nothing to roll back to on an error the caller catches,
+    as Django's own ``delete()`` takes none), else a new one."""
+    if transaction.get_connection(using).in_atomic_block:
+        return nullcontext()
+    return transaction.atomic(using=using)
+
+
 # ``(database, pairs)``: the (type, context) pairs a QuerySet.delete() of
 # resources on that database has removed so far, stamped once when it ends
 # (`ResourceQuerySet.delete`); None outside one.
@@ -56,11 +88,22 @@ class ResourceQuerySet(models.QuerySet):
         resources through a ``Collector`` built by hand, outside a queryset,
         still stamps them one by one.
 
+        It first locks the rows it deletes, in primary key order
+        (`lock_for_delete`), as an API write locks its row first.
+
         It runs on the database Django's ``delete()`` deletes on: the
         queryset's ``using()`` alias, else the router's ``db_for_write`` (not
         ``self.db``, which is ``db_for_read`` there: a read replica)."""
         db = self._db or router.db_for_write(self.model, **self._hints)
+        if (
+            self.query.is_sliced
+            or self.query.distinct_fields
+            or self.query.combinator
+            or self._fields is not None
+        ):
+            return super().delete()  # Django refuses these: TypeError.
         with transaction.atomic(using=db, savepoint=False):
+            lock_for_delete(self, db)
             pending = set()
             token = _PENDING_STAMPS.set((db, pending))
             try:
@@ -95,6 +138,20 @@ class Resource(ResourceMixin):
         verbose_name='resource type',
         related_name='resource_type',
     )
+
+    def delete(self, using=None, keep_parents=False):
+        """``Model.delete()``, with the row locked first (`lock_for_delete`),
+        in the caller's transaction or one of its own: the admin's delete,
+        and server code's, take the locks in the order the API's locked
+        writes do."""
+        if self.pk is None:
+            return super().delete(using=using, keep_parents=keep_parents)
+        db = using or router.db_for_write(type(self), instance=self)
+        with in_transaction(db):
+            lock_for_delete(Resource._base_manager.filter(pk=self.pk), db)
+            return super().delete(using=using, keep_parents=keep_parents)
+
+    delete.alters_data = True
 
     def save_base(self, *args, raw=False, using=None, update_fields=None, **kwargs):
         """Save the row and, in the same transaction on the same database, its

@@ -391,6 +391,14 @@ Conditional request handling now comes from scrudful 0.8.
   `queryset`'s model, with the row the URL names locked before the lookup:
   two concurrent writes with the same `If-Match` used to both pass (a DELETE
   then a PUT even re-inserted the row).
+* A delete outside the API (`Resource.delete()`, a `Resource` queryset's
+  `delete()`, the admin's delete and "delete selected") locks the resource
+  rows first, in primary key order, as the API's PUT and DELETE do, and so
+  waits for a concurrent write of the same resource instead of deadlocking
+  with it on PostgreSQL (`deadlock detected`, a 500 for the API request).
+  The `WorkflowPolicy` type lock is `SELECT ... FOR NO KEY UPDATE` where the
+  database has it (PostgreSQL), so that a policy deleted outside the API
+  while an API write of it waits does not deadlock either.
 * READ COMMITTED is the supported transaction isolation level (PostgreSQL's
   default, and Django's for MySQL): a write that waited for a lock then sees
   what the write it waited for committed. A new database check,
@@ -845,7 +853,8 @@ Conditional request handling now comes from scrudful 0.8.
   one is refused with 400 (not 409, the same `workflow-policy-invalid`
   problem), without naming the existing policy; update or delete the
   existing policy instead. `WorkflowPolicy` writes lock the
-  `WorkflowPolicy` resource type's row (`select_for_update`) and check again
+  `WorkflowPolicy` resource type's row (`select_for_update`, `FOR NO KEY
+  UPDATE` on PostgreSQL) and check again
   after the save, so of two concurrent writes the second is refused. Every
   `WorkflowPolicy` write through `ResourceRegistration` (`register`,
   `register_instance`, `update`, `delete`, and the API's create, update and
