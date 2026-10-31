@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 import reversion
 from django.core.exceptions import FieldError, ImproperlyConfigured, ValidationError
 from django.db import DEFAULT_DB_ALIAS, router, transaction
-from django.db.models import Max
+from django.db.models import Max, ProtectedError
 from django.http import Http404
 from rest_framework import status
 from rest_framework.generics import get_object_or_404
@@ -19,7 +19,9 @@ from scrudful.rest_framework import ScrudfulViewFunc
 from scrud_django.exceptions import (
     RbacContextInvalidError,
     RequestBodyMissingError,
+    RequestBodyNulError,
     RequestBodyTooDeepError,
+    ResourceInUseError,
 )
 from scrud_django.filters import (
     filter_by_object_checks,
@@ -113,6 +115,33 @@ def check_body_depth(request):
         return
     if body_depth(request.data, MAX_BODY_DEPTH) > MAX_BODY_DEPTH:
         raise RequestBodyTooDeepError(MAX_BODY_DEPTH)
+
+
+def body_has_nul(data):
+    """Whether a string of `data` (a parsed JSON body), a key or a value at
+    any depth, holds a NUL character; walked without recursion."""
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            if "\x00" in node:
+                return True
+        elif isinstance(node, Mapping):
+            stack.extend(node.keys())
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+    return False
+
+
+def check_body_nul(request):
+    """Raise `RequestBodyNulError` (400) for a POST, PUT or PATCH body with a
+    NUL character in any string (`body_has_nul`): PostgreSQL's ``jsonb``
+    cannot hold one, so it is refused on every database alike."""
+    if request.method not in BODY_METHODS:
+        return
+    if body_has_nul(request.data):
+        raise RequestBodyNulError()
 
 
 def check_written_contexts(request):
@@ -720,14 +749,19 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         return Response(serializer.data)
 
     def destroy(self, request, slug: str):
-        """Delete a Resource: the locked instance (`dispatch`)."""
+        """Delete a Resource: the locked instance (`dispatch`). One that a
+        resource type uses (its schema, context or indexing policy) is kept:
+        409 (`ResourceInUseError`)."""
         instance = self.get_instance(request, slug)
         self.check_every_context_of_policy(request, instance)
-        ResourceRegistration.delete_locked(
-            instance,
-            resource_type=self.get_resource_type(),
-            using=self.locked_write_db or write_db(),
-        )
+        try:
+            ResourceRegistration.delete_locked(
+                instance,
+                resource_type=self.get_resource_type(),
+                using=self.locked_write_db or write_db(),
+            )
+        except ProtectedError as exc:
+            raise ResourceInUseError(instance, exc.protected_objects) from exc
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def retrieve(self, request, slug: str):
@@ -741,8 +775,9 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         ``rbac_context`` cannot be stored (`check_written_contexts`), with
         400, before scoped-rbac's request check (which would authorize an
         empty body as ``{}`` and refuse an empty context list with 403 for
-        everyone), and a body nested deeper than `MAX_BODY_DEPTH`
-        (`check_body_depth`): they depend on the body alone. scoped-rbac's
+        everyone), a body nested deeper than `MAX_BODY_DEPTH`
+        (`check_body_depth`) and one with a NUL character in a string
+        (`check_body_nul`): they depend on the body alone. scoped-rbac's
         request check then reads the body itself (``request.data``). A method
         the view does not serve skips the body checks (its body is not
         parsed), so that it gets its 405 whatever its body, as scoped-rbac's
@@ -750,6 +785,7 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         if request.method in self.allowed_methods:
             check_body_present(request, self)
             check_body_depth(request)
+            check_body_nul(request)
             check_written_contexts(request)
         with self.write_checks(request):
             super().check_permissions(request)

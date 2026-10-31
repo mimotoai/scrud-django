@@ -21,8 +21,10 @@ from scrud_django.exceptions import (
     WorkflowPolicyInvalidError,
     scrud_exception_handler,
 )
+from scrud_django.models import Resource
 from scrud_django.registration import (
     ResourceRegistration,
+    get_resource_type_for,
     workflow_policy_resource_type,
 )
 
@@ -278,3 +280,45 @@ def test_scrud_errors_carry_an_error_detail_with_a_code():
     assert isinstance(policy_exc.detail, ErrorDetail)
     assert policy_exc.detail.code == "workflow_policy_invalid"
     assert str(policy_exc.detail) == "Invalid workflow state condition: x"
+
+
+# A resource a type uses (its schema, JSON-LD context or indexing policy) is
+# protected (on_delete=PROTECT): deleting it is a 409 problem naming the type,
+# under any handler, and leaves it stored.
+
+RESOURCE_IN_USE = "https://api.openteams.com/http-problem/resource-in-use"
+
+
+def delete_schema_of(slug):
+    reverse(f"{slug}-list")
+    schema = get_resource_type_for(slug).schema
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    response = client_for(admin).delete(
+        reverse("json-schema-detail", args=[schema.pk]),
+        HTTP_IF_MATCH=quote_etag(schema.etag),
+    )
+    return schema, response
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("handler", HANDLERS)
+def test_deleting_a_resource_a_type_uses_is_409_under_any_handler(handler):
+    with with_handler(handler):
+        schema, response = delete_schema_of("todos")
+    assert response.status_code == 409, response.content
+    assert "tests://ToDo" in json.loads(response.content)["detail"]
+    assert Resource.objects.filter(pk=schema.pk).exists()
+
+
+@pytest.mark.django_db
+def test_scrud_handler_body_for_a_resource_a_type_uses():
+    schema, response = delete_schema_of("todos")
+    assert response.status_code == 409, response.content
+    assert response["Content-Type"] == "application/problem+json"
+    body = json.loads(response.content)
+    assert body["type"] == RESOURCE_IN_USE
+    assert body["title"] == "Resource in use"
+    assert body["status"] == 409
+    assert body["used_by"] == [{"resource_type": "tests://ToDo", "as": "schema"}]
+    assert "tests://ToDo" in body["detail"]
+    assert Resource.objects.filter(pk=schema.pk).exists()

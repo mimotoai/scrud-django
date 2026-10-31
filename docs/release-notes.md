@@ -124,7 +124,8 @@ django-scoped-rbac 0.11. It has several breaking changes.
     no longer makes a body valid either. A POST or PUT with an empty body, or
     with no `Content-Length` (a chunked body), gets 400 (`body-missing`), and
     one nested more than 100 levels deep (objects and arrays) gets 400
-    (`body-too-deep`). A refused
+    (`body-too-deep`), as does one with a NUL character (`\u0000`) in any
+    string (`body-nul-character`). A refused
     `WorkflowPolicy` write's 400 is a `workflow-policy-invalid` problem whose
     `detail` says why, and a workflow error caused by a settings default
     policy names it as `{"resource_type": ..., "default": true}` instead of
@@ -752,6 +753,20 @@ Conditional request handling now comes from scrudful 0.8.
   on one a few hundred levels deep with `RecursionError`, a 500. A method the
   route does not serve still gets 405, whatever its body (too deep, an empty
   `rbac_context` list, a form body): its body is neither checked nor parsed.
+* A POST or PUT body with a NUL character (`\u0000`) in any string, a key
+  or a value at any depth, gets 400
+  (`https://api.openteams.com/http-problem/body-nul-character`, "NUL
+  character in request body", `RequestBodyNulError`), before authorization,
+  on every database. PostgreSQL's `jsonb` cannot hold one: such a POST was a
+  500 there (`DataError`) and was stored on SQLite.
+* A DELETE of a resource that a resource type uses as its JSON Schema, JSON-LD
+  context or indexing policy gets 409 Conflict
+  (`https://api.openteams.com/http-problem/resource-in-use`, "Resource in
+  use", `scrud_django.exceptions.ResourceInUseError`), whose `used_by` lists
+  each type URI and what it uses the resource as (`schema`, `context`,
+  `indexing_policy`), and the resource is kept. It was a 500
+  (`ProtectedError`). `ResourceRegistration.delete` and `Resource.delete()`
+  still raise `ProtectedError`.
 * The envelope's `last_modified` (and the search index's `modified_at`) no
   longer depend on `USE_TZ`. With `USE_TZ = False`, a stored modification time
   is naive and in `TIME_ZONE`; it used to be read as UTC, so the envelope

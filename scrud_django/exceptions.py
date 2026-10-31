@@ -151,6 +151,68 @@ class RequestBodyTooDeepError(ScrudException):
         self.title = "Request body too deeply nested"
 
 
+class RequestBodyNulError(ScrudException):
+    """A POST or PUT (or PATCH) body with a NUL character (``\\u0000``) in a
+    string, key or value: PostgreSQL's ``jsonb`` cannot store one (a 500
+    there, stored on SQLite), so it is refused on every database."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "body_nul_character"
+
+    def __init__(self):
+        super().__init__(
+            "A request body may not contain a NUL character (\\u0000) in any "
+            "string, key or value."
+        )
+        self.type = "https://api.openteams.com/http-problem/body-nul-character"
+        self.title = "NUL character in request body"
+
+
+class ResourceInUseError(ScrudException):
+    """A DELETE of a resource that a resource type uses as its JSON Schema,
+    JSON-LD context or indexing policy (``on_delete=PROTECT``): 409 Conflict,
+    naming each type and what it uses the resource as (``used_by``). Type URIs
+    are public metadata (the service catalog lists them)."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "resource_in_use"
+
+    # ResourceType's protecting foreign keys, as ``used_by`` names them.
+    USES = {
+        "schema_id": "schema",
+        "context_id": "context",
+        "indexing_policy_id": "indexing_policy",
+    }
+
+    def __init__(self, resource, resource_types):
+        self.used_by = sorted(
+            (
+                {"resource_type": resource_type.type_uri, "as": use}
+                for resource_type in resource_types
+                for attname, use in self.USES.items()
+                if getattr(resource_type, attname, None) == resource.pk
+            ),
+            key=lambda use: (use["resource_type"], use["as"]),
+        )
+        names = ", ".join(
+            f"the {use['as'].replace('_', ' ')} of {use['resource_type']}"
+            for use in self.used_by
+        )
+        super().__init__(
+            f"This resource cannot be deleted while a resource type uses it: it "
+            f"is {names or 'used by a resource type'}."
+        )
+        self.type = "https://api.openteams.com/http-problem/resource-in-use"
+        self.title = "Resource in use"
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        data["used_by"] = self.used_by
+        return data
+
+
 class StoredPolicyReference:
     """A stored ``WorkflowPolicy`` resource, as a workflow error names it: by its
     detail URL, never its content, which a writer refused because of it may not
