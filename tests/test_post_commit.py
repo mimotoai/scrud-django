@@ -5,10 +5,14 @@ index (`scrud_django.search.OnCommitSignalProcessor`, the test settings'
 error) runs none of them. ``scrud_post_save`` itself still fires inside the
 write, before the post-save check."""
 
+import logging
+import threading
 from contextlib import contextmanager
 from uuid import uuid4
 
 import pytest
+from django.apps import apps
+from django.db import connection, connections
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
@@ -50,6 +54,34 @@ def ran(monkeypatch):
     monkeypatch.setitem(entry, "on_save", on_save)
     monkeypatch.setitem(entry, "on_delete", on_delete)
     return calls
+
+
+class ActionFailed(Exception):
+    pass
+
+
+@pytest.fixture
+def failing_on_save(monkeypatch):
+    """A ToDo ``on_save`` action that raises; returns the pks it was called
+    with."""
+    calls = []
+
+    def on_save(sender, instance, **kwargs):
+        calls.append(instance.pk)
+        raise ActionFailed(f"on_save failed for {instance.pk}")
+
+    monkeypatch.setitem(actions[TODO], "on_save", on_save)
+    return calls
+
+
+def logged_action_failures(caplog):
+    return [
+        record
+        for record in caplog.records
+        if record.levelno == logging.ERROR
+        and record.exc_info
+        and isinstance(record.exc_info[1], ActionFailed)
+    ]
 
 
 @pytest.fixture
@@ -240,3 +272,54 @@ def test_scrud_post_save_still_fires_inside_the_write(
     for callback in callbacks:
         callback()
     assert ran == [("save", todo.pk)]
+
+
+# An action that raises never fails the write (``robust``): Django logs it.
+
+
+@pytest.mark.django_db
+def test_an_action_that_raises_on_commit_does_not_fail_the_write(
+    failing_on_save, caplog, django_capture_on_commit_callbacks
+):
+    reverse("todos-list")
+    with django_capture_on_commit_callbacks(execute=True):
+        response = admin_client().post(
+            reverse("todos-list"), NOT_STARTED, format="json"
+        )
+    assert response.status_code == 201, response.content
+    pk = Resource.objects.latest("pk").pk
+    assert Resource.objects.get(pk=pk).content["status"] == "not started"
+    assert failing_on_save == [pk]
+    (record,) = logged_action_failures(caplog)
+    assert f"on_save failed for {pk}" in record.getMessage()
+
+
+@pytest.mark.django_db
+def test_an_action_that_raises_outside_a_transaction_does_not_raise(
+    failing_on_save, caplog
+):
+    """Outside a transaction (autocommit) ``on_commit`` runs the action at
+    once, inside the signal, and it still must not raise. The test's own
+    connection is in a transaction, so the signal is handled on another
+    thread, which has its own connection in autocommit. Nothing is written."""
+    processor = apps.get_app_config("scrud_django").processor
+    raised = []
+
+    def trigger():
+        try:
+            assert connection.get_autocommit()
+            processor.post_save_trigger(
+                Resource, instance=Resource(pk=-1), resource_type_uri=TODO
+            )
+        except BaseException as error:
+            raised.append(error)
+        finally:
+            connections.close_all()
+
+    thread = threading.Thread(target=trigger)
+    thread.start()
+    thread.join()
+    assert raised == []
+    assert failing_on_save == [-1]
+    (record,) = logged_action_failures(caplog)
+    assert "on_save failed for -1" in record.getMessage()
