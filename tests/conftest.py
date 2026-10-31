@@ -1,6 +1,20 @@
 import pytest
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--reverse",
+        action="store_true",
+        help="Run the tests in reverse order (the modules, and the tests in "
+        "each), to show that no test depends on one that runs before it.",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--reverse"):
+        items.reverse()
+
+
 def pytest_configure(config):
     import django
     from django.conf import settings
