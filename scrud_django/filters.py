@@ -404,7 +404,9 @@ def readable_removal(request, view, resource_type, using=None):
 
 class ResourceRbacFilter(RbacFilter):
     """scoped-rbac's ``RbacFilter`` for the scrud viewsets, whose lists show
-    exactly what the detail route shows: a list (a GET or HEAD outside
+    exactly what the detail route shows as far as ``IsAuthorized``
+    permissions decide (another ``BasePermission`` is not asked for lists, as
+    in DRF): a list (a GET or HEAD outside
     ``get_object()``) of `Resource` is restricted to the resources the
     requester may ``http.GET`` as **items** of the view's type
     (``view.resource_type_iri``) in any of their usable contexts

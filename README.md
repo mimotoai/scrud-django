@@ -103,6 +103,31 @@ Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
 user may list. A resource's context is its content's `rbac_context` (the
 default context `""` without one).
 
+A grant conditioned on the `scrud_workflow` operator
+(`{"condition": {"operator": "scrud_workflow", "authorized_transitions": ["cancel"]}}`)
+grants workflow transitions and nothing else: the transitions it lists, in a
+POST or PUT the workflow check covers. It never allows a GET, a list or a
+DELETE, even with the action `"*"`, so a role that should read needs its own
+`http.GET` grant. `authorized_transitions` must be a list of transition names
+(`__INITIALIZE__` for a create, `__SAME_STATE__` for an update that keeps its
+state); anything else refuses everywhere.
+
+A list shows what the detail route shows, as far as the view's
+`IsAuthorized` permissions (and subclasses of it) decide. Another DRF
+`BasePermission` on the view, such as an owner check in
+`has_object_permission`, is not asked for lists, as in DRF: its detail route
+refuses a resource that its list still shows. Put such a rule in an
+`IsAuthorized` subclass (override `has_object_permission` or
+`has_context_permission`), or apply it in a filter backend of the view (or its
+`get_queryset`), for the list to follow it.
+
+A write is checked in the contexts the resource ends up in, every one of
+them, and (by the object check of a PUT or DELETE) in any one context it is
+stored in. Removing a resource from a context, by a PUT whose `rbac_context`
+leaves it out, needs no grant in that context unless a workflow policy applies
+there, as a DELETE allowed in one context deletes the resource from all of
+them.
+
 Configure Django REST Framework to authorize with scoped-rbac and to answer
 errors as [RFC 7807](https://tools.ietf.org/html/rfc7807) problem details while
 keeping scrud-django's own validation and workflow error bodies (the scrud

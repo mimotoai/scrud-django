@@ -29,8 +29,9 @@ class ResourceViewSet(
     # than once: scoped-rbac checks the last value, the list would be stored.
     parser_classes = [RbacJSONParser]
 
-    # The list shows exactly the resources the detail route shows the user
-    # (ResourceRbacFilter); a detail lookup is scoped as RbacFilter scopes it.
+    # The list shows exactly the resources the detail route shows the user, as
+    # IsAuthorized permissions decide it (ResourceRbacFilter); a detail lookup
+    # is scoped as RbacFilter scopes it.
     filter_backends = [ResourceRbacFilter]
 
     def __init__(self, *args, **kwargs):

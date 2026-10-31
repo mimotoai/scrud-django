@@ -315,7 +315,11 @@ class ListValidatorsMixin:
     a view whose ``IsAuthorized`` overrides ``has_object_permission`` or
     ``has_context_permission`` keeps only the objects that object check
     allows, as the detail route asks it (`filter_by_object_checks`, given
-    `object_for_checks`), so that it shows what the detail route shows."""
+    `object_for_checks`), so that it shows what the detail route shows as far
+    as ``IsAuthorized`` permissions decide. Another ``BasePermission`` of the
+    view is not asked for lists, as in DRF: to make its rule narrow a list,
+    move it into an ``IsAuthorized`` subclass or apply it in a filter
+    backend (or ``get_queryset``)."""
 
     # True while ``get_object()`` runs: its lookup is not a list.
     _scrud_in_get_object = False

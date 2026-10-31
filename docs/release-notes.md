@@ -208,7 +208,8 @@ django-scoped-rbac 0.11. It has several breaking changes.
 ### Lists
 
 * List endpoints are RBAC-filtered. A list shows exactly the resources the
-  detail route shows the requester: those on which `http.GET` on the
+  detail route shows the requester, as far as the view's `IsAuthorized`
+  permissions (and subclasses of it) decide: those on which `http.GET` on the
   resource's type is allowed in **any** of the resource's usable contexts (not
   a reserved one), with a condition evaluated against the resource as the
   detail route's object check evaluates it (on the resource's content, a
@@ -286,7 +287,12 @@ django-scoped-rbac 0.11. It has several breaking changes.
   ([list-last-modified-deletes](follow-ups.md#list-last-modified-deletes)).
   `GenericViewMixin` lists are narrowed the same way, each object given as
   it is. A permission class that overrides neither is listed in SQL as
-  before.
+  before. Only `IsAuthorized` permissions narrow a list: another
+  `BasePermission` on the view (an owner check's `has_object_permission`,
+  say) is not asked for lists, as in DRF, so its detail route refuses a
+  resource that the list still shows, content included. Put such a rule in
+  an `IsAuthorized` subclass, or apply it in a filter backend of the view
+  (or its `get_queryset`), for the list to follow it.
 * A list's `ETag` and `Last-Modified` come from what the requester gets: the
   `ETag` is a hash of the page's resources (their keys and ETags, in order),
   the list's count and the query parameters; `Last-Modified` is the newest
@@ -514,6 +520,16 @@ Conditional request handling now comes from scrudful 0.8.
   **and** every context the write moves it to (see Workflows below). A user
   who may only make some transitions in one context can no longer make others
   by moving the resource into a context where they may write.
+* Removing a resource from a context needs no grant in that context unless a
+  workflow policy applies there. A PUT is authorized by the object check in
+  any one context the stored resource is in, and after the save in every
+  context it ends up in; a context it leaves is checked only under that
+  context's workflow policy (the transition must be allowed there). So a user
+  with `http.PUT` in `a` alone can PUT `"rbac_context": "a"` to a resource in
+  `["a", "b"]`, and `b`'s readers lose it, as a DELETE grant in one context
+  deletes a resource from all of them. A `WorkflowPolicy` resource is the
+  exception: its update or delete needs the method in every context it is
+  in.
 
 ### API changes
 
