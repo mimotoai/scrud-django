@@ -405,3 +405,55 @@ def test_resource_contexts_reads_the_content_or_the_object():
     assert resource_contexts({}) == [""]
     resource = Resource(content={"rbac_context": "a"})
     assert resource_contexts(resource) == ["a"]
+
+
+def agreeing(client, prefix, resources):
+    """The names the list of `prefix` shows, which must be those its detail
+    route reads (200; any other answer a 404, never an error)."""
+    shown = listed(client, reverse(f"{prefix}-partner-profiles-list"))
+    readable = set()
+    for resource in resources:
+        response = client.get(
+            reverse(f"{prefix}-partner-profiles-detail", args=[resource.pk])
+        )
+        assert response.status_code in (200, 404), response.content
+        if response.status_code == 200:
+            readable.add(resource.content["name"])
+    assert shown == readable
+    return shown
+
+
+@pytest.mark.django_db
+def test_an_object_check_asking_the_views_permissions_agrees_on_list_and_detail():
+    # tests/urls.py: DelegatingIsAuthorized's has_object_permission asks the
+    # permissions view.get_permissions() gives it; on the list as on the
+    # detail route they read a resource's contexts from its content.
+    from .urls import DelegatingIsAuthorized  # noqa: F401  (registers the routes)
+
+    resources = [profile("in a", "a"), profile("in b", "b")]
+    client = client_with(({"http.GET": [PP, PP_LIST]}, "a"))
+    assert agreeing(client, "delegating", resources) == {"in a"}
+
+
+@pytest.mark.django_db
+def test_a_list_whose_permissions_mix_overridden_and_default_contexts():
+    # tests/urls.py: MixedContextsResourceViewSet needs scoped-rbac's
+    # IsAuthorized in the resource's contexts and TeamIsAuthorized in its
+    # team: the list goes per object, with the default contexts read from
+    # the content.
+    from .urls import MixedContextsResourceViewSet  # noqa: F401
+
+    reverse("partner-profiles-list")
+
+    def member(name, context, team):
+        return ResourceRegistration.register(
+            {"name": name, "rbac_context": context, "team": team}, "partner-profiles"
+        )
+
+    resources = [
+        member("a/a", "a", "a"),
+        member("a/b", "a", "b"),
+        member("b/a", "b", "a"),
+    ]
+    client = client_with(({"http.GET": [PP, PP_LIST]}, "a"))
+    assert agreeing(client, "mixed-contexts", resources) == {"a/a"}

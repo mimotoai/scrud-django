@@ -487,3 +487,50 @@ for _prefix, _viewset in (
             ),
         ]
     )
+
+
+class DelegatingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` whose ``has_object_permission`` asks the
+    view's plain ``IsAuthorized`` permissions (from ``view.get_permissions()``)
+    itself: it allows what each of their object checks allows."""
+
+    def has_object_permission(self, request, view, obj):
+        others = [p for p in view.get_permissions() if type(p) is IsAuthorized]
+        return bool(others) and all(
+            p.has_object_permission(request, view, obj) for p in others
+        )
+
+
+class DelegatingResourceViewSet(ResourceViewSet):
+    permission_classes = [IsAuthorized, DelegatingIsAuthorized]
+
+
+class MixedContextsResourceViewSet(ResourceViewSet):
+    """Both must allow: scoped-rbac's IsAuthorized in the resource's contexts
+    and TeamIsAuthorized in its team."""
+
+    permission_classes = [IsAuthorized, TeamIsAuthorized]
+
+
+for _prefix, _viewset in (
+    ("delegating", DelegatingResourceViewSet),
+    ("mixed-contexts", MixedContextsResourceViewSet),
+):
+    urlpatterns.extend(
+        [
+            path(
+                f"{_prefix}/partner-profiles/",
+                _viewset.as_view(
+                    {"get": "list"}, resource_type_name="partner-profiles"
+                ),
+                name=f"{_prefix}-partner-profiles-list",
+            ),
+            path(
+                f"{_prefix}/partner-profiles/<slug>/",
+                _viewset.as_view(
+                    {"get": "retrieve"}, resource_type_name="partner-profiles"
+                ),
+                name=f"{_prefix}-partner-profiles-detail",
+            ),
+        ]
+    )

@@ -313,7 +313,9 @@ def filter_by_object_checks(queryset, request, view, requirement, object_for_che
     ``has_object_permission(request, view, object_for_checks(obj))`` (one that
     raises a refusal, `REFUSALS`, refuses that object only), with
     the request's method (GET or HEAD) on the view's item type
-    (`as_detail_route`). An object stored in a context reserved once
+    (`as_detail_route`), and the view's permissions reading a resource's
+    contexts from its content, as on the detail route (`reading_content`,
+    `checks_read_content`). An object stored in a context reserved once
     normalised is left out (its detail route is a 404). Every object examined
     counts against ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``: past it,
     ``access.ConditionalListTooLarge``."""
@@ -333,12 +335,14 @@ def filter_by_object_checks(queryset, request, view, requirement, object_for_che
             return False
 
     # Each permission reads a resource's contexts from the content
-    # (`reading_content`), whatever the view's get_permissions() built.
+    # (`reading_content`), whatever the view's get_permissions() built, and
+    # so do those an object check asks view.get_permissions() for, as on the
+    # detail route (`checks_read_content`).
     reading_content(_requirement_leaves(requirement))
     max_rows = conditional_list_max_rows()
     allowed_pks = []
     bounded = queryset.order_by()[: max_rows + 1]
-    with as_detail_route(view):
+    with as_detail_route(view), checks_read_content(view):
         for count, obj in enumerate(
             bounded.iterator(chunk_size=CANDIDATE_CHUNK_SIZE), start=1
         ):
