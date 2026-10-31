@@ -42,8 +42,10 @@ def test_an_isolation_level_other_than_read_committed_is_a_warning(level):
             consequence = (
                 "Concurrent writes of one resource, or of WorkflowPolicy "
                 "resources, can fail with a serialization error (a 500) instead "
-                "of a 412 or 400, and on MySQL or MariaDB two WorkflowPolicy "
-                "resources can be stored for one type and context."
+                "of a 412 or 400; on PostgreSQL at REPEATABLE READ two POSTs to "
+                "a list with the same If-Match can both create, with no error; "
+                "and on MySQL or MariaDB two WorkflowPolicy resources can be "
+                "stored for one type and context."
             )
         assert found[0].msg == (
             f"Transactions on database 'default', where scrud-django writes "

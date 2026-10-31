@@ -73,7 +73,12 @@ Above it, on PostgreSQL 14 (REPEATABLE READ or SERIALIZABLE, set with
 writes that would make a duplicate fails with "could not serialize access
 due to concurrent update" when it gets the type lock: a 500, and no
 duplicate is stored. Concurrent PUTs or DELETEs of one resource fail the same
-way instead of answering 412 or 400. Reading the candidate policies with
+way instead of answering 412 or 400. Two POSTs to a list with the same
+`If-Match` both create (201), with no error, at REPEATABLE READ: the
+transaction's snapshot is taken by its first statement, the type lock,
+before it waits, so the second evaluates the list without the first's
+resource (`tests/test_conditional_create.py::test_two_conditional_creates_with_one_etag_give_one_201_and_one_412`
+fails so). Reading the candidate policies with
 `SELECT ... FOR UPDATE` in the re-check changes neither outcome on
 PostgreSQL, so the re-check does not do it. On MySQL or MariaDB at REPEATABLE
 READ (the server default, which Django's backend overrides unless

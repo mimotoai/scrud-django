@@ -538,7 +538,9 @@ Conditional request handling now comes from scrudful 0.8.
   rolled back). On PostgreSQL at REPEATABLE READ or
   SERIALIZABLE, the second of two concurrent writes of one resource (or of two
   `WorkflowPolicy` writes that would make a duplicate) fails with a
-  serialization error, a 500, instead of a 412 or 400; on MySQL or MariaDB at
+  serialization error, a 500, instead of a 412 or 400, and at REPEATABLE
+  READ two POSTs to a list with the same `If-Match` can both create, with no
+  error; on MySQL or MariaDB at
   REPEATABLE READ, the `WorkflowPolicy` uniqueness re-check can miss a
   concurrent duplicate
   ([policy-recheck-isolation](follow-ups.md#policy-recheck-isolation)).

@@ -376,8 +376,11 @@ def check_isolation_level(app_configs, databases=None, **kwargs):
     but READ COMMITTED, the supported level. Under it, a write blocked on a row or the
     ``WorkflowPolicy`` lock reads what the writer it waited for committed. At
     REPEATABLE READ or SERIALIZABLE, PostgreSQL fails that write with a
-    serialization error (a 500); MySQL and MariaDB read their snapshot, so the
-    ``WorkflowPolicy`` uniqueness re-check can miss a concurrent duplicate.
+    serialization error (a 500), and at REPEATABLE READ a conditional POST to
+    a list reads the snapshot its type lock's statement took, so two with
+    the same ``If-Match`` can both create; MySQL and MariaDB read their
+    snapshot, so the ``WorkflowPolicy`` uniqueness re-check can miss a
+    concurrent duplicate.
     At READ UNCOMMITTED, MySQL and MariaDB let those checks read a policy
     that is never committed (PostgreSQL treats it as READ COMMITTED; it is
     warned about all the same). Django's MySQL backend uses READ COMMITTED unless
@@ -404,8 +407,10 @@ def check_isolation_level(app_configs, databases=None, **kwargs):
             consequence = (
                 "Concurrent writes of one resource, or of WorkflowPolicy "
                 "resources, can fail with a serialization error (a 500) instead "
-                "of a 412 or 400, and on MySQL or MariaDB two WorkflowPolicy "
-                "resources can be stored for one type and context."
+                "of a 412 or 400; on PostgreSQL at REPEATABLE READ two POSTs to "
+                "a list with the same If-Match can both create, with no error; "
+                "and on MySQL or MariaDB two WorkflowPolicy resources can be "
+                "stored for one type and context."
             )
         found.append(
             checks.Warning(
