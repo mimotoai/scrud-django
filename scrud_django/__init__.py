@@ -6,7 +6,6 @@ import base64
 import datetime
 from importlib.metadata import PackageNotFoundError, version
 
-from django.utils.timezone import datetime as ddt
 from rest_framework.reverse import reverse
 
 try:
@@ -32,7 +31,10 @@ class ScrudServices:
         ).decode('utf-8')
 
     def update_last_modified(self):
-        self.last_modified = ddt.now()
+        # Aware UTC: a naive time would be read in TIME_ZONE (scrudful, as
+        # Django), which need not be the zone it was taken in (the process's
+        # TZ changes when Django is configured).
+        self.last_modified = datetime.datetime.now(datetime.UTC)
         self._set_etag()
 
     def add_service(self, type_uri, value):

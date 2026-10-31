@@ -402,6 +402,10 @@ Conditional request handling now comes from scrudful 0.8.
 * A PUT or DELETE with no precondition returns 428 instead of 400. Either
   `If-Match` or `If-Unmodified-Since` is enough.
 * ETags no longer carry a version suffix.
+* The service list's (`services/`) `Last-Modified` is the instant its
+  catalog last changed. It was that time's local wall-clock time read in
+  `TIME_ZONE`, hours off wherever the two zones differ. Its `ETag` changes
+  once with the upgrade.
 * The `Link` header now uses `rel="describedby"` with the type
   `application/schema+json`. A list envelope's `link` is now the same value
   as the resource's `Link` header (it used `rel="describedBy"` and
