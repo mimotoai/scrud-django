@@ -2,8 +2,8 @@
 SCRUD-Django - Semantic Create, Read, Update and Delete Django application.
 """
 
-import base64
-import datetime
+import hashlib
+import json
 from importlib.metadata import PackageNotFoundError, version
 
 from rest_framework.reverse import reverse
@@ -17,40 +17,38 @@ except PackageNotFoundError:
 
 
 class ScrudServices:
-    last_modified: datetime.datetime
+    """The service catalog (``services/``): type URI -> a function of the
+    request giving the URL of its list. Its validator is `etag_for`, a hash
+    of the catalog as served, the same in every process that registered
+    the same services; there is no modification time (entries are added by
+    code at startup, which records none that every process shares)."""
+
     services: dict
-    etag: str
 
     def __init__(self):
-        self.update_last_modified()
         self.services = {}
 
-    def _set_etag(self):
-        self.etag = base64.b64encode(
-            self.last_modified.isoformat().encode('utf-8')
-        ).decode('utf-8')
-
-    def update_last_modified(self):
-        # Aware UTC: a naive time would be read in TIME_ZONE (scrudful, as
-        # Django), which need not be the zone it was taken in (the process's
-        # TZ changes when Django is configured).
-        self.last_modified = datetime.datetime.now(datetime.UTC)
-        self._set_etag()
-
     def add_service(self, type_uri, value):
+        """Register `type_uri`'s list: `value` is a route name (its
+        ``-list`` route) or a function ``f(request=None)`` returning a URL."""
         if callable(value):
             self.services[type_uri] = value
         else:
             self.services[type_uri] = lambda request=None: reverse(
                 f"{value}-list", request=request
             )
-        self.update_last_modified()
 
-    def get_last_modified(self):
-        return self.last_modified
+    def catalog(self, request=None):
+        """The catalog as served to `request`: type URI -> list URL."""
+        return {
+            type_uri: url_func(request=request)
+            for type_uri, url_func in self.services.items()
+        }
 
-    def get_etag(self):
-        return self.etag
+    def etag_for(self, request=None):
+        """The ETag of `catalog` for `request`: a hash of its content."""
+        content = json.dumps(self.catalog(request), sort_keys=True)
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 services = ScrudServices()

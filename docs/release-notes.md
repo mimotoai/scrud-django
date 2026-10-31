@@ -442,10 +442,15 @@ Conditional request handling now comes from scrudful 0.8.
   gets the same body as `application/json`; lists, OPTIONS and errors keep
   their types. The collection context's content is unchanged
   ([collection-context-terms](follow-ups.md#collection-context-terms)).
-* The service list's (`services/`) `Last-Modified` is the instant its
-  catalog last changed. It was that time's local wall-clock time read in
-  `TIME_ZONE`, hours off wherever the two zones differ. Its `ETag` changes
-  once with the upgrade.
+* The service list's (`services/`) `ETag` is a hash of the catalog it
+  serves, the same in every process and worker that registered the same
+  services; it changes when the catalog does. It sends no `Last-Modified`.
+  Both were the time the process last registered a service, so they changed
+  at every process start and differed between workers (and `Last-Modified`
+  was that time's local wall-clock time read in `TIME_ZONE`, hours off).
+  `scrud_django.ScrudServices` loses `etag`, `last_modified`,
+  `update_last_modified()`, `get_etag()` and `get_last_modified()`; use
+  `etag_for(request)` and `catalog(request)`.
 * The `Link` header now uses `rel="describedby"` with the type
   `application/schema+json`. A list envelope's `link` is now the same value
   as the resource's `Link` header (it used `rel="describedBy"` and

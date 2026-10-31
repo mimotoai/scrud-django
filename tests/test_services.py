@@ -1,37 +1,56 @@
-"""The service list (``services/``): its ``Last-Modified`` is the instant the
-catalog last changed, whatever the server's or Django's time zone."""
+"""The service list (``services/``): its ``ETag`` is a hash of the catalog it
+serves, so every process and worker that registered the same services sends
+the same one, whenever it started; it changes when the catalog does. It sends
+no ``Last-Modified``: nothing records when a catalog entry, which code adds
+at startup, last changed (a process's start time differed between workers)."""
 
-import datetime
+import time
 
 import pytest
-from django.test import override_settings
 from django.urls import reverse
-from django.utils.http import parse_http_date
 from rest_framework.test import APIClient
 
 from scrud_django import ScrudServices, services
 
 
-def test_the_catalog_time_is_aware_utc():
+def a_catalog():
+    """A catalog as a process start builds it."""
     catalog = ScrudServices()
-    assert catalog.last_modified.utcoffset() == datetime.timedelta(0)
-    now = datetime.datetime.now(datetime.UTC)
-    assert abs((now - catalog.last_modified).total_seconds()) < 5
+    catalog.add_service("tests://A", "partner-profiles")
+    catalog.add_service("tests://B", lambda request=None: "http://example.com/b/")
+    return catalog
+
+
+def test_two_processes_with_the_same_services_have_the_same_etag():
+    first = a_catalog()
+    time.sleep(1.1)  # another process, started later
+    second = a_catalog()
+    assert first.etag_for(None) == second.etag_for(None)
+    # Registered again, as each start does, it is unchanged.
+    second.add_service("tests://A", "partner-profiles")
+    assert first.etag_for(None) == second.etag_for(None)
+    # A catalog with another entry differs.
+    second.add_service("tests://C", lambda request=None: "http://example.com/c/")
+    assert first.etag_for(None) != second.etag_for(None)
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize(
-    "time_zone", ["UTC", "Pacific/Kiritimati", "Pacific/Pago_Pago"]
-)
-def test_the_service_list_last_modified_is_the_instant_it_changed(time_zone):
-    # The catalog changes under one time zone (as at import, before Django
-    # sets the process's TZ) and is served under another.
+def test_the_service_list_etag_follows_its_catalog():
     reverse("services")  # the URLconf registers the services
-    services.update_last_modified()
-    changed = datetime.datetime.now(datetime.UTC).timestamp()
-    with override_settings(TIME_ZONE=time_zone):
-        response = APIClient().get(reverse("services"))
+    client = APIClient()
+    response = client.get(reverse("services"))
     assert response.status_code == 200, response.content
-    assert abs(parse_http_date(response["Last-Modified"]) - changed) < 5, response[
-        "Last-Modified"
-    ]
+    assert "Last-Modified" not in response, response["Last-Modified"]
+    etag = response["ETag"]
+    assert client.get(reverse("services"), HTTP_IF_NONE_MATCH=etag).status_code == 304
+    # Registering the same services again (a new process) keeps it.
+    for type_uri, url_func in list(services.services.items()):
+        services.add_service(type_uri, url_func)
+    time.sleep(1.1)
+    assert client.get(reverse("services"))["ETag"] == etag
+    # A new service changes it.
+    services.add_service("tests://K5M1", lambda request=None: "http://example.com/")
+    try:
+        assert client.get(reverse("services"))["ETag"] != etag
+    finally:
+        del services.services["tests://K5M1"]

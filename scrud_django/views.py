@@ -312,18 +312,20 @@ class ResourceCollectionContextView(DocumentMediaTypeMixin, APIView):
         )
 
 
+def services_etag(view, request, *args, **kwargs):
+    """The service list's ETag: a hash of the catalog it serves
+    (`ScrudServices.etag_for`). It has no Last-Modified."""
+    return services.etag_for(request)
+
+
 @scrudful_api_view(
-    etag_func=lambda *args, **kwargs: services.etag,
-    last_modified_func=lambda *args, **kwargs: services.last_modified,
+    etag_func=services_etag,
     error=problems.problem_entity(),
     error_body_func=problems.conditional_problem,
 )
 @permission_classes([AllowAny])
 def get_service_list(request, *args, **kwargs):
-    catalog = {}
-    for type_uri, url_func in services.services.items():
-        catalog[type_uri] = url_func(request=request)
-    return Response(catalog)
+    return Response(services.catalog(request))
 
 
 # scrudful's 400, 412 and 428 are problem details only while
