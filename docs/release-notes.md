@@ -304,6 +304,10 @@ django-scoped-rbac 0.11. It has several breaking changes.
 ### Requirements and packaging
 
 * Python 3.11 or newer and Django 5.2 are required.
+* Minimum versions of the other dependencies: djangorestframework 3.15,
+  django-filter 25.1, django-reversion 5.1, jsonpath-ng 1.6 and
+  fastjsonschema 2.19; with the `search` extra, django-haystack 3.3 and
+  whoosh-reloaded 2.7.5 (the lowest versions the suite is run with).
 * `django_jsonfield_backport` is no longer used. Remove it from `INSTALLED_APPS`.
   If your project has migrations of its own that import
   `django_jsonfield_backport.models.JSONField`, change those imports to

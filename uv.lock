@@ -1149,15 +1149,15 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "django", specifier = ">=5.2,<6.0" },
-    { name = "django-filter" },
-    { name = "django-haystack", marker = "extra == 'search'" },
-    { name = "django-reversion" },
+    { name = "django-filter", specifier = ">=25.1" },
+    { name = "django-haystack", marker = "extra == 'search'", specifier = ">=3.3" },
+    { name = "django-reversion", specifier = ">=5.1" },
     { name = "django-scoped-rbac", extras = ["drf"], specifier = ">=0.11.1,<0.12" },
     { name = "djangorestframework", specifier = ">=3.15" },
-    { name = "fastjsonschema" },
-    { name = "jsonpath-ng" },
+    { name = "fastjsonschema", specifier = ">=2.19" },
+    { name = "jsonpath-ng", specifier = ">=1.6" },
     { name = "scrudful", extras = ["drf"], specifier = ">=0.8,<0.9" },
-    { name = "whoosh-reloaded", marker = "extra == 'search'" },
+    { name = "whoosh-reloaded", marker = "extra == 'search'", specifier = ">=2.7.5" },
 ]
 provides-extras = ["search"]
 
