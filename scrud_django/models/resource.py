@@ -88,7 +88,8 @@ class ResourceQuerySet(models.QuerySet):
         bulk paths use it. A deletion on another database while it runs (a
         signal receiver's) is stamped there at once. Only a deletion of many
         resources through a ``Collector`` built by hand, outside a queryset,
-        still stamps them one by one.
+        still stamps them one by one. It runs in the caller's transaction, or
+        one of its own (`in_transaction`).
 
         It first locks the rows it deletes, in primary key order
         (`lock_for_delete`), as an API write locks its row first.
@@ -104,7 +105,7 @@ class ResourceQuerySet(models.QuerySet):
             or self._fields is not None
         ):
             return super().delete()  # Django refuses these: TypeError.
-        with transaction.atomic(using=db, savepoint=False):
+        with in_transaction(db):
             lock_for_delete(self, db)
             pending = set()
             token = _PENDING_STAMPS.set((db, pending))

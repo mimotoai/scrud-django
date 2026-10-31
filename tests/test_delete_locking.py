@@ -132,6 +132,21 @@ def test_model_delete_inside_a_transaction_keeps_it_usable_after_protected_error
         assert Resource.objects.filter(pk=schema.pk).exists()
 
 
+@pytest.mark.django_db
+def test_queryset_delete_inside_a_transaction_keeps_it_usable_after_protected_error():
+    # As for Model.delete(): a ProtectedError the caller catches leaves its
+    # transaction usable (a savepoint-less atomic block marked it for
+    # rollback, so its next query failed).
+    from django.db.models import ProtectedError
+
+    reverse("partner-profiles-list")
+    schema = registration.get_resource_type_for("partner-profiles").schema
+    with transaction.atomic():
+        with pytest.raises(ProtectedError):
+            Resource.objects.filter(pk=schema.pk).delete()
+        assert Resource.objects.filter(pk=schema.pk).exists()
+
+
 def superuser_admin():
     user = UserFactory(is_staff=True, is_superuser=True)
     user.user_permissions.set(
