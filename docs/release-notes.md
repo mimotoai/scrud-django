@@ -179,8 +179,13 @@ django-scoped-rbac 0.11. It has several breaking changes.
     Your `GenericViewMixin` views' request check gives the parsed body the
     same way; their object checks give your model's instance, as
     scoped-rbac does, so an operator there that evaluates CEL itself passes
-    the model's `to_cel()` (or `scoped_rbac.access.cel_mapping(None, obj)`,
-    which reads it; an operator gets no request). Lists ask
+    the model's `to_cel()` (give the model one).
+    `scoped_rbac.access.cel_mapping(None, obj)` reads it too, but an
+    operator gets no request, so it leaves out the fields a model's
+    `cel_resource(request)` gives the policy's CEL, and for a model without
+    `to_cel()` it is `{}`: an operator written as a denial
+    (`not cel.is_true(...)`) must refuse when the fields it reads are
+    missing, or that undetermined result becomes an allow. Lists ask
     them too: on a view whose `IsAuthorized` subclass overrides
     `has_object_permission` or `has_context_permission`, a list keeps only
     the resources its `has_object_permission` allows (see Lists below), so

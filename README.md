@@ -157,8 +157,13 @@ per-object check) gives `has_object_permission`, `has_context_permission`,
 exact `dict`s and `list`s, so on `Resource` views an operator that evaluates
 CEL itself passes what it got. `GenericViewMixin` views give their object
 checks your model's instance, as scoped-rbac does, so an operator there
-passes the model's `to_cel()` (or `scoped_rbac.access.cel_mapping(None,
-obj)`). A check must only read what it gets (`obj.get("owner")`, never
+that evaluates CEL itself passes the model's `to_cel()`: give the model one.
+`scoped_rbac.access.cel_mapping(None, obj)` reads it too, but without a
+request it leaves out the fields a model's `cel_resource(request)` gives the
+policy's CEL, and for a model without `to_cel()` it is `{}`. An operator
+written as a denial (`not cel.is_true(...)`) must therefore refuse when the
+fields it reads are missing: on `{}` the CEL result is undetermined, and
+`not` turns it into an allow. A check must only read what it gets (`obj.get("owner")`, never
 `obj.pop("owner")`): one that changes it changes what is stored (or, on a
 read, what the response shows), a bug in that check. Scoped-rbac's default
 `contexts_for` reads a resource's contexts from its content on the scrud
