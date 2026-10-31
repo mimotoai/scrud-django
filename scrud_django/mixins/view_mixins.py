@@ -816,7 +816,9 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
       ``filter_backends``, and ``list`` should serve `list_page` (or
       `list_queryset`). The model needs ``etag`` and ``modified_at``. A
       deletion changes the ``ETag``, not ``Last-Modified``;
-    - scrudful's 400, 412 and 428 are problem details.
+    - scrudful's 400, 412 and 428 are problem details while
+      ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is on (`UniformErrorsMixin`); off,
+      they are scrudful's native ``{"detail": ...}`` bodies.
     """
 
     # The detail route's URL keyword, as the detail stubs below take it.
