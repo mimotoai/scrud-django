@@ -349,20 +349,23 @@ class WorkflowValidator:
     def stored_resource_readable(request, instance, context=None):
         """Whether the requester may read the stored resource `instance` (a
         ``Resource``), as the detail route decides it tells a 403 from a 404:
-        the view's own ``is_readable`` (``http.GET`` in the resource's
+        the view's ``object_readable`` (``http.GET`` in the resource's
         contexts, as each of its ``IsAuthorized`` permissions reads them from
-        the content), else ``http.GET`` on the resource's type in one of its
-        contexts. Asked outside any write's checks, so a grant conditioned on
-        ``scrud_workflow`` does not make it readable; no request is no
-        requester to hide anything from."""
+        the content, and the object checks its list asks for a read), else
+        its ``is_readable``, else ``http.GET`` on the resource's type in one
+        of its contexts. Asked outside any write's checks, so a grant
+        conditioned on ``scrud_workflow`` does not make it readable; no
+        request is no requester to hide anything from."""
         if request is None:
             return True
         view = getattr(context, "context", {}).get("view")
         content = content_of(instance)
         with _not_checking_write():
-            if callable(getattr(view, "is_readable", None)):
-                with checks_read_content(view):
-                    return view.is_readable(request, content)
+            for name in ("object_readable", "is_readable"):
+                readable = getattr(view, name, None)
+                if callable(readable):
+                    with checks_read_content(view):
+                        return readable(request, content)
             return access.may_read(
                 request,
                 instance.resource_type.type_uri,

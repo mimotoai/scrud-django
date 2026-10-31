@@ -199,7 +199,9 @@ django-scoped-rbac 0.11. It has several breaking changes.
     (their `has_object_permission` and `has_context_permission` in every
     context), and they can refuse a workflow transition the policy allows,
     but not grant one it refuses (their `has_context_permission` is given
-    the request body as sent in each context, not the stored resource).
+    the request body as sent in each context, not the stored resource). An
+    object they refuse to read is a 404 on its detail route, for every
+    method (it was a 403; see Authorization below).
     Your `GenericViewMixin` views' request check gives the parsed body the
     same way; their object checks give your model's instance, as
     scoped-rbac does, so an operator there that evaluates CEL itself passes
@@ -500,6 +502,15 @@ Conditional request handling now comes from scrudful 0.8.
   only when it is a string or a list of strings. Resources with no
   `rbac_context`, or with any other value there (for example a JSON-LD context
   document's `{"@id": ...}` term definition), belong to the default context `""`.
+* Whether the user can read a refused object (404 or 403 on its detail
+  route, and whether a workflow error names its stored state) also asks the
+  object checks of the view's `IsAuthorized` subclasses, as for a GET of the
+  detail route whatever the request's method, as its list does: an object
+  your `has_object_permission` or `has_context_permission` refuses to read
+  is now a 404 for every method, as it is missing from the list (it was a
+  403, which revealed that it exists). Object checks only narrow: one that
+  allows what the grants refuse makes nothing readable. The same holds for
+  `GenericViewMixin` views (`ListValidatorsMixin.object_readable`).
 * Unauthenticated requests now get 401.
 * A POST or PUT body whose `rbac_context` is an empty list gets 400
   (`https://api.openteams.com/http-problem/rbac-context-invalid`, "Invalid

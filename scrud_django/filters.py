@@ -28,6 +28,7 @@ from rest_framework.exceptions import (
     ValidationError,
 )
 from rest_framework.filters import BaseFilterBackend
+from rest_framework.request import clone_request
 from rest_framework.settings import api_settings
 from scoped_rbac import access
 from scoped_rbac.conf import conditional_list_max_rows
@@ -312,6 +313,67 @@ def as_detail_route(view):
             view.action = previous
 
 
+@contextmanager
+def as_detail_read(view, request):
+    """`view` as a GET of its detail route has it while the block runs, for
+    asking whether an object is readable whatever the request's method: its
+    ``action`` is ``"retrieve"`` (`as_detail_route`) and its ``request`` a
+    copy of `request` whose method is GET (DRF's ``clone_request``), which the
+    block gets. The view's own ``request`` is restored when it ends."""
+    read = clone_request(request, "GET")
+    missing = object()
+    previous = view.__dict__.get("request", missing)
+    view.request = read
+    try:
+        with as_detail_route(view):
+            yield read
+    finally:
+        if previous is missing:
+            del view.request
+        else:
+            view.request = previous
+
+
+def meets_object_checks(requirement, request, view, check):
+    """Whether every entry of `requirement` (`object_check_requirement`; any
+    option of an ``access.AnyOf`` suffices) allows
+    ``has_object_permission(request, view, check)``; one that raises a
+    refusal (`REFUSALS`) refuses `check` only."""
+
+    def meets(entry):
+        if isinstance(entry, access.AnyOf):
+            return any(
+                all(meets(e) for e in option)
+                if isinstance(option, (list, tuple))
+                else meets(option)
+                for option in entry.options
+            )
+        try:
+            return entry.has_object_permission(request, view, check)
+        except REFUSALS:
+            # Raised for this object, the detail route refuses it alone.
+            return False
+
+    return all(meets(entry) for entry in requirement)
+
+
+def readable_by_object_checks(view, request, check):
+    """Whether `view`'s object checks allow a read of `check` (the object as
+    its object check gets it), as its list asks them
+    (`filter_by_object_checks`), whatever `request`'s method: with
+    `object_check_requirement` built for a GET of the detail route
+    (`as_detail_read`), each ``IsAuthorized`` of it reading a resource's
+    contexts from its content. True when the view has no such requirement
+    (its grants decide alone). They can only refuse: the grants are asked
+    apart (``is_readable``)."""
+    with as_detail_read(view, request) as read, checks_read_content(view):
+        requirement = object_check_requirement(view)
+        if requirement is None:
+            return True
+        reading_content(_requirement_leaves(requirement))
+        return meets_object_checks(requirement, read, view, check)
+
+
 def filter_by_object_checks(queryset, request, view, requirement, object_for_checks):
     """`queryset` (a list, already RBAC-filtered) restricted to the objects
     `view`'s object check allows, as the detail route asks it: each
@@ -326,20 +388,6 @@ def filter_by_object_checks(queryset, request, view, requirement, object_for_che
     normalised is left out (its detail route is a 404). Every object examined
     counts against ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``: past it,
     ``access.ConditionalListTooLarge``."""
-
-    def meets(entry, check):
-        if isinstance(entry, access.AnyOf):
-            return any(
-                all(meets(e, check) for e in option)
-                if isinstance(option, (list, tuple))
-                else meets(option, check)
-                for option in entry.options
-            )
-        try:
-            return entry.has_object_permission(request, view, check)
-        except REFUSALS:
-            # Raised for this object, the detail route refuses it alone.
-            return False
 
     # Each permission reads a resource's contexts from the content
     # (`reading_content`), whatever the view's get_permissions() built, and
@@ -358,7 +406,7 @@ def filter_by_object_checks(queryset, request, view, requirement, object_for_che
             if access.stored_in_reserved_context(obj):
                 continue
             check = object_for_checks(obj)
-            if all(meets(entry, check) for entry in requirement):
+            if meets_object_checks(requirement, request, view, check):
                 allowed_pks.append(obj.pk)
     return queryset.filter(pk__in=allowed_pks)
 

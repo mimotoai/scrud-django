@@ -141,7 +141,10 @@ DELETE, even with the action `"*"`, so a role that should read needs its own
 state); anything else refuses everywhere.
 
 A list shows what the detail route shows, as far as the view's
-`IsAuthorized` permissions (and subclasses of it) decide. Another DRF
+`IsAuthorized` permissions (and subclasses of it) decide: an object such a
+subclass refuses to read is missing from the list and a 404 on its detail
+route, for every method (an object the user may read but not write gets
+403). Another DRF
 `BasePermission` on the view, such as an owner check in
 `has_object_permission`, is not asked for lists, as in DRF: its detail route
 refuses a resource that its list still shows. Put such a rule in an

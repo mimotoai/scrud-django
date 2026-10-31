@@ -118,6 +118,30 @@ urlpatterns.extend(
 )
 
 
+class ReadRefusingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` that refuses a read (GET or HEAD) of an
+    object named "unreadable" (a resource whose content's ``name`` or
+    ``title`` is, a `Note` whose ``text`` is), and decides every other
+    request as ``IsAuthorized`` (a write of that object included)."""
+
+    UNREADABLE = "unreadable"
+
+    @staticmethod
+    def names_of(obj):
+        if isinstance(obj, Note):
+            return (obj.text,)
+        return (obj.get("name"), obj.get("title"))
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in ("GET", "HEAD") and self.UNREADABLE in self.names_of(obj):
+            return False
+        return super().has_object_permission(request, view, obj)
+
+
+class ReadRefusingResourceViewSet(ResourceViewSet):
+    permission_classes = [ReadRefusingIsAuthorized]
+
+
 class RecordingIsAuthorized(IsAuthorized):
     """An adopter's ``IsAuthorized`` that records the ``obj`` each of its
     ``has_object_permission`` and ``has_context_permission`` calls gets, in
@@ -139,6 +163,33 @@ class RecordingResourceViewSet(ResourceViewSet):
 
 
 # The partner profiles again, authorized by RecordingIsAuthorized.
+urlpatterns.extend(
+    [
+        path(
+            "read-refusing/partner-profiles/",
+            ReadRefusingResourceViewSet.as_view(
+                {"get": "list", "head": "list"}, resource_type_name="partner-profiles"
+            ),
+            name="read-refusing-partner-profiles-list",
+        ),
+        path(
+            "read-refusing/partner-profiles/<slug>/",
+            ReadRefusingResourceViewSet.as_view(
+                {"get": "retrieve", "head": "retrieve", "put": "update"},
+                resource_type_name="partner-profiles",
+            ),
+            name="read-refusing-partner-profiles-detail",
+        ),
+        path(
+            "read-refusing/todos/<slug>/",
+            ReadRefusingResourceViewSet.as_view(
+                {"get": "retrieve", "put": "update"}, resource_type_name="todos"
+            ),
+            name="read-refusing-todos-detail",
+        ),
+    ]
+)
+
 urlpatterns.extend(
     [
         path(
@@ -339,6 +390,31 @@ urlpatterns.extend(
             "generic/denying-notes-from-list-queryset/",
             PagedContextDenyingNoteViewSet.as_view({"get": "list", "head": "list"}),
             name="generic-denying-notes-from-list-queryset",
+        ),
+    ]
+)
+
+
+class ReadRefusingNoteViewSet(NoteViewSet):
+    """The notes again, authorized by ReadRefusingIsAuthorized (a note's
+    ``text`` is its name)."""
+
+    permission_classes = [ReadRefusingIsAuthorized]
+
+
+urlpatterns.extend(
+    [
+        path(
+            "generic/read-refusing-notes/",
+            ReadRefusingNoteViewSet.as_view({"get": "list", "head": "list"}),
+            name="generic-read-refusing-notes-list",
+        ),
+        path(
+            "generic/read-refusing-notes/<slug>/",
+            ReadRefusingNoteViewSet.as_view(
+                {"get": "retrieve", "put": "update", "delete": "destroy"}
+            ),
+            name="generic-read-refusing-notes-detail",
         ),
     ]
 )

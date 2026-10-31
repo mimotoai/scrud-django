@@ -73,7 +73,9 @@ def test_a_list_leaves_out_what_has_context_permission_refuses():
     secret, shown = profile("secret", "denied"), profile("shown", "a")
     client = client_with((PP_READER, "denied"), (PP_READER, "a"))
     detail = reverse("denying-partner-profiles-detail", args=[secret.pk])
-    assert client.get(detail).status_code == 403
+    # The detail route hides it too (404, not 403): the permission class
+    # refuses a read of it, as the list does.
+    assert client.get(detail).status_code == 404
     response = client.get(reverse("denying-partner-profiles-list"))
     assert listed(response) == ["shown"]
     assert response.json()["count"] == 1
@@ -106,7 +108,8 @@ def test_a_list_leaves_out_what_has_object_permission_refuses():
     )
     client = client_with(({"http.GET": [LD, LD_LIST]}, "a"))
     detail = reverse("locking-json-ld-detail", args=[locked.pk])
-    assert client.get(detail).status_code == 403
+    # The detail route hides it too (404, not 403), as the list does.
+    assert client.get(detail).status_code == 404
     response = client.get(reverse("locking-json-ld-list"))
     assert listed(response) == ["open"]
 
@@ -187,7 +190,8 @@ def test_a_generic_view_list_leaves_out_what_the_permission_class_refuses(route)
     reader = {"http.GET": [NOTE, NOTE_LIST]}
     client = client_with((reader, "denied"), (reader, "a"))
     detail = reverse("generic-denying-notes-detail", args=[secret.pk])
-    assert client.get(detail).status_code == 403
+    # The detail route hides it too (404, not 403), as the list does.
+    assert client.get(detail).status_code == 404
     response = client.get(reverse(route))
     assert response.status_code == 200, response.content
     assert [note["text"] for note in response.json()] == ["shown"]
@@ -231,11 +235,12 @@ def test_only_a_class_overriding_an_object_check_lists_object_by_object():
 @pytest.mark.django_db
 def test_an_object_check_that_raises_refuses_that_object_only():
     # A has_object_permission that raises PermissionDenied refuses that
-    # resource, as on its detail route, not the whole list.
+    # resource, as on its detail route, not the whole list. It refuses a
+    # read, so the detail route hides it (404, not 403), as the list does.
     raising, shown = profile("raise", "a"), profile("shown", "a")
     client = client_with((PP_READER, "a"))
     detail = reverse("raising-partner-profiles-detail", args=[raising.pk])
-    assert client.get(detail).status_code == 403
+    assert client.get(detail).status_code == 404
     assert (
         client.get(
             reverse("raising-partner-profiles-detail", args=[shown.pk])

@@ -8,12 +8,14 @@ from django.db import DEFAULT_DB_ALIAS, router, transaction
 from django.db.models import Max, ProtectedError
 from django.http import Http404
 from rest_framework import status
+from rest_framework.exceptions import NotAuthenticated, PermissionDenied
 from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import AccessAPIError, drf_error
+from scoped_rbac.rest import AccessControlledAPIView
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django.exceptions import (
@@ -24,8 +26,10 @@ from scrud_django.exceptions import (
     ResourceInUseError,
 )
 from scrud_django.filters import (
+    as_detail_read,
     filter_by_object_checks,
     object_check_requirement,
+    readable_by_object_checks,
     readable_removal,
 )
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
@@ -372,6 +376,46 @@ class ListValidatorsMixin:
     # True while ``get_object()`` runs: its lookup is not a list.
     _scrud_in_get_object = False
 
+    def object_readable(self, request, obj):
+        """Whether `obj` (the object as the object check gets it) is
+        readable by `request`'s user, which tells a 404 from a 403 on the
+        detail route (`check_object_permissions`) and decides whether a
+        workflow error names a resource's stored state: as a GET of the
+        detail route has it (`scrud_django.filters.as_detail_read`), whatever
+        the request's method, scoped-rbac's ``is_readable`` (``http.GET`` in
+        the object's contexts, as each ``IsAuthorized`` reads them) **and**
+        the object checks a list asks (`readable_by_object_checks`), so that
+        the detail route hides what the list leaves out. The object checks
+        only narrow. A grant conditioned on ``scrud_workflow`` never makes
+        an object readable."""
+        with _not_checking_write(), checks_read_content(self):
+            if isinstance(self, AccessControlledAPIView):
+                with as_detail_read(self, request) as read:
+                    if not AccessControlledAPIView.is_readable(self, read, obj):
+                        return False
+            return readable_by_object_checks(self, request, obj)
+
+    def is_readable(self, request, obj):
+        """`object_readable`. (scoped-rbac's ``AccessControlledAPIView``
+        defines its own: where it precedes this mixin, as in the scrud
+        viewsets, its ``check_object_permissions`` asks its own, after this
+        mixin's `check_object_permissions` has already answered 404 for an
+        object `object_readable` refuses.)"""
+        return self.object_readable(request, obj)
+
+    def check_object_permissions(self, request, obj):
+        """DRF's object check, except that a refusal (403, or 401 for the
+        anonymous user) of an object `object_readable` refuses is a 404:
+        another answer would reveal that it exists. scoped-rbac's
+        ``AccessControlledAPIView.check_object_permissions`` (which reads
+        only the grants) then lets the 404 through."""
+        try:
+            super().check_object_permissions(request, obj)
+        except (PermissionDenied, NotAuthenticated):
+            if not self.object_readable(request, obj):
+                raise Http404 from None
+            raise
+
     def object_for_checks(self, obj):
         """`obj` as the detail route gives it to the object check: itself
         (`ResourceViewMixin` gives the resource's content)."""
@@ -537,16 +581,10 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
     def check_object_permissions(self, request, obj):
         """DRF's object check, with ``scrud_workflow`` allowing for a PUT the
         workflow check covers and refusing for anything else
-        (`write_checks`). Whether a refused resource is readable (scoped-rbac's
-        ``is_readable``, 404 or 403) is asked outside it (`is_readable`)."""
+        (`write_checks`). Whether a refused resource is readable (404 or
+        403) is asked outside it (`object_readable`)."""
         with self.write_checks(request):
             super().check_object_permissions(request, obj)
-
-    def is_readable(self, request, obj):
-        """scoped-rbac's, with ``scrud_workflow`` refusing: a grant
-        conditioned on it never makes a resource readable."""
-        with _not_checking_write():
-            return super().is_readable(request, obj)
 
     def get_resource_type(self):
         """The view's resource type, read once per request and database (the
