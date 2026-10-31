@@ -1,20 +1,21 @@
 import json
 import os
-from datetime import timezone
 from http import server
 from multiprocessing import Process
 from uuid import uuid4
 
 import pytest
 from django.urls import reverse
-from django.utils.http import http_date, quote_etag
+from django.utils.http import quote_etag
 from django.utils.timezone import now
 from scoped_rbac.models import Role, RoleAssignment
-from scoped_rbac.permissions import DEFAULT_CONTEXT
+from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.registration import ResourceRegistration
+from scrud_django.utils import http_date_for
 
 from .factories import UserFactory
+from .rbac_defaults import TYPE_URI_PARTNER_PROFILES
 
 __all__ = [
     'ROOT_PATH',
@@ -26,6 +27,7 @@ __all__ = [
     'http_static_server',
     'last_modified_for',
     'login_no_roles',
+    'login_other_context',
     'partner_profile_post_data',
     'partner_profiles',
     'regular_login',
@@ -47,7 +49,7 @@ RESOURCE_ENDPOINT_LIST_NAME = f"{RESOURCE_ENDPOINT_PREFIX}-list"
 
 
 def last_modified_for(resource):
-    return http_date(resource.modified_at.replace(tzinfo=timezone.utc).timestamp())
+    return http_date_for(resource.modified_at)
 
 
 def serialize_page(resources):
@@ -74,21 +76,23 @@ def serialize_resource(resource):
     return resource.content
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def role_allow_all():
-    role = Role(definition=True, etag=uuid4().hex, modified_at=now(),)
+def role_allow_all(db):
+    role = Role(
+        definition=True,
+        etag=uuid4().hex,
+        modified_at=now(),
+    )
     role.save()
     return role
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def role_todo_creator():
+def role_todo_creator(db):
     role = Role(
-        definition = {
-            "http.GET": [ "tests://ToDo" ],
-            "http.POST": [ "tests://ToDo" ],
+        definition={
+            "http.GET": ["tests://ToDo"],
+            "http.POST": ["tests://ToDo"],
             "http.PUT": {
                 "tests://ToDo": {
                     "condition": {
@@ -96,7 +100,7 @@ def role_todo_creator():
                         "authorized_transitions": ["cancel"],
                     }
                 }
-            }
+            },
         },
         etag=uuid4().hex,
         modified_at=now(),
@@ -105,9 +109,8 @@ def role_todo_creator():
     return role
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def regular_login(role_allow_all):
+def regular_login(db, role_allow_all):
     user = UserFactory()
     RoleAssignment(
         user=user,
@@ -119,21 +122,42 @@ def regular_login(role_allow_all):
     return user
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def admin_login():
+def admin_login(db):
     return UserFactory(is_staff=True, is_superuser=True)
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def login_no_roles():
+def login_no_roles(db):
     return UserFactory()
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def todo_creator_login(role_todo_creator):
+def login_other_context(db):
+    """A user who may GET, PUT and DELETE partner profiles only in the context
+    "other": past the view-level check, but unable to read a resource in ""."""
+    role = Role(
+        definition={
+            method: [TYPE_URI_PARTNER_PROFILES]
+            for method in ("http.GET", "http.PUT", "http.DELETE")
+        },
+        etag=uuid4().hex,
+        modified_at=now(),
+    )
+    role.save()
+    user = UserFactory()
+    RoleAssignment(
+        user=user,
+        role=role,
+        rbac_context="other",
+        etag=uuid4().hex,
+        modified_at=now(),
+    ).save()
+    return user
+
+
+@pytest.fixture
+def todo_creator_login(db, role_todo_creator):
     user = UserFactory()
     RoleAssignment(
         user=user,
@@ -171,13 +195,12 @@ def partner_profile_post_data():
         'static',
         'post_partner_profile.json',
     )
-    with open(path, 'r') as f:
+    with open(path) as f:
         return json.loads(f.read())
 
 
-@pytest.mark.django_db
 @pytest.fixture
-def partner_profiles(partner_profile_post_data):
+def partner_profiles(db, partner_profile_post_data):
     # force registration of resource types
     reverse(RESOURCE_ENDPOINT_LIST_NAME)
     return ResourceRegistration.register(

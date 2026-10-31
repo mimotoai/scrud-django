@@ -2,11 +2,10 @@
 
 import django.db.models.deletion
 from django.db import migrations, models
-from django_jsonfield_backport.models import JSONField
+from django.db.models import JSONField
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = []

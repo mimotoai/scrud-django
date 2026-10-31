@@ -8,7 +8,9 @@ policy_for_unauthenticated = policy_from_json(
     {
         DEFAULT_CONTEXT: {
             "http.OPTIONS": True,
-            "http.POST": [TYPE_URI_PARTNER_PROFILES,],  # noqa: E231
+            "http.POST": [
+                TYPE_URI_PARTNER_PROFILES,
+            ],  # noqa: E231
         },
     }
 )
@@ -21,6 +23,16 @@ policy_for_staff = policy_from_json(
             "http.POST": [TYPE_URI_PARTNER_PROFILES],
             "http.PUT": [TYPE_URI_PARTNER_PROFILES],
             "http.DELETE": [TYPE_URI_PARTNER_PROFILES],
+        },
+    }
+)
+
+# A default for every authenticated user that grants reading partner profiles in
+# any context ("*"): unrestricted for the list, without being a superuser.
+policy_read_partner_profiles_anywhere = policy_from_json(
+    {
+        "*": {
+            "http.GET": [TYPE_URI_PARTNER_PROFILES, TYPE_URI_LIST_PARTNER_PROFILES],
         },
     }
 )

@@ -1,120 +1,95 @@
-import os
-import sys
-
 import pytest
 
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--no-pkgroot",
+        "--reverse",
         action="store_true",
-        default=False,
-        help="Remove package root directory from sys.path, ensuring that "
-        "rest_framework is imported from the installed site-packages. "
-        "Used for testing the distribution.",
+        help="Run the tests in reverse order (the modules, and the tests in "
+        "each, within each of pytest-django's groups, which keep their "
+        "order), to show that no test depends on one that runs before it.",
     )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_collection_modifyitems(config, items):
+    """``--reverse``: reverse the collected tests before pytest-django's
+    ordering runs (this wraps it). Its sort is stable, so each of its groups
+    (database tests, then transactional ones, which flush the database, then
+    the others) runs in reverse, and the groups keep their order: a
+    transactional test never runs first."""
+    if config.getoption("--reverse"):
+        items.reverse()
+    return (yield)
 
 
 def pytest_configure(config):
+    import django
     from django.conf import settings
 
-    settings.configure(
-        DEBUG_PROPAGATE_EXCEPTIONS=True,
-        DATABASES={
-            "default": {
-                "ENGINE": "django.db.backends.sqlite3",
-                "NAME": ":memory:",
-            }  # noqa: E231
-        },
-        SITE_ID=1,
-        SECRET_KEY="not very secret in tests",
-        USE_I18N=True,
-        USE_L10N=True,
-        STATIC_URL="/static/",
-        ROOT_URLCONF="tests.urls",
-        TEMPLATE_LOADERS=(
-            "django.template.loaders.filesystem.Loader",
-            "django.template.loaders.app_directories.Loader",
-        ),
-        MIDDLEWARE=(
-            "django.middleware.common.CommonMiddleware",
-            "django.contrib.sessions.middleware.SessionMiddleware",
-            "django.middleware.csrf.CsrfViewMiddleware",
-            "django.contrib.auth.middleware.AuthenticationMiddleware",
-            "django.contrib.messages.middleware.MessageMiddleware",
-        ),
-        INSTALLED_APPS=(
-            "django.contrib.admin",
-            "django.contrib.auth",
-            "django.contrib.contenttypes",
-            "django.contrib.sessions",
-            "django.contrib.sites",
-            "django.contrib.messages",
-            "django.contrib.staticfiles",
-            "django_jsonfield_backport",
-            "haystack",
-            "rest_framework",
-            "rest_framework.authtoken",
-            "scoped_rbac",
-            "scrud_django",
-            "tests",
-            "reversion",
-        ),
-        PASSWORD_HASHERS=(
-            "django.contrib.auth.hashers.SHA1PasswordHasher",
-            "django.contrib.auth.hashers.PBKDF2PasswordHasher",
-            "django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher",
-            "django.contrib.auth.hashers.BCryptPasswordHasher",
-            "django.contrib.auth.hashers.MD5PasswordHasher",
-            "django.contrib.auth.hashers.CryptPasswordHasher",
-        ),
-        REST_FRAMEWORK={
-            "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
-            "DEFAULT_PERMISSION_CLASSES": [
-                "scoped_rbac.permissions.IsAuthorized",
-                # "rest_framework.permissions.IsAdminUser",
-            ],
-        },
-        SCOPED_RBAC={
-            "POLICY_FOR_UNAUTHENTICATED": "tests.rbac_defaults.policy_for_unauthenticated",  # noqa: E501
-            "POLICY_FOR_STAFF": "tests.rbac_defaults.policy_for_staff",
-        },
-        SCRUD_WORKFLOW={
-            "DEFAULT_WORKFLOW_POLICIES": "tests.workflow_defaults.workflow_policies",
-        },
-        HAYSTACK_CONNECTIONS={
-            'default': {
-                'ENGINE': 'haystack.backends.whoosh_backend.WhooshEngine',
-                'PATH': os.path.join(os.path.dirname(__file__), 'whoosh_index'),
-            },
-        },
-        HAYSTACK_SIGNAL_PROCESSOR='haystack.signals.RealtimeSignalProcessor',
-        SCRUD_WORKFLOW_ACTIONS=["tests.workflow_actions.actions"],
-    )
+    from tests.settings import SETTINGS
 
-    if config.getoption("--no-pkgroot"):
-        sys.path.pop(0)
+    settings.configure(**SETTINGS)
+    django.setup()
 
-        # import scoped_rbac before pytest re-adds the package root directory.
-        import scrud_django  # noqa
-
-        package_dir = os.path.join(os.getcwd(), "scrud_django")
-        assert not scrud_django.__file__.startswith(package_dir)
-
-    try:
-        import django  # noqa
-
-        django.setup()
-    except AttributeError:
-        pass
+    # Importing the steps module registers them; it imports Django models, so it
+    # must happen after django.setup().
+    import tests.steps  # noqa: F401
 
 
 @pytest.fixture(scope="session")
 def django_db_setup(django_db_setup, django_db_blocker):
     """Ensure that the partner-profiles resource type is properly initialized for all
     tests.
+
+    The built-in WorkflowPolicy type is registered here too: otherwise it is only
+    created when ``scrud_django.urls`` is first imported, inside whichever test
+    first resolves a URL, and that test's rollback removes it (and its JSON-LD
+    context document) for every later test.
     """
+    from scrud_django import registration
     from tests import resource_types
 
     with django_db_blocker.unblock():
         resource_types.json_resource_types()
+        registration.workflow_policy_resource_type()
+
+
+# The built-in resource types `scrud_django.registration` caches at module
+# level.
+REGISTRATION_CACHES = [
+    "JSON_SCHEMA_REGISTRATION_",
+    "JSON_SCHEMA_RESOURCE_TYPE_",
+    "JSON_LD_RESOURCE_TYPE_",
+    "JSON_LD_REGISTRATION_",
+    "INDEXING_POLICY_RESOURCE_TYPE_",
+    "INDEXING_POLICY_REGISTRATION_",
+    "WORKFLOW_POLICY_RESOURCE_TYPE_",
+    "WORKFLOW_POLICY_REGISTRATION_",
+]
+
+
+@pytest.fixture
+def committed_types():
+    """The test resource types, committed for other connections to see: use
+    it in every ``@pytest.mark.django_db(transaction=True)`` test that needs
+    them.
+
+    A transactional test's database is flushed after it, which deletes the
+    types `django_db_setup` registered for the session (and the built-in types
+    `registration` caches): they are registered again here, and the caches
+    forgotten before and afterwards, so that the next test registers its own.
+    pytest-django runs transactional tests after the other database tests
+    (with ``--reverse`` too), so those never see the flushed database."""
+    from scrud_django import registration
+    from tests import resource_types
+
+    def forget():
+        for name in REGISTRATION_CACHES:
+            setattr(registration, name, None)
+
+    forget()
+    resource_types.json_resource_types()
+    registration.workflow_policy_resource_type()
+    yield
+    forget()

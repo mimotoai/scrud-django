@@ -1,9 +1,638 @@
-import importlib.resources
+from uuid import uuid4
 
+from django.contrib import admin
 from django.urls import include, path
+from django.utils.timezone import now
+from rest_framework import serializers, status, viewsets
+from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.renderers import JSONRenderer
+from rest_framework.response import Response
+from scoped_rbac import access
+from scoped_rbac.filters import RbacFilter
+from scoped_rbac.permissions import IsAuthorized
+from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
+from scrudful.rest_framework import scrudful_viewset
 
 from scrud_django import registration
+from scrud_django.mixins.view_mixins import GenericViewMixin
+from scrud_django.models import ResourceType
+from scrud_django.permissions import current_transition
+from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
+
+from .models import Note
 from .resource_types import json_resource_types
 
-urlpatterns = [path("", include("scrud_django.urls"))]
+urlpatterns = [
+    path("admin/", admin.site.urls),
+    path("", include("scrud_django.urls")),
+]
 urlpatterns.extend(registration.resource_types(*json_resource_types()))
+
+# The partner profiles list again, served by ResourceViewSetGenericFilter, whose
+# list filters on query parameters.
+urlpatterns.append(
+    path(
+        "filtered/partner-profiles/",
+        ResourceViewSetGenericFilter.as_view(
+            {"get": "list", "head": "list"}, resource_type_name="partner-profiles"
+        ),
+        name="filtered-partner-profiles-list",
+    )
+)
+
+
+class ContextDenyingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` that never allows anything in the context
+    "denied", whatever the user's grants there."""
+
+    DENIED = "denied"
+
+    def has_context_permission(self, request, view, obj, context):
+        if context == self.DENIED:
+            return False
+        return super().has_context_permission(request, view, obj, context)
+
+
+class ContextDenyingResourceViewSet(ResourceViewSet):
+    permission_classes = [ContextDenyingIsAuthorized]
+
+
+# The partner profiles again, authorized by ContextDenyingIsAuthorized.
+urlpatterns.extend(
+    [
+        path(
+            "denying/partner-profiles/",
+            ContextDenyingResourceViewSet.as_view(
+                {"get": "list", "head": "list", "post": "create"},
+                resource_type_name="partner-profiles",
+            ),
+            name="denying-partner-profiles-list",
+        ),
+        path(
+            "denying/partner-profiles/<slug>/",
+            ContextDenyingResourceViewSet.as_view(
+                {"get": "retrieve", "put": "update"},
+                resource_type_name="partner-profiles",
+            ),
+            name="denying-partner-profiles-detail",
+        ),
+    ]
+)
+
+
+class LockedDenyingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` that overrides ``has_object_permission``
+    (DRF's object-level hook) to refuse a resource whose content has
+    ``"locked": true``: the scrud views' object checks give it the content
+    (a ``dict``)."""
+
+    def has_object_permission(self, request, view, obj):
+        if obj.get("locked") is True:
+            return False
+        return super().has_object_permission(request, view, obj)
+
+
+class LockedDenyingResourceViewSet(ResourceViewSet):
+    permission_classes = [LockedDenyingIsAuthorized]
+
+
+# The JSON-LD contexts again, authorized by LockedDenyingIsAuthorized.
+urlpatterns.extend(
+    [
+        path(
+            "locking/json-ld/",
+            LockedDenyingResourceViewSet.as_view(
+                {"get": "list", "head": "list", "post": "create"},
+                resource_type_name="json-ld",
+            ),
+            name="locking-json-ld-list",
+        ),
+        path(
+            "locking/json-ld/<slug>/",
+            LockedDenyingResourceViewSet.as_view(
+                {"get": "retrieve", "put": "update"}, resource_type_name="json-ld"
+            ),
+            name="locking-json-ld-detail",
+        ),
+    ]
+)
+
+
+class ReadRefusingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` that refuses a read (GET or HEAD) of an
+    object named "unreadable" (a resource whose content's ``name`` or
+    ``title`` is, a `Note` whose ``text`` is), and decides every other
+    request as ``IsAuthorized`` (a write of that object included)."""
+
+    UNREADABLE = "unreadable"
+
+    @staticmethod
+    def names_of(obj):
+        if isinstance(obj, Note):
+            return (obj.text,)
+        return (obj.get("name"), obj.get("title"))
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in ("GET", "HEAD") and self.UNREADABLE in self.names_of(obj):
+            return False
+        return super().has_object_permission(request, view, obj)
+
+
+class ReadRefusingResourceViewSet(ResourceViewSet):
+    permission_classes = [ReadRefusingIsAuthorized]
+
+
+class VndApiRenderer(JSONRenderer):
+    """An adopter's JSON renderer with its own media type and format."""
+
+    media_type = "application/vnd.api+json"
+    format = "vnd.api+json"
+
+
+class VndApiResourceViewSet(ResourceViewSet):
+    renderer_classes = [VndApiRenderer]
+
+
+urlpatterns.append(
+    path(
+        "vnd/partner-profiles/",
+        VndApiResourceViewSet.as_view(
+            {"get": "list", "post": "create"}, resource_type_name="partner-profiles"
+        ),
+        name="vnd-partner-profiles-list",
+    )
+)
+
+
+class RecordingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` that records the ``obj`` each of its
+    ``has_object_permission`` and ``has_context_permission`` calls gets, in
+    `SEEN`, and decides as ``IsAuthorized``."""
+
+    SEEN = []
+
+    def has_object_permission(self, request, view, obj):
+        self.SEEN.append(("has_object_permission", obj))
+        return super().has_object_permission(request, view, obj)
+
+    def has_context_permission(self, request, view, obj, context):
+        self.SEEN.append(("has_context_permission", obj))
+        return super().has_context_permission(request, view, obj, context)
+
+
+class RecordingResourceViewSet(ResourceViewSet):
+    permission_classes = [RecordingIsAuthorized]
+
+
+# The partner profiles again, authorized by RecordingIsAuthorized.
+urlpatterns.extend(
+    [
+        path(
+            "read-refusing/partner-profiles/",
+            ReadRefusingResourceViewSet.as_view(
+                {"get": "list", "head": "list"}, resource_type_name="partner-profiles"
+            ),
+            name="read-refusing-partner-profiles-list",
+        ),
+        path(
+            "read-refusing/partner-profiles/<slug>/",
+            ReadRefusingResourceViewSet.as_view(
+                {"get": "retrieve", "head": "retrieve", "put": "update"},
+                resource_type_name="partner-profiles",
+            ),
+            name="read-refusing-partner-profiles-detail",
+        ),
+        path(
+            "read-refusing/todos/<slug>/",
+            ReadRefusingResourceViewSet.as_view(
+                {"get": "retrieve", "put": "update"}, resource_type_name="todos"
+            ),
+            name="read-refusing-todos-detail",
+        ),
+    ]
+)
+
+urlpatterns.extend(
+    [
+        path(
+            "recording/partner-profiles/",
+            RecordingResourceViewSet.as_view(
+                {"get": "list", "post": "create"}, resource_type_name="partner-profiles"
+            ),
+            name="recording-partner-profiles-list",
+        ),
+        path(
+            "recording/partner-profiles/<slug>/",
+            RecordingResourceViewSet.as_view(
+                {"get": "retrieve", "put": "update"},
+                resource_type_name="partner-profiles",
+            ),
+            name="recording-partner-profiles-detail",
+        ),
+    ]
+)
+
+
+class TeamIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` whose ``contexts_for`` is a resource's
+    ``team`` (``""`` without one), not its ``rbac_context``: it reads the
+    resource's content, as object checks give it (a ``dict``)."""
+
+    def contexts_for(self, obj):
+        return [obj.get("team", "")]
+
+
+class TeamResourceViewSet(ResourceViewSet):
+    permission_classes = [TeamIsAuthorized]
+
+
+# The partner profiles again, authorized by team (TeamIsAuthorized).
+urlpatterns.extend(
+    [
+        path(
+            "teams/partner-profiles/",
+            TeamResourceViewSet.as_view(
+                {"get": "list"}, resource_type_name="partner-profiles"
+            ),
+            name="teams-partner-profiles-list",
+        ),
+        path(
+            "teams/partner-profiles/<slug>/",
+            TeamResourceViewSet.as_view(
+                {"get": "retrieve"}, resource_type_name="partner-profiles"
+            ),
+            name="teams-partner-profiles-detail",
+        ),
+    ]
+)
+
+
+class NoCancelIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` that decides by the workflow transition
+    itself: it never allows ``cancel`` (``current_transition()`` in the
+    workflow check), whatever the user's grants."""
+
+    def has_context_permission(self, request, view, obj, context):
+        if current_transition() == "cancel":
+            return False
+        return super().has_context_permission(request, view, obj, context)
+
+
+class NoCancelResourceViewSet(ResourceViewSet):
+    permission_classes = [NoCancelIsAuthorized]
+
+
+class ContextDenyingToDoViewSet(ResourceViewSet):
+    permission_classes = [ContextDenyingIsAuthorized]
+
+
+# The ToDos again, authorized by NoCancelIsAuthorized and by
+# ContextDenyingIsAuthorized.
+urlpatterns.extend(
+    [
+        path(
+            "no-cancel/todos/<slug>/",
+            NoCancelResourceViewSet.as_view(
+                {"put": "update"}, resource_type_name="todos"
+            ),
+            name="no-cancel-todos-detail",
+        ),
+        path(
+            "denying/todos/",
+            ContextDenyingToDoViewSet.as_view(
+                {"post": "create"}, resource_type_name="todos"
+            ),
+            name="denying-todos-list",
+        ),
+    ]
+)
+
+
+NOTE = "tests://Note"
+
+
+class NoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Note
+        fields = ["id", "text", "rbac_context"]
+
+    def __init__(self, *args, **kwargs):
+        kwargs.pop("resource_type", None)  # GenericViewMixin passes it
+        super().__init__(*args, **kwargs)
+
+
+@scrudful_viewset
+class NoteViewSet(AccessControlledAPIView, GenericViewMixin, viewsets.GenericViewSet):
+    """An adopter's view of a model of their own (`Note`) on GenericViewMixin."""
+
+    queryset = Note.objects.all()
+    serializer_class = NoteSerializer
+    permission_classes = [IsAuthorized]
+    parser_classes = [RbacJSONParser]
+    filter_backends = [RbacFilter]
+    resource_type_iri = NOTE
+
+    def get_resource_type(self):
+        resource_type, _ = ResourceType.objects.get_or_create(
+            type_uri=NOTE,
+            defaults={
+                "slug": "notes",
+                "revision": "1",
+                "etag": uuid4().hex,
+                "modified_at": now(),
+            },
+        )
+        return resource_type
+
+    def list(self, request):
+        queryset = self.filter_queryset(self.get_queryset())
+        return Response(self.get_serializer(queryset, many=True).data)
+
+    def retrieve(self, request, slug: str):
+        return Response(self.get_serializer(self.get_object()).data)
+
+    def update(self, request, slug: str):
+        note = self.get_object()
+        note.text = request.data.get("text", "")
+        note.etag = uuid4().hex
+        note.modified_at = now()
+        note.save()
+        return Response(self.get_serializer(note).data)
+
+    def destroy(self, request, slug: str):
+        self.get_object().delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+urlpatterns.extend(
+    [
+        path(
+            "generic/notes/",
+            NoteViewSet.as_view({"get": "list", "head": "list"}),
+            name="generic-notes-list",
+        ),
+        path(
+            "generic/notes/<slug>/",
+            NoteViewSet.as_view(
+                {"get": "retrieve", "put": "update", "delete": "destroy"}
+            ),
+            name="generic-notes-detail",
+        ),
+    ]
+)
+
+
+class ContextDenyingNoteViewSet(NoteViewSet):
+    """The notes again, authorized by ContextDenyingIsAuthorized."""
+
+    permission_classes = [ContextDenyingIsAuthorized]
+
+
+class PagedContextDenyingNoteViewSet(ContextDenyingNoteViewSet):
+    """The notes again, authorized by ContextDenyingIsAuthorized, listed from
+    `list_queryset` (as a GenericViewMixin list should serve it)."""
+
+    def list(self, request):
+        return Response(self.get_serializer(self.list_queryset(), many=True).data)
+
+
+urlpatterns.extend(
+    [
+        path(
+            "generic/denying-notes/",
+            ContextDenyingNoteViewSet.as_view({"get": "list", "head": "list"}),
+            name="generic-denying-notes-list",
+        ),
+        path(
+            "generic/denying-notes/<slug>/",
+            ContextDenyingNoteViewSet.as_view({"get": "retrieve"}),
+            name="generic-denying-notes-detail",
+        ),
+        path(
+            "generic/denying-notes-from-list-queryset/",
+            PagedContextDenyingNoteViewSet.as_view({"get": "list", "head": "list"}),
+            name="generic-denying-notes-from-list-queryset",
+        ),
+    ]
+)
+
+
+class ReadRefusingNoteViewSet(NoteViewSet):
+    """The notes again, authorized by ReadRefusingIsAuthorized (a note's
+    ``text`` is its name)."""
+
+    permission_classes = [ReadRefusingIsAuthorized]
+
+
+urlpatterns.extend(
+    [
+        path(
+            "generic/read-refusing-notes/",
+            ReadRefusingNoteViewSet.as_view({"get": "list", "head": "list"}),
+            name="generic-read-refusing-notes-list",
+        ),
+        path(
+            "generic/read-refusing-notes/<slug>/",
+            ReadRefusingNoteViewSet.as_view(
+                {"get": "retrieve", "put": "update", "delete": "destroy"}
+            ),
+            name="generic-read-refusing-notes-detail",
+        ),
+    ]
+)
+
+
+class OwnerIsAuthorized(IsAuthorized):
+    """An adopter's "owners may do anything" shortcut: allows whatever
+    ``obj`` has ``owner`` equal to the user's name, else ``IsAuthorized``.
+    In the workflow check ``obj`` is the request body, so the shortcut must
+    not widen a transition there."""
+
+    def has_context_permission(self, request, view, obj, context):
+        if hasattr(obj, "get") and obj.get("owner") == request.user.username:
+            return True
+        return super().has_context_permission(request, view, obj, context)
+
+
+class OwnerResourceViewSet(ResourceViewSet):
+    permission_classes = [OwnerIsAuthorized]
+
+
+urlpatterns.append(
+    path(
+        "owner/todos/<slug>/",
+        OwnerResourceViewSet.as_view({"put": "update"}, resource_type_name="todos"),
+        name="owner-todos-detail",
+    )
+)
+
+
+class BodyContextsIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` whose ``contexts_from`` delegates to
+    scoped-rbac's own building block, ``access.body_contexts``."""
+
+    def contexts_from(self, view, content):
+        return access.body_contexts(content)
+
+
+class BodyContextsResourceViewSet(ResourceViewSet):
+    permission_classes = [BodyContextsIsAuthorized]
+
+
+class RaisingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` whose ``has_object_permission`` raises
+    ``PermissionDenied`` (a DRF idiom) for a resource named "raise", and
+    DRF's ``NotFound`` (hiding it) for one named "hide"."""
+
+    def has_object_permission(self, request, view, obj):
+        if obj.get("name") == "raise":
+            raise PermissionDenied("nope")
+        if obj.get("name") == "hide":
+            raise NotFound()
+        return super().has_object_permission(request, view, obj)
+
+
+class RaisingResourceViewSet(ResourceViewSet):
+    permission_classes = [RaisingIsAuthorized]
+
+
+urlpatterns.extend(
+    [
+        path(
+            "body-contexts/json-ld/",
+            BodyContextsResourceViewSet.as_view(
+                {"post": "create"}, resource_type_name="json-ld"
+            ),
+            name="body-contexts-json-ld-list",
+        ),
+        path(
+            "raising/partner-profiles/",
+            RaisingResourceViewSet.as_view(
+                {"get": "list"}, resource_type_name="partner-profiles"
+            ),
+            name="raising-partner-profiles-list",
+        ),
+        path(
+            "raising/partner-profiles/<slug>/",
+            RaisingResourceViewSet.as_view(
+                {"get": "retrieve"}, resource_type_name="partner-profiles"
+            ),
+            name="raising-partner-profiles-detail",
+        ),
+    ]
+)
+
+
+# Adopters' get_permissions overrides on scrud views, as DRF allows them.
+
+
+class NoSuperResourceViewSet(ResourceViewSet):
+    """A get_permissions that builds its own permissions, without super()."""
+
+    def get_permissions(self):
+        return [IsAuthorized()]
+
+
+class PerActionResourceViewSet(ResourceViewSet):
+    """A get_permissions with a branch per action: fresh permissions for a
+    write, super()'s otherwise."""
+
+    def get_permissions(self):
+        if self.action in ("update", "destroy"):
+            return [IsAuthorized(), IsAuthenticated()]
+        return super().get_permissions()
+
+
+class AppendingResourceViewSet(ResourceViewSet):
+    """A get_permissions that calls super() and adds another IsAuthorized,
+    composed with DRF's ``&``."""
+
+    def get_permissions(self):
+        return super().get_permissions() + [(IsAuthorized & IsAuthenticated)()]
+
+
+# One IsAuthorized instance every request of SharedResourceViewSet reuses.
+SHARED_IS_AUTHORIZED = IsAuthorized()
+
+
+class SharedResourceViewSet(ResourceViewSet):
+    """A get_permissions that returns the same instance on every call."""
+
+    def get_permissions(self):
+        return [SHARED_IS_AUTHORIZED]
+
+
+for _prefix, _viewset in (
+    ("no-super", NoSuperResourceViewSet),
+    ("per-action", PerActionResourceViewSet),
+    ("appending", AppendingResourceViewSet),
+    ("shared", SharedResourceViewSet),
+):
+    urlpatterns.extend(
+        [
+            path(
+                f"{_prefix}/partner-profiles/",
+                _viewset.as_view(
+                    {"get": "list", "post": "create"},
+                    resource_type_name="partner-profiles",
+                ),
+                name=f"{_prefix}-partner-profiles-list",
+            ),
+            path(
+                f"{_prefix}/partner-profiles/<slug>/",
+                _viewset.as_view(
+                    {"get": "retrieve", "put": "update", "delete": "destroy"},
+                    resource_type_name="partner-profiles",
+                ),
+                name=f"{_prefix}-partner-profiles-detail",
+            ),
+        ]
+    )
+
+
+class DelegatingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` whose ``has_object_permission`` asks the
+    view's plain ``IsAuthorized`` permissions (from ``view.get_permissions()``)
+    itself: it allows what each of their object checks allows."""
+
+    def has_object_permission(self, request, view, obj):
+        others = [p for p in view.get_permissions() if type(p) is IsAuthorized]
+        return bool(others) and all(
+            p.has_object_permission(request, view, obj) for p in others
+        )
+
+
+class DelegatingResourceViewSet(ResourceViewSet):
+    permission_classes = [IsAuthorized, DelegatingIsAuthorized]
+
+
+class MixedContextsResourceViewSet(ResourceViewSet):
+    """Both must allow: scoped-rbac's IsAuthorized in the resource's contexts
+    and TeamIsAuthorized in its team."""
+
+    permission_classes = [IsAuthorized, TeamIsAuthorized]
+
+
+for _prefix, _viewset in (
+    ("delegating", DelegatingResourceViewSet),
+    ("mixed-contexts", MixedContextsResourceViewSet),
+):
+    urlpatterns.extend(
+        [
+            path(
+                f"{_prefix}/partner-profiles/",
+                _viewset.as_view(
+                    {"get": "list"}, resource_type_name="partner-profiles"
+                ),
+                name=f"{_prefix}-partner-profiles-list",
+            ),
+            path(
+                f"{_prefix}/partner-profiles/<slug>/",
+                _viewset.as_view(
+                    {"get": "retrieve"}, resource_type_name="partner-profiles"
+                ),
+                name=f"{_prefix}-partner-profiles-detail",
+            ),
+        ]
+    )

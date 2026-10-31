@@ -1,14 +1,14 @@
-from django.utils import timezone
 from uuid import uuid4
 
 import factory
 from django.contrib.auth.models import User
+from django.utils import timezone
 
 from scrud_django.models import Resource, ResourceType
 
 
 def fake_url():
-    return 'https://a{}.com'.format(uuid4().hex)
+    return f'https://a{uuid4().hex}.com'
 
 
 def fake_resource():

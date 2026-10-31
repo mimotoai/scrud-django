@@ -33,11 +33,21 @@ class TestCustomDjangoSignals(TestCase):
     post_save_trigger = False
     post_delete_trigger = False
 
-    def __init__(self, methodName: str) -> None:
-        super().__init__(methodName=methodName)
+    def setUp(self):
+        # Connected for this test only: pytest builds the TestCase instances
+        # at collection, so receivers connected in __init__ would fire (and
+        # run the ToDo actions again) in every module collected with this one.
         scrud_post_delete.connect(self.handler)
+        self.addCleanup(scrud_post_delete.disconnect, self.handler)
         scrud_post_save.connect(self.handler)
+        self.addCleanup(scrud_post_save.disconnect, self.handler)
         self.signal_processor = ScrudSignalProcessorMock()
+        self.addCleanup(
+            scrud_post_delete.disconnect, self.signal_processor.post_delete_trigger
+        )
+        self.addCleanup(
+            scrud_post_save.disconnect, self.signal_processor.post_save_trigger
+        )
 
     def handler(self, sender, **kwargs):
         self.type_uri = kwargs.get('resource_type_uri')
@@ -80,8 +90,10 @@ class TestCustomDjangoSignals(TestCase):
         self.assertTrue(self.signal_was_called)
         self.assertEqual(new_resource.resource_type.type_uri, self.type_uri)
         self.assertEqual(new_resource.__class__, self.sender)
-        # Assert Transition data is sent with the signal
-        self.assertEqual(self.prior_state, initial_content)
+        # Assert Transition data is sent with the signal: a create has no prior
+        # state, and its proposed state is its initial state.
+        self.assertIsNone(self.prior_state)
+        self.assertEqual(self.proposed_state, "not started")
 
         # For Update
         self.signal_was_called = False

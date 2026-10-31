@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ('scrud_django', '0005_fix_resource_content_column_type'),
     ]

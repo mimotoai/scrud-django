@@ -1,15 +1,15 @@
 import importlib.resources
 import json
-from scrud_django.workflow import WorkflowPolicy
 
 
 def workflow_policies():
-  return {
-    "tests://ToDo": read_workflow_policy("tests.static.todo_flow", "workflow.json")
-  }
+    """The test settings' ``SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]``: policy
+    content (mappings), which scrud-django compiles and checks per type."""
+    return {
+        "tests://ToDo": read_workflow_policy("tests.static.todo_flow", "workflow.json")
+    }
 
 
 def read_workflow_policy(module, filename):
-  text = importlib.resources.read_text("tests.static.todo_flow", "workflow.json")
-  policy_json = json.loads(text)
-  return WorkflowPolicy(policy_json)
+    text = importlib.resources.files(module).joinpath(filename).read_text()
+    return json.loads(text)

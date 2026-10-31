@@ -1,4 +1,4 @@
 # Contributors
 
 Check the list of contributors at
-[github scrud-django contributors page](https://github.com/openteamsinc/scrud-django/graphs/contributors)
+[the GitLab scrud-django contributors page](https://gitlab.com/dcharbon/scrud-django/-/graphs/develop)

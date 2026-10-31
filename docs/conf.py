@@ -9,20 +9,25 @@
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
-#
-# import os
-# import sys
-# sys.path.insert(0, os.path.abspath('.'))
+
+import os
+import sys
+from importlib.metadata import version as _package_version
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '_ext'))
 
 
 # -- Project information -----------------------------------------------------
 
-project = 'OpenTeams SCRUD Django'
-copyright = '2020, OpenTeams Inc.'
+project = 'SCRUD Django'
+copyright = '2020-2026, David Charboneau'
 author = 'David Charboneau'
 
-# The full version, including alpha/beta/rc tags
-release = '1.0'
+# The full version, including alpha/beta/rc tags, from the installed package
+# (pyproject.toml is the single source).
+release = _package_version('scrud-django')
+# The short X.Y version.
+version = '.'.join(release.split('.')[:2])
 
 
 # -- General configuration ---------------------------------------------------
@@ -31,36 +36,33 @@ release = '1.0'
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'sphinx.ext.githubpages',
     'myst_parser',
-    'sphinxcontrib.bibtex',
     'sphinx.ext.todo',
 ]
 
 todo_include_todos = True
 
+# Heading anchors, so that links such as follow-ups.md#policy-recheck-isolation
+# resolve (see _ext/myst_slugs.py).
+myst_heading_anchors = 2
+myst_heading_slug_func = 'myst_slugs.follow_up_slug'
+
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+templates_path = []
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = []
+exclude_patterns = ['_build', 'superpowers']
 
 pygments_style = 'sphinx'
 
 # -- Options for HTML output -------------------------------------------------
 
-# The theme to use for HTML and HTML Help pages.  See the documentation for
-# a list of builtin themes.
-#
-# html_theme = 'alabaster'
-html_theme = 'solar_theme'
-import solar_theme  # noqa: E402
-
-html_theme_path = [solar_theme.theme_path]
+# The theme to use for HTML and HTML Help pages.
+html_theme = 'sphinx_rtd_theme'
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+html_static_path = []

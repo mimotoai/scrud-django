@@ -1,0 +1,313 @@
+# Pipelines run for merge requests, tags and the default branch. A branch push
+# gets its own pipeline only when it has no open merge request. `lint`, `docs`,
+# `package`, `test`, `test-postgres` and `test-mysql` run in all of them,
+# `version-check` in merge requests, and `publish` (PyPI) only on the default
+# branch.
+#
+# Releasing: a merge request that changes the package sets the version to
+# release (`uv version --bump minor`, `uv version 1.0.0`); merging it to the
+# default branch publishes that version. See scripts/release.py. Never run
+# `uv publish` by hand.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Before the open-MR rule: a push to the default branch always gets a
+    # pipeline (and so a publish), even while an MR from it is open.
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+default:
+  # Pinned to uv 0.9 so that build-system's `uv_build>=0.9,<0.10` keeps matching.
+  image: ghcr.io/astral-sh/uv:0.9-python3.13-bookworm-slim
+  # The PyPI token is a protected variable, so every job on the default
+  # branch gets it; only the upload in `publish` needs it.
+  before_script:
+    - unset UV_PYPI_ACCESS_TOKEN
+
+stages:
+  - lint
+  - test
+  - deploy
+
+variables:
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  UV_LINK_MODE: copy
+  # Each job tests the interpreter in its image; uv must not fetch another one.
+  UV_PYTHON_DOWNLOADS: never
+
+lint:
+  stage: lint
+  cache:
+    key:
+      files: [uv.lock]
+      prefix: lint
+    paths:
+      - .uv-cache
+  script:
+    - uv sync --locked
+    - uv run --locked ruff check .
+    - uv run --locked ruff format --check .
+    - uv run --locked python manage.py makemigrations scrud_django --check --dry-run
+  after_script:
+    - uv cache prune --ci
+
+docs:
+  stage: lint
+  cache:
+    key:
+      files: [uv.lock]
+      prefix: docs
+    paths:
+      - .uv-cache
+  script:
+    - uv run --locked --group docs sphinx-build -W -b html docs docs/_build
+  after_script:
+    - uv cache prune --ci
+
+test:
+  stage: test
+  image: ghcr.io/astral-sh/uv:0.9-python$PYTHON-bookworm-slim
+  variables:
+    # .python-version says 3.13; with downloads off, uv must use this image's.
+    UV_PYTHON: "$PYTHON"
+  parallel:
+    matrix:
+      - PYTHON: ["3.11", "3.12", "3.13"]
+  cache:
+    when: always
+    key:
+      files: [uv.lock]
+      prefix: test-$PYTHON
+    paths:
+      - .uv-cache
+  script:
+    - uv run --locked python -V
+    - uv run --locked pytest --cov=scrud_django --cov-report=term --cov-report=xml:coverage.xml
+    # The suite again, in reverse order (tests/conftest.py): no test may
+    # depend on one that runs before it.
+    - uv run --locked pytest -q --reverse
+  after_script:
+    - uv cache prune --ci
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+# The suite on PostgreSQL 14, where the PostgreSQL-only tests run (row locks
+# that PostgreSQL refuses through some querysets, READ COMMITTED, the
+# isolation check) and SQLite-only ones skip. tests/settings.py points both
+# database aliases at the service when SCRUD_TEST_PG_HOST is set.
+test-postgres:
+  stage: test
+  services:
+    - name: postgres:14
+      alias: postgres
+  variables:
+    POSTGRES_HOST_AUTH_METHOD: trust
+    SCRUD_TEST_PG_HOST: postgres
+  cache:
+    when: always
+    key:
+      files: [uv.lock]
+      prefix: test-postgres
+    paths:
+      - .uv-cache
+  script:
+    - uv run --locked python -V
+    - uv run --locked pytest -q -rs
+  after_script:
+    - uv cache prune --ci
+
+# The suite on MySQL 8.4 and MariaDB 11.4, the other supported databases, in
+# their default (case- and accent-insensitive) collations, where the
+# two-connection races run as on PostgreSQL. tests/settings.py points both
+# database aliases at the service when SCRUD_TEST_MYSQL_HOST is set (utf8mb4,
+# READ COMMITTED). The driver, mysqlclient, is not a dev dependency: it
+# builds against the client library, so the job installs the build packages
+# and adds it to the locked environment with `--with`.
+test-mysql:
+  stage: test
+  parallel:
+    matrix:
+      - DATABASE_IMAGE: ["mysql:8.4", "mariadb:11.4"]
+  services:
+    - name: $DATABASE_IMAGE
+      alias: mysql
+  variables:
+    MYSQL_ROOT_PASSWORD: scrud
+    MARIADB_ROOT_PASSWORD: scrud
+    SCRUD_TEST_MYSQL_HOST: mysql
+    SCRUD_TEST_MYSQL_PASSWORD: scrud
+    MYSQLCLIENT: mysqlclient==2.3.0
+  cache:
+    when: always
+    key:
+      files: [uv.lock]
+      prefix: test-mysql
+    paths:
+      - .uv-cache
+  script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends build-essential default-libmysqlclient-dev pkg-config > /dev/null
+    - uv run --locked --with "$MYSQLCLIENT" python -V
+    # The service may still be starting: wait for it (up to 2 minutes).
+    - |
+      uv run --locked --with "$MYSQLCLIENT" python - <<'EOF'
+      import os
+      import time
+
+      import MySQLdb
+
+      for attempt in range(60):
+          try:
+              connection = MySQLdb.connect(
+                  host=os.environ["SCRUD_TEST_MYSQL_HOST"],
+                  user="root",
+                  password=os.environ["SCRUD_TEST_MYSQL_PASSWORD"],
+              )
+          except MySQLdb.OperationalError as error:
+              print("waiting for the database:", error)
+              time.sleep(2)
+          else:
+              cursor = connection.cursor()
+              cursor.execute("SELECT VERSION(), @@collation_server")
+              print("database:", cursor.fetchone())
+              break
+      else:
+          raise SystemExit("the database did not start")
+      EOF
+    - uv run --locked --with "$MYSQLCLIENT" pytest -q -rs
+  after_script:
+    - uv cache prune --ci
+
+# PyPI refuses an upload whose README doesn't render; check the built metadata
+# on every pipeline rather than at publish time. The wheel is also installed
+# into a clean venv to prove that it carries the project version and every
+# file under scrud_django/, and that it imports (`-I` keeps the checkout off
+# sys.path).
+package:
+  stage: test
+  cache:
+    key:
+      files: [uv.lock]
+      prefix: package
+    paths:
+      - .uv-cache
+  script:
+    - uv build -q -o build/dist-check
+    - uv run --no-project --with "twine==7.0.0" twine check --strict build/dist-check/*
+    - uv venv -q build/wheel-venv
+    - uv pip install -q -p build/wheel-venv build/dist-check/*.whl
+    - |
+      expected="$(uv version --short)"
+      EXPECTED="$expected" build/wheel-venv/bin/python -I - <<'EOF'
+      import os
+      import sys
+      from pathlib import Path
+
+      import django
+      from django.conf import settings
+
+      import scrud_django
+
+      installed = Path(scrud_django.__file__).parent
+      assert installed.is_relative_to(Path(sys.prefix)), installed
+      assert scrud_django.__version__ == os.environ["EXPECTED"], scrud_django.__version__
+
+
+      def files(root):
+          return {
+              p.relative_to(root)
+              for p in root.rglob("*")
+              if p.is_file() and "__pycache__" not in p.parts
+          }
+
+
+      missing = files(Path("scrud_django")) - files(installed)
+      assert not missing, f"not in the wheel: {sorted(map(str, missing))}"
+
+      settings.configure(
+          INSTALLED_APPS=[
+              "django.contrib.auth",
+              "django.contrib.contenttypes",
+              "rest_framework",
+              "scoped_rbac",
+              "reversion",
+              "scrud_django",
+          ]
+      )
+      django.setup()
+      import scrud_django.views  # noqa: E402,F401
+
+      print(f"ok: scrud_django {scrud_django.__version__} from {installed}")
+      EOF
+  after_script:
+    - uv cache prune --ci
+
+# A merge request that changes the package (scrud_django/, or the published
+# parts of pyproject.toml) or the version must raise the version above the
+# target branch's and every release on PyPI. Needs git, which the slim image
+# lacks.
+version-check:
+  stage: test
+  image: ghcr.io/astral-sh/uv:0.9-python3.13-bookworm
+  variables:
+    TARGET: origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME
+  script:
+    - git fetch -q origin "$CI_MERGE_REQUEST_DIFF_BASE_SHA" "+refs/heads/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}:refs/remotes/${TARGET}"
+    - uv run --no-project --with "packaging==26.3" python scripts/release.py check-bump "$CI_MERGE_REQUEST_DIFF_BASE_SHA" "$TARGET"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Publishes the version in pyproject.toml if it isn't on PyPI yet; merges that
+# don't change the version publish nothing. A version lower than the latest on
+# PyPI is refused.
+#
+# Only the tip of the default branch publishes: a job for a superseded commit
+# (a late or retried pipeline) exits without publishing, so older code is never
+# released under a newer version. The tag and GitLab release (vX.Y.Z) are
+# created before the upload, so a failed or partial upload (e.g. only the
+# sdist) is finished by retrying the job: the build is reproducible and `uv
+# publish --check-url` skips the files already on PyPI. Only the same commit
+# can retry it: once a new commit lands, create-release refuses because the
+# release is on the old commit, and an unpublished version then needs a new
+# version (or its release and tag deleted). The tag's own pipeline does not
+# publish.
+publish:
+  stage: deploy
+  image: ghcr.io/astral-sh/uv:0.9-python3.13-bookworm
+  # Serialises publish jobs: concurrent pipelines would race on the upload.
+  resource_group: publish
+  before_script:
+    # Only `uv publish` gets the token: a shell variable, unexported, keeps it
+    # out of every other step's environment.
+    - publish_token="${UV_PYPI_ACCESS_TOKEN-}"
+    - unset UV_PYPI_ACCESS_TOKEN
+  script:
+    - git fetch -q origin "$CI_DEFAULT_BRANCH"
+    - |
+      if [ "$(git rev-parse FETCH_HEAD)" != "$CI_COMMIT_SHA" ]; then
+        echo "$CI_COMMIT_SHA is no longer the tip of ${CI_DEFAULT_BRANCH}; skipping"
+        exit 0
+      fi
+    # Exit status 10: this version is already on PyPI.
+    - |
+      status=0
+      uv run --no-project --with "packaging==26.3" python scripts/release.py needs-release || status=$?
+      if [ "$status" -eq 10 ]; then exit 0; fi
+      if [ "$status" -ne 0 ]; then exit "$status"; fi
+    - ': "${publish_token:?UV_PYPI_ACCESS_TOKEN is not set}"'
+    - uv run --no-project --with "packaging==26.3" python scripts/release.py create-release
+    - uv build
+    - UV_PUBLISH_TOKEN="$publish_token" uv publish --check-url https://pypi.org/simple/
+  artifacts:
+    paths:
+      - dist
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

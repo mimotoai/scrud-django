@@ -4,6 +4,7 @@ This will support queries, such as:
     GET /resource_type/context?uri=http://schema.org/person
 
 """
+
 import reversion
 from django.db import models
 from django.utils.translation import gettext_lazy as _

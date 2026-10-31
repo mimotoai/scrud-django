@@ -1,10 +1,8 @@
-from datetime import timezone
-
-from django.utils.http import http_date
 from haystack import indexes
 from jsonpath_ng import parse
 
 from .models import Resource
+from .utils import http_date_for
 
 
 class ResourceIndex(indexes.SearchIndex, indexes.Indexable):
@@ -19,9 +17,7 @@ class ResourceIndex(indexes.SearchIndex, indexes.Indexable):
     def prepare(self, obj):
         self.prepared_data = super().prepare(obj)
         self.prepared_data["type_uri"] = obj.resource_type.type_uri
-        self.prepared_data["modified_at"] = http_date(
-            obj.modified_at.replace(tzinfo=timezone.utc).timestamp()
-        )
+        self.prepared_data["modified_at"] = http_date_for(obj.modified_at)
         self.prepared_data["etag"] = obj.etag
         indexing_policy = self.get_indexing_policy(obj)
         text_policy = indexing_policy.get("text", None)

@@ -10,7 +10,7 @@ You can contribute in many ways:
 
 ### Report Bugs
 
-Report bugs at https://github.com/openteamsinc/scrud-django/issues.
+Report bugs at https://gitlab.com/dcharbon/scrud-django/-/issues.
 
 If you are reporting a bug, please include:
 
@@ -20,12 +20,12 @@ If you are reporting a bug, please include:
 
 ### Fix Bugs
 
-Look through the GitHub issues for bugs. Anything tagged with "bug" and "help
+Look through the GitLab issues for bugs. Anything tagged with "bug" and "help
 wanted" is open to whoever wants to implement it.
 
 ### Implement Features
 
-Look through the GitHub issues for features. Anything tagged with "enhancement"
+Look through the GitLab issues for features. Anything tagged with "enhancement"
 and "help wanted" is open to whoever wants to implement it.
 
 ### Write Documentation
@@ -36,7 +36,7 @@ articles, and such.
 
 ### Submit Feedback
 
-The best way to send feedback is to file an issue at https://github.com/openteamsinc/scrud-django/issues.
+The best way to send feedback is to file an issue at https://gitlab.com/dcharbon/scrud-django/-/issues.
 
 If you are proposing a feature:
 
@@ -49,36 +49,84 @@ If you are proposing a feature:
 
 Ready to contribute? Here's how to set up `scrud-django` for local development.
 
-1. Fork the `scrud-django` repo on GitHub.
+1. Fork the `scrud-django` repo on GitLab.
 2. Clone your fork locally:
 ```{sourceCode} console
-$ git clone git@github.com:your_name_here/scrud-django.git
+$ git clone git@gitlab.com:your_name_here/scrud-django.git
 ```
-3. Install your local copy into a virtual environment. Assuming want to use conda environment, this is how you set up your fork for local development:
-    ```{sourceCode} console
-        $ conda env create -n scrud-django-dev --file docker/environment-dev.yml
-        $ make develop
-    ```
+3. Install your local copy with [uv](https://docs.astral.sh/uv/):
+```{sourceCode} console
+$ cd scrud-django
+$ uv sync
+$ uv run pre-commit install
+```
 4. Create a branch for local development:
 ```{sourceCode} console
-    $ git checkout -b name-of-your-bugfix-or-feature
+$ git checkout -b name-of-your-bugfix-or-feature
 ```
-5. Commit your changes and push your branch to GitHub. When you commit a change, as it uses git pre-commit, it will run flake8, mypy, black and isort before commit any change:
+5. Run the checks before you commit:
 ```{sourceCode} console
-    $ git add .
-    $ git commit -m "Your detailed description of your changes."
-    $ git push origin name-of-your-bugfix-or-feature
+$ make lint
+$ make test
+$ make migrations-check
 ```
-6. Submit a pull request through the GitHub website.
+   The suite runs on in-memory SQLite. To run it on PostgreSQL, as CI's
+   `test-postgres` job does (some tests run only there), point the test
+   settings at a server with `SCRUD_TEST_PG_HOST` (and `SCRUD_TEST_PG_PORT`,
+   `SCRUD_TEST_PG_USER`, `SCRUD_TEST_PG_PASSWORD`, `SCRUD_TEST_PG_NAME` if the
+   defaults 5432, postgres, none and scrud don't fit; see `tests/settings.py`):
+```{sourceCode} console
+$ docker run -d --name scrud-pg -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:14
+$ SCRUD_TEST_PG_HOST=localhost uv run pytest
+```
+   Tests must not depend on the order they run in. CI also runs the suite in
+   reverse order:
+```{sourceCode} console
+$ uv run pytest -q --reverse
+```
+6. Commit your changes and push your branch to GitLab:
+```{sourceCode} console
+$ git add .
+$ git commit -m "Your detailed description of your changes."
+$ git push origin name-of-your-bugfix-or-feature
+```
+7. Submit a merge request through the GitLab website.
 
-Pull Request Guidelines
------------------------
+Merge Request Guidelines
+------------------------
 
-Before you submit a pull request, check that it meets these guidelines:
+Before you submit a merge request, check that it meets these guidelines:
 
-1. The pull request should include tests.
-2. If the pull request adds functionality, the docs should be updated. Put your new functionality into a function with a docstring.
-3. The pull request should work for Python 3.8 or newer.
+1. The merge request should include tests.
+2. If the merge request adds functionality, the docs should be updated. Put your new functionality into a function with a docstring.
+3. The change should work for Python 3.11, 3.12 and 3.13, on SQLite and
+   PostgreSQL.
+4. A merge request that changes the package (`scrud_django/`, or the published
+   parts of `pyproject.toml`, including `[tool.uv.build-backend]`) must raise
+   the version; see "Releasing" below.
+
+### Releasing
+
+Releases are published to PyPI from CI. The merge request that changes the
+package sets the version to release:
+
+```{sourceCode} console
+$ uv version --bump minor   # or: uv version 1.0.0
+```
+
+and commits `pyproject.toml` and `uv.lock`. The `version-check` job fails the
+merge request if the version is not above the target branch's and every release
+on PyPI; it checks any merge request that changes the version, even one that
+changes nothing else. When the merge request lands on `develop`, the `publish`
+job tags `vX.Y.Z`, creates a GitLab release and uploads to PyPI, but only if that
+version is not on PyPI yet; a merge that leaves the version alone publishes
+nothing, and a version lower than the latest on PyPI fails the job. If an upload
+stops part way, retry the job: it uploads the files that are missing. The
+`package` job builds the distribution on every pipeline, checks that its README
+renders, and installs the wheel in a clean venv to check that it holds every
+file under `scrud_django/` and imports. Only the upload step gets the
+protected, masked CI/CD variable `UV_PYPI_ACCESS_TOKEN`. Never run `uv publish`
+locally. See `scripts/release.py` for the checks.
 
 
 ### Code of Conduct

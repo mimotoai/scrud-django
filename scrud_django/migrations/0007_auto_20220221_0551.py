@@ -4,7 +4,6 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ('scrud_django', '0006_resourcetype_uses_reversion'),
     ]

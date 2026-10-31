@@ -1,13 +1,15 @@
 import importlib.resources
 
+from django.contrib import admin
 from django.urls import include, path
-from rest_framework.routers import DefaultRouter
 from scoped_rbac.rest import UserViewSet
+from scoped_rbac.urls import OpenRouter
+
 from scrud_django import registration
 
 app_name = "scrud_django-demo"
 
-router = DefaultRouter()
+router = OpenRouter()
 router.register(r"users", UserViewSet)
 
 api_urlpatterns = [
@@ -20,11 +22,15 @@ api_urlpatterns.extend(
             resource_type_uri="tests://PartnerProfiles",
             revision="1",
             slug="partner-profiles",
-            schema_func=lambda: importlib.resources.read_text(
-                "demo", "PartnerProfile-schema.json"
+            schema_func=lambda: (
+                importlib.resources.files("demo")
+                .joinpath("PartnerProfile-schema.json")
+                .read_text()
             ),
-            context_func=lambda: importlib.resources.read_text(
-                "demo", "PartnerProfile-ld.json"
+            context_func=lambda: (
+                importlib.resources.files("demo")
+                .joinpath("PartnerProfile-ld.json")
+                .read_text()
             ),
         ),
     )
@@ -32,4 +38,7 @@ api_urlpatterns.extend(
 
 urlpatterns = [
     path("api/", include(api_urlpatterns)),
+    # Log in to the browsable API (its "Log in" link) and to the admin.
+    path("api-auth/", include("rest_framework.urls")),
+    path("admin/", admin.site.urls),
 ]

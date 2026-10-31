@@ -1,6 +1,5 @@
 from rest_framework.reverse import reverse
-
-from scrud_django.utils import link_content
+from scrudful.utils import join_links, link_content
 
 
 def get_schema_uri_for(resource_type, request):
@@ -9,7 +8,9 @@ def get_schema_uri_for(resource_type, request):
     if resource_type.schema:
         schema = resource_type.schema
         uri = reverse(
-            schema.resource_type.route_name_detail(), args=[schema.id], request=request,
+            schema.resource_type.route_name_detail(),
+            args=[schema.id],
+            request=request,
         )
     elif resource_type.schema_uri:
         uri = resource_type.schema_uri
@@ -32,19 +33,24 @@ def get_context_uri_for(resource_type, request):
 
 
 def get_link_header_for(resource_type, request):
+    """The Link field value of a resource of `resource_type`, as scrudful sends
+    it on the resource's own responses: the schema (``rel="describedby"``,
+    ``type="application/schema+json"``) and the JSON-LD context. A list
+    envelope's ``link`` is this value."""
     schema_uri = get_schema_uri_for(resource_type, request)
     context_uri = get_context_uri_for(resource_type, request)
     schema_link = (
-        link_content(schema_uri, "describedBy", "application/json")
+        link_content(schema_uri, "describedby", "application/schema+json")
         if schema_uri
-        else ""
+        else None
     )
     context_link = (
         link_content(
-            context_uri, "http://www.w3.org/ns/json-ld#context", "application/ld+json",
+            context_uri,
+            "http://www.w3.org/ns/json-ld#context",
+            "application/ld+json",
         )
         if context_uri
-        else ""
+        else None
     )
-    join_links = ", " if schema_link and context_link else ""
-    return schema_link + join_links + context_link
+    return join_links(schema_link, context_link) or ""
