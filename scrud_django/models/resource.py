@@ -50,18 +50,45 @@ def lock_for_delete(queryset, using):
     deadlock on the resource rows either. Returns the keys it locked, in
     order: a delete must delete those and no others (`delete_locked_keys`),
     since its own query, run again, would also find rows that came to match
-    since, without their lock."""
-    keys = queryset.using(using).values("pk")
-    keys.query.select_for_update = False
-    keys.query.select_related = False
-    keys.query.clear_ordering(force=True)
-    return list(
-        Resource._base_manager.using(using)
-        .filter(pk__in=keys)
-        .order_by("pk")
-        .select_for_update()
-        .values_list("pk", flat=True)
+    since, without their lock.
+
+    The keys are read first, without a lock, and then locked by key, at most
+    `DELETE_BATCH_SIZE` a statement: a locking read of `queryset`'s own
+    query would lock every row it examines on MySQL and MariaDB (InnoDB), a
+    joined ``ResourceType`` row too (``filter(resource_type__slug=...)``),
+    which blocks every insert of a resource of that type. A row deleted in
+    between is not locked (nor deleted); one that came to match in between
+    is left alone, as by a delete that ran a moment earlier.
+
+    When a ``WorkflowPolicy`` resource is among them, the ``WorkflowPolicy``
+    type lock (`scrud_django.workflow.lock_workflow_policy_type`) is taken
+    first, as the API's writes of a policy take it before its row: deleting
+    a policy stamps a ``ResourceRemoval`` of its type, whose foreign key
+    check on MySQL and MariaDB waits for that lock, and a delete holding the
+    policy's row while it waited deadlocked with an API write of it."""
+    from scrud_django.workflow import (
+        WORKFLOW_POLICY_TYPE_URI,
+        lock_workflow_policy_type,
     )
+
+    rows = queryset.using(using).values_list("pk", "resource_type__type_uri")
+    rows.query.select_for_update = False
+    rows.query.select_related = False
+    rows.query.clear_ordering(force=True)
+    found = dict(rows)
+    if WORKFLOW_POLICY_TYPE_URI in found.values():
+        lock_workflow_policy_type(using)
+    keys = sorted(found)
+    locked = []
+    for start in range(0, len(keys), DELETE_BATCH_SIZE):
+        locked.extend(
+            Resource._base_manager.using(using)
+            .filter(pk__in=keys[start : start + DELETE_BATCH_SIZE])
+            .order_by("pk")
+            .select_for_update()
+            .values_list("pk", flat=True)
+        )
+    return locked
 
 
 # The most keys one ``Collector`` pass of `delete_locked_keys` deletes (a
@@ -210,7 +237,10 @@ class Resource(ResourceMixin):
 
         The stored rows are always read, except for ``force_insert`` (e.g.
         ``objects.create()``): a new instance given an existing ``pk`` updates
-        that row, and its old contexts must go."""
+        that row, and its old contexts must go.
+
+        A ``WorkflowPolicy`` resource takes the ``WorkflowPolicy`` type lock
+        first (`lock_workflow_policy_type_for`), as the API's writes of one do."""
         if raw:
             # check_raw_save (pre_save) and sync_raw_save (post_save).
             return super().save_base(
@@ -222,6 +252,8 @@ class Resource(ResourceMixin):
         if sync:
             check_contexts(self.content)
         with transaction.atomic(using=using, savepoint=False):
+            if sync:
+                lock_workflow_policy_type_for(self, using)
             super().save_base(
                 *args, raw=raw, using=using, update_fields=update_fields, **kwargs
             )
@@ -340,8 +372,27 @@ def resync_contexts(pk, using, *, repair=True):
     while it syncs the rows, so under it the two agree unless the drift is
     real. Returns ``(rows, wanted)`` if it is (and, with `repair`, makes the
     rows its content's, `sync_resource_contexts`, stamping the contexts it
-    left), else ``None`` (in step, or deleted since)."""
+    left), else ``None`` (in step, or deleted since).
+
+    A repair of a ``WorkflowPolicy`` resource takes the ``WorkflowPolicy``
+    type lock first (`scrud_django.workflow.lock_workflow_policy_type`), as
+    the API's writes of a policy do: the removal stamp it may insert checks
+    its foreign key against that type's row, which on MySQL and MariaDB
+    waits for that lock while the policy's row is held."""
+    from scrud_django.workflow import (
+        WORKFLOW_POLICY_TYPE_URI,
+        lock_workflow_policy_type,
+    )
+
     with transaction.atomic(using=using):
+        if repair and (
+            Resource.objects.using(using)
+            .filter(pk=pk)
+            .values_list("resource_type__type_uri", flat=True)
+            .first()
+            == WORKFLOW_POLICY_TYPE_URI
+        ):
+            lock_workflow_policy_type(using)
         resource = (
             Resource.objects.using(using).select_for_update().filter(pk=pk).first()
         )
@@ -411,6 +462,36 @@ def stamp_removals(resource_type_id, contexts, using, when=None):
             rows.filter(**key, removed_at__lt=when).update(removed_at=when)
 
 
+def lock_workflow_policy_type_for(resource, using):
+    """Take the ``WorkflowPolicy`` type lock
+    (`scrud_django.workflow.lock_workflow_policy_type`) on database `using`,
+    in the caller's transaction, when `resource` is a ``WorkflowPolicy``,
+    before its row is written. The API's writes of a policy take that lock
+    before the policy's row; a write that left a context stamps its removal,
+    a ``ResourceRemoval`` of the ``WorkflowPolicy`` type, whose foreign key
+    check on MySQL and MariaDB waits for that lock: a write that held the
+    row first deadlocked with an API write of the policy. The type is the
+    one cached on `resource`, else read on `using`."""
+    from scrud_django.workflow import (
+        WORKFLOW_POLICY_TYPE_URI,
+        lock_workflow_policy_type,
+    )
+
+    field = Resource.resource_type.field
+    if field.is_cached(resource):
+        cached = field.get_cached_value(resource)
+        type_uri = cached.type_uri if cached is not None else None
+    else:
+        type_uri = (
+            ResourceType.objects.using(using)
+            .filter(pk=resource.resource_type_id)
+            .values_list("type_uri", flat=True)
+            .first()
+        )
+    if type_uri == WORKFLOW_POLICY_TYPE_URI:
+        lock_workflow_policy_type(using)
+
+
 def require_transaction(using, what):
     """Raise ``TransactionManagementError`` unless database `using` is inside
     a transaction: a raw save's rows are synced by a signal after the row is
@@ -437,12 +518,14 @@ def check_raw_save(sender, instance, raw, using, update_fields, **kwargs):
     (older) ones, so that a client revalidating with ``If-Modified-Since``,
     and a list it is the newest resource of, or is back in after a deletion
     (whose removal stamp is older), sees the change. Clients refetch it
-    once."""
+    once. A ``WorkflowPolicy`` takes the type lock first
+    (`lock_workflow_policy_type_for`), as `Resource.save_base` does."""
     if not raw:
         return
     if _content_saved(update_fields):
         require_transaction(using, "A raw save of a Resource")
         check_contexts(instance.content)
+        lock_workflow_policy_type_for(instance, using)
     instance.etag = uuid4().hex
     instance.modified_at = timezone.now()
 
