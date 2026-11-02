@@ -22,8 +22,9 @@ workflow:
 default:
   # Pinned to uv 0.9 so that build-system's `uv_build>=0.9,<0.10` keeps matching.
   image: ghcr.io/astral-sh/uv:0.9-python3.13-bookworm-slim
-  # The PyPI token is a protected variable, so every job on the default
-  # branch gets it; only the upload in `publish` needs it.
+  # Publishing uses trusted publishing (see `publish`). Until the old
+  # protected `UV_PYPI_ACCESS_TOKEN` variable is deleted, every job on the
+  # default branch would get it, so no job keeps it.
   before_script:
     - unset UV_PYPI_ACCESS_TOKEN
 
@@ -284,11 +285,22 @@ publish:
   image: ghcr.io/astral-sh/uv:0.9-python3.13-bookworm
   # Serialises publish jobs: concurrent pipelines would race on the upload.
   resource_group: publish
+  # PyPI trusted publishing: PyPI exchanges this job's OIDC token for a
+  # short-lived upload token. scrud-django's publisher on PyPI names this
+  # project, `.gitlab-ci.yml` and the environment below, so no other job can
+  # publish and no PyPI secret is stored in GitLab. GitLab records a
+  # deployment to `pypi` for every run, including those that publish nothing.
+  environment:
+    name: pypi
+    url: https://pypi.org/project/scrud-django/
+  id_tokens:
+    PYPI_ID_TOKEN:
+      aud: pypi
   before_script:
-    # Only `uv publish` gets the token: a shell variable, unexported, keeps it
-    # out of every other step's environment.
-    - publish_token="${UV_PYPI_ACCESS_TOKEN-}"
-    - unset UV_PYPI_ACCESS_TOKEN
+    # Only `uv publish` gets the OIDC token: a shell variable, unexported, keeps
+    # it out of every other step's environment.
+    - oidc_token="${PYPI_ID_TOKEN-}"
+    - unset PYPI_ID_TOKEN UV_PYPI_ACCESS_TOKEN
   script:
     - git fetch -q origin "$CI_DEFAULT_BRANCH"
     - |
@@ -302,10 +314,11 @@ publish:
       uv run --no-project --with "packaging==26.3" python scripts/release.py needs-release || status=$?
       if [ "$status" -eq 10 ]; then exit 0; fi
       if [ "$status" -ne 0 ]; then exit "$status"; fi
-    - ': "${publish_token:?UV_PYPI_ACCESS_TOKEN is not set}"'
+    - ': "${oidc_token:?PYPI_ID_TOKEN is not set (see id_tokens)}"'
     - uv run --no-project --with "packaging==26.3" python scripts/release.py create-release
     - uv build
-    - UV_PUBLISH_TOKEN="$publish_token" uv publish --check-url https://pypi.org/simple/
+    # `always`: fail rather than fall back to a token or password.
+    - PYPI_ID_TOKEN="$oidc_token" uv publish --trusted-publishing always --check-url https://pypi.org/simple/
   artifacts:
     paths:
       - dist
