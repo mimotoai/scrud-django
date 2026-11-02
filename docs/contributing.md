@@ -124,9 +124,11 @@ nothing, and a version lower than the latest on PyPI fails the job. If an upload
 stops part way, retry the job: it uploads the files that are missing. The
 `package` job builds the distribution on every pipeline, checks that its README
 renders, and installs the wheel in a clean venv to check that it holds every
-file under `scrud_django/` and imports. Only the upload step gets the
-protected, masked CI/CD variable `UV_PYPI_ACCESS_TOKEN`. Never run `uv publish`
-locally. See `scripts/release.py` for the checks.
+file under `scrud_django/` and imports. The upload uses PyPI trusted
+publishing: PyPI accepts it only from the `publish` job in this project's
+`.gitlab-ci.yml`, deploying to the `pypi` environment, and no PyPI token is
+stored in GitLab. Never run `uv publish` locally. See `scripts/release.py`
+for the checks.
 
 
 ### Code of Conduct
