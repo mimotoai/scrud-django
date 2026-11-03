@@ -76,7 +76,8 @@ Fix: run `authorize_without_policy` only for the contexts the body writes
 
 A user whose `http.GET` on a type is granted only under a condition (say
 `rbac_context != "x"`, in `"*"`) sees the resources the condition allows in
-the list, but every detail GET, HEAD, PUT and DELETE of the type is a 403:
+the list, but every detail GET, HEAD and DELETE of the type is a 403 (a PUT
+is not: its request check evaluates the condition on the body):
 scoped-rbac's request check has no resource to evaluate the condition on,
 the decision is undetermined, and it lets an undetermined request through
 only where the view defers to its object checks
@@ -111,7 +112,13 @@ and `::test_an_operator_gets_the_stored_content`). So a negated condition
 written in a `has_context_permission` of your own, or an operator, on
 `rbac_context` reads the whole value, as before 0.12.2; an override reads
 each context through its `super()` call by passing
-`condition_resource(obj, context)`.
+`condition_resource(obj, context)`. Beside a `has_context_permission` of
+your own, the scrud views ask the grants themselves, each context read as
+the resource is there, on the detail route and in the post-save check, as
+the list does (`ListValidatorsMixin.check_grants_in_each_context`), so a
+negated CEL condition holds on such views too and the list and the detail
+route agree
+(`tests/test_condition_contexts.py::test_an_overriding_view_shows_on_its_detail_route_what_it_lists`).
 
 <a id="custom-contexts-conditions"></a>
 ## custom-contexts-conditions: a context of your own leaves the object as it is

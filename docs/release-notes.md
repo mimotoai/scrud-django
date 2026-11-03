@@ -13,8 +13,7 @@ is evaluated in, in every check (scrud-django#2).
    written or stored: a list, or a value that is not a string (`null`, a
    number, an object), which stores the resource in the default context
    `""`. A resource without an `rbac_context` is read with `""` in `""`, so
-   a condition that tests for the field (`has(rbac_context)`) now holds
-   there.
+   `rbac_context == ""` now holds for it there.
    * `rbac_context != "x"` now refuses a resource in `"x"` however it is
      stored, a write into `""` with an `rbac_context` that is not a string
      (under `!= ""`), and a workflow transition that moves a resource out
@@ -35,13 +34,19 @@ is evaluated in, in every check (scrud-django#2).
      and string functions such as `rbac_context.contains("a")` now match
      against that one context. Rewrite them to compare `rbac_context` with
      one context.
-2. Your code is unchanged: an operator function, a `has_context_permission`
-   or `has_object_permission` of your own, and a `contexts_for` of your own
-   get the content as stored (or, in the workflow check, the body as sent),
-   its `rbac_context` the whole value, and their `super()` calls read it so.
-   Only scoped-rbac's own `has_context_permission`, and the CEL conditions
-   it evaluates, read each context. To have your override's `super()` call
-   read so too, pass it
+2. Your code: an operator function, and a `has_context_permission`,
+   `has_object_permission` or `contexts_for` of your own, get the content
+   as stored (or, in the workflow check, the body as sent), its
+   `rbac_context` the whole value, as before. A `has_object_permission` of
+   your own that asks `super()` reaches scoped-rbac's
+   `has_context_permission`, whose CEL conditions read each context. A
+   `has_context_permission` of your own, and its `super()` call, read the
+   stored content, so on a view with one the scrud views now also ask the
+   grants themselves, each context read as the resource is there, on the
+   detail route and in the post-save check, as its list already did: such
+   an override narrows what the grants allow, and one that allowed what the
+   grants refuse no longer does. To have its `super()` call read each
+   context too, pass it
    `scrud_django.permissions.condition_resource(obj, context)`.
 3. Your code: a view of your own that composes scoped-rbac's
    `AccessControlledAPIView` with `ResourceViewMixin` or `GenericViewMixin`
@@ -58,7 +63,9 @@ is evaluated in, in every check (scrud-django#2).
   `rbac_context` since 0.11.2:
   * the object checks of a detail route and the post-save check, through
     the `has_context_permission` of each `IsAuthorized` that keeps
-    scoped-rbac's (`reading_content`);
+    scoped-rbac's (`reading_content`), and beside one with its own
+    (`ListValidatorsMixin.check_grants_in_each_context`,
+    `scrud_django.filters.grants_allow`);
   * whether a refused resource is a 404 or a 403: the scrud viewsets'
     `is_readable` is `object_readable` (`ReadableMixin`), whose grants check
     (`scrud_django.filters.readable_by_grants`) is scoped-rbac's

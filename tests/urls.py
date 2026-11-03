@@ -679,3 +679,32 @@ urlpatterns.extend(
         ),
     ]
 )
+
+
+class ContextDenyingJsonLdViewSet(ResourceViewSet):
+    """JSON-LD resources authorized by `ContextDenyingIsAuthorized`, the
+    "refuse one context, else super()" shape of an adopter's
+    ``has_context_permission``."""
+
+    permission_classes = [ContextDenyingIsAuthorized]
+
+
+urlpatterns.extend(
+    [
+        path(
+            "denying/json-ld/",
+            ContextDenyingJsonLdViewSet.as_view(
+                {"get": "list", "post": "create"}, resource_type_name="json-ld"
+            ),
+            name="denying-json-ld-list",
+        ),
+        path(
+            "denying/json-ld/<slug>/",
+            ContextDenyingJsonLdViewSet.as_view(
+                {"get": "retrieve", "put": "update", "delete": "destroy"},
+                resource_type_name="json-ld",
+            ),
+            name="denying-json-ld-detail",
+        ),
+    ]
+)

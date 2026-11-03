@@ -47,7 +47,7 @@ from scrud_django.permissions import (
     checks_read_content,
     condition_resource,
     content_of,
-    may_read_in_context,
+    may_act_in_context,
     reading_content,
 )
 
@@ -375,20 +375,18 @@ def meets_object_checks(requirement, request, view, check):
     return all(meets(entry) for entry in requirement)
 
 
-def readable_by_grants(view, request, obj):
-    """Whether the grants allow a read of `obj` (the object as its object
-    check gets it), which tells a 403 from a 404: scoped-rbac's
-    ``AccessControlledAPIView.is_readable`` (``http.GET`` in the contexts
-    each ``IsAuthorized`` of the view's requirement reads, ``access.AnyOf``
-    alternatives included), except that each context is read with the object
-    as it is in that context (`condition_resource`), as the object check
-    reads it.
-    Call it as a GET of the detail route has it (`as_detail_read`), with the
+def grants_allow(view, request, obj, permission):
+    """Whether the grants allow `permission` on `obj` (the object as its
+    object check gets it) as `view`'s ``IsAuthorized`` permissions read its
+    contexts: scoped-rbac's ``AccessControlledAPIView.is_readable`` (in the
+    contexts each ``IsAuthorized`` of the view's requirement reads,
+    ``access.AnyOf`` alternatives included) for `permission`, except that
+    each context is read with the object as it is in that context
+    (`condition_resource`), as the object check reads it. Call it with the
     view's permissions reading the content (`checks_read_content`)."""
-    resource_type = view.resource_type_iri_for(request)
 
     def reads(leaf):
-        return may_read_in_context(request, resource_type, obj, leaf.contexts_for(obj))
+        return may_act_in_context(request, permission, obj, leaf.contexts_for(obj))
 
     def meets(entry):
         if isinstance(entry, access.AnyOf):
@@ -400,6 +398,15 @@ def readable_by_grants(view, request, obj):
         return all(map(meets, requirement))
     leaves = view._rbac_permissions()
     return not leaves or any(map(reads, leaves))
+
+
+def readable_by_grants(view, request, obj):
+    """`grants_allow` for ``http.GET`` on the view's type: which tells a 403
+    from a 404. Call it as a GET of the detail route has it
+    (`as_detail_read`), with the view's permissions reading the content
+    (`checks_read_content`)."""
+    permission = Permission("http.GET", view.resource_type_iri_for(request))
+    return grants_allow(view, request, obj, permission)
 
 
 def readable_by_object_checks(view, request, check):

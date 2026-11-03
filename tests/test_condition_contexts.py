@@ -698,3 +698,57 @@ def test_readable_by_grants_reads_each_context_through_any_requirement():
     assert readable([], [elsewhere, reads])
     assert not readable([], [elsewhere])
     assert readable([], [])
+
+
+# A view whose IsAuthorized has a has_context_permission of its own that asks
+# super() (tests/urls.py: ContextDenyingIsAuthorized): that code reads the
+# content as stored, but the grants are also asked, each context as the
+# resource is there, as its list asks them: object checks only narrow.
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_overriding_view_shows_on_its_detail_route_what_it_lists():
+    victims = store({"foo": "theirs", "rbac_context": ["victim"]})
+    shared = store({"foo": "shared", "rbac_context": ["victim", "public"]})
+    Given.http.force_authenticate(user_with(everywhere_but("victim"), READS_ELSEWHERE))
+    When.http.get(reverse("denying-json-ld-list"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    listed = {item["content"].get("foo") for item in Http.response.json()["content"]}
+    assert "shared" in listed and "theirs" not in listed, listed
+    When.http.get(reverse("denying-json-ld-detail", args=[shared.pk]))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    detail = reverse("denying-json-ld-detail", args=[victims.pk])
+    When.http.get(detail)
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+    When.http.put(
+        detail,
+        {"foo": "taken", "rbac_context": "public"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(victims.etag),
+    )
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+    victims.refresh_from_db()
+    assert victims.content == {"foo": "theirs", "rbac_context": ["victim"]}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("rbac_context", INTO_THE_DEFAULT_CONTEXT)
+@test_context
+def test_an_overriding_view_refuses_a_create_into_the_default_context(rbac_context):
+    reverse("json-ld-list")
+    Given.http.force_authenticate(user_with(everywhere_but("")))
+    before = Resource.objects.count()
+    When.http.post(
+        reverse("denying-json-ld-list"),
+        {"foo": "in default", "rbac_context": rbac_context},
+        format="json",
+    )
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.count() == before
+    When.http.post(
+        reverse("denying-json-ld-list"),
+        {"foo": "elsewhere", "rbac_context": "public"},
+        format="json",
+    )
+    Then.http.status_code_is(status.HTTP_201_CREATED)

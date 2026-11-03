@@ -200,6 +200,9 @@ Code of your own reads what it always did: an operator function, and a
 body as sent), its `rbac_context` the whole value. Its `super()` call reads
 that too; to have scoped-rbac's check read each context as the object is
 there, pass it `scrud_django.permissions.condition_resource(obj, context)`.
+On a view with such an override, the scrud views also ask the grants,
+each context read as the resource is there, on the detail route and after
+a write, as its list does: the override narrows what the grants allow.
 A context that a `contexts_for` of your own names, and that is not one of
 the resource's, leaves the object as it is (`docs/follow-ups.md`,
 `custom-contexts-conditions`). A view of your own that composes scoped-rbac's

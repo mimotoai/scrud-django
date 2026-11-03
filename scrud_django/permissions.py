@@ -26,6 +26,7 @@ from contextvars import ContextVar
 from rest_framework.permissions import AND, NOT, OR
 from scoped_rbac import access, policy
 from scoped_rbac.permissions import IsAuthorized, custom_contexts_for
+from scoped_rbac.policy import Permission
 
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 
@@ -201,18 +202,35 @@ def condition_resource(obj, context, *, every=False):
     return obj if fields is obj else policy.RequestResource(obj, fields)
 
 
-def may_read_in_context(request, resource_type, obj, contexts):
-    """``access.may_read`` (``http.GET`` on `resource_type` in any of
-    `contexts`), with each context's conditions reading `obj` as it is there
+def may_act_in_context(request, permission, obj, contexts):
+    """``access.may_act_on`` (`permission` allowed in any of `contexts`),
+    with each context's conditions reading `obj` as it is there
     (`condition_resource`). An object with no usable context is a
     superuser's only, as there."""
     usable = access.usable_contexts(contexts)
     if not usable:
-        return access.may_read(request, resource_type, obj, [])
+        return access.may_act_on(request, permission, obj, [])
     return any(
-        access.may_read(request, resource_type, condition_resource(obj, c), [c])
+        access.may_act_on(request, permission, condition_resource(obj, c), [c])
         for c in usable
     )
+
+
+def may_read_in_context(request, resource_type, obj, contexts):
+    """`may_act_in_context` for ``http.GET`` on `resource_type`
+    (``access.may_read``)."""
+    return may_act_in_context(
+        request, Permission("http.GET", resource_type), obj, contexts
+    )
+
+
+def reads_each_context(leaf):
+    """Whether the ``IsAuthorized`` `leaf` asks the grants reading each
+    context as the object is there (`_reads_in_context`, given by
+    `reading_content` to a leaf keeping scoped-rbac's
+    ``has_context_permission``). One with a ``has_context_permission`` of its
+    own does not: the scrud views then ask the grants so beside it."""
+    return getattr(vars(leaf).get("has_context_permission"), "_scrud_in_context", False)
 
 
 @contextmanager
