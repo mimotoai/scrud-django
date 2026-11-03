@@ -43,7 +43,12 @@ from scoped_rbac.policy import Permission
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
 from scrud_django.models import Resource, ResourceContext, ResourceRemoval
-from scrud_django.permissions import checks_read_content, content_of, reading_content
+from scrud_django.permissions import (
+    checks_read_content,
+    content_of,
+    in_context,
+    reading_content,
+)
 
 # What an object check may raise to refuse one object (DRF's and Django's
 # idioms): a list leaves that object out, as its detail route refuses it.
@@ -174,8 +179,14 @@ def _conditionally_allowed(candidates, request, policy, permission, scope, conte
         evaluated = [c for c in usable if scope.conditional_anywhere or c in contexts]
         if not evaluated:
             continue
-        resource = access.cel_resource(request, content_of(obj))
-        if any(policy.should_allow(permission, c, resource) for c in evaluated):
+        content = content_of(obj)
+        # Each context's condition reads the content as it is in that context.
+        if any(
+            policy.should_allow(
+                permission, c, access.cel_resource(request, in_context(content, c))
+            )
+            for c in evaluated
+        ):
             allowed.append(obj.pk)
     return allowed
 
@@ -210,7 +221,7 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
         return queryset.none()
     contexts_fors = access.non_default_contexts_for(contexts_for)
 
-    def allowed(check, contexts, resource):
+    def allowed(check, contexts, resources):
         # As scoped-rbac 0.11.2 reads them: a context that is not a str (a
         # lazy string, a number) names no context (only "*" reaches it).
         contexts = [access.context_name(c) for c in access.usable_contexts(contexts)]
@@ -223,9 +234,16 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
         ]
         if not conditional:
             return False
-        if not resource:
-            resource.append(access.cel_resource(request, check))
-        return any(policy.should_allow(permission, c, resource[0]) for c in conditional)
+
+        def resource(context):
+            # The content as it is in `context` (in_context), built once each.
+            if context not in resources:
+                resources[context] = access.cel_resource(
+                    request, in_context(check, context)
+                )
+            return resources[context]
+
+        return any(policy.should_allow(permission, c, resource(c)) for c in conditional)
 
     max_rows = conditional_list_max_rows()
     allowed_pks = []
@@ -238,9 +256,9 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
         if access.stored_in_reserved_context(obj):
             continue
         check = content_of(obj)
-        resource = []  # the resource's CEL resource, built once if needed
+        resources = {}  # the CEL resource in each context, built once if needed
 
-        def allows(contexts_for, check=check, resource=resource):
+        def allows(contexts_for, check=check, resources=resources):
             if isinstance(contexts_for, access.AnyOf):
                 return any(
                     all(map(allows, option))
@@ -248,7 +266,7 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
                     else allows(option)
                     for option in contexts_for.options
                 )
-            return allowed(check, contexts_for(check), resource)
+            return allowed(check, contexts_for(check), resources)
 
         if all(map(allows, contexts_fors)):
             allowed_pks.append(obj.pk)
@@ -357,6 +375,38 @@ def meets_object_checks(requirement, request, view, check):
             return False
 
     return all(meets(entry) for entry in requirement)
+
+
+def readable_by_grants(view, request, obj):
+    """Whether the grants allow a read of `obj` (the object as its object
+    check gets it), which tells a 403 from a 404: scoped-rbac's
+    ``AccessControlledAPIView.is_readable`` (``http.GET`` in the contexts
+    each ``IsAuthorized`` of the view's requirement reads, ``access.AnyOf``
+    alternatives included), except that each context is read with the object
+    as it is in that context (`in_context`), as the object check reads it.
+    Call it as a GET of the detail route has it (`as_detail_read`), with the
+    view's permissions reading the content (`checks_read_content`)."""
+    resource_type = view.resource_type_iri_for(request)
+
+    def reads(leaf):
+        contexts = access.usable_contexts(leaf.contexts_for(obj))
+        if not contexts:
+            return access.may_read(request, resource_type, obj, [])
+        return any(
+            access.may_read(request, resource_type, in_context(obj, c), [c])
+            for c in contexts
+        )
+
+    def meets(entry):
+        if isinstance(entry, access.AnyOf):
+            return any(all(map(meets, option)) for option in entry.options)
+        return reads(entry)
+
+    requirement = view.rbac_requirement()
+    if requirement:
+        return all(map(meets, requirement))
+    leaves = view._rbac_permissions()
+    return not leaves or any(map(reads, leaves))
 
 
 def readable_by_object_checks(view, request, check):

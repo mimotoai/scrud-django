@@ -1,8 +1,10 @@
-"""scrud-django re-implements three upstream functions: DRF's
-``GenericAPIView.get_object`` (as ``ResourceViewMixin.get_object``) and
+"""scrud-django re-implements four upstream functions: DRF's
+``GenericAPIView.get_object`` (as ``ResourceViewMixin.get_object``),
 scoped-rbac's private ``access._filter_per_object`` (as
-``filters.filter_readable_resources_per_object``), to give object checks a
-resource's content (a ``dict``), and DRF's ``GenericAPIView.filter_queryset``
+``filters.filter_readable_resources_per_object``) and its
+``AccessControlledAPIView.is_readable`` (as ``filters.readable_by_grants``),
+to give object checks a resource's content (a ``dict``) as it is in each
+context, and DRF's ``GenericAPIView.filter_queryset``
 (as ``ListValidatorsMixin.filter_queryset``, which narrows a list by the
 object check right after the RBAC filter). It also relies on upstream
 internals: the ``error`` / ``error_body_func`` attributes of scrudful's
@@ -113,6 +115,27 @@ def test_scoped_rbacs_per_object_filter_is_what_scrud_re_implements():
         "tuple",
         "unrestricted",
         "usable_contexts",
+    )
+
+
+def test_scoped_rbacs_is_readable_is_what_scrud_re_implements():
+    # scrud_django.filters.readable_by_grants, which reads each context with
+    # the object as it is in it (permissions.in_context).
+    from scoped_rbac.rest import AccessControlledAPIView
+
+    assert code_names(AccessControlledAPIView.is_readable) == (
+        "AnyOf",
+        "_rbac_permissions",
+        "access",
+        "all",
+        "any",
+        "contexts_for",
+        "isinstance",
+        "map",
+        "may_read",
+        "options",
+        "rbac_requirement",
+        "resource_type_iri_for",
     )
 
 

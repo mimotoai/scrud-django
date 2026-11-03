@@ -40,6 +40,7 @@ from scrud_django.filters import (
     as_detail_read,
     filter_by_object_checks,
     object_check_requirement,
+    readable_by_grants,
     readable_by_object_checks,
     readable_removal,
 )
@@ -423,8 +424,10 @@ class ListValidatorsMixin:
         detail route (`check_object_permissions`) and decides whether a
         workflow error names a resource's stored state: as a GET of the
         detail route has it (`scrud_django.filters.as_detail_read`), whatever
-        the request's method, scoped-rbac's ``is_readable`` (``http.GET`` in
-        the object's contexts, as each ``IsAuthorized`` reads them) **and**
+        the request's method, the grants (`readable_by_grants`, scoped-rbac's
+        ``is_readable``: ``http.GET`` in the object's contexts, as each
+        ``IsAuthorized`` reads them, each with the object as it is in that
+        context) **and**
         the object checks a list asks (`readable_by_object_checks`), so that
         the detail route hides what the list leaves out. The object checks
         only narrow. A grant conditioned on ``scrud_workflow`` never makes
@@ -432,7 +435,7 @@ class ListValidatorsMixin:
         with _not_checking_write(), checks_read_content(self):
             if isinstance(self, AccessControlledAPIView):
                 with as_detail_read(self, request) as read:
-                    if not AccessControlledAPIView.is_readable(self, read, obj):
+                    if not readable_by_grants(self, read, obj):
                         return False
             return readable_by_object_checks(self, request, obj)
 

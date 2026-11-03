@@ -1,5 +1,46 @@
 # Change Log
 
+## 0.12.2
+
+A grant's condition that reads `rbac_context` now reads the context it is
+evaluated in, in every check (scrud-django#2).
+
+### Upgrading
+
+1. Roles: review grants whose condition reads `rbac_context`. Each check now
+   gives the condition the object with the context it is evaluated in as
+   its `rbac_context`, where 0.12.1 gave it the value as written or stored:
+   a list, or a value that is not a string (`null`, a number, an object),
+   which stores the resource in the default context `""`. A resource
+   without an `rbac_context` is read with `""`. A condition such as
+   `rbac_context != "x"` now keeps its grant out of a resource stored in
+   `"x"` as a list (it is a 404 on the detail route and missing from the
+   list) and out of writes into `""` (403). A condition such as
+   `rbac_context == "a"` now allows a resource stored as `["a", "b"]` in
+   `"a"`.
+2. Your code: an `IsAuthorized` subclass's `has_context_permission` on a
+   scrud view gets the content as it is in the context asked, with that
+   context as its `rbac_context` when it is one of the resource's.
+   `has_object_permission` still gets the content as stored.
+
+### Authorization
+
+* The workflow and post-save checks, the object checks of a detail route
+  (including whether a refused resource is a 404 or a 403) and lists give a
+  condition the object as it is in each context
+  (`scrud_django.permissions.in_context`), as scoped-rbac's request check
+  reads a list `rbac_context` since 0.11.2. On the scrud views, every
+  `IsAuthorized` permission's `has_context_permission` reads so
+  (`reading_content`); the workflow check and the lists' per-object
+  evaluation read so where they evaluate the policy themselves; and the
+  403-or-404 decision is `scrud_django.filters.readable_by_grants`,
+  scoped-rbac's `AccessControlledAPIView.is_readable` reading each
+  context so.
+* Closed by this: a writer whose grant refuses `""` by a condition
+  (`rbac_context != ""`) could write into `""` with an `rbac_context` that
+  is not a string, and a grant whose condition refuses `"x"` could read,
+  list, overwrite and move a resource stored in `"x"` as a list.
+
 ## 0.12.1
 
 This release requires django-scoped-rbac 0.11.2, which closes a way to write
@@ -57,8 +98,7 @@ a resource into a context a conditional grant refuses.
 
 * Outside scoped-rbac's request check, a grant condition that reads
   `rbac_context` reads the value as written or stored, not the context it is
-  evaluated in (`docs/follow-ups.md`, `conditions-on-rbac-context`; also in
-  0.12.0). With a negated condition (`rbac_context != "x"`):
+  evaluated in (scrud-django#2; also in 0.12.0; fixed in 0.12.2). With a negated condition (`rbac_context != "x"`):
   * a writer still reaches `""` with an `rbac_context` that is not a string
     (`null`, a number, an object; a list holding a number, bool or null
     needs a grant in `"*"`);

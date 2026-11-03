@@ -1,6 +1,6 @@
 [project]
 name = "scrud-django"
-version = "0.12.1"
+version = "0.12.2"
 description = "A Django REST Framework app for Semantic CRUD."
 readme = "README.md"
 authors = [{ name = "David Charboneau", email = "david@adadabase.com" }]

@@ -53,49 +53,6 @@ create's handler the list's error body function). Test: POST
 `reverse("role-list")` as a superuser with `If-Match: "nope"`; expect 412,
 get 201 today.
 
-<a id="conditions-on-rbac-context"></a>
-## conditions-on-rbac-context: a condition on `rbac_context` reads the raw value, not the context being checked
-
-A grant's condition that reads `rbac_context` (`rbac_context != "x"`) is
-evaluated with a body or a resource's content as it is. Only
-django-scoped-rbac's request check (0.11.2, #56) reads one value at a time,
-and only the values of a list of strings. Everywhere else the condition
-reads the raw value. That value is not the context being checked when it
-is a list, or when it is not a string and scrud stores the resource in the
-default context `""` (`rbac_contexts_of`). None of these is new in 0.12.1:
-0.12.0 with django-scoped-rbac 0.11.1 behaves the same.
-
-- **Writes into `""`:** a writer granted in `"*"` with
-  `rbac_context != ""` (every context but the default) gets 403 for
-  `"rbac_context": ""`. They get 201 for `null`, `5`, `{"@id": "x"}` or a
-  list holding a number, bool or null (`["public", 1]`), and the resource
-  is stored in `""`. In each case the request, workflow and post-save
-  checks read the body's own value, which is not `""`. (A list holding a
-  non-string also needs the method in that value, which only a grant in
-  `"*"` gives.)
-- **Updates of a resource stored as a list:** a resource stored with
-  `"rbac_context": ["victim"]` can be overwritten and moved by a writer
-  granted in `"*"` with `rbac_context != "victim"`. The PUT's object check
-  reads the stored list, and `["victim"] != "victim"` is true. The same
-  resource stored as `"victim"` is a 404 for them.
-- **Reads of a resource stored as a list:** for the same reason, a reader
-  with such a condition lists a resource stored as `["victim"]` (and not one
-  stored as `"victim"`).
-- **The other way round:** a writer granted in `"a"` with
-  `rbac_context == "a"` and in `"b"` with `rbac_context == "b"` cannot
-  write `["a", "b"]`. The post-save check reads the whole list (403).
-
-Fix: give every condition the object with `rbac_context` set to the context
-it is evaluated in: in the post-save and workflow checks (each context the
-resource ends up in or leaves), in the object checks of a detail route, and
-in the lists' per-object evaluation (`scrud_django.filters`). Those places
-are scrud's own. Each place must give the condition the same object, or a
-list and the detail route disagree. Tests, each failing today: in
-`tests/test_context_smuggling.py`, the writer above POSTs `{"rbac_context":
-null}` and `["public", 1]` (403, nothing stored) and PUTs over a resource
-stored as `["victim"]` (404, unchanged); a reader with that condition does
-not list or GET it; and the `"a"`/`"b"` writer creates `["a", "b"]` (201).
-
 # Decided
 
 <a id="policy-recheck-isolation"></a>

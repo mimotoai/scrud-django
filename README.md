@@ -180,16 +180,16 @@ or a list holding a number, bool or null) stores it in the default context
 `""`. A list holding an array or an object is a 400 (`invalid`, naming
 `rbac_context`).
 
-Grant conditions that read `rbac_context` see the value as written or
-stored, with one exception. scoped-rbac's request check of a POST or PUT
-reads each value of a list of strings as the object written there, the
-body with that value as its `rbac_context`. The workflow and post-save
-checks, the object checks of a detail route, and lists all see the whole
-value. A negated condition such as `rbac_context != "x"` therefore does
-not keep a grant out of `"x"` for a resource stored there as a list, nor
-out of `""` for one whose `rbac_context` is not a string. Grant by context
-(`RoleAssignment.rbac_context`) instead where that matters; see
-`docs/follow-ups.md`, `conditions-on-rbac-context`.
+A grant's condition that reads `rbac_context` reads the context it is
+evaluated in: the object as it is in that context, the content with that
+context as its `rbac_context`. scrud's workflow and post-save checks, the
+object checks of a detail route and lists read every context so;
+scoped-rbac's request check of a POST or PUT reads each value of a list of
+strings so, and any other body as written. So a condition such as
+`rbac_context != "x"` keeps a grant out of `"x"` for a resource stored
+there as a list too, and out of `""` for one whose `rbac_context` is not a
+string. A context that a `contexts_for` of your own names, and that is not
+one of the resource's, leaves the object as it is.
 
 Configure Django REST Framework to authorize with scoped-rbac and to answer
 errors as [RFC 7807](https://tools.ietf.org/html/rfc7807) problem details while

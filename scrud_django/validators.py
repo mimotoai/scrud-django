@@ -25,6 +25,7 @@ from scrud_django.permissions import (
     _not_checking_write,
     checks_read_content,
     content_of,
+    in_context,
     reading_content,
 )
 from scrud_django.workflow import (
@@ -467,8 +468,10 @@ class WorkflowValidator:
         narrowed by each ``IsAuthorized`` of the view."""
         if rbac_context is None:
             return access.may_act_on(request, permission, body, [])
+        # A condition reads the body as it is in `rbac_context` (in_context):
+        # with that context as its rbac_context when the body writes it there.
         if not policy_for(request).should_allow(
-            permission, rbac_context, resource=body
+            permission, rbac_context, resource=in_context(body, rbac_context)
         ):
             return False
         # The view's IsAuthorized permissions may refuse what the policy
