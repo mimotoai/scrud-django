@@ -225,8 +225,9 @@ class WorkflowValidator:
     the settings default, and only a superuser may make its transition, as
     scoped-rbac's object checks allow. In a context where no policy applies, a
     grant conditioned on ``scrud_workflow`` allows nothing
-    (`authorize_without_policy`: 403). Operators and CEL conditions read the
-    body as sent, a ``dict``.
+    (`authorize_without_policy`: 403). Operators, CEL conditions and the
+    view's permission classes read the body as sent, a ``dict``, with the
+    context checked as its ``rbac_context`` (`with_context`).
 
     An error under a stored policy the requester may not read, or about a
     stored resource they may not read, names neither the policy nor its
@@ -438,8 +439,9 @@ class WorkflowValidator:
         for `transition`: the ``scrud_workflow`` operator, and any permission
         class, reads it as `current_transition` (set only while this check
         asks), and every operator and CEL condition reads the body `data`
-        as sent, a ``dict`` (``{}`` for a body that is not a JSON object), as in
-        scoped-rbac's request check. Without `transition_check`, on the body
+        as sent, a ``dict`` (``{}`` for a body that is not a JSON object), with
+        `rbac_context` as its ``rbac_context`` (`with_context`), as
+        scoped-rbac's request check reads each value of a list. Without `transition_check`, on the body
         alone, as the write's request and post-save checks ask it
         (``scrud_workflow`` allows there).
 

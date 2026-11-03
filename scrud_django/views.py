@@ -13,7 +13,11 @@ from scrudful.rest_framework import scrudful_api_view, scrudful_viewset
 
 from scrud_django import collection_type_uri_for, services
 from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
-from scrud_django.mixins.view_mixins import ResourceViewMixin, gate_uniform_errors
+from scrud_django.mixins.view_mixins import (
+    ReadableMixin,
+    ResourceViewMixin,
+    gate_uniform_errors,
+)
 from scrud_django.registration import get_resource_type_for
 from scrud_django.renderers import JSONLDRenderer, SchemaJSONRenderer
 from scrud_django.validators import JsonValidator
@@ -61,18 +65,12 @@ class DocumentMediaTypeMixin:
 
 @scrudful_viewset
 class ResourceViewSet(
-    AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
+    ReadableMixin, AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
 ):
     # Fail closed: DRF's default permission is AllowAny, and scoped-rbac sets no
     # default either, so without this a project that does not configure
     # DEFAULT_PERMISSION_CLASSES would let anyone write and delete resources.
     permission_classes = [IsAuthorized]
-
-    def is_readable(self, request, obj):
-        # scoped-rbac's check_object_permissions, first in the MRO, asks this
-        # whether a refused object is a 403 or a 404: each context read with
-        # the object as it is there (ResourceViewMixin.object_readable).
-        return self.object_readable(request, obj)
 
     # JSON bodies only. A form or multipart body can name ``rbac_context`` more
     # than once: scoped-rbac checks the last value, the list would be stored.
@@ -100,18 +98,12 @@ class ResourceViewSet(
 
 @scrudful_viewset
 class ResourceViewSetGenericFilter(
-    AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
+    ReadableMixin, AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
 ):
     # Fail closed: DRF's default permission is AllowAny, and scoped-rbac sets no
     # default either, so without this a project that does not configure
     # DEFAULT_PERMISSION_CLASSES would let anyone write and delete resources.
     permission_classes = [IsAuthorized]
-
-    def is_readable(self, request, obj):
-        # scoped-rbac's check_object_permissions, first in the MRO, asks this
-        # whether a refused object is a 403 or a 404: each context read with
-        # the object as it is there (ResourceViewMixin.object_readable).
-        return self.object_readable(request, obj)
 
     # JSON bodies only. A form or multipart body can name ``rbac_context`` more
     # than once: scoped-rbac checks the last value, the list would be stored.

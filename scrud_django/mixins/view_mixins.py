@@ -440,11 +440,11 @@ class ListValidatorsMixin:
             return readable_by_object_checks(self, request, obj)
 
     def is_readable(self, request, obj):
-        """`object_readable`. (scoped-rbac's ``AccessControlledAPIView``
-        defines its own: where it precedes this mixin, as in the scrud
-        viewsets, its ``check_object_permissions`` asks its own, after this
-        mixin's `check_object_permissions` has already answered 404 for an
-        object `object_readable` refuses.)"""
+        """`object_readable`. scoped-rbac's ``AccessControlledAPIView``
+        defines its own, which reads a resource's stored ``rbac_context``
+        whole: a view composing it before this mixin puts `ReadableMixin`
+        first, as the scrud viewsets do, so that its
+        ``check_object_permissions`` asks this one."""
         return self.object_readable(request, obj)
 
     def check_object_permissions(self, request, obj):
@@ -656,6 +656,18 @@ class ListValidatorsMixin:
                 result, request, (self, request, *self.args), dict(self.kwargs)
             )
         return conditional_response(result)
+
+
+class ReadableMixin:
+    """Put first in a view composing scoped-rbac's ``AccessControlledAPIView``
+    with `ResourceViewMixin` (or `GenericViewMixin`), as the scrud viewsets
+    do: ``AccessControlledAPIView.check_object_permissions`` then asks
+    `ListValidatorsMixin.object_readable` whether a refused object is a 403
+    or a 404, which reads each of a resource's contexts with the resource as
+    it is there, rather than its own ``is_readable``."""
+
+    def is_readable(self, request, obj):
+        return self.object_readable(request, obj)
 
 
 class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin):

@@ -30,7 +30,15 @@ evaluated in, in every check (scrud-django#2).
    scrud view gets the content as it is in the context asked, with that
    context as its `rbac_context` when it is one of the resource's (in the
    workflow check, whichever context is checked). `has_object_permission`
-   still gets the content as stored.
+   still gets the content as stored. In the workflow check, `obj` therefore
+   no longer tells where the body writes the resource: a class that
+   compared it with the context asked (to refuse a move out of a context,
+   say) must read `request.data["rbac_context"]` instead.
+3. Your code: a view of your own that composes scoped-rbac's
+   `AccessControlledAPIView` with `ResourceViewMixin` or `GenericViewMixin`
+   should put `scrud_django.mixins.view_mixins.ReadableMixin` first, as the
+   scrud viewsets now do. Otherwise a refused write of a resource readable
+   in one of its contexts is a 404, not a 403.
 
 ### Authorization
 
@@ -40,7 +48,7 @@ evaluated in, in every check (scrud-django#2).
   * the object checks of a detail route, through each `IsAuthorized`
     permission's `has_context_permission` (`reading_content`);
   * whether a refused resource is a 404 or a 403: the scrud viewsets'
-    `is_readable` is `object_readable`, whose grants check
+    `is_readable` is `object_readable` (`ReadableMixin`), whose grants check
     (`scrud_django.filters.readable_by_grants`) is scoped-rbac's
     `AccessControlledAPIView.is_readable` reading each context so;
   * the post-save check;
@@ -113,7 +121,8 @@ a resource into a context a conditional grant refuses.
 
 * Outside scoped-rbac's request check, a grant condition that reads
   `rbac_context` reads the value as written or stored, not the context it
-  is evaluated in (scrud-django#2; also in 0.12.0; fixed in 0.12.2). With a negated condition (`rbac_context != "x"`):
+  is evaluated in (scrud-django#2; also in 0.12.0; fixed in 0.12.2). With
+  a negated condition (`rbac_context != "x"`):
   * a writer still reaches `""` with an `rbac_context` that is not a string
     (`null`, a number, an object; a list holding a number, bool or null
     needs a grant in `"*"`);

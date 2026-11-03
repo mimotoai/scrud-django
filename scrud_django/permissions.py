@@ -4,7 +4,8 @@
 Every check reads plain data, as scoped-rbac's own checks do: a request
 check the parsed body itself (``request.data``), an object check of a
 resource its content (`content_of`, the stored ``dict`` itself), and the
-workflow check the body as sent. A check (a permission class, an operator, a
+workflow check the body as sent, with the context it checks as its
+``rbac_context`` (`with_context`). A check (a permission class, an operator, a
 ``contexts_from``) must only read what it is given: changing it changes what
 is stored, and is a bug in that check, not something scrud-django guards.
 
@@ -68,7 +69,9 @@ def current_transition():
 
     A permission class that refuses a transition reads it here, e.g.
     ``if current_transition() == "cancel": return False``. In the workflow
-    check its ``obj`` is the request body as sent (a ``dict``)."""
+    check its ``obj`` is the request body as sent (a ``dict``), with the
+    context checked as its ``rbac_context`` (`with_context`): where the body
+    writes the resource is ``request.data["rbac_context"]``."""
     transition = _transition.get()
     return None if transition is _OUTSIDE or transition is _WRITE else transition
 

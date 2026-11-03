@@ -53,6 +53,24 @@ create's handler the list's error body function). Test: POST
 `reverse("role-list")` as a superuser with `If-Match: "nope"`; expect 412,
 get 201 today.
 
+<a id="workflow-grant-blocks-leaving"></a>
+## workflow-grant-blocks-leaving: a `scrud_workflow` grant refuses moving a resource out of a context without a policy
+
+A PUT that moves a resource out of a context needs no grant there unless a
+workflow policy applies there (README). But `WorkflowValidator` runs
+`authorize_without_policy` for every context the write concerns, those it
+leaves included. In a context without a policy, a writer whose grants there
+are conditioned on `scrud_workflow` gets 403, while a writer with no grant
+there at all may move the resource out. It fails closed, and it predates
+0.12.2. Found in the review of scrud-django#2.
+
+Fix: run `authorize_without_policy` only for the contexts the body writes
+(`rbac_contexts_of(data)`), not those the update leaves. Test: in
+`tests/test_workflow_contexts.py`, a resource stored as `["a", "b"]`
+(JSON-LD, no policy in `"b"`), a writer with JSON-LD writes in `"a"` and a
+`scrud_workflow` grant in `"b"`, PUTs it with `"rbac_context": "a"`: expect
+200, get 403 today.
+
 # Decided
 
 <a id="custom-contexts-conditions"></a>

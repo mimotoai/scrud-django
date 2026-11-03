@@ -483,3 +483,28 @@ def test_reading_content_keeps_an_instance_level_has_context_permission():
     (permission,) = reading_content([permission])
     assert permission.has_context_permission(None, None, {"rbac_context": ["a"]}, "a")
     assert seen == [({"rbac_context": "a"}, "a")]
+
+
+def test_the_scrud_viewsets_decide_403_or_404_with_object_readable():
+    # AccessControlledAPIView.check_object_permissions asks self.is_readable:
+    # ReadableMixin, first, makes that the per-context object_readable.
+    from scrud_django.mixins.view_mixins import ReadableMixin
+    from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
+
+    for viewset in (ResourceViewSet, ResourceViewSetGenericFilter):
+        assert viewset.is_readable is ReadableMixin.is_readable
+
+
+@pytest.mark.django_db
+def test_a_workflow_error_outside_a_view_reads_each_context():
+    # WorkflowValidator.stored_resource_readable without a view (a serializer
+    # used outside the scrud views) reads each of the resource's contexts.
+    from rest_framework.test import APIRequestFactory
+
+    from scrud_django.validators import WorkflowValidator
+
+    request = APIRequestFactory().get("/")
+    request.user = user_with(everywhere_but("victim"))
+    readable = WorkflowValidator.stored_resource_readable
+    assert not readable(request, store({"foo": 1, "rbac_context": ["victim"]}))
+    assert readable(request, store({"foo": 2, "rbac_context": ["victim", "public"]}))
