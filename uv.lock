@@ -441,16 +441,16 @@ wheels = [
 
 [[package]]
 name = "django-scoped-rbac"
-version = "0.11.1"
+version = "0.11.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cel-expr-python" },
     { name = "django" },
     { name = "scrudful" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/42/1d/94617952d8ccfb0ed6b1e609e7978efd65e739508b6859c27b83ed9e2831/django_scoped_rbac-0.11.1.tar.gz", hash = "sha256:41e14b4f51601871cfc6a911f410771fbd60e0750ee2c0c8f63c8c28e1b52b49", size = 103091, upload-time = "2026-10-27T22:53:02.276Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c6/49/83fafabeb65991aae91c34bdb75040772fb880a1695c9c3781e9a39aac53/django_scoped_rbac-0.11.2.tar.gz", hash = "sha256:aa4512c001bbe517ff4d62ae74155b6323bbb3f5523fb28d81fe20f2821c7909", size = 110293, upload-time = "2026-10-31T00:42:21.133Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/4e/d6b62ca3396230980efa29b939bbe5be4eba5f3416c3af08b991b678c7db/django_scoped_rbac-0.11.1-py3-none-any.whl", hash = "sha256:590870945ba47f29dc8fe38ebc9de6adeeec2d4baa7b6b06d369257794275d05", size = 121614, upload-time = "2026-10-27T22:53:00.896Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/ca/716f93e51894112da12cb7097bd62cfc377ae26123a7dbe615dc96e2eeac/django_scoped_rbac-0.11.2-py3-none-any.whl", hash = "sha256:c8b781d63d8084390e9b4b0f883df2f453c5e41dd8d9234e69122f94b3aa0498", size = 129085, upload-time = "2026-10-31T00:42:22.489Z" },
 ]
 
 [package.optional-dependencies]
@@ -1104,7 +1104,7 @@ wheels = [
 
 [[package]]
 name = "scrud-django"
-version = "0.12.0"
+version = "0.12.1"
 source = { editable = "." }
 dependencies = [
     { name = "django" },
@@ -1152,7 +1152,7 @@ requires-dist = [
     { name = "django-filter", specifier = ">=25.1" },
     { name = "django-haystack", marker = "extra == 'search'", specifier = ">=3.3" },
     { name = "django-reversion", specifier = ">=5.1" },
-    { name = "django-scoped-rbac", extras = ["drf"], specifier = ">=0.11.1,<0.12" },
+    { name = "django-scoped-rbac", extras = ["drf"], specifier = ">=0.11.2,<0.12" },
     { name = "djangorestframework", specifier = ">=3.15" },
     { name = "fastjsonschema", specifier = ">=2.19" },
     { name = "jsonpath-ng", specifier = ">=1.6" },

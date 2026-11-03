@@ -30,14 +30,19 @@ def rbac_contexts_of(content):
     a resource's contexts: object checks (``Resource.rbac_contexts``, and
     ``scrud_django.permissions.resource_contexts``, scoped-rbac's default
     ``contexts_for`` on the scrud views, which give checks the content), and the workflow checks (``WorkflowValidator``) all
-    use it."""
+    use it. Each context is the exact ``str`` of its characters, as
+    scoped-rbac reads a context (``access.context_name``): a ``str`` subclass
+    (a ``StrEnum`` member, from Python code) is not kept as itself. A value
+    is told by its type, as scoped-rbac does: an object only passing as a
+    ``str`` (a ``SimpleLazyObject``) is not a string, and is not
+    evaluated."""
     context = content.get("rbac_context") if isinstance(content, Mapping) else None
-    if isinstance(context, str):
-        return [context]
-    if isinstance(context, (list, tuple)) and all(
-        isinstance(item, str) for item in context
+    if issubclass(type(context), str):
+        return [str.__str__(context)]
+    if issubclass(type(context), (list, tuple)) and all(
+        issubclass(type(item), str) for item in context
     ):
-        return list(context)
+        return [str.__str__(item) for item in context]
     return [DEFAULT_CONTEXT]
 
 

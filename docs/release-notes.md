@@ -1,5 +1,73 @@
 # Change Log
 
+## 0.12.1
+
+This release requires django-scoped-rbac 0.11.2, which closes a way to write
+a resource into a context a conditional grant refuses.
+
+### Upgrading
+
+1. Install django-scoped-rbac 0.11.2 or newer, below 0.12. The new floor
+   comes with scrud-django 0.12.1; raise any pin of your own.
+2. Clients: a POST or PUT whose `rbac_context` is a list holding an array or
+   an object (`["a", ["b"]]`, `["a", {"@id": "x"}]`) now gets 400, for
+   superusers too. Send a list of strings. scrud-django 0.12.0 stored such
+   a resource in the default context `""`.
+3. Roles: scoped-rbac's request check now reads each value of a list
+   `rbac_context` on its own when it evaluates a condition on
+   `rbac_context` (see Authorization). A create or update that a condition
+   such as `rbac_context != "x"` let into `"x"` through a list is now a
+   403. Resources already stored that way stay where they are, and such a
+   grant can still read, overwrite and move them (see Known issues): look
+   for resources whose `rbac_context` is a list that includes a context
+   such a grant refuses.
+4. Your code: a context that is not a `str`, such as a lazy string
+   (`gettext_lazy`) or a number from a `contexts_for` of your own, now names
+   no context. Only a grant in every context (`"*"`) reaches it. Return
+   `str` contexts.
+
+### Authorization
+
+* The request check of a POST or PUT whose `rbac_context` is a list of
+  strings checks each value as the object written there: the body with that
+  value as its `rbac_context` (django-scoped-rbac #56). A condition that
+  reads `rbac_context` reads one context at a time. In 0.12.0 it read the
+  whole list, and a negated condition was true of it: a writer granted in
+  every context but `"x"` (`rbac_context != "x"` in `"*"`) could store a
+  resource in `"x"` by also naming another context. The workflow and
+  post-save checks, the object checks and lists still give a condition the
+  whole value (see Known issues).
+* A list `rbac_context` holding an array or an object is refused with a 400
+  problem (code `invalid`, an `errors` entry for `rbac_context`: "A context
+  is a string, not an array or object."), before any grant is evaluated.
+* Contexts are read as django-scoped-rbac 0.11.2 reads them
+  (`access.context_name`): a `str` subclass by its characters, any other
+  value as no context. Lists that a `contexts_for` of your own decides
+  (`IsAuthorized` subclasses) read them so too, and agree with the detail
+  route again. `rbac_contexts_of` gives exact `str`s, so a `StrEnum`
+  member in content written from Python is stored and checked as its
+  value.
+
+### Packaging
+
+* Releases are published to PyPI with trusted publishing from GitLab CI;
+  no PyPI token is stored in the project.
+
+### Known issues
+
+* Outside scoped-rbac's request check, a grant condition that reads
+  `rbac_context` reads the value as written or stored, not the context it is
+  evaluated in (`docs/follow-ups.md`, `conditions-on-rbac-context`; also in
+  0.12.0). With a negated condition (`rbac_context != "x"`):
+  * a writer still reaches `""` with an `rbac_context` that is not a string
+    (`null`, a number, an object; a list holding a number, bool or null
+    needs a grant in `"*"`);
+  * a resource stored as a list naming `"x"` can be read, listed,
+    overwritten and moved by that grant.
+
+  Until this is fixed, keep such grants out of those contexts by context
+  (`RoleAssignment.rbac_context`), not by a condition.
+
 ## 0.12.0
 
 This release moves scrud-django to Django 5.2, uv, scrudful 0.8 and

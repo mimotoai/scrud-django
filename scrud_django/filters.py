@@ -211,7 +211,9 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
     contexts_fors = access.non_default_contexts_for(contexts_for)
 
     def allowed(check, contexts, resource):
-        contexts = access.usable_contexts(contexts)
+        # As scoped-rbac 0.11.2 reads them: a context that is not a str (a
+        # lazy string, a number) names no context (only "*" reaches it).
+        contexts = [access.context_name(c) for c in access.usable_contexts(contexts)]
         if not contexts:
             return False
         if scope.unrestricted or any(c in scope.outright for c in contexts):

@@ -499,6 +499,104 @@ def test_a_body_naming_no_context_needs_the_default_context(body):
     assert Resource.objects.count() == before
 
 
+# A list rbac_context holding an array or an object names no context. Since
+# scoped-rbac 0.11.2 its request check refuses it with a 400 naming the
+# field, before any grant is evaluated (access.InvalidContext): a superuser
+# gets it too. Before, scrud stored such a resource in "" (rbac_contexts_of).
+NESTED_IN_A_LIST = [
+    pytest.param(["a", ["b"]], id="array-in-a-list"),
+    pytest.param(["a", {"@id": "x"}], id="object-in-a-list"),
+]
+INVALID_CONTEXT_PROBLEM = {
+    "type": "about:blank",
+    "title": "Bad Request",
+    "status": 400,
+    "detail": "Invalid input.",
+    "code": "invalid",
+    "errors": {
+        "rbac_context": [
+            {
+                "code": "invalid",
+                "message": "A context is a string, not an array or object.",
+            }
+        ]
+    },
+}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("rbac_context", NESTED_IN_A_LIST)
+@pytest.mark.parametrize("as_superuser", [False, True], ids=["writer", "superuser"])
+@test_context
+def test_a_list_context_holding_an_array_or_object_is_400(
+    rbac_context, as_superuser, admin_login
+):
+    reverse("json-ld-list")
+    before = Resource.objects.count()
+    Given.http.force_authenticate(admin_login if as_superuser else json_ld_writer(""))
+    When.http.post(
+        reverse("json-ld-list"),
+        {"@id": "x", "rbac_context": rbac_context},
+        format="json",
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    And.http.content_type_is("application/problem+json")
+    And.http.response_json_matches(INVALID_CONTEXT_PROBLEM)
+    assert Resource.objects.count() == before
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("rbac_context", NESTED_IN_A_LIST)
+@pytest.mark.parametrize("as_superuser", [False, True], ids=["writer", "superuser"])
+@test_context
+def test_a_put_of_a_list_context_holding_an_array_or_object_is_400(
+    rbac_context, as_superuser, admin_login
+):
+    reverse("json-ld-list")
+    stored = ResourceRegistration.register({"@id": "kept"}, "json-ld")
+    Given.http.force_authenticate(admin_login if as_superuser else json_ld_writer(""))
+    When.http.put(
+        reverse("json-ld-detail", args=[stored.pk]),
+        {"@id": "x", "rbac_context": rbac_context},
+        format="json",
+        HTTP_IF_MATCH=f'"{stored.etag}"',
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    And.http.content_type_is("application/problem+json")
+    And.http.response_json_matches(INVALID_CONTEXT_PROBLEM)
+    assert Resource.objects.get(pk=stored.pk).content == {"@id": "kept"}
+    assert rows_of(stored) == {""}
+
+
+def test_contexts_are_read_as_exact_strs():
+    # As scoped-rbac 0.11.2 reads a context (access.context_name):
+    # rbac_contexts_of gives a str subclass (a StrEnum member, from Python
+    # code) as the exact str of its characters, and tells a value by its
+    # type, so an object only passing as a str is not one (nor evaluated).
+    from enum import StrEnum
+
+    from django.utils.functional import SimpleLazyObject
+
+    from scrud_django.mixins.resource_mixin import rbac_contexts_of
+
+    class Team(StrEnum):
+        RED = "red"
+        BLUE = "blue"
+
+    for content in ({"rbac_context": Team.RED}, {"rbac_context": [Team.RED, "blue"]}):
+        contexts = rbac_contexts_of(content)
+        assert [type(c) for c in contexts] == [str] * len(contexts)
+    assert rbac_contexts_of({"rbac_context": Team.RED}) == ["red"]
+    assert rbac_contexts_of({"rbac_context": [Team.RED, Team.BLUE]}) == ["red", "blue"]
+
+    def evaluated():
+        raise AssertionError("a lazy context must not be evaluated")
+
+    lazy = SimpleLazyObject(evaluated)
+    assert rbac_contexts_of({"rbac_context": lazy}) == [""]
+    assert rbac_contexts_of({"rbac_context": ["a", lazy]}) == [""]
+
+
 def removal_stamps():
     from scrud_django.models import ResourceRemoval
 
