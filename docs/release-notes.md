@@ -2,38 +2,47 @@
 
 ## 0.12.2
 
-A grant's condition that reads `rbac_context` now reads the context it is
-evaluated in, in every check (scrud-django#2).
+A grant's CEL condition that reads `rbac_context` now reads the context it
+is evaluated in, in every check (scrud-django#2).
 
 ### Upgrading
 
-1. Roles: review grants whose condition reads `rbac_context`. Each check now
-   gives the condition the object with the context it is evaluated in as
-   its `rbac_context`, where 0.12.1 gave it the value as written or stored:
-   a list, or a value that is not a string (`null`, a number, an object),
-   which stores the resource in the default context `""`. A resource
-   without an `rbac_context` is read with `""`.
-   * A condition such as `rbac_context != "x"` now keeps its grant out of a
-     resource stored in `"x"` as a list (missing from the list, a 404 on
-     its detail route), out of writes into `""` (403), and out of a
-     workflow transition that moves a resource out of `"x"`.
-   * A condition such as `rbac_context == "a"` now holds for a resource
-     stored as `["a", "b"]` when it is checked in `"a"`. A grant in `"a"`
-     under that condition can therefore read, update and delete such a
-     resource, and move it out of `"b"` where no workflow policy applies
-     there (removing a resource from a context needs no grant there, as
-     before).
-   * A condition written for a list, such as `"a" in rbac_context` or
-     `size(rbac_context) > 1`, now reads a string and no longer holds as it
-     did. Rewrite it to compare `rbac_context` with one context.
-2. Your code: an `IsAuthorized` subclass's `has_context_permission` on a
-   scrud view gets the content as it is in the context asked, with that
-   context as its `rbac_context` when it is one of the resource's (in the
-   workflow check, whichever context is checked). `has_object_permission`
-   still gets the content as stored. In the workflow check, `obj` therefore
-   no longer tells where the body writes the resource: a class that
-   compared it with the context asked (to refuse a move out of a context,
-   say) must read `request.data["rbac_context"]` instead.
+1. Roles: review grants whose CEL condition reads `rbac_context`. Each
+   check now gives the condition the content with the context it is
+   evaluated in as its `rbac_context`, where 0.12.1 gave it the value as
+   written or stored: a list, or a value that is not a string (`null`, a
+   number, an object), which stores the resource in the default context
+   `""`. A resource without an `rbac_context` is read with `""` in `""`, so
+   a condition that tests for the field (`has(rbac_context)`) now holds
+   there.
+   * `rbac_context != "x"` now refuses a resource in `"x"` however it is
+     stored, a write into `""` with an `rbac_context` that is not a string
+     (under `!= ""`), and a workflow transition that moves a resource out
+     of `"x"`. It is still no exclusion: a resource stored as `["x", "y"]`
+     is readable, and may be updated (and moved out of `"x"` where no
+     workflow policy applies there) or deleted, by a grant that holds in
+     `"y"`, as access to a resource in several contexts needs any one of
+     them. Keep a grant out of a context by assigning it in the contexts
+     it covers (`RoleAssignment.rbac_context`).
+   * `rbac_context == "a"` now holds for a resource stored as `["a", "b"]`
+     where it is checked in `"a"`: such a grant in `"a"` can read, update
+     and delete it, and move it out of `"b"` where no workflow policy
+     applies there (removing a resource from a context needs no grant
+     there, as before; a grant there conditioned on `scrud_workflow` still
+     refuses it, `docs/follow-ups.md`, `workflow-grant-blocks-leaving`).
+   * A condition written for a list now reads one context: `"a" in
+     rbac_context` and `size(rbac_context) > 1` no longer hold as they did,
+     and string functions such as `rbac_context.contains("a")` now match
+     against that one context. Rewrite them to compare `rbac_context` with
+     one context.
+2. Your code is unchanged: an operator function, a `has_context_permission`
+   or `has_object_permission` of your own, and a `contexts_for` of your own
+   get the content as stored (or, in the workflow check, the body as sent),
+   its `rbac_context` the whole value, and their `super()` calls read it so.
+   Only scoped-rbac's own `has_context_permission`, and the CEL conditions
+   it evaluates, read each context. To have your override's `super()` call
+   read so too, pass it
+   `scrud_django.permissions.condition_resource(obj, context)`.
 3. Your code: a view of your own that composes scoped-rbac's
    `AccessControlledAPIView` with `ResourceViewMixin` or `GenericViewMixin`
    should put `scrud_django.mixins.view_mixins.ReadableMixin` first, as the
@@ -42,24 +51,28 @@ evaluated in, in every check (scrud-django#2).
 
 ### Authorization
 
-* Every check scrud-django runs gives a condition the object as it is in
-  each context (`scrud_django.permissions.in_context`), as scoped-rbac's
-  request check reads a list `rbac_context` since 0.11.2:
-  * the object checks of a detail route, through each `IsAuthorized`
-    permission's `has_context_permission` (`reading_content`);
+* Every check scrud-django runs gives a CEL condition the content as it is
+  in each context, and an operator the content itself
+  (`scrud_django.permissions.condition_resource`, a scoped-rbac
+  `RequestResource`), as scoped-rbac's request check reads a list
+  `rbac_context` since 0.11.2:
+  * the object checks of a detail route and the post-save check, through
+    the `has_context_permission` of each `IsAuthorized` that keeps
+    scoped-rbac's (`reading_content`);
   * whether a refused resource is a 404 or a 403: the scrud viewsets'
     `is_readable` is `object_readable` (`ReadableMixin`), whose grants check
     (`scrud_django.filters.readable_by_grants`) is scoped-rbac's
     `AccessControlledAPIView.is_readable` reading each context so;
-  * the post-save check;
   * the workflow check, in every context it checks, those an update moves
-    the resource out of included (`with_context`);
+    the resource out of included;
   * lists, on both their SQL and per-object paths;
   * whether a workflow error names a stored policy or resource.
 * Closed by this: a writer whose grant refuses `""` by a condition
   (`rbac_context != ""`) could write into `""` with an `rbac_context` that
-  is not a string, and a grant whose condition refuses `"x"` could read,
-  list, overwrite and move a resource stored in `"x"` as a list.
+  is not a string; a grant whose condition refuses `"x"` could read, list,
+  overwrite and move a resource stored only in `"x"` as a list; and a
+  writer under such a condition could move a resource out of `"x"` under
+  `"x"`'s workflow policy.
 * A context that a `contexts_for` of your own names and that is not one of
   the resource's leaves the object as it is (`docs/follow-ups.md`,
   `custom-contexts-conditions`).

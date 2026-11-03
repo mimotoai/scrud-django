@@ -23,11 +23,12 @@ from scrud_django.permissions import (
     _checking_write,
     _mark_workflow_authorized,
     _not_checking_write,
+    _reading_every_context,
     checks_read_content,
+    condition_resource,
     content_of,
     may_read_in_context,
     reading_content,
-    with_context,
 )
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
@@ -225,9 +226,10 @@ class WorkflowValidator:
     the settings default, and only a superuser may make its transition, as
     scoped-rbac's object checks allow. In a context where no policy applies, a
     grant conditioned on ``scrud_workflow`` allows nothing
-    (`authorize_without_policy`: 403). Operators, CEL conditions and the
-    view's permission classes read the body as sent, a ``dict``, with the
-    context checked as its ``rbac_context`` (`with_context`).
+    (`authorize_without_policy`: 403). Operators and the view's permission
+    classes read the body as sent, a ``dict``; a CEL condition reads it with
+    the context checked as its ``rbac_context``
+    (``scrud_django.permissions.condition_resource``).
 
     An error under a stored policy the requester may not read, or about a
     stored resource they may not read, names neither the policy nor its
@@ -438,10 +440,10 @@ class WorkflowValidator:
         (``None``: no context, superusers only, as scoped-rbac's object checks)
         for `transition`: the ``scrud_workflow`` operator, and any permission
         class, reads it as `current_transition` (set only while this check
-        asks), and every operator and CEL condition reads the body `data`
-        as sent, a ``dict`` (``{}`` for a body that is not a JSON object), with
-        `rbac_context` as its ``rbac_context`` (`with_context`), as
-        scoped-rbac's request check reads each value of a list. Without `transition_check`, on the body
+        asks), and every operator reads the body `data` as sent, a ``dict``
+        (``{}`` for a body that is not a JSON object); a CEL condition reads
+        it with `rbac_context` as its ``rbac_context`` (`condition_resource`),
+        as scoped-rbac's request check reads each value of a list. Without `transition_check`, on the body
         alone, as the write's request and post-save checks ask it
         (``scrud_workflow`` allows there).
 
@@ -452,8 +454,7 @@ class WorkflowValidator:
         ``IsAuthorized`` subclass can therefore refuse a transition, never
         grant one the policy refuses: its ``obj`` here is the request body as
         the writer sent it (a check written for stored fields, such as an
-        owner, would read the writer's claim), with `rbac_context` as its
-        ``rbac_context`` (`with_context`), as every condition reads it here. Without a view (a serializer
+        owner, would read the writer's claim). Without a view (a serializer
         used outside the views), the policy alone decides."""
         request = self.request_of(context)
         permission = Permission(
@@ -472,22 +473,26 @@ class WorkflowValidator:
         narrowed by each ``IsAuthorized`` of the view."""
         if rbac_context is None:
             return access.may_act_on(request, permission, body, [])
-        # Every condition reads the body as it is in `rbac_context`, with that
-        # context as its rbac_context (with_context), whether the write keeps
-        # the resource there, moves it in, or moves it out.
-        body = with_context(body, rbac_context)
+        # A CEL condition reads the body as it is in `rbac_context`, with that
+        # context as its rbac_context (condition_resource with every=True),
+        # whether the write keeps the resource there, moves it in, or moves it
+        # out; an operator gets the body as sent.
         if not policy_for(request).should_allow(
-            permission, rbac_context, resource=body
+            permission,
+            rbac_context,
+            resource=condition_resource(body, rbac_context, every=True),
         ):
             return False
         # The view's IsAuthorized permissions may refuse what the policy
         # allows, never allow what it refuses: here `body` is the request
-        # body, which the writer chose.
+        # body, which the writer chose. Those keeping scoped-rbac's
+        # has_context_permission read it as the policy did just above.
         view = getattr(context, "context", {}).get("view")
-        return all(
-            leaf.has_context_permission(request, view, body, rbac_context)
-            for leaf in reading_content(rbac_permissions_of(view))
-        )
+        with _reading_every_context():
+            return all(
+                leaf.has_context_permission(request, view, body, rbac_context)
+                for leaf in reading_content(rbac_permissions_of(view))
+            )
 
 
 def plain_body(data):

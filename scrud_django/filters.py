@@ -45,8 +45,8 @@ from scoped_rbac.rbac_contexts import SOME_CONTEXT
 from scrud_django.models import Resource, ResourceContext, ResourceRemoval
 from scrud_django.permissions import (
     checks_read_content,
+    condition_resource,
     content_of,
-    in_context,
     may_read_in_context,
     reading_content,
 )
@@ -181,11 +181,9 @@ def _conditionally_allowed(candidates, request, policy, permission, scope, conte
         if not evaluated:
             continue
         content = content_of(obj)
-        # Each context's condition reads the content as it is in that context.
+        # Each context's conditions read the content as it is in that context.
         if any(
-            policy.should_allow(
-                permission, c, access.cel_resource(request, in_context(content, c))
-            )
+            policy.should_allow(permission, c, condition_resource(content, c))
             for c in evaluated
         ):
             allowed.append(obj.pk)
@@ -237,11 +235,10 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
             return False
 
         def resource(context):
-            # The content as it is in `context` (in_context), built once each.
+            # The content as it is in `context` (condition_resource), built
+            # once for each context.
             if context not in resources:
-                resources[context] = access.cel_resource(
-                    request, in_context(check, context)
-                )
+                resources[context] = condition_resource(check, context)
             return resources[context]
 
         return any(policy.should_allow(permission, c, resource(c)) for c in conditional)
@@ -384,7 +381,8 @@ def readable_by_grants(view, request, obj):
     ``AccessControlledAPIView.is_readable`` (``http.GET`` in the contexts
     each ``IsAuthorized`` of the view's requirement reads, ``access.AnyOf``
     alternatives included), except that each context is read with the object
-    as it is in that context (`in_context`), as the object check reads it.
+    as it is in that context (`condition_resource`), as the object check
+    reads it.
     Call it as a GET of the detail route has it (`as_detail_read`), with the
     view's permissions reading the content (`checks_read_content`)."""
     resource_type = view.resource_type_iri_for(request)

@@ -71,7 +71,47 @@ Fix: run `authorize_without_policy` only for the contexts the body writes
 `scrud_workflow` grant in `"b"`, PUTs it with `"rbac_context": "a"`: expect
 200, get 403 today.
 
+<a id="conditional-only-detail-reads"></a>
+## conditional-only-detail-reads: a reader whose only grant is conditional lists resources but gets 403 on their detail route
+
+A user whose `http.GET` on a type is granted only under a condition (say
+`rbac_context != "x"`, in `"*"`) sees the resources the condition allows in
+the list, but every detail GET, HEAD, PUT and DELETE of the type is a 403:
+scoped-rbac's request check has no resource to evaluate the condition on,
+the decision is undetermined, and it lets an undetermined request through
+only where the view defers to its object checks
+(`AccessControlledAPIView.defers_to_object_checks`), which scoped-rbac's
+viewsets do for `list` alone. It fails closed, and it predates 0.12.2. It
+contradicts the README's "a list shows what the detail route shows". Found
+in the review of scrud-django#2.
+
+Fix: have the scrud viewsets defer `retrieve` (and the writes' object
+checks) to their object checks too, once it is shown that nothing produces a
+response before those checks run (validators, a 304 or 412, headers from the
+object), as `defers_to_object_checks` requires. Test: a reader granted `http.GET` on JSON-LD in `"*"` under
+`rbac_context != "x"` (and the list type outright) GETs a resource stored
+in `"y"`: expect 200 (and 404 for one in `"x"`); get 403 today.
+
 # Decided
+
+<a id="own-code-reads-stored-content"></a>
+## own-code-reads-stored-content: operators and permission classes of your own get the content as stored
+
+Decision: only CEL conditions read a resource as it is in the context they
+are evaluated in (`scrud_django.permissions.condition_resource`); an
+operator function, and a `has_context_permission` of your own (with its
+`super()` call), get the content as stored, or in the workflow check the
+body as sent, its `rbac_context` the whole value.
+
+Such code may refuse by every context a resource is in (`"archived" in
+rbac_contexts_of(obj)`): giving it the content with one context as its
+`rbac_context` would turn that refusal into an allow
+(`tests/test_condition_contexts.py::test_an_adopters_has_context_permission_reads_the_stored_content`
+and `::test_an_operator_gets_the_stored_content`). So a negated condition
+written in a `has_context_permission` of your own, or an operator, on
+`rbac_context` reads the whole value, as before 0.12.2; an override reads
+each context through its `super()` call by passing
+`condition_resource(obj, context)`.
 
 <a id="custom-contexts-conditions"></a>
 ## custom-contexts-conditions: a context of your own leaves the object as it is

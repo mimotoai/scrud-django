@@ -265,7 +265,12 @@ def test_in_context_sets_the_context_a_condition_is_evaluated_in():
 
 
 def test_reading_content_reads_each_context_without_changing_the_class():
+    # Only a leaf keeping scoped-rbac's has_context_permission is given one
+    # reading each context (its conditions read the content as it is there,
+    # an operator the content as stored); a has_context_permission of your
+    # own gets the content as stored.
     from scoped_rbac.permissions import IsAuthorized
+    from scoped_rbac.policy import RequestResource
 
     from scrud_django.filters import overrides_object_checks
     from scrud_django.permissions import reading_content
@@ -276,16 +281,30 @@ def test_reading_content_reads_each_context_without_changing_the_class():
             return False
 
     seen = []
-    (permission,) = reading_content([Recording()])
-    wrapped = vars(permission)["has_context_permission"]
-    reading_content([permission])  # idempotent: not wrapped twice
-    assert vars(permission)["has_context_permission"] is wrapped
-    assert type(permission) is Recording
-    assert overrides_object_checks(permission)
-    assert not overrides_object_checks(reading_content([IsAuthorized()])[0])
+    (own,) = reading_content([Recording()])
+    assert "has_context_permission" not in vars(own)
+    stored = {"rbac_context": ["a", "b"]}
+    own.has_context_permission(None, None, stored, "b")
+    assert seen == [(stored, "b")] and seen[0][0] is stored
 
-    permission.has_context_permission(None, None, {"rbac_context": ["a", "b"]}, "b")
-    assert seen == [({"rbac_context": "b"}, "b")]
+    (default,) = reading_content([IsAuthorized()])
+    wrapped = vars(default)["has_context_permission"]
+    reading_content([default])  # idempotent: not wrapped twice
+    assert vars(default)["has_context_permission"] is wrapped
+    assert type(default) is IsAuthorized
+    assert not overrides_object_checks(default)
+    assert overrides_object_checks(own)
+
+    # What it then gives scoped-rbac's has_context_permission (whose
+    # conditions read `fields`, its operators `instance`):
+    from scrud_django.permissions import condition_resource
+
+    resource = condition_resource(stored, "b")
+    assert isinstance(resource, RequestResource)
+    assert resource.instance is stored
+    assert resource.fields == {"rbac_context": "b"}
+    plain = {"rbac_context": "b"}
+    assert condition_resource(plain, "b") is plain
 
 
 @pytest.mark.django_db
@@ -477,12 +496,13 @@ def test_reading_content_keeps_an_instance_level_has_context_permission():
 
     seen = []
     permission = IsAuthorized()
-    permission.has_context_permission = lambda request, view, obj, context: (
-        seen.append((obj, context)) or True
-    )
+    own = lambda request, view, obj, context: seen.append((obj, context)) or True  # noqa: E731
+    permission.has_context_permission = own
     (permission,) = reading_content([permission])
-    assert permission.has_context_permission(None, None, {"rbac_context": ["a"]}, "a")
-    assert seen == [({"rbac_context": "a"}, "a")]
+    assert permission.has_context_permission is own
+    stored = {"rbac_context": ["a"]}
+    assert permission.has_context_permission(None, None, stored, "a")
+    assert seen == [(stored, "a")]
 
 
 def test_the_scrud_viewsets_decide_403_or_404_with_object_readable():
@@ -508,3 +528,173 @@ def test_a_workflow_error_outside_a_view_reads_each_context():
     readable = WorkflowValidator.stored_resource_readable
     assert not readable(request, store({"foo": 1, "rbac_context": ["victim"]}))
     assert readable(request, store({"foo": 2, "rbac_context": ["victim", "public"]}))
+
+
+# An adopter's code reads the content as stored: a has_context_permission of
+# its own (tests/urls.py: ArchivedRefusingIsAuthorized) and an operator
+# function get the stored content, whose rbac_context is the whole list. Only
+# a CEL condition reads the context it is evaluated in.
+TEAM_WRITER = (
+    {
+        **{m: [JSON_LD] for m in ALL_METHODS},
+        "http.GET": [JSON_LD, collection_type_uri_for(JSON_LD)],
+    },
+    "team",
+)
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_adopters_has_context_permission_reads_the_stored_content():
+    reverse("json-ld-list")
+    archived = store({"foo": "old", "rbac_context": ["team", "archived"]})
+    current = store({"foo": "new", "rbac_context": ["team"]})
+    Given.http.force_authenticate(user_with(TEAM_WRITER))
+    When.http.get(reverse("archived-refusing-json-ld-list"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    listed = {item["content"].get("foo") for item in Http.response.json()["content"]}
+    assert "new" in listed and "old" not in listed, listed
+    detail = reverse("archived-refusing-json-ld-detail", args=[archived.pk])
+    When.http.get(detail)
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+    When.http.put(
+        detail,
+        {"foo": "moved", "rbac_context": "team"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(archived.etag),
+    )
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+    When.http.delete(detail, HTTP_IF_MATCH=quote_etag(archived.etag))
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+    assert Resource.objects.get(pk=archived.pk).content["foo"] == "old"
+    When.http.get(reverse("archived-refusing-json-ld-detail", args=[current.pk]))
+    Then.http.status_code_is(status.HTTP_200_OK)
+
+
+def not_archived(resource, configuration):
+    """An adopter's operator: allows a resource not also stored in
+    "archived", reading its contexts from the content it gets."""
+    from scrud_django.mixins.resource_mixin import rbac_contexts_of
+
+    return "archived" not in rbac_contexts_of(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_operator_gets_the_stored_content():
+    from django.conf import settings
+    from django.test import override_settings
+
+    reverse("json-ld-list")
+    archived = store({"foo": "old", "rbac_context": ["team", "archived"]})
+    current = store({"foo": "new", "rbac_context": ["team"]})
+    by_operator = {"condition": {"operator": "not_archived"}}
+    reader = user_with(
+        (
+            {
+                "http.GET": {
+                    JSON_LD: by_operator,
+                    collection_type_uri_for(JSON_LD): True,
+                },
+                "http.DELETE": {JSON_LD: by_operator},
+            },
+            "*",
+        ),
+        ({m: [JSON_LD] for m in ("http.GET", "http.DELETE")}, "elsewhere"),
+    )
+    operators = dict(settings.SCOPED_RBAC, OPERATORS={"not_archived": not_archived})
+    with override_settings(SCOPED_RBAC=operators):
+        Given.http.force_authenticate(reader)
+        When.http.get(reverse("json-ld-list"))
+        Then.http.status_code_is(status.HTTP_200_OK)
+        listed = {
+            item["content"].get("foo") for item in Http.response.json()["content"]
+        }
+        assert "new" in listed and "old" not in listed, listed
+        When.http.get(reverse("json-ld-detail", args=[archived.pk]))
+        Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+        When.http.delete(
+            reverse("json-ld-detail", args=[archived.pk]),
+            HTTP_IF_MATCH=quote_etag(archived.etag),
+        )
+        Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+        assert Resource.objects.filter(pk=archived.pk).exists()
+        When.http.get(reverse("json-ld-detail", args=[current.pk]))
+        Then.http.status_code_is(status.HTTP_200_OK)
+
+
+@pytest.mark.django_db
+def test_the_per_object_list_reads_each_context_with_its_own_content():
+    # One resource in "a" and "b", readable only by the grant in "b": the
+    # per-object path (a contexts_for of your own) evaluates "b" with the
+    # content as it is in "b", not as it is in the context evaluated first.
+    from rest_framework.test import APIRequestFactory
+    from scoped_rbac.policy import Permission
+
+    from scrud_django.filters import filter_readable_resources_per_object
+    from scrud_django.mixins.resource_mixin import rbac_contexts_of
+
+    resource = store({"foo": 1, "rbac_context": ["a", "b"]})
+    request = APIRequestFactory().get("/")
+    request.user = user_with(
+        (on_json_ld('rbac_context == "nowhere"', ("http.GET",)), "a"),
+        (on_json_ld('rbac_context == "b"', ("http.GET",)), "b"),
+    )
+    listed = filter_readable_resources_per_object(
+        Resource.objects.filter(pk=resource.pk),
+        request,
+        Permission("http.GET", JSON_LD),
+        lambda content: rbac_contexts_of(content),
+    )
+    assert list(listed.values_list("pk", flat=True)) == [resource.pk]
+
+
+class RequirementView:
+    """What `readable_by_grants` reads of a view: its type, its RBAC
+    requirement (DRF's ``|`` gives an ``access.AnyOf``) and its
+    ``IsAuthorized`` leaves (for a view whose requirement is empty, e.g.
+    ``~IsAuthorized``)."""
+
+    def __init__(self, requirement, leaves=()):
+        self.requirement = list(requirement)
+        self.leaves = list(leaves)
+
+    def resource_type_iri_for(self, request):
+        return JSON_LD
+
+    def rbac_requirement(self):
+        return self.requirement
+
+    def _rbac_permissions(self):
+        return self.leaves
+
+
+@pytest.mark.django_db
+def test_readable_by_grants_reads_each_context_through_any_requirement():
+    from rest_framework.test import APIRequestFactory
+    from scoped_rbac import access
+    from scoped_rbac.permissions import IsAuthorized
+
+    from scrud_django.filters import readable_by_grants
+    from scrud_django.permissions import reading_content
+
+    request = APIRequestFactory().get("/")
+    request.user = in_its_own_context()  # reads ["a", "b"] in each
+    content = dict(store({"foo": 1, "rbac_context": ["a", "b"]}).content)
+    (reads, elsewhere) = reading_content([IsAuthorized(), IsAuthorized()])
+    elsewhere.contexts_for = lambda obj: ["nowhere"]
+
+    def readable(requirement, leaves=()):
+        return readable_by_grants(
+            RequirementView(requirement, leaves), request, content
+        )
+
+    assert readable([reads])
+    assert not readable([elsewhere])
+    assert not readable([reads, elsewhere])  # both required (&)
+    assert readable([access.AnyOf([[elsewhere], [reads]])])  # either (|)
+    assert not readable([access.AnyOf([[elsewhere, reads]])])  # one option, both
+    # No requirement (only ~IsAuthorized): any leaf reading it, or no leaf.
+    assert readable([], [elsewhere, reads])
+    assert not readable([], [elsewhere])
+    assert readable([], [])
