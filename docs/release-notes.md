@@ -1,9 +1,12 @@
 # Change Log
 
-## 0.12.2
+## 0.13.0
 
 A grant's CEL condition that reads `rbac_context` now reads the context it
-is evaluated in, in every check (scrud-django#2).
+is evaluated in, in every check (scrud-django#2). This changes what existing
+conditions on `rbac_context` allow, and a `has_context_permission` of your
+own now only narrows what the grants allow on the detail route and after a
+write: work through Upgrading before you deploy it.
 
 ### Upgrading
 
@@ -141,7 +144,7 @@ a resource into a context a conditional grant refuses.
 
 * Outside scoped-rbac's request check, a grant condition that reads
   `rbac_context` reads the value as written or stored, not the context it
-  is evaluated in (scrud-django#2; also in 0.12.0; fixed in 0.12.2). With
+  is evaluated in (scrud-django#2; also in 0.12.0; fixed in 0.13.0). With
   a negated condition (`rbac_context != "x"`):
   * a writer still reaches `""` with an `rbac_context` that is not a string
     (`null`, a number, an object; a list holding a number, bool or null
@@ -150,7 +153,7 @@ a resource into a context a conditional grant refuses.
     overwritten and moved by that grant.
 
   In 0.12.1, keep such grants out of those contexts by context
-  (`RoleAssignment.rbac_context`), not by a condition, or upgrade to 0.12.2.
+  (`RoleAssignment.rbac_context`), not by a condition, or upgrade to 0.13.0.
 
 ## 0.12.0
 

@@ -62,7 +62,7 @@ workflow policy applies there (README). But `WorkflowValidator` runs
 leaves included. In a context without a policy, a writer whose grants there
 are conditioned on `scrud_workflow` gets 403, while a writer with no grant
 there at all may move the resource out. It fails closed, and it predates
-0.12.2. Found in the review of scrud-django#2.
+0.13.0. Found in the review of scrud-django#2; scrud-django#4.
 
 Fix: run `authorize_without_policy` only for the contexts the body writes
 (`rbac_contexts_of(data)`), not those the update leaves. Test: in
@@ -82,9 +82,9 @@ scoped-rbac's request check has no resource to evaluate the condition on,
 the decision is undetermined, and it lets an undetermined request through
 only where the view defers to its object checks
 (`AccessControlledAPIView.defers_to_object_checks`), which scoped-rbac's
-viewsets do for `list` alone. It fails closed, and it predates 0.12.2. It
+viewsets do for `list` alone. It fails closed, and it predates 0.13.0. It
 contradicts the README's "a list shows what the detail route shows". Found
-in the review of scrud-django#2.
+in the review of scrud-django#2; scrud-django#3.
 
 Fix: have the scrud viewsets defer `retrieve` (and the writes' object
 checks) to their object checks too, once it is shown that nothing produces a
@@ -110,7 +110,7 @@ rbac_contexts_of(obj)`): giving it the content with one context as its
 (`tests/test_condition_contexts.py::test_an_adopters_has_context_permission_reads_the_stored_content`
 and `::test_an_operator_gets_the_stored_content`). So a negated condition
 written in a `has_context_permission` of your own, or an operator, on
-`rbac_context` reads the whole value, as before 0.12.2; an override reads
+`rbac_context` reads the whole value, as before 0.13.0; an override reads
 each context through its `super()` call by passing
 `condition_resource(obj, context)`. Beside a `has_context_permission` of
 your own, the scrud views ask the grants themselves, each context read as
@@ -133,7 +133,7 @@ condition is evaluated in only when the resource is stored there: what
 `rbac_context` should read in a context the resource is not stored in is
 the view's to decide, not scrud-django's. For such a view, a condition on
 `rbac_context` (`rbac_context != "x"`) reads a resource stored as
-`["x"]` as the list, as it did before 0.12.2, and the list and the detail
+`["x"]` as the list, as it did before 0.13.0, and the list and the detail
 route agree on it
 (`tests/test_condition_contexts.py::test_a_view_reading_its_own_contexts_lists_what_its_detail_route_shows`
 covers a team that is one of the resource's contexts). Write such
