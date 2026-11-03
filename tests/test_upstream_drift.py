@@ -24,6 +24,7 @@ from django.http import Http404
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.functional import lazystr
 from rest_framework.generics import GenericAPIView
 from rest_framework.test import APIRequestFactory, force_authenticate
 from scoped_rbac import access
@@ -98,6 +99,7 @@ def test_scoped_rbacs_per_object_filter_is_what_scrud_re_implements():
         "conditional",
         "conditional_anywhere",
         "conditional_list_max_rows",
+        "context_name",
         "enumerate",
         "filter",
         "isinstance",
@@ -181,8 +183,16 @@ def team_of(obj):
     return [content.get("team", "")]
 
 
+def lazy_team_of(obj):
+    """`team_of` as lazy strings: since scoped-rbac 0.11.2 a context that is
+    not a ``str`` names no context (``access.context_name``), so only a grant
+    in every context reaches it, never one in the context its text spells."""
+    return [lazystr(team) for team in team_of(obj)]
+
+
 @pytest.mark.django_db
-def test_the_per_object_list_filter_agrees_with_scoped_rbacs():
+@pytest.mark.parametrize("contexts_for", [team_of, lazy_team_of])
+def test_the_per_object_list_filter_agrees_with_scoped_rbacs(contexts_for):
     # Upstream also lists a resource stored in a reserved context, whose
     # detail route is a 404; scrud's does not. Those are left out here.
     reverse("partner-profiles-list")
@@ -216,7 +226,7 @@ def test_the_per_object_list_filter_agrees_with_scoped_rbacs():
             request = request_of(user)
             ours = set(
                 filter_readable_resources_per_object(
-                    queryset, request, permission, team_of
+                    queryset, request, permission, contexts_for
                 ).values_list("pk", flat=True)
             )
             theirs = set(
@@ -225,7 +235,7 @@ def test_the_per_object_list_filter_agrees_with_scoped_rbacs():
                     policy_for(request),
                     permission,
                     request=request,
-                    contexts_for=team_of,
+                    contexts_for=contexts_for,
                 ).values_list("pk", flat=True)
             )
         assert ours == theirs, label

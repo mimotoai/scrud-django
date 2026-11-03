@@ -449,3 +449,72 @@ def test_the_post_save_check_asks_an_overridden_has_object_permission():
     Then.http.status_code_is(status.HTTP_200_OK)
     When.http.post(reverse("locking-json-ld-list"), {"locked": False}, format="json")
     Then.http.status_code_is(status.HTTP_201_CREATED)
+
+
+# A writer granted everywhere but one context, by a condition: a grant in
+# every context ("*") whose condition refuses "victim". scoped-rbac 0.11.2
+# (#56) checks each value of a list rbac_context as the object written there,
+# the body with that value as its rbac_context, so the condition reads
+# "victim" and refuses it. On 0.11.1 it read the whole list, which is not
+# equal to "victim", and the resource was stored in "victim" (201 / 200).
+NOT_IN_VICTIM = 'rbac_context != "victim"'
+
+
+def writer_everywhere_but_victim():
+    return user_with(
+        {m: {JSON_LD_TYPE: {"condition": NOT_IN_VICTIM}} for m in ALL_METHODS}, "*"
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_list_context_cannot_slip_past_a_negated_condition_on_create():
+    reverse("json-ld-list")
+    Given.http.force_authenticate(writer_everywhere_but_victim())
+    before = Resource.objects.count()
+    When.http.post(
+        reverse("json-ld-list"),
+        {"foo": "pwn", "rbac_context": ["victim", "public"]},
+        format="json",
+    )
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.count() == before
+    assert not Resource.objects.filter(content__foo="pwn").exists()
+
+    When.http.post(
+        reverse("json-ld-list"),
+        {"foo": "fine", "rbac_context": ["public", "other"]},
+        format="json",
+    )
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    assert Resource.objects.count() == before + 1
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_list_context_cannot_slip_past_a_negated_condition_on_update():
+    reverse("json-ld-list")
+    own = ResourceRegistration.register(
+        {"foo": "mine", "rbac_context": "public"}, "json-ld"
+    )
+    Given.http.force_authenticate(writer_everywhere_but_victim())
+    When.http.put(
+        reverse("json-ld-detail", args=[own.pk]),
+        {"foo": "moved", "rbac_context": ["victim", "public"]},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(own.etag),
+    )
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    own.refresh_from_db()
+    assert own.content == {"foo": "mine", "rbac_context": "public"}
+    assert own.rbac_contexts == ["public"]
+
+    When.http.put(
+        reverse("json-ld-detail", args=[own.pk]),
+        {"foo": "spread", "rbac_context": ["public", "other"]},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(own.etag),
+    )
+    Then.http.status_code_is(status.HTTP_200_OK)
+    own.refresh_from_db()
+    assert own.rbac_contexts == ["public", "other"]

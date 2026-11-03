@@ -174,6 +174,23 @@ leaves it out, needs no grant in that context unless a workflow policy applies
 there, as a DELETE allowed in one context deletes the resource from all of
 them.
 
+An `rbac_context` that is a list of strings stores the resource in each of
+them. Any other value that is not a string (`null`, a number, an object,
+or a list holding a number, bool or null) stores it in the default context
+`""`. A list holding an array or an object is a 400 (`invalid`, naming
+`rbac_context`).
+
+Grant conditions that read `rbac_context` see the value as written or
+stored, with one exception. scoped-rbac's request check of a POST or PUT
+reads each value of a list of strings as the object written there, the
+body with that value as its `rbac_context`. The workflow and post-save
+checks, the object checks of a detail route, and lists all see the whole
+value. A negated condition such as `rbac_context != "x"` therefore does
+not keep a grant out of `"x"` for a resource stored there as a list, nor
+out of `""` for one whose `rbac_context` is not a string. Grant by context
+(`RoleAssignment.rbac_context`) instead where that matters; see
+`docs/follow-ups.md`, `conditions-on-rbac-context`.
+
 Configure Django REST Framework to authorize with scoped-rbac and to answer
 errors as [RFC 7807](https://tools.ietf.org/html/rfc7807) problem details while
 keeping scrud-django's own validation and workflow error bodies (the scrud
