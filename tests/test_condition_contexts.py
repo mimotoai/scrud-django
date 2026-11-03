@@ -286,3 +286,200 @@ def test_reading_content_reads_each_context_without_changing_the_class():
 
     permission.has_context_permission(None, None, {"rbac_context": ["a", "b"]}, "b")
     assert seen == [({"rbac_context": "b"}, "b")]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "stored, grant_context",
+    [
+        pytest.param(["a", "b"], "a", id="list"),
+        pytest.param(None, "", id="not-a-string"),
+        pytest.param("a", "a", id="string"),
+    ],
+)
+@test_context
+def test_a_readable_resource_refused_a_write_is_403(stored, grant_context):
+    # Reading is allowed in grant_context by a condition on the context it
+    # is read in; writing is allowed only elsewhere. The refusal of a PUT or
+    # DELETE is a 403 (readable), not a 404, as for a string rbac_context:
+    # scoped-rbac's check_object_permissions asks the view's is_readable.
+    resource = store({"foo": "readable", "rbac_context": stored})
+    reader = user_with(
+        (
+            {
+                "http.GET": {
+                    JSON_LD: {"condition": f'rbac_context == "{grant_context}"'}
+                }
+            },
+            grant_context,
+        ),
+        ({m: [JSON_LD] for m in ALL_METHODS}, "elsewhere"),
+    )
+    Given.http.force_authenticate(reader)
+    detail = reverse("json-ld-detail", args=[resource.pk])
+    When.http.get(detail)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    When.http.put(
+        detail,
+        {"foo": "changed", "rbac_context": stored},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(resource.etag),
+    )
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    When.http.delete(detail, HTTP_IF_MATCH=quote_etag(resource.etag))
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.get(pk=resource.pk).content["foo"] == "readable"
+
+
+def store_json_ld_policy(context):
+    """A stored WorkflowPolicy for JSON-LD contexts in `context` (a list is
+    stored server-side only: the API refuses one)."""
+    workflow_policy_resource_type()
+    return ResourceRegistration.register(
+        {
+            "resource_type": JSON_LD,
+            "initial_states": {"any": "true"},
+            "states": {},
+            "transitions": {},
+            "rbac_context": context,
+        },
+        "workflow-policies",
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_leaving_a_context_is_checked_with_that_context():
+    # The workflow check in a context the update leaves reads the body as it
+    # was there: with that context as its rbac_context.
+    store_json_ld_policy("victim")
+    shared = store({"foo": "shared", "rbac_context": ["victim", "public"]})
+    Given.http.force_authenticate(user_with(everywhere_but("victim")))
+    When.http.put(
+        reverse("json-ld-detail", args=[shared.pk]),
+        {"foo": "out", "rbac_context": "public"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(shared.etag),
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    shared.refresh_from_db()
+    assert shared.content == {"foo": "shared", "rbac_context": ["victim", "public"]}
+
+    store_json_ld_policy("b")
+    both = store({"foo": "both", "rbac_context": ["a", "b"]})
+    Given.http.force_authenticate(in_its_own_context())
+    When.http.put(
+        reverse("json-ld-detail", args=[both.pk]),
+        {"foo": "only a", "rbac_context": "a"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(both.etag),
+    )
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert Resource.objects.get(pk=both.pk).rbac_contexts == ["a"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_workflow_error_under_a_policy_stored_as_a_list_is_hidden():
+    # The policy is readable in a context only by a condition that refuses
+    # it there: the error names neither the policy nor its states.
+    from scrud_django.registration import WORKFLOW_POLICY_TYPE_URI
+
+    policy = store_json_ld_policy(["victim"])
+    shared = store({"foo": "shared", "rbac_context": ["victim", "public"]})
+    writer = user_with(
+        everywhere_but("victim"),
+        (
+            {
+                "http.GET": {
+                    WORKFLOW_POLICY_TYPE_URI: {"condition": 'rbac_context != "victim"'}
+                }
+            },
+            "*",
+        ),
+    )
+    Given.http.force_authenticate(writer)
+    When.http.put(
+        reverse("json-ld-detail", args=[shared.pk]),
+        {"foo": "out", "rbac_context": "public"},
+        format="json",
+        HTTP_IF_MATCH=quote_etag(shared.etag),
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    body = Http.response.content.decode()
+    assert str(policy.pk) not in body and "__SAME_STATE__" not in body, body
+    assert Http.response.json().get("policy") is None
+
+
+def test_in_context_reads_a_context_as_scoped_rbac_names_it():
+    from enum import StrEnum
+
+    from scrud_django.permissions import in_context
+
+    class Ctx(StrEnum):
+        A = "a"
+
+    read = in_context({"rbac_context": ["a", "b"]}, Ctx.A)
+    assert read == {"rbac_context": "a"}
+    assert type(read["rbac_context"]) is str
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_view_reading_its_own_contexts_lists_what_its_detail_route_shows():
+    # tests/urls.py: TeamIsAuthorized reads a partner profile's contexts from
+    # its "team" (the per-object list path). A team that is one of the
+    # profile's rbac_context contexts is read as such.
+    from .rbac_defaults import (
+        TYPE_URI_LIST_PARTNER_PROFILES,
+        TYPE_URI_PARTNER_PROFILES,
+    )
+
+    reverse("teams-partner-profiles-list")
+    register = ResourceRegistration.register
+    hidden = register(
+        {"name": "hidden", "team": "victim", "rbac_context": ["victim", "p"]},
+        "partner-profiles",
+    )
+    shown = register(
+        {"name": "shown", "team": "p", "rbac_context": ["victim", "p"]},
+        "partner-profiles",
+    )
+    reader = user_with(
+        (
+            {
+                "http.GET": {
+                    TYPE_URI_PARTNER_PROFILES: {
+                        "condition": 'rbac_context != "victim"'
+                    },
+                    TYPE_URI_LIST_PARTNER_PROFILES: True,
+                }
+            },
+            "*",
+        ),
+        ({"http.GET": [TYPE_URI_PARTNER_PROFILES]}, "elsewhere"),
+    )
+    Given.http.force_authenticate(reader)
+    When.http.get(reverse("teams-partner-profiles-list"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    names = {item["content"]["name"] for item in Http.response.json()["content"]}
+    assert "shown" in names and "hidden" not in names, names
+    When.http.get(reverse("teams-partner-profiles-detail", args=[hidden.pk]))
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+    When.http.get(reverse("teams-partner-profiles-detail", args=[shown.pk]))
+    Then.http.status_code_is(status.HTTP_200_OK)
+
+
+def test_reading_content_keeps_an_instance_level_has_context_permission():
+    from scoped_rbac.permissions import IsAuthorized
+
+    from scrud_django.permissions import reading_content
+
+    seen = []
+    permission = IsAuthorized()
+    permission.has_context_permission = lambda request, view, obj, context: (
+        seen.append((obj, context)) or True
+    )
+    (permission,) = reading_content([permission])
+    assert permission.has_context_permission(None, None, {"rbac_context": ["a"]}, "a")
+    assert seen == [({"rbac_context": "a"}, "a")]

@@ -47,6 +47,7 @@ from scrud_django.permissions import (
     checks_read_content,
     content_of,
     in_context,
+    may_read_in_context,
     reading_content,
 )
 
@@ -389,13 +390,7 @@ def readable_by_grants(view, request, obj):
     resource_type = view.resource_type_iri_for(request)
 
     def reads(leaf):
-        contexts = access.usable_contexts(leaf.contexts_for(obj))
-        if not contexts:
-            return access.may_read(request, resource_type, obj, [])
-        return any(
-            access.may_read(request, resource_type, in_context(obj, c), [c])
-            for c in contexts
-        )
+        return may_read_in_context(request, resource_type, obj, leaf.contexts_for(obj))
 
     def meets(entry):
         if isinstance(entry, access.AnyOf):

@@ -25,8 +25,9 @@ from scrud_django.permissions import (
     _not_checking_write,
     checks_read_content,
     content_of,
-    in_context,
+    may_read_in_context,
     reading_content,
+    with_context,
 )
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
@@ -333,7 +334,7 @@ class WorkflowValidator:
             yield
         except WorkflowTransitionError as e:
             stored = workflow_policy.resource
-            if stored is not None and not access.may_read(
+            if stored is not None and not may_read_in_context(
                 request,
                 WORKFLOW_POLICY_TYPE_URI,
                 content_of(stored),
@@ -367,7 +368,7 @@ class WorkflowValidator:
                 if callable(readable):
                     with checks_read_content(view):
                         return readable(request, content)
-            return access.may_read(
+            return may_read_in_context(
                 request,
                 instance.resource_type.type_uri,
                 content,
@@ -449,7 +450,8 @@ class WorkflowValidator:
         ``IsAuthorized`` subclass can therefore refuse a transition, never
         grant one the policy refuses: its ``obj`` here is the request body as
         the writer sent it (a check written for stored fields, such as an
-        owner, would read the writer's claim). Without a view (a serializer
+        owner, would read the writer's claim), with `rbac_context` as its
+        ``rbac_context`` (`with_context`), as every condition reads it here. Without a view (a serializer
         used outside the views), the policy alone decides."""
         request = self.request_of(context)
         permission = Permission(
@@ -468,10 +470,12 @@ class WorkflowValidator:
         narrowed by each ``IsAuthorized`` of the view."""
         if rbac_context is None:
             return access.may_act_on(request, permission, body, [])
-        # A condition reads the body as it is in `rbac_context` (in_context):
-        # with that context as its rbac_context when the body writes it there.
+        # Every condition reads the body as it is in `rbac_context`, with that
+        # context as its rbac_context (with_context), whether the write keeps
+        # the resource there, moves it in, or moves it out.
+        body = with_context(body, rbac_context)
         if not policy_for(request).should_allow(
-            permission, rbac_context, resource=in_context(body, rbac_context)
+            permission, rbac_context, resource=body
         ):
             return False
         # The view's IsAuthorized permissions may refuse what the policy

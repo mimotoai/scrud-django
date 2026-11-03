@@ -144,42 +144,72 @@ def resource_contexts(obj):
     return access.object_contexts(obj)
 
 
+def with_context(obj, context):
+    """`obj` (a resource's content, or a body: a mapping) as it is in
+    `context`, whatever contexts it names: a ``dict`` copy with `context` as
+    its ``rbac_context``, read as scoped-rbac names a context
+    (``access.context_name``: a ``str`` subclass as its characters). `obj`
+    itself when its ``rbac_context`` already is that ``str``, when `context`
+    names no context (it is not a ``str``), and for any other object."""
+    if not isinstance(obj, Mapping):
+        return obj
+    name = access.context_name(context)
+    if type(name) is not str:
+        return obj
+    stored = obj.get("rbac_context")
+    if type(stored) is str and stored == name:
+        return obj
+    return {**obj, "rbac_context": name}
+
+
 def in_context(obj, context):
     """`obj` as a condition evaluated in `context` reads it: for a resource's
     content (a mapping) stored in `context` (one of its `rbac_contexts_of`),
-    a ``dict`` copy with `context` as its ``rbac_context``, so that a
-    condition on ``rbac_context`` (``rbac_context != "x"``) reads the context
-    it is evaluated in, not a list of contexts, nor a value that is not a
-    string and stores the resource in the default context ``""``. `obj`
-    itself when its ``rbac_context`` already is `context` (a ``str``), and
-    for any other object or context (one a ``contexts_for`` of your own
-    names). scoped-rbac's request check reads a body's list of strings so
-    (``access.authorize_request``); the scrud views' object, post-save and
-    workflow checks and their lists read every context so."""
+    `with_context`, so that a condition on ``rbac_context``
+    (``rbac_context != "x"``) reads the context it is evaluated in, not a
+    list of contexts, nor a value that is not a string and stores the
+    resource in the default context ``""``. `obj` itself for any other
+    object or context (one a ``contexts_for`` of your own names that is not
+    one of the resource's). scoped-rbac's request check reads a body's list
+    of strings so (``access.authorize_request``); the scrud views' object and
+    post-save checks and their lists read every context so, and the workflow
+    check every context it checks (`with_context`)."""
     if not isinstance(obj, Mapping):
         return obj
-    stored = obj.get("rbac_context")
-    if type(stored) is str and stored == context:
+    name = access.context_name(context)
+    if type(name) is not str or name not in rbac_contexts_of(obj):
         return obj
-    if context not in rbac_contexts_of(obj):
-        return obj
-    return {**obj, "rbac_context": context}
+    return with_context(obj, name)
+
+
+def may_read_in_context(request, resource_type, obj, contexts):
+    """``access.may_read`` (``http.GET`` on `resource_type` in any of
+    `contexts`), with `obj` read in each context as it is there
+    (`in_context`). An object with no usable context is a superuser's
+    only, as there."""
+    usable = access.usable_contexts(contexts)
+    if not usable:
+        return access.may_read(request, resource_type, obj, [])
+    return any(
+        access.may_read(request, resource_type, in_context(obj, c), [c]) for c in usable
+    )
 
 
 def _reads_in_context(leaf):
     """Give the ``IsAuthorized`` `leaf` a ``has_context_permission`` that
-    asks its class's with the object as it is in the context asked
-    (`in_context`). scoped-rbac's ``has_object_permission`` asks it for
-    each of the object's contexts, so the object checks read each context
-    so. Idempotent: an instance already given one is left alone. Its class
-    is unchanged, so `scrud_django.filters.overrides_object_checks` still
-    judges the class."""
+    asks its own (as it was: its class's, or one set on the instance) with
+    the object as it is in the context asked (`in_context`). scoped-rbac's
+    ``has_object_permission`` asks it for each of the object's contexts, so
+    the object checks read each context so. Idempotent: an instance already
+    given one is left alone. Its class is unchanged, so
+    `scrud_django.filters.overrides_object_checks` still judges the
+    class."""
     if getattr(vars(leaf).get("has_context_permission"), "_scrud_in_context", False):
         return
-    asks = type(leaf).has_context_permission
+    asks = leaf.has_context_permission
 
     def has_context_permission(request, view, obj, context):
-        return asks(leaf, request, view, in_context(obj, context), context)
+        return asks(request, view, in_context(obj, context), context)
 
     has_context_permission._scrud_in_context = True
     leaf.has_context_permission = has_context_permission

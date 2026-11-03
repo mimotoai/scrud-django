@@ -68,6 +68,12 @@ class ResourceViewSet(
     # DEFAULT_PERMISSION_CLASSES would let anyone write and delete resources.
     permission_classes = [IsAuthorized]
 
+    def is_readable(self, request, obj):
+        # scoped-rbac's check_object_permissions, first in the MRO, asks this
+        # whether a refused object is a 403 or a 404: each context read with
+        # the object as it is there (ResourceViewMixin.object_readable).
+        return self.object_readable(request, obj)
+
     # JSON bodies only. A form or multipart body can name ``rbac_context`` more
     # than once: scoped-rbac checks the last value, the list would be stored.
     parser_classes = [RbacJSONParser]
@@ -100,6 +106,12 @@ class ResourceViewSetGenericFilter(
     # default either, so without this a project that does not configure
     # DEFAULT_PERMISSION_CLASSES would let anyone write and delete resources.
     permission_classes = [IsAuthorized]
+
+    def is_readable(self, request, obj):
+        # scoped-rbac's check_object_permissions, first in the MRO, asks this
+        # whether a refused object is a 403 or a 404: each context read with
+        # the object as it is there (ResourceViewMixin.object_readable).
+        return self.object_readable(request, obj)
 
     # JSON bodies only. A form or multipart body can name ``rbac_context`` more
     # than once: scoped-rbac checks the last value, the list would be stored.

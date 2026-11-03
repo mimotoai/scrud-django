@@ -55,6 +55,25 @@ get 201 today.
 
 # Decided
 
+<a id="custom-contexts-conditions"></a>
+## custom-contexts-conditions: a context of your own leaves the object as it is
+
+Decision: a condition evaluated in a context that a `contexts_for` of your
+own names (an `IsAuthorized` subclass reading, say, a resource's `team`)
+reads the object as stored, unless that context is also one of the
+resource's `rbac_context` contexts.
+
+`scrud_django.permissions.in_context` sets `rbac_context` to the context a
+condition is evaluated in only when the resource is stored there: what
+`rbac_context` should read in a context the resource is not stored in is
+the view's to decide, not scrud-django's. For such a view, a condition on
+`rbac_context` (`rbac_context != "x"`) reads a resource stored as
+`["x"]` as the list, as it did before 0.12.2, and the list and the detail
+route agree on it
+(`tests/test_condition_contexts.py::test_a_view_reading_its_own_contexts_lists_what_its_detail_route_shows`
+covers a team that is one of the resource's contexts). Write such
+conditions on the fields the view's contexts come from instead.
+
 <a id="policy-recheck-isolation"></a>
 ## policy-recheck-isolation: concurrency control assumes READ COMMITTED
 

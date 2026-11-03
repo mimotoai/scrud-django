@@ -182,14 +182,17 @@ or a list holding a number, bool or null) stores it in the default context
 
 A grant's condition that reads `rbac_context` reads the context it is
 evaluated in: the object as it is in that context, the content with that
-context as its `rbac_context`. scrud's workflow and post-save checks, the
-object checks of a detail route and lists read every context so;
-scoped-rbac's request check of a POST or PUT reads each value of a list of
-strings so, and any other body as written. So a condition such as
+context as its `rbac_context`. scrud's post-save check, the object checks
+of a detail route (and whether a refused resource is a 404 or a 403) and
+lists read every context so, and the workflow check every context it
+checks, those an update moves the resource out of included; scoped-rbac's
+request check of a POST or PUT reads each value of a list of strings so,
+and any other body as written. So a condition such as
 `rbac_context != "x"` keeps a grant out of `"x"` for a resource stored
 there as a list too, and out of `""` for one whose `rbac_context` is not a
 string. A context that a `contexts_for` of your own names, and that is not
-one of the resource's, leaves the object as it is.
+one of the resource's, leaves the object as it is
+(`docs/follow-ups.md`, `custom-contexts-conditions`).
 
 Configure Django REST Framework to authorize with scoped-rbac and to answer
 errors as [RFC 7807](https://tools.ietf.org/html/rfc7807) problem details while
