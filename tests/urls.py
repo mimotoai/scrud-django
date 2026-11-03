@@ -15,7 +15,7 @@ from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
 from scrudful.rest_framework import scrudful_viewset
 
 from scrud_django import registration
-from scrud_django.mixins.view_mixins import GenericViewMixin
+from scrud_django.mixins.view_mixins import GenericViewMixin, ReadableMixin
 from scrud_django.models import ResourceType
 from scrud_django.permissions import current_transition
 from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
@@ -323,7 +323,9 @@ class NoteSerializer(serializers.ModelSerializer):
 
 
 @scrudful_viewset
-class NoteViewSet(AccessControlledAPIView, GenericViewMixin, viewsets.GenericViewSet):
+class NoteViewSet(
+    ReadableMixin, AccessControlledAPIView, GenericViewMixin, viewsets.GenericViewSet
+):
     """An adopter's view of a model of their own (`Note`) on GenericViewMixin."""
 
     queryset = Note.objects.all()
@@ -636,3 +638,73 @@ for _prefix, _viewset in (
             ),
         ]
     )
+
+
+class ArchivedRefusingIsAuthorized(IsAuthorized):
+    """An adopter's ``IsAuthorized`` that refuses, in every context, a
+    resource also stored in the context "archived": its
+    ``has_context_permission`` reads the resource's contexts from the content
+    it gets (the content as stored)."""
+
+    ARCHIVED = "archived"
+
+    def has_context_permission(self, request, view, obj, context):
+        from scrud_django.mixins.resource_mixin import rbac_contexts_of
+
+        if self.ARCHIVED in rbac_contexts_of(obj):
+            return False
+        return super().has_context_permission(request, view, obj, context)
+
+
+class ArchivedRefusingResourceViewSet(ResourceViewSet):
+    permission_classes = [ArchivedRefusingIsAuthorized]
+
+
+urlpatterns.extend(
+    [
+        path(
+            "archived-refusing/json-ld/",
+            ArchivedRefusingResourceViewSet.as_view(
+                {"get": "list"}, resource_type_name="json-ld"
+            ),
+            name="archived-refusing-json-ld-list",
+        ),
+        path(
+            "archived-refusing/json-ld/<slug>/",
+            ArchivedRefusingResourceViewSet.as_view(
+                {"get": "retrieve", "put": "update", "delete": "destroy"},
+                resource_type_name="json-ld",
+            ),
+            name="archived-refusing-json-ld-detail",
+        ),
+    ]
+)
+
+
+class ContextDenyingJsonLdViewSet(ResourceViewSet):
+    """JSON-LD resources authorized by `ContextDenyingIsAuthorized`, the
+    "refuse one context, else super()" shape of an adopter's
+    ``has_context_permission``."""
+
+    permission_classes = [ContextDenyingIsAuthorized]
+
+
+urlpatterns.extend(
+    [
+        path(
+            "denying/json-ld/",
+            ContextDenyingJsonLdViewSet.as_view(
+                {"get": "list", "post": "create"}, resource_type_name="json-ld"
+            ),
+            name="denying-json-ld-list",
+        ),
+        path(
+            "denying/json-ld/<slug>/",
+            ContextDenyingJsonLdViewSet.as_view(
+                {"get": "retrieve", "put": "update", "delete": "destroy"},
+                resource_type_name="json-ld",
+            ),
+            name="denying-json-ld-detail",
+        ),
+    ]
+)

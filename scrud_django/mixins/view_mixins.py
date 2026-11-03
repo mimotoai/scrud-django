@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
-from scoped_rbac.permissions import AccessAPIError, drf_error
+from scoped_rbac.permissions import AccessAPIError, drf_error, view_permission
 from scoped_rbac.rest import AccessControlledAPIView
 from scrudful._django import aware, conditional_response, precondition_headers
 from scrudful.conditional import (
@@ -39,7 +39,9 @@ from scrud_django.exceptions import (
 from scrud_django.filters import (
     as_detail_read,
     filter_by_object_checks,
+    grants_allow,
     object_check_requirement,
+    readable_by_grants,
     readable_by_object_checks,
     readable_removal,
 )
@@ -54,7 +56,9 @@ from scrud_django.permissions import (
     _workflow_authorized,
     checks_read_content,
     content_of,
+    may_act_in_context,
     reading_content,
+    reads_each_context,
 )
 from scrud_django.registration import (
     ResourceRegistration,
@@ -423,8 +427,10 @@ class ListValidatorsMixin:
         detail route (`check_object_permissions`) and decides whether a
         workflow error names a resource's stored state: as a GET of the
         detail route has it (`scrud_django.filters.as_detail_read`), whatever
-        the request's method, scoped-rbac's ``is_readable`` (``http.GET`` in
-        the object's contexts, as each ``IsAuthorized`` reads them) **and**
+        the request's method, the grants (`readable_by_grants`, scoped-rbac's
+        ``is_readable``: ``http.GET`` in the object's contexts, as each
+        ``IsAuthorized`` reads them, each with the object as it is in that
+        context) **and**
         the object checks a list asks (`readable_by_object_checks`), so that
         the detail route hides what the list leaves out. The object checks
         only narrow. A grant conditioned on ``scrud_workflow`` never makes
@@ -432,16 +438,16 @@ class ListValidatorsMixin:
         with _not_checking_write(), checks_read_content(self):
             if isinstance(self, AccessControlledAPIView):
                 with as_detail_read(self, request) as read:
-                    if not AccessControlledAPIView.is_readable(self, read, obj):
+                    if not readable_by_grants(self, read, obj):
                         return False
             return readable_by_object_checks(self, request, obj)
 
     def is_readable(self, request, obj):
-        """`object_readable`. (scoped-rbac's ``AccessControlledAPIView``
-        defines its own: where it precedes this mixin, as in the scrud
-        viewsets, its ``check_object_permissions`` asks its own, after this
-        mixin's `check_object_permissions` has already answered 404 for an
-        object `object_readable` refuses.)"""
+        """`object_readable`. scoped-rbac's ``AccessControlledAPIView``
+        defines its own, which reads a resource's stored ``rbac_context``
+        whole: a view composing it before this mixin puts `ReadableMixin`
+        first, as the scrud viewsets do, so that its
+        ``check_object_permissions`` asks this one."""
         return self.object_readable(request, obj)
 
     def check_object_permissions(self, request, obj):
@@ -452,10 +458,35 @@ class ListValidatorsMixin:
         only the grants) then lets the 404 through."""
         try:
             super().check_object_permissions(request, obj)
+            self.check_grants_in_each_context(request, obj)
         except (PermissionDenied, NotAuthenticated):
             if not self.object_readable(request, obj):
                 raise Http404 from None
             raise
+
+    def check_grants_in_each_context(self, request, obj):
+        """Refuse (``permission_denied``) the resource `obj` (its content)
+        unless the grants allow the request's action on it, each context read
+        as the resource is there (`grants_allow`), when an ``IsAuthorized``
+        of the view has a ``has_context_permission`` of its own
+        (`reads_each_context` is false): that code, and its ``super()``
+        call, read the content as stored, so the grants are asked here too,
+        as a list asks them before its object checks. Object checks only
+        narrow. A view whose ``IsAuthorized`` permissions keep scoped-rbac's
+        ``has_context_permission`` asks the grants so already; a model's
+        instance (`GenericViewMixin`) is left to its object checks."""
+        get_rbac_permissions = getattr(self, "get_rbac_permissions", None)
+        if (
+            not isinstance(obj, Mapping)
+            or not callable(get_rbac_permissions)
+            or not isinstance(self, AccessControlledAPIView)
+        ):
+            return
+        with checks_read_content(self):
+            if all(map(reads_each_context, reading_content(get_rbac_permissions()))):
+                return
+            if not grants_allow(self, request, obj, view_permission(request, self)):
+                self.permission_denied(request)
 
     def object_for_checks(self, obj):
         """`obj` as the detail route gives it to the object check: itself
@@ -655,6 +686,18 @@ class ListValidatorsMixin:
         return conditional_response(result)
 
 
+class ReadableMixin:
+    """Put first in a view composing scoped-rbac's ``AccessControlledAPIView``
+    with `ResourceViewMixin` (or `GenericViewMixin`), as the scrud viewsets
+    do: ``AccessControlledAPIView.check_object_permissions`` then asks
+    `ListValidatorsMixin.object_readable` whether a refused object is a 403
+    or a 404, which reads each of a resource's contexts with the resource as
+    it is there, rather than its own ``is_readable``."""
+
+    def is_readable(self, request, obj):
+        return self.object_readable(request, obj)
+
+
 class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin):
     queryset = Resource.objects.all()
     serializer_class = ResourceSerializer
@@ -819,14 +862,25 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         must allow it (as scoped-rbac's own post-save check asks; superusers
         only for a resource in no usable context), and its
         ``has_context_permission`` must allow it in each context its
-        ``contexts_for`` names."""
+        ``contexts_for`` names, and, for one with a
+        ``has_context_permission`` of its own, so must the grants, each
+        context read as the resource is there (`may_act_in_context`)."""
         check = self.object_for_checks(obj)
+        permission = view_permission(request, self)
         for leaf in reading_content(self.get_post_save_permissions()):
             contexts = access.usable_contexts(leaf.contexts_for(check))
             allowed = leaf.has_object_permission(request, self, check) and all(
                 leaf.has_context_permission(request, self, check, context)
                 for context in contexts
             )
+            if allowed and not reads_each_context(leaf):
+                # Its own has_context_permission (and its super() call) read
+                # the content as stored: the grants are asked too, each
+                # context as the resource is there. Object checks only narrow.
+                allowed = all(
+                    may_act_in_context(request, permission, check, [context])
+                    for context in contexts
+                )
             if not allowed:
                 raise access.AccessDenied()
 

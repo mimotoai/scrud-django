@@ -13,7 +13,11 @@ from scrudful.rest_framework import scrudful_api_view, scrudful_viewset
 
 from scrud_django import collection_type_uri_for, services
 from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
-from scrud_django.mixins.view_mixins import ResourceViewMixin, gate_uniform_errors
+from scrud_django.mixins.view_mixins import (
+    ReadableMixin,
+    ResourceViewMixin,
+    gate_uniform_errors,
+)
 from scrud_django.registration import get_resource_type_for
 from scrud_django.renderers import JSONLDRenderer, SchemaJSONRenderer
 from scrud_django.validators import JsonValidator
@@ -61,7 +65,7 @@ class DocumentMediaTypeMixin:
 
 @scrudful_viewset
 class ResourceViewSet(
-    AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
+    ReadableMixin, AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
 ):
     # Fail closed: DRF's default permission is AllowAny, and scoped-rbac sets no
     # default either, so without this a project that does not configure
@@ -94,7 +98,7 @@ class ResourceViewSet(
 
 @scrudful_viewset
 class ResourceViewSetGenericFilter(
-    AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
+    ReadableMixin, AccessControlledAPIView, ResourceViewMixin, viewsets.ModelViewSet
 ):
     # Fail closed: DRF's default permission is AllowAny, and scoped-rbac sets no
     # default either, so without this a project that does not configure

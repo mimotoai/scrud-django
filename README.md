@@ -180,16 +180,36 @@ or a list holding a number, bool or null) stores it in the default context
 `""`. A list holding an array or an object is a 400 (`invalid`, naming
 `rbac_context`).
 
-Grant conditions that read `rbac_context` see the value as written or
-stored, with one exception. scoped-rbac's request check of a POST or PUT
-reads each value of a list of strings as the object written there, the
-body with that value as its `rbac_context`. The workflow and post-save
-checks, the object checks of a detail route, and lists all see the whole
-value. A negated condition such as `rbac_context != "x"` therefore does
-not keep a grant out of `"x"` for a resource stored there as a list, nor
-out of `""` for one whose `rbac_context` is not a string. Grant by context
-(`RoleAssignment.rbac_context`) instead where that matters; see
-`docs/follow-ups.md`, `conditions-on-rbac-context`.
+A grant's CEL condition that reads `rbac_context` reads the context it is
+evaluated in: the content with that context as its `rbac_context`. scrud's
+post-save check, the object checks of a detail route (and whether a refused
+resource is a 404 or a 403) and lists read every context so, and the
+workflow check every context it checks, those an update moves the resource
+out of included; scoped-rbac's request check of a POST or PUT reads each
+value of a list of strings so, and any other body as written. So
+`rbac_context != "x"` refuses a write into `"x"` (or into `""` with an
+`rbac_context` that is not a string), and refuses a resource in `"x"`
+however it is stored. A resource stored in several contexts is readable,
+and may be updated or deleted, where any one of its contexts allows it:
+`rbac_context != "x"` does not hide a resource stored as `["x", "y"]` from
+a grant that holds in `"y"`. To keep a grant out of a context, assign it
+in the contexts it covers (`RoleAssignment.rbac_context`) instead.
+
+Code of your own reads what it always did: an operator function, and a
+`has_context_permission` of your own, get the content as stored (or the
+body as sent), its `rbac_context` the whole value. Its `super()` call reads
+that too; to have scoped-rbac's check read each context as the object is
+there, pass it `scrud_django.permissions.condition_resource(obj, context)`.
+On a view with such an override, the scrud views also ask the grants,
+each context read as the resource is there, on the detail route and after
+a write, as its list does: the override narrows what the grants allow.
+A context that a `contexts_for` of your own names, and that is not one of
+the resource's, leaves the object as it is (`docs/follow-ups.md`,
+`custom-contexts-conditions`). A view of your own that composes scoped-rbac's
+`AccessControlledAPIView` with `ResourceViewMixin` puts
+`scrud_django.mixins.view_mixins.ReadableMixin` first, as the scrud viewsets
+do, so that a refused write of a resource readable in one of its contexts is
+a 403, not a 404.
 
 Configure Django REST Framework to authorize with scoped-rbac and to answer
 errors as [RFC 7807](https://tools.ietf.org/html/rfc7807) problem details while

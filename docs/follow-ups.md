@@ -53,50 +53,91 @@ create's handler the list's error body function). Test: POST
 `reverse("role-list")` as a superuser with `If-Match: "nope"`; expect 412,
 get 201 today.
 
-<a id="conditions-on-rbac-context"></a>
-## conditions-on-rbac-context: a condition on `rbac_context` reads the raw value, not the context being checked
+<a id="workflow-grant-blocks-leaving"></a>
+## workflow-grant-blocks-leaving: a `scrud_workflow` grant refuses moving a resource out of a context without a policy
 
-A grant's condition that reads `rbac_context` (`rbac_context != "x"`) is
-evaluated with a body or a resource's content as it is. Only
-django-scoped-rbac's request check (0.11.2, #56) reads one value at a time,
-and only the values of a list of strings. Everywhere else the condition
-reads the raw value. That value is not the context being checked when it
-is a list, or when it is not a string and scrud stores the resource in the
-default context `""` (`rbac_contexts_of`). None of these is new in 0.12.1:
-0.12.0 with django-scoped-rbac 0.11.1 behaves the same.
+A PUT that moves a resource out of a context needs no grant there unless a
+workflow policy applies there (README). But `WorkflowValidator` runs
+`authorize_without_policy` for every context the write concerns, those it
+leaves included. In a context without a policy, a writer whose grants there
+are conditioned on `scrud_workflow` gets 403, while a writer with no grant
+there at all may move the resource out. It fails closed, and it predates
+0.13.0. Found in the review of scrud-django#2; scrud-django#4.
 
-- **Writes into `""`:** a writer granted in `"*"` with
-  `rbac_context != ""` (every context but the default) gets 403 for
-  `"rbac_context": ""`. They get 201 for `null`, `5`, `{"@id": "x"}` or a
-  list holding a number, bool or null (`["public", 1]`), and the resource
-  is stored in `""`. In each case the request, workflow and post-save
-  checks read the body's own value, which is not `""`. (A list holding a
-  non-string also needs the method in that value, which only a grant in
-  `"*"` gives.)
-- **Updates of a resource stored as a list:** a resource stored with
-  `"rbac_context": ["victim"]` can be overwritten and moved by a writer
-  granted in `"*"` with `rbac_context != "victim"`. The PUT's object check
-  reads the stored list, and `["victim"] != "victim"` is true. The same
-  resource stored as `"victim"` is a 404 for them.
-- **Reads of a resource stored as a list:** for the same reason, a reader
-  with such a condition lists a resource stored as `["victim"]` (and not one
-  stored as `"victim"`).
-- **The other way round:** a writer granted in `"a"` with
-  `rbac_context == "a"` and in `"b"` with `rbac_context == "b"` cannot
-  write `["a", "b"]`. The post-save check reads the whole list (403).
+Fix: run `authorize_without_policy` only for the contexts the body writes
+(`rbac_contexts_of(data)`), not those the update leaves. Test: in
+`tests/test_workflow_contexts.py`, a resource stored as `["a", "b"]`
+(JSON-LD, no policy in `"b"`), a writer with JSON-LD writes in `"a"` and a
+`scrud_workflow` grant in `"b"`, PUTs it with `"rbac_context": "a"`: expect
+200, get 403 today.
 
-Fix: give every condition the object with `rbac_context` set to the context
-it is evaluated in: in the post-save and workflow checks (each context the
-resource ends up in or leaves), in the object checks of a detail route, and
-in the lists' per-object evaluation (`scrud_django.filters`). Those places
-are scrud's own. Each place must give the condition the same object, or a
-list and the detail route disagree. Tests, each failing today: in
-`tests/test_context_smuggling.py`, the writer above POSTs `{"rbac_context":
-null}` and `["public", 1]` (403, nothing stored) and PUTs over a resource
-stored as `["victim"]` (404, unchanged); a reader with that condition does
-not list or GET it; and the `"a"`/`"b"` writer creates `["a", "b"]` (201).
+<a id="conditional-only-detail-reads"></a>
+## conditional-only-detail-reads: a reader whose only grant is conditional lists resources but gets 403 on their detail route
+
+A user whose `http.GET` on a type is granted only under a condition (say
+`rbac_context != "x"`, in `"*"`) sees the resources the condition allows in
+the list, but every detail GET, HEAD and DELETE of the type is a 403 (a PUT
+is not: its request check evaluates the condition on the body):
+scoped-rbac's request check has no resource to evaluate the condition on,
+the decision is undetermined, and it lets an undetermined request through
+only where the view defers to its object checks
+(`AccessControlledAPIView.defers_to_object_checks`), which scoped-rbac's
+viewsets do for `list` alone. It fails closed, and it predates 0.13.0. It
+contradicts the README's "a list shows what the detail route shows". Found
+in the review of scrud-django#2; scrud-django#3.
+
+Fix: have the scrud viewsets defer `retrieve` (and the writes' object
+checks) to their object checks too, once it is shown that nothing produces a
+response before those checks run (validators, a 304 or 412, headers from the
+object), as `defers_to_object_checks` requires. Test: a reader granted `http.GET` on JSON-LD in `"*"` under
+`rbac_context != "x"` (and the list type outright) GETs a resource stored
+in `"y"`: expect 200 (and 404 for one in `"x"`); get 403 today.
 
 # Decided
+
+<a id="own-code-reads-stored-content"></a>
+## own-code-reads-stored-content: operators and permission classes of your own get the content as stored
+
+Decision: only CEL conditions read a resource as it is in the context they
+are evaluated in (`scrud_django.permissions.condition_resource`); an
+operator function, and a `has_context_permission` of your own (with its
+`super()` call), get the content as stored, or in the workflow check the
+body as sent, its `rbac_context` the whole value.
+
+Such code may refuse by every context a resource is in (`"archived" in
+rbac_contexts_of(obj)`): giving it the content with one context as its
+`rbac_context` would turn that refusal into an allow
+(`tests/test_condition_contexts.py::test_an_adopters_has_context_permission_reads_the_stored_content`
+and `::test_an_operator_gets_the_stored_content`). So a negated condition
+written in a `has_context_permission` of your own, or an operator, on
+`rbac_context` reads the whole value, as before 0.13.0; an override reads
+each context through its `super()` call by passing
+`condition_resource(obj, context)`. Beside a `has_context_permission` of
+your own, the scrud views ask the grants themselves, each context read as
+the resource is there, on the detail route and in the post-save check, as
+the list does (`ListValidatorsMixin.check_grants_in_each_context`), so a
+negated CEL condition holds on such views too and the list and the detail
+route agree
+(`tests/test_condition_contexts.py::test_an_overriding_view_shows_on_its_detail_route_what_it_lists`).
+
+<a id="custom-contexts-conditions"></a>
+## custom-contexts-conditions: a context of your own leaves the object as it is
+
+Decision: a condition evaluated in a context that a `contexts_for` of your
+own names (an `IsAuthorized` subclass reading, say, a resource's `team`)
+reads the object as stored, unless that context is also one of the
+resource's `rbac_context` contexts.
+
+`scrud_django.permissions.in_context` sets `rbac_context` to the context a
+condition is evaluated in only when the resource is stored there: what
+`rbac_context` should read in a context the resource is not stored in is
+the view's to decide, not scrud-django's. For such a view, a condition on
+`rbac_context` (`rbac_context != "x"`) reads a resource stored as
+`["x"]` as the list, as it did before 0.13.0, and the list and the detail
+route agree on it
+(`tests/test_condition_contexts.py::test_a_view_reading_its_own_contexts_lists_what_its_detail_route_shows`
+covers a team that is one of the resource's contexts). Write such
+conditions on the fields the view's contexts come from instead.
 
 <a id="policy-recheck-isolation"></a>
 ## policy-recheck-isolation: concurrency control assumes READ COMMITTED

@@ -7,6 +7,13 @@ resource its content (`content_of`, the stored ``dict`` itself), and the
 workflow check the body as sent. A check (a permission class, an operator, a
 ``contexts_from``) must only read what it is given: changing it changes what
 is stored, and is a bug in that check, not something scrud-django guards.
+
+A grant's CEL condition evaluated in one context reads the object as it is
+in that context (`condition_resource`): a resource stored in several
+contexts, or in the default one because its ``rbac_context`` is not a
+string, is read with that context as its ``rbac_context``. Operator
+functions and permission classes of your own still get the object as
+stored (or the body as sent).
 """
 
 import logging
@@ -17,8 +24,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 from rest_framework.permissions import AND, NOT, OR
-from scoped_rbac import access
+from scoped_rbac import access, policy
 from scoped_rbac.permissions import IsAuthorized, custom_contexts_for
+from scoped_rbac.policy import Permission
 
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 
@@ -37,6 +45,12 @@ _WRITE = object()
 # and the view's permission classes about it (`_checking_transition`); else
 # `_OUTSIDE` or `_WRITE`.
 _transition = ContextVar("scrud_django_transition", default=_OUTSIDE)
+
+# True while the workflow check asks the view's permissions about a context:
+# a condition there reads the body with that context as its rbac_context
+# whatever contexts the body names (`with_context`), the contexts an update
+# moves the resource out of included (`condition_resource`).
+_every_context = ContextVar("scrud_django_every_context", default=False)
 
 # The malformed ``authorized_transitions`` values already logged (their
 # ``repr``), most recent last, at most `_MALFORMED_REPORTED_MAX` of them: each
@@ -139,6 +153,120 @@ def resource_contexts(obj):
     return access.object_contexts(obj)
 
 
+def with_context(obj, context):
+    """`obj` (a resource's content, or a body: a mapping) as it is in
+    `context`, whatever contexts it names: a ``dict`` copy with `context` as
+    its ``rbac_context``, read as scoped-rbac names a context
+    (``access.context_name``: a ``str`` subclass as its characters). `obj`
+    itself when its ``rbac_context`` already is that ``str``, when `context`
+    names no context (it is not a ``str``), and for any other object."""
+    if not isinstance(obj, Mapping):
+        return obj
+    name = access.context_name(context)
+    if type(name) is not str:
+        return obj
+    stored = obj.get("rbac_context")
+    if type(stored) is str and stored == name:
+        return obj
+    return {**obj, "rbac_context": name}
+
+
+def in_context(obj, context):
+    """The fields a CEL condition evaluated in `context` reads for `obj`: for
+    a resource's content (a mapping) stored in `context` (one of its
+    `rbac_contexts_of`), `with_context`, so that a condition on
+    ``rbac_context`` (``rbac_context != "x"``) reads the context it is
+    evaluated in, not a list of contexts, nor a value that is not a string
+    and stores the resource in the default context ``""``. `obj` itself for
+    any other object or context (one a ``contexts_for`` of your own names
+    that is not one of the resource's)."""
+    if not isinstance(obj, Mapping):
+        return obj
+    name = access.context_name(context)
+    if type(name) is not str or name not in rbac_contexts_of(obj):
+        return obj
+    return with_context(obj, name)
+
+
+def condition_resource(obj, context, *, every=False):
+    """What a grant's condition evaluated in `context` gets for `obj`: a
+    ``scoped_rbac.policy.RequestResource`` whose fields, what a CEL
+    condition reads, are `obj` as it is in `context` (`in_context`, or
+    `with_context` with `every`), and whose instance, what an operator
+    function gets, is `obj` itself, as stored or sent. `obj` itself where
+    the two are the same. A ``has_context_permission`` of your own that
+    asks ``super()`` can give it this to read each context so:
+    ``super().has_context_permission(request, view,
+    condition_resource(obj, context), context)``."""
+    fields = with_context(obj, context) if every else in_context(obj, context)
+    return obj if fields is obj else policy.RequestResource(obj, fields)
+
+
+def may_act_in_context(request, permission, obj, contexts):
+    """``access.may_act_on`` (`permission` allowed in any of `contexts`),
+    with each context's conditions reading `obj` as it is there
+    (`condition_resource`). An object with no usable context is a
+    superuser's only, as there."""
+    usable = access.usable_contexts(contexts)
+    if not usable:
+        return access.may_act_on(request, permission, obj, [])
+    return any(
+        access.may_act_on(request, permission, condition_resource(obj, c), [c])
+        for c in usable
+    )
+
+
+def may_read_in_context(request, resource_type, obj, contexts):
+    """`may_act_in_context` for ``http.GET`` on `resource_type`
+    (``access.may_read``)."""
+    return may_act_in_context(
+        request, Permission("http.GET", resource_type), obj, contexts
+    )
+
+
+def reads_each_context(leaf):
+    """Whether the ``IsAuthorized`` `leaf` asks the grants reading each
+    context as the object is there (`_reads_in_context`, given by
+    `reading_content` to a leaf keeping scoped-rbac's
+    ``has_context_permission``). One with a ``has_context_permission`` of its
+    own does not: the scrud views then ask the grants so beside it."""
+    return getattr(vars(leaf).get("has_context_permission"), "_scrud_in_context", False)
+
+
+@contextmanager
+def _reading_every_context():
+    token = _every_context.set(True)
+    try:
+        yield
+    finally:
+        _every_context.reset(token)
+
+
+def _reads_in_context(leaf):
+    """Give the ``IsAuthorized`` `leaf`, when it keeps scoped-rbac's
+    ``has_context_permission``, one that asks it with `condition_resource`:
+    its conditions read the object as it is in the context asked, and an
+    operator gets the object itself. scoped-rbac's ``has_object_permission``
+    asks it for each of the object's contexts, so the object checks read
+    each context so. A leaf whose class (or instance) has a
+    ``has_context_permission`` of its own is left alone: that code gets the
+    object as stored, as it always did. Idempotent. Its class is unchanged,
+    so `scrud_django.filters.overrides_object_checks` still judges the
+    class."""
+    if "has_context_permission" in vars(leaf):
+        return  # already given one, or one of the instance's own
+    if type(leaf).has_context_permission is not IsAuthorized.has_context_permission:
+        return
+    asks = leaf.has_context_permission
+
+    def has_context_permission(request, view, obj, context):
+        resource = condition_resource(obj, context, every=_every_context.get())
+        return asks(request, view, resource, context)
+
+    has_context_permission._scrud_in_context = True
+    leaf.has_context_permission = has_context_permission
+
+
 def _leaves(permission):
     """The permissions composed into `permission` by DRF's ``&``, ``|`` and
     ``~`` (their ``op1``/``op2``), or `permission` itself."""
@@ -159,13 +287,17 @@ def reading_content(permissions):
     the scrud views' checks give it. Judged by the class, as scoped-rbac's
     ``custom_contexts_for`` judges it, so such a permission still counts as
     keeping the default (a list stays on its SQL path). Idempotent: the same
-    function every time, never a wrapper. Returns the permissions, as a
-    list."""
+    function every time, never a wrapper. Every ``IsAuthorized`` among them
+    also reads each context as the object is in it (`_reads_in_context`).
+    Returns the permissions, as a list."""
     permissions = list(permissions)
     for permission in permissions:
         for leaf in _leaves(permission):
-            if isinstance(leaf, IsAuthorized) and custom_contexts_for(leaf) is None:
+            if not isinstance(leaf, IsAuthorized):
+                continue
+            if custom_contexts_for(leaf) is None:
                 leaf.contexts_for = resource_contexts
+            _reads_in_context(leaf)
     return permissions
 
 
