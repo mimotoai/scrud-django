@@ -22,11 +22,6 @@ workflow:
 default:
   # Pinned to uv 0.9 so that build-system's `uv_build>=0.9,<0.10` keeps matching.
   image: ghcr.io/astral-sh/uv:0.9-python3.13-bookworm-slim
-  # Publishing uses trusted publishing (see `publish`). Until the old
-  # protected `UV_PYPI_ACCESS_TOKEN` variable is deleted, every job on the
-  # default branch would get it, so no job keeps it.
-  before_script:
-    - unset UV_PYPI_ACCESS_TOKEN
 
 stages:
   - lint
@@ -300,7 +295,7 @@ publish:
     # Only `uv publish` gets the OIDC token: a shell variable, unexported, keeps
     # it out of every other step's environment.
     - oidc_token="${PYPI_ID_TOKEN-}"
-    - unset PYPI_ID_TOKEN UV_PYPI_ACCESS_TOKEN
+    - unset PYPI_ID_TOKEN
   script:
     - git fetch -q origin "$CI_DEFAULT_BRANCH"
     - |
