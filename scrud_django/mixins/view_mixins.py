@@ -89,8 +89,10 @@ LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
 # forgotten when it serves another: the list's validators read
 # (`create_list_validators`), whether the conditional create's lock is held,
 # whether its preconditions were evaluated (by scrudful, whose list callbacks
-# record it, `_recording_evaluation`, or by `list_precondition_response`) and
-# whether `list_precondition_response` found them failed.
+# record it, `_recording_evaluation`, or by `list_precondition_response`), and
+# whether an evaluation failed (scrudful's answer to it,
+# `UniformErrorsViewFunc._early_response`; a callback that raised; or
+# `list_precondition_response`'s).
 _CREATE_STATE = (
     "_scrud_create_validators",
     "_scrud_create_locked",
@@ -107,7 +109,8 @@ def has_list_preconditions(headers):
 
 def list_preconditions_to_evaluate(headers):
     """Whether the preconditions `headers` of a POST to a list must be
-    evaluated (`LockedWriteMixin.dispatch` refuses a success that did not):
+    evaluated (`LockedWriteMixin.dispatch` refuses a response that is no
+    error and did not):
     any of `LIST_PRECONDITIONS` but an ``If-Match: *`` without
     ``If-None-Match``, which passes on a list, which always exists
     (``If-Unmodified-Since`` is not evaluated beside an ``If-Match``)."""
@@ -373,24 +376,45 @@ class UniformErrorsViewFunc(ScrudfulViewFunc):
     def error_body_func(self, value):
         self._scrud_error_body_func = value
 
+    def _early_response(self, result, request, args, kwargs):
+        """scrudful's answer to preconditions that failed (412) or are
+        malformed (400), recording on the view, for a POST, that they failed
+        (`LockedWriteMixin.list_preconditions_failed`): a handler that drops
+        this answer and answers otherwise is refused."""
+        view = args[0] if args else None
+        if isinstance(view, LockedWriteMixin) and request.method == "POST":
+            view._scrud_list_preconditions_failed = True
+        return super()._early_response(result, request, args, kwargs)
+
 
 def _recording_evaluation(func):
     """`func`, a list validator callback of a scrudful handler
-    (``list_etag_func``, ``list_last_modified_func``), recording on the view
-    it is called for, for a POST, that scrudful is evaluating the POST's
-    preconditions with what it returns (it calls them only to evaluate
-    them): `LockedWriteMixin.list_preconditions_evaluated`. Idempotent."""
+    (``list_etag_func``, ``list_last_modified_func``), which scrudful calls
+    only to evaluate a POST's preconditions, recording on the view it is
+    called for that they are evaluated
+    (`LockedWriteMixin.list_preconditions_evaluated`), first refusing it
+    when it needs the list's validators without the conditional create's
+    lock held (`ListValidatorsMixin.refuse_unlocked_list_read`), whichever
+    the callback. One that raises records a failure: nothing was evaluated
+    (`LockedWriteMixin.list_preconditions_failed`). A failed evaluation is
+    recorded by `UniformErrorsViewFunc._early_response`. Idempotent."""
     if func is None or getattr(func, "_scrud_records_evaluation", False):
         return func
 
     @functools.wraps(func)
     def recording(*args, **kwargs):
-        value = func(*args, **kwargs)
         view = args[0] if args else None
         request = args[1] if len(args) > 1 else None
-        if isinstance(view, LockedWriteMixin) and request.method == "POST":
-            view._scrud_list_preconditions_evaluated = True
-        return value
+        if not (isinstance(view, LockedWriteMixin) and request.method == "POST"):
+            return func(*args, **kwargs)
+        if isinstance(view, ListValidatorsMixin):
+            view.refuse_unlocked_list_read(request)
+        view._scrud_list_preconditions_evaluated = True
+        try:
+            return func(*args, **kwargs)
+        except BaseException:
+            view._scrud_list_preconditions_failed = True
+            raise
 
     recording._scrud_records_evaluation = True
     return recording
@@ -398,18 +422,21 @@ def _recording_evaluation(func):
 
 def gate_uniform_errors(cls):
     """Make every scrudful handler of `cls` (and its bases), which
-    ``scrudful_viewset`` installed, a `UniformErrorsViewFunc`, and have the
-    list validator callbacks of every scrudful handler there record that
-    scrudful evaluated a POST's preconditions with them
-    (`_recording_evaluation`), whichever they are. Idempotent."""
+    ``scrudful_viewset`` or ``@scrudful`` installed, a
+    `UniformErrorsViewFunc` (which records the failed evaluations it answers,
+    `UniformErrorsViewFunc._early_response`), and have the callbacks of
+    every one with list validators record the evaluations of a POST's
+    preconditions scrudful makes with them (`_recording_evaluation`),
+    whichever the callbacks. Idempotent."""
     for klass in cls.__mro__:
         for value in list(vars(klass).values()):
             if not isinstance(value, ScrudfulViewFunc):
                 continue
-            value.list_etag_func = _recording_evaluation(value.list_etag_func)
-            value.list_last_modified_func = _recording_evaluation(
-                value.list_last_modified_func
-            )
+            if value.has_list_validators:
+                value.list_etag_func = _recording_evaluation(value.list_etag_func)
+                value.list_last_modified_func = _recording_evaluation(
+                    value.list_last_modified_func
+                )
             if type(value) is ScrudfulViewFunc:
                 # Keep the configured values under the properties' names
                 # before the class changes, so no request sees neither.
@@ -448,16 +475,18 @@ class LockedWriteMixin:
 
     A POST to the list (`is_list_post`: any POST but one to an item)
     carrying ``If-Match``, ``If-None-Match`` or ``If-Unmodified-Since``
-    (`list_preconditions_to_evaluate`: all but an ``If-Match: *`` alone,
-    which always passes on a list, and is not wrapped) runs in one
+    (`list_preconditions_to_evaluate`: all but an ``If-Match: *`` without
+    ``If-None-Match``, which always passes on a list, and is not wrapped)
+    runs in one
     transaction on `locked_write_database` too. When its preconditions need
     the list's validators (`is_conditional_create`), conditional creates
     run one at a time: once DRF's ``initial`` has authenticated, authorized
     and throttled it, `conditional_create_lock` is taken, and held until the
     response. The preconditions are then evaluated against the list: by
-    scrudful, before a handler of its with list validators runs (a
-    viewset's ``create``, which ``scrudful_viewset`` gives ``Meta``'s,
-    whichever they are), else by
+    scrudful, before a scrudful handler of the view with list validators
+    runs (a viewset's ``create``, which ``scrudful_viewset`` gives
+    ``Meta``'s, whichever they are; its callbacks record it,
+    `gate_uniform_errors`), else by
     `ListValidatorsMixin.list_precondition_response`, which the handler
     calls first (``ResourceViewMixin.create`` does). An error response rolls
     the transaction back. A response that is no error is refused
@@ -465,10 +494,13 @@ class LockedWriteMixin:
     preconditions (`list_preconditions_evaluated`), whether or not the
     handler wrote: one scrudful does not evaluate (an ``@action``, or a
     handler of your own, whose ``@scrudful`` has no list validators, or a
-    ``create`` override not decorated again with ``scrudful_viewset``, or a
+    ``create`` override not decorated again with ``scrudful_viewset`` that
+    does not reach scrudful's ``create`` through ``super().create()``, or a
     handler scrudful skips because it already handles the request) and that
-    does not call `list_precondition_response`. So is one answered though
-    `list_precondition_response` found them failed (its response dropped).
+    does not call `list_precondition_response`. So is one answered after an
+    evaluation failed (`list_preconditions_failed`: scrudful's 412 or 400,
+    or `list_precondition_response`'s, dropped; or a list callback
+    raised).
 
     Other requests are not wrapped. A subclass overriding ``dispatch`` or
     ``initial`` must call ``super()``: without it, a conditional create's
@@ -499,8 +531,11 @@ class LockedWriteMixin:
         list's unless the URL names an item (the view's ``lookup_url_kwarg``,
         else its ``lookup_field``, among the URL's keywords). So a POST to a
         collection nested under a parent whose URL keyword has that name
-        (``parents/<slug>/notes/``), served by such a handler, is taken for
-        a POST to an item: route it with a router, or as an
+        (``parents/<slug>/notes/`` for scrud's views), served by such a
+        handler, is taken for a POST to an item (its preconditions are then
+        refused, ``ImproperlyConfigured``, or not evaluated): pass
+        ``detail=False`` to ``as_view``, as a router does (a plain view: set
+        ``detail = False`` on it), or make the handler an
         ``@action(detail=False)``."""
         if request.method != "POST":
             return False
@@ -531,13 +566,24 @@ class LockedWriteMixin:
 
     def list_preconditions_evaluated(self):
         """Whether the preconditions of the POST this view serves were
-        evaluated against the list: scrudful called a list validator callback
-        of one of the view's handlers for it (`_recording_evaluation`; it
-        calls them only to evaluate, and evaluates only the outer of two
-        nested handlers), or `ListValidatorsMixin.list_precondition_response`
-        completed. Recorded as it happens, not predicted from the
-        handler."""
+        evaluated against the list: scrudful called the list validator
+        callbacks of one of the view's handlers for it
+        (`_recording_evaluation`; it calls them only to evaluate, and
+        evaluates only the outer of two nested handlers), or
+        `ListValidatorsMixin.list_precondition_response` completed. Recorded
+        as it happens, not predicted from the handler; whether one failed is
+        `list_preconditions_failed`."""
         return bool(self.__dict__.get("_scrud_list_preconditions_evaluated"))
+
+    def list_preconditions_failed(self):
+        """Whether an evaluation of the preconditions of the POST this view
+        serves did not pass: scrudful answered their 412 or 400
+        (`UniformErrorsViewFunc._early_response`), a list callback raised
+        (`_recording_evaluation`), or
+        `ListValidatorsMixin.list_precondition_response` found them failed.
+        `dispatch` refuses a response that is no error after one: the
+        handler dropped that answer."""
+        return bool(self.__dict__.get("_scrud_list_preconditions_failed"))
 
     def check_write_database(self, using):
         """Refuse (``ImproperlyConfigured``) a locked write or a conditional
@@ -579,12 +625,13 @@ class LockedWriteMixin:
             elif attribute == "conditional_create_db":
                 # Raised inside the transaction: what the handler wrote is
                 # rolled back.
-                if self.__dict__.get("_scrud_list_preconditions_failed"):
+                if self.list_preconditions_failed():
                     raise ImproperlyConfigured(
                         f"{type(self).__name__} answered a POST to its list "
-                        f"with {response.status_code} though "
-                        "list_precondition_response found its preconditions "
-                        "failed: return the response it gives."
+                        f"with {response.status_code} though its "
+                        "preconditions failed (or could not be evaluated): "
+                        "return the 412 or 400 that scrudful's handler, or "
+                        "list_precondition_response, gives."
                     )
                 if not self.list_preconditions_evaluated():
                     raise ImproperlyConfigured(
@@ -595,7 +642,8 @@ class LockedWriteMixin:
                         "of your own, whose @scrudful has no list_etag_func "
                         "or list_last_modified_func) must call "
                         "list_precondition_response first, and a create "
-                        "override must be decorated again with "
+                        "override that does not reach scrudful's create "
+                        "(super().create()) must be decorated again with "
                         "@scrudful_viewset (or call it first)."
                     )
         return response
@@ -899,20 +947,35 @@ class ListValidatorsMixin:
         if validators is None:
             validators = (None, None)
             if list_validators_needed(precondition_headers(request)):
-                if self.conditional_create_db is None or not self.__dict__.get(
-                    "_scrud_create_locked"
-                ):
-                    raise ImproperlyConfigured(
-                        f"{type(self).__name__} evaluates a conditional POST "
-                        "against its list outside a conditional create's "
-                        "locked transaction: serve it as a POST to the list "
-                        "(LockedWriteMixin.is_list_post: any POST but one to "
-                        "an item), and call super() in dispatch and initial."
-                    )
+                self.refuse_unlocked_list_read(request)
                 with self.as_list_read(request, self.conditional_create_db) as read:
                     validators = (self.list_etag(read), self.list_last_modified())
             self._scrud_create_validators = validators
         return validators
+
+    def refuse_unlocked_list_read(self, request):
+        """Refuse (``ImproperlyConfigured``) to evaluate the preconditions of
+        POST `request` against the list when they need its validators
+        (`list_validators_needed`) and the conditional create's lock is not
+        held (`LockedWriteMixin`: a POST to an item, or a ``dispatch`` or
+        ``initial`` that skips ``super()``): they would be read unlocked.
+        `create_list_validators` and every list callback of a scrudful
+        handler (`_recording_evaluation`, a ``Meta`` of your own's too) call
+        it first."""
+        if not list_validators_needed(precondition_headers(request)):
+            return
+        if self.conditional_create_db is None or not self.__dict__.get(
+            "_scrud_create_locked"
+        ):
+            raise ImproperlyConfigured(
+                f"{type(self).__name__} evaluates a conditional POST against "
+                "its list outside a conditional create's locked transaction: "
+                "serve it as a POST to the list (LockedWriteMixin."
+                "is_list_post: any POST but one to an item; an as_view() "
+                "handler on a nested URL naming a parent by the view's "
+                "lookup keyword needs detail=False), and call super() in "
+                "dispatch and initial."
+            )
 
     def list_precondition_response(self, request, using=None):
         """The response to a POST to the list whose preconditions fail, or
@@ -938,11 +1001,12 @@ class ListValidatorsMixin:
         the outer of two nested handlers): call this first there, or in that
         ``create``, as ``ResourceViewMixin.create`` does. That POST runs in
         the transaction `LockedWriteMixin.dispatch` opens, and reads the list
-        under the conditional create's lock; a success whose preconditions
-        neither evaluated is refused (``ImproperlyConfigured``). Once it has
-        evaluated them it records so, and whether they failed: a response
-        that is no error after a failure it found is refused too (its
-        response was dropped). A refusal it raises records nothing.
+        under the conditional create's lock; a response that is no error
+        whose preconditions nothing evaluated is refused
+        (``ImproperlyConfigured``). Once it has evaluated them it records
+        so, and a failure (never cleared by a later pass): a response that
+        is no error after it is refused too (its response was dropped). A
+        refusal it raises records nothing.
 
         With `using` ``None`` it reads the list as `create_list_validators`
         does, under that lock (else ``ImproperlyConfigured``). With a `using`
@@ -969,9 +1033,11 @@ class ListValidatorsMixin:
             exists=True,
         )
         self._scrud_list_preconditions_evaluated = True
-        self._scrud_list_preconditions_failed = result is not None
         if result is None:
             return None
+        # Recorded, never cleared: an evaluation passing later does not undo
+        # one that failed and whose answer was dropped.
+        self._scrud_list_preconditions_failed = True
         # Rendered as scrudful renders a create's own 400 and 412 (the
         # handler's error entity and body function).
         for name in ("create", "list"):
@@ -1430,13 +1496,15 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
       ``@scrudful`` has no list validators (an ``@action``, a decorated
       handler of your own) is not evaluated by scrudful, nor is a ``create``
       it calls, nor a ``create`` override not decorated again with
-      ``scrudful_viewset``: call `list_precondition_response` first in it,
-      and return its response. (An undecorated handler that calls the
-      scrudful ``create`` is evaluated by it.)
-      Such a POST runs in one transaction (`LockedWriteMixin`), and a
-      success whose preconditions nothing evaluated is refused
-      (``ImproperlyConfigured``) and rolled back (but for an ``If-Match: *``
-      alone, which passes on a list). When the preconditions need the
+      ``scrudful_viewset`` that does not call ``super().create()``: call
+      `list_precondition_response` first in it, and return its response.
+      (An undecorated handler that calls the scrudful ``create`` is
+      evaluated by it.) Such a POST runs in one transaction
+      (`LockedWriteMixin`), and a response that is no error whose
+      preconditions nothing evaluated, or that follows a failed evaluation,
+      is refused (``ImproperlyConfigured``) and rolled back (but for an
+      ``If-Match: *`` without ``If-None-Match``, which passes on a list).
+      When the preconditions need the
       list's validators, the evaluation and your ``create`` run in that
       transaction holding the collection's lock
       (`conditional_create_lock`: scoped-rbac's
@@ -1469,10 +1537,10 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
         else of the ``serializer_class`` attribute's ``Meta.model``, else the
         default database. It is called before DRF has wrapped the request
         (``self.request`` is Django's, ``self.action`` unset), so it reads no
-        ``get_queryset()``; a view whose objects are elsewhere (a model only
-        ``get_queryset()`` names, or a ``get_queryset()`` that selects a
-        database with ``using()``) overrides this (`check_write_database`
-        refuses the mismatch)."""
+        ``get_queryset()``: a view whose model only ``get_queryset()`` names,
+        written elsewhere, overrides this (`check_write_database` refuses
+        the mismatch), as does a view that selects its database by hand
+        (``using()`` in ``get_queryset()``, its creates there too)."""
         queryset = getattr(self, "queryset", None)
         model = getattr(queryset, "model", None)
         if model is None:
@@ -1482,20 +1550,29 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
 
     def check_write_database(self, using):
         """Refuse (``ImproperlyConfigured``) a transaction on database `using`
-        (`locked_write_database`) when the view's queryset is elsewhere: the
-        database ``get_queryset()`` selects (``using()``), else where the
-        router writes its model. The lock would serialize nothing, and the
-        lookup and the write read another database."""
-        queryset = self.get_queryset()
-        # A QuerySet's db is the router's read database unless using() chose
-        # one (_db); a write goes where the router writes.
-        selected = queryset._db or router.db_for_write(queryset.model)
-        if selected != using:
+        when the router writes the view's model (``get_queryset()``'s)
+        elsewhere: the transaction and its lock would serialize and roll back
+        nothing of what is written. Only for the inherited
+        `locked_write_database`, which reads no ``get_queryset()`` (it runs
+        before DRF wraps the request) and so may not know the model. A view
+        that overrides it has chosen its database: its writes, creates
+        included (a ``ModelSerializer`` creates where the router writes),
+        must go there, which this cannot check. A ``get_queryset()`` that
+        reads elsewhere (a replica, ``using()``) is no mismatch: inside the
+        transaction the lookup and the lock read `using`."""
+        if type(self).locked_write_database is not (
+            GenericViewMixin.locked_write_database
+        ):
+            return
+        model = self.get_queryset().model
+        written = router.db_for_write(model)
+        if written != using:
             raise ImproperlyConfigured(
                 f"{type(self).__name__} opens its transaction on the "
-                f"{using!r} database, and its queryset of "
-                f"{queryset.model._meta.label} is on {selected!r}: override "
-                f"locked_write_database() to return {selected!r}."
+                f"{using!r} database, and the router writes "
+                f"{model._meta.label} on {written!r}: name the model with a "
+                "queryset or serializer_class attribute, or override "
+                f"locked_write_database() to return {written!r}."
             )
 
     def filter_queryset(self, queryset):
