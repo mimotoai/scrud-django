@@ -6,6 +6,7 @@ scrudful's precondition errors as problem details; a conditional create
 (``create``, or a POST ``@action`` of the list) is evaluated under the
 collection's lock."""
 
+import inspect
 import json
 import threading
 import time
@@ -1037,6 +1038,14 @@ def serve(view_class, actions, request, **kwargs):
     return view
 
 
+def create_unevaluated(view, request):
+    """NoteViewSet's create, not through scrudful (nothing evaluated)."""
+    serializer = view.get_serializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    note = serializer.save(etag=uuid4().hex, modified_at=now())
+    return Response(view.get_serializer(note).data, status=201)
+
+
 def authenticated_post(url, **headers):
     request = APIRequestFactory().post(url, {"text": "new"}, format="json", **headers)
     force_authenticate(request, UserFactory(is_superuser=True, is_staff=True))
@@ -1062,7 +1071,7 @@ def test_a_refusal_the_handler_swallows_still_refuses_its_success():
                 failed = self.list_precondition_response(request)
             except ImproperlyConfigured:
                 failed = None
-            return failed or NoteViewSet.create.view_method(self, request)
+            return failed or create_unevaluated(self, request)
 
     a_note()
     etag = superuser_client().get(list_url())["ETag"]
@@ -1084,14 +1093,14 @@ def test_a_create_override_not_decorated_again_is_refused_unless_it_cannot_fail(
 ):
     # An override replaces scrudful's wrapper of create (scrudful_viewset
     # decorates the class it is given), so nothing evaluates it: refused,
-    # but for an If-Match: * alone, which passes on a list.
+    # but for an If-Match: * without If-None-Match, which passes on a list.
     from django.core.exceptions import ImproperlyConfigured
 
     from .urls import NoteViewSet
 
     class Overriding(NoteViewSet):
         def create(self, request):
-            return NoteViewSet.create.view_method(self, request)
+            return create_unevaluated(self, request)
 
     a_note()
     view = Overriding.as_view({"post": "create"})
@@ -1331,8 +1340,9 @@ def test_a_view_selecting_its_database_by_hand_serves_its_locked_writes():
     assert Note.objects.using("other").get(pk=note.pk).text == "changed"
 
 
-# The same record, reached by a plain handler, a function view, a dropped
-# answer, a redirect, and a view on another database.
+# Whether a list POST was evaluated, or failed, is recorded as it happens
+# (above): reached by a plain handler, a create override, a function view, a
+# dropped answer and a redirect.
 
 
 @pytest.mark.django_db
@@ -1444,17 +1454,25 @@ def test_a_redirect_from_a_conditional_post_commits_or_is_refused(evaluates):
         assert created() == 0
 
 
-@pytest.mark.django_db(databases=["default", "other"])
-def test_a_view_reading_from_a_replica_serves_its_locked_writes():
-    # get_queryset() reads elsewhere (using()), the router writes on the
-    # default database, as locked_write_database (inherited) says: no
-    # mismatch. Inside the transaction the lookup and the lock read it.
+def replica_notes(reads_replica):
+    """A NoteViewSet whose get_queryset() reads "other" (using()), the router
+    writing on the default database, as its inherited
+    locked_write_database() says."""
     from .urls import NoteViewSet
 
     class ReplicaNotes(NoteViewSet):
         def get_queryset(self):
             return Note.objects.using("other")
 
+    ReplicaNotes.reads_replica = reads_replica
+    return ReplicaNotes
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_a_view_reading_from_a_replica_serves_its_locked_writes():
+    # Declared a replica (reads_replica): inside the transaction the lookup
+    # and the lock read the write database.
+    ReplicaNotes = replica_notes(reads_replica=True)
     note = a_note()
     request = APIRequestFactory().put(
         detail(note),
@@ -1492,7 +1510,8 @@ def test_a_model_the_router_writes_elsewhere_is_locked_and_written_there():
 
 @pytest.mark.django_db
 def test_the_write_database_is_checked_after_the_request_is_authorized():
-    # The check reads get_queryset(): an anonymous request is refused (401)
+    # The check reads get_queryset(): an anonymous request is refused (401,
+    # or 403 under another authentication scheme)
     # first, not answered with the misconfiguration.
     note = a_note()
     request = APIRequestFactory().put(
@@ -1515,7 +1534,7 @@ def old_modification(view_instance, request, **kwargs):
 @pytest.mark.parametrize("passes", [True, False], ids=["passes", "fails"])
 def test_an_action_with_one_list_validator_of_its_own_is_evaluated(validator, passes):
     # Either callback alone records the evaluation (gate_uniform_errors
-    # wraps each), and the action's method its pass.
+    # wraps each), and the action's own @scrudful decides the 201 or 412.
     from .urls import ACTION, NoteViewSet, custom_list_etag
 
     options = (
@@ -1629,9 +1648,9 @@ def test_own_meta_validators_without_the_lock_are_refused():
 
 @pytest.mark.django_db
 def test_a_reused_view_forgets_a_failure_of_its_last_post():
-    # Served by an action that evaluates with list_precondition_response, not
-    # by scrudful's create (which would record its own evaluation over
-    # whatever leaked).
+    # Leaked records of an evaluation that failed, and of one scrudful never
+    # saw pass, must not refuse the next POST (served here by an action that
+    # evaluates with list_precondition_response).
     from .urls import NoteImportViewSet
 
     a_note()
@@ -1639,6 +1658,7 @@ def test_a_reused_view_forgets_a_failure_of_its_last_post():
     view = serve(NoteImportViewSet, actions, authenticated_post(list_url()))
     assert view.response.status_code == 201
     view._scrud_list_preconditions_failed = True
+    view._scrud_scrudful_pending = {0: {"etag"}}  # an evaluation never passed
     etag = superuser_client().get(list_url())["ETag"]
     request = authenticated_post(list_url(), HTTP_IF_MATCH=etag)
     view.request = request
@@ -1654,18 +1674,325 @@ def test_an_evaluation_passing_after_a_dropped_failure_is_still_refused():
     # creates: the failure stays recorded.
     from django.core.exceptions import ImproperlyConfigured
 
-    from .urls import CustomListEtagNoteViewSet, NoteViewSet
+    from .urls import CustomListEtagNoteViewSet
 
     class Retrying(CustomListEtagNoteViewSet):
         def import_note(self, request):
             assert self.create(request).status_code == 412
             assert self.list_precondition_response(request) is None
-            return NoteViewSet.create.view_method(self, request)
+            return create_unevaluated(self, request)
 
     a_note()
     etag = superuser_client().get(list_url())["ETag"]  # scrud's, not "custom"
     with pytest.raises(ImproperlyConfigured, match="though its preconditions failed"):
         Retrying.as_view({"post": "import_note"})(
             authenticated_post(list_url(), HTTP_IF_MATCH=etag)
+        )
+    assert created() == 0
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+@pytest.mark.parametrize("method", ["put", "post"])
+def test_a_view_reading_another_database_undeclared_is_refused(method):
+    # get_queryset() uses() another database, with neither reads_replica nor
+    # an overridden locked_write_database(): refused after authorization,
+    # before any lock, read or write, naming both remedies.
+    from django.core.exceptions import ImproperlyConfigured
+
+    view_class = replica_notes(reads_replica=False)
+    note = a_note()
+    if method == "put":
+        request = APIRequestFactory().put(
+            detail(note),
+            {"text": "changed"},
+            format="json",
+            HTTP_IF_MATCH=quote_etag(note.etag),
+        )
+        force_authenticate(request, UserFactory(is_superuser=True, is_staff=True))
+        view, kwargs = view_class.as_view({"put": "update"}), {"slug": str(note.pk)}
+    else:
+        request = authenticated_post(list_url(), HTTP_IF_NONE_MATCH='"x"')
+        view, kwargs = view_class.as_view({"post": "create"}), {}
+    with (
+        recorded_collection_locks() as taken,
+        pytest.raises(ImproperlyConfigured, match="set reads_replica = True"),
+    ):
+        view(request, **kwargs)
+    assert taken == []
+    assert Note.objects.get(pk=note.pk).text == "x"
+    assert created() == 0
+
+
+def tagged_list_etag(view_instance, request, **kwargs):
+    return "children"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "if_match, status_code",
+    [('"children"', 201), ('"other"', 412)],
+    ids=["its", "other"],
+)
+def test_a_post_to_an_item_with_list_validators_of_its_own_is_evaluated(
+    if_match, status_code
+):
+    # scrudful's pattern for a sub-collection of an item: the action's own
+    # list callback, no lock of scrud's (it is not the view's list).
+    from .urls import ACTION, NoteViewSet
+
+    class WithChildren(NoteViewSet):
+        @action(detail=True, methods=["post"])
+        @scrudful(list_etag_func=tagged_list_etag, **ACTION)
+        def children(self, request, slug):
+            Note.objects.create(text="new", etag=uuid4().hex, modified_at=now())
+            return Response({}, status=201)
+
+    note = a_note()
+    view = WithChildren.as_view({"post": "children"}, detail=True)
+    response = view(
+        authenticated_post(detail(note), HTTP_IF_MATCH=if_match), slug=str(note.pk)
+    )
+    assert response.status_code == status_code, response.data
+    assert created() == (1 if status_code == 201 else 0)
+
+
+def unquotable_list_etag(view_instance, request, **kwargs):
+    return 'has"quote'  # scrudful's quote_etag refuses it, after the callback
+
+
+@pytest.mark.django_db
+def test_an_evaluation_raising_after_its_callback_is_no_pass():
+    # The callback returns; scrudful raises computing the ETag from it; the
+    # handler catches that and writes: the evaluation never passed.
+    from django.core.exceptions import ImproperlyConfigured
+    from scrudful.rest_framework import scrudful_viewset
+
+    from scrud_django.mixins.view_mixins import ScrudfulMeta
+
+    from .urls import NoteViewSet
+
+    @scrudful_viewset
+    class Unquotable(NoteViewSet):
+        class Meta(ScrudfulMeta):
+            list_etag_func = unquotable_list_etag
+
+    class Catching(Unquotable):
+        def import_note(self, request):
+            try:
+                return self.create(request)
+            except ValueError:
+                Note.objects.create(text="new", etag=uuid4().hex, modified_at=now())
+                return Response({}, status=200)
+
+    a_note()
+    with pytest.raises(ImproperlyConfigured, match="could not be evaluated"):
+        Catching.as_view({"post": "import_note"})(
+            authenticated_post(list_url(), HTTP_IF_MATCH='"x"')
+        )
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_a_dropped_412_of_a_scoped_rbac_handler_is_refused():
+    # A handler scoped-rbac's AccessControlledModelViewSet made (its own
+    # ScrudfulViewFunc subclass, not scrud's UniformErrorsViewFunc): recorded
+    # all the same.
+    from django.core.exceptions import ImproperlyConfigured
+    from rest_framework.permissions import IsAuthenticated
+    from scoped_rbac.rest import AccessControlledModelViewSet
+    from scrudful.rest_framework import ScrudfulViewFunc
+
+    from scrud_django.mixins.view_mixins import (
+        GenericViewMixin,
+        ReadableMixin,
+        UniformErrorsViewFunc,
+    )
+
+    from .urls import NoteSerializer, NoteViewSet
+
+    class RbacNotes(ReadableMixin, GenericViewMixin, AccessControlledModelViewSet):
+        queryset = Note.objects.all()
+        serializer_class = NoteSerializer
+        permission_classes = [IsAuthenticated]
+        resource_type_iri = NoteViewSet.resource_type_iri
+        get_resource_type = NoteViewSet.get_resource_type
+
+        def import_note(self, request):
+            inner = self.create(request)
+            Note.objects.create(text="new", etag=uuid4().hex, modified_at=now())
+            return Response({"inner": inner.status_code})
+
+    view = RbacNotes.as_view({"post": "import_note"})
+    handler = inspect.getattr_static(RbacNotes, "create")
+    assert isinstance(handler, ScrudfulViewFunc)
+    assert not isinstance(handler, UniformErrorsViewFunc)
+    a_note()
+    with pytest.raises(ImproperlyConfigured, match="though its preconditions failed"):
+        view(authenticated_post(list_url(), HTTP_IF_MATCH='"stale"'))
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_a_dropped_412_without_a_scrudful_create_is_refused():
+    # Neither create nor list is scrudful's: list_precondition_response's own
+    # record of the failure is the only one.
+    from django.core.exceptions import ImproperlyConfigured
+
+    from .urls import ACTION, NoteViewSet
+
+    class Plain(NoteViewSet):
+        def create(self, request):
+            return create_unevaluated(self, request)
+
+        def list(self, request):
+            return Response(self.get_serializer(self.get_queryset(), many=True).data)
+
+        @action(detail=False, methods=["post"])
+        @scrudful(**ACTION)
+        def import_note(self, request):
+            assert self.list_precondition_response(request).status_code == 412
+            return self.create(request)
+
+    a_note()
+    with pytest.raises(ImproperlyConfigured, match="though its preconditions failed"):
+        Plain.as_view({"post": "import_note"})(
+            authenticated_post(list_url(), HTTP_IF_MATCH='"stale"')
+        )
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_a_dropped_400_of_scrudfuls_is_refused():
+    # A malformed If-Match: scrudful's create answers 400, which the handler
+    # drops before creating.
+    from django.core.exceptions import ImproperlyConfigured
+
+    from .urls import NoteViewSet
+
+    class Dropping(NoteViewSet):
+        def import_note(self, request):
+            assert self.create(request).status_code == 400
+            return create_unevaluated(self, request)
+
+    a_note()
+    with pytest.raises(ImproperlyConfigured, match="though its preconditions failed"):
+        Dropping.as_view({"post": "import_note"})(
+            authenticated_post(list_url(), HTTP_IF_MATCH="not-quoted")
+        )
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_an_unlocked_read_is_refused_before_the_callback_runs():
+    from django.core.exceptions import ImproperlyConfigured
+    from rest_framework.views import APIView
+    from scrudful.rest_framework import scrudful_viewset
+
+    from scrud_django.mixins.view_mixins import ScrudfulMeta
+
+    from .urls import NoteViewSet
+
+    calls = []
+
+    def counting_list_etag(view_instance, request, **kwargs):
+        calls.append(request.method)
+        return "custom"
+
+    @scrudful_viewset
+    class Counting(NoteViewSet):
+        class Meta(ScrudfulMeta):
+            list_etag_func = counting_list_etag
+
+        def initial(self, request, *args, **kwargs):
+            APIView.initial(self, request, *args, **kwargs)
+
+    a_note()
+    with pytest.raises(ImproperlyConfigured, match="outside a conditional create"):
+        Counting.as_view({"post": "create"})(
+            authenticated_post(list_url(), HTTP_IF_MATCH='"custom"')
+        )
+    assert calls == []
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_a_subclass_decorated_again_after_its_parent_served_records_its_own():
+    # scrudful_viewset builds the subclass's handlers anew from the parent's
+    # (already gated) methods: their record is made again for them, or a
+    # passing create would look failed.
+    from scrudful.rest_framework import scrudful_viewset
+
+    from .urls import NoteViewSet
+
+    NoteViewSet.as_view({"post": "create"})  # the parent gated first
+
+    @scrudful_viewset
+    class Again(NoteViewSet):
+        pass
+
+    assert inspect.getattr_static(Again, "create") is not inspect.getattr_static(
+        NoteViewSet, "create"
+    )
+    a_note()
+    etag = superuser_client().get(list_url())["ETag"]
+    response = Again.as_view({"post": "create"})(
+        authenticated_post(list_url(), HTTP_IF_MATCH=etag)
+    )
+    assert response.status_code == 201, response.data
+    assert created() == 1
+
+
+@pytest.mark.django_db
+def test_another_handlers_pass_does_not_clear_a_dropped_failure():
+    # create fails the request (scrud's list ETag is not "custom"); another
+    # scrudful handler of the view, with list validators of its own, passes
+    # it: the record is the handler's, so create's failure stays.
+    from django.core.exceptions import ImproperlyConfigured
+
+    from .urls import ACTION, NoteViewSet, custom_list_etag
+
+    class TwoHandlers(NoteViewSet):
+        @scrudful(list_etag_func=custom_list_etag, **ACTION)
+        def other(self, request):
+            return create_unevaluated(self, request)
+
+        def import_note(self, request):
+            assert self.create(request).status_code == 412
+            return self.other(request)
+
+    a_note()
+    with pytest.raises(ImproperlyConfigured, match="though its preconditions failed"):
+        TwoHandlers.as_view({"post": "import_note"})(
+            authenticated_post(list_url(), HTTP_IF_MATCH='"custom"')
+        )
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_a_handlers_second_evaluation_does_not_clear_its_failed_first():
+    # The same handler evaluated twice in one request: a failure, then (its
+    # list ETag having changed) a pass. The failure stays recorded.
+    from django.core.exceptions import ImproperlyConfigured
+
+    from .urls import ACTION, NoteViewSet
+
+    etags = iter(["first", "second"])
+
+    def changing_list_etag(view_instance, request, **kwargs):
+        return next(etags)
+
+    class Twice(NoteViewSet):
+        @scrudful(list_etag_func=changing_list_etag, **ACTION)
+        def guarded(self, request):
+            return create_unevaluated(self, request)
+
+        def import_note(self, request):
+            assert self.guarded(request).status_code == 412
+            return self.guarded(request)
+
+    a_note()
+    with pytest.raises(ImproperlyConfigured, match="though its preconditions failed"):
+        Twice.as_view({"post": "import_note"})(
+            authenticated_post(list_url(), HTTP_IF_MATCH='"second"')
         )
     assert created() == 0

@@ -33,13 +33,18 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    whose model only `get_queryset()` names, written elsewhere, overrides
    it: once the request is authorized, the inherited one's transaction on
    another database than the one the router writes the model to is
-   refused (`ImproperlyConfigured`) before any lock or write. A
-   `get_queryset()` reading from a replica (`using()`) needs nothing: the
-   lookup and the lock read the write database inside the transaction. A
-   view that selects its database by hand overrides
+   refused (`ImproperlyConfigured`) before any lock or write. So is one
+   whose `get_queryset()` selects another database (`using()`), unless
+   the view says how: a `get_queryset()` reading from a replica of the
+   write database sets `reads_replica = True` on the view (new; the
+   lookup, the list's validators and the locks then read the write
+   database inside the transaction; a list `ETag` a client got from the
+   replica may lag behind, and a POST evaluated against it then gets a
+   412). A view that selects its database by hand overrides
    `locked_write_database()` to return it, and must create there too (a
    `ModelSerializer` creates where the router writes); that is not
-   checked.
+   checked. A replica view that sets neither gets `ImproperlyConfigured`
+   on its first PUT, PATCH, DELETE or conditional POST.
 4. Clients: an OPTIONS is a 204 without content or `Content-Type`; GET the
    document its HSR `Link`
    (`rel="https://w3id.org/semantic-http/ns#http-schema-resource-document"`)
@@ -114,7 +119,8 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    `as_view` on a collection nested under a parent whose URL keyword is
    the view's lookup keyword (`slug` for scrud's views:
    `parents/<slug>/notes/`) is taken for a POST to an item: pass
-   `detail=False` to `as_view`, as a router does, or make it an
+   `detail=False` to `as_view`, as a router does (a view that is no
+   viewset: set `detail = False` on it), or make it an
    `@action(detail=False)`.
 8. `manage.py check` warns `scrudful.W001` for the routes of a resource type
    whose HSR cannot be built, `json-schema-list` and `json-schema-detail`
@@ -145,10 +151,12 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
   `LockedWriteMixin.dispatch`, and its lock (`conditional_create_lock`:
   the type's row for `ResourceViewMixin`, as before) is taken in
   `initial`, after authentication, permissions and throttles, so scrudful
-  evaluates under it. scrud records that scrudful evaluated as it calls the
-  view's list callbacks (`gate_uniform_errors` wraps them, `Meta`'s own
-  included), and that it failed as it answers the 412 or 400
-  (`UniformErrorsViewFunc._early_response`). `ResourceViewMixin.create`
+  evaluates under it. scrud records, for each scrudful handler with list
+  validators (whichever its class or callbacks; `gate_uniform_errors`
+  wraps them), that scrudful started an evaluation as it calls the
+  handler's list callbacks, and that it passed as it runs the handler,
+  which scrudful does only then: one started and never passed (a 412 or
+  400, or an exception) is a failure. `ResourceViewMixin.create`
   evaluates them itself
   (`list_precondition_response`) when nothing has, so that a create
   called from an `@action` is evaluated too, and once.

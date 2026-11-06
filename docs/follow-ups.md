@@ -68,8 +68,8 @@ review of MR !6 (0.14.0); it is as old as `@action` support, not new in
 0.14.0. The list's counterpart is refused since 0.14.0
 (`LockedWriteMixin.dispatch`).
 
-Fix: treat a POST to an item carrying `If-Match` or `If-Unmodified-Since`
-as a locked write (lock the row first), and refuse a response that is no
+Fix: treat a POST to an item carrying `If-Match`, `If-None-Match` or
+`If-Unmodified-Since` as a locked write (lock the row first), and refuse a response that is no
 error whose preconditions nothing evaluated, as for the list. Meanwhile an
 action can give its `@scrudful` the item's validators
 (`object_validators=True` with `ScrudfulMeta.etag_func` and
