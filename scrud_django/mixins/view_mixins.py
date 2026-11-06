@@ -489,7 +489,10 @@ class LockedWriteMixin:
     gets scrudful's 412 or 400 (from a scrudful handler it calls) or
     `list_precondition_response`'s, or an exception an evaluation raised,
     must return it (or let it propagate). One that drops it and answers
-    otherwise is not detected: what it writes commits.
+    otherwise may go undetected: what it writes then commits. (A list
+    callback that raises records no evaluation, so a success after dropping
+    its exception is refused as unevaluated, unless another evaluation was
+    recorded.)
 
     Other requests are not wrapped. A subclass overriding ``dispatch`` or
     ``initial`` must call ``super()``: without it, a conditional create's
@@ -1090,9 +1093,14 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
     def get_resource_type(self):
         """The view's resource type, read once per request and database (the
         filter, the serializer, the validators, the Links and the write all
-        ask for it). Inside a locked write it is read on the type's write
-        database (`type_db`), not through the read router."""
-        using = type_db() if self.locked_write_db is not None else None
+        ask for it). Inside a locked write, or a conditional POST's
+        transaction (`dispatch`), it is read on the type's write database
+        (`type_db`), not through the read router: a conditional create locks
+        the type row it reads (`conditional_create_lock`), and two creates
+        reading different revisions of the type from a lagging replica would
+        lock different rows."""
+        transaction_db = self.locked_write_db or self.conditional_create_db
+        using = type_db() if transaction_db is not None else None
         read = self.__dict__.setdefault("_scrud_resource_types", {})
         if using not in read:
             read[using] = get_resource_type_for(self.resource_type_name, using=using)
@@ -1121,7 +1129,11 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         ``check_object_permissions`` answers it for an object of its own. The
         `Resource` is returned. Inside a locked write (`dispatch`) the lookup
         reads the write database with the row locked (`locked`), whatever
-        database a ``get_queryset()`` of a subclass selects (``using()``)."""
+        database a ``get_queryset()`` of a subclass selects (``using()``). A
+        subclass's ``get_queryset()`` that does not call ``super()`` and
+        builds a queryset PostgreSQL cannot lock (``DISTINCT``, an aggregate,
+        the nullable side of an outer join) fails such a write with
+        ``NotSupportedError`` rather than writing unlocked."""
         previous, self._scrud_in_get_object = self._scrud_in_get_object, True
         try:
             queryset = self.locked(self.filter_queryset(self.get_queryset()))
@@ -1495,11 +1507,11 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
     resource_type_name: str | None = None
 
     # Whether get_queryset() reads a replica of locked_write_database()
-    # (using()): set, `check_write_database` lets it, and inside a locked
-    # write or a conditional POST's transaction the lookup, the list's
-    # validators and the locks read the write database instead. Unset, such
-    # a view is refused (ImproperlyConfigured) on every write it is
-    # authorized for.
+    # (using()): set, `check_write_database` allows it; that is all it does.
+    # Inside a locked write or a conditional POST's transaction the lookup,
+    # the list's validators and the locks read the write database whether
+    # or not it is set. Unset, such a view is refused (ImproperlyConfigured)
+    # on every PUT, PATCH, DELETE or conditional POST it is authorized for.
     reads_replica: bool = False
 
     class Meta(ScrudfulMeta):
@@ -1542,9 +1554,11 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
 
         - the router writes the model (``get_queryset()``'s) elsewhere; or
         - ``get_queryset()`` selects another database (``using()``), unless
-          the view declares it a replica of `using` (`reads_replica`): inside
-          the transaction the lookup, the list's validators and the locks
-          then read `using`.
+          the view declares it a replica of `using` (`reads_replica`). Either
+          way, inside the transaction the lookup, the list's validators and
+          the locks read `using` (with ``Meta.object_validators`` on, as
+          `ScrudfulMeta` has it: item validators of your own computed from
+          ``get_queryset()`` read where it says).
 
         A view that overrides `locked_write_database` has chosen its
         database: its writes, creates included (a ``ModelSerializer`` creates

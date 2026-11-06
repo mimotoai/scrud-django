@@ -198,7 +198,17 @@ def test_api_writes_read_no_resource_or_type_through_the_read_router():
     todo = a_todo()
     other = a_todo()
     client = admin_client()
+    list_etag = client.get(reverse("todos-list"))["ETag"]
     with routed_reads() as reads:
+        # A conditional create locks the type row it reads: read on the
+        # type's write database, not a replica's (maybe older) revision.
+        response = client.post(
+            reverse("todos-list"),
+            IN_PROGRESS,
+            format="json",
+            HTTP_IF_MATCH=list_etag,
+        )
+        assert response.status_code == 201, response.content
         response = client.put(
             todo_url(todo), DONE, format="json", HTTP_IF_MATCH=quote_etag(todo.etag)
         )

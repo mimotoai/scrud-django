@@ -116,8 +116,8 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    handler that gets a 412 or 400 (from a scrudful handler it calls, or
    from `list_precondition_response`), or an exception an evaluation
    raised, must return it or let it propagate. One that drops it and
-   answers otherwise is not detected, and what it wrote commits. A `dispatch` or `initial` of your own
-   must call `super()`: a conditional create whose lock was not taken
+   answers otherwise may go undetected, and what it wrote then commits.
+   A `dispatch` or `initial` of your own must call `super()`: a conditional create whose lock was not taken
    raises `ImproperlyConfigured` rather than run unserialized, whichever
    the list callbacks (yours too). A POST to an item is not covered: see
    Known issues. A handler of your own (no `@action`) routed with

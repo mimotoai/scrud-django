@@ -1007,9 +1007,9 @@ def bulk_url():
 @pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "stale"])
 def test_a_scrudful_handler_of_its_own_that_skips_evaluation_is_refused(fresh):
     # tests.urls.NoteBulkViewSet.bulk: an @scrudful handler with no list
-    # validators (no @action) calling a create that does not evaluate: the
-    # list's POST all the same (the URL names no item), refused once it
-    # succeeds, and rolled back.
+    # validators (no @action) calling create, which scrudful skips as a
+    # nested handler: the list's POST all the same (the URL names no item),
+    # its success refused, and rolled back.
     from django.core.exceptions import ImproperlyConfigured
 
     a_note()
@@ -1339,9 +1339,10 @@ def test_a_view_selecting_its_database_by_hand_serves_its_locked_writes():
     assert Note.objects.using("other").get(pk=note.pk).text == "changed"
 
 
-# Whether a list POST was evaluated is recorded as it happens (above): reached
-# by a plain handler, a create override, a function view and a redirect. An
-# answer the handler drops is not detected (LockedWriteMixin).
+# Whether a list POST was evaluated is recorded as it happens
+# (LockedWriteMixin.list_preconditions_evaluated): reached by a plain handler,
+# a create override, a function view and a redirect (below). An answer the
+# handler drops may go undetected (LockedWriteMixin).
 
 
 @pytest.mark.django_db
@@ -1446,8 +1447,9 @@ def replica_notes(reads_replica, alias="other"):
 
 @pytest.mark.django_db(databases=["default", "other"])
 def test_a_view_reading_from_a_replica_serves_its_locked_writes():
-    # Declared a replica (reads_replica): inside the transaction the lookup
-    # and the lock read the write database.
+    # Declared a replica, it is served. Inside the transaction the lookup and
+    # the lock read the write database, as they would without the
+    # declaration (which only lifts check_write_database's refusal).
     ReplicaNotes = replica_notes(reads_replica=True)
     note = a_note()
     request = APIRequestFactory().put(
@@ -1468,8 +1470,8 @@ def test_a_view_reading_from_a_replica_serves_its_locked_writes():
 def test_a_replica_views_conditional_post_is_evaluated_on_the_write_database(
     fresh,
 ):
-    # Declared a replica: the list's validators are read on the write
-    # database, under the collection's lock, as the plain view's GET there
+    # Declared a replica, it is served; the list's validators are read on the
+    # write database (as they would be undeclared), under the collection's lock, as the plain view's GET there
     # gives them (the replica, "other", has no note).
     ReplicaNotes = replica_notes(reads_replica=True)
     a_note()
@@ -1696,10 +1698,6 @@ def test_a_post_to_an_item_with_list_validators_of_its_own_is_evaluated(
     assert created() == (1 if status_code == 201 else 0)
 
 
-def unquotable_list_etag(view_instance, request, **kwargs):
-    return 'has"quote'  # scrudful's quote_etag refuses it, after the callback
-
-
 @pytest.mark.django_db
 def test_an_unlocked_read_is_refused_before_the_callback_runs():
     from django.core.exceptions import ImproperlyConfigured
@@ -1758,3 +1756,130 @@ def test_a_subclass_decorated_again_after_its_parent_served_records_its_own():
     )
     assert response.status_code == 201, response.data
     assert created() == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "header, status_code",
+    [("HTTP_IF_NONE_MATCH", 201), ("HTTP_IF_MATCH", 412)],
+    ids=["passes", "fails"],
+)
+def test_a_scoped_rbac_handlers_callbacks_record_its_evaluation(header, status_code):
+    # A create scoped-rbac's AccessControlledModelViewSet made (its own
+    # ScrudfulViewFunc subclass, not scrud's UniformErrorsViewFunc): its list
+    # callbacks record the evaluation too, or its every success would be
+    # refused as unevaluated.
+    from rest_framework import viewsets
+    from rest_framework.permissions import IsAuthenticated
+    from scoped_rbac.rest import AccessControlledModelViewSet
+    from scrudful.rest_framework import ScrudfulViewFunc
+
+    from scrud_django.mixins.view_mixins import (
+        GenericViewMixin,
+        ReadableMixin,
+        ScrudfulMeta,
+        UniformErrorsViewFunc,
+    )
+
+    from .urls import NoteSerializer, NoteViewSet
+
+    class RbacNotes(ReadableMixin, GenericViewMixin, AccessControlledModelViewSet):
+        queryset = Note.objects.all()
+        serializer_class = NoteSerializer
+        permission_classes = [IsAuthenticated]
+        pagination_class = NoteViewSet.pagination_class
+        resource_type_iri = NoteViewSet.resource_type_iri
+        get_resource_type = NoteViewSet.get_resource_type
+
+        class Meta(ScrudfulMeta):
+            pass
+
+        # GenericViewMixin's stubs precede ModelViewSet's handlers.
+        create = viewsets.ModelViewSet.create
+        list = viewsets.ModelViewSet.list
+
+        def perform_create(self, serializer):
+            serializer.save(etag=uuid4().hex, modified_at=now())
+
+        def detail_url(self, obj, request=None):
+            return f"/generic/notes/{obj.pk}/"
+
+    RbacNotes.as_view({"post": "create"})  # serve() skips as_view's gating
+    handler = inspect.getattr_static(RbacNotes, "create")
+    assert isinstance(handler, ScrudfulViewFunc)
+    assert not isinstance(handler, UniformErrorsViewFunc)
+    a_note()
+    view = serve(
+        RbacNotes,
+        {"post": "create"},
+        authenticated_post(list_url(), **{header: '"stale"'}),
+    )
+    assert view.response.status_code == status_code, view.response.data
+    assert view.list_preconditions_evaluated()
+    assert created() == (1 if status_code == 201 else 0)
+
+
+@pytest.mark.django_db
+def test_a_list_callback_that_raises_records_no_evaluation():
+    # The only list callback raises (a missing collection, say); the handler
+    # catches it and writes: nothing was evaluated, so the success is
+    # refused and rolled back.
+    from django.core.exceptions import ImproperlyConfigured
+    from django.http import Http404
+    from scrudful.rest_framework import scrudful_viewset
+
+    from scrud_django.mixins.view_mixins import ScrudfulMeta
+
+    from .urls import NoteViewSet
+
+    def missing(view_instance, request, **kwargs):
+        raise Http404
+
+    @scrudful_viewset
+    class Raising(NoteViewSet):
+        class Meta(ScrudfulMeta):
+            list_etag_func = missing
+            list_last_modified_func = None
+
+    class Catching(Raising):
+        def import_note(self, request):
+            try:
+                return self.create(request)
+            except Http404:
+                Note.objects.create(text="new", etag=uuid4().hex, modified_at=now())
+                return Response({}, status=200)
+
+    a_note()
+    with pytest.raises(ImproperlyConfigured, match="without evaluating"):
+        Catching.as_view({"post": "import_note"})(
+            authenticated_post(list_url(), HTTP_IF_MATCH='"x"')
+        )
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_a_412_of_list_precondition_response_the_handler_drops_is_not_detected():
+    # The contract, as through scrudful (test_a_412_the_handler_drops_is_not_
+    # detected): list_precondition_response records the evaluation whether
+    # it passes or not, and the handler is to return what it answers.
+    from .urls import ACTION, NoteViewSet
+
+    class Dropping(NoteViewSet):
+        @action(detail=False, methods=["post"])
+        @scrudful(**ACTION)
+        def import_note(self, request):
+            failed = self.list_precondition_response(request)
+            Note.objects.create(text="audit", etag=uuid4().hex, modified_at=now())
+            return Response({"failed": failed.status_code})
+
+    a_note()
+    Dropping.as_view({"post": "import_note"})
+    view = serve(
+        Dropping,
+        {"post": "import_note"},
+        authenticated_post(list_url(), HTTP_IF_MATCH='"stale"'),
+    )
+    assert view.response.status_code == 200
+    assert view.response.data == {"failed": 412}
+    assert view.list_preconditions_evaluated()
+    assert created("audit") == 1

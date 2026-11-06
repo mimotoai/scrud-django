@@ -436,8 +436,9 @@ ACTION = dict(
 
 class NoteUncheckedImportViewSet(NoteViewSet):
     """The notes again, with a POST ``@action`` of the list that calls
-    ``create`` without evaluating the preconditions (NoteViewSet.create does
-    not): refused (ImproperlyConfigured) once it succeeds."""
+    ``create``, which scrudful skips as a nested handler, so nothing
+    evaluates the preconditions: its success (201, whatever the
+    precondition) is refused (ImproperlyConfigured) and rolled back."""
 
     @action(detail=False, methods=["post"])
     @scrudful(**ACTION)
@@ -544,7 +545,8 @@ class CustomListEtagResourceViewSet(ResourceViewSet):
 class NoteBulkViewSet(NoteViewSet):
     """The notes again, whose POST (``as_view({"post": "bulk"})``) is a
     handler of its own, no @action, decorated as E007 asks an action: it
-    calls a create that does not evaluate (NoteViewSet.create)."""
+    calls ``create``, which scrudful skips as a nested handler, so nothing
+    evaluates."""
 
     @scrudful(**ACTION)
     def bulk(self, request):
