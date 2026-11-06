@@ -70,8 +70,10 @@ review of MR !6 (0.14.0); it is as old as `@action` support, not new in
 
 Fix: treat a POST to an item carrying `If-Match` or `If-Unmodified-Since`
 as a locked write (lock the row first), and refuse a success whose
-preconditions nothing evaluated, as for the list; or document that such an
-action evaluates them itself. Test: in `tests/test_generic_views.py`, a
+preconditions nothing evaluated, as for the list. Meanwhile an action can
+give its `@scrudful` the item's validators (`object_validators=True` with
+an `etag_func`), which scrudful evaluates for a POST, without the row
+lock. Test: in `tests/test_generic_views.py`, a
 `NoteViewSet` subclass with that `rename` action, POST with `If-Match:
 "stale"`, and expect 412 (or `ImproperlyConfigured`) with the note
 unchanged; it is a 200 today.

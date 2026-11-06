@@ -685,3 +685,65 @@ def test_a_create_outside_the_conditional_creates_transaction_is_refused(writer)
     with pytest.raises(ImproperlyConfigured, match="outside a conditional create"):
         view(request)
     assert created() == 0
+
+
+def authenticated(request):
+    from rest_framework.test import force_authenticate
+
+    force_authenticate(request, UserFactory(is_superuser=True, is_staff=True))
+    return request
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "if_match, status_code", [('"custom"', 201), ('"other"', 412)], ids=["its", "other"]
+)
+def test_a_plain_handlers_create_is_evaluated_once_with_its_own_meta_validators(
+    writer, if_match, status_code
+):
+    # The undecorated handler reaches scrudful's create, which evaluates with
+    # the viewset's own Meta list validators: ResourceViewMixin.create does
+    # not evaluate again (against scrud's list ETag, which is not "custom").
+    from rest_framework.test import APIRequestFactory
+
+    from .urls import CustomListEtagResourceViewSet
+
+    class Plain(CustomListEtagResourceViewSet):
+        def import_resource(self, request):
+            return self.create(request)
+
+    view = Plain.as_view(
+        {"post": "import_resource"}, resource_type_name="partner-profiles"
+    )
+    request = APIRequestFactory().post(
+        url(), BODY, format="json", HTTP_IF_MATCH=if_match
+    )
+    response = view(authenticated(request))
+    assert response.status_code == status_code, response.data
+    assert created() == (1 if status_code == 201 else 0)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "stale"])
+def test_a_create_a_scrudful_function_view_delegates_to_evaluates_itself(writer, fresh):
+    # scrudful skips the viewset's create (it already handles the request);
+    # ResourceViewMixin.create finds nothing evaluated, and evaluates.
+    from rest_framework.test import APIRequestFactory
+    from scrudful.rest_framework import scrudful
+
+    from scrud_django.views import ResourceViewSet
+
+    @scrudful()
+    def outer(request):
+        return ResourceViewSet.as_view(
+            {"post": "create"}, resource_type_name="partner-profiles"
+        )(request)
+
+    etag = writer.get(url())["ETag"] if fresh else '"stale"'
+    request = APIRequestFactory().post(url(), BODY, format="json", HTTP_IF_MATCH=etag)
+    with recorded_type_locks() as events:
+        response = outer(authenticated(request))
+    assert response.status_code == (201 if fresh else 412), response.content
+    assert created() == (1 if fresh else 0)
+    no_key = connection.features.has_select_for_no_key_update
+    assert type_locks(events) == [("lock", no_key)], events

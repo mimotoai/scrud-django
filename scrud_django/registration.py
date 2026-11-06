@@ -76,10 +76,10 @@ def type_locked(resource_type, using):
     it (``ResourceViewMixin.conditional_create_lock``, which
     ``LockedWriteMixin.initial`` enters once the request is authorized) so
     that conditional creates of a type run one at a time. The other writes
-    of the type do not take it first: a foreign key check of a row they insert that refers to the type
-    (a resource, a removal stamp) may wait for it, holding nothing it waits
-    for, and ``FOR NO KEY UPDATE`` does not block PostgreSQL's (``FOR KEY
-    SHARE``).
+    of the type do not take it first: a foreign key check of a row they
+    insert that refers to the type (a resource, a removal stamp) may wait
+    for it, holding nothing it waits for, and ``FOR NO KEY UPDATE`` does not
+    block PostgreSQL's (``FOR KEY SHARE``).
 
     For ``WorkflowPolicy`` it is `lock_workflow_policy_type` (the same rows,
     taken in the same order its writes take them), which then is not taken
