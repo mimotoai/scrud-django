@@ -12,7 +12,7 @@ from scoped_rbac import access
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import IsAuthorized
 from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
-from scrudful.rest_framework import scrudful_viewset
+from scrudful.rest_framework import hsr_urls, scrudful_viewset
 
 from scrud_django import registration
 from scrud_django.mixins.view_mixins import GenericViewMixin, ReadableMixin
@@ -26,6 +26,8 @@ from .resource_types import json_resource_types
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", include("scrud_django.urls")),
+    # Serves each scrudful view's HTTP Schema Resource, which OPTIONS links to.
+    path("", include(hsr_urls())),
 ]
 urlpatterns.extend(registration.resource_types(*json_resource_types()))
 
@@ -354,6 +356,14 @@ class NoteViewSet(
     def retrieve(self, request, slug: str):
         return Response(self.get_serializer(self.get_object()).data)
 
+    def create(self, request):
+        # scrudful has evaluated the preconditions against the list, under the
+        # collection's lock when they need its validators (GenericViewMixin).
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        note = serializer.save(etag=uuid4().hex, modified_at=now())
+        return Response(self.get_serializer(note).data, status=status.HTTP_201_CREATED)
+
     def update(self, request, slug: str):
         note = self.get_object()
         note.text = request.data.get("text", "")
@@ -371,7 +381,7 @@ urlpatterns.extend(
     [
         path(
             "generic/notes/",
-            NoteViewSet.as_view({"get": "list", "head": "list"}),
+            NoteViewSet.as_view({"get": "list", "head": "list", "post": "create"}),
             name="generic-notes-list",
         ),
         path(
@@ -391,6 +401,9 @@ class ContextDenyingNoteViewSet(NoteViewSet):
     permission_classes = [ContextDenyingIsAuthorized]
 
 
+# A subclass overriding a handler is decorated again, so that scrudful
+# handles the override (scrudful.E007 otherwise: no HTTP Schema Resource).
+@scrudful_viewset
 class PagedContextDenyingNoteViewSet(ContextDenyingNoteViewSet):
     """The notes again, authorized by ContextDenyingIsAuthorized, listed from
     `list_queryset` (as a GenericViewMixin list should serve it)."""

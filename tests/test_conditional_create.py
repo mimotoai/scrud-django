@@ -3,8 +3,10 @@
 the list's validators as the requester would GET them (their RBAC-filtered
 list's ``ETag`` and ``Last-Modified``): a failed one is a 412 and nothing is
 created, a malformed one a 400, as on the detail routes. A POST without
-preconditions is unchanged. (scrudful never evaluates a create's
-preconditions; scrud does it in ``ResourceViewMixin.create``.)"""
+preconditions is unchanged. (scrudful 0.9 evaluates them before the
+``create`` handler runs, against ``Meta.list_etag_func`` and
+``Meta.list_last_modified_func``, which scrud gives the requester's list:
+``ListValidatorsMixin.create_list_validators``.)"""
 
 import threading
 import time
@@ -340,28 +342,25 @@ def superuser_client():
 @contextmanager
 def paused_after_evaluation(thread_name, seconds=0.8):
     """The create in thread `thread_name` pauses for `seconds` right after
-    its list preconditions passed (before it creates); `timeline` records
-    when (``paused``, ``resumed``) and `evaluated` is set as it pauses."""
-    from scrud_django.mixins.view_mixins import ListValidatorsMixin
+    its list preconditions passed (before it creates): scrudful evaluates
+    them before the ``create`` handler runs, which then calls
+    ``create_resource``. `timeline` records when (``paused``, ``resumed``)
+    and `evaluated` is set as it pauses."""
+    from scrud_django.mixins.view_mixins import ResourceViewMixin
 
-    original = ListValidatorsMixin.list_precondition_response
+    original = ResourceViewMixin.create_resource
     evaluated = threading.Event()
     timeline = {}
 
-    def evaluate(self, request, *args, **kwargs):
-        result = original(self, request, *args, **kwargs)
-        if (
-            threading.current_thread().name == thread_name
-            and result is None
-            and "paused" not in timeline
-        ):
+    def create_resource(self, request, *args, **kwargs):
+        if threading.current_thread().name == thread_name and "paused" not in timeline:
             timeline["paused"] = time.monotonic()
             evaluated.set()
             time.sleep(seconds)
             timeline["resumed"] = time.monotonic()
-        return result
+        return original(self, request, *args, **kwargs)
 
-    with mock.patch.object(ListValidatorsMixin, "list_precondition_response", evaluate):
+    with mock.patch.object(ResourceViewMixin, "create_resource", create_resource):
         yield evaluated, timeline
 
 
@@ -527,3 +526,23 @@ def test_a_conditional_create_and_another_write_do_not_deadlock(
         results = run_threads(**{names[0]: starts, names[1]: after})
     assert timeline["paused"] < timeline["second sent"] < timeline["resumed"], timeline
     assert results == {"conditional": 201, "other": expected}, results
+
+
+@pytest.mark.django_db
+def test_scoped_rbacs_own_lists_evaluate_a_creates_preconditions():
+    # scoped-rbac 0.12 (#62) evaluates them on its role and role-assignment
+    # lists, which scrud_django.urls mounts (formerly scrud's follow-up
+    # scrudful-create-preconditions).
+    client = APIClient()
+    client.force_authenticate(UserFactory(is_superuser=True, is_staff=True))
+    role = {"rbac_context": "", "definition": {"http.GET": [PP]}}
+    response = client.post(
+        reverse("role-list"), role, format="json", HTTP_IF_MATCH='"nope"'
+    )
+    assert response.status_code == 412, response.content
+    assert not Role.objects.filter(definition={"http.GET": [PP]}).exists()
+    etag = client.get(reverse("role-list"))["ETag"]
+    response = client.post(
+        reverse("role-list"), role, format="json", HTTP_IF_MATCH=etag
+    )
+    assert response.status_code == 201, response.content

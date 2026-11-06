@@ -1,5 +1,92 @@
 # Change Log
 
+## 0.14.0
+
+This release requires django-scoped-rbac 0.12.1 and scrudful 0.10.1
+(Semantic HTTP 0.1 at spec commit `37ec1ce`), which are breaking: OPTIONS is
+a 204 without content linking an HTTP Schema Resource (HSR), `Allow` lists
+what the requester may do, and a create's preconditions are evaluated by
+scrudful. Work through Upgrading before you deploy it.
+
+### Upgrading
+
+1. URLs: include scrudful's HSR route once, in the root URLconf:
+   `path("", include(scrudful.rest_framework.hsr_urls()))`. Without it every
+   request of a scrud view raises `ImproperlyConfigured` (`manage.py check`
+   reports `scrudful.E003`).
+2. Settings: set `SCRUDFUL["BASE_URL"]` to the URL the API is served at.
+   The HSR is built without a request; its schema and context links, and
+   response Links, resolve against it.
+3. Migrate: django-scoped-rbac's `0008_collectionlock` adds the table of its
+   collection lock. Run `migrate` on every database that stores an
+   access-controlled model, including the database of a `GenericViewMixin`
+   view's model (its conditional creates lock it, below).
+4. Clients: an OPTIONS is a 204 without content or `Content-Type`; GET the
+   document its HSR `Link`
+   (`rel="https://w3id.org/semantic-http/ns#http-schema-resource-document"`)
+   names for what the OPTIONS body held (`get`, `post`, ... with their
+   schemas and `x-rdf-context`); it is the same for every requester.
+   `Allow` lists the methods this requester may use (an anonymous user, or
+   one without grants, may get `OPTIONS` alone). Every response of a scrud
+   route carries the HSR link after its other Links; a list envelope's
+   `link` is unchanged (the resource's schema and context).
+5. Clients of scoped-rbac's `roles/` and `role-assignments/` lists, which
+   `scrud_django.urls` mounts: they now send `ETag` and `Last-Modified`, and
+   a POST to them evaluates `If-Match`, `If-None-Match` and
+   `If-Unmodified-Since` (412, 400), as scrud's own lists do.
+6. Your code: a subclass of a scrud viewset that overrides a handler
+   (`list`, `create`, ...) must be decorated with `@scrudful_viewset` again,
+   so that scrudful handles the override (`scrudful.E007` otherwise).
+7. Your code: on a `GenericViewMixin` view, scrudful now evaluates a POST's
+   preconditions against the list (as the requester would GET it) before
+   your `create` runs, and when they need the list's validators the view
+   holds scoped-rbac's collection lock of its model
+   (`conditional_create_lock`) from after the request is authorized until
+   the response. Remove the `list_precondition_response` call and the lock
+   from a `create` of your own: `list_precondition_response` is deprecated
+   and returns `None`. Override `conditional_create_lock` to lock another
+   row. A `dispatch` or `initial` of your own must call `super()`.
+8. On a database that is not migrated yet, `manage.py check` (and so
+   `migrate`) warns `scrudful.W001` for each scrud route: the HSR's link
+   callables read the `ResourceType` rows. The HSR is then built when first
+   served; the warnings stop once the database is migrated.
+
+### Changed
+
+* OPTIONS, the HSR and `Allow` come from scrudful 0.10 (above). The body
+  checks (an empty body, one nested too deep or holding a NUL, an
+  `rbac_context` that cannot be stored) leave alone the body-less copies of
+  an OPTIONS on which scrudful checks each method for `Allow`
+  (`scoped_rbac.access.checks_allow`): without this every OPTIONS of a
+  scrud route was a 400 `body-missing`.
+* A create's preconditions: scrudful 0.9 evaluates them before the view's
+  `create` runs, against `Meta.list_etag_func` and
+  `Meta.list_last_modified_func`, which for a POST give the list as the
+  requester would GET it (`ListValidatorsMixin.create_list_validators`):
+  the same 412, 400 and `conditional_list_too_large` 400 as before, the
+  same problem details. A conditional create's transaction now opens in
+  `LockedWriteMixin.dispatch`, and its lock (`conditional_create_lock`:
+  the type's row for `ResourceViewMixin`, as before) is taken in
+  `initial`, after authentication, permissions and throttles, so scrudful
+  evaluates under it. `ResourceViewMixin.create` only creates.
+* `GenericViewMixin` views' creates evaluate their preconditions (they
+  evaluated none unless your `create` called `list_precondition_response`),
+  and conditional ones run one at a time under scoped-rbac's
+  `lock_collection` of the view's model.
+* scrud no longer uses scrudful's private `ScrudfulViewFunc._early_response`.
+
+### Fixed
+
+* `docs/follow-ups.md`, `scrudful-create-preconditions`: closed. scrudful
+  evaluates a create's preconditions, and django-scoped-rbac 0.12 its own
+  role and role-assignment lists'.
+
+### Known issues
+
+* The HSR of a resource type with a schema and no JSON-LD context, such as
+  `json-schema`, cannot be built: its GET is a 500 (`docs/follow-ups.md`,
+  `hsr-context-less-types`). Its resources are served as before.
+
 ## 0.13.0
 
 A grant's CEL condition that reads `rbac_context` now reads the context it
@@ -669,7 +756,7 @@ Conditional request handling now comes from scrudful 0.8.
   malformed `If-Match` or `If-None-Match` a 400, as on the detail routes,
   and nothing is created. They were ignored (scrudful evaluates none for a
   create;
-  [scrudful-create-preconditions](follow-ups.md#scrudful-create-preconditions)).
+  `scrudful-create-preconditions`, closed in 0.14.0).
   A POST without preconditions is unchanged. Computing the list's
   validators is a GET of the list: past
   `SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]` such a POST is the same 400
@@ -1418,7 +1505,7 @@ On MariaDB a list's query-parameter filter ignores trailing spaces in the
 value ([mariadb-content-filter-padding](follow-ups.md#mariadb-content-filter-padding)).
 A POST to scoped-rbac's own Role and RoleAssignment lists ignores its
 preconditions
-([scrudful-create-preconditions](follow-ups.md#scrudful-create-preconditions)).
+(`scrudful-create-preconditions`, closed in 0.14.0).
 Limitations kept by a decision are listed, with
 the decision, under "Decided" in [follow-ups](follow-ups.md): the supported
 isolation level

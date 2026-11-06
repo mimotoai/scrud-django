@@ -436,3 +436,83 @@ def test_a_generic_views_body_naming_several_contexts_is_checked_in_each():
             HTTP_IF_MATCH=quote_etag(Note.objects.get(pk=note.pk).etag),
         )
         assert response.status_code == status_code, response.content
+
+
+# A conditional create (scrudful 0.9 evaluates a POST's preconditions against
+# the list before the view's ``create`` runs): one whose preconditions need the
+# list's validators runs in a transaction holding scoped-rbac's collection lock
+# of the view's model (GenericViewMixin.conditional_create_lock), taken after
+# the request is authorized.
+
+
+def collection_holds():
+    from scoped_rbac.models import CollectionLock
+
+    lock = CollectionLock.objects.filter(label=Note._meta.label_lower).first()
+    return 0 if lock is None else lock.holds
+
+
+def created(text="new"):
+    return Note.objects.filter(text=text).count()
+
+
+@pytest.mark.django_db
+def test_a_generic_create_with_the_lists_etag_creates_under_the_collection_lock():
+    a_note()
+    client = superuser_client()
+    etag = client.get(list_url())["ETag"]
+    before = collection_holds()
+    response = client.post(
+        list_url(), {"text": "new"}, format="json", HTTP_IF_MATCH=etag
+    )
+    assert response.status_code == 201, response.content
+    assert created() == 1
+    assert collection_holds() == before + 1
+
+
+@pytest.mark.django_db
+def test_a_generic_create_with_a_stale_etag_is_412_and_creates_nothing():
+    a_note()
+    client = superuser_client()
+    etag = client.get(list_url())["ETag"]
+    a_note("another")
+    response = client.post(
+        list_url(), {"text": "new"}, format="json", HTTP_IF_MATCH=etag
+    )
+    assert response.status_code == 412, response.content
+    assert response["Content-Type"] == "application/problem+json"
+    assert created() == 0
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "headers", [{}, {"HTTP_IF_MATCH": "*"}], ids=["unconditional", "if-match-any"]
+)
+def test_a_generic_create_that_needs_no_validators_takes_no_lock(headers):
+    a_note()
+    before = collection_holds()
+    response = superuser_client().post(
+        list_url(), {"text": "new"}, format="json", **headers
+    )
+    assert response.status_code == 201, response.content
+    assert collection_holds() == before
+
+
+@pytest.mark.django_db
+def test_a_refused_generic_create_takes_no_lock():
+    a_note()
+    before = collection_holds()
+    response = reader_in("").post(
+        list_url(), {"text": "new"}, format="json", HTTP_IF_MATCH='"nope"'
+    )
+    assert response.status_code == 403, response.content
+    assert collection_holds() == before
+    assert created() == 0
+
+
+def test_list_precondition_response_is_deprecated_and_returns_none():
+    # scrudful evaluates a create's preconditions before any create runs.
+    from scrud_django.mixins.view_mixins import ListValidatorsMixin
+
+    with pytest.warns(DeprecationWarning, match="list_precondition_response"):
+        assert ListValidatorsMixin().list_precondition_response(object()) is None

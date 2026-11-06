@@ -29,29 +29,28 @@ that `filtered-partner-profiles-list?name=foo` lists only the first and
 other databases. The same padding applied to `stored_policies_for`'s
 `content__resource_type` lookup, which now re-checks the type in Python.
 
-<a id="scrudful-create-preconditions"></a>
-## scrudful-create-preconditions: scrudful evaluates no precondition on a create
+<a id="hsr-context-less-types"></a>
+## hsr-context-less-types: the HTTP Schema Resource of a type with a schema and no JSON-LD context is a 500
 
-scrudful's `ScrudfulViewFunc` (and so `scrudful_viewset`'s `create`) never
-evaluates a create's preconditions ("a create never evaluates
-preconditions"): a POST with `If-Match: "nope"`, a past `If-Unmodified-Since`
-or `If-None-Match: *` creates (201). RFC 9110 §13.1.1, §13.1.2 and §13.1.4
-say an origin server MUST evaluate them against the target, the list. scrud
-works around it in its own views: `ListValidatorsMixin.list_precondition_response`
-evaluates them with scrudful's `evaluate_preconditions` against the
-requester's list validators, and `ResourceViewMixin.create` calls it first
-(`tests/test_conditional_create.py`). It renders the failure with the list
-handler's private `ScrudfulViewFunc._early_response`, pinned in
-`tests/test_upstream_drift.py`, since scrudful configures the create's handler
-with no `error_body_func`.
+scrudful 0.10 builds each route's HTTP Schema Resource (HSR), which every
+OPTIONS links to and every response of the route links after its own Links.
+It refuses to build one whose `application/json` content has a schema link
+and no RDF context link (`x-rdf-context` would be missing): the GET of that
+HSR is a 500 (`scrudful.rest_framework._DataDependentError`), and
+`manage.py check` warns `scrudful.W001` for the route. The JSON Schema
+resource type (`json-schema`, registered with only a `schema_uri`) is
+such a type, as is any type registered with a schema and without
+`context_func` or `context_uri`. Its resources are served as before
+(GET, POST, PUT, DELETE, OPTIONS); only the document the OPTIONS links to
+fails. Found adopting scrudful 0.10 (scrud-django 0.14.0), in the demo:
+`GET /_hsr/json-schema-list` and `GET /_hsr/json-schema-detail`.
 
-Still affected: scoped-rbac's own `roles/` and `role-assignments/` lists,
-which `scrud_django.urls` mounts, and a `GenericViewMixin` `create` that does
-not call `list_precondition_response`. For the owner to file on scrudful:
-evaluate a create's preconditions against the list validators (and give the
-create's handler the list's error body function). Test: POST
-`reverse("role-list")` as a superuser with `If-Match: "nope"`; expect 412,
-get 201 today.
+Fix: give such types a JSON-LD context (scrud's own, served like the
+collection contexts; a decision on the IRIs, which are part of the API's
+semantics), or link no schema for them in the HSR and on their responses
+alike (scrudful requires the two to agree). Test: in
+`tests/test_options.py`, GET `/_hsr/json-schema-list` and expect 200; it
+is a 500 today.
 
 <a id="workflow-grant-blocks-leaving"></a>
 ## workflow-grant-blocks-leaving: a `scrud_workflow` grant refuses moving a resource out of a context without a policy

@@ -3,7 +3,7 @@ says: a list's collection schema and a JSON Schema resource as
 ``application/schema+json``, a list's collection context and a JSON-LD
 context resource as ``application/ld+json``. A client that asks for
 ``application/json`` still gets the same body as ``application/json``;
-errors, OPTIONS and lists keep theirs."""
+errors and lists keep theirs, and OPTIONS is a 204 without content."""
 
 import pytest
 from django.conf import settings
@@ -102,17 +102,26 @@ def test_a_put_of_a_json_schema_answers_with_the_schema_type():
 
 
 @pytest.mark.django_db
-def test_lists_and_options_keep_application_json():
+def test_lists_keep_application_json_and_options_has_no_content():
     client = superuser()
     documents()
     for name in ("json-schema-list", "json-ld-list"):
         response = client.get(reverse(name))
         assert response.status_code == 200, response.content
         assert content_type(response) == "application/json", name
-    for url, _media_type in documents():
+    collections, resources = documents()[:2], documents()[2:]
+    for url, _media_type in collections:
+        # Plain DRF views: DRF's OPTIONS metadata, as application/json.
         response = client.options(url)
         assert response.status_code == 200, (url, response.content)
         assert content_type(response) == "application/json", url
+    for url, _media_type in resources:
+        # scrudful views (0.10): OPTIONS has no content (its HTTP Schema
+        # Resource, served by GET, is application/json: tests/test_options.py).
+        response = client.options(url)
+        assert response.status_code == 204, (url, response.content)
+        assert response.content == b"", url
+        assert "Content-Type" not in response, url
 
 
 @pytest.mark.django_db
