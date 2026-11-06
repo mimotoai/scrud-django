@@ -16,7 +16,11 @@ from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
 from scrudful.rest_framework import hsr_urls, scrudful, scrudful_viewset
 
 from scrud_django import registration
-from scrud_django.mixins.view_mixins import GenericViewMixin, ReadableMixin
+from scrud_django.mixins.view_mixins import (
+    GenericViewMixin,
+    ReadableMixin,
+    ScrudfulMeta,
+)
 from scrud_django.models import ResourceType
 from scrud_django.permissions import current_transition
 from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
@@ -444,7 +448,7 @@ class NoteUncheckedImportViewSet(NoteViewSet):
 class NoteMappedImportViewSet(NoteViewSet):
     """The notes again, with a GET ``@action`` of the list whose POST is a
     handler of its own (``@<action>.mapping.post``), which DRF gives no
-    ``detail``."""
+    ``detail``, and a POST ``@action`` of an item (``touch``)."""
 
     @action(detail=False, methods=["get"])
     @scrudful(**ACTION)
@@ -459,6 +463,12 @@ class NoteMappedImportViewSet(NoteViewSet):
             return failed
         return self.create(request)
 
+    @action(detail=True, methods=["post"])
+    @scrudful(**ACTION)
+    def touch(self, request, slug):
+        """A POST to an item: not the list's, whatever its preconditions."""
+        return Response({"touched": slug})
+
 
 routed_notes = routers.SimpleRouter()
 routed_notes.register(
@@ -471,6 +481,11 @@ urlpatterns.extend(
             "generic/notes-unchecked-import/",
             NoteUncheckedImportViewSet.as_view({"post": "import_note"}),
             name="generic-notes-unchecked-import",
+        ),
+        path(
+            "generic/notes-touch/<slug>/",
+            NoteMappedImportViewSet.as_view({"post": "touch"}),
+            name="generic-notes-touch",
         ),
         path(
             "generic/notes-mapped-import/",
@@ -499,6 +514,79 @@ urlpatterns.append(
         ),
         name="importing-partner-profiles",
     )
+)
+
+
+def custom_list_etag(view_instance, request, **kwargs):
+    return "custom"
+
+
+def no_list_last_modified(view_instance, request, **kwargs):
+    return None
+
+
+# A viewset's own Meta list validators (scrudful evaluates a create's
+# preconditions with them, not through create_list_validators).
+@scrudful_viewset
+class CustomListEtagNoteViewSet(NoteViewSet):
+    class Meta(ScrudfulMeta):
+        list_etag_func = custom_list_etag
+        list_last_modified_func = no_list_last_modified
+
+
+@scrudful_viewset
+class CustomListEtagResourceViewSet(ResourceViewSet):
+    class Meta(ScrudfulMeta):
+        list_etag_func = custom_list_etag
+        list_last_modified_func = no_list_last_modified
+
+
+class NoteBulkViewSet(NoteViewSet):
+    """The notes again, whose POST (``as_view({"post": "bulk"})``) is a
+    handler of its own, no @action, decorated as E007 asks an action: it
+    calls a create that does not evaluate (NoteViewSet.create)."""
+
+    @scrudful(**ACTION)
+    def bulk(self, request):
+        return self.create(request)
+
+
+class ResourceBulkViewSet(ResourceViewSet):
+    """Partner profiles, whose POST is a handler of its own that calls
+    ResourceViewMixin.create, which evaluates the preconditions."""
+
+    @scrudful(**ACTION)
+    def bulk(self, request):
+        return self.create(request)
+
+
+urlpatterns.extend(
+    [
+        path(
+            "generic/custom-etag-notes/",
+            CustomListEtagNoteViewSet.as_view({"get": "list", "post": "create"}),
+            name="generic-custom-etag-notes-list",
+        ),
+        path(
+            "custom-etag/partner-profiles/",
+            CustomListEtagResourceViewSet.as_view(
+                {"get": "list", "post": "create"}, resource_type_name="partner-profiles"
+            ),
+            name="custom-etag-partner-profiles-list",
+        ),
+        path(
+            "generic/bulk-notes/",
+            NoteBulkViewSet.as_view({"post": "bulk"}),
+            name="generic-bulk-notes",
+        ),
+        path(
+            "bulk/partner-profiles/",
+            ResourceBulkViewSet.as_view(
+                {"post": "bulk"}, resource_type_name="partner-profiles"
+            ),
+            name="bulk-partner-profiles",
+        ),
+    ]
 )
 
 

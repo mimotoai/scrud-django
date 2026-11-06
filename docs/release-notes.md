@@ -16,8 +16,9 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    reports `scrudful.E003`).
 2. Settings: set `SCRUDFUL["BASE_URL"]` to the URL the API is served at.
    The HSR is built without a request; its schema and context links, and
-   the HSR link each response carries, resolve against it (scrud's other
-   response Links are absolute URLs built from the request, as before).
+   the HSR link each response carries, resolve against it. scrudful
+   resolves only relative links against it: scrud's other response Links
+   are absolute URLs built from the request, as before.
 3. Migrate: django-scoped-rbac's `0008_collectionlock` adds the table of its
    collection lock (`scoped_rbac.CollectionLock`). A `GenericViewMixin`
    view's conditional create locks it on the view's `locked_write_database()`
@@ -25,10 +26,13 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    with a database router, let its `allow_migrate` put `scoped_rbac`'s
    `CollectionLock` on that database. scoped-rbac's own `roles/` and
    `role-assignments/` lists (below) take that lock too, on the database
-   their models are written to. A view without a `queryset` attribute
-   finds its model through `get_queryset()`, called before DRF wraps the
-   request (`self.request` is Django's): one that needs DRF's should keep
-   a `queryset` attribute or override `locked_write_database()`.
+   their models are written to. `locked_write_database()` names the model
+   by the view's `queryset` attribute, else its `serializer_class`
+   attribute's `Meta.model`, else it is the default database (it runs
+   before DRF wraps the request, so it calls no `get_queryset()`). A view
+   whose model only `get_queryset()` names, written elsewhere, overrides
+   it: a lock on another database than the model's is refused
+   (`ImproperlyConfigured`).
 4. Clients: an OPTIONS is a 204 without content or `Content-Type`; GET the
    document its HSR `Link`
    (`rel="https://w3id.org/semantic-http/ns#http-schema-resource-document"`)
@@ -37,10 +41,14 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    `Allow` lists the methods the requester's grants allow there (an
    anonymous user, or one without grants, may get `OPTIONS` alone). A
    list's POST is checked without a body, so it is listed when they may
-   write in some context, whatever conditions their grants put on the body;
-   a detail route's PUT and DELETE are checked against the stored resource,
-   and the OPTIONS of a resource they may not read is a 404, as its GET is.
-   Every response of a scrud resource route carries the HSR link after its
+   write in some context, whatever conditions their grants put on the body.
+   A detail route's methods are checked against the stored resource, which
+   the OPTIONS loads as the first method the requester may use somewhere
+   loads it (GET, when they may read in some context): a resource that is
+   missing, or that method may not reach, is a 404 (for a reader, as its
+   GET is). A requester who may use no method there gets 204 with
+   `Allow: OPTIONS` whether or not it exists. Every response of a scrud
+   resource route but a CORS preflight carries the HSR link after its
    other Links; a list envelope's `link` is unchanged (the resource's schema
    and context). The collection schema and context documents
    (`collections-json-schema`, `collections-json-ld`) are plain DRF views:
@@ -65,26 +73,37 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    `conditional_create_lock`: it must be held before the list is read,
    which is now before `create` runs.
 
-   A POST `@action(detail=False)` (its own handler, or one
-   `@<action>.mapping.post` maps there) carrying `If-Match`,
-   `If-None-Match` or `If-Unmodified-Since` now runs in one transaction
-   (holding the lock when they need the list's validators) that any
-   response but a success rolls back. scrudful evaluates nothing for it,
-   nor for a `create` it calls (only the outer of two nested scrudful
-   handlers evaluates): call `list_precondition_response` first in it, or
-   in your `create`, as `ResourceViewMixin.create` does. A success whose
-   preconditions nothing evaluated raises `ImproperlyConfigured`, and what
-   it wrote is rolled back. A `dispatch` or `initial` of your own must call
-   `super()`: a conditional create whose lock was not taken raises
-   `ImproperlyConfigured` rather than run unserialized.
+   Every POST to the list (any POST but one to an item: `create`, an
+   `@action(detail=False)` or the handler `@<action>.mapping.post` adds to
+   one, or a POST handler of your own on a URL naming no item) carrying
+   `If-Match`, `If-None-Match` or `If-Unmodified-Since` now runs in one
+   transaction (holding the lock when they need the list's validators)
+   that any response but a success rolls back, and its preconditions must
+   be evaluated. scrudful evaluates them when the POST's handler is
+   scrudful's with list validators (a viewset's `create`, which
+   `scrudful_viewset` gives `Meta`'s). It evaluates nothing for a handler
+   whose `@scrudful` has none (as for an `@action`, unless you pass it
+   `list_etag_func=ScrudfulMeta.list_etag_func` and
+   `list_last_modified_func=ScrudfulMeta.list_last_modified_func`), nor for
+   a `create` such a handler calls (only the outer of two nested scrudful
+   handlers evaluates), nor for a `create` override you did not decorate
+   again with `@scrudful_viewset`. Call `list_precondition_response` first
+   there, or in your `create`, as `ResourceViewMixin.create` does. A
+   success whose preconditions nothing evaluated, whether or not it wrote
+   (a list action that searches too), raises `ImproperlyConfigured`, and
+   what it wrote is rolled back; an `If-Match: *` alone, which always
+   passes on a list, is not refused. A `dispatch` or `initial` of your own
+   must call `super()`: a conditional create whose lock was not taken
+   raises `ImproperlyConfigured` rather than run unserialized. A POST to an
+   item is not covered: see Known issues.
 8. `manage.py check` warns `scrudful.W001` for the routes of a resource type
    whose HSR cannot be built, `json-schema-list` and `json-schema-detail`
    among scrud's own (Known issues). On a database not migrated yet
    `scrud_django.urls` registers no resource-type route, as before, so it
-   warns nothing for them; a scrud view you route yourself (`as_view`, with
-   a `resource_type_name`) is still checked, and its routes warn
-   `scrudful.W001` (its link callables read the missing tables). Migrate,
-   then check.
+   warns nothing for them. A scrud view you route yourself (with `as_view`
+   or a router) is still checked: its routes whose link callables read the
+   resource type (every list route, and a detail route with a
+   `resource_type_name`) warn `scrudful.W001`. Migrate, then check.
 
 ### Changed
 
@@ -103,10 +122,10 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
   `LockedWriteMixin.dispatch`, and its lock (`conditional_create_lock`:
   the type's row for `ResourceViewMixin`, as before) is taken in
   `initial`, after authentication, permissions and throttles, so scrudful
-  evaluates under it. `ResourceViewMixin.create` evaluates them again
-  first (`list_precondition_response`; `None` once scrudful has, from the
-  validators read once), so that a create called from an `@action` is
-  evaluated too.
+  evaluates under it. `ResourceViewMixin.create` evaluates them itself
+  (`list_precondition_response`) when scrudful has not (its handler is not
+  scrudful's with list validators), so that a create called from an
+  `@action` is evaluated too, and once.
 * `GenericViewMixin` views' creates evaluate their preconditions (they
   evaluated none unless your `create` called `list_precondition_response`),
   and conditional ones run one at a time under scoped-rbac's
@@ -124,6 +143,11 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
 
 ### Known issues
 
+* A POST `@action(detail=True)` that delegates to `update` (or writes the
+  item itself) does not evaluate the item's `If-Match`: scrudful evaluates
+  only the action's own `@scrudful`, and a POST takes no row lock
+  (`docs/follow-ups.md`, `detail-post-action-preconditions`). Evaluate it
+  in the action.
 * The HSR of a resource type with a schema and no JSON-LD context, such as
   `json-schema`, cannot be built: its GET is a 500 (`docs/follow-ups.md`,
   `hsr-context-less-types`). Its resources are served as before.

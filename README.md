@@ -57,12 +57,15 @@ set the base URL the API is served at. An OPTIONS is a 204 without content
 whose `Link` names the path's HTTP Schema Resource (HSR), a JSON document
 describing its methods that a GET serves; scrudful builds it without a request,
 so its links, and the HSR link each response carries, resolve against
-`SCRUDFUL["BASE_URL"]` (scrud's other response Links are absolute URLs built
-from the request). `Allow` lists the methods the requester's grants allow
-there. A list's POST is checked without a body, so it is listed when they may
-write in some context, whatever conditions their grants put on the body; a
-detail route's PUT and DELETE are checked against the stored resource, and an
-OPTIONS of one they may not read is a 404, as its GET is.
+`SCRUDFUL["BASE_URL"]` (scrudful resolves only relative links against it;
+scrud's other response Links are absolute URLs built from the request).
+`Allow` lists the methods the requester's grants allow there. A list's POST is
+checked without a body, so it is listed when they may write in some context,
+whatever conditions their grants put on the body. A detail route's methods are
+checked against the stored resource, which the OPTIONS loads as the first
+method the requester may use somewhere loads it: a resource that is missing, or
+that method may not reach, is a 404; a requester who may use no method there
+gets 204 with `Allow: OPTIONS` whether or not it exists.
 
 ```python
 # urls.py (the root URLconf)

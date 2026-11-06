@@ -75,8 +75,8 @@ def type_locked(resource_type, using):
     ends; call it first inside that transaction. A conditional create takes
     it (``ResourceViewMixin.conditional_create_lock``, which
     ``LockedWriteMixin.initial`` enters once the request is authorized) so
-    that conditional creates of a type run one at a time. The other writes of the type do not take it
-    first: a foreign key check of a row they insert that refers to the type
+    that conditional creates of a type run one at a time. The other writes
+    of the type do not take it first: a foreign key check of a row they insert that refers to the type
     (a resource, a removal stamp) may wait for it, holding nothing it waits
     for, and ``FOR NO KEY UPDATE`` does not block PostgreSQL's (``FOR KEY
     SHARE``).

@@ -40,9 +40,9 @@ HSR is a 500 (`scrudful.rest_framework._DataDependentError`), and
 `manage.py check` warns `scrudful.W001` for the route. The JSON Schema
 resource type (`json-schema`, registered with only a `schema_uri`) is
 such a type, as is any type registered with a schema and without
-`context_resource`, `context_func` or `context_uri`. Its resources are served as before
-(GET, POST, PUT, DELETE, OPTIONS); only the document the OPTIONS links to
-fails. Found adopting scrudful 0.10 (scrud-django 0.14.0), in the demo:
+`context_resource`, `context_func` or `context_uri`. Its resources are
+served as before (GET, POST, PUT, DELETE, OPTIONS); only the document the
+OPTIONS links to fails. Found adopting scrudful 0.10 (scrud-django 0.14.0), in the demo:
 `GET /_hsr/json-schema-list` and `GET /_hsr/json-schema-detail`.
 
 Fix: give such types a JSON-LD context (scrud's own, served like the
@@ -50,8 +50,31 @@ collection contexts; a decision on the IRIs, which are part of the API's
 semantics), or link no schema for them in the HSR and on their responses
 alike (scrudful requires the two to agree). Test: in
 `tests/test_options.py`, GET `/_hsr/json-schema-list` and expect 200; it
-is a 500 today (under the tests' `DEBUG_PROPAGATE_EXCEPTIONS`, the test
-client raises `_DataDependentError` instead).
+is a 500 today (the test client re-raises it, `_DataDependentError`,
+rather than return the 500).
+
+<a id="detail-post-action-preconditions"></a>
+## detail-post-action-preconditions: a POST `@action(detail=True)` that writes the item ignores its `If-Match`
+
+A POST to an item, such as `@action(detail=True, methods=["post"])
+@scrudful(...) def rename(self, request, slug): return self.update(request,
+slug)`, is not evaluated by anyone: the action's `@scrudful` (as
+`scrudful.E007` asks for one) has no validators, the nested `update`'s
+wrapper is skipped (scrudful evaluates only the outer of two nested
+handlers), and a POST is not one of the locked writes
+(`LockedWriteMixin.dispatch`: PUT, PATCH, DELETE), so no row lock is taken
+either. `If-Match: "stale"` gets 200 and the write happens. Found by the
+review of MR !6 (0.14.0); it is as old as `@action` support, not new in
+0.14.0. The list's counterpart is refused since 0.14.0
+(`LockedWriteMixin.dispatch`).
+
+Fix: treat a POST to an item carrying `If-Match` or `If-Unmodified-Since`
+as a locked write (lock the row first), and refuse a success whose
+preconditions nothing evaluated, as for the list; or document that such an
+action evaluates them itself. Test: in `tests/test_generic_views.py`, a
+`NoteViewSet` subclass with that `rename` action, POST with `If-Match:
+"stale"`, and expect 412 (or `ImproperlyConfigured`) with the note
+unchanged; it is a 200 today.
 
 <a id="workflow-grant-blocks-leaving"></a>
 ## workflow-grant-blocks-leaving: a `scrud_workflow` grant refuses moving a resource out of a context without a policy
