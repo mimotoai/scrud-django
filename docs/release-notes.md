@@ -36,15 +36,18 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    refused (`ImproperlyConfigured`) before any lock or write. So is one
    whose `get_queryset()` selects another database (`using()`), unless
    the view says how: a `get_queryset()` reading from a replica of the
-   write database sets `reads_replica = True` on the view (new; the
-   lookup, the list's validators and the locks then read the write
-   database inside the transaction; a list `ETag` a client got from the
+   write database sets `reads_replica = True` on the view (new). That only
+   lifts the refusal: inside the transaction the lookup, the list's
+   validators and the locks read the write database whatever
+   `get_queryset()` selects, so a list `ETag` a client got from the
    replica may lag behind, and a POST evaluated against it then gets a
-   412). A view that selects its database by hand overrides
+   412. A view that selects its database by hand overrides
    `locked_write_database()` to return it, and must create there too (a
    `ModelSerializer` creates where the router writes); that is not
    checked. A replica view that sets neither gets `ImproperlyConfigured`
-   on its first PUT, PATCH, DELETE or conditional POST.
+   on every PUT, PATCH, DELETE or conditional POST it is authorized for.
+   (A `ResourceViewMixin` view has no `reads_replica`: its locked lookup
+   reads the write database whatever its `get_queryset()` selects.)
 4. Clients: an OPTIONS is a 204 without content or `Content-Type`; GET the
    document its HSR `Link`
    (`rel="https://w3id.org/semantic-http/ns#http-schema-resource-document"`)
@@ -108,10 +111,12 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    `ResourceViewMixin.create` does, and return the response it gives. A
    response that is no error (a success, a redirect) whose preconditions
    nothing evaluated, whether or not the handler wrote (a list action
-   that searches too), or that follows a failed evaluation (a 412 or 400
-   of scrudful's or of `list_precondition_response` the handler dropped,
-   or a list callback that raised), raises `ImproperlyConfigured`, and
-   what it wrote is rolled back. A `dispatch` or `initial` of your own
+   that searches too), raises `ImproperlyConfigured`, and what it wrote is
+   rolled back. What an evaluation answers is your handler's to return: a
+   handler that gets a 412 or 400 (from a scrudful handler it calls, or
+   from `list_precondition_response`), or an exception an evaluation
+   raised, must return it or let it propagate. One that drops it and
+   answers otherwise is not detected, and what it wrote commits. A `dispatch` or `initial` of your own
    must call `super()`: a conditional create whose lock was not taken
    raises `ImproperlyConfigured` rather than run unserialized, whichever
    the list callbacks (yours too). A POST to an item is not covered: see
@@ -151,12 +156,10 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
   `LockedWriteMixin.dispatch`, and its lock (`conditional_create_lock`:
   the type's row for `ResourceViewMixin`, as before) is taken in
   `initial`, after authentication, permissions and throttles, so scrudful
-  evaluates under it. scrud records, for each scrudful handler with list
-  validators (whichever its class or callbacks; `gate_uniform_errors`
-  wraps them), that scrudful started an evaluation as it calls the
-  handler's list callbacks, and that it passed as it runs the handler,
-  which scrudful does only then: one started and never passed (a 412 or
-  400, or an exception) is a failure. `ResourceViewMixin.create`
+  evaluates under it. scrud records that scrudful evaluated them as it
+  calls a handler's list callbacks (whichever its class or callbacks;
+  `gate_uniform_errors` wraps them), which scrudful calls for a POST only
+  to evaluate; whether they passed is not recorded. `ResourceViewMixin.create`
   evaluates them itself
   (`list_precondition_response`) when nothing has, so that a create
   called from an `@action` is evaluated too, and once.

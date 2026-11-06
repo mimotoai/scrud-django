@@ -326,6 +326,34 @@ def test_the_locked_lookup_selects_for_update_on_the_write_database(method):
     assert seen and all(entry == (write_db(), True) for entry in seen), seen
 
 
+@pytest.mark.django_db(databases=["default", "other"])
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "stale"])
+def test_a_locked_lookup_reads_the_write_database_whatever_get_queryset_uses(
+    fresh,
+):
+    # A get_queryset() of a subclass selecting another database (using(), a
+    # replica: "other" has no resource) does not move a locked write's
+    # lookup there: the row is read and locked on the write database, and
+    # the If-Match is evaluated against it.
+    from scrud_django.mixins.view_mixins import ResourceViewMixin
+
+    todo = a_todo()
+    original = ResourceViewMixin.get_queryset
+
+    def get_queryset(self):
+        return original(self).using("other")
+
+    etag = quote_etag(todo.etag) if fresh else '"stale"'
+    with mock.patch.object(ResourceViewMixin, "get_queryset", get_queryset):
+        response = admin_client().put(
+            todo_url(todo), DONE, format="json", HTTP_IF_MATCH=etag
+        )
+    assert response.status_code == (200 if fresh else 412), response.content
+    stored = Resource.objects.get(pk=todo.pk)
+    assert stored.content == (DONE if fresh else IN_PROGRESS)
+    assert not Resource.objects.using("other").exists()
+
+
 @pytest.mark.django_db
 def test_a_refused_write_rolls_back_the_requests_transaction():
     todo = a_todo()
