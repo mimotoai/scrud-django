@@ -183,8 +183,12 @@ def test_a_create_without_preconditions_is_unchanged(writer):
 def test_authorization_comes_before_preconditions():
     profile("existing")
     reader = client_with(({"http.GET": [PP, PP_LIST]}, "a"))
-    response = post(reader, HTTP_IF_MATCH='"nope"')
+    with recorded_type_locks() as events:
+        response = post(reader, HTTP_IF_MATCH='"nope"')
     assert response.status_code == 403, response.content
+    # Refused before the type's lock is taken (a rollback would not show a
+    # lock taken and released).
+    assert type_locks(events) == [], events
 
 
 # Past SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"] the list's validators cannot be
@@ -546,3 +550,61 @@ def test_scoped_rbacs_own_lists_evaluate_a_creates_preconditions():
         reverse("role-list"), role, format="json", HTTP_IF_MATCH=etag
     )
     assert response.status_code == 201, response.content
+
+
+# A POST @action of the list that only calls create
+# (tests.urls.ImportingResourceViewSet.import_resource): scrudful evaluates
+# nothing of the nested create, whose ResourceViewMixin.create evaluates the
+# preconditions itself (list_precondition_response), under the type's lock.
+
+
+def import_post(client, **headers):
+    return client.post(
+        reverse("importing-partner-profiles"), BODY, format="json", **headers
+    )
+
+
+@pytest.mark.django_db
+def test_an_actions_create_of_a_stale_if_match_is_412(writer):
+    etag = writer.get(url())["ETag"]
+    profile("another")
+    with recorded_type_locks() as events:
+        response = import_post(writer, HTTP_IF_MATCH=etag)
+    assert response.status_code == 412, response.content
+    assert response["Content-Type"] == "application/problem+json"
+    assert created() == 0
+    no_key = connection.features.has_select_for_no_key_update
+    assert type_locks(events) == [("lock", no_key)], events
+
+
+@pytest.mark.django_db
+def test_an_actions_create_with_the_lists_etag_creates_under_the_type_lock(writer):
+    etag = writer.get(url())["ETag"]
+    with recorded_type_locks() as events:
+        response = import_post(writer, HTTP_IF_MATCH=etag)
+    assert response.status_code == 201, response.content
+    assert created() == 1
+    no_key = connection.features.has_select_for_no_key_update
+    assert type_locks(events) == [("lock", no_key)], events
+    assert events[0][0] == "lock", events  # before any INSERT
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "headers, status_code, code",
+    [
+        ({"HTTP_IF_NONE_MATCH": "*"}, 412, None),
+        ({"HTTP_IF_MATCH": "nope"}, 400, "malformed_precondition"),
+    ],
+    ids=["if-none-match-any", "malformed-if-match"],
+)
+def test_an_actions_create_evaluates_what_needs_no_validators(
+    writer, headers, status_code, code
+):
+    with recorded_type_locks() as events:
+        response = import_post(writer, **headers)
+    assert response.status_code == status_code, response.content
+    if code is not None:
+        assert response.json()["code"] == code, response.content
+    assert created() == 0
+    assert type_locks(events) == [], events

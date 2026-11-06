@@ -157,8 +157,9 @@ REST_FRAMEWORK = {
 }
 
 # scrudful builds each path's HTTP Schema Resource without a request: its
-# relative links (schemas, contexts) resolve against this base URL, and so do
-# response Links. Set it to the URL the API is served at.
+# links (schemas, contexts), and the link to it each response carries, resolve
+# against this base URL (scrud's other response Links are absolute, built from
+# the request). Set it to the URL the API is served at.
 
 SCRUDFUL = {"BASE_URL": "http://127.0.0.1:8000"}
 

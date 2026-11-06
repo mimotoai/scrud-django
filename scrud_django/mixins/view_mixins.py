@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 
 import reversion
 from django.core.exceptions import FieldError, ImproperlyConfigured, ValidationError
-from django.db import DEFAULT_DB_ALIAS, router, transaction
+from django.db import router, transaction
 from django.db.models import Max, ProtectedError
 from django.http import Http404
 from rest_framework import status
@@ -83,6 +83,22 @@ LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 
 # The preconditions a POST to a list evaluates (`list_precondition_response`).
 LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
+
+# What a view records of the conditional POST it serves (`LockedWriteMixin`),
+# forgotten when it serves another: the list's validators read
+# (`create_list_validators`), whether the conditional create's lock is held,
+# and whether its preconditions were evaluated.
+_CREATE_STATE = (
+    "_scrud_create_validators",
+    "_scrud_create_locked",
+    "_scrud_list_preconditions_evaluated",
+)
+
+
+def has_list_preconditions(headers):
+    """Whether `headers` (as ``precondition_headers`` gives them) carry a
+    precondition a POST to a list evaluates (`LIST_PRECONDITIONS`)."""
+    return any(headers.get(name) for name in LIST_PRECONDITIONS)
 
 
 def list_validators_needed(headers):
@@ -265,8 +281,9 @@ class ScrudfulMeta:
         return obj.modified_at
 
     # Link callbacks also run for create, where there is no slug, and when
-    # scrudful builds the HSR, with ``request`` None (its links resolve
-    # against ``SCRUDFUL["BASE_URL"]``): they take ``**kwargs``.
+    # scrudful builds the HSR, with ``request`` None (they then give paths,
+    # which scrudful resolves against ``SCRUDFUL["BASE_URL"]``; on a response
+    # they are absolute, from the request): they take ``**kwargs``.
     def schema_link_or_func(view_instance, request, **kwargs):
         if view_instance.resource_type_name:
             resource_type = view_instance.get_resource_type()
@@ -365,7 +382,8 @@ class UniformErrorsMixin:
 
 
 class LockedWriteMixin:
-    """PUT, PATCH and DELETE in one transaction with the row locked: for
+    """PUT, PATCH and DELETE in one transaction with the row locked, and a
+    conditional POST to the list in one transaction too: for
     `ResourceViewMixin` and `GenericViewMixin` views.
 
     `dispatch` runs the whole request in one transaction on
@@ -378,44 +396,70 @@ class LockedWriteMixin:
     committed. A response that is not a success (an error, a 412) rolls the
     transaction back.
 
-    A conditional create (`is_conditional_create`: a POST to the list whose
-    preconditions need the list's validators) runs in one transaction too,
-    on `locked_write_database`, so that conditional creates run one at a
+    A POST to the list (`is_list_post`: ``create`` or an
+    ``@action(detail=False)``) carrying ``If-Match``, ``If-None-Match`` or
+    ``If-Unmodified-Since`` runs in one transaction on
+    `locked_write_database` too. When its preconditions need the list's
+    validators (`is_conditional_create`), conditional creates run one at a
     time: once DRF's ``initial`` has authenticated, authorized and throttled
     it, `conditional_create_lock` is taken, and held until the response;
-    scrudful then evaluates the preconditions against the list
-    (``Meta.list_etag_func``, `ListValidatorsMixin.create_list_validators`)
-    and the create runs. A response that is not a success rolls it back.
+    the preconditions are then evaluated against the list
+    (`ListValidatorsMixin.create_list_validators`: by scrudful before the
+    viewset's ``create``, or by `ListValidatorsMixin.list_precondition_response`,
+    which a POST ``@action`` calls first) and the create runs. A response
+    that is not a success rolls it back; so does one whose preconditions
+    nothing evaluated (``ImproperlyConfigured``), as from an ``@action``
+    that writes without calling `list_precondition_response` (or a
+    ``create`` that calls it).
 
     Other requests are not wrapped. A subclass overriding ``dispatch`` or
-    ``initial`` must call ``super()``."""
+    ``initial`` must call ``super()``: without it, a conditional create's
+    preconditions are refused (``ImproperlyConfigured``) rather than
+    evaluated unlocked."""
 
     # The database of the request's locked write transaction (`dispatch`), or
     # ``None`` outside one.
     locked_write_db: str | None = None
 
-    # The database of a conditional create's transaction (`dispatch`), or
-    # ``None`` outside one.
+    # The database of the transaction of a POST to the list carrying a
+    # precondition (`dispatch`), or ``None`` outside one.
     conditional_create_db: str | None = None
 
     def locked_write_database(self):
         """The database a locked write's transaction opens on."""
         raise NotImplementedError()
 
-    def is_conditional_create(self, request):
-        """Whether `request` is a POST to the list, that this viewset answers
-        with ``create`` or with an ``@action(detail=False)`` (which may call
-        `list_precondition_response`, or ``create``), carrying a precondition
-        that needs the list's validators (`list_validators_needed`;
-        ``If-Match: *`` and ``If-None-Match: *`` alone do not)."""
+    def is_list_post(self, request):
+        """Whether `request` is a POST this viewset answers on its list route:
+        with ``create``, or with an ``@action(detail=False)`` (its own
+        handler, or one ``@<action>.mapping.post`` adds). The router tells
+        (``detail``, which it gives each route's view); in a view built
+        without one (``as_view`` with its actions), the handler the POST is
+        mapped to: ``create``, or that of an extra action of the viewset
+        (``get_extra_actions``) whose ``mapping`` maps its POST there."""
         if request.method != "POST":
             return False
-        action = (getattr(self, "action_map", None) or {}).get("post")
-        if action != "create":
-            handler = getattr(type(self), action, None) if action else None
-            if getattr(handler, "detail", None) is not False:
-                return False
-        return list_validators_needed(precondition_headers(request))
+        detail = getattr(self, "detail", None)
+        if detail is not None:
+            return detail is False
+        handler = (getattr(self, "action_map", None) or {}).get("post")
+        if handler == "create":
+            return True
+        extra_actions = getattr(type(self), "get_extra_actions", None)
+        for extra in extra_actions() if handler and extra_actions else ():
+            # MethodMapper's own get is the @<action>.mapping.get decorator.
+            if dict.get(extra.mapping, "post") == handler:
+                return extra.detail is False
+        return False
+
+    def is_conditional_create(self, request):
+        """Whether `request` is a POST to the list (`is_list_post`) carrying
+        a precondition that needs the list's validators
+        (`list_validators_needed`; ``If-Match: *`` and ``If-None-Match: *``
+        alone do not)."""
+        return self.is_list_post(request) and list_validators_needed(
+            precondition_headers(request)
+        )
 
     def conditional_create_lock(self, using):
         """A context manager taking the lock every conditional create of this
@@ -424,12 +468,15 @@ class LockedWriteMixin:
         raise NotImplementedError()
 
     def dispatch(self, request, *args, **kwargs):
-        # A view instance serves one request: forget a create's validators a
-        # reused one read (`create_list_validators`).
-        self.__dict__.pop("_scrud_create_validators", None)
+        # A view instance serves one request: forget what a reused one
+        # recorded of its last (`create_list_validators`).
+        for name in _CREATE_STATE:
+            self.__dict__.pop(name, None)
         if request.method in LOCKED_WRITE_METHODS:
             attribute = "locked_write_db"
-        elif self.is_conditional_create(request):
+        elif self.is_list_post(request) and has_list_preconditions(
+            precondition_headers(request)
+        ):
             attribute = "conditional_create_db"
         else:
             return super().dispatch(request, *args, **kwargs)
@@ -444,6 +491,18 @@ class LockedWriteMixin:
                 self._scrud_create_locks = None
             if not 200 <= response.status_code < 300:
                 transaction.set_rollback(True, using=db)
+            elif attribute == "conditional_create_db" and not self.__dict__.get(
+                "_scrud_list_preconditions_evaluated"
+            ):
+                # Raised inside the transaction: what the handler wrote is
+                # rolled back.
+                raise ImproperlyConfigured(
+                    f"{type(self).__name__} answered a POST to its list with "
+                    f"{response.status_code} without evaluating its "
+                    "preconditions: an @action(detail=False) serving a POST "
+                    "must first call list_precondition_response (or a create "
+                    "that does)."
+                )
         return response
 
     def initial(self, request, *args, **kwargs):
@@ -457,18 +516,22 @@ class LockedWriteMixin:
         refused whatever the order of the view's bases. scrudful checks
         ``Allow`` on its copies without calling ``initial``. Then DRF's
         (authentication, permissions, throttles), then, for a conditional
-        create, its lock (`conditional_create_lock`), held until
-        `dispatch`'s transaction ends: after the request is authorized, so a
-        refused one never waits for it or holds it."""
+        create (`is_conditional_create`), its lock
+        (`conditional_create_lock`), held until `dispatch`'s transaction
+        ends: after the request is authorized, so a refused one never waits
+        for it or holds it."""
         try:
             access.refuse_rewritten_options(request)
         except access.AccessError as exc:
             raise drf_error(exc, request) from exc
         super().initial(request, *args, **kwargs)
-        if self.conditional_create_db is not None:
+        if self.conditional_create_db is not None and self.is_conditional_create(
+            request
+        ):
             self._scrud_create_locks.enter_context(
                 self.conditional_create_lock(self.conditional_create_db)
             )
+            self._scrud_create_locked = True
 
     def locked(self, queryset):
         """`queryset`, inside a locked write (`dispatch`) read on its
@@ -729,16 +792,22 @@ class ListValidatorsMixin:
         GET's 400 (``conditional_list_too_large``). They are read on the
         conditional create's database, under its lock
         (`LockedWriteMixin.dispatch`), so the create is evaluated against the
-        list the previous one left: needed outside one (a POST that is not a
-        conditional create, `LockedWriteMixin.is_conditional_create`, such as
-        one to a view that is no viewset, or a ``dispatch`` or ``initial``
-        that skips ``super()``), they are refused (``ImproperlyConfigured``)
-        rather than evaluated unlocked."""
+        list the previous one left: needed without that lock (a POST that is
+        not a conditional create, `LockedWriteMixin.is_conditional_create`,
+        such as one to a view that is no viewset, or a ``dispatch`` or
+        ``initial`` that skips ``super()``), they are refused
+        (``ImproperlyConfigured``) rather than evaluated unlocked. Calling it
+        records that the request's preconditions were evaluated
+        (`LockedWriteMixin.dispatch` refuses a conditional POST's success
+        without)."""
+        self._scrud_list_preconditions_evaluated = True
         validators = self.__dict__.get("_scrud_create_validators")
         if validators is None:
             validators = (None, None)
             if list_validators_needed(precondition_headers(request)):
-                if self.conditional_create_db is None:
+                if self.conditional_create_db is None or not self.__dict__.get(
+                    "_scrud_create_locked"
+                ):
                     raise ImproperlyConfigured(
                         f"{type(self).__name__} evaluates a conditional POST "
                         "against its list outside a conditional create's "
@@ -765,20 +834,25 @@ class ListValidatorsMixin:
         past ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`` it is that GET's
         400 (``conditional_list_too_large``).
 
-        A viewset's ``create`` decorated by ``scrudful_viewset`` need not call
-        it: scrudful evaluates the same preconditions before it runs, under
-        the conditional create's lock (`create_list_validators`), and calling
-        it there again gives ``None``. Call it first in a POST handler
-        scrudful does not evaluate, such as an ``@action(detail=False)``,
-        which is a conditional create too (`LockedWriteMixin`): it then reads
-        the list under that create's lock, and the handler may go on to
-        ``create``. Elsewhere it reads the list on database `using`
-        (``None``: as the router reads) and does not hold it: to hold it,
-        call it with `using` inside a transaction there that first locks a
-        row every such create locks, and create in that transaction."""
+        scrudful evaluates the same preconditions before a viewset's
+        ``create`` decorated by ``scrudful_viewset`` runs, under the
+        conditional create's lock (`create_list_validators`), and calling it
+        there again gives ``None`` (the validators are read once). It does
+        not evaluate them for a POST ``@action(detail=False)``, nor for the
+        ``create`` such an action calls (scrudful evaluates only the outer
+        of two nested handlers): call it first there, or in that ``create``,
+        as ``ResourceViewMixin.create`` does. The action is a conditional
+        create too (`LockedWriteMixin`): it reads the list under that
+        create's lock, and a success whose preconditions nothing evaluated
+        is refused (``ImproperlyConfigured``). Elsewhere it reads the list on
+        database `using` (``None``: as the router reads) and does not hold
+        it: to hold it, call it with `using` inside a transaction there that
+        first locks a row every such create locks, and create in that
+        transaction."""
         headers = precondition_headers(request)
-        if not any(headers.get(name) for name in LIST_PRECONDITIONS):
+        if not has_list_preconditions(headers):
             return None
+        self._scrud_list_preconditions_evaluated = True
         if self.conditional_create_db is not None and using in (
             None,
             self.conditional_create_db,
@@ -1079,10 +1153,17 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         return type_locked(self.get_resource_type(), using)
 
     def create(self, request):
-        """Create a resource from the body. scrudful has evaluated the
-        request's preconditions against the list before
-        (`create_list_validators`), under the type's lock when they need its
-        validators (`LockedWriteMixin`); other creates take no lock."""
+        """Create a resource from the body, once the request's preconditions
+        are evaluated against the list (`list_precondition_response`), under
+        the type's lock when they need its validators (`LockedWriteMixin`);
+        other creates take no lock. scrudful has evaluated them before, and
+        this evaluation then gives ``None``, unless ``create`` is called from
+        a POST ``@action(detail=False)``, which scrudful evaluates in its
+        place (with no list validators): a stale ``If-Match`` is then this
+        412."""
+        failed = self.list_precondition_response(request)
+        if failed is not None:
+            return failed
         return self.create_resource(request)
 
     def create_resource(self, request):
@@ -1244,14 +1325,18 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
     - a POST to the list carrying ``If-Match``, ``If-None-Match`` or
       ``If-Unmodified-Since`` is evaluated by scrudful against the list as
       the requester would GET it (`create_list_validators`), before your
-      ``create`` runs: a 412 or 400 never calls it. When the preconditions
-      need the list's validators, the evaluation and your ``create`` run in
-      one transaction holding the collection's lock
+      ``create`` runs: a 412 or 400 never calls it. A POST
+      ``@action(detail=False)`` (and a ``create`` it calls) is not evaluated
+      by scrudful: call `list_precondition_response` first in it (a success
+      nothing evaluated is refused, ``ImproperlyConfigured``). When the
+      preconditions need the list's validators, the evaluation and your
+      ``create`` run in one transaction holding the collection's lock
       (`conditional_create_lock`: scoped-rbac's
-      ``conditional.lock_collection`` of the ``queryset``'s model; migrate
+      ``conditional.lock_collection`` of the view's model; migrate
       ``scoped_rbac`` on its database), so two conditional creates run one
       at a time. Writes of your own that change the list without creating
-      do not take it.
+      do not take it; a lock of your own a create needs belongs in
+      `conditional_create_lock`, taken before the list is read.
     """
 
     # The detail route's URL keyword, as the detail stubs below take it.
@@ -1270,13 +1355,15 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
         return _collection_locked(self.get_queryset().model, using)
 
     def locked_write_database(self):
-        """The database of a locked write: where the view's model is written
-        (``router.db_for_write`` of its ``queryset``'s model). A view without a
-        ``queryset`` attribute (one that only overrides ``get_queryset()``)
-        writes on the default database unless it overrides this."""
+        """The database of a locked write (and of a conditional POST to the
+        list): where the view's model is written (``router.db_for_write`` of
+        the model of its ``queryset``, else of ``get_queryset()``'s). It is
+        called before DRF wraps the request: a ``get_queryset()`` that reads
+        ``self.request`` sees Django's ``HttpRequest`` (one that cannot
+        should leave a ``queryset`` attribute, or override this)."""
         queryset = getattr(self, "queryset", None)
         if queryset is None:
-            return DEFAULT_DB_ALIAS
+            queryset = self.get_queryset()
         return router.db_for_write(queryset.model)
 
     def filter_queryset(self, queryset):

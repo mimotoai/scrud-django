@@ -461,6 +461,31 @@ def created(text="new"):
     return Note.objects.filter(text=text).count()
 
 
+@contextmanager
+def recorded_collection_locks(events=None):
+    """Each conditional create lock GenericViewMixin takes, as it is held:
+    ``(thread name, time.monotonic())``; also ``"locked"`` appended to
+    `events`, if given. A rollback undoes the lock's ``holds``, not this
+    record."""
+    from scrud_django.mixins.view_mixins import GenericViewMixin
+
+    original = GenericViewMixin.conditional_create_lock
+    taken = []
+
+    @contextmanager
+    def conditional_create_lock(self, using):
+        with original(self, using):
+            taken.append((threading.current_thread().name, time.monotonic()))
+            if events is not None:
+                events.append("locked")
+            yield
+
+    with mock.patch.object(
+        GenericViewMixin, "conditional_create_lock", conditional_create_lock
+    ):
+        yield taken
+
+
 @pytest.mark.django_db
 def test_a_generic_create_with_the_lists_etag_creates_under_the_collection_lock():
     a_note()
@@ -507,12 +532,36 @@ def test_a_generic_create_that_needs_no_validators_takes_no_lock(headers):
 def test_a_refused_generic_create_takes_no_lock():
     a_note()
     before = collection_holds()
-    response = reader_in("").post(
-        list_url(), {"text": "new"}, format="json", HTTP_IF_MATCH='"nope"'
-    )
+    with recorded_collection_locks() as taken:
+        response = reader_in("").post(
+            list_url(), {"text": "new"}, format="json", HTTP_IF_MATCH='"nope"'
+        )
     assert response.status_code == 403, response.content
+    assert taken == []  # refused before the lock, not taken and rolled back
     assert collection_holds() == before
     assert created() == 0
+
+
+@pytest.mark.django_db
+def test_a_conditional_create_locks_the_collection_before_it_reads_the_list():
+    a_note()
+    client = superuser_client()
+    etag = client.get(list_url())["ETag"]
+    note_table = connection.ops.quote_name(Note._meta.db_table)
+    events = []
+
+    def record(execute, sql, params, many, context):
+        if sql.startswith("SELECT") and note_table in sql:
+            events.append("list read")
+        return execute(sql, params, many, context)
+
+    with recorded_collection_locks(events), connection.execute_wrapper(record):
+        response = client.post(
+            list_url(), {"text": "new"}, format="json", HTTP_IF_MATCH=etag
+        )
+    assert response.status_code == 201, response.content
+    assert events and events[0] == "locked", events
+    assert "list read" in events, events
 
 
 def import_url():
@@ -653,16 +702,183 @@ def test_a_conditional_post_outside_a_conditional_create_is_refused():
     assert created() == 0
 
 
+# A POST @action of the list whose handler calls a create that does not
+# evaluate the preconditions (tests.urls.NoteUncheckedImportViewSet): scrudful
+# evaluates nothing of the nested create, so its success is refused
+# (ImproperlyConfigured) and what it wrote rolled back, whatever the
+# precondition. One without a precondition is no conditional POST.
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"HTTP_IF_MATCH": "list"},
+        {"HTTP_IF_NONE_MATCH": '"other"'},
+        {"HTTP_IF_MATCH": "*"},
+        {"HTTP_IF_NONE_MATCH": "*"},
+    ],
+    ids=["if-match-list", "if-none-match-tag", "if-match-any", "if-none-match-any"],
+)
+def test_an_actions_create_nothing_evaluated_is_refused_and_rolled_back(headers):
+    from django.core.exceptions import ImproperlyConfigured
+
+    a_note()
+    client = superuser_client()
+    if headers.get("HTTP_IF_MATCH") == "list":
+        headers = {"HTTP_IF_MATCH": client.get(list_url())["ETag"]}
+    with pytest.raises(ImproperlyConfigured, match="without evaluating"):
+        client.post(
+            reverse("generic-notes-unchecked-import"),
+            {"text": "new"},
+            format="json",
+            **headers,
+        )
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_an_actions_create_without_preconditions_is_unconditional():
+    a_note()
+    response = superuser_client().post(
+        reverse("generic-notes-unchecked-import"), {"text": "new"}, format="json"
+    )
+    assert response.status_code == 201, response.content
+    assert created() == 1
+
+
+# A POST that ``@<action>.mapping.post`` maps to a handler of its own
+# (tests.urls.NoteMappedImportViewSet), which DRF gives no ``detail``: a
+# conditional create all the same, routed by a router (which gives the view
+# ``detail``) or not (the viewset's extra actions tell).
+
+MAPPED_ROUTES = pytest.mark.parametrize(
+    "route", ["routed-notes-imports", "generic-notes-mapped-import"]
+)
+
+
+@pytest.mark.django_db
+@MAPPED_ROUTES
+def test_a_mapped_posts_stale_create_is_412(route):
+    a_note()
+    client = superuser_client()
+    etag = client.get(list_url())["ETag"]
+    a_note("another")
+    with recorded_collection_locks() as taken:
+        response = client.post(
+            reverse(route), {"text": "new"}, format="json", HTTP_IF_MATCH=etag
+        )
+    assert response.status_code == 412, response.content
+    assert created() == 0
+    assert len(taken) == 1, taken
+
+
+@pytest.mark.django_db
+@MAPPED_ROUTES
+def test_a_mapped_posts_create_with_the_lists_etag_creates_under_the_lock(route):
+    a_note()
+    client = superuser_client()
+    etag = client.get(list_url())["ETag"]
+    with recorded_collection_locks() as taken:
+        response = client.post(
+            reverse(route), {"text": "new"}, format="json", HTTP_IF_MATCH=etag
+        )
+    assert response.status_code == 201, response.content
+    assert created() == 1
+    assert len(taken) == 1, taken
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "initkwargs, expected",
+    [
+        ({"action_map": {"post": "create"}}, True),
+        ({"action_map": {"post": "import_note"}}, True),  # mapped, no router
+        ({"action_map": {"post": "update"}}, False),
+        ({"action_map": {"post": "import_note"}, "detail": False}, True),
+        ({"action_map": {"post": "import_note"}, "detail": True}, False),
+        ({"action_map": {"post": "create"}, "detail": True}, False),
+        ({}, False),
+    ],
+)
+def test_which_posts_are_to_the_list(initkwargs, expected):
+    from scrud_django.mixins.view_mixins import LockedWriteMixin
+
+    from .urls import NoteMappedImportViewSet
+
+    view = NoteMappedImportViewSet(**initkwargs)
+    assert view.is_list_post(APIRequestFactory().post("/")) is expected
+    assert view.is_list_post(APIRequestFactory().get("/")) is False
+    assert LockedWriteMixin().is_list_post(APIRequestFactory().post("/")) is False
+
+
+@pytest.mark.django_db
+def test_an_initial_that_skips_super_is_refused_its_conditional_create():
+    # DRF's initial alone: neither scoped-rbac's nor LockedWriteMixin's, so
+    # the collection lock is never taken. The preconditions are refused
+    # rather than evaluated unlocked.
+    from django.core.exceptions import ImproperlyConfigured
+    from rest_framework.views import APIView
+
+    from .urls import NoteViewSet
+
+    class Bypassing(NoteViewSet):
+        def initial(self, request, *args, **kwargs):
+            APIView.initial(self, request, *args, **kwargs)
+
+    a_note()
+    etag = superuser_client().get(list_url())["ETag"]
+    request = APIRequestFactory().post(
+        list_url(), {"text": "new"}, format="json", HTTP_IF_MATCH=etag
+    )
+    force_authenticate(request, UserFactory(is_superuser=True, is_staff=True))
+    with pytest.raises(ImproperlyConfigured, match="outside a conditional create"):
+        Bypassing.as_view({"post": "create"})(request)
+    assert created() == 0
+
+
+@pytest.mark.django_db
+def test_a_view_without_a_queryset_attribute_writes_where_its_model_is_routed():
+    from django.db import router
+
+    from .urls import NoteViewSet
+
+    class Unqueried(NoteViewSet):
+        queryset = None
+
+        def get_queryset(self):
+            return Note.objects.all()
+
+    def db_for_write(model, **hints):
+        return "other" if model is Note else DEFAULT_DB_ALIAS
+
+    with mock.patch.object(router, "db_for_write", db_for_write):
+        assert Unqueried().locked_write_database() == "other"
+        assert NoteViewSet().locked_write_database() == "other"
+
+
 @TWO_WRITERS
 @pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("lock_row", ["first-use", "existing"])
 def test_two_generic_conditional_creates_with_one_etag_give_one_201_and_one_412(
-    committed_types,
+    committed_types, lock_row
 ):
     # The first create pauses after its preconditions passed, holding the
     # collection lock; the second, sent meanwhile, waits for the lock, then
-    # is evaluated against the list the first left.
+    # is evaluated against the list the first left. Whether or not the
+    # collection's lock row exists yet (scoped-rbac creates it on first use).
+    from scoped_rbac.conditional import lock_collection
+    from scoped_rbac.models import CollectionLock
+
     from .urls import NoteSerializer
 
+    if lock_row == "existing":
+        with transaction.atomic():
+            lock_collection(Note, DEFAULT_DB_ALIAS)
+    label = Note._meta.label_lower
+    assert CollectionLock.objects.filter(label=label).exists() is (
+        lock_row == "existing"
+    )
     a_note("existing")
     first_client, second_client = superuser_client(), superuser_client()
     etag = first_client.get(list_url())["ETag"]
@@ -689,11 +905,18 @@ def test_two_generic_conditional_creates_with_one_etag_give_one_201_and_one_412(
         timeline["second sent"] = time.monotonic()
         return create(second_client, "second")
 
-    with mock.patch.object(NoteSerializer, "is_valid", is_valid):
+    with (
+        mock.patch.object(NoteSerializer, "is_valid", is_valid),
+        recorded_collection_locks() as taken,
+    ):
         results = run_threads(
             first=lambda: create(first_client, "first"), second=second
         )
     assert timeline["paused"] < timeline["second sent"] < timeline["resumed"], timeline
     assert results == {"first": 201, "second": 412}, results
+    # The second waited for the lock: it held it only after the first resumed.
+    locked = dict(taken)
+    assert sorted(locked) == ["first", "second"], taken
+    assert locked["second"] > timeline["resumed"], (taken, timeline)
     texts = sorted(Note.objects.values_list("text", flat=True))
     assert texts == ["existing", "first"], texts

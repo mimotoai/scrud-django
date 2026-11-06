@@ -3,7 +3,9 @@ says: a list's collection schema and a JSON Schema resource as
 ``application/schema+json``, a list's collection context and a JSON-LD
 context resource as ``application/ld+json``. A client that asks for
 ``application/json`` still gets the same body as ``application/json``;
-errors and lists keep theirs, and OPTIONS is a 204 without content."""
+errors and lists keep theirs. The OPTIONS of a resource (a scrudful view) is a
+204 without content; that of a collection document (a plain DRF view) is DRF's
+200."""
 
 import pytest
 from django.conf import settings
@@ -111,7 +113,8 @@ def test_lists_keep_application_json_and_options_has_no_content():
         assert content_type(response) == "application/json", name
     collections, resources = documents()[:2], documents()[2:]
     for url, _media_type in collections:
-        # Plain DRF views: DRF's OPTIONS metadata, as application/json.
+        # Plain DRF views (no scrudful): DRF's OPTIONS metadata, as
+        # application/json, and no HSR link.
         response = client.options(url)
         assert response.status_code == 200, (url, response.content)
         assert content_type(response) == "application/json", url

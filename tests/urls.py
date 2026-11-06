@@ -3,7 +3,7 @@ from uuid import uuid4
 from django.contrib import admin
 from django.urls import include, path
 from django.utils.timezone import now
-from rest_framework import serializers, status, viewsets
+from rest_framework import routers, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
@@ -418,6 +418,86 @@ urlpatterns.append(
         "generic/notes-import/",
         NoteImportViewSet.as_view({"post": "import_note"}),
         name="generic-notes-import",
+    )
+)
+
+
+# scrudful's 0.10 decorations: an @action needs @scrudful (scrudful.E007),
+# which gives it no list validators; in a POST @action, scrudful evaluates
+# nothing of the nested create (only the outer of two nested handlers).
+ACTION = dict(
+    error=problems.problem_entity(), error_body_func=problems.conditional_problem
+)
+
+
+class NoteUncheckedImportViewSet(NoteViewSet):
+    """The notes again, with a POST ``@action`` of the list that calls
+    ``create`` without evaluating the preconditions (NoteViewSet.create does
+    not): refused (ImproperlyConfigured) once it succeeds."""
+
+    @action(detail=False, methods=["post"])
+    @scrudful(**ACTION)
+    def import_note(self, request):
+        return self.create(request)
+
+
+class NoteMappedImportViewSet(NoteViewSet):
+    """The notes again, with a GET ``@action`` of the list whose POST is a
+    handler of its own (``@<action>.mapping.post``), which DRF gives no
+    ``detail``."""
+
+    @action(detail=False, methods=["get"])
+    @scrudful(**ACTION)
+    def imports(self, request):
+        return Response([])
+
+    @imports.mapping.post
+    @scrudful(**ACTION)
+    def import_note(self, request):
+        failed = self.list_precondition_response(request)
+        if failed is not None:
+            return failed
+        return self.create(request)
+
+
+routed_notes = routers.SimpleRouter()
+routed_notes.register(
+    "generic/routed-notes", NoteMappedImportViewSet, basename="routed-notes"
+)
+urlpatterns.extend(routed_notes.urls)
+urlpatterns.extend(
+    [
+        path(
+            "generic/notes-unchecked-import/",
+            NoteUncheckedImportViewSet.as_view({"post": "import_note"}),
+            name="generic-notes-unchecked-import",
+        ),
+        path(
+            "generic/notes-mapped-import/",
+            NoteMappedImportViewSet.as_view({"get": "imports", "post": "import_note"}),
+            name="generic-notes-mapped-import",
+        ),
+    ]
+)
+
+
+class ImportingResourceViewSet(ResourceViewSet):
+    """Partner profiles, created by a POST ``@action`` of the list that only
+    calls ``create``: ResourceViewMixin.create evaluates the preconditions."""
+
+    @action(detail=False, methods=["post"])
+    @scrudful(**ACTION)
+    def import_resource(self, request):
+        return self.create(request)
+
+
+urlpatterns.append(
+    path(
+        "importing/partner-profiles/",
+        ImportingResourceViewSet.as_view(
+            {"post": "import_resource"}, resource_type_name="partner-profiles"
+        ),
+        name="importing-partner-profiles",
     )
 )
 

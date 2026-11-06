@@ -40,7 +40,7 @@ HSR is a 500 (`scrudful.rest_framework._DataDependentError`), and
 `manage.py check` warns `scrudful.W001` for the route. The JSON Schema
 resource type (`json-schema`, registered with only a `schema_uri`) is
 such a type, as is any type registered with a schema and without
-`context_func` or `context_uri`. Its resources are served as before
+`context_resource`, `context_func` or `context_uri`. Its resources are served as before
 (GET, POST, PUT, DELETE, OPTIONS); only the document the OPTIONS links to
 fails. Found adopting scrudful 0.10 (scrud-django 0.14.0), in the demo:
 `GET /_hsr/json-schema-list` and `GET /_hsr/json-schema-detail`.
@@ -50,7 +50,8 @@ collection contexts; a decision on the IRIs, which are part of the API's
 semantics), or link no schema for them in the HSR and on their responses
 alike (scrudful requires the two to agree). Test: in
 `tests/test_options.py`, GET `/_hsr/json-schema-list` and expect 200; it
-is a 500 today.
+is a 500 today (under the tests' `DEBUG_PROPAGATE_EXCEPTIONS`, the test
+client raises `_DataDependentError` instead).
 
 <a id="workflow-grant-blocks-leaving"></a>
 ## workflow-grant-blocks-leaving: a `scrud_workflow` grant refuses moving a resource out of a context without a policy
