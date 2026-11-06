@@ -108,29 +108,48 @@ def type_locked(resource_type, using):
 def type_db():
     """The database `ResourceType` rows are written to
     (``router.db_for_write(ResourceType)``). A write reads its resource type
-    there, never through ``db_for_read`` (a replica may be stale)."""
+    there, never through ``db_for_read`` (a replica may be stale), with the
+    documents it validates and links by (`get_resource_type_for`)."""
     return router.db_for_write(ResourceType)
+
+
+# The documents of a resource type a write validates its body against and
+# links to, with their own types (the schema's says whether it is a JSON
+# Schema): read with the type, on its database (`get_resource_type_for`).
+TYPE_DOCUMENTS = (
+    "schema__resource_type",
+    "context__resource_type",
+    "indexing_policy__resource_type",
+)
 
 
 def get_resource_type_for(slug, using=None):
     """The latest revision of the resource type `slug` (404 if none), read on
-    database `using` (``None``: as the router reads it)."""
-    queryset = ResourceType.objects.order_by("-revision")
+    database `using` (``None``: as the router reads it). Read on a given
+    database, its documents (`TYPE_DOCUMENTS`: its schema, which validates a
+    write, its context and indexing policy) come with it, from the same
+    database: loaded later, as related objects, the router would read them
+    (``db_for_read`` with the type as hint), from a replica that may not
+    have the type's latest schema."""
+    queryset = ResourceType.objects.filter(slug=slug).order_by("-revision")
     if using is not None:
-        queryset = queryset.using(using)
-    return get_list_or_404(queryset, slug=slug)[0]
+        queryset = queryset.using(using).select_related(*TYPE_DOCUMENTS)
+    return get_list_or_404(queryset[:1])[0]
 
 
 def get_locked_resource(resource_type, slug, using):
     """The `Resource` of `resource_type` with primary key `slug` (404 if
     none), read on database `using` with its row locked
     (``select_for_update``) until the caller's transaction there ends. Take
-    `lock_if_workflow_policy` first."""
-    return get_object_or_404(
+    `lock_if_workflow_policy` first. Its type is `resource_type` itself, not
+    loaded again (through the read router)."""
+    resource = get_object_or_404(
         Resource.objects.using(using).select_for_update(),
         resource_type=resource_type,
         pk=int(slug),
     )
+    Resource.resource_type.field.set_cached_value(resource, resource_type)
+    return resource
 
 
 class ResourceTypeRegistration:
@@ -278,7 +297,7 @@ class ResourceRegistration:
         Resource
 
         """
-        resource_type = get_resource_type_for(register_type)
+        resource_type = get_resource_type_for(register_type, using=type_db())
         resource = Resource(content=content, resource_type=resource_type)
         resource = ResourceRegistration.register_instance(resource)
         return resource

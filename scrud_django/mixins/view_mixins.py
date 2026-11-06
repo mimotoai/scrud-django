@@ -81,6 +81,10 @@ from scrud_django.workflow import (
 # write run in one transaction with the row locked (`ResourceViewMixin.dispatch`).
 LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 
+# The methods whose resource type is read on its write database
+# (`ResourceViewMixin.get_resource_type`): the writes.
+TYPE_WRITE_METHODS = LOCKED_WRITE_METHODS | {"POST"}
+
 
 # The preconditions a POST to a list evaluates (`list_precondition_response`).
 LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
@@ -491,8 +495,11 @@ class LockedWriteMixin:
     must return it (or let it propagate). One that drops it and answers
     otherwise may go undetected: what it writes then commits. (A list
     callback that raises records no evaluation, so a success after dropping
-    its exception is refused as unevaluated, unless another evaluation was
-    recorded.)
+    its exception is refused as unevaluated, unless an evaluation was
+    recorded before it raised: by ``list_etag_func``, which scrudful calls
+    before ``list_last_modified_func``, or by `list_precondition_response`.
+    An exception scrudful raises after a callback returned, from
+    ``quote_etag`` say, is not covered.)
 
     Other requests are not wrapped. A subclass overriding ``dispatch`` or
     ``initial`` must call ``super()``: without it, a conditional create's
@@ -1093,14 +1100,19 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
     def get_resource_type(self):
         """The view's resource type, read once per request and database (the
         filter, the serializer, the validators, the Links and the write all
-        ask for it). Inside a locked write, or a conditional POST's
-        transaction (`dispatch`), it is read on the type's write database
-        (`type_db`), not through the read router: a conditional create locks
-        the type row it reads (`conditional_create_lock`), and two creates
-        reading different revisions of the type from a lagging replica would
-        lock different rows."""
+        ask for it). For a write (`TYPE_WRITE_METHODS`; inside a locked
+        write's or a conditional POST's transaction, `dispatch`, whatever
+        the method) it is read on the type's write database (`type_db`),
+        with the documents the write is validated against and links to
+        (``registration.TYPE_DOCUMENTS``), not through the read router: a
+        lagging replica would validate the body against an older schema, and
+        a conditional create locks the type row it reads
+        (`conditional_create_lock`), so two creates reading different
+        revisions would lock different rows."""
         transaction_db = self.locked_write_db or self.conditional_create_db
-        using = type_db() if transaction_db is not None else None
+        method = getattr(getattr(self, "request", None), "method", None)
+        writes = transaction_db is not None or method in TYPE_WRITE_METHODS
+        using = type_db() if writes else None
         read = self.__dict__.setdefault("_scrud_resource_types", {})
         if using not in read:
             read[using] = get_resource_type_for(self.resource_type_name, using=using)
@@ -1130,10 +1142,11 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         `Resource` is returned. Inside a locked write (`dispatch`) the lookup
         reads the write database with the row locked (`locked`), whatever
         database a ``get_queryset()`` of a subclass selects (``using()``). A
-        subclass's ``get_queryset()`` that does not call ``super()`` and
-        builds a queryset PostgreSQL cannot lock (``DISTINCT``, an aggregate,
-        the nullable side of an outer join) fails such a write with
-        ``NotSupportedError`` rather than writing unlocked."""
+        ``get_queryset()`` or filter backend of a subclass that makes the
+        queryset one PostgreSQL cannot lock ``FOR UPDATE`` (``DISTINCT``,
+        ``GROUP BY``, the nullable side of an outer join) fails such a write
+        there with ``NotSupportedError``; MySQL and MariaDB lock it, and
+        SQLite has no row locks."""
         previous, self._scrud_in_get_object = self._scrud_in_get_object, True
         try:
             queryset = self.locked(self.filter_queryset(self.get_queryset()))
@@ -1321,6 +1334,13 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.save_checked(lambda: self.perform_create(serializer))
+        resource_type = self.get_resource_type()
+        if serializer.instance.resource_type_id == resource_type.pk:
+            # The type the view read (on its write database), not loaded
+            # again through the read router.
+            Resource.resource_type.field.set_cached_value(
+                serializer.instance, resource_type
+            )
         headers = {
             'Location': reverse(
                 serializer.instance.resource_type.route_name_detail(),
@@ -1556,9 +1576,10 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
         - ``get_queryset()`` selects another database (``using()``), unless
           the view declares it a replica of `using` (`reads_replica`). Either
           way, inside the transaction the lookup, the list's validators and
-          the locks read `using` (with ``Meta.object_validators`` on, as
-          `ScrudfulMeta` has it: item validators of your own computed from
-          ``get_queryset()`` read where it says).
+          the locks read `using`, and so do the item validators, from the
+          locked object, with ``Meta.object_validators`` on, as
+          `ScrudfulMeta` has it (off, item validators of your own computed
+          from ``get_queryset()`` read where it says).
 
         A view that overrides `locked_write_database` has chosen its
         database: its writes, creates included (a ``ModelSerializer`` creates

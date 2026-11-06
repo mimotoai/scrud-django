@@ -1471,8 +1471,9 @@ def test_a_replica_views_conditional_post_is_evaluated_on_the_write_database(
     fresh,
 ):
     # Declared a replica, it is served; the list's validators are read on the
-    # write database (as they would be undeclared), under the collection's lock, as the plain view's GET there
-    # gives them (the replica, "other", has no note).
+    # write database (as they would be undeclared), under the collection's
+    # lock, as the plain view's GET there gives them (the replica, "other",
+    # has no note).
     ReplicaNotes = replica_notes(reads_replica=True)
     a_note()
     etag = superuser_client().get(list_url())["ETag"] if fresh else '"stale"'

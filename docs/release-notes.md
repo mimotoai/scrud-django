@@ -117,9 +117,10 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
    from `list_precondition_response`), or an exception an evaluation
    raised, must return it or let it propagate. One that drops it and
    answers otherwise may go undetected, and what it wrote then commits.
-   A `dispatch` or `initial` of your own must call `super()`: a conditional create whose lock was not taken
-   raises `ImproperlyConfigured` rather than run unserialized, whichever
-   the list callbacks (yours too). A POST to an item is not covered: see
+   A `dispatch` or `initial` of your own must call `super()`: a
+   conditional create whose lock was not taken raises
+   `ImproperlyConfigured` rather than run unserialized, whichever the list
+   callbacks (yours too). A POST to an item is not covered: see
    Known issues. A handler of your own (no `@action`) routed with
    `as_view` on a collection nested under a parent whose URL keyword is
    the view's lookup keyword (`slug` for scrud's views:
@@ -182,6 +183,18 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
 * `docs/follow-ups.md`, `scrudful-create-preconditions`: closed. scrudful
   evaluates a create's preconditions, and django-scoped-rbac 0.12 its own
   role and role-assignment lists'.
+* Writes read their resource type, and the schema they validate the body
+  against, on the type's write database (`type_db()`), never through the
+  router's `db_for_read`, which a primary/replica router sends to a replica
+  that may lag behind. A create (conditional or not) read its type there,
+  and every API write and `ResourceRegistration.register` loaded the
+  type's schema and context through the router (as related objects, which
+  a router ignoring hints routes like any read): a body the current schema
+  refuses could be validated against an older one and stored, and two
+  conditional creates reading different revisions of the type locked
+  different rows, so they did not run one at a time. The type's schema,
+  context and indexing policy are now read with the type, on its database
+  (`registration.TYPE_DOCUMENTS`).
 
 ### Known issues
 

@@ -173,13 +173,14 @@ def test_a_write_is_authorized_against_the_stored_context(method):
 
 class RecordingRouter:
     """Routes nothing; records the reads of scrud_django models that the
-    router decides without an instance hint (a query, not a related object's
-    load)."""
+    router decides: queries, and loads of related objects (a type's schema,
+    with the type as the instance hint), which a router ignoring hints, as
+    a primary/replica one does, would send to the replica too."""
 
     reads = []
 
     def db_for_read(self, model, **hints):
-        if model._meta.app_label == "scrud_django" and "instance" not in hints:
+        if model._meta.app_label == "scrud_django":
             self.reads.append(model.__name__)
         return None
 
@@ -201,14 +202,13 @@ def test_api_writes_read_no_resource_or_type_through_the_read_router():
     list_etag = client.get(reverse("todos-list"))["ETag"]
     with routed_reads() as reads:
         # A conditional create locks the type row it reads: read on the
-        # type's write database, not a replica's (maybe older) revision.
-        response = client.post(
-            reverse("todos-list"),
-            IN_PROGRESS,
-            format="json",
-            HTTP_IF_MATCH=list_etag,
-        )
-        assert response.status_code == 201, response.content
+        # type's write database, not a replica's (maybe older) revision. Every
+        # create reads there the schema it validates the body against.
+        for headers in ({"HTTP_IF_MATCH": list_etag}, {"HTTP_IF_MATCH": "*"}, {}):
+            response = client.post(
+                reverse("todos-list"), IN_PROGRESS, format="json", **headers
+            )
+            assert response.status_code == 201, (headers, response.content)
         response = client.put(
             todo_url(todo), DONE, format="json", HTTP_IF_MATCH=quote_etag(todo.etag)
         )
@@ -222,6 +222,7 @@ def test_api_writes_read_no_resource_or_type_through_the_read_router():
 def test_server_side_writes_read_no_resource_or_type_through_the_read_router():
     todo = a_todo()
     with routed_reads() as reads:
+        ResourceRegistration.register(dict(IN_PROGRESS), "todos")
         ResourceRegistration.update(
             content=dict(DONE), register_type="todos", slug=str(todo.pk)
         )

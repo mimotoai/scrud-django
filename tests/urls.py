@@ -437,8 +437,9 @@ ACTION = dict(
 class NoteUncheckedImportViewSet(NoteViewSet):
     """The notes again, with a POST ``@action`` of the list that calls
     ``create``, which scrudful skips as a nested handler, so nothing
-    evaluates the preconditions: its success (201, whatever the
-    precondition) is refused (ImproperlyConfigured) and rolled back."""
+    evaluates the preconditions: its success (201, whatever a precondition
+    it must evaluate: not a POST without one, nor one with ``If-Match: *``
+    alone) is refused (ImproperlyConfigured) and rolled back."""
 
     @action(detail=False, methods=["post"])
     @scrudful(**ACTION)

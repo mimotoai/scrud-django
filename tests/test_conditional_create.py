@@ -292,6 +292,29 @@ def test_a_conditional_create_locks_the_type_row_before_it_writes(writer):
 
 
 @pytest.mark.django_db
+def test_a_conditional_create_locks_the_row_of_the_type_it_saves_under(writer):
+    # The lock serializes the creates of the type only if it is the row the
+    # resource is saved under (each type revision is a row of its own).
+    # Recorded from the query's select_for_update flag, which SQLite (no row
+    # locks) keeps too.
+    etag = writer.get(url())["ETag"]
+    locked = []
+    original = QuerySet._fetch_all
+
+    def fetch_all(self):
+        fresh = self._result_cache is None
+        original(self)
+        if fresh and self.model is ResourceType and self.query.select_for_update:
+            locked.extend(row.pk for row in self._result_cache)
+
+    with mock.patch.object(QuerySet, "_fetch_all", fetch_all):
+        response = post(writer, HTTP_IF_MATCH=etag)
+    assert response.status_code == 201, response.content
+    saved = Resource.objects.get(content__name="new")
+    assert locked == [saved.resource_type_id], locked
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize(
     "headers", [{}, {"HTTP_IF_MATCH": "*"}], ids=["unconditional", "if-match-any"]
 )
