@@ -8,7 +8,8 @@ context, and DRF's ``GenericAPIView.filter_queryset``
 (as ``ListValidatorsMixin.filter_queryset``, which narrows a list by the
 object check right after the RBAC filter). It also relies on upstream
 internals: the ``error`` / ``error_body_func`` attributes of scrudful's
-``ScrudfulViewFunc`` (``gate_uniform_errors``). These tests fail when
+``ScrudfulViewFunc`` (``gate_uniform_errors``) and its ``_early_response``
+(``ListValidatorsMixin.list_precondition_response``). These tests fail when
 upstream drifts from what
 was re-implemented or relied on: the names the upstream code uses are
 pinned, and the re-implementations must give upstream's results where
@@ -370,3 +371,33 @@ def test_scrudfuls_view_func_keeps_error_and_error_body_func_in_its_dict():
     )
     assert handler.__dict__["error"] is handler.error
     assert handler.__dict__["error_body_func"] is handler.error_body_func
+
+
+def test_scrudfuls_early_response_is_what_a_list_precondition_response_renders_with():
+    # ListValidatorsMixin.list_precondition_response renders a failed list
+    # precondition with the create (else list) handler's private
+    # ScrudfulViewFunc._early_response(result, request, args, kwargs), as
+    # scrudful renders its own 400 and 412 (error entity, body function).
+    import inspect
+
+    from scrudful.rest_framework import ScrudfulViewFunc
+
+    assert list(inspect.signature(ScrudfulViewFunc._early_response).parameters) == [
+        "self",
+        "result",
+        "request",
+        "args",
+        "kwargs",
+    ]
+    assert code_names(ScrudfulViewFunc._early_response) == (
+        "_conditional_response",
+        "_entity_links",
+        "body",
+        "error",
+        "error_body_func",
+        "join_links",
+        "live_base_url",
+        "media_type",
+        "setting_error",
+        "with_error_body",
+    )

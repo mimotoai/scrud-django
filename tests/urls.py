@@ -4,15 +4,16 @@ from django.contrib import admin
 from django.urls import include, path
 from django.utils.timezone import now
 from rest_framework import serializers, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
-from scoped_rbac import access
+from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import IsAuthorized
 from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
-from scrudful.rest_framework import hsr_urls, scrudful_viewset
+from scrudful.rest_framework import hsr_urls, scrudful, scrudful_viewset
 
 from scrud_django import registration
 from scrud_django.mixins.view_mixins import GenericViewMixin, ReadableMixin
@@ -392,6 +393,32 @@ urlpatterns.extend(
             name="generic-notes-detail",
         ),
     ]
+)
+
+
+class NoteImportViewSet(NoteViewSet):
+    """The notes again, with a POST ``@action`` of the list whose
+    preconditions scrudful does not evaluate (its ``@scrudful``, which
+    scrudful.E007 asks of an action, gives no list validators): it evaluates
+    them itself (`list_precondition_response`), then creates."""
+
+    @action(detail=False, methods=["post"])
+    @scrudful(
+        error=problems.problem_entity(), error_body_func=problems.conditional_problem
+    )
+    def import_note(self, request):
+        failed = self.list_precondition_response(request)
+        if failed is not None:
+            return failed
+        return self.create(request)
+
+
+urlpatterns.append(
+    path(
+        "generic/notes-import/",
+        NoteImportViewSet.as_view({"post": "import_note"}),
+        name="generic-notes-import",
+    )
 )
 
 

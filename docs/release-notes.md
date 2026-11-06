@@ -5,8 +5,8 @@
 This release requires django-scoped-rbac 0.12.1 and scrudful 0.10.1
 (Semantic HTTP 0.1 at spec commit `37ec1ce`), which are breaking: OPTIONS is
 a 204 without content linking an HTTP Schema Resource (HSR), `Allow` lists
-what the requester may do, and a create's preconditions are evaluated by
-scrudful. Work through Upgrading before you deploy it.
+the methods the requester's grants allow, and a create's preconditions are
+evaluated by scrudful. Work through Upgrading before you deploy it.
 
 ### Upgrading
 
@@ -18,38 +18,49 @@ scrudful. Work through Upgrading before you deploy it.
    The HSR is built without a request; its schema and context links, and
    response Links, resolve against it.
 3. Migrate: django-scoped-rbac's `0008_collectionlock` adds the table of its
-   collection lock. Run `migrate` on every database that stores an
-   access-controlled model, including the database of a `GenericViewMixin`
-   view's model (its conditional creates lock it, below).
+   collection lock (`scoped_rbac.CollectionLock`). A `GenericViewMixin`
+   view's conditional create locks it on the view's `locked_write_database()`
+   (the database its model is written to, below): run `migrate` there, and,
+   with a database router, let its `allow_migrate` put `scoped_rbac`'s
+   `CollectionLock` on that database.
 4. Clients: an OPTIONS is a 204 without content or `Content-Type`; GET the
    document its HSR `Link`
    (`rel="https://w3id.org/semantic-http/ns#http-schema-resource-document"`)
    names for what the OPTIONS body held (`get`, `post`, ... with their
    schemas and `x-rdf-context`); it is the same for every requester.
-   `Allow` lists the methods this requester may use (an anonymous user, or
-   one without grants, may get `OPTIONS` alone). Every response of a scrud
-   route carries the HSR link after its other Links; a list envelope's
-   `link` is unchanged (the resource's schema and context).
+   `Allow` lists the methods the requester's grants allow there (an
+   anonymous user, or one without grants, may get `OPTIONS` alone); a POST
+   or PUT is checked without a body, so it is listed when they may write in
+   some context, whatever conditions their grants put on the body. Every
+   response of a scrud route carries the HSR link after its other Links; a
+   list envelope's `link` is unchanged (the resource's schema and context).
 5. Clients of scoped-rbac's `roles/` and `role-assignments/` lists, which
    `scrud_django.urls` mounts: they now send `ETag` and `Last-Modified`, and
    a POST to them evaluates `If-Match`, `If-None-Match` and
    `If-Unmodified-Since` (412, 400), as scrud's own lists do.
 6. Your code: a subclass of a scrud viewset that overrides a handler
    (`list`, `create`, ...) must be decorated with `@scrudful_viewset` again,
-   so that scrudful handles the override (`scrudful.E007` otherwise).
+   so that scrudful handles the override, and an `@action` of one needs
+   `@scrudful(...)` (`scrudful.E007` otherwise).
 7. Your code: on a `GenericViewMixin` view, scrudful now evaluates a POST's
    preconditions against the list (as the requester would GET it) before
    your `create` runs, and when they need the list's validators the view
    holds scoped-rbac's collection lock of its model
    (`conditional_create_lock`) from after the request is authorized until
-   the response. Remove the `list_precondition_response` call and the lock
-   from a `create` of your own: `list_precondition_response` is deprecated
-   and returns `None`. Override `conditional_create_lock` to lock another
-   row. A `dispatch` or `initial` of your own must call `super()`.
-8. On a database that is not migrated yet, `manage.py check` (and so
-   `migrate`) warns `scrudful.W001` for each scrud route: the HSR's link
-   callables read the `ResourceType` rows. The HSR is then built when first
-   served; the warnings stop once the database is migrated.
+   the response. A `create` of your own need not call
+   `list_precondition_response` or take a lock (calling it gives `None`:
+   scrudful has evaluated). A POST `@action(detail=False)` whose
+   preconditions need the list's validators is a conditional create too: it
+   holds the lock, and scrudful still evaluates nothing for it, so it calls
+   `list_precondition_response` first, which then reads the list under the
+   lock. Override `conditional_create_lock` to lock another row. A
+   `dispatch` or `initial` of your own must call `super()`: a conditional
+   POST evaluated outside the lock's transaction raises
+   `ImproperlyConfigured` rather than run unserialized.
+8. `manage.py check` warns `scrudful.W001` for the routes of a resource type
+   whose HSR cannot be built, `json-schema-list` and `json-schema-detail`
+   among scrud's own (Known issues). On a database not migrated yet no
+   resource-type route is registered, as before, so nothing is warned.
 
 ### Changed
 
@@ -73,7 +84,10 @@ scrudful. Work through Upgrading before you deploy it.
   evaluated none unless your `create` called `list_precondition_response`),
   and conditional ones run one at a time under scoped-rbac's
   `lock_collection` of the view's model.
-* scrud no longer uses scrudful's private `ScrudfulViewFunc._early_response`.
+* A request rewritten from an OPTIONS (middleware setting `request.method`,
+  say from `X-HTTP-Method-Override`), which looks like scrudful's body-less
+  copy of an OPTIONS, is refused (403, 401 for the anonymous) by
+  `LockedWriteMixin.initial` too, whatever the order of a view's bases.
 
 ### Fixed
 

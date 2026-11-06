@@ -1,5 +1,5 @@
 import hashlib
-import warnings
+import inspect
 from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
 from urllib.parse import urlencode
@@ -20,10 +20,13 @@ from scoped_rbac.conditional import lock_collection
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import AccessAPIError, drf_error, view_permission
 from scoped_rbac.rest import AccessControlledAPIView
-from scrudful._django import precondition_headers
+from scrudful._django import aware, conditional_response, precondition_headers
 from scrudful.conditional import (
+    evaluate_preconditions,
+    http_timestamp,
     parse_etag_list,
     parse_http_date,
+    quote_etag,
 )
 from scrudful.rest_framework import ScrudfulViewFunc
 
@@ -76,6 +79,10 @@ from scrud_django.workflow import (
 # The methods whose lookup, authorization, preconditions, workflow check and
 # write run in one transaction with the row locked (`ResourceViewMixin.dispatch`).
 LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
+
+
+# The preconditions a POST to a list evaluates (`list_precondition_response`).
+LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
 
 
 def list_validators_needed(headers):
@@ -257,8 +264,9 @@ class ScrudfulMeta:
     def last_modified_func(obj):
         return obj.modified_at
 
-    # Link callbacks also run for create and the list route's OPTIONS, where
-    # there is no slug: they take ``**kwargs``.
+    # Link callbacks also run for create, where there is no slug, and when
+    # scrudful builds the HSR, with ``request`` None (its links resolve
+    # against ``SCRUDFUL["BASE_URL"]``): they take ``**kwargs``.
     def schema_link_or_func(view_instance, request, **kwargs):
         if view_instance.resource_type_name:
             resource_type = view_instance.get_resource_type()
@@ -395,15 +403,19 @@ class LockedWriteMixin:
         raise NotImplementedError()
 
     def is_conditional_create(self, request):
-        """Whether `request` is a POST this view answers with ``create`` that
-        carries a precondition needing the list's validators
-        (`list_validators_needed`; ``If-Match: *`` and ``If-None-Match: *``
-        alone do not)."""
-        return (
-            request.method == "POST"
-            and (getattr(self, "action_map", None) or {}).get("post") == "create"
-            and list_validators_needed(precondition_headers(request))
-        )
+        """Whether `request` is a POST to the list, that this viewset answers
+        with ``create`` or with an ``@action(detail=False)`` (which may call
+        `list_precondition_response`, or ``create``), carrying a precondition
+        that needs the list's validators (`list_validators_needed`;
+        ``If-Match: *`` and ``If-None-Match: *`` alone do not)."""
+        if request.method != "POST":
+            return False
+        action = (getattr(self, "action_map", None) or {}).get("post")
+        if action != "create":
+            handler = getattr(type(self), action, None) if action else None
+            if getattr(handler, "detail", None) is not False:
+                return False
+        return list_validators_needed(precondition_headers(request))
 
     def conditional_create_lock(self, using):
         """A context manager taking the lock every conditional create of this
@@ -412,6 +424,9 @@ class LockedWriteMixin:
         raise NotImplementedError()
 
     def dispatch(self, request, *args, **kwargs):
+        # A view instance serves one request: forget a create's validators a
+        # reused one read (`create_list_validators`).
+        self.__dict__.pop("_scrud_create_validators", None)
         if request.method in LOCKED_WRITE_METHODS:
             attribute = "locked_write_db"
         elif self.is_conditional_create(request):
@@ -432,10 +447,23 @@ class LockedWriteMixin:
         return response
 
     def initial(self, request, *args, **kwargs):
-        """DRF's (authentication, permissions, throttles), then, for a
-        conditional create, its lock (`conditional_create_lock`), held until
+        """Refuse a request rewritten from an OPTIONS
+        (``scoped_rbac.access.refuse_rewritten_options``: 403, 401 for the
+        anonymous; middleware rewriting an OPTIONS's ``request.method``, say
+        from ``X-HTTP-Method-Override``), which the body checks would take
+        for scrudful's copy of an OPTIONS and skip
+        (``ResourceViewMixin.check_permissions``): here, and not only in
+        scoped-rbac's ``AccessControlledAPIView.initial``, so that it is
+        refused whatever the order of the view's bases. scrudful checks
+        ``Allow`` on its copies without calling ``initial``. Then DRF's
+        (authentication, permissions, throttles), then, for a conditional
+        create, its lock (`conditional_create_lock`), held until
         `dispatch`'s transaction ends: after the request is authorized, so a
         refused one never waits for it or holds it."""
+        try:
+            access.refuse_rewritten_options(request)
+        except access.AccessError as exc:
+            raise drf_error(exc, request) from exc
         super().initial(request, *args, **kwargs)
         if self.conditional_create_db is not None:
             self._scrud_create_locks.enter_context(
@@ -698,31 +726,88 @@ class ListValidatorsMixin:
         None)``: ``If-Match: *`` passes and ``If-None-Match: *`` fails on the
         list existing, which it always does. Computing them is a GET of the
         list: past ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`` it is that
-        GET's 400 (``conditional_list_too_large``). Inside a conditional
-        create (`LockedWriteMixin.dispatch`) they are read on its database,
-        under its lock, so the create is evaluated against the list the
-        previous one left."""
+        GET's 400 (``conditional_list_too_large``). They are read on the
+        conditional create's database, under its lock
+        (`LockedWriteMixin.dispatch`), so the create is evaluated against the
+        list the previous one left: needed outside one (a POST that is not a
+        conditional create, `LockedWriteMixin.is_conditional_create`, such as
+        one to a view that is no viewset, or a ``dispatch`` or ``initial``
+        that skips ``super()``), they are refused (``ImproperlyConfigured``)
+        rather than evaluated unlocked."""
         validators = self.__dict__.get("_scrud_create_validators")
         if validators is None:
             validators = (None, None)
             if list_validators_needed(precondition_headers(request)):
+                if self.conditional_create_db is None:
+                    raise ImproperlyConfigured(
+                        f"{type(self).__name__} evaluates a conditional POST "
+                        "against its list outside a conditional create's "
+                        "locked transaction: serve the POST with a viewset's "
+                        "create or an @action(detail=False) "
+                        "(LockedWriteMixin.is_conditional_create), and call "
+                        "super() in dispatch and initial."
+                    )
                 with self.as_list_read(request, self.conditional_create_db) as read:
                     validators = (self.list_etag(read), self.list_last_modified())
             self._scrud_create_validators = validators
         return validators
 
     def list_precondition_response(self, request, using=None):
-        """Deprecated: always ``None``. scrudful 0.9 evaluates a create's
-        preconditions against the list (`create_list_validators`) before the
-        ``create`` handler runs, and `LockedWriteMixin` holds the conditional
-        create's lock, so a ``create`` of your own no longer calls this."""
-        warnings.warn(
-            "list_precondition_response is deprecated and returns None: "
-            "scrudful evaluates a create's preconditions before create runs.",
-            DeprecationWarning,
-            stacklevel=2,
+        """The response to a POST to the list whose preconditions fail, or
+        ``None`` to go on: ``If-Match``, else ``If-Unmodified-Since``, then
+        ``If-None-Match`` (``*`` fails: the list exists), with
+        ``scrudful.conditional.evaluate_preconditions``, against the list as
+        the requester would GET it from this URL. A failed one is scrudful's
+        412, a malformed one its 400, rendered as the view's ``create`` (else
+        ``list``) handler renders its own (problem details while
+        ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is on). The validators are only
+        computed when a precondition needs them (`list_validators_needed`);
+        past ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`` it is that GET's
+        400 (``conditional_list_too_large``).
+
+        A viewset's ``create`` decorated by ``scrudful_viewset`` need not call
+        it: scrudful evaluates the same preconditions before it runs, under
+        the conditional create's lock (`create_list_validators`), and calling
+        it there again gives ``None``. Call it first in a POST handler
+        scrudful does not evaluate, such as an ``@action(detail=False)``,
+        which is a conditional create too (`LockedWriteMixin`): it then reads
+        the list under that create's lock, and the handler may go on to
+        ``create``. Elsewhere it reads the list on database `using`
+        (``None``: as the router reads) and does not hold it: to hold it,
+        call it with `using` inside a transaction there that first locks a
+        row every such create locks, and create in that transaction."""
+        headers = precondition_headers(request)
+        if not any(headers.get(name) for name in LIST_PRECONDITIONS):
+            return None
+        if self.conditional_create_db is not None and using in (
+            None,
+            self.conditional_create_db,
+        ):
+            etag, last_modified = self.create_list_validators(request)
+        elif list_validators_needed(headers):
+            with self.as_list_read(request, using) as read:
+                etag, last_modified = self.list_etag(read), self.list_last_modified()
+        else:
+            etag = last_modified = None
+        result = evaluate_preconditions(
+            request.method,
+            headers,
+            etag=None if etag is None else quote_etag(etag),
+            last_modified=http_timestamp(aware(last_modified)),
+            require_precondition=False,
+            exists=True,
         )
-        return None
+        if result is None:
+            return None
+        # Rendered as scrudful renders a create's own 400 and 412 (the
+        # handler's error entity and body function).
+        for name in ("create", "list"):
+            handler = inspect.getattr_static(type(self), name, None)
+            if isinstance(handler, ScrudfulViewFunc):
+                return handler._early_response(
+                    result, request, (self, request, *self.args), dict(self.kwargs)
+                )
+        return conditional_response(result)
 
 
 class ReadableMixin:
@@ -1074,7 +1159,9 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         request check leaves it to. So does scrudful's body-less copy of an
         OPTIONS, on which it checks one method for ``Allow``
         (``scoped_rbac.access.checks_allow``): scoped-rbac checks a POST or
-        PUT there without a body, and the copy is no write to refuse."""
+        PUT there without a body, and the copy is no write to refuse. A
+        request that *arrives* so is refused before it gets here
+        (`LockedWriteMixin.initial`)."""
         if request.method in self.allowed_methods and not access.checks_allow(request):
             check_body_present(request, self)
             check_body_depth(request)
@@ -1153,8 +1240,7 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
       ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is on (`UniformErrorsMixin`); off,
       they are scrudful's native ``{"detail": ...}`` bodies;
     - an object an ``IsAuthorized`` subclass's object check refuses to read
-      is a 404 on the detail route, for every method (`object_readable`).
-
+      is a 404 on the detail route, for every method (`object_readable`);
     - a POST to the list carrying ``If-Match``, ``If-None-Match`` or
       ``If-Unmodified-Since`` is evaluated by scrudful against the list as
       the requester would GET it (`create_list_validators`), before your

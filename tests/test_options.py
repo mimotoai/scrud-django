@@ -4,23 +4,32 @@ and an ``Allow`` of the methods this requester may use.
 
 scrudful decides ``Allow`` by checking each method on a body-less copy of the
 OPTIONS (``scoped_rbac.access.checks_allow``): scrud's body checks, which
-refuse an empty POST or PUT with 400, must leave those copies alone, or the
-OPTIONS of anyone who may write is that 400."""
+refuse an empty POST or PUT with 400, must leave those copies alone, or
+every OPTIONS of a route serving POST or PUT is that 400. A request that
+arrives looking like such a copy (an OPTIONS whose ``request.method``
+middleware rewrote) is refused."""
 
 from uuid import uuid4
 
 import pytest
+from django.test import RequestFactory, override_settings
 from django.urls import reverse
 from django.utils.timezone import now
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
+from rest_framework.request import Request
 from rest_framework.test import APIClient
+from rest_framework.views import APIView
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
+from scrud_django.mixins.view_mixins import LockedWriteMixin
+from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
+from .models import Note
 from .steps import *  # noqa: F403, F401
 
 HSR_REL = "https://w3id.org/semantic-http/ns#http-schema-resource-document"
@@ -132,3 +141,104 @@ def test_the_hsr_is_served_by_get_and_is_the_same_for_everyone():
     assert hsr["options"] == {"responses": {"204": {"description": "No Content"}}}
     for method in ("get", "post"):
         assert method in hsr, sorted(hsr)
+
+
+@pytest.mark.django_db
+def test_options_of_a_write_only_user_lists_only_their_write():
+    reverse("json-ld-list")
+    stored = ResourceRegistration.register({"name": "kept"}, "json-ld")
+    response = user_granted("http.PUT").options(
+        reverse("json-ld-detail", args=[stored.pk])
+    )
+    assert_options_204(response)
+    assert allowed(response) == {"PUT", "OPTIONS"}
+
+
+@pytest.mark.django_db
+def test_the_hsr_of_a_detail_route_describes_its_methods():
+    reverse("json-ld-list")
+    stored = ResourceRegistration.register({"name": "kept"}, "json-ld")
+    url = hsr_link(APIClient().options(reverse("json-ld-detail", args=[stored.pk])))
+    assert url == "http://testserver/_hsr/json-ld-detail"
+    response = APIClient().get(url)
+    assert response.status_code == status.HTTP_200_OK, response.content
+    assert response["Content-Type"] == "application/json"
+    hsr = response.json()
+    assert hsr["options"] == {"responses": {"204": {"description": "No Content"}}}
+    for method in ("get", "put", "delete"):
+        assert method in hsr, sorted(hsr)
+    assert "post" not in hsr
+
+
+@pytest.mark.django_db
+def test_options_and_the_hsr_of_a_generic_view():
+    # tests.urls.NoteViewSet, a GenericViewMixin view of a model of its own.
+    reverse("generic-notes-list")
+    note = Note.objects.create(text="x", etag=uuid4().hex, modified_at=now())
+    client = APIClient()
+    client.force_authenticate(UserFactory(is_superuser=True, is_staff=True))
+    for route, methods in (
+        ("generic-notes-list", {"get", "head", "post"}),
+        ("generic-notes-detail", {"get", "put", "delete"}),
+    ):
+        args = [] if route.endswith("list") else [note.pk]
+        response = client.options(reverse(route, args=args))
+        assert_options_204(response)
+        assert {m.upper() for m in methods} | {"OPTIONS"} <= allowed(response)
+        url = hsr_link(response)
+        assert url == f"http://testserver/_hsr/{route}"
+        hsr = APIClient().get(url)
+        assert hsr.status_code == status.HTTP_200_OK, hsr.content
+        assert methods | {"options"} <= set(hsr.json()), sorted(hsr.json())
+
+
+# An OPTIONS whose ``request.method`` middleware rewrote (tests.middleware)
+# arrives looking like scrudful's body-less copy of an OPTIONS, on which the
+# body checks are skipped: it is refused (403, 401 for the anonymous) and
+# writes nothing.
+REWRITING = override_settings(
+    MIDDLEWARE=(
+        "django.contrib.sessions.middleware.SessionMiddleware",
+        "django.contrib.auth.middleware.AuthenticationMiddleware",
+        "tests.middleware.MethodOverrideMiddleware",
+    )
+)
+
+
+@pytest.mark.django_db
+@REWRITING
+def test_an_options_rewritten_to_a_post_is_refused():
+    reverse("json-ld-list")
+    before = Resource.objects.count()
+    response = user_granted("http.POST").options(
+        reverse("json-ld-list"), HTTP_X_HTTP_METHOD_OVERRIDE="POST"
+    )
+    assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
+    assert Resource.objects.count() == before
+
+
+@pytest.mark.django_db
+@REWRITING
+def test_an_anonymous_options_rewritten_to_a_post_is_401():
+    # tests.rbac_defaults lets the anonymous POST partner profiles.
+    before = Resource.objects.count()
+    response = APIClient().options(
+        reverse("partner-profiles-list"), HTTP_X_HTTP_METHOD_OVERRIDE="POST"
+    )
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED, response.content
+    assert Resource.objects.count() == before
+
+
+@pytest.mark.django_db
+def test_scrud_refuses_a_rewritten_options_without_scoped_rbacs_view():
+    # LockedWriteMixin.initial refuses it itself, so that a view whose bases
+    # leave out (or put after it) scoped-rbac's AccessControlledAPIView, which
+    # refuses it too, never runs the body checks' skip on it.
+    class View(LockedWriteMixin, APIView):
+        pass
+
+    django_request = RequestFactory().options("/")
+    django_request.method = "POST"
+    request = Request(django_request)  # no authenticator: no user
+    with pytest.raises(PermissionDenied, match="request line's OPTIONS"):
+        View().initial(request)

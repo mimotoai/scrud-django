@@ -57,16 +57,22 @@ set the base URL the API is served at. An OPTIONS is a 204 without content
 whose `Link` names the path's HTTP Schema Resource (HSR), a JSON document
 describing its methods that a GET serves; scrudful builds it without a request,
 so its links resolve against `SCRUDFUL["BASE_URL"]` (response Links too).
-`Allow` lists the methods the requester may use:
+`Allow` lists the methods the requester's grants allow there; a POST or PUT
+is checked without a body, so it is listed when they may write in some
+context, whatever conditions their grants put on the body.
 
 ```python
+# urls.py (the root URLconf)
 from scrudful.rest_framework import hsr_urls
 
 urlpatterns = [
     path("api/", include("scrud_django.urls")),
     path("", include(hsr_urls())),
 ]
+```
 
+```python
+# settings.py
 SCRUDFUL = {"BASE_URL": "https://api.example.com"}
 ```
 
