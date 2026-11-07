@@ -107,10 +107,10 @@ def type_locked(resource_type, using):
 
 def type_db():
     """The database `ResourceType` rows are written to
-    (``router.db_for_write(ResourceType)``). A write of resources reads its
-    resource type there, never through ``db_for_read`` (a replica may be
-    stale), with the type's documents (`TYPE_DOCUMENTS`,
-    `get_resource_type_for`)."""
+    (``router.db_for_write(ResourceType)``). A write of resources, and the
+    registration of a type (`ResourceTypeRegistration`), read the resource
+    type there, never through ``db_for_read`` (a replica may be stale), with
+    the type's documents (`TYPE_DOCUMENTS`, `get_resource_type_for`)."""
     return router.db_for_write(ResourceType)
 
 
@@ -181,8 +181,8 @@ class ResourceTypeRegistration:
         # Read on the type's write database, with the documents compared
         # below with the files (register_json_file): a lagging replica would
         # leave a schema edited since in place, add a second row for a type
-        # it does not have yet, and (but in DEBUG) save its stale copy of the
-        # row back.
+        # it does not have yet, and (outside DEBUG) save its stale copy of
+        # the row back.
         search = (
             ResourceType.objects.using(type_db())
             .select_related(*TYPE_DOCUMENTS)

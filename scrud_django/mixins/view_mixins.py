@@ -82,9 +82,10 @@ from scrud_django.workflow import (
 LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 
 # The methods whose resource type is read on its write database
-# (`ResourceViewMixin.get_resource_type`): the unsafe ones, a POST that only
-# searches too. (PUT, PATCH and DELETE also run in a locked write, which
-# reads it there whatever the method.)
+# (`ResourceViewMixin.get_resource_type`): the unsafe ones, any POST (one that
+# writes nothing, an @action of your own, too). For PUT, PATCH, DELETE and a
+# conditional POST the transaction rule there already does; this adds the
+# POSTs that run in none.
 TYPE_WRITE_METHODS = LOCKED_WRITE_METHODS | {"POST"}
 
 
@@ -1108,8 +1109,9 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         (``registration.TYPE_DOCUMENTS``), not through the read router: a
         lagging replica would validate the body against an older schema, and
         a conditional create locks the type row it reads
-        (`conditional_create_lock`), which must be the latest revision's on
-        the write database, the row the resource is saved under."""
+        (`conditional_create_lock`): read through the router, two creates of
+        a slug with several rows could lock different rows, and not run one
+        at a time."""
         transaction_db = self.locked_write_db or self.conditional_create_db
         method = getattr(getattr(self, "request", None), "method", None)
         writes = transaction_db is not None or method in TYPE_WRITE_METHODS
@@ -1288,7 +1290,21 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         back. The request was authorized by the context its body names; this
         checks where the resource actually landed (scoped-rbac's ``SaveCheck``).
         `instance` is the resource an update replaces (``None`` for a create).
-        Returns the saved resource as read back."""
+        Returns the saved resource as read back.
+
+        The check refreshes the saved resource from its row, which empties
+        its cache of related objects: the view's type (`get_resource_type`,
+        read on its write database) is cached on it again, and on what is
+        returned, so that what reads it later (the response's ``Location``,
+        the ``scrud_post_save`` receivers, search indexing on commit) does
+        not load it through the read router."""
+        saved = []
+
+        def recorded_save():
+            result = save()
+            saved.append(instance if result is None else result)
+            return result
+
         check = access.SaveCheck(
             self.request,
             written_contexts=lambda obj: obj.rbac_contexts,
@@ -1299,14 +1315,28 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         # the un-hinted write alias, as there (instance-hint routing of
         # scrud_django's models is not supported for the API).
         db = self.locked_write_db or write_db()
+        run = recorded_save
         if self.get_resource_type().type_uri == WORKFLOW_POLICY_TYPE_URI:
-            save = self.serialized_policy_save(save, db)
+            run = self.serialized_policy_save(recorded_save, db)
         try:
             if instance is None:
-                return check.create(save, db=db)
-            return check.update(instance, save, db=db)
+                result = check.create(run, db=db)
+            else:
+                result = check.update(instance, run, db=db)
         except access.AccessError as exc:
             raise drf_error(exc, self.request) from exc
+        self.cache_resource_type(*saved, result)
+        return result
+
+    def cache_resource_type(self, *objects):
+        """Cache the view's type (`get_resource_type`) on each `Resource` of
+        `objects` (lists and tuples of them too) that is of it."""
+        resource_type = self.get_resource_type()
+        for obj in objects:
+            if isinstance(obj, (list, tuple)):
+                self.cache_resource_type(*obj)
+            elif isinstance(obj, Resource) and obj.resource_type_id == resource_type.pk:
+                Resource.resource_type.field.set_cached_value(obj, resource_type)
 
     def conditional_create_lock(self, using):
         """A conditional create's lock: the type's row (`type_locked`), so
@@ -1335,13 +1365,6 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.save_checked(lambda: self.perform_create(serializer))
-        resource_type = self.get_resource_type()
-        if serializer.instance.resource_type_id == resource_type.pk:
-            # The type the view read (on its write database), not loaded
-            # again through the read router.
-            Resource.resource_type.field.set_cached_value(
-                serializer.instance, resource_type
-            )
         headers = {
             'Location': reverse(
                 serializer.instance.resource_type.route_name_detail(),

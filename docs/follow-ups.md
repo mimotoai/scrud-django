@@ -42,13 +42,30 @@ them (the latest revision, then whichever the database returns first), so
 resources may be stored under either. Since 0.14.0 the lookup reads the
 write database, not a replica that may lag behind, which narrowed the window
 from the replica's lag to the time between the lookup and the insert. Fix:
-take a lock first (scoped-rbac's `conditional.lock_collection` of
-`ResourceType`, or a row of its own) and look up again under it, or add a
-unique constraint on `type_uri` (a migration; check existing databases for
-duplicates first) and catch the `IntegrityError`. Test: on PostgreSQL, run
-`ResourceTypeRegistration` for a new type in two threads that both pass the
-lookup before either inserts (a barrier in a patched `QuerySet.__bool__`),
-and assert one row for the slug; it fails today.
+run the registration in a transaction (`transaction.atomic` on `type_db()`)
+that first takes a lock (scoped-rbac's `conditional.lock_collection` of
+`ResourceType`, which needs that transaction, or a row of its own) and looks
+up again under it, or add a unique constraint on `type_uri` (a migration;
+check existing databases for duplicates first) and catch the
+`IntegrityError`. Test: on PostgreSQL, with
+`@pytest.mark.django_db(transaction=True)` (the threads' connections do not
+see the test's transaction, and what they commit must be removed after),
+run `ResourceTypeRegistration` for a new type in two threads that both pass
+the lookup before either inserts (a barrier in a patched
+`QuerySet.__bool__`, waiting after the fetch and only for the `ResourceType`
+lookup by `type_uri`), and assert one row for the slug; it fails today.
+
+<a id="json-resource-type-indexing-policy"></a>
+## json-resource-type-indexing-policy: `json_resource_type` drops its `indexing_policy_resource`
+
+`registration.json_resource_type` takes an `indexing_policy_resource`
+argument but does not pass it to `ResourceTypeRegistration`. A type
+registered with one (and no `indexing_policy_func`) has its indexing policy
+set to `None` and saved at every start, clearing one stored before, so its
+resources are indexed without one. Fix: pass it through. Test: register a
+type with `json_resource_type(..., indexing_policy_resource=<a stored
+policy>)` and assert the stored type's `indexing_policy` is that resource;
+it is `None` today.
 
 <a id="hsr-context-less-types"></a>
 ## hsr-context-less-types: the HTTP Schema Resource of a type with a schema and no JSON-LD context is a 500

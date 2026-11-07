@@ -439,8 +439,8 @@ class NoteUncheckedImportViewSet(NoteViewSet):
     ``create``, which scrudful skips as a nested handler, so nothing
     evaluates the preconditions: its success (201) is refused
     (ImproperlyConfigured) and rolled back for any POST carrying a
-    precondition it must evaluate, that is any but none or ``If-Match: *``
-    alone."""
+    precondition it must evaluate: any but an ``If-Match: *`` without
+    ``If-None-Match``."""
 
     @action(detail=False, methods=["post"])
     @scrudful(**ACTION)

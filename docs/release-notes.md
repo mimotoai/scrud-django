@@ -196,19 +196,24 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
   - a create and a PUT loaded the type's schema and context (as related
     objects): a body the current schema refuses could be validated against
     an older one, and stored;
-  - a create's `Location`, and `ResourceRegistration.delete`'s
-    `scrud_post_delete`, loaded the type again;
+  - `ResourceRegistration.delete`'s `scrud_post_delete` loaded the type
+    again;
   - `ResourceTypeRegistration` (a type registered at startup) read the
-    type, and the schema and context it compares with the files: a schema
-    edited since was left in place, a type the replica did not have yet
-    was stored again as a second row, and (but under `DEBUG`) the
-    replica's copy of the type row was saved back;
+    type, and the schema, context and indexing policy it compares with the
+    files: a schema edited since was left in place, a type the replica did
+    not have yet was stored again as a second row, and (outside `DEBUG`)
+    the replica's copy of the type row was saved back;
+  - after a create or an update, the saved resource's type was loaded
+    again by what reads it later: the `Location`, the `scrud_post_save`
+    receivers, search indexing on commit (which then indexed by the
+    replica's indexing policy, or not at all where the replica lacked the
+    type: the error is only logged);
   - a refused transition's link to its workflow policy loaded the policy's
     type (a 500 where the replica lacked it).
 
   A conditional create locks the type row it read: read through the router,
-  it could be another row than the one the resource is saved under (a
-  slug with several rows, which the registration above could store).
+  two creates of a slug with several rows (which the registration above
+  could store) could lock different rows, and not run one at a time.
   `GenericViewMixin.get_resource_type` still reads through the router: its
   type gives the view's links and the serializer's `resource_type` only.
 
