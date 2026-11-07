@@ -107,30 +107,33 @@ def type_locked(resource_type, using):
 
 def type_db():
     """The database `ResourceType` rows are written to
-    (``router.db_for_write(ResourceType)``). A write reads its resource type
-    there, never through ``db_for_read`` (a replica may be stale), with the
-    documents it validates and links by (`get_resource_type_for`)."""
+    (``router.db_for_write(ResourceType)``). A write of resources reads its
+    resource type there, never through ``db_for_read`` (a replica may be
+    stale), with the type's documents (`TYPE_DOCUMENTS`,
+    `get_resource_type_for`)."""
     return router.db_for_write(ResourceType)
 
 
-# The documents of a resource type a write validates its body against and
-# links to, with their own types (the schema's says whether it is a JSON
-# Schema): read with the type, on its database (`get_resource_type_for`).
+# The documents of a resource type, read with the type, on its database
+# (`get_resource_type_for`): its schema, which a write validates the body
+# against, with its own type (whether it is a JSON Schema; the Link's route);
+# its context, linked with its own type's route; its indexing policy, which
+# search indexing reads.
 TYPE_DOCUMENTS = (
     "schema__resource_type",
     "context__resource_type",
-    "indexing_policy__resource_type",
+    "indexing_policy",
 )
 
 
 def get_resource_type_for(slug, using=None):
     """The latest revision of the resource type `slug` (404 if none), read on
     database `using` (``None``: as the router reads it). Read on a given
-    database, its documents (`TYPE_DOCUMENTS`: its schema, which validates a
-    write, its context and indexing policy) come with it, from the same
-    database: loaded later, as related objects, the router would read them
-    (``db_for_read`` with the type as hint), from a replica that may not
-    have the type's latest schema."""
+    database, its documents (`TYPE_DOCUMENTS`) come with it, from the same
+    database: loaded later, as related objects, they would be read where
+    ``db_for_read`` (given the type as hint) says, which for a router that
+    ignores the hint is a replica that may not have the type's latest
+    schema."""
     queryset = ResourceType.objects.filter(slug=slug).order_by("-revision")
     if using is not None:
         queryset = queryset.using(using).select_related(*TYPE_DOCUMENTS)
@@ -175,7 +178,16 @@ class ResourceTypeRegistration:
         """
         from scrud_django import views
 
-        search = ResourceType.objects.filter(type_uri=resource_type_uri)
+        # Read on the type's write database, with the documents compared
+        # below with the files (register_json_file): a lagging replica would
+        # leave a schema edited since in place, add a second row for a type
+        # it does not have yet, and (but in DEBUG) save its stale copy of the
+        # row back.
+        search = (
+            ResourceType.objects.using(type_db())
+            .select_related(*TYPE_DOCUMENTS)
+            .filter(type_uri=resource_type_uri)
+        )
 
         self.viewset_class = viewset_class or views.ResourceViewSet
 

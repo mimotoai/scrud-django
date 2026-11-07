@@ -13,8 +13,10 @@ preconditions and checked its workflow transition by then. The PostgreSQL
 proof with two connections is in the batch report.
 """
 
+import copy
 import time
 from contextlib import contextmanager
+from datetime import timedelta
 from unittest import mock
 from uuid import uuid4
 
@@ -46,6 +48,13 @@ IN_PROGRESS = {
     "assignee": "http://somewhere.example/someone",
 }
 CANCELED = dict(IN_PROGRESS, status="canceled")
+# Allows a ToDo only in progress or done: canceling one is refused (400).
+STRICT_POLICY = {
+    "resource_type": TODO,
+    "initial_states": {"in progress": "status == 'in progress'"},
+    "states": {"done": "status == 'done'"},
+    "transitions": {},
+}
 DONE = dict(IN_PROGRESS, status="done")
 PERMISSIVE_POLICY = {
     "resource_type": TODO,
@@ -175,7 +184,8 @@ class RecordingRouter:
     """Routes nothing; records the reads of scrud_django models that the
     router decides: queries, and loads of related objects (a type's schema,
     with the type as the instance hint), which a router ignoring hints, as
-    a primary/replica one does, would send to the replica too."""
+    Django's documented primary/replica example does, would send to the
+    replica too."""
 
     reads = []
 
@@ -228,6 +238,149 @@ def test_server_side_writes_read_no_resource_or_type_through_the_read_router():
         )
         ResourceRegistration.delete(register_type="todos", slug=str(todo.pk))
     assert [r for r in reads if r in ("Resource", "ResourceType")] == []
+
+
+@pytest.mark.django_db
+def test_registering_types_reads_no_type_through_the_read_router():
+    # A process start (tests.resource_types, as conftest registers them)
+    # compares each stored type's schema and context with its files.
+    from . import resource_types
+
+    a_todo()
+    with routed_reads() as reads:
+        resource_types.json_resource_types()
+    assert [r for r in reads if r in ("Resource", "ResourceType")] == []
+
+
+@pytest.mark.django_db
+def test_a_refused_transitions_policy_link_reads_no_type_through_the_router():
+    # The 400 links the stored policy by its type's route: the type comes
+    # with the policy, read on the write database.
+    todo = a_todo()
+    workflow_policy_resource_type()
+    ResourceRegistration.register(dict(STRICT_POLICY), "workflow-policies")
+    with routed_reads() as reads:
+        response = admin_client().put(
+            todo_url(todo),
+            CANCELED,
+            format="json",
+            HTTP_IF_MATCH=quote_etag(todo.etag),
+        )
+    assert response.status_code == 400, response.content
+    assert response.json()["policy"], response.json()
+    assert [r for r in reads if r in ("Resource", "ResourceType")] == []
+
+
+class LaggingReplicaRouter:
+    """Reads resources and types on "other", a replica lagging behind
+    (`lagging_replica`), ignoring hints, as Django's documented
+    primary/replica example does; writes on the default database."""
+
+    def db_for_read(self, model, **hints):
+        if model in (Resource, ResourceType):
+            return "other"
+        return None
+
+    def db_for_write(self, model, **hints):
+        return DEFAULT_DB_ALIAS
+
+    def allow_relation(self, *args, **kwargs):
+        return True
+
+
+def copied(row, **changes):
+    row = copy.copy(row)
+    for name, value in changes.items():
+        setattr(row, name, value)
+    return row
+
+
+def lagging_replica(resource_type, schema=None):
+    """Copy `resource_type`, its context and its schema (with their own
+    types) to "other", the schema's content as `schema` (an older one, with
+    another ETag and modification time, as an older version has: the
+    compiled validators are cached by them), else as stored."""
+    documents = [resource_type.schema, resource_type.context]
+    types = {doc.resource_type_id: doc.resource_type for doc in documents}
+    ResourceType.objects.using("other").bulk_create(
+        [
+            copied(t, schema_id=None, context_id=None, indexing_policy_id=None)
+            for t in types.values()
+        ]
+    )
+    stored_schema = resource_type.schema
+    if schema is not None:
+        stored_schema = copied(
+            stored_schema,
+            content=schema,
+            etag=uuid4().hex,
+            modified_at=stored_schema.modified_at - timedelta(days=1),
+        )
+    Resource.objects.using("other").bulk_create(
+        [stored_schema, copied(resource_type.context)]
+    )
+    ResourceType.objects.using("other").bulk_create(
+        [copied(resource_type, indexing_policy_id=None)]
+    )
+
+
+LAGGING = override_settings(
+    DATABASE_ROUTERS=["tests.test_atomic_writes.LaggingReplicaRouter"]
+)
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+@pytest.mark.parametrize(
+    "method, headers",
+    [("post", {}), ("post", {"HTTP_IF_MATCH": "*"}), ("put", None)],
+    ids=["post", "post-if-match-any", "put"],
+)
+def test_a_write_is_validated_against_the_schema_not_a_lagging_replicas(
+    method, headers
+):
+    # The replica still has an older, permissive schema: the body the
+    # current one refuses is a 400 all the same, and nothing is stored.
+    todo = a_todo()
+    lagging_replica(todo.resource_type, schema={"type": "object"})
+    refused = dict(IN_PROGRESS, priority="bogus")
+    client = admin_client()
+    with LAGGING:
+        if method == "put":
+            response = client.put(
+                todo_url(todo),
+                refused,
+                format="json",
+                HTTP_IF_MATCH=quote_etag(todo.etag),
+            )
+        else:
+            response = client.post(
+                reverse("todos-list"), refused, format="json", **headers
+            )
+    assert response.status_code == 400, response.content
+    assert not Resource.objects.filter(content__priority="bogus").exists()
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_registering_types_compares_the_files_with_the_write_database():
+    # The replica has the todos type and its schema as the files have it,
+    # and no partner-profiles type yet; the primary's todos schema was
+    # edited since. A process start puts the files' schema back, and stores
+    # no second partner-profiles type.
+    from . import resource_types
+
+    todo = a_todo()
+    todos_type = todo.resource_type
+    from_file = dict(todos_type.schema.content)
+    lagging_replica(todos_type)
+    ResourceRegistration.update(
+        dict(from_file, title="edited"), "json-schema", todos_type.schema.pk
+    )
+    with LAGGING:
+        resource_types.json_resource_types()
+    stored = ResourceType.objects.get(slug="todos").schema
+    assert stored.content == from_file
+    slugs = list(ResourceType.objects.values_list("slug", flat=True))
+    assert len(slugs) == len(set(slugs)), sorted(slugs)
 
 
 @contextmanager

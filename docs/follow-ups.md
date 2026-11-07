@@ -29,6 +29,27 @@ that `filtered-partner-profiles-list?name=foo` lists only the first and
 other databases. The same padding applied to `stored_policies_for`'s
 `content__resource_type` lookup, which now re-checks the type in Python.
 
+<a id="type-registration-race"></a>
+## type-registration-race: two processes starting at once can each store a new resource type
+
+`ResourceTypeRegistration` (every resource type registered at startup, as
+`scrud_django.urls` and `json_resource_type` do) looks the type up by its
+`type_uri` and inserts it when there is none, without a lock or a unique
+constraint on `type_uri`. Two processes starting together on a database
+without the type (a fresh deployment) can both find none and both insert
+one: the slug then has two rows, and `get_resource_type_for` takes one of
+them (the latest revision, then whichever the database returns first), so
+resources may be stored under either. Since 0.14.0 the lookup reads the
+write database, not a replica that may lag behind, which narrowed the window
+from the replica's lag to the time between the lookup and the insert. Fix:
+take a lock first (scoped-rbac's `conditional.lock_collection` of
+`ResourceType`, or a row of its own) and look up again under it, or add a
+unique constraint on `type_uri` (a migration; check existing databases for
+duplicates first) and catch the `IntegrityError`. Test: on PostgreSQL, run
+`ResourceTypeRegistration` for a new type in two threads that both pass the
+lookup before either inserts (a barrier in a patched `QuerySet.__bool__`),
+and assert one row for the slug; it fails today.
+
 <a id="hsr-context-less-types"></a>
 ## hsr-context-less-types: the HTTP Schema Resource of a type with a schema and no JSON-LD context is a 500
 

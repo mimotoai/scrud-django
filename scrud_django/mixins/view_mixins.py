@@ -82,7 +82,9 @@ from scrud_django.workflow import (
 LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 
 # The methods whose resource type is read on its write database
-# (`ResourceViewMixin.get_resource_type`): the writes.
+# (`ResourceViewMixin.get_resource_type`): the unsafe ones, a POST that only
+# searches too. (PUT, PATCH and DELETE also run in a locked write, which
+# reads it there whatever the method.)
 TYPE_WRITE_METHODS = LOCKED_WRITE_METHODS | {"POST"}
 
 
@@ -1100,15 +1102,14 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
     def get_resource_type(self):
         """The view's resource type, read once per request and database (the
         filter, the serializer, the validators, the Links and the write all
-        ask for it). For a write (`TYPE_WRITE_METHODS`; inside a locked
-        write's or a conditional POST's transaction, `dispatch`, whatever
-        the method) it is read on the type's write database (`type_db`),
-        with the documents the write is validated against and links to
+        ask for it). For an unsafe method (`TYPE_WRITE_METHODS`; and inside
+        a locked write's or a conditional POST's transaction, `dispatch`) it
+        is read on the type's write database (`type_db`), with its documents
         (``registration.TYPE_DOCUMENTS``), not through the read router: a
         lagging replica would validate the body against an older schema, and
         a conditional create locks the type row it reads
-        (`conditional_create_lock`), so two creates reading different
-        revisions would lock different rows."""
+        (`conditional_create_lock`), which must be the latest revision's on
+        the write database, the row the resource is saved under."""
         transaction_db = self.locked_write_db or self.conditional_create_db
         method = getattr(getattr(self, "request", None), "method", None)
         writes = transaction_db is not None or method in TYPE_WRITE_METHODS

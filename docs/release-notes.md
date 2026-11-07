@@ -183,18 +183,34 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
 * `docs/follow-ups.md`, `scrudful-create-preconditions`: closed. scrudful
   evaluates a create's preconditions, and django-scoped-rbac 0.12 its own
   role and role-assignment lists'.
-* Writes read their resource type, and the schema they validate the body
-  against, on the type's write database (`type_db()`), never through the
-  router's `db_for_read`, which a primary/replica router sends to a replica
-  that may lag behind. A create (conditional or not) read its type there,
-  and every API write and `ResourceRegistration.register` loaded the
-  type's schema and context through the router (as related objects, which
-  a router ignoring hints routes like any read): a body the current schema
-  refuses could be validated against an older one and stored, and two
-  conditional creates reading different revisions of the type locked
-  different rows, so they did not run one at a time. The type's schema,
-  context and indexing policy are now read with the type, on its database
-  (`registration.TYPE_DOCUMENTS`).
+* Writes of resources (`ResourceViewMixin` views, `ResourceRegistration`)
+  and the registration of resource types read the type, and the schema a
+  body is validated against, on the type's write database (`type_db()`),
+  not through the router's `db_for_read`, which a primary/replica router
+  ignoring hints (as Django's documented example does) sends to a replica
+  that may lag behind. The type's schema, context and indexing policy are
+  read with it, on that database (`registration.TYPE_DOCUMENTS`). Through
+  the router, in 0.13.0:
+  - a create (conditional or not) and `ResourceRegistration.register` read
+    their type;
+  - a create and a PUT loaded the type's schema and context (as related
+    objects): a body the current schema refuses could be validated against
+    an older one, and stored;
+  - a create's `Location`, and `ResourceRegistration.delete`'s
+    `scrud_post_delete`, loaded the type again;
+  - `ResourceTypeRegistration` (a type registered at startup) read the
+    type, and the schema and context it compares with the files: a schema
+    edited since was left in place, a type the replica did not have yet
+    was stored again as a second row, and (but under `DEBUG`) the
+    replica's copy of the type row was saved back;
+  - a refused transition's link to its workflow policy loaded the policy's
+    type (a 500 where the replica lacked it).
+
+  A conditional create locks the type row it read: read through the router,
+  it could be another row than the one the resource is saved under (a
+  slug with several rows, which the registration above could store).
+  `GenericViewMixin.get_resource_type` still reads through the router: its
+  type gives the view's links and the serializer's `resource_type` only.
 
 ### Known issues
 
