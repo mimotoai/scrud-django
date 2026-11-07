@@ -1296,8 +1296,13 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         its cache of related objects: the view's type (`get_resource_type`,
         read on its write database) is cached on it again, and on what is
         returned, so that what reads it later (the response's ``Location``,
-        the ``scrud_post_save`` receivers, search indexing on commit) does
-        not load it through the read router."""
+        and what runs on commit with it: search indexing, the
+        ``SCRUD_WORKFLOW_ACTIONS`` the ``scrud_post_save`` receivers defer)
+        does not load it through the read router. The check and that run in
+        one transaction, so that a write outside the request's own (a POST
+        that is no conditional create) commits only once the type is cached
+        again: the check's own transaction, outermost, would commit, and run
+        what waits on the commit, before."""
         saved = []
 
         def recorded_save():
@@ -1319,13 +1324,14 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         if self.get_resource_type().type_uri == WORKFLOW_POLICY_TYPE_URI:
             run = self.serialized_policy_save(recorded_save, db)
         try:
-            if instance is None:
-                result = check.create(run, db=db)
-            else:
-                result = check.update(instance, run, db=db)
+            with transaction.atomic(using=db):
+                if instance is None:
+                    result = check.create(run, db=db)
+                else:
+                    result = check.update(instance, run, db=db)
+                self.cache_resource_type(*saved, result)
         except access.AccessError as exc:
             raise drf_error(exc, self.request) from exc
-        self.cache_resource_type(*saved, result)
         return result
 
     def cache_resource_type(self, *objects):

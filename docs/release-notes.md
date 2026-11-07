@@ -203,11 +203,13 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
     files: a schema edited since was left in place, a type the replica did
     not have yet was stored again as a second row, and (outside `DEBUG`)
     the replica's copy of the type row was saved back;
-  - after a create or an update, the saved resource's type was loaded
-    again by what reads it later: the `Location`, the `scrud_post_save`
-    receivers, search indexing on commit (which then indexed by the
-    replica's indexing policy, or not at all where the replica lacked the
-    type: the error is only logged);
+  - after an API create or PUT (whose save check refreshes the saved
+    resource, emptying its related objects), its type was loaded again by
+    what read it later: the `Location`, and what runs on commit with it,
+    the `SCRUD_WORKFLOW_ACTIONS` the `scrud_post_save` receivers defer and
+    search indexing (which then indexed by the replica's indexing policy,
+    or not at all where the replica lacked the type: the error is only
+    logged);
   - a refused transition's link to its workflow policy loaded the policy's
     type (a 500 where the replica lacked it).
 

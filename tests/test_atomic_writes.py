@@ -48,8 +48,8 @@ IN_PROGRESS = {
     "assignee": "http://somewhere.example/someone",
 }
 CANCELED = dict(IN_PROGRESS, status="canceled")
-# Creates a ToDo in progress only, with no transitions: a canceled ToDo is
-# in no state (400, WorkflowInvalidStateError).
+# Allows creating a ToDo only in progress, with no transitions: a canceled
+# ToDo is in no state (400, WorkflowInvalidStateError).
 STRICT_POLICY = {
     "resource_type": TODO,
     "initial_states": {"in progress": "status == 'in progress'"},
@@ -229,28 +229,79 @@ def test_api_writes_read_no_resource_or_type_through_the_read_router():
     assert [r for r in reads if r in ("Resource", "ResourceType")] == []
 
 
-@pytest.mark.django_db
-@pytest.mark.parametrize("method", ["post", "put"])
+@contextmanager
+def recorded_indexing():
+    """The resources search indexing prepares (tests' OnCommitSignalProcessor,
+    on commit)."""
+    from scrud_django.search_indexes import ResourceIndex
+
+    prepared = []
+    original = ResourceIndex.prepare
+
+    def prepare(self, obj):
+        prepared.append(obj.pk)
+        return original(self, obj)
+
+    with mock.patch.object(ResourceIndex, "prepare", prepare):
+        yield prepared
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "method, headers",
+    [("post", {}), ("post", {"HTTP_IF_MATCH": "*"}), ("put", None)],
+    ids=["post", "post-if-match-any", "put"],
+)
 def test_what_runs_on_a_writes_commit_reads_no_type_through_the_read_router(
-    method, django_capture_on_commit_callbacks
+    method, headers, committed_types
 ):
-    # Search indexing (tests' OnCommitSignalProcessor) reads the saved
-    # resource's type and its indexing policy on commit; the save check
-    # refreshed that resource, emptying its related objects.
+    # Search indexing reads the saved resource's type and its indexing policy
+    # on commit; the save check refreshed that resource, emptying its related
+    # objects. Committed for real: a POST that is no conditional create runs
+    # in no transaction of the request's, so it commits inside save_checked
+    # (a test's own transaction would hold what runs on commit back until
+    # after the response).
     todo = a_todo()
     client = admin_client()
-    with (
-        routed_reads() as reads,
-        django_capture_on_commit_callbacks(execute=True) as callbacks,
-    ):
+    with routed_reads() as reads, recorded_indexing() as prepared:
         if method == "put":
             response = client.put(
                 todo_url(todo), DONE, format="json", HTTP_IF_MATCH=quote_etag(todo.etag)
             )
         else:
-            response = client.post(reverse("todos-list"), IN_PROGRESS, format="json")
+            response = client.post(
+                reverse("todos-list"), IN_PROGRESS, format="json", **headers
+            )
     assert response.status_code in (200, 201), response.content
-    assert callbacks, "nothing ran on commit"
+    assert prepared, "nothing was indexed on commit"
+    assert [r for r in reads if r in ("Resource", "ResourceType")] == []
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("method", ["post", "put"])
+def test_a_policy_writes_commit_reads_no_type_through_the_read_router(
+    method, committed_types
+):
+    # A WorkflowPolicy's save runs in serialized_policy_save, which the
+    # type's re-caching must wrap too.
+    policy = a_policy()
+    client = admin_client()
+    with routed_reads() as reads, recorded_indexing() as prepared:
+        if method == "put":
+            response = client.put(
+                reverse("workflow-policies-detail", args=[policy.pk]),
+                dict(PERMISSIVE_POLICY, rbac_context="p", states={"x": "true"}),
+                format="json",
+                HTTP_IF_MATCH=quote_etag(policy.etag),
+            )
+        else:
+            response = client.post(
+                reverse("workflow-policies-list"),
+                dict(PERMISSIVE_POLICY, rbac_context="q"),
+                format="json",
+            )
+    assert response.status_code in (200, 201), response.content
+    assert prepared, "nothing was indexed on commit"
     assert [r for r in reads if r in ("Resource", "ResourceType")] == []
 
 
