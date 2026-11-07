@@ -153,17 +153,19 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
   `Meta.list_last_modified_func`, which for a POST give the list as the
   requester would GET it (`ListValidatorsMixin.create_list_validators`):
   the same 412, 400 and `conditional_list_too_large` 400 as before, the
-  same problem details. A conditional create's transaction now opens in
-  `LockedWriteMixin.dispatch`, and its lock (`conditional_create_lock`:
-  the type's row for `ResourceViewMixin`, as before) is taken in
-  `initial`, after authentication, permissions and throttles, so scrudful
-  evaluates under it. scrud records that scrudful evaluated them as it
-  calls a handler's list callbacks (whichever its class or callbacks;
-  `gate_uniform_errors` wraps them), which scrudful calls for a POST only
-  to evaluate; whether they passed is not recorded. `ResourceViewMixin.create`
-  evaluates them itself
-  (`list_precondition_response`) when nothing has, so that a create
-  called from an `@action` is evaluated too, and once.
+  same problem details. The transaction of a POST to the list with
+  preconditions to evaluate (any but an `If-Match: *` with no
+  `If-None-Match`) now opens in `LockedWriteMixin.dispatch`. A conditional
+  create (preconditions that need the list's validators) takes its lock
+  (`conditional_create_lock`: the type's row for `ResourceViewMixin`, as
+  before) in `initial`, after authentication, permissions and throttles,
+  so scrudful evaluates under it. scrud records
+  that scrudful evaluated them as it calls a handler's list callbacks
+  (whichever its class or callbacks; `gate_uniform_errors` wraps them),
+  which scrudful calls for a POST only to evaluate; whether they passed is
+  not recorded. `ResourceViewMixin.create` evaluates them itself
+  (`list_precondition_response`) when nothing has, so that a create called
+  from an `@action` is evaluated too, and once.
 * A locked write (PUT, PATCH, DELETE) rolls back on an error response
   (4xx, 5xx) only; a redirect (3xx) commits. It rolled back on any status
   outside 2xx, so a write answered with a redirect to what it wrote was
@@ -206,8 +208,8 @@ evaluated by scrudful. Work through Upgrading before you deploy it.
   - after an API create or PUT (whose save check refreshes the saved
     resource, emptying its related objects), its type was loaded again by
     what read it later: the `Location`, and what runs on commit with it,
-    the `SCRUD_WORKFLOW_ACTIONS` the `scrud_post_save` receivers defer and
-    search indexing (which then indexed by the replica's indexing policy,
+    the `SCRUD_WORKFLOW_ACTIONS` `ScrudSignalProcessor` defers and search
+    indexing (which then indexed by the replica's indexing policy,
     or not at all where the replica lacked the type: the error is only
     logged);
   - a refused transition's link to its workflow policy loaded the policy's

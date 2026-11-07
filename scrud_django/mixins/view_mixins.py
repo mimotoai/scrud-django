@@ -1297,12 +1297,13 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         read on its write database) is cached on it again, and on what is
         returned, so that what reads it later (the response's ``Location``,
         and what runs on commit with it: search indexing, the
-        ``SCRUD_WORKFLOW_ACTIONS`` the ``scrud_post_save`` receivers defer)
-        does not load it through the read router. The check and that run in
-        one transaction, so that a write outside the request's own (a POST
-        that is no conditional create) commits only once the type is cached
-        again: the check's own transaction, outermost, would commit, and run
-        what waits on the commit, before."""
+        ``SCRUD_WORKFLOW_ACTIONS`` `ScrudSignalProcessor` defers) does not
+        load it through the read router. The check and this re-caching run
+        in one transaction on the write database, so that a write outside
+        `dispatch`'s transaction (a POST with no preconditions, or with
+        ``If-Match: *`` and no ``If-None-Match``) commits only once the type
+        is cached again: the check's own transaction, outermost, would
+        commit, and run what waits on the commit, before."""
         saved = []
 
         def recorded_save():

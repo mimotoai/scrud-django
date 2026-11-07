@@ -231,8 +231,8 @@ def test_api_writes_read_no_resource_or_type_through_the_read_router():
 
 @contextmanager
 def recorded_indexing():
-    """The resources search indexing prepares (tests' OnCommitSignalProcessor,
-    on commit)."""
+    """The primary keys of the resources search indexing prepares (tests'
+    OnCommitSignalProcessor, on commit)."""
     from scrud_django.search_indexes import ResourceIndex
 
     prepared = []
@@ -257,10 +257,10 @@ def test_what_runs_on_a_writes_commit_reads_no_type_through_the_read_router(
 ):
     # Search indexing reads the saved resource's type and its indexing policy
     # on commit; the save check refreshed that resource, emptying its related
-    # objects. Committed for real: a POST that is no conditional create runs
-    # in no transaction of the request's, so it commits inside save_checked
-    # (a test's own transaction would hold what runs on commit back until
-    # after the response).
+    # objects. Committed for real: a POST outside dispatch's transaction (no
+    # preconditions, or If-Match: * and no If-None-Match) commits inside
+    # save_checked (a test's own transaction would hold what runs on commit
+    # back until after the response).
     todo = a_todo()
     client = admin_client()
     with routed_reads() as reads, recorded_indexing() as prepared:
@@ -282,8 +282,9 @@ def test_what_runs_on_a_writes_commit_reads_no_type_through_the_read_router(
 def test_a_policy_writes_commit_reads_no_type_through_the_read_router(
     method, committed_types
 ):
-    # A WorkflowPolicy's save runs in serialized_policy_save, which the
-    # type's re-caching must wrap too.
+    # A WorkflowPolicy's save runs inside serialized_policy_save (its lock
+    # and duplicate check), which wraps the save save_checked records: the
+    # policy it returns is re-cached all the same.
     policy = a_policy()
     client = admin_client()
     with routed_reads() as reads, recorded_indexing() as prepared:
@@ -574,6 +575,65 @@ def test_the_locked_lookup_selects_for_update_on_the_write_database(method):
         )
     assert response.status_code in (200, 204), response.content
     assert seen and all(entry == (write_db(), True) for entry in seen), seen
+
+
+@contextmanager
+def scrud_transactions():
+    """The database each transaction scrud_django opens names (``using``,
+    ``None`` for none: Django's default alias, whatever the router says)."""
+    import sys
+
+    import scrud_django
+
+    package = scrud_django.__path__[0]
+    opened = []
+    original = transaction.Atomic.__enter__
+
+    def enter(self):
+        if sys._getframe(1).f_code.co_filename.startswith(package):
+            opened.append(self.using)
+        return original(self)
+
+    with mock.patch.object(transaction.Atomic, "__enter__", enter):
+        yield opened
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "method, headers",
+    [
+        ("post", {}),
+        ("post", {"HTTP_IF_MATCH": "*"}),
+        ("post", "list-etag"),
+        ("put", None),
+        ("delete", None),
+    ],
+    ids=["post", "post-if-match-any", "post-if-match", "put", "delete"],
+)
+def test_a_writes_transactions_open_on_the_write_database(method, headers):
+    # A deployment routing writes away from the default alias: every
+    # transaction a write opens (dispatch's, save_checked's, the save's)
+    # names the write database, so that what runs on its commit waits for
+    # that database's commit (a transaction on the default alias would not
+    # hold it back).
+    todo = a_todo()
+    client = admin_client()
+    if headers == "list-etag":
+        headers = {"HTTP_IF_MATCH": client.get(reverse("todos-list"))["ETag"]}
+    with scrud_transactions() as opened:
+        if method == "post":
+            response = client.post(
+                reverse("todos-list"), IN_PROGRESS, format="json", **headers
+            )
+        else:
+            response = getattr(client, method)(
+                todo_url(todo),
+                *([DONE] if method == "put" else []),
+                format="json",
+                HTTP_IF_MATCH=quote_etag(todo.etag),
+            )
+    assert response.status_code in (200, 201, 204), response.content
+    assert opened and set(opened) == {write_db()}, opened
 
 
 @pytest.mark.django_db(databases=["default", "other"])
