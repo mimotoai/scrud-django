@@ -13,7 +13,7 @@ from scrud_django.workflow import (
     WorkflowInvalidStateError,
     WorkflowTransitionError,
     default_workflow_policy_for,
-    workflow_policy_for,
+    workflow_policies_for,
 )
 
 from ..scrud_signals import scrud_post_delete, scrud_post_save
@@ -184,8 +184,7 @@ class ResourceMixin(ScrudfulMixin):
         contexts = self.rbac_contexts
         if not contexts:
             return None, default_workflow_policy_for(self.resource_type)
-        for context in contexts:
-            policy = workflow_policy_for(self.resource_type, context)
+        for context, policy in workflow_policies_for(self.resource_type, contexts):
             if policy is not None:
                 return context, policy
         return None, None

@@ -312,7 +312,10 @@ API) keeps in step. Rows written with `QuerySet.update()`, `bulk_create()` or
 `bulk_update()` go stale. `manage.py scrud_sync_contexts --check` lists the
 resources whose rows disagree with their content (exit status 1 if any), and
 `manage.py scrud_sync_contexts` re-syncs them; the `scrud_django.W004`
-database check reports resources that have no row at all.
+database check reports resources that have no row at all. The workflow
+policy of a context is found by those rows too, and also by the policy's
+content, so that stale rows do not hide a policy (see
+`scrud_django.workflow.stored_policies_in` for the one case they still can).
 
 DRF's own default permission is `AllowAny`. The scrud-django viewsets set
 `IsAuthorized` themselves, but any other view in your project (and any view you

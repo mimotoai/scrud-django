@@ -317,35 +317,77 @@ def stored_policies_for(resource_type, context):
     `rbac_contexts_of`, so a policy that names no ``rbac_context`` is in the
     default context ``""``) include `context`, oldest first. There is at most
     one, unless policies were stored past the API's check (or before it).
-    The type is compared again in Python, exactly: MariaDB compares the
-    content's ``resource_type`` in SQL as text that pads with spaces."""
+    `stored_policies_in` for one context."""
+    return stored_policies_in(resource_type, [context])[context]
+
+
+def stored_policies_in(resource_type, contexts):
+    """`stored_policies_for` each of `contexts`, in one query: a dict from
+    each context to its list of policies (oldest first).
+
+    The query selects the type's policies in SQL by their `ResourceContext`
+    rows (``ContextField``: compared exactly, as bytes on MySQL and MariaDB),
+    so a write reads the policies of its own contexts, not every tenant's.
+    Those rows are an index of the content: ``Resource.save()`` keeps them
+    in step, ``QuerySet.update()``, ``bulk_create()`` and ``bulk_update()``
+    do not. A policy left out by stale rows would let the writes in its
+    contexts skip it, so the query also selects, by content, a policy with
+    no row at all (``scrud_django.W004``), one whose ``rbac_context`` is
+    one of `contexts` or a list (``scrud_django.W001``) and, when `contexts`
+    has the default context, one whose ``rbac_context`` is absent or
+    ``null``. What it can still miss takes a ``QuerySet.update()`` of a
+    policy's ``rbac_context`` to another JSON type (a number, an object:
+    the default context) while its rows name another context; ``manage.py
+    scrud_sync_contexts`` repairs those rows.
+
+    The type and contexts are compared again in Python, exactly: a list or a
+    stale row selects more than its contexts, and MariaDB compares content
+    values in SQL as text that pads with spaces."""
     from django.db import router
+    from django.db.models import Exists, OuterRef, Q
+    from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
     from scrud_django.mixins.resource_mixin import rbac_contexts_of
-    from scrud_django.models import Resource
+    from scrud_django.models import Resource, ResourceContext
 
     type_uri = _type_uri(resource_type)
+    contexts = list(dict.fromkeys(contexts))
+    if not contexts:
+        return {}
+    rows = ResourceContext.objects.filter(resource=OuterRef("pk"))
+    in_contexts = Exists(rows.filter(rbac_context__in=contexts)) | ~Exists(rows)
+    # A list (as JSON text; a string starting with "[" too). Not a
+    # ``__0__isnull`` lookup: MySQL reads ``$[0]`` of a string as the string.
+    in_contexts |= Q(content__rbac_context__startswith="[")
+    for context in contexts:
+        in_contexts |= Q(content__rbac_context=context)
+    if DEFAULT_CONTEXT in contexts:
+        in_contexts |= Q(content__rbac_context__isnull=True)
+        in_contexts |= Q(content__rbac_context=None)
     # The write database: a write's uniqueness re-check (and the policy a
     # write is checked under) must not read a stale replica. The policy's
     # type comes with it (a refused transition links the policy by it,
     # exceptions.StoredPolicyReference), not loaded later through the read
     # router.
-    stored = (
-        Resource.objects.using(router.db_for_write(Resource))
+    stored = [
+        policy
+        for policy in Resource.objects.using(router.db_for_write(Resource))
         .select_related("resource_type")
         .filter(
+            in_contexts,
             resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI,
             content__resource_type=type_uri,
         )
         .order_by("pk")
-    )
-    return [
-        policy
-        for policy in stored
         if isinstance(policy.content, dict)
         and policy.content.get("resource_type") == type_uri
-        and context in rbac_contexts_of(policy.content)
     ]
+    found = {}
+    for context in contexts:
+        found[context] = [
+            policy for policy in stored if context in rbac_contexts_of(policy.content)
+        ]
+    return found
 
 
 # How many compiled stored policies `workflow_policy_for` keeps
@@ -461,18 +503,31 @@ def workflow_policy_for(resource_type, context):
     govern fail until all but one are deleted.
 
     The one lookup of a policy: the `WorkflowValidator` and
-    ``ResourceMixin.get_workflow_policy`` both use it. A stored policy is
-    compiled once per version (`STORED_POLICY_CACHE`); the stored resources
-    are read on every call.
+    ``ResourceMixin.get_workflow_policy`` both use it, through
+    `workflow_policies_for`. A stored policy is compiled once per version
+    (`STORED_POLICY_CACHE`); the stored resources are read on every call.
     """
-    stored = stored_policies_for(resource_type, context)
-    if len(stored) > 1:
-        raise ImproperlyConfigured(
-            f"{len(stored)} WorkflowPolicy resources (pks "
-            f"{[policy.pk for policy in stored]}) apply to "
-            f"{_type_uri(resource_type)!r} in context {context!r}; there must be "
-            "at most one."
-        )
-    if stored:
-        return STORED_POLICY_CACHE.get(stored[0])
-    return default_workflow_policy_for(resource_type)
+    return next(workflow_policies_for(resource_type, [context]))[1]
+
+
+def workflow_policies_for(resource_type, contexts):
+    """``(context, policy)`` for each of `contexts` in turn, the policy as
+    `workflow_policy_for` gives it, the stored policies of all of them read
+    in one query (`stored_policies_in`) when the first is asked for. A
+    context's ``ImproperlyConfigured`` is raised when its turn comes, so a
+    caller that stops at an earlier context does not see it."""
+    contexts = list(contexts)
+    stored = stored_policies_in(resource_type, contexts)
+    for context in contexts:
+        policies = stored[context]
+        if len(policies) > 1:
+            raise ImproperlyConfigured(
+                f"{len(policies)} WorkflowPolicy resources (pks "
+                f"{[policy.pk for policy in policies]}) apply to "
+                f"{_type_uri(resource_type)!r} in context {context!r}; there must "
+                "be at most one."
+            )
+        if policies:
+            yield context, STORED_POLICY_CACHE.get(policies[0])
+        else:
+            yield context, default_workflow_policy_for(resource_type)

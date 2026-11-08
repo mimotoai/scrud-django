@@ -461,6 +461,119 @@ def test_policy_lookup_reads_the_write_database():
         assert stored_policies_for(TODO, "p") == [stored]
 
 
+# The lookup selects a type's policies by their ResourceContext rows, and
+# also by content, so that a policy whose rows are stale (written without
+# Resource.save()) is not left out: it still governs its contexts' writes.
+
+REFUSING_POLICY = {
+    "resource_type": TODO,
+    "initial_states": {"never": "false"},
+    "states": {},
+    "transitions": {},
+}
+ABSENT = object()
+
+
+def post_todo(context):
+    """An admin's create of a ToDo in `context` (``ABSENT``: none named),
+    valid under the default ToDo policy."""
+    body = {"title": "t", "status": "not started"}
+    if context is not ABSENT:
+        body["rbac_context"] = context
+    return admin_client().post(reverse("todos-list"), body, format="json")
+
+
+def row_contexts(resource):
+    return set(resource.rbac_context_rows.values_list("rbac_context", flat=True))
+
+
+@pytest.mark.django_db
+def test_policy_lookup_reads_its_contexts_in_one_query(django_assert_num_queries):
+    from scrud_django.workflow import stored_policies_in
+
+    p = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    q = store_policy(dict(PERMISSIVE_POLICY, rbac_context="q"))
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="r"))
+    with django_assert_num_queries(1):
+        found = stored_policies_in(TODO, ["p", "q", "s"])
+    assert found == {"p": [p], "q": [q], "s": []}
+    assert stored_policies_in(TODO, []) == {}
+
+
+@pytest.mark.django_db
+def test_policy_lookup_compares_contexts_exactly():
+    from scrud_django.workflow import stored_policies_for
+
+    stored = store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    assert stored_policies_for(TODO, "p") == [stored]
+    # MySQL's and MariaDB's collations ignore case and trailing spaces.
+    assert stored_policies_for(TODO, "P") == []
+    assert stored_policies_for(TODO, "p ") == []
+
+
+@pytest.mark.django_db
+def test_a_policy_without_context_rows_still_governs_its_context():
+    from django.utils.timezone import now
+
+    from scrud_django.workflow import stored_policies_for
+
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="other"))
+    policy_type = workflow_policy_resource_type()
+    # bulk_create() bypasses Resource.save(): no ResourceContext row.
+    Resource.objects.bulk_create(
+        [
+            Resource(
+                resource_type=policy_type,
+                content=dict(REFUSING_POLICY, rbac_context="p"),
+                etag="0" * 32,
+                modified_at=now(),
+            )
+        ]
+    )
+    bulk = Resource.objects.get(resource_type=policy_type, content__rbac_context="p")
+    assert row_contexts(bulk) == set()
+    assert stored_policies_for(TODO, "p") == [bulk]
+    assert stored_policies_for(TODO, "q") == []
+    response = post_todo("p")
+    assert response.status_code == 400, response.content
+    response = post_todo("q")
+    assert response.status_code == 201, response.content
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "moved_to, context",
+    [
+        ("q", "q"),
+        (["r", "q"], "q"),
+        (ABSENT, ""),
+        (None, ""),
+    ],
+    ids=["string", "list", "absent", "null"],
+)
+def test_a_policy_moved_past_save_governs_its_new_context(moved_to, context):
+    from scrud_django.workflow import stored_policies_for, workflow_policy_for
+
+    moved = store_policy(dict(REFUSING_POLICY, rbac_context="p"))
+    content = dict(REFUSING_POLICY)
+    if moved_to is not ABSENT:
+        content["rbac_context"] = moved_to
+    # QuerySet.update() bypasses Resource.save(): the rows still say "p".
+    Resource.objects.filter(pk=moved.pk).update(content=content)
+    moved.refresh_from_db()
+    assert row_contexts(moved) == {"p"}
+    assert stored_policies_for(TODO, context) == [moved]
+    assert stored_policies_for(TODO, "p") == []
+    response = post_todo(context or ABSENT)
+    assert response.status_code == 400, response.content
+    response = post_todo("p")
+    assert response.status_code == 201, response.content
+    # With a policy saved there, it is one of two: neither applies.
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context=context))
+    with pytest.raises(ImproperlyConfigured, match="2 WorkflowPolicy"):
+        workflow_policy_for(TODO, context)
+
+
 class OtherWriteRouter:
     """Resource writes go to the "other" alias; everything else to default."""
 

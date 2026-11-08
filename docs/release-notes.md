@@ -67,6 +67,21 @@
   (`workflow-policy-invalid`), a stored one is reported by `manage.py
   check --database` (`scrud_django.E005`) and a settings default by
   `manage.py check` (`scrud_django.E001`).
+* A workflow write no longer reads every stored `WorkflowPolicy` of its
+  type. The policy lookup (`scrud_django.workflow.stored_policies_for`)
+  read all of a type's policies, in every context, and kept those of the
+  checked context in Python, once per context a write is checked in, again
+  for the `scrud_post_save` report and in a policy write's uniqueness
+  check: with one policy per tenant, every write cost O(tenants). It now
+  selects them in SQL by their `ResourceContext` rows, and the contexts a
+  write is checked in are looked up in one query (new
+  `stored_policies_in(resource_type, contexts)` and
+  `workflow_policies_for(resource_type, contexts)`). So that a policy
+  whose rows are stale (a `QuerySet.update()` or `bulk_create()` past
+  `Resource.save()`) still governs its contexts, the query also selects
+  policies by content: one without any row, one whose `rbac_context` is
+  the checked context or a list, and, in the default context, one that
+  names none.
 
 ### Upgrading
 
@@ -77,6 +92,14 @@
   policy fails every write of its type in its contexts closed
   (`ImproperlyConfigured`, a 500) until it is fixed or deleted, and an
   invalid default fails every write of its type.
+* The workflow policy of a context is now found through the policies'
+  `ResourceContext` rows, with the content as a fallback for stale rows
+  (Fixes). The one case it misses is a policy whose `rbac_context` server
+  code changed past `Resource.save()` (`QuerySet.update()`,
+  `bulk_update()`) to a number, boolean or object (the default context)
+  while its rows still name another context. If your code writes
+  `WorkflowPolicy` resources that way, run `manage.py scrud_sync_contexts
+  --check` (and without `--check` to repair) after deploying.
 * An update in place of a state in `restrict_update` through a transition
   whose `from` or `to` lists other states as well is now refused. To keep
   allowing such edits, add a transition from that state to itself alone
