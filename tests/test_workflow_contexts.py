@@ -863,9 +863,14 @@ INVALID_POLICIES = [
         id="transition-to-undefined-state",
     ),
     pytest.param(
-        dict(PERMISSIVE_POLICY, transitions={"go": [{"from": "any", "to": "any"}]}),
-        "Invalid workflow transition 'go': it must be an object with 'from' and 'to'.",
-        id="transition-list",
+        dict(
+            PERMISSIVE_POLICY,
+            initial_states={"any": "true"},
+            states={"any": "false"},
+        ),
+        "Invalid workflow state 'any': it is named in both initial_states and "
+        "states; a state has one condition.",
+        id="state-in-initial-states-and-states",
     ),
     pytest.param(
         dict(PERMISSIVE_POLICY, restrict_update=["nowhere"]),
@@ -887,10 +892,16 @@ INVALID_POLICIES = [
     ),
 ]
 
-# ``restrict_update`` must be a list of state names; the schema refuses others.
+# ``restrict_update`` must be a list of state names, and a transition an
+# object (not a list of them); the schema refuses others.
 SCHEMA_INVALID_POLICIES = [
     pytest.param(dict(PERMISSIVE_POLICY, restrict_update=value), id=repr(value))
     for value in (5, True, None, "any", [5])
+] + [
+    pytest.param(
+        dict(PERMISSIVE_POLICY, transitions={"go": [{"from": "any", "to": "any"}]}),
+        id="transition-list",
+    ),
 ]
 
 

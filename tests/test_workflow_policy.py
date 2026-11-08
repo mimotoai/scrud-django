@@ -199,33 +199,49 @@ def test_content_staying_in_its_state_is_a_same_state_update():
     assert error.message == "Update not allowed on this state"
 
 
+def test_a_state_in_both_initial_states_and_states_is_refused():
+    # Two conditions for one state: creates would read one, updates the
+    # other.
+    with pytest.raises(ImproperlyConfigured) as excinfo:
+        WorkflowPolicy(
+            {
+                "initial_states": {"draft": 'status == "draft"'},
+                "states": {
+                    "published": "published == true",
+                    "draft": 'status == "draft" && published == false',
+                },
+                "transitions": {"publish": {"from": "draft", "to": "published"}},
+            }
+        )
+    assert str(excinfo.value) == (
+        "Invalid workflow state 'draft': it is named in both initial_states and "
+        "states; a state has one condition."
+    )
+
+
 def test_initial_state_is_the_state_the_content_is_stored_in():
-    # "states" redefines "draft": content stored by its "states" condition is
-    # in "draft" only if it meets that one.
+    # Content that meets an initial state's condition and a later state's is
+    # created in, and stored in, the initial state: the first match.
     policy = WorkflowPolicy(
         {
             "initial_states": {"draft": 'status == "draft"'},
-            "states": {
-                "published": "published == true",
-                "draft": 'status == "draft" && published == false',
-            },
+            "states": {"published": "published == true"},
             "transitions": {"publish": {"from": "draft", "to": "published"}},
         }
     )
     published_draft = {"status": "draft", "published": True}
-    assert policy.determine_state(published_draft, policy.state_expressions) == (
-        "published"
-    )
-    with pytest.raises(WorkflowInvalidInitialStateError):
-        policy.validate(published_draft)
-    with pytest.raises(WorkflowInvalidInitialStateError):
-        policy.initial_transition(published_draft)
-
-    unpublished = {"status": "draft", "published": False}
-    assert policy.validate(unpublished) == unpublished
-    assert policy.initial_transition(unpublished) == TransitionData(
+    assert policy.state(published_draft) == "draft"
+    assert policy.initial_state(published_draft) == "draft"
+    assert policy.validate(published_draft) == published_draft
+    assert policy.initial_transition(published_draft) == TransitionData(
         "draft", None, "__INITIALIZE__"
     )
+    # Content in a later state only is no initial state.
+    published = {"status": "live", "published": True}
+    assert policy.state(published) == "published"
+    assert policy.initial_state(published) is None
+    with pytest.raises(WorkflowInvalidInitialStateError):
+        policy.initial_transition(published)
 
 
 # "published" may not change in place; "republish" leads to it from it and

@@ -217,3 +217,130 @@ def test_a_callable_that_raises_is_one_error_for_the_setting():
         assert "could not be loaded" in errors[0].msg
         with pytest.raises(ImproperlyConfigured):
             default_workflow_policy_for("tests://PartnerProfiles")
+
+
+# State conditions compile without type checking, so one that reads a
+# property the governed type's JSON Schema does not define (a misspelling)
+# compiles and makes its state unreachable: a database check warns.
+
+
+@pytest.mark.parametrize(
+    "condition, properties, undeclared",
+    [
+        ('status == "x"', {"status"}, []),
+        ('stauts == "x" || status == "y"', {"status"}, ["stauts"]),
+        ('stauts == "x" && stauts != "y" || sise > 1', {"status"}, ["sise", "stauts"]),
+        # A qualified name is a property's field.
+        ("a.b.c == 1", {"status"}, ["a"]),
+        ("has(assignee.name)", {"status"}, ["assignee"]),
+        # Functions (unknown ones too) and macro variables are not properties.
+        ("foo(status)", {"status"}, []),
+        ("status.foo()", {"status"}, []),
+        ("size(status) > 0 && status.startsWith('a')", {"status"}, []),
+        ("blockers.exists(b, b.note != null)", {"blockers"}, []),
+        ("type(status) == string && status != null", {"status"}, []),
+        # A type error is not a missing property.
+        ('status == "x" && 1 == "1"', {"status"}, []),
+        # A property name that is not a CEL identifier is never read.
+        ('status == "x"', {"status", "first-name", "in"}, []),
+        # One that does not compile is E001's.
+        ('stauts == "x" &&', {"status"}, []),
+    ],
+)
+def test_undeclared_properties(condition, properties, undeclared):
+    from scrud_django.workflow import undeclared_properties
+
+    assert undeclared_properties(condition, properties) == undeclared
+
+
+@pytest.mark.parametrize(
+    "schema, properties",
+    [
+        ({"properties": {"a": {}, "b": {}}}, {"a", "b"}),
+        ({"properties": {"a": {}}, "additionalProperties": False}, {"a"}),
+        # Other properties are allowed, or may be defined elsewhere.
+        ({"properties": {"a": {}}, "additionalProperties": True}, None),
+        ({"properties": {"a": {}}, "additionalProperties": {"type": "string"}}, None),
+        ({"properties": {"a": {}}, "patternProperties": {"^x": {}}}, None),
+        ({"properties": {"a": {}}, "allOf": [{"properties": {"b": {}}}]}, None),
+        ({"properties": {"a": {}}, "$ref": "#/definitions/Other"}, None),
+        ({"type": "object"}, None),
+        ({"properties": ["a"]}, None),
+        (["a"], None),
+    ],
+)
+def test_schema_properties(schema, properties):
+    from scrud_django.checks import schema_properties
+
+    assert schema_properties(schema) == properties
+
+
+@pytest.mark.django_db
+def test_default_policy_conditions_pass_the_database_check():
+    from scrud_django.checks import check_default_policy_conditions
+
+    reverse("todos-list")
+    assert check_default_policy_conditions(None, databases=["default"]) == []
+
+
+@pytest.mark.django_db
+def test_a_condition_reading_a_property_the_schema_lacks_is_a_warning():
+    from scrud_django.checks import check_default_policy_conditions
+
+    reverse("todos-list")
+    states = dict(todo_policy()["states"], done='stauts == "done" && assignee != null')
+    misspelled = dict(todo_policy(), states=states)
+    with override_settings(
+        SCRUD_WORKFLOW={"DEFAULT_WORKFLOW_POLICIES": {TODO: misspelled}}
+    ):
+        # A valid policy: no E001.
+        assert check_default_workflow_policies(None) == []
+        found = check_default_policy_conditions(None, databases=["default"])
+        assert found == [
+            checks.Warning(
+                f"The condition of state 'done' of the default workflow policy "
+                f"for {TODO!r} reads 'stauts', which the JSON Schema of "
+                f"{TODO!r} does not define: content that lacks it never meets "
+                "the condition.",
+                hint=(
+                    "Fix the condition (a misspelled property?) or define the "
+                    "property in the schema; a schema that expects other "
+                    'properties says so with "additionalProperties": true.'
+                ),
+                obj=TODO,
+                id="scrud_django.W005",
+            )
+        ]
+        # Registered as a database check: `check --database` and `migrate`
+        # run it.
+        assert found[0] in checks.run_checks(databases=["default"])
+        assert found[0] not in checks.run_checks()
+        assert check_default_policy_conditions(None) == []
+
+
+@pytest.mark.django_db
+def test_a_condition_may_read_rbac_context(monkeypatch):
+    # Every resource may have one, whether its schema defines it or not.
+    from scrud_django import checks as scrud_checks
+
+    reverse("todos-list")
+    original = scrud_checks.schema_properties
+
+    def without_rbac_context(schema):
+        properties = original(schema)
+        assert "rbac_context" in properties
+        return properties - {"rbac_context"}
+
+    monkeypatch.setattr(scrud_checks, "schema_properties", without_rbac_context)
+    initial_states = dict(
+        todo_policy()["initial_states"],
+        mine='rbac_context == "a" && title == "x"',
+    )
+    policy = dict(todo_policy(), initial_states=initial_states)
+    with override_settings(
+        SCRUD_WORKFLOW={"DEFAULT_WORKFLOW_POLICIES": {TODO: policy}}
+    ):
+        assert (
+            scrud_checks.check_default_policy_conditions(None, databases=["default"])
+            == []
+        )

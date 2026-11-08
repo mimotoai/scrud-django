@@ -36,6 +36,104 @@ def check_default_workflow_policies(app_configs, **kwargs):
     ]
 
 
+# Top-level keywords of a JSON Schema through which an object may have
+# properties its ``properties`` does not name.
+OPEN_SCHEMA_KEYWORDS = (
+    "patternProperties",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "$ref",
+    "if",
+    "then",
+    "else",
+    "dependencies",
+    "dependentSchemas",
+    "unevaluatedProperties",
+)
+
+
+def schema_properties(schema):
+    """The names of the top-level properties a JSON Schema (`schema`, its
+    content) defines, when they are all a resource it validates is expected
+    to have: its ``properties``, unless ``additionalProperties`` allows
+    others (``true`` or a schema; absent counts as not saying so) or a
+    keyword such as ``patternProperties``, ``allOf`` or ``$ref`` may add
+    some (`OPEN_SCHEMA_KEYWORDS`). Else ``None``: nothing can be told."""
+    if not isinstance(schema, dict):
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return None
+    if schema.get("additionalProperties", False) is not False:
+        return None
+    if any(keyword in schema for keyword in OPEN_SCHEMA_KEYWORDS):
+        return None
+    return set(properties)
+
+
+def check_default_policy_conditions(app_configs, databases=None, **kwargs):
+    """A database check (``manage.py check --database default``, and
+    ``migrate``): a Warning (``scrud_django.W005``) for each state condition
+    of a settings default workflow policy that reads a top-level property
+    (`scrud_django.workflow.undeclared_properties`) which the JSON Schema of
+    the policy's type, as stored on a migrated database of `databases`, does
+    not define (`schema_properties`; ``rbac_context`` is always allowed).
+    State conditions compile without type checking, so a misspelled
+    property passes ``scrud_django.E001`` and makes its state unreachable.
+    Nothing is reported for a type that is not registered there, whose
+    schema is not stored (``schema_uri``) or may allow other properties, or
+    for a default that is invalid (``scrud_django.E001`` reports it).
+    Stored ``WorkflowPolicy`` resources are not checked."""
+    from django.db.utils import OperationalError, ProgrammingError
+
+    from scrud_django.conf import DefaultWorkflowPolicies
+    from scrud_django.models import ResourceType
+    from scrud_django.workflow import undeclared_properties
+
+    found = []
+    policies = DefaultWorkflowPolicies().policies
+    for alias in databases or ():
+        if not policies or scrud_migrations_pending(alias):
+            continue
+        try:
+            schemas = list(
+                ResourceType.objects.using(alias)
+                .filter(type_uri__in=list(policies), schema__isnull=False)
+                .order_by("pk")
+                .values_list("type_uri", "schema__content")
+            )
+        except (OperationalError, ProgrammingError):
+            continue
+        for type_uri, schema in schemas:
+            properties = schema_properties(schema)
+            if properties is None:
+                continue
+            properties.add("rbac_context")
+            policy = policies[type_uri].policy
+            for key in ("initial_states", "states"):
+                for state, condition in policy.get(key, {}).items():
+                    for name in undeclared_properties(condition, properties):
+                        warning = checks.Warning(
+                            f"The condition of state {state!r} of the default "
+                            f"workflow policy for {type_uri!r} reads {name!r}, "
+                            f"which the JSON Schema of {type_uri!r} does not "
+                            "define: content that lacks it never meets the "
+                            "condition.",
+                            hint=(
+                                "Fix the condition (a misspelled property?) or "
+                                "define the property in the schema; a schema "
+                                "that expects other properties says so with "
+                                '"additionalProperties": true.'
+                            ),
+                            obj=type_uri,
+                            id="scrud_django.W005",
+                        )
+                        if warning not in found:
+                            found.append(warning)
+    return found
+
+
 def scrud_migrations_pending(alias):
     """Whether database `alias` lacks one of scrud_django's migrations (or
     has no migration table yet): its tables are then not all there, and
@@ -64,8 +162,9 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
     - ``scrud_django.E003`` for each whose ``resource_type`` is not a string
       (stored server-side; it governs no type);
     - ``scrud_django.E005`` for each that does not pass ``WorkflowPolicy``'s
-      checks (a state condition that does not compile, a malformed transition
-      or one naming an undefined state, a reserved transition name, an invalid
+      checks (a state condition that does not compile, a state named in both
+      ``initial_states`` and ``states``, a malformed transition or one naming
+      an undefined state, a reserved transition name, an invalid
       ``restrict_update``, or ``initial_states``, ``states``, ``transitions``
       or conditions of the wrong type), as a policy stored before 0.12.0 or
       server-side may not, or that cannot be checked at all (any other error

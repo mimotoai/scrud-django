@@ -30,7 +30,7 @@ THING = "tests://UpgradedThing"
 POLICY = {
     "resource_type": THING,
     "initial_states": {"s": "true"},
-    "states": {"s": "true"},
+    "states": {},
     "transitions": {},
 }
 

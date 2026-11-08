@@ -23,13 +23,11 @@
   * an update whose content still meets its stored state's condition
     first stays in that state: it is `__SAME_STATE__` (refused in a
     `restrict_update` state), no longer a transition to a later-listed
-    state it also matches, so a grant needs `__SAME_STATE__` to make it;
-  * a create (or a move into a context) whose content meets an initial
-    state's condition but is stored in another state, possible only where
-    `states` redefines an initial state's name, is not a valid initial
-    state.
+    state it also matches, so a grant needs `__SAME_STATE__` to make it.
 
-  Policies whose state conditions do not overlap are unaffected.
+  Policies whose state conditions do not overlap are unaffected. A create
+  (or a move into a context) is in the state it is stored in: a policy may
+  no longer name a state in both `initial_states` and `states` (below).
 
 * A grant conditioned on `scrud_workflow` no longer authorizes a custom
   write action. Whether the operator allowed a request (leaving the
@@ -82,6 +80,32 @@
   policies by content: one without any row, one whose `rbac_context` is
   the checked context or a list, and, in the default context, one that
   names none.
+* A workflow policy that names a state in both `initial_states` and
+  `states` is invalid: the state had two conditions, a create reading one
+  and an update the other. It is refused like the other invalid policies
+  (`ImproperlyConfigured` naming the state): a `WorkflowPolicy` POST or PUT
+  is a 400 (`workflow-policy-invalid`), a stored one is reported by
+  `manage.py check --database` (`scrud_django.E005`) and a settings default
+  by `manage.py check` (`scrud_django.E001`). A create's initial state is
+  now simply its first matching initial state, which is always the state
+  it is stored in.
+* The `WorkflowPolicy` JSON Schema no longer allows a transition to be a
+  list of transition specifications, which no version of the compiler
+  accepted: such a policy is still a 400, now refused by the schema
+  (`json-invalid`) rather than by the policy check
+  (`workflow-policy-invalid`).
+* The new `scrud_django.W005` database check (`manage.py check --database
+  default`, and `migrate`) warns when a state condition of a settings
+  default policy reads a top-level property that the JSON Schema of its
+  type does not define (and the schema allows no other properties:
+  `additionalProperties` absent or `false`, no `patternProperties`, `$ref`
+  or `allOf`-style composition). State conditions compile without type
+  checking, so a misspelled property was accepted and made its state
+  unreachable. `rbac_context` is always allowed; stored policies are not
+  checked. The README's new "Workflow policies" section also says that a
+  state condition reads `rbac_context` as stored (a list for a resource in
+  several contexts), unlike a grant's condition, which reads the context
+  being checked.
 
 ### Upgrading
 
@@ -100,6 +124,12 @@
   while its rows still name another context. If your code writes
   `WorkflowPolicy` resources that way, run `manage.py scrud_sync_contexts
   --check` (and without `--check` to repair) after deploying.
+* A workflow policy that names a state in both `initial_states` and
+  `states` is now invalid. Before deploying, run `manage.py check
+  --database default` and `manage.py check`, and give each such state one
+  name and one condition: a stored invalid policy fails every write of its
+  type in its contexts closed (`ImproperlyConfigured`, a 500) until it is
+  fixed or deleted, and an invalid default every write of its type.
 * An update in place of a state in `restrict_update` through a transition
   whose `from` or `to` lists other states as well is now refused. To keep
   allowing such edits, add a transition from that state to itself alone

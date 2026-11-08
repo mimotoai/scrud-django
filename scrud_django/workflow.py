@@ -1,4 +1,5 @@
 import copy
+import re
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -47,7 +48,8 @@ class WorkflowPolicy:
     Constructing a policy checks it and raises ``ImproperlyConfigured`` for a
     policy that is not an object, ``initial_states``, ``states`` or
     ``transitions`` that are present but not objects, a state condition that is
-    not a string or does not compile, a transition that is not an object
+    not a string or does not compile, a state named in both ``initial_states``
+    and ``states``, a transition that is not an object
     with ``from`` and ``to`` naming defined states or whose name starts with
     ``__`` (reserved), two transitions that lead from one state to another
     (a pair of states has at most one transition), or a ``restrict_update``
@@ -122,13 +124,11 @@ class WorkflowPolicy:
 
     def initial_state(self, data):
         """The initial state a create of `data` makes, or ``None``: the first
-        initial state whose condition `data` meets, provided that it is also
-        the state `data` is stored in (`state`). The two differ only where
-        ``states`` redefines an initial state's name."""
-        initial_state = self.determine_state(data, self.initial_state_expressions)
-        if initial_state is None or initial_state != self.state(data):
-            return None
-        return initial_state
+        initial state whose condition `data` meets. It is the state `data` is
+        stored in (`state`), which tries the initial states first, in the
+        same order: a state has one condition, as no name may be both an
+        initial state and one of ``states``."""
+        return self.determine_state(data, self.initial_state_expressions)
 
     def validate_transition(self, proposed_data, prior_data):
         """Given a proposed state and a previous state determine if the proposed
@@ -213,6 +213,12 @@ class WorkflowPolicy:
         self.state_expressions = dict(self.initial_state_expressions)
         states = self.mapping_of("states", what)
         for name, condition in states.items():
+            if name in self.initial_state_expressions:
+                # Creates would read one condition, updates the other.
+                raise ImproperlyConfigured(
+                    f"Invalid workflow state {name!r}: it is named in both "
+                    "initial_states and states; a state has one condition."
+                )
             self.state_expressions[name] = self.compile_expression(condition, name)
 
     def compile_expression(self, state_condition, name=None):
@@ -293,6 +299,50 @@ class WorkflowPolicy:
                 f"state names, not {restrict_update!r}."
             )
         return frozenset(restrict_update)
+
+
+# How CEL's type checker names an identifier it cannot resolve.
+UNDECLARED_REFERENCE = re.compile(r"undeclared reference to '([^']+)'")
+CEL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _undeclared_references(condition, variables):
+    """The names CEL's type checker cannot resolve in `condition`, given
+    `variables` (declared as ``dyn``): top-level names, as their first
+    segment, and functions. ``set()`` if it compiles."""
+    from cel_expr_python import cel
+
+    environment = cel.NewEnv(
+        variables={
+            name: cel.Type.DYN for name in variables if CEL_IDENTIFIER.match(name)
+        }
+    )
+    try:
+        environment.compile(condition, disable_check=False)
+    except RuntimeError as e:
+        return {name.split(".")[0] for name in UNDECLARED_REFERENCE.findall(str(e))}
+    return set()
+
+
+def undeclared_properties(condition, properties):
+    """The top-level properties the CEL state `condition` reads that are not
+    among `properties`, sorted. A state condition is compiled without type
+    checking (`compile_expression`), so one that reads a misspelled
+    property compiles, and that property is missing from every resource.
+    The cel package exposes no expression's references; its type checker
+    names the identifiers it cannot resolve, given the declared variables.
+    A name that still does not resolve once declared as a variable is a
+    function (``foo(x)``, ``x.foo()``), not a property. Other type errors
+    are ignored, and a condition that does not compile reads none."""
+    try:
+        missing = _undeclared_references(condition, properties)
+        if not missing:
+            return []
+        functions = _undeclared_references(condition, set(properties) | missing)
+    except Exception:  # noqa: BLE001
+        # Never fail a system check on one condition.
+        return []
+    return sorted(missing - functions)
 
 
 def _type_uri(resource_type):

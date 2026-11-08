@@ -328,6 +328,12 @@ STORED_INVALID_POLICIES = [
         id="duplicate-pair",
     ),
     pytest.param(
+        dict(PERMISSIVE_POLICY, states={"any": "false"}),
+        "Invalid workflow state 'any': it is named in both initial_states and "
+        "states; a state has one condition.",
+        id="state-in-initial-states-and-states",
+    ),
+    pytest.param(
         dict(PERMISSIVE_POLICY, restrict_update="any"),
         "Invalid workflow restrict_update: it must be a list of defined state "
         "names, not 'any'.",
@@ -358,6 +364,11 @@ STORED_INVALID_POLICIES = [
         "Invalid workflow transitions: it must be an object of transition names "
         "to transitions, not ['t'].",
         id="transitions-list",
+    ),
+    pytest.param(
+        dict(PERMISSIVE_POLICY, transitions={"go": [{"from": "any", "to": "any"}]}),
+        "Invalid workflow transition 'go': it must be an object with 'from' and 'to'.",
+        id="transition-list",
     ),
     pytest.param(
         dict(PERMISSIVE_POLICY, initial_states={"a": 3}),

@@ -380,6 +380,23 @@ own `RealtimeSignalProcessor` indexes inside the write, so a write that
 scrud-django then rolls back (for example with 403, when the stored resource
 lands in a context the writer may not write in) would stay in the index.
 
+### Workflow policies
+
+A workflow policy (a `WorkflowPolicy` resource for one type in its
+`rbac_context`, else the type's `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`
+entry) names its states in `initial_states` (where a create may put a
+resource) and `states` (the others); a state is named in one of them, not
+both. Each state's condition is a CEL expression over the resource's content,
+each top-level property a variable. Unlike a grant's condition, it reads
+`rbac_context` as stored: the whole value (a list for a resource in several
+contexts), the same in every context the write is checked in, not the context
+being checked. State conditions are compiled without type checking, so a
+misspelled property (`stauts == "done"`) is accepted, never present, and its
+state unreachable: `manage.py check --database default` warns
+(`scrud_django.W005`) where a default policy's condition reads a property its
+type's JSON Schema does not define and the schema allows no others
+(`additionalProperties` absent or `false`); stored policies are not checked.
+
 ### Workflow actions
 
 `SCRUD_WORKFLOW_ACTIONS` is a list (or tuple) of dotted paths to mappings of

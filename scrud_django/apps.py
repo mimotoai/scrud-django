@@ -13,6 +13,7 @@ class ScrudConfig(AppConfig):
 
         from scrud_django.checks import (
             check_context_drift,
+            check_default_policy_conditions,
             check_default_workflow_policies,
             check_isolation_level,
             check_list_filters,
@@ -24,6 +25,7 @@ class ScrudConfig(AppConfig):
 
         register_operator("scrud_workflow", authorized_transitions)
         checks.register(check_default_workflow_policies)
+        checks.register(check_default_policy_conditions, checks.Tags.database)
         checks.register(check_stored_workflow_policies, checks.Tags.database)
         checks.register(check_overlong_contexts, checks.Tags.database)
         checks.register(check_context_drift, checks.Tags.database)
