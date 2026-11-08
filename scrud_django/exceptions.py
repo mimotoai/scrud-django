@@ -339,3 +339,36 @@ class WorkflowInvalidStateError(WorkflowTransitionError):
         super().__init__(
             policy, None, None, message="The request does not match a valid state"
         )
+
+
+class WorkflowAmbiguousStateError(WorkflowInvalidStateError):
+    """Content that meets the conditions of more than one state of a policy
+    (`matching_states`, sorted): its state would depend on the order of the
+    conditions, which a JSON column does not keep (PostgreSQL's ``jsonb`` and
+    MySQL's JSON reorder an object's keys). The request's content (or, when
+    `stored`, the stored content a write replaces) is refused. Its ``type``
+    is the other workflow errors' (``workflow-transition-invalid``); the
+    body adds ``matching_states``. Like them it becomes a
+    `HiddenWorkflowTransitionError`, which names no state, for a requester
+    who may not read the policy or the stored resource."""
+
+    def __init__(self, policy, matching_states, stored=False):
+        self.matching_states = sorted(matching_states)
+        names = ", ".join(repr(state) for state in self.matching_states)
+        content = "The stored resource" if stored else "The request"
+        WorkflowTransitionError.__init__(
+            self,
+            policy,
+            None,
+            None,
+            message=(
+                f"{content} meets the conditions of more than one workflow "
+                f"state ({names}); a state's condition must exclude the others'."
+            ),
+        )
+        self.stored = stored
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        data["matching_states"] = list(self.matching_states)
+        return data

@@ -17,6 +17,7 @@ from scoped_rbac.cel import (
 from scrud_django.exceptions import (
     DefaultPolicyReference,
     StoredPolicyReference,
+    WorkflowAmbiguousStateError,
     WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
     WorkflowTransitionError,
@@ -106,7 +107,9 @@ class WorkflowPolicy:
 
     def validate_initial_state(self, data):
         """The initial state `data` is in (`initial_state`); raises
-        ``WorkflowInvalidInitialStateError`` if it is in none."""
+        ``WorkflowInvalidInitialStateError`` if it is in none, and
+        ``WorkflowAmbiguousStateError`` if it meets the conditions of more
+        than one state."""
         proposed_state = self.initial_state(data)
         if proposed_state is None:
             raise WorkflowInvalidInitialStateError(self.reference, proposed_state)
@@ -118,19 +121,21 @@ class WorkflowPolicy:
         return TransitionData(self.validate_initial_state(data), None, "__INITIALIZE__")
 
     def state(self, data):
-        """The state content `data` is stored in: the first of all the states
-        (`state_expressions`: the initial states, then ``states``) whose
-        condition it meets, or ``None``. A write is authorized into this state
-        and the next one leaves from it."""
+        """The state content `data` is stored in: the one state, among the
+        initial states and ``states`` (`state_expressions`), whose condition
+        it meets, or ``None``. Raises ``WorkflowAmbiguousStateError`` when it
+        meets the conditions of more than one (`determine_state`). A write is
+        authorized into this state and the next one leaves from it."""
         return self.determine_state(data, self.state_expressions)
 
     def initial_state(self, data):
-        """The initial state a create of `data` makes, or ``None``: the first
-        initial state whose condition `data` meets. It is the state `data` is
-        stored in (`state`), which tries the initial states first, in the
-        same order: a state has one condition, as no name may be both an
-        initial state and one of ``states``."""
-        return self.determine_state(data, self.initial_state_expressions)
+        """The initial state a create of `data` makes, or ``None``: the state
+        `data` is stored in (`state`, which raises
+        ``WorkflowAmbiguousStateError`` for content that meets the
+        conditions of more than one state, initial or not) when it is one of
+        the initial states."""
+        state = self.state(data)
+        return state if state in self.initial_state_expressions else None
 
     def validate_transition(self, proposed_data, prior_data):
         """Given a proposed state and a previous state determine if the proposed
@@ -142,9 +147,14 @@ class WorkflowPolicy:
         """The `TransitionData` of replacing `prior_data` with `proposed_data`:
         from the state the stored content is in to the state the new content
         will be stored in (`state` of each), and the transition between them.
-        Raises ``WorkflowInvalidStateError`` when `proposed_data` is in no
-        state (and `prior_data` is in one), and ``WorkflowTransitionError``
-        when no transition leads from the prior state to the proposed one.
+        Raises ``WorkflowAmbiguousStateError`` when either content meets the
+        conditions of more than one state (the stored content's error says
+        it is the stored resource's: such content, stored before this check
+        or after a policy edit, can no longer be updated until the policy's
+        conditions exclude each other), ``WorkflowInvalidStateError`` when
+        `proposed_data` is in no state (and `prior_data` is in one), and
+        ``WorkflowTransitionError`` when no transition leads from the prior
+        state to the proposed one.
         Content that stays in its state is the ``__SAME_STATE__`` transition
         (unless a transition of the policy leads from that state to itself).
         For a state in ``restrict_update`` it is refused, unless a transition
@@ -153,7 +163,12 @@ class WorkflowPolicy:
         to itself among other states does not update it in place.
         """
         # TODO add prior state to Resource instead
-        prior_state = self.state(prior_data)
+        try:
+            prior_state = self.state(prior_data)
+        except WorkflowAmbiguousStateError as e:
+            raise WorkflowAmbiguousStateError(
+                self.reference, e.matching_states, stored=True
+            ) from e
         proposed_state = self.state(proposed_data)
         if prior_state is not None:
             if proposed_state is None:
@@ -177,22 +192,31 @@ class WorkflowPolicy:
         raise WorkflowTransitionError(self.reference, prior_state, proposed_state)
 
     def determine_state(self, data, state_expressions):
-        """Apply the `state_expressions` to identify the current state of the data.
-        First match is returned. Later revisions of this class may enable partial
-        orders based on state conditions referencing each other, meaning the "most"
-        matching expression in the first matched partial order will be the ultimate
-        match. Data that is not a mapping (content stored before 0.12.0 could be
-        a list) is in no state: ``None``.
+        """The one state of `state_expressions` whose condition `data`
+        meets, or ``None``. Every condition is evaluated: content that meets
+        more than one is ambiguous (``WorkflowAmbiguousStateError``, naming
+        them), never resolved by the conditions' order, which a policy stored
+        in a JSON column does not keep (PostgreSQL's ``jsonb`` and MySQL's
+        JSON reorder an object's keys). Data that is not a mapping (content
+        stored before 0.12.0 could be a list) is in no state: ``None``.
         """
-        if not isinstance(data, Mapping):
-            return None
-        for name, condition in state_expressions.items():
-            # Evaluation errors, such as a property missing from the provided data,
-            # count as not matching.
-            if is_true(condition, data):
-                return name
+        matches = self.matching_states(data, state_expressions)
+        if len(matches) > 1:
+            raise WorkflowAmbiguousStateError(self.reference, matches)
+        return matches[0] if matches else None
 
-        return None
+    @staticmethod
+    def matching_states(data, state_expressions):
+        """The names of the `state_expressions` whose condition `data` (a
+        mapping, else none) meets. An evaluation error, such as a property
+        missing from `data`, or a result that is not ``true``, is no match."""
+        if not isinstance(data, Mapping):
+            return []
+        return [
+            name
+            for name, condition in state_expressions.items()
+            if is_true(condition, data)
+        ]
 
     def mapping_of(self, key, what):
         """The policy's `key` (``{}`` when absent), which must be an object (of

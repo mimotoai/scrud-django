@@ -398,6 +398,20 @@ state unreachable: `manage.py check --database default` warns
 type's JSON Schema does not define and the schema allows no others
 (`additionalProperties` absent or `false`); stored policies are not checked.
 
+A policy's state conditions must be mutually exclusive: content is in the
+one state whose condition it meets. The order of the conditions decides
+nothing, since a policy stored in a JSON column does not keep it
+(PostgreSQL's `jsonb` and MySQL's JSON reorder an object's keys). Content
+that meets the conditions of more than one state is ambiguous: a create or
+update whose body is ambiguous, or an update of a resource whose stored
+content is, is refused (400, `workflow-transition-invalid`, with the states
+it meets in `matching_states` and in its message, unless the error is
+hidden from a writer who may not read the policy or the resource). A policy
+whose conditions overlap is not refused when it is written (whether two CEL
+conditions can both hold is not decidable in general); write each condition
+so that it excludes the others (`status == "review" && !published`, not
+`status == "review"` beside `published`).
+
 ### Workflow actions
 
 `SCRUD_WORKFLOW_ACTIONS` is a list (or tuple) of dotted paths to mappings of

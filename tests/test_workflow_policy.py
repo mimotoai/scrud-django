@@ -3,6 +3,7 @@ from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac.cel import InvalidExpression
 
 from scrud_django.exceptions import (
+    WorkflowAmbiguousStateError,
     WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
     WorkflowTransitionError,
@@ -138,8 +139,8 @@ def test_restrict_update_may_be_absent_or_a_list_of_states():
     WorkflowPolicy(dict(policy, restrict_update=["start"]))
 
 
-# States whose conditions overlap: content that is "review" and published is
-# stored in "published", the first state it matches.
+# States whose conditions overlap: content that is "review" and published
+# meets the conditions of both "review" and "published".
 overlapping_policy = {
     "initial_states": {"draft": 'status == "draft" && published == false'},
     "states": {
@@ -154,47 +155,140 @@ overlapping_policy = {
 draft = {"status": "draft", "published": False}
 
 
+def reordered(policy):
+    """`policy` with the keys of its ``initial_states`` and ``states``
+    reversed, as a JSON column that does not keep key order may return
+    them."""
+    return dict(
+        policy,
+        **{
+            key: dict(reversed(list(policy[key].items())))
+            for key in ("initial_states", "states")
+            if key in policy
+        },
+    )
+
+
 def test_transition_is_authorized_into_the_state_the_content_is_stored_in():
     policy = WorkflowPolicy(overlapping_policy)
     proposed = {"status": "review", "published": True}
-    assert policy.determine_state(proposed, policy.state_expressions) == "published"
-    # "submit" leads from "draft" to "review", which the content also matches,
-    # but it would be stored in "published": no transition leads there.
-    with pytest.raises(WorkflowTransitionError) as excinfo:
+    # The content meets "published" and "review": it is in neither, whatever
+    # the order of their conditions. "submit" leads from "draft" to "review",
+    # but the update is refused.
+    with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
+        policy.state(proposed)
+    assert excinfo.value.matching_states == ["published", "review"]
+    with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
         policy.determine_transition(proposed, draft)
     error = excinfo.value
-    assert (error.prior_state, error.proposed_state) == ("draft", "published")
-    with pytest.raises(WorkflowTransitionError):
+    # A WorkflowTransitionError (and WorkflowInvalidStateError), like the
+    # other refusals of invalid workflow content.
+    assert isinstance(error, WorkflowInvalidStateError)
+    assert isinstance(error, WorkflowTransitionError)
+    assert error.matching_states == ["published", "review"]
+    assert (error.prior_state, error.proposed_state) == (None, None)
+    assert error.stored is False
+    assert error.message == (
+        "The request meets the conditions of more than one workflow state "
+        "('published', 'review'); a state's condition must exclude the others'."
+    )
+    with pytest.raises(WorkflowAmbiguousStateError):
         policy.validate(proposed, draft)
 
     submitted = {"status": "review", "published": False}
     assert policy.determine_transition(submitted, draft) == TransitionData(
         "review", "draft", "submit"
     )
-    published = {"status": "review", "published": True}
+    # Published content that is no longer "review" is in "published" alone.
+    published = {"status": "published", "published": True}
     assert policy.determine_transition(published, submitted) == TransitionData(
         "published", "review", "publish"
     )
 
 
+def test_a_state_does_not_depend_on_the_order_of_the_conditions():
+    # The same policy, its states in two orders (as PostgreSQL's jsonb or
+    # MySQL's JSON may return a stored one): every content is in the same
+    # state, or ambiguous, under both.
+    policies = [
+        WorkflowPolicy(overlapping_policy),
+        WorkflowPolicy(reordered(overlapping_policy)),
+    ]
+    assert list(policies[1].state_expressions) == ["draft", "review", "published"]
+    submitted = {"status": "review", "published": False}
+    published = {"status": "published", "published": True}
+    ambiguous = {"status": "review", "published": True}
+    for policy in policies:
+        assert policy.state(draft) == "draft"
+        assert policy.initial_state(draft) == "draft"
+        assert policy.state(submitted) == "review"
+        assert policy.state(published) == "published"
+        assert policy.state({"status": "other", "published": False}) is None
+        assert policy.determine_transition(submitted, draft) == TransitionData(
+            "review", "draft", "submit"
+        )
+        assert policy.determine_transition(published, submitted) == TransitionData(
+            "published", "review", "publish"
+        )
+        with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
+            policy.determine_transition(ambiguous, draft)
+        assert excinfo.value.matching_states == ["published", "review"]
+        with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
+            policy.determine_transition(ambiguous, submitted)
+        assert excinfo.value.matching_states == ["published", "review"]
+
+
+def test_an_update_of_stored_content_in_more_than_one_state_is_refused():
+    # Stored before the policy's conditions were checked for it (or before a
+    # policy edit made them overlap): its state is ambiguous, so no update
+    # leaves it, not even one into a state it also meets, or a valid one.
+    policy = WorkflowPolicy(overlapping_policy)
+    stored = {"status": "review", "published": True}
+    for proposed in (
+        {"status": "published", "published": True},
+        {"status": "review", "published": False},
+        stored,
+    ):
+        with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
+            policy.determine_transition(proposed, stored)
+        error = excinfo.value
+        assert error.stored is True
+        assert error.matching_states == ["published", "review"]
+        assert (error.prior_state, error.proposed_state) == (None, None)
+        assert error.message == (
+            "The stored resource meets the conditions of more than one workflow "
+            "state ('published', 'review'); a state's condition must exclude the "
+            "others'."
+        )
+
+
 def test_content_staying_in_its_state_is_a_same_state_update():
-    # "archive" leads from "review" to "archived", which the content also
-    # matches; it is stored in "review", its first match, so it stays there.
+    # "archive" leads from "review" to "archived".
     policy = {
         "initial_states": {"review": 'status == "review"'},
         "states": {"archived": "archived == true"},
         "transitions": {"archive": {"from": "review", "to": "archived"}},
     }
     prior = {"status": "review", "archived": False}
-    proposed = {"status": "review", "archived": True}
-    assert WorkflowPolicy(policy).determine_transition(
-        proposed, prior
-    ) == TransitionData("review", "review", "__SAME_STATE__")
-
+    # Content that is "review" and archived meets both conditions: it is in
+    # neither, and the update is refused, under restrict_update or not.
+    overlapping = {"status": "review", "archived": True}
     restricted = WorkflowPolicy(dict(policy, restrict_update=["review"]))
+    for workflow in (WorkflowPolicy(policy), restricted):
+        with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
+            workflow.determine_transition(overlapping, prior)
+        assert excinfo.value.matching_states == ["archived", "review"]
+
+    # Content that stays in "review" alone is a __SAME_STATE__ update,
+    # refused under restrict_update.
+    edited = {"status": "review", "archived": False, "title": "edited"}
+    assert WorkflowPolicy(policy).determine_transition(edited, prior) == TransitionData(
+        "review", "review", "__SAME_STATE__"
+    )
     with pytest.raises(WorkflowTransitionError) as excinfo:
-        restricted.determine_transition(proposed, prior)
+        restricted.determine_transition(edited, prior)
     error = excinfo.value
+    assert not isinstance(error, WorkflowAmbiguousStateError)
     assert (error.prior_state, error.proposed_state) == ("review", "review")
     assert error.message == "Update not allowed on this state"
 
@@ -221,7 +315,7 @@ def test_a_state_in_both_initial_states_and_states_is_refused():
 
 def test_initial_state_is_the_state_the_content_is_stored_in():
     # Content that meets an initial state's condition and a later state's is
-    # created in, and stored in, the initial state: the first match.
+    # in neither: a create of it is refused, as an update to it is.
     policy = WorkflowPolicy(
         {
             "initial_states": {"draft": 'status == "draft"'},
@@ -230,10 +324,23 @@ def test_initial_state_is_the_state_the_content_is_stored_in():
         }
     )
     published_draft = {"status": "draft", "published": True}
-    assert policy.state(published_draft) == "draft"
-    assert policy.initial_state(published_draft) == "draft"
-    assert policy.validate(published_draft) == published_draft
-    assert policy.initial_transition(published_draft) == TransitionData(
+    for decide in (
+        policy.state,
+        policy.initial_state,
+        policy.validate,
+        policy.validate_initial_state,
+        policy.initial_transition,
+    ):
+        with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
+            decide(published_draft)
+        assert excinfo.value.matching_states == ["draft", "published"]
+        assert excinfo.value.stored is False
+    # Content in the initial state alone is created there.
+    unpublished_draft = {"status": "draft", "published": False}
+    assert policy.state(unpublished_draft) == "draft"
+    assert policy.initial_state(unpublished_draft) == "draft"
+    assert policy.validate(unpublished_draft) == unpublished_draft
+    assert policy.initial_transition(unpublished_draft) == TransitionData(
         "draft", None, "__INITIALIZE__"
     )
     # Content in a later state only is no initial state.
@@ -242,6 +349,42 @@ def test_initial_state_is_the_state_the_content_is_stored_in():
     assert policy.initial_state(published) is None
     with pytest.raises(WorkflowInvalidInitialStateError):
         policy.initial_transition(published)
+
+
+def test_content_in_two_initial_states_is_no_initial_state():
+    policy = {
+        "initial_states": {
+            "urgent": 'priority == "HIGH"',
+            "open": 'status == "OPEN"',
+        },
+        "states": {},
+        "transitions": {},
+    }
+    both = {"priority": "HIGH", "status": "OPEN"}
+    for workflow in (WorkflowPolicy(policy), WorkflowPolicy(reordered(policy))):
+        with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
+            workflow.validate(both)
+        assert excinfo.value.matching_states == ["open", "urgent"]
+        assert workflow.validate({"status": "OPEN"}) == {"status": "OPEN"}
+        assert workflow.initial_state({"priority": "HIGH"}) == "urgent"
+
+
+def test_an_ambiguous_state_error_names_the_states_in_its_body():
+    from scrud_django.exceptions import DefaultPolicyReference
+
+    error = WorkflowAmbiguousStateError(
+        DefaultPolicyReference("todo"), ["review", "published"]
+    )
+    data = error.response_data({})
+    assert data["type"] == (
+        "http://api.openteams.com/http-problem/workflow-transition-invalid"
+    )
+    assert data["title"] == "Invalid workflow transition"
+    assert data["matching_states"] == ["published", "review"]
+    assert data["policy"] == {"resource_type": "todo", "default": True}
+    assert (data["prior_state"], data["proposed_state"]) == (None, None)
+    assert data["message"] == error.message
+    assert error.detail.code == "workflow_transition_invalid"
 
 
 # "published" may not change in place; "republish" leads to it from it and

@@ -10,6 +10,7 @@ from scrud_django.models.resource_type import ResourceType
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     TransitionData,
+    WorkflowAmbiguousStateError,
     WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
     WorkflowTransitionError,
@@ -32,6 +33,7 @@ LEAVE_TRANSITION = "__LEAVE__"
 # The workflow errors a report of a transition (`ResourceMixin.get_transitions`)
 # catches: a write that skipped the ``WorkflowValidator`` is still saved.
 WORKFLOW_ERRORS = (
+    WorkflowAmbiguousStateError,
     WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
     WorkflowTransitionError,
@@ -209,7 +211,8 @@ class ResourceMixin(ScrudfulMixin):
 
         - ``transition_data`` (`get_transition_data`), and
           ``transition_error``, the workflow error that made it ``None``
-          (an invalid transition, which a write that skipped the
+          (an invalid transition, or content that meets the conditions of
+          more than one state, which a write that skipped the
           ``WorkflowValidator`` still saves), else ``None``;
         - ``transitions``: for each context the stored resource or the
           content is in (stored ones first, as the ``WorkflowValidator``
@@ -218,8 +221,9 @@ class ResourceMixin(ScrudfulMixin):
           write there. A context it stays in: the transition under its
           policy (``None`` if invalid); one it enters (or a create's): its
           ``__INITIALIZE__``; one it leaves: ``TransitionData(None, <the
-          state it was in there>, "__LEAVE__")``. A context without a policy
-          is left out.
+          state it was in there>, "__LEAVE__")``; ``None`` in any of them
+          where the content's (or stored content's) state is ambiguous. A
+          context without a policy is left out.
 
         Each context's policy is read once."""
         prior_data = self.stored_content(using)
@@ -261,17 +265,19 @@ class ResourceMixin(ScrudfulMixin):
         """``(TransitionData or None, workflow error or None)``: this save
         under `workflow` in a context the resource `entering` moves into,
         `leaving` moves out of, or else stays in, from `prior_data` (``None``:
-        a create)."""
-        if leaving:
-            prior_state = workflow.state(prior_data)
-            return TransitionData(None, prior_state, LEAVE_TRANSITION), None
-        if prior_data is None or entering:
-            # A create has no prior state; its proposed state is the initial
-            # state the content is in (``None`` if none: this is a report, the
-            # `WorkflowValidator` validates).
-            initial_state = workflow.initial_state(self.content)
-            return TransitionData(initial_state, None, "__INITIALIZE__"), None
+        a create). Content that meets the conditions of more than one state
+        (``WorkflowAmbiguousStateError``) is reported as ``None`` with the
+        error, as an invalid transition is."""
         try:
+            if leaving:
+                prior_state = workflow.state(prior_data)
+                return TransitionData(None, prior_state, LEAVE_TRANSITION), None
+            if prior_data is None or entering:
+                # A create has no prior state; its proposed state is the
+                # initial state the content is in (``None`` if none: this is
+                # a report, the `WorkflowValidator` validates).
+                initial_state = workflow.initial_state(self.content)
+                return TransitionData(initial_state, None, "__INITIALIZE__"), None
             return workflow.determine_transition(self.content, prior_data), None
         except WORKFLOW_ERRORS as error:
             # Workflow validation is the WorkflowValidator's: the error is

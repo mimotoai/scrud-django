@@ -4,30 +4,40 @@
 
 ### Fixes
 
-* A workflow write is authorized into the state its content is stored in.
-  A resource's state is the first state (the initial states, then `states`,
-  in the policy's order) whose condition its content meets, but an update's
-  new state was looked up only among the states a transition leads to from
-  the stored one. Where state conditions overlap, an update could be
-  authorized (and reported to `scrud_post_save` and workflow actions) as
+* A workflow write is authorized into the state its content is stored in,
+  and a state no longer depends on the order of the policy's conditions.
+  A resource's state was the first state (the initial states, then
+  `states`, in the policy's order) whose condition its content met, but an
+  update's new state was looked up only among the states a transition leads
+  to from the stored one. Where state conditions overlap, an update could
+  be authorized (and reported to `scrud_post_save` and workflow actions) as
   one transition while its content was stored in another state, one that
-  no transition the writer may make leads to. An update's new state is now
-  its content's first matching state, as for stored content, and a
-  transition must lead there from the stored state. Under a policy whose
-  conditions overlap, writes that were accepted before can be refused
-  (400, `workflow-transition-invalid`), and the transition a write is
-  checked and reported as can change:
-  * an update whose content is stored in a state no transition leads to
-    from the stored state is refused, even if it also meets the condition
-    of a state that one does lead to;
-  * an update whose content still meets its stored state's condition
-    first stays in that state: it is `__SAME_STATE__` (refused in a
-    `restrict_update` state), no longer a transition to a later-listed
-    state it also matches, so a grant needs `__SAME_STATE__` to make it.
+  no transition the writer may make leads to. And "the policy's order" was
+  the database's: a stored policy lives in a JSON column, and PostgreSQL's
+  `jsonb` and MySQL's JSON do not keep an object's keys in order, so the
+  same content could be in different states on SQLite or MariaDB and on
+  PostgreSQL or MySQL. Content is now in the one state whose condition it
+  meets: every condition is evaluated, and content that meets more than
+  one is ambiguous (the new
+  `scrud_django.exceptions.WorkflowAmbiguousStateError`, a
+  `WorkflowInvalidStateError`). An update's new state is its content's
+  state, as for stored content, and a transition must lead there from the
+  stored state. Under a policy whose conditions overlap, writes that were
+  accepted before are refused (400, `workflow-transition-invalid`; the
+  body names the states the content meets in `matching_states`, unless the
+  error is hidden from a writer who may not read the policy or the
+  resource):
+  * a create or update whose body meets the conditions of more than one
+    state, whichever of them a transition leads to;
+  * an update of a resource whose stored content meets the conditions of
+    more than one state (Upgrading).
 
-  Policies whose state conditions do not overlap are unaffected. A create
-  (or a move into a context) is in the state it is stored in: a policy may
-  no longer name a state in both `initial_states` and `states` (below).
+  `scrud_post_save` reports such a write (one that skipped the
+  `WorkflowValidator`) as `None` in `transitions`, with the error as
+  `transition_error`, as an invalid transition. Policies whose state
+  conditions do not overlap are unaffected. A create (or a move into a
+  context) is in the state it is stored in: a policy may no longer name a
+  state in both `initial_states` and `states` (below) (#5).
 
 * A grant conditioned on `scrud_workflow` no longer authorizes a custom
   write action. Whether the operator allowed a request (leaving the
@@ -87,8 +97,7 @@
   is a 400 (`workflow-policy-invalid`), a stored one is reported by
   `manage.py check --database` (`scrud_django.E005`) and a settings default
   by `manage.py check` (`scrud_django.E001`). A create's initial state is
-  now simply its first matching initial state, which is always the state
-  it is stored in.
+  now the state it is stored in, when that is an initial state.
 * The `WorkflowPolicy` JSON Schema no longer allows a transition to be a
   list of transition specifications, which no version of the compiler
   accepted: such a policy is still a 400, now refused by the schema
@@ -196,6 +205,16 @@
   while its rows still name another context. If your code writes
   `WorkflowPolicy` resources that way, run `manage.py scrud_sync_contexts
   --check` (and without `--check` to repair) after deploying.
+* A resource whose content meets the conditions of more than one state of
+  its workflow policy can no longer be updated (400,
+  `workflow-transition-invalid`) until the policy's conditions are made
+  mutually exclusive (README "Workflow policies"), or its content is fixed
+  by server code (`Resource.save()` past the API). Such content was stored
+  before this release, or before a policy edit made the conditions
+  overlap; it is not detected by any check. Before deploying, review your
+  policies (stored `WorkflowPolicy` resources and
+  `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`) for conditions that can
+  both hold, and give each state a condition that excludes the others'.
 * A workflow policy that names a state in both `initial_states` and
   `states` is now invalid. Before deploying, run `manage.py check
   --database default` and `manage.py check`, and give each such state one

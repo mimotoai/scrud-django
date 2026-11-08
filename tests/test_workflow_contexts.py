@@ -347,8 +347,11 @@ def test_a_move_into_a_context_is_reported_as_a_creation_there(
     ]
 
 
-# States whose conditions overlap: a "high" priority ToDo is "published",
-# the first state it matches, whatever its status.
+# States whose conditions overlap: a "high" priority ToDo that is "in
+# progress" meets the conditions of both "published" and "review". Stored
+# in a JSON column, the policy's states may come back in either order
+# (PostgreSQL's jsonb and MySQL's JSON reorder keys): such content is in
+# neither state, whatever the database.
 OVERLAPPING_POLICY = {
     "resource_type": TODO,
     "initial_states": {"draft": 'status == "not started" && priority != "high"'},
@@ -361,6 +364,14 @@ OVERLAPPING_POLICY = {
         "publish": {"from": "review", "to": "published"},
     },
 }
+AMBIGUOUS = dict(NOT_STARTED, status="in progress", priority="high")
+
+
+def ambiguous_state_message(content):
+    return (
+        f"{content} meets the conditions of more than one workflow state "
+        "('published', 'review'); a state's condition must exclude the others'."
+    )
 
 
 @pytest.mark.django_db
@@ -369,21 +380,21 @@ def test_a_transition_is_authorized_into_the_state_the_content_is_stored_in(
     reported_transitions,
 ):
     # The body is "in progress" ("review", where "submit" leads) and "high"
-    # priority, so it would be stored in "published". A writer who may only
-    # "submit" may not make it: no transition leads from "draft" there.
+    # priority ("published"): it is in no one state, so a writer who may
+    # "submit" may not store it.
     from scrud_django.workflow import TransitionData
 
-    store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
+    stored = store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
     user = user_with((workflow_writer("submit"), "w"))
     resource = todo(rbac_context="w")
     Given.http.force_authenticate(user)
     reported_transitions.clear()
-    put_todo(
-        resource,
-        dict(NOT_STARTED, status="in progress", priority="high", rbac_context="w"),
-    )
+    put_todo(resource, dict(AMBIGUOUS, rbac_context="w"))
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
     assert_workflow_error()
+    # The writer may not read the policy: the error names neither it nor
+    # the states the body meets.
+    assert_generic_workflow_error(stored)
     assert_unchanged(resource)
     assert reported_transitions == []
 
@@ -392,6 +403,66 @@ def test_a_transition_is_authorized_into_the_state_the_content_is_stored_in(
     Then.http.status_code_is(status.HTTP_200_OK)
     assert Resource.objects.get(pk=resource.pk).content == submitted
     assert reported_transitions == [TransitionData("review", "draft", "submit")]
+
+
+@pytest.mark.django_db
+@test_context
+def test_content_in_more_than_one_state_is_refused_naming_them():
+    # A writer who may read the policy is told which states the body meets.
+    stored = store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
+    user = user_with((workflow_writer("submit", "publish"), "w"), (READ_POLICIES, "w"))
+    resource = todo(rbac_context="w")
+    Given.http.force_authenticate(user)
+    put_todo(resource, dict(AMBIGUOUS, rbac_context="w"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_references_stored_policy(stored)
+    assert_no_policy_content(Http.response.json())
+    body = Http.response.json()
+    assert body["matching_states"] == ["published", "review"], body
+    assert body["message"] == ambiguous_state_message("The request"), body
+    assert (body["prior_state"], body["proposed_state"]) == (None, None), body
+    assert_unchanged(resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_resource_stored_in_more_than_one_state_cannot_be_updated(
+    reported_saves,
+):
+    from scrud_django.exceptions import WorkflowAmbiguousStateError
+
+    stored = store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
+    # Stored server-side, past the workflow check: reported with the error.
+    reported_saves.clear()
+    resource = todo(**dict(AMBIGUOUS, rbac_context="w"))
+    (reported,) = reported_saves
+    assert reported["transition_data"] is None
+    error = reported["transition_error"]
+    assert isinstance(error, WorkflowAmbiguousStateError), error
+    assert error.matching_states == ["published", "review"]
+    assert reported["transitions"] == {"w": None}
+
+    # Its state is ambiguous: no update leaves it, not even into a state it
+    # meets that a transition the writer may make leads to.
+    user = user_with((workflow_writer("submit", "publish"), "w"), (READ_POLICIES, "w"))
+    Given.http.force_authenticate(user)
+    reported_saves.clear()
+    put_todo(
+        resource, dict(NOT_STARTED, status="done", priority="high", rbac_context="w")
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_references_stored_policy(stored)
+    body = Http.response.json()
+    assert body["matching_states"] == ["published", "review"], body
+    assert body["message"] == ambiguous_state_message("The stored resource"), body
+    assert_unchanged(resource)
+    assert reported_saves == []
+
+    # A server-side move out of "w" reports no state left there.
+    resource.content = dict(NOT_STARTED, rbac_context="a")
+    resource.save()
+    (reported,) = reported_saves
+    assert reported["transitions"]["w"] is None
 
 
 # "done" and "canceled" may not change in place: "reopen" leads to "done"
