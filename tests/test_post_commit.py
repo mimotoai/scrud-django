@@ -12,7 +12,8 @@ from uuid import uuid4
 
 import pytest
 from django.apps import apps
-from django.db import connection, connections
+from django.db import connection, connections, transaction
+from django.test import override_settings
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
@@ -22,7 +23,7 @@ from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
-from scrud_django.scrud_signals import scrud_post_save
+from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save, write_alias
 from scrud_django.search_indexes import ResourceIndex
 
 from .factories import UserFactory
@@ -148,6 +149,30 @@ def todos_moved_after_save(context="other"):
 def a_todo(content=NOT_STARTED):
     reverse("todos-list")
     return ResourceRegistration.register(dict(content), "todos")
+
+
+class ReplicaRouter:
+    """Reads from "other" (a read replica), writes to default."""
+
+    def db_for_read(self, model, **hints):
+        return "other"
+
+    def db_for_write(self, model, **hints):
+        return "default"
+
+    def allow_relation(self, obj1, obj2, **hints):
+        return True
+
+
+def read_from_the_replica(todo):
+    """`todo` as a read through `ReplicaRouter` returns it: its
+    ``_state.db`` is "other". (The test's "other" database is not a copy of
+    default, so it is read from default, with its type, and given the
+    replica's alias.)"""
+    resources = Resource.objects.using("default").select_related("resource_type")
+    instance = resources.get(pk=todo.pk)
+    instance._state.db = "other"
+    return instance
 
 
 @pytest.mark.django_db
@@ -359,3 +384,55 @@ def test_an_action_that_raises_outside_a_transaction_does_not_raise(
     assert failing_on_save == [-1]
     (record,) = logged_action_failures(caplog)
     assert "on_save failed for -1" in record.getMessage()
+
+
+class RolledBack(Exception):
+    pass
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "other"])
+@pytest.mark.parametrize("commit", [False, True], ids=["rolled-back", "committed"])
+def test_a_delete_of_a_resource_read_from_a_replica_acts_when_it_commits(
+    commit, ran, committed_types
+):
+    # Committed for real, on both databases: "other" is in autocommit, so an
+    # action registered there would run at once, inside the delete.
+    todo = read_from_the_replica(a_todo())
+    ran.clear()
+    with override_settings(DATABASE_ROUTERS=["tests.test_post_commit.ReplicaRouter"]):
+        try:
+            with transaction.atomic(using="default"):
+                todo.delete()
+                # The delete's action waits for the write database's commit.
+                assert ran == []
+                if not commit:
+                    raise RolledBack
+        except RolledBack:
+            pass
+    assert Resource.objects.using("default").filter(etag=todo.etag).exists() != commit
+    assert ran == ([("delete", todo.etag)] if commit else [])
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_scrud_signals_name_the_database_written_to_not_the_one_read_from():
+    todo = read_from_the_replica(a_todo())
+    received = []
+
+    def record(sender, using=None, **kwargs):
+        received.append(using)
+
+    scrud_post_save.connect(record)
+    scrud_post_delete.connect(record)
+    try:
+        with override_settings(
+            DATABASE_ROUTERS=["tests.test_post_commit.ReplicaRouter"]
+        ):
+            # A sender that names no database: the router's write database.
+            assert write_alias(Resource, {"instance": todo}) == "default"
+            todo.save()
+            todo._state.db = "other"
+            todo.delete()
+    finally:
+        scrud_post_save.disconnect(record)
+        scrud_post_delete.disconnect(record)
+    assert received == ["default", "default"]

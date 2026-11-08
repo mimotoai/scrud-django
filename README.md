@@ -382,7 +382,9 @@ entry for a type replaces an earlier one's. An action runs when the write
 of a resource of its type commits, never for a write that is rolled back. The
 `scrud_post_save` and `scrud_post_delete` signals fire inside the write; a
 receiver whose work leaves the database should wrap it in
-`transaction.on_commit`.
+`transaction.on_commit(..., using=using)`. Their `using` is the database the
+write went to (the router's `db_for_write`), even for an instance read from a
+replica.
 
 ### Upgrading
 

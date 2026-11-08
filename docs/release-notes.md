@@ -1,5 +1,20 @@
 # Change Log
 
+## Unreleased
+
+### Fixes
+
+- A resource read from a read replica (a router whose `db_for_read` names
+  another alias than its `db_for_write`) and then deleted ran its `on_delete`
+  workflow action at once, on the replica's connection, before the delete
+  committed and even if it rolled back. `scrud_post_save` and
+  `scrud_post_delete` are now sent with `using` the database the write went
+  to (`using`, else the router's `db_for_write`), and `ScrudSignalProcessor`
+  registers the action there; without a `using` it asks the router, no
+  longer the instance's `_state.db` (the database it was read from) first.
+  Receivers that read `using` get that alias where they used to get `None`
+  (#6).
+
 ## 0.14.0
 
 This release requires django-scoped-rbac 0.12.1 and scrudful 0.10.1

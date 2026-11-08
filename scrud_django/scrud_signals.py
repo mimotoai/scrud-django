@@ -8,20 +8,24 @@ from .conf import workflow_actions
 # back): a receiver may read or change the database in the write's
 # transaction. Work that leaves the database belongs in
 # ``transaction.on_commit``, as `ScrudSignalProcessor` runs the configured
-# workflow actions.
+# workflow actions. ``using`` is the database the write went to (`write_alias`),
+# which ``on_commit`` must name: not the instance's ``_state.db``, the one it
+# was read from (a read replica under a primary/replica router).
 scrud_post_save = Signal()
 scrud_post_delete = Signal()
 
 
 def write_alias(sender, kwargs):
     """The database a ``scrud_post_save`` / ``scrud_post_delete`` write went
-    to: the signal's ``using``, else the instance's, else the router's."""
-    instance = kwargs.get("instance")
-    state = getattr(instance, "_state", None)
-    return (
-        kwargs.get("using")
-        or getattr(state, "db", None)
-        or router.db_for_write(sender, instance=instance)
+    to: the signal's ``using`` (``ResourceMixin`` always sends it), else the
+    router's ``db_for_write`` for the instance, as Django picks a write's
+    database. Not the instance's ``_state.db`` first: that is the database it
+    was read from, a read replica's alias under a primary/replica router,
+    whose connection would run the action at once, before the write commits
+    or if it rolls back. (With no router's opinion, ``db_for_write`` gives
+    ``_state.db`` anyway.)"""
+    return kwargs.get("using") or router.db_for_write(
+        sender, instance=kwargs.get("instance")
     )
 
 

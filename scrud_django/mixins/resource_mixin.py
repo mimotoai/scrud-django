@@ -92,10 +92,20 @@ class ResourceMixin(ScrudfulMixin):
         (`scrud_django.permissions.content_of`), the same fields."""
         return self.content if isinstance(self.content, Mapping) else {}
 
+    def _write_db(self, using=None):
+        """The database a ``save()`` or ``delete()`` of this instance writes
+        to, as Django picks it: `using`, else the router's
+        ``db_for_write`` for this instance (not ``_state.db``, the database it
+        was read from, which may be a read replica)."""
+        return using or router.db_for_write(type(self), instance=self)
+
     def save(
         self, force_insert=False, force_update=False, using=None, update_fields=None
     ) -> None:
-        transition_data = self.get_transition_data(using)
+        """``Model.save()``, then ``scrud_post_save``, sent with ``using`` the
+        database the save wrote to (`_write_db`)."""
+        db = self._write_db(using)
+        transition_data = self.get_transition_data(db)
         action = 'CREATE' if self._state.adding else 'UPDATE'
         super().save(
             force_insert=force_insert,
@@ -107,18 +117,22 @@ class ResourceMixin(ScrudfulMixin):
             sender=self.__class__,
             instance=self,
             update_fields=update_fields,
-            using=using,
+            using=db,
             resource_type_uri=self.resource_type.type_uri,
             transition_data=transition_data,
             action=action,
         )
 
     def delete(self, using=None, keep_parents=False) -> tuple[int, dict[str, int]]:
+        """``Model.delete()``, then ``scrud_post_delete``, sent with ``using``
+        the database the delete wrote to (`_write_db`): an instance read from
+        a replica still has the replica's alias in ``_state.db``."""
+        db = self._write_db(using)
         res = super().delete(using=using, keep_parents=keep_parents)
         scrud_post_delete.send(
             sender=self.__class__,
             instance=self,
-            using=using,
+            using=db,
             resource_type_uri=self.resource_type.type_uri,
             action='DELETE',
         )
@@ -136,7 +150,7 @@ class ResourceMixin(ScrudfulMixin):
         if self._state.adding:
             prior_data = None
         else:
-            db = using or router.db_for_write(type(self), instance=self)
+            db = self._write_db(using)
             prior_version = self.__class__.objects.using(db).filter(pk=self.pk)
             prior_data = prior_version.first().content
         context, workflow = self.workflow_context_and_policy()
