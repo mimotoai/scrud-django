@@ -394,6 +394,49 @@ def test_a_transition_is_authorized_into_the_state_the_content_is_stored_in(
     assert reported_transitions == [TransitionData("review", "draft", "submit")]
 
 
+# "done" and "canceled" may not change in place: "reopen" leads to "done"
+# from both (a self-loop of "done" only through its list), "amend" from
+# "canceled" to itself (one state on each side: an edit in place).
+RESTRICTED_POLICY = {
+    "resource_type": TODO,
+    "initial_states": {"not started": 'status == "not started"'},
+    "states": {"done": 'status == "done"', "canceled": 'status == "canceled"'},
+    "transitions": {
+        "reopen": {"from": ["done", "canceled"], "to": "done"},
+        "amend": {"from": "canceled", "to": "canceled"},
+    },
+    "restrict_update": ["done", "canceled"],
+}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_restricted_state_is_edited_in_place_only_by_its_own_self_loop():
+    store_policy(dict(RESTRICTED_POLICY, rbac_context="w"))
+    done = todo(status="done", rbac_context="w")
+    # The writer may read the policy, so the error says why.
+    reader = ({"http.GET": [WORKFLOW_POLICY]}, "w")
+    Given.http.force_authenticate(user_with((workflow_writer("reopen"), "w"), reader))
+    put_todo(done, dict(done.content, title="edited"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_workflow_error()
+    assert Http.response.json()["message"] == "Update not allowed on this state"
+    assert_unchanged(done)
+
+    # "reopen" still leads from "canceled" to "done".
+    canceled = todo(status="canceled", rbac_context="w")
+    put_todo(canceled, dict(canceled.content, status="done"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+
+    # "amend" names "canceled" alone on each side: its holders edit in place.
+    canceled = todo(status="canceled", rbac_context="w")
+    edited = dict(canceled.content, title="edited")
+    Given.http.force_authenticate(user_with((workflow_writer("amend"), "w")))
+    put_todo(canceled, edited)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert Resource.objects.get(pk=canceled.pk).content == edited
+
+
 @pytest.mark.django_db
 @test_context
 def test_default_policy_authorizes_transitions_in_other_contexts():
@@ -829,6 +872,18 @@ INVALID_POLICIES = [
         "Invalid workflow restrict_update: it must be a list of defined state "
         "names, not ['nowhere'].",
         id="restrict-update-undefined-state",
+    ),
+    pytest.param(
+        dict(
+            PERMISSIVE_POLICY,
+            transitions={
+                "go": {"from": "any", "to": "any"},
+                "again": {"from": ["any"], "to": "any"},
+            },
+        ),
+        "Invalid workflow transitions 'go' and 'again': both lead from 'any' to "
+        "'any'; a pair of states may have one transition.",
+        id="duplicate-pair",
     ),
 ]
 

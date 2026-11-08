@@ -226,3 +226,125 @@ def test_initial_state_is_the_state_the_content_is_stored_in():
     assert policy.initial_transition(unpublished) == TransitionData(
         "draft", None, "__INITIALIZE__"
     )
+
+
+# "published" may not change in place; "republish" leads to it from it and
+# from "archived" (a self-loop only through its list), "shelve" to
+# "archived" from it and from "published".
+republish_policy = {
+    "initial_states": {"draft": 'status == "draft"'},
+    "states": {
+        "published": 'status == "published"',
+        "archived": 'status == "archived"',
+    },
+    "transitions": {
+        "publish": {"from": "draft", "to": "published"},
+        "republish": {"from": ["published", "archived"], "to": ["published"]},
+        "shelve": {"from": ["published", "archived"], "to": "archived"},
+    },
+    "restrict_update": ["published"],
+}
+published = {"status": "published", "title": "a"}
+archived = {"status": "archived", "title": "a"}
+
+
+@pytest.mark.parametrize(
+    "transition",
+    [
+        {"from": ["published", "archived"], "to": ["published"]},
+        {"from": "published", "to": ["published", "archived"]},
+        {"from": ["published", "archived"], "to": ["published", "archived"]},
+    ],
+    ids=["from-list", "to-list", "both-lists"],
+)
+def test_a_restricted_state_is_not_updated_in_place_by_a_list_self_loop(transition):
+    policy = WorkflowPolicy(
+        dict(
+            republish_policy,
+            transitions={
+                "publish": {"from": "draft", "to": "published"},
+                "republish": transition,
+            },
+        )
+    )
+    edited = dict(published, title="edited")
+    with pytest.raises(WorkflowTransitionError) as excinfo:
+        policy.determine_transition(edited, published)
+    error = excinfo.value
+    assert (error.prior_state, error.proposed_state) == ("published", "published")
+    assert error.message == "Update not allowed on this state"
+    with pytest.raises(WorkflowTransitionError):
+        policy.validate(edited, published)
+
+
+def test_a_list_self_loop_still_names_its_other_pairs_and_unrestricted_states():
+    policy = WorkflowPolicy(republish_policy)
+    # The pairs of "republish" that are not a restricted self-loop.
+    assert policy.determine_transition(published, archived) == TransitionData(
+        "published", "archived", "republish"
+    )
+    # "archived" is not restricted: its self-loop through "shelve"'s list
+    # names "shelve", as before.
+    edited = dict(archived, title="edited")
+    assert policy.determine_transition(edited, archived) == TransitionData(
+        "archived", "archived", "shelve"
+    )
+    assert policy.determine_transition(archived, published) == TransitionData(
+        "archived", "published", "shelve"
+    )
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"from": "published", "to": "published"},
+        {"from": ["published"], "to": ["published"]},
+    ],
+    ids=["names", "single-element-lists"],
+)
+def test_a_restricted_state_is_updated_in_place_by_its_own_self_loop(edit):
+    policy = WorkflowPolicy(
+        dict(
+            republish_policy,
+            transitions=dict(
+                republish_policy["transitions"],
+                republish={"from": "archived", "to": "published"},
+                edit=edit,
+            ),
+        )
+    )
+    edited = dict(published, title="edited")
+    assert policy.determine_transition(edited, published) == TransitionData(
+        "published", "published", "edit"
+    )
+    assert policy.validate(edited, published) == edited
+
+
+def test_two_transitions_covering_one_pair_are_a_configuration_error():
+    # "publish" and "republish" both lead from "archived" to "published":
+    # which one a writer needs would depend on their order.
+    policy = dict(
+        republish_policy,
+        transitions={
+            "publish": {"from": ["draft", "archived"], "to": "published"},
+            "republish": {"from": ["published", "archived"], "to": ["published"]},
+        },
+    )
+    with pytest.raises(ImproperlyConfigured) as excinfo:
+        WorkflowPolicy(policy)
+    assert str(excinfo.value) == (
+        "Invalid workflow transitions 'publish' and 'republish': both lead from "
+        "'archived' to 'published'; a pair of states may have one transition."
+    )
+
+
+def test_one_transition_naming_a_state_twice_is_no_duplicate():
+    policy = WorkflowPolicy(
+        dict(
+            republish_policy,
+            transitions={"publish": {"from": ["draft", "draft"], "to": "published"}},
+        )
+    )
+    assert policy.determine_transition(published, {"status": "draft"}) == (
+        TransitionData("published", "draft", "publish")
+    )

@@ -46,6 +46,43 @@
   `create` or `update` (so the workflow check runs) may override
   `checks_workflow` to include it.
 
+* `restrict_update` is no longer bypassed by a transition whose lists lead
+  from a restricted state to itself. A transition leads from every state of
+  its `from` to every state of its `to`, and one leading from a state to
+  itself was taken before `restrict_update` was asked, so its holders could
+  edit the state in place: `republish: {from: [published, archived], to:
+  published}` let them edit a `published` resource under `restrict_update:
+  [published]`. A state in `restrict_update` is now updated in place only
+  through a transition whose `from` and `to` each name that state alone
+  (`{"from": "published", "to": "published"}`, or one-element lists); any
+  other in-place update of it is refused (400, `workflow-transition-invalid`,
+  "Update not allowed on this state"). The other pairs of such a transition,
+  and self-loops of states not in `restrict_update`, are unchanged.
+* Two transitions that lead from one state to another (the same pair, such
+  as `publish: {from: [draft, archived], to: published}` and `republish:
+  {from: archived, to: published}`) silently overwrote each other, the last
+  one winning, so the grant a write needed depended on their order. Such a
+  policy is now invalid (`ImproperlyConfigured` naming both transitions and
+  the pair): a `WorkflowPolicy` POST or PUT is a 400
+  (`workflow-policy-invalid`), a stored one is reported by `manage.py
+  check --database` (`scrud_django.E005`) and a settings default by
+  `manage.py check` (`scrud_django.E001`).
+
+### Upgrading
+
+* A workflow policy in which two transitions cover the same (from, to) pair
+  of states is now invalid. Run `manage.py check --database default` (and
+  `manage.py check` for `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`)
+  before deploying, and give each pair one transition: a stored invalid
+  policy fails every write of its type in its contexts closed
+  (`ImproperlyConfigured`, a 500) until it is fixed or deleted, and an
+  invalid default fails every write of its type.
+* An update in place of a state in `restrict_update` through a transition
+  whose `from` or `to` lists other states as well is now refused. To keep
+  allowing such edits, add a transition from that state to itself alone
+  (`{"from": "published", "to": "published"}`) and grant it to the roles
+  that should make them.
+
 ## 0.14.0
 
 This release requires django-scoped-rbac 0.12.1 and scrudful 0.10.1

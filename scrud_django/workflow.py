@@ -49,8 +49,9 @@ class WorkflowPolicy:
     ``transitions`` that are present but not objects, a state condition that is
     not a string or does not compile, a transition that is not an object
     with ``from`` and ``to`` naming defined states or whose name starts with
-    ``__`` (reserved), or a ``restrict_update`` that is not a list of defined
-    state names. These are the checks a
+    ``__`` (reserved), two transitions that lead from one state to another
+    (a pair of states has at most one transition), or a ``restrict_update``
+    that is not a list of defined state names. These are the checks a
     ``WorkflowPolicy`` write must pass; they are not a proof that every write
     under the policy succeeds.
     """
@@ -71,6 +72,9 @@ class WorkflowPolicy:
         self.state_expressions = {}
         # from state -> to state -> transition name
         self.allowed_transitions = {}
+        # state -> the transition whose "from" and "to" each name that state
+        # alone: the one way to update a restrict_update state in place.
+        self.in_place_transitions = {}
         self.compile_state_expressions()
         self.compile_allowed_transitions()
         self.restrict_update = self.compile_restrict_update()
@@ -140,8 +144,11 @@ class WorkflowPolicy:
         state (and `prior_data` is in one), and ``WorkflowTransitionError``
         when no transition leads from the prior state to the proposed one.
         Content that stays in its state is the ``__SAME_STATE__`` transition
-        (unless a transition of the policy leads from that state to itself),
-        refused for a state in ``restrict_update``.
+        (unless a transition of the policy leads from that state to itself).
+        For a state in ``restrict_update`` it is refused, unless a transition
+        names that state alone as its ``from`` and its ``to``
+        (`in_place_transitions`): a transition whose lists lead from the state
+        to itself among other states does not update it in place.
         """
         # TODO add prior state to Resource instead
         prior_state = self.state(prior_data)
@@ -152,17 +159,19 @@ class WorkflowPolicy:
             transition = self.allowed_transitions.get(prior_state, {}).get(
                 proposed_state
             )
+            if prior_state == proposed_state and proposed_state in self.restrict_update:
+                transition = self.in_place_transitions.get(proposed_state)
+                if transition is None:
+                    raise WorkflowTransitionError(
+                        self.reference,
+                        prior_state,
+                        proposed_state,
+                        message='Update not allowed on this state',
+                    )
             if transition is not None:
                 return TransitionData(proposed_state, prior_state, transition)
             if prior_state == proposed_state:
-                if proposed_state not in self.restrict_update:
-                    return TransitionData(proposed_state, prior_state, "__SAME_STATE__")
-                raise WorkflowTransitionError(
-                    self.reference,
-                    prior_state,
-                    proposed_state,
-                    message='Update not allowed on this state',
-                )
+                return TransitionData(proposed_state, prior_state, "__SAME_STATE__")
         raise WorkflowTransitionError(self.reference, prior_state, proposed_state)
 
     def determine_state(self, data, state_expressions):
@@ -218,6 +227,11 @@ class WorkflowPolicy:
             raise ImproperlyConfigured(f"Invalid workflow state condition: {e}") from e
 
     def compile_allowed_transitions(self):
+        """`allowed_transitions` (and `in_place_transitions`) from the
+        policy's ``transitions``: each leads from every state of its ``from``
+        to every state of its ``to``. Two transitions that lead from one
+        state to another are an ``ImproperlyConfigured``: which one a write
+        is (and so which grant it needs) would depend on their order."""
         transitions = self.mapping_of("transitions", "transition names to transitions")
 
         def as_list(x):
@@ -249,13 +263,26 @@ class WorkflowPolicy:
                         f"Invalid workflow transition {transition_name!r}: "
                         f"{state!r} is not a defined state."
                     )
-            for source, target in product(transition_from, transition_to):
+            # A state a list names twice is one pair, not a duplicate.
+            sources = list(dict.fromkeys(transition_from))
+            targets = list(dict.fromkeys(transition_to))
+            for source, target in product(sources, targets):
                 source_transitions = self.allowed_transitions.setdefault(source, {})
+                other = source_transitions.get(target)
+                if other is not None:
+                    raise ImproperlyConfigured(
+                        f"Invalid workflow transitions {other!r} and "
+                        f"{transition_name!r}: both lead from {source!r} to "
+                        f"{target!r}; a pair of states may have one transition."
+                    )
                 source_transitions[target] = transition_name
+            if len(sources) == 1 and sources == targets:
+                self.in_place_transitions[sources[0]] = transition_name
 
     def compile_restrict_update(self):
-        """The states whose content may not change in place: ``restrict_update``,
-        absent or a list of defined state names."""
+        """The states whose content may not change in place (but through
+        their `in_place_transitions`): ``restrict_update``, absent or a list
+        of defined state names."""
         restrict_update = self.policy.get("restrict_update", [])
         if not isinstance(restrict_update, list) or not all(
             isinstance(state, str) and state in self.state_expressions

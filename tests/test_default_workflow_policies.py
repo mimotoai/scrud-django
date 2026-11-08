@@ -89,6 +89,30 @@ def test_invalid_default_is_a_system_check_error():
         assert errors[0] in checks.run_checks()
 
 
+@pytest.mark.django_db
+def test_a_default_with_two_transitions_for_one_pair_is_a_system_check_error():
+    # "abandon" leads from "blocked" to "canceled", as "cancel" does.
+    transitions = dict(
+        todo_policy()["transitions"], abandon={"from": "blocked", "to": "canceled"}
+    )
+    duplicated = dict(todo_policy(), transitions=transitions)
+    with override_settings(
+        SCRUD_WORKFLOW={"DEFAULT_WORKFLOW_POLICIES": {TODO: duplicated}}
+    ):
+        errors = check_default_workflow_policies(None)
+        assert errors == [
+            checks.Error(
+                f"Invalid default workflow policy for {TODO!r}: Invalid workflow "
+                "transitions 'cancel' and 'abandon': both lead from 'blocked' to "
+                "'canceled'; a pair of states may have one transition.",
+                hint='Fix SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"].',
+                obj=TODO,
+                id="scrud_django.E001",
+            )
+        ]
+        assert errors[0] in checks.run_checks()
+
+
 def test_unloadable_defaults_are_a_system_check_error():
     with override_settings(
         SCRUD_WORKFLOW={"DEFAULT_WORKFLOW_POLICIES": "tests.no_such_module.policies"}

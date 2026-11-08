@@ -316,6 +316,18 @@ STORED_INVALID_POLICIES = [
         id="reserved-transition-name",
     ),
     pytest.param(
+        dict(
+            PERMISSIVE_POLICY,
+            transitions={
+                "go": {"from": "any", "to": "any"},
+                "again": {"from": ["any"], "to": "any"},
+            },
+        ),
+        "Invalid workflow transitions 'go' and 'again': both lead from 'any' to "
+        "'any'; a pair of states may have one transition.",
+        id="duplicate-pair",
+    ),
+    pytest.param(
         dict(PERMISSIVE_POLICY, restrict_update="any"),
         "Invalid workflow restrict_update: it must be a list of defined state "
         "names, not 'any'.",
