@@ -441,16 +441,16 @@ wheels = [
 
 [[package]]
 name = "django-scoped-rbac"
-version = "0.11.2"
+version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cel-expr-python" },
     { name = "django" },
     { name = "scrudful" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/49/83fafabeb65991aae91c34bdb75040772fb880a1695c9c3781e9a39aac53/django_scoped_rbac-0.11.2.tar.gz", hash = "sha256:aa4512c001bbe517ff4d62ae74155b6323bbb3f5523fb28d81fe20f2821c7909", size = 110293, upload-time = "2026-10-31T00:42:21.133Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/4d/ec4750520478581c7ae3f885184d6e024d5bbcb4164e7de22eb106b2efce/django_scoped_rbac-0.12.1.tar.gz", hash = "sha256:b00093c2d96bf9c44bee9345dbd152aef48a523b11e5a0fe2b6f8959ada0e906", size = 120264, upload-time = "2026-11-06T09:07:08.739Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/ca/716f93e51894112da12cb7097bd62cfc377ae26123a7dbe615dc96e2eeac/django_scoped_rbac-0.11.2-py3-none-any.whl", hash = "sha256:c8b781d63d8084390e9b4b0f883df2f453c5e41dd8d9234e69122f94b3aa0498", size = 129085, upload-time = "2026-10-31T00:42:22.489Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/4b/8254e170abe8d90e0b1eb034a5612675601db35f7e80410eb54b4122649a/django_scoped_rbac-0.12.1-py3-none-any.whl", hash = "sha256:182b95cdf1e09e588dbda71aa68536533b207a39c6d412de2d98e30d60715ef0", size = 140353, upload-time = "2026-11-06T09:07:10.055Z" },
 ]
 
 [package.optional-dependencies]
@@ -1104,7 +1104,7 @@ wheels = [
 
 [[package]]
 name = "scrud-django"
-version = "0.13.0"
+version = "0.14.0"
 source = { editable = "." }
 dependencies = [
     { name = "django" },
@@ -1152,11 +1152,11 @@ requires-dist = [
     { name = "django-filter", specifier = ">=25.1" },
     { name = "django-haystack", marker = "extra == 'search'", specifier = ">=3.3" },
     { name = "django-reversion", specifier = ">=5.1" },
-    { name = "django-scoped-rbac", extras = ["drf"], specifier = ">=0.11.2,<0.12" },
+    { name = "django-scoped-rbac", extras = ["drf"], specifier = ">=0.12.1,<0.13" },
     { name = "djangorestframework", specifier = ">=3.15" },
     { name = "fastjsonschema", specifier = ">=2.19" },
     { name = "jsonpath-ng", specifier = ">=1.6" },
-    { name = "scrudful", extras = ["drf"], specifier = ">=0.8,<0.9" },
+    { name = "scrudful", extras = ["drf"], specifier = ">=0.10.1,<0.11" },
     { name = "whoosh-reloaded", marker = "extra == 'search'", specifier = ">=2.7.5" },
 ]
 provides-extras = ["search"]
@@ -1184,11 +1184,11 @@ docs = [
 
 [[package]]
 name = "scrudful"
-version = "0.8.0"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1e/f2/2c395a36b14aac347e7e844fed3b6a03497b8f944df0c8b236eec2e84ee0/scrudful-0.8.0.tar.gz", hash = "sha256:ca4b184728458e7334837d0cb52bd96810875d74501ccb337c46fbab28281f48", size = 289402, upload-time = "2026-10-27T00:34:38.933Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c8/50/66ce38bfa59ec3e6ca77ef9b8f55b9106a40873ee4b332ddc844801bd825/scrudful-0.10.1.tar.gz", hash = "sha256:db0edff97b3a18329e1b5e4dde7fdb7796b3394c2131e878461aa5343827c1de", size = 644187, upload-time = "2026-11-06T08:28:45.233Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/fa/2cd6b0658b153053c03c3720cd6d2ef080f814e203f92ffc7cf8ba62c193/scrudful-0.8.0-py3-none-any.whl", hash = "sha256:25de1ae1d32a15b3295e3423b450496d07abccac1ff17de5f224eaf4a3a2737a", size = 117180, upload-time = "2026-10-27T00:34:37.474Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/25/de83acffe86ee1cf0d3c7992e0c1f98607e5234637353ee912d737a15a6c/scrudful-0.10.1-py3-none-any.whl", hash = "sha256:0ef8a298ad73cf36ff8a10a70237099ea03b112a5d295f92d2a44ed90662ec33", size = 257183, upload-time = "2026-11-06T08:28:43.603Z" },
 ]
 
 [package.optional-dependencies]

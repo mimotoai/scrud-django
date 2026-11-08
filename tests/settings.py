@@ -110,6 +110,9 @@ SETTINGS: dict[str, Any] = dict(
             "scoped_rbac.permissions.IsAuthorized",
         ],
     },
+    # The HTTP Schema Resource is built without a request: its relative links
+    # resolve against BASE_URL (scrudful 0.10), the test client's host.
+    SCRUDFUL={"BASE_URL": "http://testserver"},
     SCOPED_RBAC={
         "POLICY_FOR_UNAUTHENTICATED": "tests.rbac_defaults.policy_for_unauthenticated",
         "POLICY_FOR_STAFF": "tests.rbac_defaults.policy_for_staff",

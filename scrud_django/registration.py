@@ -72,13 +72,14 @@ def type_locked(resource_type, using):
     """Lock `resource_type`'s row on database `using` (``select_for_update``,
     ``FOR NO KEY UPDATE`` where the database has it, as
     `lock_workflow_policy_type` takes it) until the caller's transaction there
-    ends; call it first inside that transaction. A conditional create
-    (``ResourceViewMixin.create``) takes it so that conditional creates of a
-    type run one at a time. The other writes of the type do not take it
-    first: a foreign key check of a row they insert that refers to the type
-    (a resource, a removal stamp) may wait for it, holding nothing it waits
-    for, and ``FOR NO KEY UPDATE`` does not block PostgreSQL's (``FOR KEY
-    SHARE``).
+    ends; call it first inside that transaction. A conditional create takes
+    it (``ResourceViewMixin.conditional_create_lock``, which
+    ``LockedWriteMixin.initial`` enters once the request is authorized) so
+    that conditional creates of a type run one at a time. The other writes
+    of the type do not take it first: a foreign key check of a row they
+    insert that refers to the type (a resource, a removal stamp) may wait
+    for it, holding nothing it waits for, and ``FOR NO KEY UPDATE`` does not
+    block PostgreSQL's (``FOR KEY SHARE``).
 
     For ``WorkflowPolicy`` it is `lock_workflow_policy_type` (the same rows,
     taken in the same order its writes take them), which then is not taken
@@ -106,30 +107,52 @@ def type_locked(resource_type, using):
 
 def type_db():
     """The database `ResourceType` rows are written to
-    (``router.db_for_write(ResourceType)``). A write reads its resource type
-    there, never through ``db_for_read`` (a replica may be stale)."""
+    (``router.db_for_write(ResourceType)``). A write of resources, and the
+    registration of a type (`ResourceTypeRegistration`), read the resource
+    type there, never through ``db_for_read`` (a replica may be stale), with
+    the type's documents (`TYPE_DOCUMENTS`, `get_resource_type_for`)."""
     return router.db_for_write(ResourceType)
+
+
+# The documents of a resource type, read with the type, on its database
+# (`get_resource_type_for`): its schema, which a write validates the body
+# against, with its own type (whether it is a JSON Schema; the Link's route);
+# its context, linked with its own type's route; its indexing policy, which
+# search indexing reads.
+TYPE_DOCUMENTS = (
+    "schema__resource_type",
+    "context__resource_type",
+    "indexing_policy",
+)
 
 
 def get_resource_type_for(slug, using=None):
     """The latest revision of the resource type `slug` (404 if none), read on
-    database `using` (``None``: as the router reads it)."""
-    queryset = ResourceType.objects.order_by("-revision")
+    database `using` (``None``: as the router reads it). Read on a given
+    database, its documents (`TYPE_DOCUMENTS`) come with it, from the same
+    database: loaded later, as related objects, they would be read where
+    ``db_for_read`` (given the type as hint) says, which for a router that
+    ignores the hint is a replica that may not have the type's latest
+    schema."""
+    queryset = ResourceType.objects.filter(slug=slug).order_by("-revision")
     if using is not None:
-        queryset = queryset.using(using)
-    return get_list_or_404(queryset, slug=slug)[0]
+        queryset = queryset.using(using).select_related(*TYPE_DOCUMENTS)
+    return get_list_or_404(queryset[:1])[0]
 
 
 def get_locked_resource(resource_type, slug, using):
     """The `Resource` of `resource_type` with primary key `slug` (404 if
     none), read on database `using` with its row locked
     (``select_for_update``) until the caller's transaction there ends. Take
-    `lock_if_workflow_policy` first."""
-    return get_object_or_404(
+    `lock_if_workflow_policy` first. Its type is `resource_type` itself, not
+    loaded again (through the read router)."""
+    resource = get_object_or_404(
         Resource.objects.using(using).select_for_update(),
         resource_type=resource_type,
         pk=int(slug),
     )
+    Resource.resource_type.field.set_cached_value(resource, resource_type)
+    return resource
 
 
 class ResourceTypeRegistration:
@@ -155,7 +178,16 @@ class ResourceTypeRegistration:
         """
         from scrud_django import views
 
-        search = ResourceType.objects.filter(type_uri=resource_type_uri)
+        # Read on the type's write database, with the documents compared
+        # below with the files (register_json_file): a lagging replica would
+        # leave a schema edited since in place, add a second row for a type
+        # it does not have yet, and (outside DEBUG) save its stale copy of
+        # the row back.
+        search = (
+            ResourceType.objects.using(type_db())
+            .select_related(*TYPE_DOCUMENTS)
+            .filter(type_uri=resource_type_uri)
+        )
 
         self.viewset_class = viewset_class or views.ResourceViewSet
 
@@ -277,7 +309,7 @@ class ResourceRegistration:
         Resource
 
         """
-        resource_type = get_resource_type_for(register_type)
+        resource_type = get_resource_type_for(register_type, using=type_db())
         resource = Resource(content=content, resource_type=resource_type)
         resource = ResourceRegistration.register_instance(resource)
         return resource

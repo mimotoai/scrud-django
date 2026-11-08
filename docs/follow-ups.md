@@ -29,29 +29,93 @@ that `filtered-partner-profiles-list?name=foo` lists only the first and
 other databases. The same padding applied to `stored_policies_for`'s
 `content__resource_type` lookup, which now re-checks the type in Python.
 
-<a id="scrudful-create-preconditions"></a>
-## scrudful-create-preconditions: scrudful evaluates no precondition on a create
+<a id="type-registration-race"></a>
+## type-registration-race: two processes starting at once can each store a new resource type
 
-scrudful's `ScrudfulViewFunc` (and so `scrudful_viewset`'s `create`) never
-evaluates a create's preconditions ("a create never evaluates
-preconditions"): a POST with `If-Match: "nope"`, a past `If-Unmodified-Since`
-or `If-None-Match: *` creates (201). RFC 9110 §13.1.1, §13.1.2 and §13.1.4
-say an origin server MUST evaluate them against the target, the list. scrud
-works around it in its own views: `ListValidatorsMixin.list_precondition_response`
-evaluates them with scrudful's `evaluate_preconditions` against the
-requester's list validators, and `ResourceViewMixin.create` calls it first
-(`tests/test_conditional_create.py`). It renders the failure with the list
-handler's private `ScrudfulViewFunc._early_response`, pinned in
-`tests/test_upstream_drift.py`, since scrudful configures the create's handler
-with no `error_body_func`.
+`ResourceTypeRegistration` (every resource type registered at startup, as
+`scrud_django.urls` and `json_resource_type` do) looks the type up by its
+`type_uri` and inserts it when there is none, without a lock or a unique
+constraint on `type_uri`. Two processes starting together on a database
+without the type (a fresh deployment) can both find none and both insert
+one: the slug then has two rows, and `get_resource_type_for` takes one of
+them (the latest revision, then whichever the database returns first), so
+resources may be stored under either. Since 0.14.0 the lookup reads the
+write database, not a replica that may lag behind, which narrowed the window
+from the replica's lag to the time between the lookup and the insert. Fix:
+run the registration in a transaction (`transaction.atomic` on `type_db()`)
+that first takes a lock (scoped-rbac's `conditional.lock_collection` of
+`ResourceType`, which needs that transaction, or a row of its own) and looks
+up again under it, or add a unique constraint on `type_uri` (a migration;
+check existing databases for duplicates first) and catch the
+`IntegrityError`. Test: on PostgreSQL, with
+`@pytest.mark.django_db(transaction=True)` (the threads' connections do not
+see the test's transaction, and what they commit must be removed after),
+run `ResourceTypeRegistration` for a new type in two threads that both pass
+the lookup before either inserts (a barrier in a patched
+`QuerySet.__bool__`, waiting after the fetch and only for the `ResourceType`
+lookup by `type_uri`), and assert one row for the slug; it fails today.
 
-Still affected: scoped-rbac's own `roles/` and `role-assignments/` lists,
-which `scrud_django.urls` mounts, and a `GenericViewMixin` `create` that does
-not call `list_precondition_response`. For the owner to file on scrudful:
-evaluate a create's preconditions against the list validators (and give the
-create's handler the list's error body function). Test: POST
-`reverse("role-list")` as a superuser with `If-Match: "nope"`; expect 412,
-get 201 today.
+<a id="json-resource-type-indexing-policy"></a>
+## json-resource-type-indexing-policy: `json_resource_type` drops its `indexing_policy_resource`
+
+`registration.json_resource_type` takes an `indexing_policy_resource`
+argument but does not pass it to `ResourceTypeRegistration`. A type
+registered with one (and no `indexing_policy_func`) has its indexing policy
+set to `None` and saved at every start, clearing one stored before, so its
+resources are indexed without one. Fix: pass it through. Test: register a
+type with `json_resource_type(..., indexing_policy_resource=<a stored
+policy>)` and assert the stored type's `indexing_policy` is that resource;
+it is `None` today.
+
+<a id="hsr-context-less-types"></a>
+## hsr-context-less-types: the HTTP Schema Resource of a type with a schema and no JSON-LD context is a 500
+
+scrudful 0.10 builds each route's HTTP Schema Resource (HSR), which every
+OPTIONS links to and every response of the route links after its own Links.
+It refuses to build one whose `application/json` content has a schema link
+and no RDF context link (`x-rdf-context` would be missing): the GET of that
+HSR is a 500 (`scrudful.rest_framework._DataDependentError`), and
+`manage.py check` warns `scrudful.W001` for the route. The JSON Schema
+resource type (`json-schema`, registered with only a `schema_uri`) is
+such a type, as is any type registered with a schema and without
+`context_resource`, `context_func` or `context_uri`. Its resources are
+served as before (GET, POST, PUT, DELETE, OPTIONS); only the document the
+OPTIONS links to fails. Found adopting scrudful 0.10 (scrud-django 0.14.0), in the demo:
+`GET /_hsr/json-schema-list` and `GET /_hsr/json-schema-detail`.
+
+Fix: give such types a JSON-LD context (scrud's own, served like the
+collection contexts; a decision on the IRIs, which are part of the API's
+semantics), or link no schema for them in the HSR and on their responses
+alike (scrudful requires the two to agree). Test: in
+`tests/test_options.py`, GET `/_hsr/json-schema-list` and expect 200; it
+is a 500 today (the test client re-raises it, `_DataDependentError`,
+rather than return the 500).
+
+<a id="detail-post-action-preconditions"></a>
+## detail-post-action-preconditions: a POST `@action(detail=True)` that writes the item ignores its `If-Match`
+
+A POST to an item, such as `@action(detail=True, methods=["post"])
+@scrudful(...) def rename(self, request, slug): return self.update(request,
+slug)`, is not evaluated by anyone: the action's `@scrudful` (as
+`scrudful.E007` asks for one) has no validators, the nested `update`'s
+wrapper is skipped (scrudful evaluates only the outer of two nested
+handlers), and a POST is not one of the locked writes
+(`LockedWriteMixin.dispatch`: PUT, PATCH, DELETE), so no row lock is taken
+either. `If-Match: "stale"` gets 200 and the write happens. Found by the
+review of MR !6 (0.14.0); it is as old as `@action` support, not new in
+0.14.0. The list's counterpart is refused since 0.14.0
+(`LockedWriteMixin.dispatch`).
+
+Fix: treat a POST to an item carrying `If-Match`, `If-None-Match` or
+`If-Unmodified-Since` as a locked write (lock the row first), and refuse a response that is no
+error whose preconditions nothing evaluated, as for the list. Meanwhile an
+action can give its `@scrudful` the item's validators
+(`object_validators=True` with `ScrudfulMeta.etag_func` and
+`ScrudfulMeta.last_modified_func`), which scrudful evaluates for a POST,
+without the row lock. Test: in `tests/test_generic_views.py`, a
+`NoteViewSet` subclass with that `rename` action, POST with `If-Match:
+"stale"`, and expect 412 (or `ImproperlyConfigured`) with the note
+unchanged; it is a 200 today.
 
 <a id="workflow-grant-blocks-leaving"></a>
 ## workflow-grant-blocks-leaving: a `scrud_workflow` grant refuses moving a resource out of a context without a policy

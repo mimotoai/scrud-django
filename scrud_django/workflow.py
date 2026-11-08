@@ -295,9 +295,13 @@ def stored_policies_for(resource_type, context):
 
     type_uri = _type_uri(resource_type)
     # The write database: a write's uniqueness re-check (and the policy a
-    # write is checked under) must not read a stale replica.
+    # write is checked under) must not read a stale replica. The policy's
+    # type comes with it (a refused transition links the policy by it,
+    # exceptions.StoredPolicyReference), not loaded later through the read
+    # router.
     stored = (
         Resource.objects.using(router.db_for_write(Resource))
+        .select_related("resource_type")
         .filter(
             resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI,
             content__resource_type=type_uri,

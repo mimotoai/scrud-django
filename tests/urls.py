@@ -3,19 +3,24 @@ from uuid import uuid4
 from django.contrib import admin
 from django.urls import include, path
 from django.utils.timezone import now
-from rest_framework import serializers, status, viewsets
+from rest_framework import routers, serializers, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
-from scoped_rbac import access
+from scoped_rbac import access, problems
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import IsAuthorized
 from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
-from scrudful.rest_framework import scrudful_viewset
+from scrudful.rest_framework import hsr_urls, scrudful, scrudful_viewset
 
 from scrud_django import registration
-from scrud_django.mixins.view_mixins import GenericViewMixin, ReadableMixin
+from scrud_django.mixins.view_mixins import (
+    GenericViewMixin,
+    ReadableMixin,
+    ScrudfulMeta,
+)
 from scrud_django.models import ResourceType
 from scrud_django.permissions import current_transition
 from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
@@ -26,6 +31,8 @@ from .resource_types import json_resource_types
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", include("scrud_django.urls")),
+    # Serves each scrudful view's HTTP Schema Resource, which OPTIONS links to.
+    path("", include(hsr_urls())),
 ]
 urlpatterns.extend(registration.resource_types(*json_resource_types()))
 
@@ -354,6 +361,14 @@ class NoteViewSet(
     def retrieve(self, request, slug: str):
         return Response(self.get_serializer(self.get_object()).data)
 
+    def create(self, request):
+        # scrudful has evaluated the preconditions against the list, under the
+        # collection's lock when they need its validators (GenericViewMixin).
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        note = serializer.save(etag=uuid4().hex, modified_at=now())
+        return Response(self.get_serializer(note).data, status=status.HTTP_201_CREATED)
+
     def update(self, request, slug: str):
         note = self.get_object()
         note.text = request.data.get("text", "")
@@ -371,7 +386,7 @@ urlpatterns.extend(
     [
         path(
             "generic/notes/",
-            NoteViewSet.as_view({"get": "list", "head": "list"}),
+            NoteViewSet.as_view({"get": "list", "head": "list", "post": "create"}),
             name="generic-notes-list",
         ),
         path(
@@ -385,12 +400,209 @@ urlpatterns.extend(
 )
 
 
+class NoteImportViewSet(NoteViewSet):
+    """The notes again, with a POST ``@action`` of the list whose
+    preconditions scrudful does not evaluate (its ``@scrudful``, which
+    scrudful.E007 asks of an action, gives no list validators): it evaluates
+    them itself (`list_precondition_response`), then creates."""
+
+    @action(detail=False, methods=["post"])
+    @scrudful(
+        error=problems.problem_entity(), error_body_func=problems.conditional_problem
+    )
+    def import_note(self, request):
+        failed = self.list_precondition_response(request)
+        if failed is not None:
+            return failed
+        return self.create(request)
+
+
+urlpatterns.append(
+    path(
+        "generic/notes-import/",
+        NoteImportViewSet.as_view({"post": "import_note"}),
+        name="generic-notes-import",
+    )
+)
+
+
+# scrudful's 0.10 decorations: an @action needs @scrudful (scrudful.E007),
+# which gives it no list validators; in a POST @action, scrudful evaluates
+# nothing of the nested create (only the outer of two nested handlers).
+ACTION = dict(
+    error=problems.problem_entity(), error_body_func=problems.conditional_problem
+)
+
+
+class NoteUncheckedImportViewSet(NoteViewSet):
+    """The notes again, with a POST ``@action`` of the list that calls
+    ``create``, which scrudful skips as a nested handler, so nothing
+    evaluates the preconditions: its success (201) is refused
+    (ImproperlyConfigured) and rolled back for any POST carrying a
+    precondition it must evaluate: any but an ``If-Match: *`` without
+    ``If-None-Match``."""
+
+    @action(detail=False, methods=["post"])
+    @scrudful(**ACTION)
+    def import_note(self, request):
+        return self.create(request)
+
+
+class NoteMappedImportViewSet(NoteViewSet):
+    """The notes again, with a GET ``@action`` of the list whose POST is a
+    handler of its own (``@<action>.mapping.post``), which DRF gives no
+    ``detail``, and a POST ``@action`` of an item (``touch``)."""
+
+    @action(detail=False, methods=["get"])
+    @scrudful(**ACTION)
+    def imports(self, request):
+        return Response([])
+
+    @imports.mapping.post
+    @scrudful(**ACTION)
+    def import_note(self, request):
+        failed = self.list_precondition_response(request)
+        if failed is not None:
+            return failed
+        return self.create(request)
+
+    @action(detail=True, methods=["post"])
+    @scrudful(**ACTION)
+    def touch(self, request, slug):
+        """A POST to an item: not the list's, whatever its preconditions."""
+        return Response({"touched": slug})
+
+
+routed_notes = routers.SimpleRouter()
+routed_notes.register(
+    "generic/routed-notes", NoteMappedImportViewSet, basename="routed-notes"
+)
+urlpatterns.extend(routed_notes.urls)
+urlpatterns.extend(
+    [
+        path(
+            "generic/notes-unchecked-import/",
+            NoteUncheckedImportViewSet.as_view({"post": "import_note"}),
+            name="generic-notes-unchecked-import",
+        ),
+        path(
+            "generic/notes-touch/<slug>/",
+            NoteMappedImportViewSet.as_view({"post": "touch"}),
+            name="generic-notes-touch",
+        ),
+        path(
+            "generic/notes-mapped-import/",
+            NoteMappedImportViewSet.as_view({"get": "imports", "post": "import_note"}),
+            name="generic-notes-mapped-import",
+        ),
+    ]
+)
+
+
+class ImportingResourceViewSet(ResourceViewSet):
+    """Partner profiles, created by a POST ``@action`` of the list that only
+    calls ``create``: ResourceViewMixin.create evaluates the preconditions."""
+
+    @action(detail=False, methods=["post"])
+    @scrudful(**ACTION)
+    def import_resource(self, request):
+        return self.create(request)
+
+
+urlpatterns.append(
+    path(
+        "importing/partner-profiles/",
+        ImportingResourceViewSet.as_view(
+            {"post": "import_resource"}, resource_type_name="partner-profiles"
+        ),
+        name="importing-partner-profiles",
+    )
+)
+
+
+def custom_list_etag(view_instance, request, **kwargs):
+    return "custom"
+
+
+def no_list_last_modified(view_instance, request, **kwargs):
+    return None
+
+
+# A viewset's own Meta list validators (scrudful evaluates a create's
+# preconditions with them, not through create_list_validators).
+@scrudful_viewset
+class CustomListEtagNoteViewSet(NoteViewSet):
+    class Meta(ScrudfulMeta):
+        list_etag_func = custom_list_etag
+        list_last_modified_func = no_list_last_modified
+
+
+@scrudful_viewset
+class CustomListEtagResourceViewSet(ResourceViewSet):
+    class Meta(ScrudfulMeta):
+        list_etag_func = custom_list_etag
+        list_last_modified_func = no_list_last_modified
+
+
+class NoteBulkViewSet(NoteViewSet):
+    """The notes again, whose POST (``as_view({"post": "bulk"})``) is a
+    handler of its own, no @action, decorated as E007 asks an action: it
+    calls ``create``, which scrudful skips as a nested handler, so nothing
+    evaluates."""
+
+    @scrudful(**ACTION)
+    def bulk(self, request):
+        return self.create(request)
+
+
+class ResourceBulkViewSet(ResourceViewSet):
+    """Partner profiles, whose POST is a handler of its own that calls
+    ResourceViewMixin.create, which evaluates the preconditions."""
+
+    @scrudful(**ACTION)
+    def bulk(self, request):
+        return self.create(request)
+
+
+urlpatterns.extend(
+    [
+        path(
+            "generic/custom-etag-notes/",
+            CustomListEtagNoteViewSet.as_view({"get": "list", "post": "create"}),
+            name="generic-custom-etag-notes-list",
+        ),
+        path(
+            "custom-etag/partner-profiles/",
+            CustomListEtagResourceViewSet.as_view(
+                {"get": "list", "post": "create"}, resource_type_name="partner-profiles"
+            ),
+            name="custom-etag-partner-profiles-list",
+        ),
+        path(
+            "generic/bulk-notes/",
+            NoteBulkViewSet.as_view({"post": "bulk"}),
+            name="generic-bulk-notes",
+        ),
+        path(
+            "bulk/partner-profiles/",
+            ResourceBulkViewSet.as_view(
+                {"post": "bulk"}, resource_type_name="partner-profiles"
+            ),
+            name="bulk-partner-profiles",
+        ),
+    ]
+)
+
+
 class ContextDenyingNoteViewSet(NoteViewSet):
     """The notes again, authorized by ContextDenyingIsAuthorized."""
 
     permission_classes = [ContextDenyingIsAuthorized]
 
 
+# A subclass overriding a handler is decorated again, so that scrudful
+# handles the override (scrudful.E007 otherwise: no HTTP Schema Resource).
+@scrudful_viewset
 class PagedContextDenyingNoteViewSet(ContextDenyingNoteViewSet):
     """The notes again, authorized by ContextDenyingIsAuthorized, listed from
     `list_queryset` (as a GenericViewMixin list should serve it)."""

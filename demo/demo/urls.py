@@ -4,6 +4,7 @@ from django.contrib import admin
 from django.urls import include, path
 from scoped_rbac.rest import UserViewSet
 from scoped_rbac.urls import OpenRouter
+from scrudful.rest_framework import hsr_urls
 
 from scrud_django import registration
 
@@ -41,4 +42,7 @@ urlpatterns = [
     # Log in to the browsable API (its "Log in" link) and to the admin.
     path("api-auth/", include("rest_framework.urls")),
     path("admin/", admin.site.urls),
+    # Serves each scrudful view's HTTP Schema Resource (OPTIONS links to it);
+    # once, in the root URLconf.
+    path("", include(hsr_urls())),
 ]

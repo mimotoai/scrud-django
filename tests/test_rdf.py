@@ -23,6 +23,19 @@ type_partner_profiles_collection = URIRef(
 )
 type_partner_profile = URIRef("tests://PartnerProfiles")
 
+HSR_REL = "https://w3id.org/semantic-http/ns#http-schema-resource-document"
+
+
+def get_hsr_of_options():
+    """OPTIONS is a 204 without content (scrudful 0.10) linking the path's
+    HTTP Schema Resource: GET that, which describes the methods."""
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    (link,) = [
+        link for link in Http.response["Link"].split(", ") if f'rel="{HSR_REL}"' in link
+    ]
+    When.http.get(link.split(";")[0].strip("<>"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+
 
 @pytest.mark.django_db
 @test_context
@@ -31,7 +44,7 @@ def test_collection_json_ld():
     assert url == '/partner-profiles/'
 
     When.http.options(url)
-    Then.http.status_code_is(status.HTTP_200_OK)
+    get_hsr_of_options()
     And.json_path_matches(
         "get.responses['200'].content['application/json']['x-rdf-context'].href",
         lambda x: x is not None and x != "",
@@ -52,7 +65,7 @@ def test_detail_json_ld(admin_login):
     assert url == '/partner-profiles/'
 
     When.http.options(url)
-    Then.http.status_code_is(status.HTTP_200_OK)
+    get_hsr_of_options()
     And.json_path_matches(
         "post.requestBody.content['application/json']['x-rdf-context'].href",
         lambda x: x is not None and x != "",

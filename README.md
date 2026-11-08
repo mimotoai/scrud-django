@@ -52,6 +52,39 @@ urlpatterns = [
 If you mount URLs yourself, include `scoped_rbac.semantic_urls`, for example
 `path("semantic/", include("scoped_rbac.semantic_urls"))`.
 
+Include scrudful's HTTP Schema Resource route once, in the root URLconf, and
+set the base URL the API is served at. An OPTIONS is a 204 without content
+whose `Link` names the path's HTTP Schema Resource (HSR), a JSON document
+describing its methods that a GET serves; scrudful builds it without a request,
+so its links, and the HSR link each response carries, resolve against
+`SCRUDFUL["BASE_URL"]` (scrudful resolves only relative links against it;
+scrud's other response Links are absolute URLs built from the request).
+`Allow` lists the methods the requester's grants allow there. A list's POST is
+checked without a body, so it is listed when they may write in some context,
+whatever conditions their grants put on the body. A detail route's methods are
+checked against the stored resource, which the OPTIONS loads as the first
+method the requester may use somewhere loads it: a resource that is missing, or
+that method may not reach, is a 404; a requester who may use no method there
+gets 204 with `Allow: OPTIONS` whether or not it exists.
+
+```python
+# urls.py (the root URLconf)
+from scrudful.rest_framework import hsr_urls
+
+urlpatterns = [
+    path("api/", include("scrud_django.urls")),
+    path("", include(hsr_urls())),
+]
+```
+
+```python
+# settings.py
+SCRUDFUL = {"BASE_URL": "https://api.example.com"}
+```
+
+Without the include, every request of a scrud view raises
+`ImproperlyConfigured` (and `manage.py check` reports `scrudful.E003`).
+
 ### Databases
 
 scrud-django supports SQLite, PostgreSQL, MySQL 8.4+ and MariaDB 11.4+. CI
@@ -352,6 +385,13 @@ receiver whose work leaves the database should wrap it in
 `transaction.on_commit`.
 
 ### Upgrading
+
+Version 0.14.0 adopts django-scoped-rbac 0.12 and scrudful 0.10, which change
+OPTIONS (a 204 linking an HTTP Schema Resource) and need the `hsr_urls()`
+include, `SCRUDFUL["BASE_URL"]` and a scoped-rbac migration. Work through the
+Upgrading list of the
+[0.14.0 release notes](https://gitlab.com/dcharbon/scrud-django/-/blob/develop/docs/release-notes.md)
+before upgrading.
 
 Version 0.12.0 has breaking changes (Django 5.2, uv, scrudful 0.8, scoped-rbac
 0.11, JSON-only bodies, object-level RBAC on detail routes, RBAC-filtered

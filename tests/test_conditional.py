@@ -102,6 +102,18 @@ def test_if_modified_since_current_is_304(partner_profiles, admin_login):
     Then.http.status_code_is(304)
 
 
+HSR_REL = "https://w3id.org/semantic-http/ns#http-schema-resource-document"
+
+
+def hsr_link(route_name):
+    """The Link scrudful (0.10) adds after a response's other Links: the
+    route's HTTP Schema Resource."""
+    return (
+        f'<http://testserver/_hsr/{route_name}>; rel="{HSR_REL}"; '
+        'type="application/json"'
+    )
+
+
 def _detail_url_of(resource):
     return "http://testserver" + reverse(
         resource.resource_type.route_name_detail(), args=[resource.id]
@@ -125,17 +137,19 @@ def test_detail_validators_and_links(partner_profiles, regular_login):
     assert Http.response["Last-Modified"] == last_modified_for(partner_profiles)
     # Schema link: rel="describedby", type="application/schema+json"; context
     # link: JSON-LD's context relation and type.
+    # Then the route's HTTP Schema Resource (scrudful 0.10).
     assert Http.response["Link"] == (
         f'<{schema_url}>; rel="describedby"; type="application/schema+json", '
         f'<{context_url}>; rel="http://www.w3.org/ns/json-ld#context"; '
-        'type="application/ld+json"'
+        'type="application/ld+json", ' + hsr_link(RESOURCE_ENDPOINT_DETAIL_NAME)
     )
 
 
 # scrudful's own 400, 412 and 428 are problem details, as scoped-rbac's own
 # viewsets answer them (scoped_rbac.problems.conditional_problem): type
 # about:blank, the reason phrase as title, the status, scrudful's detail and a
-# code, served as application/problem+json with the problem-details Links.
+# code, served as application/problem+json with the problem-details Links,
+# then the route's HTTP Schema Resource (scrudful 0.10).
 PROBLEM_LINKS = (
     '<https://w3id.org/semantic-http/0.1/problem-details.schema.json>; '
     'rel="describedby"; type="application/schema+json", '
@@ -144,10 +158,12 @@ PROBLEM_LINKS = (
 )
 
 
-def assert_precondition_problem(status, title, code, detail=None):
+def assert_precondition_problem(
+    status, title, code, detail=None, route=RESOURCE_ENDPOINT_DETAIL_NAME
+):
     assert Http.response.status_code == status, Http.response.content
     assert Http.response["Content-Type"] == "application/problem+json"
-    assert Http.response["Link"] == PROBLEM_LINKS
+    assert Http.response["Link"] == PROBLEM_LINKS + ", " + hsr_link(route)
     body = json.loads(Http.response.content)
     assert body["type"] == "about:blank", body
     assert body["title"] == title, body
@@ -162,9 +178,12 @@ def assert_precondition_problem(status, title, code, detail=None):
 @pytest.mark.django_db
 @test_context
 def test_envelope_link_is_the_detail_link_header(partner_profiles, regular_login):
-    # A list envelope's "link" is the Link header the resource's detail
+    # A list envelope's "link" is the resource's Links that its detail
     # response carries: the schema as rel="describedby" with type
-    # application/schema+json, and the JSON-LD context.
+    # application/schema+json, and the JSON-LD context. The detail response
+    # then links its route's HTTP Schema Resource (scrudful 0.10), which
+    # describes the detail URL's methods, not the resource: the envelope
+    # leaves it out.
     url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
     href = "http://testserver" + url
     Given.http.force_authenticate(regular_login)
@@ -177,7 +196,7 @@ def test_envelope_link_is_the_detail_link_header(partner_profiles, regular_login
         entry["href"]: entry for entry in json.loads(Http.response.content)["content"]
     }
     link = envelopes[href]["link"]
-    assert link == header
+    assert header == link + ", " + hsr_link(RESOURCE_ENDPOINT_DETAIL_NAME)
     schema_url = _detail_url_of(partner_profiles.resource_type.schema)
     assert link.startswith(
         f'<{schema_url}>; rel="describedby"; type="application/schema+json", '
@@ -261,7 +280,9 @@ def test_malformed_precondition_is_400_with_problem_details(
     When.http.get(url, HTTP_IF_NONE_MATCH="not-quoted")
     assert_precondition_problem(400, "Bad Request", "malformed_precondition")
     When.http.get(reverse(RESOURCE_ENDPOINT_LIST_NAME), HTTP_IF_NONE_MATCH="not-quoted")
-    assert_precondition_problem(400, "Bad Request", "malformed_precondition")
+    assert_precondition_problem(
+        400, "Bad Request", "malformed_precondition", route=RESOURCE_ENDPOINT_LIST_NAME
+    )
 
 
 @pytest.mark.django_db

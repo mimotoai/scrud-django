@@ -13,8 +13,10 @@ preconditions and checked its workflow transition by then. The PostgreSQL
 proof with two connections is in the batch report.
 """
 
+import copy
 import time
 from contextlib import contextmanager
+from datetime import timedelta
 from unittest import mock
 from uuid import uuid4
 
@@ -46,6 +48,14 @@ IN_PROGRESS = {
     "assignee": "http://somewhere.example/someone",
 }
 CANCELED = dict(IN_PROGRESS, status="canceled")
+# Allows creating a ToDo only in progress, with no transitions: a canceled
+# ToDo is in no state (400, WorkflowInvalidStateError).
+STRICT_POLICY = {
+    "resource_type": TODO,
+    "initial_states": {"in progress": "status == 'in progress'"},
+    "states": {"done": "status == 'done'"},
+    "transitions": {},
+}
 DONE = dict(IN_PROGRESS, status="done")
 PERMISSIVE_POLICY = {
     "resource_type": TODO,
@@ -173,13 +183,15 @@ def test_a_write_is_authorized_against_the_stored_context(method):
 
 class RecordingRouter:
     """Routes nothing; records the reads of scrud_django models that the
-    router decides without an instance hint (a query, not a related object's
-    load)."""
+    router decides: queries, and loads of related objects (a type's schema,
+    with the type as the instance hint), which a router ignoring hints, as
+    Django's documented primary/replica example does, would send to the
+    replica too."""
 
     reads = []
 
     def db_for_read(self, model, **hints):
-        if model._meta.app_label == "scrud_django" and "instance" not in hints:
+        if model._meta.app_label == "scrud_django":
             self.reads.append(model.__name__)
         return None
 
@@ -198,7 +210,16 @@ def test_api_writes_read_no_resource_or_type_through_the_read_router():
     todo = a_todo()
     other = a_todo()
     client = admin_client()
+    list_etag = client.get(reverse("todos-list"))["ETag"]
     with routed_reads() as reads:
+        # A conditional create locks the type row it reads: read on the
+        # type's write database, not a replica's (maybe older) revision. Every
+        # create reads there the schema it validates the body against.
+        for headers in ({"HTTP_IF_MATCH": list_etag}, {"HTTP_IF_MATCH": "*"}, {}):
+            response = client.post(
+                reverse("todos-list"), IN_PROGRESS, format="json", **headers
+            )
+            assert response.status_code == 201, (headers, response.content)
         response = client.put(
             todo_url(todo), DONE, format="json", HTTP_IF_MATCH=quote_etag(todo.etag)
         )
@@ -208,15 +229,246 @@ def test_api_writes_read_no_resource_or_type_through_the_read_router():
     assert [r for r in reads if r in ("Resource", "ResourceType")] == []
 
 
+@contextmanager
+def recorded_indexing():
+    """The primary keys of the resources search indexing prepares (tests'
+    OnCommitSignalProcessor, on commit)."""
+    from scrud_django.search_indexes import ResourceIndex
+
+    prepared = []
+    original = ResourceIndex.prepare
+
+    def prepare(self, obj):
+        prepared.append(obj.pk)
+        return original(self, obj)
+
+    with mock.patch.object(ResourceIndex, "prepare", prepare):
+        yield prepared
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "method, headers",
+    [("post", {}), ("post", {"HTTP_IF_MATCH": "*"}), ("put", None)],
+    ids=["post", "post-if-match-any", "put"],
+)
+def test_what_runs_on_a_writes_commit_reads_no_type_through_the_read_router(
+    method, headers, committed_types
+):
+    # Search indexing reads the saved resource's type and its indexing policy
+    # on commit; the save check refreshed that resource, emptying its related
+    # objects. Committed for real: a POST to the list with no precondition
+    # to evaluate (none, or If-Match: * and no If-None-Match) runs outside
+    # dispatch's transaction and commits inside save_checked (a test's own
+    # transaction would hold what runs on commit back until after the
+    # response).
+    todo = a_todo()
+    client = admin_client()
+    with routed_reads() as reads, recorded_indexing() as prepared:
+        if method == "put":
+            response = client.put(
+                todo_url(todo), DONE, format="json", HTTP_IF_MATCH=quote_etag(todo.etag)
+            )
+        else:
+            response = client.post(
+                reverse("todos-list"), IN_PROGRESS, format="json", **headers
+            )
+    assert response.status_code in (200, 201), response.content
+    assert prepared, "nothing was indexed on commit"
+    assert [r for r in reads if r in ("Resource", "ResourceType")] == []
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("method", ["post", "put"])
+def test_a_policy_writes_commit_reads_no_type_through_the_read_router(
+    method, committed_types
+):
+    # A WorkflowPolicy's save runs inside serialized_policy_save (its lock
+    # and duplicate check), which wraps the save save_checked records: the
+    # policy it returns is re-cached all the same.
+    policy = a_policy()
+    client = admin_client()
+    with routed_reads() as reads, recorded_indexing() as prepared:
+        if method == "put":
+            response = client.put(
+                reverse("workflow-policies-detail", args=[policy.pk]),
+                dict(PERMISSIVE_POLICY, rbac_context="p", states={"x": "true"}),
+                format="json",
+                HTTP_IF_MATCH=quote_etag(policy.etag),
+            )
+        else:
+            response = client.post(
+                reverse("workflow-policies-list"),
+                dict(PERMISSIVE_POLICY, rbac_context="q"),
+                format="json",
+            )
+    assert response.status_code in (200, 201), response.content
+    assert prepared, "nothing was indexed on commit"
+    assert [r for r in reads if r in ("Resource", "ResourceType")] == []
+
+
 @pytest.mark.django_db
 def test_server_side_writes_read_no_resource_or_type_through_the_read_router():
     todo = a_todo()
     with routed_reads() as reads:
+        ResourceRegistration.register(dict(IN_PROGRESS), "todos")
         ResourceRegistration.update(
             content=dict(DONE), register_type="todos", slug=str(todo.pk)
         )
         ResourceRegistration.delete(register_type="todos", slug=str(todo.pk))
     assert [r for r in reads if r in ("Resource", "ResourceType")] == []
+
+
+@pytest.mark.django_db
+def test_registering_types_reads_no_type_through_the_read_router():
+    # A process start (tests.resource_types, as conftest registers them)
+    # compares each stored type's schema and context with its files.
+    from . import resource_types
+
+    a_todo()
+    with routed_reads() as reads:
+        resource_types.json_resource_types()
+    assert [r for r in reads if r in ("Resource", "ResourceType")] == []
+
+
+@pytest.mark.django_db
+def test_a_refused_transitions_policy_link_reads_no_type_through_the_router():
+    # The 400 links the stored policy by its type's route: the type comes
+    # with the policy, read on the write database.
+    todo = a_todo()
+    workflow_policy_resource_type()
+    ResourceRegistration.register(dict(STRICT_POLICY), "workflow-policies")
+    with routed_reads() as reads:
+        response = admin_client().put(
+            todo_url(todo),
+            CANCELED,
+            format="json",
+            HTTP_IF_MATCH=quote_etag(todo.etag),
+        )
+    assert response.status_code == 400, response.content
+    assert response.json()["policy"], response.json()
+    assert [r for r in reads if r in ("Resource", "ResourceType")] == []
+
+
+class LaggingReplicaRouter:
+    """Reads resources and types on "other", a replica lagging behind
+    (`lagging_replica`), ignoring hints, as Django's documented
+    primary/replica example does; writes on the default database."""
+
+    def db_for_read(self, model, **hints):
+        if model in (Resource, ResourceType):
+            return "other"
+        return None
+
+    def db_for_write(self, model, **hints):
+        return DEFAULT_DB_ALIAS
+
+    def allow_relation(self, *args, **kwargs):
+        return True
+
+
+def copied(row, **changes):
+    row = copy.copy(row)
+    for name, value in changes.items():
+        setattr(row, name, value)
+    return row
+
+
+def lagging_replica(resource_type, schema=None):
+    """Copy `resource_type`, its context and its schema (with their own
+    types) to "other", the schema's content as `schema` (an older one, with
+    another ETag and modification time, as an older version has: the
+    compiled validators are cached by them), else as stored."""
+    documents = [resource_type.schema, resource_type.context]
+    types = {doc.resource_type_id: doc.resource_type for doc in documents}
+    ResourceType.objects.using("other").bulk_create(
+        [
+            copied(t, schema_id=None, context_id=None, indexing_policy_id=None)
+            for t in types.values()
+        ]
+    )
+    stored_schema = resource_type.schema
+    if schema is not None:
+        stored_schema = copied(
+            stored_schema,
+            content=schema,
+            etag=uuid4().hex,
+            modified_at=stored_schema.modified_at - timedelta(days=1),
+        )
+    Resource.objects.using("other").bulk_create(
+        [stored_schema, copied(resource_type.context)]
+    )
+    ResourceType.objects.using("other").bulk_create(
+        [copied(resource_type, indexing_policy_id=None)]
+    )
+
+
+LAGGING = override_settings(
+    DATABASE_ROUTERS=["tests.test_atomic_writes.LaggingReplicaRouter"]
+)
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+@pytest.mark.parametrize(
+    "method, headers",
+    [("post", {}), ("put", None)],
+    ids=["post", "put"],
+)
+def test_a_write_is_validated_against_the_schema_not_a_lagging_replicas(
+    method, headers
+):
+    # The replica still has an older, permissive schema: the body the
+    # current one refuses is a 400 all the same, and nothing is stored.
+    todo = a_todo()
+    lagging_replica(todo.resource_type, schema={"type": "object"})
+    refused = dict(IN_PROGRESS, priority="bogus")
+    client = admin_client()
+    with LAGGING:
+        if method == "put":
+            response = client.put(
+                todo_url(todo),
+                refused,
+                format="json",
+                HTTP_IF_MATCH=quote_etag(todo.etag),
+            )
+        else:
+            response = client.post(
+                reverse("todos-list"), refused, format="json", **headers
+            )
+    assert response.status_code == 400, response.content
+    problem = response.json()
+    # The current schema's refusal, not another 400.
+    assert problem["type"].endswith("/json-invalid"), problem
+    assert problem["name"] == "data.priority", problem
+    assert not Resource.objects.filter(content__priority="bogus").exists()
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_registering_types_compares_the_files_with_the_write_database():
+    # The replica has the todos type (an older copy of its row) and its
+    # schema as the files have it, and no partner-profiles type yet; the
+    # primary's todos schema was edited since. A process start puts the
+    # files' schema back, saves no replica copy of the row over the
+    # primary's, and stores no second partner-profiles type.
+    from . import resource_types
+
+    todo = a_todo()
+    todos_type = todo.resource_type
+    from_file = dict(todos_type.schema.content)
+    lagging_replica(todos_type)
+    ResourceType.objects.using("other").filter(pk=todos_type.pk).update(
+        etag=uuid4().hex
+    )
+    ResourceRegistration.update(
+        dict(from_file, title="edited"), "json-schema", todos_type.schema.pk
+    )
+    with LAGGING:
+        resource_types.json_resource_types()
+    stored = ResourceType.objects.get(slug="todos")
+    assert stored.schema.content == from_file
+    assert stored.etag == todos_type.etag
+    slugs = list(ResourceType.objects.values_list("slug", flat=True))
+    assert len(slugs) == len(set(slugs)), sorted(slugs)
 
 
 @contextmanager
@@ -324,6 +576,179 @@ def test_the_locked_lookup_selects_for_update_on_the_write_database(method):
         )
     assert response.status_code in (200, 204), response.content
     assert seen and all(entry == (write_db(), True) for entry in seen), seen
+
+
+@contextmanager
+def scrud_transactions():
+    """The database each transaction scrud_django opens names (``using``,
+    ``None`` for none: Django's default alias, whatever the router says),
+    with ``with`` or as a decorator (``@transaction.atomic(...)``, entered
+    from contextlib's wrapper: the decorated function is what opens it)."""
+    import contextlib
+    import inspect
+    import sys
+
+    import scrud_django
+
+    package = scrud_django.__path__[0]
+    opened = []
+    original = transaction.Atomic.__enter__
+
+    def opener(frame):
+        filename = frame.f_code.co_filename
+        if filename == contextlib.__file__ and "func" in frame.f_locals:
+            return inspect.unwrap(frame.f_locals["func"]).__code__.co_filename
+        return filename
+
+    def enter(self):
+        if opener(sys._getframe(1)).startswith(package):
+            opened.append(self.using)
+        return original(self)
+
+    with mock.patch.object(transaction.Atomic, "__enter__", enter):
+        yield opened
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "method, headers",
+    [
+        ("post", {}),
+        ("post", {"HTTP_IF_MATCH": "*"}),
+        ("post", "list-etag"),
+        ("put", None),
+        ("delete", None),
+    ],
+    ids=["post", "post-if-match-any", "post-if-match", "put", "delete"],
+)
+def test_a_writes_transactions_open_on_the_write_database(method, headers):
+    # Every transaction scrud_django opens for a write (dispatch's,
+    # save_checked's, the save's) names the write database (`using`). Here
+    # that is the default alias, so a bare atomic() would behave the same;
+    # it is caught by its `using` (None), and one naming the default alias
+    # by test_every_transaction_scrud_django_opens_names_its_database. In a
+    # deployment routing writes elsewhere, a transaction on the default
+    # alias would not hold back what runs on the write database's commit:
+    # the save check's own transaction there would be outermost, and commit
+    # before the type is cached again.
+    todo = a_todo()
+    client = admin_client()
+    if headers == "list-etag":
+        headers = {"HTTP_IF_MATCH": client.get(reverse("todos-list"))["ETag"]}
+    with scrud_transactions() as opened:
+        if method == "post":
+            response = client.post(
+                reverse("todos-list"), IN_PROGRESS, format="json", **headers
+            )
+        else:
+            response = getattr(client, method)(
+                todo_url(todo),
+                *([DONE] if method == "put" else []),
+                format="json",
+                HTTP_IF_MATCH=quote_etag(todo.etag),
+            )
+    assert response.status_code in (200, 201, 204), response.content
+    assert opened and set(opened) == {write_db()}, opened
+
+
+def unnamed_transactions(source):
+    """The lines of `source` that open a transaction naming no database: a
+    ``transaction.atomic`` (or ``transaction.Atomic``) not called, as a bare
+    decorator, or called with no ``using``, or with ``None`` or
+    ``DEFAULT_DB_ALIAS``; or an import of ``atomic`` itself, which the
+    other checks would not see."""
+    import ast
+
+    tree = ast.parse(source)
+    parents = {
+        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
+    }
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "django.db.transaction":
+            found.append(node.lineno)
+        if not (
+            isinstance(node, ast.Attribute)
+            and node.attr in ("atomic", "Atomic")
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "transaction"
+        ):
+            continue
+        call = parents.get(node)
+        if not (isinstance(call, ast.Call) and call.func is node):
+            found.append(node.lineno)
+            continue
+        using = [k.value for k in call.keywords if k.arg == "using"] + call.args[:1]
+        if not using or any(
+            (isinstance(u, ast.Constant) and u.value is None)
+            or (isinstance(u, ast.Name) and u.id == "DEFAULT_DB_ALIAS")
+            for u in using
+        ):
+            found.append(node.lineno)
+    return found
+
+
+@pytest.mark.parametrize(
+    "source, lines",
+    [
+        ("with transaction.atomic(using=db):\n    pass\n", []),
+        ("with transaction.atomic(db):\n    pass\n", []),
+        ("with transaction.atomic():\n    pass\n", [1]),
+        ("with transaction.atomic(savepoint=False):\n    pass\n", [1]),
+        ("with transaction.atomic(using=None):\n    pass\n", [1]),
+        ("with transaction.atomic(using=DEFAULT_DB_ALIAS):\n    pass\n", [1]),
+        ("@transaction.atomic\ndef f():\n    pass\n", [1]),
+        ("@transaction.atomic()\ndef f():\n    pass\n", [1]),
+        ("from django.db.transaction import atomic\n", [1]),
+    ],
+)
+def test_unnamed_transactions_finds_each_form(source, lines):
+    assert unnamed_transactions(source) == lines
+
+
+def test_every_transaction_scrud_django_opens_names_its_database():
+    # Static, so that it covers code no request reaches (the serializer's
+    # update, the checks) and a `using` the request tests cannot tell from
+    # the write database's here: the default alias.
+    from pathlib import Path
+
+    import scrud_django
+
+    package = Path(scrud_django.__path__[0])
+    found = {
+        str(path.relative_to(package)): lines
+        for path in sorted(package.rglob("*.py"))
+        if (lines := unnamed_transactions(path.read_text()))
+    }
+    assert found == {}
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "stale"])
+def test_a_locked_lookup_reads_the_write_database_whatever_get_queryset_uses(
+    fresh,
+):
+    # A get_queryset() of a subclass selecting another database (using(), a
+    # replica: "other" has no resource) does not move a locked write's
+    # lookup there: the row is read and locked on the write database, and
+    # the If-Match is evaluated against it.
+    from scrud_django.mixins.view_mixins import ResourceViewMixin
+
+    todo = a_todo()
+    original = ResourceViewMixin.get_queryset
+
+    def get_queryset(self):
+        return original(self).using("other")
+
+    etag = quote_etag(todo.etag) if fresh else '"stale"'
+    with mock.patch.object(ResourceViewMixin, "get_queryset", get_queryset):
+        response = admin_client().put(
+            todo_url(todo), DONE, format="json", HTTP_IF_MATCH=etag
+        )
+    assert response.status_code == (200 if fresh else 412), response.content
+    stored = Resource.objects.get(pk=todo.pk)
+    assert stored.content == (DONE if fresh else IN_PROGRESS)
+    assert not Resource.objects.using("other").exists()
 
 
 @pytest.mark.django_db

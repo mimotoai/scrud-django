@@ -7,7 +7,7 @@ write, before the post-save check."""
 
 import logging
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from uuid import uuid4
 
 import pytest
@@ -127,14 +127,15 @@ def default_context_todo_writer():
 
 
 @contextmanager
-def todos_moved_after_save():
-    """A ``scrud_post_save`` receiver that moves every saved ToDo to the
-    context "other", where the writer may not write: the post-save check
-    then refuses the write with 403 and rolls it back."""
+def todos_moved_after_save(context="other"):
+    """A ``scrud_post_save`` receiver that moves every saved ToDo to
+    `context`: by default "other", where the writer may not write, so that
+    the post-save check refuses the write with 403 and rolls it back (a
+    reserved context is a 400, whoever writes)."""
 
     def move(sender, instance, resource_type_uri=None, **kwargs):
         if resource_type_uri == TODO:
-            content = {**instance.content, "rbac_context": "other"}
+            content = {**instance.content, "rbac_context": context}
             type(instance).objects.filter(pk=instance.pk).update(content=content)
 
     scrud_post_save.connect(move, weak=False, dispatch_uid="test-post-commit-move")
@@ -166,6 +167,41 @@ def test_a_create_refused_after_its_save_runs_no_side_effect(
     assert Resource.objects.count() == before
     assert ran == []
     assert indexed == []
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "context, client, status",
+    [
+        ("other", default_context_todo_writer, 403),
+        ("__x", admin_client, 400),
+        (None, admin_client, 201),
+    ],
+    ids=["refused-403", "reserved-context-400", "created"],
+)
+def test_a_committed_create_runs_its_side_effects_only_if_it_stands(
+    context, client, status, ran, indexed, committed_types
+):
+    # Committed for real: a POST with no preconditions runs in no
+    # transaction of the request's, so save_checked's is the outermost and
+    # its commit, or its rollback, decides what runs. (In a test's own
+    # transaction, as above, nothing commits until after the response.)
+    before = Resource.objects.count()
+    # Only the POST's: not what committed_types registered.
+    ran.clear()
+    indexed.clear()
+    moved = todos_moved_after_save(context) if context else nullcontext()
+    with moved:
+        response = client().post(reverse("todos-list"), NOT_STARTED, format="json")
+    assert response.status_code == status, response.content
+    if status == 201:
+        pk = Resource.objects.latest("pk").pk
+        assert ran == [("save", pk)]
+        assert indexed == [("update", pk)]
+    else:
+        assert Resource.objects.count() == before
+        assert ran == []
+        assert indexed == []
 
 
 @pytest.mark.django_db

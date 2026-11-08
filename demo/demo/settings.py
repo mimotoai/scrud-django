@@ -156,6 +156,13 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
 }
 
+# scrudful builds each path's HTTP Schema Resource without a request: its
+# links (schemas, contexts), and the link to it each response carries, resolve
+# against this base URL (scrud's other response Links are absolute, built from
+# the request). Set it to the URL the API is served at.
+
+SCRUDFUL = {"BASE_URL": "http://127.0.0.1:8000"}
+
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/3.1/howto/static-files/

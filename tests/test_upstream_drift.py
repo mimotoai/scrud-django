@@ -9,7 +9,8 @@ context, and DRF's ``GenericAPIView.filter_queryset``
 object check right after the RBAC filter). It also relies on upstream
 internals: the ``error`` / ``error_body_func`` attributes of scrudful's
 ``ScrudfulViewFunc`` (``gate_uniform_errors``) and its ``_early_response``
-(``ListValidatorsMixin.list_precondition_response``). These tests fail when upstream drifts from what
+(``ListValidatorsMixin.list_precondition_response``). These tests fail when
+upstream drifts from what
 was re-implemented or relied on: the names the upstream code uses are
 pinned, and the re-implementations must give upstream's results where
 upstream's behaviour is the one wanted.
@@ -322,8 +323,13 @@ def test_scrudfuls_view_func_keeps_error_and_error_body_func_in_its_dict():
     assert code_names(ScrudfulViewFunc.__init__) == (
         "TypeError",
         "_check_error",
+        "_check_list_validators",
         "_check_sync",
+        "_check_view_options",
+        "_checks_page",
         "_from_viewset",
+        "allowed_func",
+        "base_url",
         "bool",
         "callable",
         "check_error_body_func",
@@ -332,16 +338,20 @@ def test_scrudfuls_view_func_keeps_error_and_error_body_func_in_its_dict():
         "context_rel_or_func",
         "context_type_or_func",
         "creates",
+        "entity",
         "error",
         "error_body_func",
         "etag_func",
         "functools",
         "last_modified_func",
+        "list_etag_func",
+        "list_last_modified_func",
         "location_func",
         "object_validators",
         "schema_link_or_func",
         "schema_rel_or_func",
         "schema_type_or_func",
+        "statuses",
         "update_wrapper",
         "view_method",
     )
@@ -363,9 +373,9 @@ def test_scrudfuls_view_func_keeps_error_and_error_body_func_in_its_dict():
     assert handler.__dict__["error_body_func"] is handler.error_body_func
 
 
-def test_scrudfuls_early_response_is_what_a_conditional_create_renders_with():
-    # ListValidatorsMixin.list_precondition_response renders a create's
-    # failed list precondition with the list handler's private
+def test_scrudfuls_early_response_is_what_a_list_precondition_response_renders_with():
+    # ListValidatorsMixin.list_precondition_response renders a failed list
+    # precondition with the create (else list) handler's private
     # ScrudfulViewFunc._early_response(result, request, args, kwargs), as
     # scrudful renders its own 400 and 412 (error entity, body function).
     import inspect
@@ -381,10 +391,13 @@ def test_scrudfuls_early_response_is_what_a_conditional_create_renders_with():
     ]
     assert code_names(ScrudfulViewFunc._early_response) == (
         "_conditional_response",
+        "_entity_links",
         "body",
         "error",
         "error_body_func",
-        "error_link_header",
+        "join_links",
+        "live_base_url",
         "media_type",
+        "setting_error",
         "with_error_body",
     )

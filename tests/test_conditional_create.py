@@ -3,8 +3,10 @@
 the list's validators as the requester would GET them (their RBAC-filtered
 list's ``ETag`` and ``Last-Modified``): a failed one is a 412 and nothing is
 created, a malformed one a 400, as on the detail routes. A POST without
-preconditions is unchanged. (scrudful never evaluates a create's
-preconditions; scrud does it in ``ResourceViewMixin.create``.)"""
+preconditions is unchanged. (scrudful 0.9 evaluates them before the
+``create`` handler runs, against ``Meta.list_etag_func`` and
+``Meta.list_last_modified_func``, which scrud gives the requester's list:
+``ListValidatorsMixin.create_list_validators``.)"""
 
 import threading
 import time
@@ -181,8 +183,12 @@ def test_a_create_without_preconditions_is_unchanged(writer):
 def test_authorization_comes_before_preconditions():
     profile("existing")
     reader = client_with(({"http.GET": [PP, PP_LIST]}, "a"))
-    response = post(reader, HTTP_IF_MATCH='"nope"')
+    with recorded_type_locks() as events:
+        response = post(reader, HTTP_IF_MATCH='"nope"')
     assert response.status_code == 403, response.content
+    # Refused before the type's row is locked (a row lock leaves nothing to
+    # check afterwards; the recorder sees the call).
+    assert type_locks(events) == [], events
 
 
 # Past SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"] the list's validators cannot be
@@ -286,6 +292,29 @@ def test_a_conditional_create_locks_the_type_row_before_it_writes(writer):
 
 
 @pytest.mark.django_db
+def test_a_conditional_create_locks_the_row_of_the_type_it_saves_under(writer):
+    # The lock serializes the creates of the type only if it is the row the
+    # resource is saved under (each type revision is a row of its own).
+    # Recorded from the query's select_for_update flag, which SQLite (no row
+    # locks) keeps too.
+    etag = writer.get(url())["ETag"]
+    locked = []
+    original = QuerySet._fetch_all
+
+    def fetch_all(self):
+        fresh = self._result_cache is None
+        original(self)
+        if fresh and self.model is ResourceType and self.query.select_for_update:
+            locked.extend(row.pk for row in self._result_cache)
+
+    with mock.patch.object(QuerySet, "_fetch_all", fetch_all):
+        response = post(writer, HTTP_IF_MATCH=etag)
+    assert response.status_code == 201, response.content
+    saved = Resource.objects.get(content__name="new")
+    assert locked == [saved.resource_type_id], locked
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize(
     "headers", [{}, {"HTTP_IF_MATCH": "*"}], ids=["unconditional", "if-match-any"]
 )
@@ -340,28 +369,25 @@ def superuser_client():
 @contextmanager
 def paused_after_evaluation(thread_name, seconds=0.8):
     """The create in thread `thread_name` pauses for `seconds` right after
-    its list preconditions passed (before it creates); `timeline` records
-    when (``paused``, ``resumed``) and `evaluated` is set as it pauses."""
-    from scrud_django.mixins.view_mixins import ListValidatorsMixin
+    its list preconditions passed (before it creates): scrudful evaluates
+    them before the ``create`` handler runs, which then calls
+    ``create_resource``. `timeline` records when (``paused``, ``resumed``)
+    and `evaluated` is set as it pauses."""
+    from scrud_django.mixins.view_mixins import ResourceViewMixin
 
-    original = ListValidatorsMixin.list_precondition_response
+    original = ResourceViewMixin.create_resource
     evaluated = threading.Event()
     timeline = {}
 
-    def evaluate(self, request, *args, **kwargs):
-        result = original(self, request, *args, **kwargs)
-        if (
-            threading.current_thread().name == thread_name
-            and result is None
-            and "paused" not in timeline
-        ):
+    def create_resource(self, request, *args, **kwargs):
+        if threading.current_thread().name == thread_name and "paused" not in timeline:
             timeline["paused"] = time.monotonic()
             evaluated.set()
             time.sleep(seconds)
             timeline["resumed"] = time.monotonic()
-        return result
+        return original(self, request, *args, **kwargs)
 
-    with mock.patch.object(ListValidatorsMixin, "list_precondition_response", evaluate):
+    with mock.patch.object(ResourceViewMixin, "create_resource", create_resource):
         yield evaluated, timeline
 
 
@@ -527,3 +553,220 @@ def test_a_conditional_create_and_another_write_do_not_deadlock(
         results = run_threads(**{names[0]: starts, names[1]: after})
     assert timeline["paused"] < timeline["second sent"] < timeline["resumed"], timeline
     assert results == {"conditional": 201, "other": expected}, results
+
+
+@pytest.mark.django_db
+def test_scoped_rbacs_own_lists_evaluate_a_creates_preconditions():
+    # scoped-rbac 0.12 (#62) evaluates them on its role and role-assignment
+    # lists, which scrud_django.urls mounts (formerly scrud's follow-up
+    # scrudful-create-preconditions).
+    client = APIClient()
+    client.force_authenticate(UserFactory(is_superuser=True, is_staff=True))
+    role = {"rbac_context": "", "definition": {"http.GET": [PP]}}
+    response = client.post(
+        reverse("role-list"), role, format="json", HTTP_IF_MATCH='"nope"'
+    )
+    assert response.status_code == 412, response.content
+    assert not Role.objects.filter(definition={"http.GET": [PP]}).exists()
+    etag = client.get(reverse("role-list"))["ETag"]
+    response = client.post(
+        reverse("role-list"), role, format="json", HTTP_IF_MATCH=etag
+    )
+    assert response.status_code == 201, response.content
+
+
+# A POST @action of the list that only calls create
+# (tests.urls.ImportingResourceViewSet.import_resource): scrudful evaluates
+# nothing of the nested create, whose ResourceViewMixin.create evaluates the
+# preconditions itself (list_precondition_response), under the type's lock.
+
+
+def import_post(client, **headers):
+    return client.post(
+        reverse("importing-partner-profiles"), BODY, format="json", **headers
+    )
+
+
+@pytest.mark.django_db
+def test_an_actions_create_of_a_stale_if_match_is_412(writer):
+    etag = writer.get(url())["ETag"]
+    profile("another")
+    with recorded_type_locks() as events:
+        response = import_post(writer, HTTP_IF_MATCH=etag)
+    assert response.status_code == 412, response.content
+    assert response["Content-Type"] == "application/problem+json"
+    assert created() == 0
+    no_key = connection.features.has_select_for_no_key_update
+    assert type_locks(events) == [("lock", no_key)], events
+
+
+@pytest.mark.django_db
+def test_an_actions_create_with_the_lists_etag_creates_under_the_type_lock(writer):
+    etag = writer.get(url())["ETag"]
+    with recorded_type_locks() as events:
+        response = import_post(writer, HTTP_IF_MATCH=etag)
+    assert response.status_code == 201, response.content
+    assert created() == 1
+    no_key = connection.features.has_select_for_no_key_update
+    assert type_locks(events) == [("lock", no_key)], events
+    assert events[0][0] == "lock", events  # before any INSERT
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "headers, status_code, code",
+    [
+        ({"HTTP_IF_NONE_MATCH": "*"}, 412, None),
+        ({"HTTP_IF_MATCH": "nope"}, 400, "malformed_precondition"),
+    ],
+    ids=["if-none-match-any", "malformed-if-match"],
+)
+def test_an_actions_create_evaluates_what_needs_no_validators(
+    writer, headers, status_code, code
+):
+    with recorded_type_locks() as events:
+        response = import_post(writer, **headers)
+    assert response.status_code == status_code, response.content
+    if code is not None:
+        assert response.json()["code"] == code, response.content
+    assert created() == 0
+    assert type_locks(events) == [], events
+
+
+# A viewset's own Meta list validators
+# (tests.urls.CustomListEtagResourceViewSet): scrudful evaluates the create
+# with them, and ResourceViewMixin.create does not evaluate it again against
+# scrud's.
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "if_match, status_code", [('"custom"', 201), ('"other"', 412)], ids=["its", "other"]
+)
+def test_a_create_is_evaluated_once_with_its_own_meta_list_validators(
+    writer, if_match, status_code
+):
+    custom = reverse("custom-etag-partner-profiles-list")
+    assert writer.get(custom)["ETag"] == '"custom"'
+    response = writer.post(custom, BODY, format="json", HTTP_IF_MATCH=if_match)
+    assert response.status_code == status_code, response.content
+    assert created() == (1 if status_code == 201 else 0)
+
+
+# A POST handler of the view's own, no @action (tests.urls.ResourceBulkViewSet
+# .bulk), calling create: the list's POST, evaluated by
+# ResourceViewMixin.create under the type's lock.
+
+
+def bulk_post(client, **headers):
+    return client.post(reverse("bulk-partner-profiles"), BODY, format="json", **headers)
+
+
+@pytest.mark.django_db
+def test_a_handlers_create_of_a_stale_if_match_is_412_under_the_type_lock(writer):
+    etag = writer.get(url())["ETag"]
+    profile("another")
+    with recorded_type_locks() as events:
+        response = bulk_post(writer, HTTP_IF_MATCH=etag)
+    assert response.status_code == 412, response.content
+    assert created() == 0
+    no_key = connection.features.has_select_for_no_key_update
+    assert type_locks(events) == [("lock", no_key)], events
+
+
+@pytest.mark.django_db
+def test_a_handlers_create_with_the_lists_etag_creates_under_the_type_lock(writer):
+    etag = writer.get(url())["ETag"]
+    with recorded_type_locks() as events:
+        response = bulk_post(writer, HTTP_IF_MATCH=etag)
+    assert response.status_code == 201, response.content
+    assert created() == 1
+    no_key = connection.features.has_select_for_no_key_update
+    assert type_locks(events) == [("lock", no_key)], events
+
+
+@pytest.mark.django_db
+def test_a_create_outside_the_conditional_creates_transaction_is_refused(writer):
+    # A dispatch that skips LockedWriteMixin's: no transaction, no lock.
+    # ResourceViewMixin.create's evaluation is refused, not run unlocked.
+    from django.core.exceptions import ImproperlyConfigured
+    from rest_framework import viewsets
+    from rest_framework.test import APIRequestFactory, force_authenticate
+
+    from .urls import ImportingResourceViewSet
+
+    class NoDispatch(ImportingResourceViewSet):
+        def dispatch(self, request, *args, **kwargs):
+            return viewsets.GenericViewSet.dispatch(self, request, *args, **kwargs)
+
+    etag = writer.get(url())["ETag"]
+    request = APIRequestFactory().post(url(), BODY, format="json", HTTP_IF_MATCH=etag)
+    force_authenticate(request, UserFactory(is_superuser=True, is_staff=True))
+    view = NoDispatch.as_view(
+        {"post": "import_resource"}, resource_type_name="partner-profiles"
+    )
+    with pytest.raises(ImproperlyConfigured, match="outside a conditional create"):
+        view(request)
+    assert created() == 0
+
+
+def authenticated(request):
+    from rest_framework.test import force_authenticate
+
+    force_authenticate(request, UserFactory(is_superuser=True, is_staff=True))
+    return request
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "if_match, status_code", [('"custom"', 201), ('"other"', 412)], ids=["its", "other"]
+)
+def test_a_plain_handlers_create_is_evaluated_once_with_its_own_meta_validators(
+    writer, if_match, status_code
+):
+    # The undecorated handler reaches scrudful's create, which evaluates with
+    # the viewset's own Meta list validators: ResourceViewMixin.create does
+    # not evaluate again (against scrud's list ETag, which is not "custom").
+    from rest_framework.test import APIRequestFactory
+
+    from .urls import CustomListEtagResourceViewSet
+
+    class Plain(CustomListEtagResourceViewSet):
+        def import_resource(self, request):
+            return self.create(request)
+
+    view = Plain.as_view(
+        {"post": "import_resource"}, resource_type_name="partner-profiles"
+    )
+    request = APIRequestFactory().post(
+        url(), BODY, format="json", HTTP_IF_MATCH=if_match
+    )
+    response = view(authenticated(request))
+    assert response.status_code == status_code, response.data
+    assert created() == (1 if status_code == 201 else 0)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "stale"])
+def test_a_create_a_scrudful_function_view_delegates_to_evaluates_itself(writer, fresh):
+    # scrudful skips the viewset's create (it already handles the request);
+    # ResourceViewMixin.create finds nothing evaluated, and evaluates.
+    from rest_framework.test import APIRequestFactory
+    from scrudful.rest_framework import scrudful
+
+    from scrud_django.views import ResourceViewSet
+
+    @scrudful()
+    def outer(request):
+        return ResourceViewSet.as_view(
+            {"post": "create"}, resource_type_name="partner-profiles"
+        )(request)
+
+    etag = writer.get(url())["ETag"] if fresh else '"stale"'
+    request = APIRequestFactory().post(url(), BODY, format="json", HTTP_IF_MATCH=etag)
+    with recorded_type_locks() as events:
+        response = outer(authenticated(request))
+    assert response.status_code == (201 if fresh else 412), response.content
+    assert created() == (1 if fresh else 0)
+    no_key = connection.features.has_select_for_no_key_update
+    assert type_locks(events) == [("lock", no_key)], events
