@@ -3,22 +3,26 @@ nothing else (fail closed). It allows the checks of a POST or PUT that the
 ``WorkflowValidator`` authorizes (the request check, the PUT's object check
 and the post-save check) and, in the workflow check, the transitions it
 lists. Everything else is refused: GET, HEAD, lists, DELETE, and a write the
-workflow check does not cover. A role that should read needs its own
-``http.GET`` grant."""
+workflow check does not cover (such as a POST ``@action`` of a viewset). A
+role that should read needs its own ``http.GET`` grant."""
 
+import json
 from uuid import uuid4
 
 import pytest
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
+from rest_framework import status
 from rest_framework.test import APIClient
+from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
+from .steps import *  # noqa: F403, F401
 
 TODO = "tests://ToDo"
 TODO_LIST = (
@@ -42,8 +46,8 @@ def scrud_workflow(transitions):
     }
 
 
-def client_with(*grants):
-    """A client whose user holds each ``(definition, context)`` of `grants`."""
+def user_with(*grants):
+    """A user holding each ``(definition, context)`` of `grants`."""
     user = UserFactory()
     for definition, context in grants:
         role = Role(definition=definition, etag=uuid4().hex, modified_at=now())
@@ -55,8 +59,13 @@ def client_with(*grants):
             etag=uuid4().hex,
             modified_at=now(),
         ).save()
+    return user
+
+
+def client_with(*grants):
+    """A client whose user holds each ``(definition, context)`` of `grants`."""
     client = APIClient()
-    client.force_authenticate(user)
+    client.force_authenticate(user_with(*grants))
     return client
 
 
@@ -185,6 +194,74 @@ def test_a_put_refused_by_its_object_check_hides_what_scrud_workflow_would_read(
     response = client.put(detail(stored), canceled, format="json", **if_match(stored))
     assert response.status_code == 404, response.content
     assert Resource.objects.get(pk=stored.pk).content == PLAN
+
+
+# A POST @action of an item that writes the resource itself
+# (tests.urls.ArchivingToDoViewSet.archive): no WorkflowValidator runs, so
+# the workflow check does not cover it and scrud_workflow refuses it, as for
+# any other route but a create or an update.
+
+
+def archive(resource):
+    When.http.post(
+        reverse("archiving-todos-archive", args=[resource.pk]),
+        data=json.dumps({"rbac_context": "team"}),
+        content_type="application/json",
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "definition",
+    [
+        {"http.POST": {TODO: scrud_workflow([])}},
+        {"http.POST": {TODO: scrud_workflow(["__SAME_STATE__"])}},
+        {"*": {TODO: scrud_workflow(["__INITIALIZE__", "__SAME_STATE__", "cancel"])}},
+    ],
+    ids=["none", "same-state", "every-action"],
+)
+@test_context
+def test_a_scrud_workflow_grant_does_not_authorize_a_custom_write_action(definition):
+    stored = todo()
+    Given.http.force_authenticate(user_with((definition, "team")))
+    archive(stored)
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.get(pk=stored.pk).content == PLAN
+
+    # Its OPTIONS does not offer the POST either.
+    When.http.options(reverse("archiving-todos-archive", args=[stored.pk]))
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert "POST" not in Http.response["Allow"], Http.response["Allow"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_plain_post_grant_authorizes_a_custom_write_action():
+    stored = todo()
+    Given.http.force_authenticate(user_with(({"http.POST": [TODO]}, "team")))
+    When.http.options(reverse("archiving-todos-archive", args=[stored.pk]))
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert "POST" in Http.response["Allow"], Http.response["Allow"]
+    archive(stored)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert Resource.objects.get(pk=stored.pk).content == dict(PLAN, status="done")
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_scrud_workflow_grant_still_offers_its_create_and_update():
+    # The workflow check covers a scrud viewset's create (POST to the list)
+    # and update (PUT to the detail route): its OPTIONS offers them to a
+    # role conditioned on scrud_workflow alone, which the workflow check
+    # then decides by the transition.
+    stored = todo()
+    Given.http.force_authenticate(user_with((CANCELLER, "team")))
+    When.http.options(detail(stored))
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert "PUT" in Http.response["Allow"], Http.response["Allow"]
+    When.http.options(reverse("todos-list"))
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert "POST" in Http.response["Allow"], Http.response["Allow"]
 
 
 # authorized_transitions must be a list of transition names: anything else

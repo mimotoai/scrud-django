@@ -147,9 +147,11 @@ def list_validators_needed(headers):
 # The methods whose body is the resource to store.
 BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
-# The methods of a resource view whose write the workflow check
-# (``WorkflowValidator``) covers.
-WORKFLOW_METHODS = frozenset({"POST", "PUT"})
+# The actions of a resource viewset whose write the workflow check covers,
+# with the method each serves: the list's create and the detail route's
+# update (``registration.ResourceTypeRegistration.register_urls``). Any other
+# action (an ``@action``, a handler of your own) may write without it.
+WORKFLOW_ACTIONS = {"create": "POST", "update": "PUT"}
 
 
 def check_body_present(request, view=None):
@@ -1075,17 +1077,30 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
 
     def checks_workflow(self, request):
         """Whether `request` is a write the workflow check
-        (``WorkflowValidator``) covers: a POST or PUT the view serves."""
-        return request.method in WORKFLOW_METHODS and (
-            request.method in self.allowed_methods
+        (``WorkflowValidator``) covers: a POST the view serves as its
+        ``create`` action or a PUT it serves as its ``update`` action
+        (`WORKFLOW_ACTIONS`), keyed on DRF's ``self.action``. Any other
+        action, such as an ``@action`` that writes the resource itself, and
+        a view with no action (``None``: a method the view does not serve,
+        or a view that is not a viewset) is not: ``scrud_workflow`` refuses
+        it. A subclass whose own action writes only through ``create`` or
+        ``update`` (so the workflow check runs) may override this to name
+        it."""
+        action = getattr(self, "action", None)
+        return (
+            action in WORKFLOW_ACTIONS
+            and request.method == WORKFLOW_ACTIONS[action]
+            and request.method in self.allowed_methods
         )
 
     def write_checks(self, request, authorized=False):
         """The block in which a check of `request` runs: for a write the
-        workflow check covers (`checks_workflow`), with the ``scrud_workflow``
-        operator allowing (the workflow check decides the transition); with
-        `authorized` (the post-save check), only once the workflow check has
-        authorized the write. Anywhere else ``scrud_workflow`` refuses."""
+        workflow check covers (`checks_workflow`: the view's ``create`` or
+        ``update`` action), with the ``scrud_workflow`` operator allowing
+        (the workflow check decides the transition); with `authorized` (the
+        post-save check), only once the workflow check has authorized the
+        write. Anywhere else (an ``@action`` of the view included)
+        ``scrud_workflow`` refuses."""
         if self.checks_workflow(request) and (
             not authorized or _workflow_authorized(request)
         ):
@@ -1094,7 +1109,8 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
 
     def check_object_permissions(self, request, obj):
         """DRF's object check, with ``scrud_workflow`` allowing for a PUT the
-        workflow check covers and refusing for anything else
+        workflow check covers (the ``update`` action) and refusing for
+        anything else
         (`write_checks`). Whether a refused resource is readable (404 or
         403) is asked outside it (`object_readable`)."""
         with self.write_checks(request):

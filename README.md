@@ -170,9 +170,12 @@ default context `""` without one).
 A grant conditioned on the `scrud_workflow` operator
 (`{"condition": {"operator": "scrud_workflow", "authorized_transitions": ["cancel"]}}`)
 grants workflow transitions and nothing else: the transitions it lists, in a
-POST or PUT the workflow check covers. It never allows a GET, a list or a
-DELETE, even with the action `"*"`, so a role that should read needs its own
-`http.GET` grant. `authorized_transitions` must be a list of transition names
+POST or PUT the workflow check covers, a scrud viewset's `create` (POST to
+the list) or `update` (PUT to the detail route). It never allows a GET, a
+list or a DELETE, even with the action `"*"`, nor any other write, such as an
+`@action` of a viewset subclass, which the workflow check does not see, so a
+role that should read needs its own `http.GET` grant, and one that should
+call such an action its own grant for its method. `authorized_transitions` must be a list of transition names
 (`__INITIALIZE__` for a create, `__SAME_STATE__` for an update that keeps its
 state); anything else refuses everywhere.
 

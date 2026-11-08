@@ -31,6 +31,21 @@
 
   Policies whose state conditions do not overlap are unaffected.
 
+* A grant conditioned on `scrud_workflow` no longer authorizes a custom
+  write action. Whether the operator allowed a request (leaving the
+  transition to the workflow check) depended on its method alone, so any
+  `scrud_workflow` grant for `http.POST`, even with `authorized_transitions:
+  []`, authorized a POST `@action` of a `ResourceViewSet` subclass, whose
+  write the workflow check never sees: the action ran and wrote, and its
+  OPTIONS offered the POST. The operator now allows only the scrud
+  viewset's `create` and `update` actions (DRF's `view.action`, which
+  `ResourceViewMixin.checks_workflow` reads), and refuses every other
+  action (403), a view that is not a viewset included. A role that should
+  call such an action needs a grant for its method that is not conditioned
+  on `scrud_workflow`; a subclass whose own action writes only through
+  `create` or `update` (so the workflow check runs) may override
+  `checks_workflow` to include it.
+
 ## 0.14.0
 
 This release requires django-scoped-rbac 0.12.1 and scrudful 0.10.1

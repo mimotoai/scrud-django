@@ -520,6 +520,29 @@ urlpatterns.append(
 )
 
 
+class ArchivingToDoViewSet(ResourceViewSet):
+    """The ToDos, with a POST ``@action`` of an item (``archive``) that
+    writes the resource itself: no ``WorkflowValidator`` runs, so a grant
+    conditioned on ``scrud_workflow`` must not authorize it."""
+
+    @action(detail=True, methods=["post"])
+    @scrudful(**ACTION)
+    def archive(self, request, slug):
+        resource = self.get_object()
+        resource.content = dict(resource.content, status="done")
+        resource.save()
+        return Response({"archived": slug})
+
+
+urlpatterns.append(
+    path(
+        "archiving/todos/<slug>/archive/",
+        ArchivingToDoViewSet.as_view({"post": "archive"}, resource_type_name="todos"),
+        name="archiving-todos-archive",
+    )
+)
+
+
 def custom_list_etag(view_instance, request, **kwargs):
     return "custom"
 
