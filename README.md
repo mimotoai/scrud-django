@@ -309,12 +309,13 @@ lock before the row by itself.
 Lists filter resources by their `ResourceContext` rows, one per context the
 content names, which `Resource.save()` (and so `ResourceRegistration` and the
 API) keeps in step. Rows written with `QuerySet.update()`, `bulk_create()` or
-`bulk_update()` go stale. `manage.py scrud_sync_contexts --check` lists the
-resources whose rows disagree with their content (exit status 1 if any), and
-`manage.py scrud_sync_contexts` re-syncs them; the `scrud_django.W004`
-database check reports resources that have no row at all. The workflow
-policy of a context is found by those rows too, and also by the policy's
-content, so that stale rows do not hide a policy (see
+`bulk_update()` go stale (and run no workflow action, see
+[Workflow actions](#workflow-actions)). `manage.py scrud_sync_contexts
+--check` lists the resources whose rows disagree with their content (exit
+status 1 if any), and `manage.py scrud_sync_contexts` re-syncs them; the
+`scrud_django.W004` database check reports resources that have no row at
+all. The workflow policy of a context is found by those rows too, and also
+by the policy's content, so that stale rows do not hide a policy (see
 `scrud_django.workflow.stored_policies_in` for the one case they still can).
 
 DRF's own default permission is `AllowAny`. The scrud-django viewsets set
@@ -405,7 +406,148 @@ entry for a type replaces an earlier one's. An action runs when the write
 of a resource of its type commits, never for a write that is rolled back. The
 `scrud_post_save` and `scrud_post_delete` signals fire inside the write; a
 receiver whose work leaves the database should wrap it in
-`transaction.on_commit`.
+`transaction.on_commit(..., using=using)`. Their `using` is the database the
+write went to (the router's `db_for_write`), even for an instance read from a
+replica.
+
+Actions and receivers are called as `action(sender, **kwargs)`, with the
+signal's keyword arguments: `instance`, `using`, `resource_type_uri` and
+`action` (`CREATE`, `UPDATE` or `DELETE`); `scrud_post_save` adds
+`update_fields`, `transition_data`, `transition_error` and `transitions`,
+and `scrud_post_delete` adds `pk`, the deleted resource's primary key (the
+`instance` is the deleted one, whose `pk` Django has set to `None`).
+`transition_data` is a `scrud_django.workflow.TransitionData`
+(`prior_state`, `proposed_state`, `transition`) under the workflow policy in
+effect in the resource's first context that has one, or `None` when no
+policy applies or the transition is invalid (a server-side write the
+workflow check did not see); `transition_error` is then the workflow error,
+and `None` otherwise. Its `transition` is the policy's transition name,
+`__SAME_STATE__` for an update that stays in its state, or `__INITIALIZE__`
+(no `prior_state`) for a create and for an update that moves the resource
+into that context. `transitions` maps every context the stored resource or
+the new content is in, where a policy applies, to the write's
+`TransitionData` there (`None` if invalid there): a transition where the
+resource stays, `__INITIALIZE__` where it enters, and `__LEAVE__` (no
+`proposed_state`; `prior_state` is the state it left) where it leaves. A
+save of an instance whose row is not on the database written to (a copy
+with `save(using=...)`) is reported as a create. The requesting user is not passed: read it from a
+`contextvars.ContextVar` that a middleware sets (see the example below),
+since receivers and actions run in the request's thread.
+
+Actions are delivered:
+
+- **At most once.** An action waits in the connection's in-memory list of
+  `on_commit` callbacks: a crash between the COMMIT and the call loses it,
+  and nothing retries it. One that raises is logged (below) and dropped.
+- **Synchronously**, in the thread that wrote, after the commit: in a
+  request, before the response, so a slow action (SMTP, an HTTP call) adds
+  to the request's latency. Outside a transaction an action runs at once.
+- **In write order**, per database connection.
+- **With the live `instance`**: changes made to it after the write, in the
+  same transaction, are visible. Rely on `transition_data`, or snapshot
+  what you need in a `scrud_post_save` receiver.
+
+The signals are sent by `Resource.save()` and `delete()` (the API,
+`ResourceRegistration`, the admin's change and delete pages) and, for each
+resource it deletes, by a `Resource.objects` queryset's `delete()` (bulk
+deletes, the admin's "delete selected"). `QuerySet.update()`,
+`bulk_create()` and `bulk_update()` send none. Nor does a raw save:
+`loaddata` and a django-reversion revert (`Version.revert()`) call
+`save_base(raw=True)`, and as in Django, loading data runs no side effects.
+To act on a revert, connect a receiver to Django's `post_save` for
+`Resource`, which they send with `raw=True` (`loaddata` too).
+
+A setting that is not a list or tuple of paths to mappings stops the process
+at startup (`ImproperlyConfigured`). `manage.py check` reports a type's entry
+that is not a mapping (`scrud_django.E007`), a key other than `on_save` and
+`on_delete` (`E008`) and a value that is neither callable nor `None`
+(`E009`); `check --database <alias>` warns about a type URI that is not a
+registered resource type (`W006`). At write time such an entry runs nothing
+and never fails the write. Neither does an action that raises: it is logged,
+with its traceback, on the `scrud_django.workflow_actions` logger, naming
+the action, the type URI, `on_save` or `on_delete` and the resource's pk.
+
+The actions are run by a `scrud_django.scrud_signals.ScrudSignalProcessor`,
+which reads the setting again when it changes (`override_settings` in
+tests). One processor receives the signals at a time (a fixed
+`dispatch_uid`, held strongly): building another one, such as an instance
+of a subclass in the `ready()` of an app listed after `scrud_django`,
+replaces the default one instead of running each action twice.
+
+An event that must not be lost belongs in a transactional outbox: a
+receiver stores it in a table in the write's own transaction, so it
+commits or rolls back with the write, and a worker delivers it later, at
+least once:
+
+```python
+# myapp/models.py
+from django.db import models
+
+
+class OutboxEvent(models.Model):
+    resource_pk = models.BigIntegerField()
+    type_uri = models.TextField()
+    action = models.CharField(max_length=6)  # CREATE, UPDATE or DELETE
+    transition = models.JSONField(null=True)
+    user_id = models.BigIntegerField(null=True)
+    content = models.JSONField(null=True)
+    sent_at = models.DateTimeField(null=True)
+
+
+# myapp/outbox.py, imported in your AppConfig.ready()
+import dataclasses
+from contextvars import ContextVar
+
+from django.db import transaction
+from django.dispatch import receiver
+from django.utils import timezone
+from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save
+
+from .models import OutboxEvent
+
+current_request = ContextVar("current_request", default=None)
+
+
+def current_request_middleware(get_response):  # add it to MIDDLEWARE
+    def middleware(request):
+        token = current_request.set(request)
+        try:
+            return get_response(request)
+        finally:
+            current_request.reset(token)
+
+    return middleware
+
+
+@receiver([scrud_post_save, scrud_post_delete], dispatch_uid="myapp.outbox")
+def store_event(sender, instance, using, resource_type_uri, action, **kwargs):
+    transition = kwargs.get("transition_data")
+    # DRF sets the user it authenticates on the Django request too.
+    user = getattr(current_request.get(), "user", None)
+    OutboxEvent.objects.using(using).create(
+        resource_pk=kwargs.get("pk", instance.pk),  # pk: sent for a delete
+        type_uri=resource_type_uri,
+        action=action,
+        transition=dataclasses.asdict(transition) if transition else None,
+        user_id=user.pk if user is not None and user.is_authenticated else None,
+        content=instance.content,
+    )
+
+
+def send_events(deliver, batch=100):
+    """Run by a worker (cron, Celery beat). `deliver` must be idempotent
+    (keyed on the event's pk): an event is sent again if marking it fails."""
+    with transaction.atomic():
+        events = (
+            OutboxEvent.objects.select_for_update(skip_locked=True)
+            .filter(sent_at=None)
+            .order_by("pk")[:batch]
+        )
+        for event in events:
+            deliver(event)
+            event.sent_at = timezone.now()
+            event.save(update_fields=["sent_at"])
+```
 
 ### Upgrading
 

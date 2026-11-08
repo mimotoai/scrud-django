@@ -20,6 +20,7 @@ from scoped_rbac.rbac_contexts import SOME_CONTEXT
 from scrud_django.mixins.resource_mixin import ResourceMixin, rbac_contexts_of
 from scrud_django.models.fields import ContextField
 from scrud_django.models.resource_type import ResourceType
+from scrud_django.scrud_signals import scrud_post_delete
 
 # The ``rbac_context`` column of `ResourceContext` and `ResourceRemoval`
 # (`ContextField`): in characters, or in bytes on MySQL and MariaDB.
@@ -39,7 +40,7 @@ def context_fits(context):
     return len(context.encode("utf-8", "surrogatepass")) <= MAX_CONTEXT_BYTES
 
 
-def lock_for_delete(queryset, using):
+def lock_for_delete(queryset, using, type_uris=None):
     """Lock the `Resource` rows `queryset` selects, on database `using`, in
     primary key order (``select_for_update``), until the caller's
     transaction there ends. A delete takes it before Django's ``Collector``
@@ -50,7 +51,9 @@ def lock_for_delete(queryset, using):
     deadlock on the resource rows either. Returns the keys it locked, in
     order: a delete must delete those and no others (`delete_locked_keys`),
     since its own query, run again, would also find rows that came to match
-    since, without their lock.
+    since, without their lock. A `type_uris` dict is given the type URI of
+    each row read, by key (read with the keys, for `ResourceQuerySet.delete`'s
+    ``scrud_post_delete``).
 
     The keys are read first, without a lock, and then locked by key, at most
     `DELETE_BATCH_SIZE` a statement: a locking read of `queryset`'s own
@@ -76,6 +79,8 @@ def lock_for_delete(queryset, using):
     rows.query.select_related = False
     rows.query.clear_ordering(force=True)
     found = dict(rows)
+    if type_uris is not None:
+        type_uris.update(found)
     if WORKFLOW_POLICY_TYPE_URI in found.values():
         lock_workflow_policy_type(using)
     keys = sorted(found)
@@ -134,8 +139,9 @@ def in_transaction(using):
     return transaction.atomic(using=using)
 
 
-# ``(database, pairs)``: the (type, context) pairs a QuerySet.delete() of
-# resources on that database has removed so far, stamped once when it ends
+# ``(database, pairs, deleted)``: the (type, context) pairs a QuerySet.delete()
+# of resources on that database has removed so far, stamped once when it ends,
+# and the instances it deleted, by primary key, sent scrud_post_delete then
 # (`ResourceQuerySet.delete`); None outside one.
 _PENDING_STAMPS = contextvars.ContextVar("scrud_pending_stamps", default=None)
 
@@ -154,6 +160,15 @@ class ResourceQuerySet(models.QuerySet):
         resources through a ``Collector`` built by hand, outside a queryset,
         still stamps them one by one. It runs in the caller's transaction, or
         one of its own (`in_transaction`).
+
+        Then, in that transaction, it sends ``scrud_post_delete`` for each
+        resource it deleted, in primary key order, as ``Resource.delete()``
+        does (`ScrudSignalProcessor` runs their ``on_delete`` actions when it
+        commits): ``instance`` is Django's deleted instance, ``pk`` its
+        primary key, ``using`` the database, ``resource_type_uri`` its type's
+        URI (read with the keys `lock_for_delete` locks, not a query per row)
+        and ``action`` ``DELETE``. ``QuerySet.update()``, ``bulk_create()``
+        and ``bulk_update()`` send no scrud signal.
 
         It first locks the rows it deletes, in primary key order
         (`lock_for_delete`), as an API write locks its row first, and then
@@ -174,9 +189,11 @@ class ResourceQuerySet(models.QuerySet):
         ):
             return super().delete()  # Django refuses these: TypeError.
         with in_transaction(db):
-            locked = lock_for_delete(self, db)
+            type_uris = {}
+            locked = lock_for_delete(self, db, type_uris)
             pending = set()
-            token = _PENDING_STAMPS.set((db, pending))
+            deleted = {}
+            token = _PENDING_STAMPS.set((db, pending, deleted))
             try:
                 result = delete_locked_keys(self, locked, db)
             finally:
@@ -186,6 +203,16 @@ class ResourceQuerySet(models.QuerySet):
                 contexts_by_type.setdefault(type_id, set()).add(context)
             for type_id in sorted(contexts_by_type):
                 stamp_removals(type_id, sorted(contexts_by_type[type_id]), db)
+            for pk in locked:
+                if pk in deleted:
+                    scrud_post_delete.send(
+                        sender=self.model,
+                        instance=deleted[pk],
+                        pk=pk,
+                        using=db,
+                        resource_type_uri=type_uris[pk],
+                        action='DELETE',
+                    )
         return result
 
     delete.alters_data = True
@@ -669,14 +696,16 @@ def stamp_deletion(sender, instance, using, **kwargs):
     """A deleted resource left every context it was in (`stamp_removals`),
     in the deletion's transaction: ``Model.delete()`` and
     `ResourceRegistration` at once, ``Resource.objects`` querysets'
-    ``delete()`` (`ResourceQuerySet.delete`) all together when it ends. One
-    in no context stamps ``SOME_CONTEXT``, which only superusers' lists
-    read."""
+    ``delete()`` (`ResourceQuerySet.delete`) all together when it ends (which
+    also takes the instance, its pk not yet cleared, for its
+    ``scrud_post_delete``). One in no context stamps ``SOME_CONTEXT``, which
+    only superusers' lists read."""
     contexts = rbac_contexts_of(instance.content) or [SOME_CONTEXT]
     deferred = _PENDING_STAMPS.get()
     if deferred is not None and deferred[0] == using:
         # A ResourceQuerySet.delete() on this database stamps them all at
         # its end; a deletion on another database is stamped there now.
         deferred[1].update((instance.resource_type_id, c) for c in contexts)
+        deferred[2][instance.pk] = instance
         return
     stamp_removals(instance.resource_type_id, contexts, using)

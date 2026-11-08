@@ -1256,3 +1256,138 @@ def test_admin_of_every_context_may_delete_a_shared_legacy_policy():
     )
     Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
     assert policy_resources() == []
+
+
+# scrud_post_save's ``transitions``: the write's TransitionData in every
+# context it concerns (the stored resource's and the content's) where a
+# policy applies; ``transition_error``: the workflow error behind a ``None``
+# ``transition_data``.
+
+
+@pytest.fixture
+def reported_saves():
+    """The keyword arguments of each ToDo ``scrud_post_save``, in order."""
+    from scrud_django.scrud_signals import scrud_post_save
+
+    reported = []
+
+    def record(sender, resource_type_uri=None, **kwargs):
+        if resource_type_uri == TODO:
+            reported.append(kwargs)
+
+    scrud_post_save.connect(record, weak=False, dispatch_uid="test-reported-saves")
+    try:
+        yield reported
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-reported-saves")
+
+
+# A policy of its own in "b": its states are not the default policy's.
+B_POLICY = {
+    "rbac_context": "b",
+    "resource_type": TODO,
+    "initial_states": {"open": 'status == "not started"'},
+    "states": {"working": 'status == "in progress"'},
+    "transitions": {"work": {"from": "open", "to": "working"}},
+}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_move_reports_leaving_one_context_and_entering_the_other(reported_saves):
+    from scrud_django.workflow import TransitionData
+
+    store_policy(B_POLICY)
+    user = user_with((TODO_WRITER, "a"), (TODO_WRITER, "b"))
+    resource = todo(rbac_context="a")
+    Given.http.force_authenticate(user)
+    reported_saves.clear()
+    put_todo(resource, dict(NOT_STARTED, rbac_context="b"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    (reported,) = reported_saves
+    # Left "a" (the default policy) from "not started"; entered "b".
+    assert reported["transitions"] == {
+        "a": TransitionData(None, "not started", "__LEAVE__"),
+        "b": TransitionData("open", None, "__INITIALIZE__"),
+    }
+    # transition_data is unchanged: the first context the content names.
+    assert reported["transition_data"] == TransitionData("open", None, "__INITIALIZE__")
+    assert reported["transition_error"] is None
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_resource_in_two_contexts_reports_each_contexts_transition(
+    reported_saves,
+):
+    from scrud_django.workflow import TransitionData
+
+    store_policy(B_POLICY)
+    # In two contexts: stored and updated server-side (the schema takes one).
+    resource = todo(rbac_context=["a", "b"])
+    reported_saves.clear()
+    resource.content = dict(NOT_STARTED, status="in progress", rbac_context=["a", "b"])
+    resource.save()
+    (reported,) = reported_saves
+    assert reported["transitions"] == {
+        "a": TransitionData("in progress", "not started", "start"),
+        "b": TransitionData("working", "open", "work"),
+    }
+    assert reported["transition_data"] == TransitionData(
+        "in progress", "not started", "start"
+    )
+    assert reported["transition_error"] is None
+    # Created in both: an __INITIALIZE__ in each.
+    reported_saves.clear()
+    todo(rbac_context=["a", "b"])
+    (reported,) = reported_saves
+    assert reported["transitions"] == {
+        "a": TransitionData("not started", None, "__INITIALIZE__"),
+        "b": TransitionData("open", None, "__INITIALIZE__"),
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_invalid_server_side_save_reports_its_transition_error(reported_saves):
+    from scrud_django.exceptions import WorkflowTransitionError
+
+    # "done" -> "not started" is no transition of the default policy; a
+    # server-side save is not checked, and is reported with the error.
+    resource = todo(rbac_context="a", status="done")
+    reported_saves.clear()
+    resource.content = dict(NOT_STARTED, rbac_context="a")
+    resource.save()
+    (reported,) = reported_saves
+    assert reported["transition_data"] is None
+    error = reported["transition_error"]
+    assert isinstance(error, WorkflowTransitionError), error
+    assert (error.prior_state, error.proposed_state) == ("done", "not started")
+    # The context's transition is no valid one: None there.
+    assert reported["transitions"] == {"a": None}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_write_under_no_policy_reports_no_transition_and_no_error():
+    from scrud_django.scrud_signals import scrud_post_save
+
+    reverse("partner-profiles-list")
+    reported = []
+
+    def record(sender, **kwargs):
+        reported.append(kwargs)
+
+    scrud_post_save.connect(record, weak=False, dispatch_uid="test-no-policy")
+    try:
+        profile = ResourceRegistration.register(
+            {"name": "n", "rbac_context": "a"}, "partner-profiles"
+        )
+        profile.content = {"name": "m", "rbac_context": "b"}
+        profile.save()
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-no-policy")
+    assert [
+        (r["transition_data"], r["transition_error"], r["transitions"])
+        for r in reported
+    ] == [(None, None, {}), (None, None, {})]

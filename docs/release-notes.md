@@ -106,6 +106,78 @@
   state condition reads `rbac_context` as stored (a list for a resource in
   several contexts), unlike a grant's condition, which reads the context
   being checked.
+* A resource read from a read replica (a router whose `db_for_read` names
+  another alias than its `db_for_write`) and then deleted ran its `on_delete`
+  workflow action at once, on the replica's connection, before the delete
+  committed and even if it rolled back. `scrud_post_save` and
+  `scrud_post_delete` are now sent with `using` the database the write went
+  to (`using`, else the router's `db_for_write`), and `ScrudSignalProcessor`
+  registers the action there; without a `using` it asks the router, no
+  longer the instance's `_state.db` (the database it was read from) first.
+  Receivers that read `using` get that alias where they used to get `None`
+  (#6).
+* An `on_delete` workflow action (and any `scrud_post_delete` receiver)
+  could not tell which resource was deleted: the signal is sent after
+  Django's delete, which sets the instance's `pk` to `None`.
+  `scrud_post_delete` now also sends `pk`, the deleted resource's primary
+  key, taken before the delete; `instance` is unchanged (#7).
+* `SCRUD_WORKFLOW_ACTIONS` entries are checked. A type's entry that is not
+  a mapping made every write of the type a 500 (`TypeError` inside the
+  write); it now runs no action, and is logged on the new
+  `scrud_django.workflow_actions` logger. A misspelled key or type URI, or a
+  value that is not callable (a dotted path), ran nothing, silently or with
+  an anonymous log at commit. New system checks report them:
+  `scrud_django.E007` (an entry that is not a mapping, or a setting that
+  cannot be loaded), `E008` (a key other than `on_save` and `on_delete`),
+  `E009` (a value neither callable nor `None`) and the database check
+  `W006` (`check --database <alias>`: a type URI that is not a registered
+  resource type). An action that raises is logged once, on
+  `scrud_django.workflow_actions`, with its qualified name, the type URI,
+  `on_save` or `on_delete` and the resource's pk; it is no longer logged by
+  `transaction.on_commit` on `django.db.backends.base` (#10).
+* A `Resource.objects` queryset's `delete()` (bulk deletes, and the admin's
+  "delete selected") sent no `scrud_post_delete`, so no `on_delete` action
+  ran for the resources it deleted. It now sends one per deleted resource,
+  inside the delete, with `pk`, `using`, `resource_type_uri` and
+  `action='DELETE'`, as `Resource.delete()` does, and the actions run when
+  it commits. Raw saves (`loaddata`, django-reversion's revert),
+  `QuerySet.update()`, `bulk_create()` and `bulk_update()` still send no
+  scrud signal; this is now documented (README "Workflow actions") (#11).
+* README "Workflow actions" now states how actions are delivered (at most
+  once, synchronously after the commit and before the response, in write
+  order per connection, with the live instance), what `transition_data`
+  holds (`None` without a policy, `__SAME_STATE__`, `__INITIALIZE__`), how
+  to get the requesting user (a middleware-set `ContextVar`), and shows a
+  transactional outbox for events that must not be lost (#12).
+* `scrud_post_save`'s `transition_data` lost information: a move into a
+  context was reported as `__INITIALIZE__` without the state left, only the
+  first context with a policy was reported, and `None` meant either "no
+  policy applies" or "the transition is invalid" (a server-side write the
+  workflow check did not see). `scrud_post_save` (and so every `on_save`
+  action) now also sends `transitions`, a mapping of each context the
+  stored resource or the new content is in, where a policy applies, to the
+  write's `TransitionData` there: the transition where the resource stays
+  (`None` if invalid there), `__INITIALIZE__` where it enters, and the new
+  reserved `__LEAVE__` (no proposed state; the prior state is the one it
+  left) where it leaves; and `transition_error`, the workflow error that
+  made `transition_data` `None`. `transition_data` itself is unchanged,
+  except that a save whose row is not on the database written to (an
+  instance copied with `save(using=...)`) is reported as a create instead
+  of raising `AttributeError` (#15).
+* `ScrudSignalProcessor` read `SCRUD_WORKFLOW_ACTIONS` once, when it was
+  built, so `override_settings(SCRUD_WORKFLOW_ACTIONS=...)` did not change
+  the actions the app ran. It now reads the setting on first use and again
+  after it changes (`setting_changed`); a setting changed to one that
+  cannot be loaded runs no action and is logged, never failing the write.
+  Its receivers were connected weakly and without a `dispatch_uid`: a
+  processor nobody kept was garbage-collected at once and did nothing, and
+  a second one kept alive ran every action twice. They are now connected
+  strongly under a fixed `dispatch_uid` per signal: building a processor
+  replaces the one connected before (`connect()` connects one again). The
+  class attribute `workflow_actions = {}`, shadowed by every instance, is
+  now a property (assignable, to give a processor a mapping of its own);
+  the dead `ScrudSignalProcessor()` in the test app's `ready()` is gone
+  (#16).
 
 ### Upgrading
 
@@ -135,6 +207,24 @@
   allowing such edits, add a transition from that state to itself alone
   (`{"from": "published", "to": "published"}`) and grant it to the roles
   that should make them.
+* Run `manage.py check` and `manage.py check --database <alias>`: the new
+  `scrud_django.E007`-`E009` errors fail `check` (and `runserver`, `migrate`)
+  on a `SCRUD_WORKFLOW_ACTIONS` entry that never worked; fix or remove it. A
+  `None` action is accepted (no action). Route the
+  `scrud_django.workflow_actions` logger where you watch errors; a log
+  filter or alert on `django.db.backends.base` for action failures no longer
+  sees them.
+* `on_delete` actions and `scrud_post_delete` receivers now also run for
+  queryset and admin bulk deletes, once per deleted resource: make sure they
+  can take a bulk delete's volume.
+* `scrud_post_save` sends two more keyword arguments, `transitions` and
+  `transition_error`: an `on_save` action (or receiver) that names its
+  keyword arguments must also take `**kwargs`.
+* A `ScrudSignalProcessor` (or subclass) instance built in addition to the
+  default one now replaces it rather than running alongside it: build it
+  in the `ready()` of an app listed after `scrud_django`, and do not count
+  on both running. The signals hold it: one built without keeping a
+  reference now runs, until another is built.
 
 ## 0.14.0
 

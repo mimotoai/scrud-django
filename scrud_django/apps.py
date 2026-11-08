@@ -19,6 +19,8 @@ class ScrudConfig(AppConfig):
             check_list_filters,
             check_overlong_contexts,
             check_stored_workflow_policies,
+            check_workflow_action_types,
+            check_workflow_actions,
             check_write_routing,
         )
         from scrud_django.permissions import authorized_transitions
@@ -32,5 +34,7 @@ class ScrudConfig(AppConfig):
         checks.register(check_write_routing)
         checks.register(check_isolation_level, checks.Tags.database)
         checks.register(check_list_filters, checks.Tags.urls)
+        checks.register(check_workflow_actions)
+        checks.register(check_workflow_action_types, checks.Tags.database)
 
         self.processor = ScrudSignalProcessor()
