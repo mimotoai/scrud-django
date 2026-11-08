@@ -386,6 +386,12 @@ receiver whose work leaves the database should wrap it in
 write went to (the router's `db_for_write`), even for an instance read from a
 replica.
 
+Actions and receivers are called with the signal's keyword arguments:
+`instance`, `using`, `resource_type_uri` and `action` (`CREATE`, `UPDATE` or
+`DELETE`); `scrud_post_save` adds `update_fields` and `transition_data`, and
+`scrud_post_delete` adds `pk`, the deleted resource's primary key (the
+`instance` is the deleted one, whose `pk` Django has set to `None`).
+
 ### Upgrading
 
 Version 0.14.0 adopts django-scoped-rbac 0.12 and scrudful 0.10, which change

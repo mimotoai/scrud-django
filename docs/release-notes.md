@@ -14,6 +14,11 @@
   longer the instance's `_state.db` (the database it was read from) first.
   Receivers that read `using` get that alias where they used to get `None`
   (#6).
+- An `on_delete` workflow action (and any `scrud_post_delete` receiver)
+  could not tell which resource was deleted: the signal is sent after
+  Django's delete, which sets the instance's `pk` to `None`.
+  `scrud_post_delete` now also sends `pk`, the deleted resource's primary
+  key, taken before the delete; `instance` is unchanged (#7).
 
 ## 0.14.0
 

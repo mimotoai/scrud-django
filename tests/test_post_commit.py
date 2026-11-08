@@ -41,16 +41,17 @@ IN_PROGRESS = {
 
 @pytest.fixture
 def ran(monkeypatch):
-    """The ToDo actions that ran: ``("save", pk)`` and ``("delete", etag)``
-    (a deleted instance has no pk)."""
+    """The ToDo actions that ran: ``("save", pk)`` and ``("delete", etag,
+    pk)``. A deleted instance has no pk: the ``pk`` the action is given
+    names the deleted row."""
     calls = []
     entry = actions[TODO]
 
     def on_save(sender, instance, **kwargs):
         calls.append(("save", instance.pk))
 
-    def on_delete(sender, instance, **kwargs):
-        calls.append(("delete", instance.etag))
+    def on_delete(sender, instance, pk=None, **kwargs):
+        calls.append(("delete", instance.etag, pk))
 
     monkeypatch.setitem(entry, "on_save", on_save)
     monkeypatch.setitem(entry, "on_delete", on_delete)
@@ -306,7 +307,7 @@ def test_a_delete_runs_its_side_effects_once_after_commit(
     assert indexed == []
     for callback in callbacks:
         callback()
-    assert ran == [("delete", todo.etag)]
+    assert ran == [("delete", todo.etag, todo.pk)]
     # The index entry is named before the instance loses its pk.
     assert indexed == [("remove", f"scrud_django.resource.{todo.pk}")]
 
@@ -398,6 +399,7 @@ def test_a_delete_of_a_resource_read_from_a_replica_acts_when_it_commits(
     # Committed for real, on both databases: "other" is in autocommit, so an
     # action registered there would run at once, inside the delete.
     todo = read_from_the_replica(a_todo())
+    todo_pk = todo.pk
     ran.clear()
     with override_settings(DATABASE_ROUTERS=["tests.test_post_commit.ReplicaRouter"]):
         try:
@@ -409,8 +411,8 @@ def test_a_delete_of_a_resource_read_from_a_replica_acts_when_it_commits(
                     raise RolledBack
         except RolledBack:
             pass
-    assert Resource.objects.using("default").filter(etag=todo.etag).exists() != commit
-    assert ran == ([("delete", todo.etag)] if commit else [])
+    assert Resource.objects.using("default").filter(pk=todo_pk).exists() != commit
+    assert ran == ([("delete", todo.etag, todo_pk)] if commit else [])
 
 
 @pytest.mark.django_db(databases=["default", "other"])
@@ -436,3 +438,24 @@ def test_scrud_signals_name_the_database_written_to_not_the_one_read_from():
         scrud_post_save.disconnect(record)
         scrud_post_delete.disconnect(record)
     assert received == ["default", "default"]
+
+
+@pytest.mark.django_db
+def test_scrud_post_delete_names_the_deleted_row():
+    todo = a_todo()
+    todo_pk = todo.pk
+    received = []
+
+    def record(sender, instance, pk=None, **kwargs):
+        received.append((instance.pk, pk))
+
+    scrud_post_delete.connect(record)
+    try:
+        ResourceRegistration.delete("todos", str(todo_pk))
+        other = a_todo()
+        other_pk = other.pk
+        other.delete()
+    finally:
+        scrud_post_delete.disconnect(record)
+    # The instance is Django's deleted instance (no pk); `pk` names its row.
+    assert received == [(None, todo_pk), (None, other_pk)]

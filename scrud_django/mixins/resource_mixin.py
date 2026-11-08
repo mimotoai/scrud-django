@@ -126,12 +126,16 @@ class ResourceMixin(ScrudfulMixin):
     def delete(self, using=None, keep_parents=False) -> tuple[int, dict[str, int]]:
         """``Model.delete()``, then ``scrud_post_delete``, sent with ``using``
         the database the delete wrote to (`_write_db`): an instance read from
-        a replica still has the replica's alias in ``_state.db``."""
+        a replica still has the replica's alias in ``_state.db``. Django's
+        delete sets the instance's pk to None, so the signal's ``pk`` is the
+        one it had, naming the deleted row."""
         db = self._write_db(using)
+        pk = self.pk
         res = super().delete(using=using, keep_parents=keep_parents)
         scrud_post_delete.send(
             sender=self.__class__,
             instance=self,
+            pk=pk,
             using=db,
             resource_type_uri=self.resource_type.type_uri,
             action='DELETE',

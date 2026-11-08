@@ -11,6 +11,8 @@ from .conf import workflow_actions
 # workflow actions. ``using`` is the database the write went to (`write_alias`),
 # which ``on_commit`` must name: not the instance's ``_state.db``, the one it
 # was read from (a read replica under a primary/replica router).
+# ``scrud_post_delete`` also sends ``pk``, the deleted row's primary key:
+# ``instance`` is Django's deleted instance, whose pk is None by then.
 scrud_post_save = Signal()
 scrud_post_delete = Signal()
 
