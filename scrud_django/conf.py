@@ -163,3 +163,24 @@ def workflow_actions():
             )
         all_actions.update(actions_by_type_uri)
     return all_actions
+
+
+_WORKFLOW_ACTIONS = None
+
+
+def configured_workflow_actions():
+    """`workflow_actions`, loaded on first use and kept until
+    ``SCRUD_WORKFLOW_ACTIONS`` changes (``setting_changed``, as
+    ``override_settings`` sends it): what `ScrudSignalProcessor` runs. Raises
+    as `workflow_actions` does."""
+    global _WORKFLOW_ACTIONS
+    if _WORKFLOW_ACTIONS is None:
+        _WORKFLOW_ACTIONS = workflow_actions()
+    return _WORKFLOW_ACTIONS
+
+
+@receiver(setting_changed)
+def reset_workflow_actions(setting, **kwargs):
+    global _WORKFLOW_ACTIONS
+    if setting == "SCRUD_WORKFLOW_ACTIONS":
+        _WORKFLOW_ACTIONS = None

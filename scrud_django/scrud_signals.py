@@ -1,10 +1,11 @@
 import logging
 from collections.abc import Mapping
 
+from django.core.exceptions import ImproperlyConfigured
 from django.db import router, transaction
 from django.dispatch import Signal
 
-from .conf import workflow_actions
+from .conf import configured_workflow_actions
 
 # Workflow actions that fail, and SCRUD_WORKFLOW_ACTIONS entries skipped at
 # write time (`ScrudSignalProcessor`).
@@ -110,17 +111,59 @@ class ScrudSignalProcessor:
     them, and outside a transaction they run at once. An action that raises
     never fails the write, in a transaction or not: `WorkflowActionCall`
     logs it on the ``scrud_django.workflow_actions`` logger. Nor does a bad
-    entry of the setting (`determine_action`)."""
+    entry of the setting (`determine_action`).
 
-    workflow_actions = {}
+    One processor receives the signals at a time: building one connects it
+    (`connect`) in place of the one connected before, under a fixed
+    ``dispatch_uid`` per signal, and the signals hold it (it need not be kept
+    referenced). ``ScrudConfig.ready()`` builds the default one
+    (``apps.get_app_config("scrud_django").processor``); an instance of a
+    subclass built later (in the ``ready()`` of an app listed after
+    ``scrud_django``) replaces it rather than running every action a second
+    time."""
+
     post_save_literal = 'on_save'
     post_delete_literal = 'on_delete'
     resource_type_uri_literal = 'resource_type_uri'
+    post_save_dispatch_uid = 'scrud_django.ScrudSignalProcessor.post_save'
+    post_delete_dispatch_uid = 'scrud_django.ScrudSignalProcessor.post_delete'
+    # Assigned to the processor (`workflow_actions`), else None: the setting's.
+    _workflow_actions = None
 
     def __init__(self) -> None:
-        scrud_post_save.connect(self.post_save_trigger)
-        scrud_post_delete.connect(self.post_delete_trigger)
-        self.workflow_actions = workflow_actions()
+        # Loaded (and checked) now, so that a setting that cannot be loaded
+        # stops the process at startup; read again after it changes.
+        configured_workflow_actions()
+        self.connect()
+
+    @property
+    def workflow_actions(self):
+        """Type URI -> ``{"on_save": ..., "on_delete": ...}``: the mapping
+        assigned to this processor, else ``SCRUD_WORKFLOW_ACTIONS``'s
+        (`configured_workflow_actions`: loaded once, and again after the
+        setting changes, as under ``override_settings``)."""
+        if self._workflow_actions is not None:
+            return self._workflow_actions
+        return configured_workflow_actions()
+
+    @workflow_actions.setter
+    def workflow_actions(self, actions):
+        self._workflow_actions = actions
+
+    def connect(self):
+        """Connect this processor to ``scrud_post_save`` and
+        ``scrud_post_delete`` in place of the processor connected before
+        (the same ``dispatch_uid``), strongly."""
+        for signal, receiver, dispatch_uid in (
+            (scrud_post_save, self.post_save_trigger, self.post_save_dispatch_uid),
+            (
+                scrud_post_delete,
+                self.post_delete_trigger,
+                self.post_delete_dispatch_uid,
+            ),
+        ):
+            signal.disconnect(dispatch_uid=dispatch_uid)
+            signal.connect(receiver, weak=False, dispatch_uid=dispatch_uid)
 
     def post_save_trigger(self, sender, **kwargs):
         action = self.determine_action(
@@ -153,8 +196,20 @@ class ScrudSignalProcessor:
         that is not a mapping, or an action that is not callable, is logged
         on the ``scrud_django.workflow_actions`` logger and runs nothing (the
         ``scrud_django.E007`` and ``E009`` checks report them). A missing key
-        or ``None`` is no action."""
-        actions = self.workflow_actions.get(type_uri)
+        or ``None`` is no action, and so is every action of a setting changed
+        (``override_settings``) to one that cannot be loaded, which is
+        logged."""
+        try:
+            all_actions = self.workflow_actions
+        except (ImproperlyConfigured, ImportError) as error:
+            logger.error(
+                "SCRUD_WORKFLOW_ACTIONS cannot be loaded (%s); no %s action runs "
+                "(scrud_django.E007).",
+                error,
+                post_literal,
+            )
+            return None
+        actions = all_actions.get(type_uri)
         if actions is None:
             return None
         if not isinstance(actions, Mapping):

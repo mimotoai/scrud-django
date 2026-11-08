@@ -510,8 +510,7 @@ ACTIONS_HINT = (
 
 def check_workflow_actions(app_configs, **kwargs):
     """The entries of ``SCRUD_WORKFLOW_ACTIONS``, as `workflow_actions` merges
-    them (read afresh, not as ``ScrudSignalProcessor`` loaded them at
-    startup). At write time a bad entry runs no action and is logged on the
+    them (read afresh, not as ``ScrudSignalProcessor`` keeps them loaded). At write time a bad entry runs no action and is logged on the
     ``scrud_django.workflow_actions`` logger at every write of its type;
     this reports it before that:
 

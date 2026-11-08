@@ -445,6 +445,13 @@ and never fails the write. Neither does an action that raises: it is logged,
 with its traceback, on the `scrud_django.workflow_actions` logger, naming
 the action, the type URI, `on_save` or `on_delete` and the resource's pk.
 
+The actions are run by a `scrud_django.scrud_signals.ScrudSignalProcessor`,
+which reads the setting again when it changes (`override_settings` in
+tests). One processor receives the signals at a time (a fixed
+`dispatch_uid`, held strongly): building another one, such as an instance
+of a subclass in the `ready()` of an app listed after `scrud_django`,
+replaces the default one instead of running each action twice.
+
 An event that must not be lost belongs in a transactional outbox: a
 receiver stores it in a table in the write's own transaction, so it
 commits or rolls back with the write, and a worker delivers it later, at

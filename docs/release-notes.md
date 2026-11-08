@@ -62,6 +62,20 @@
   except that a save whose row is not on the database written to (an
   instance copied with `save(using=...)`) is reported as a create instead
   of raising `AttributeError` (#15).
+- `ScrudSignalProcessor` read `SCRUD_WORKFLOW_ACTIONS` once, when it was
+  built, so `override_settings(SCRUD_WORKFLOW_ACTIONS=...)` did not change
+  the actions the app ran. It now reads the setting on first use and again
+  after it changes (`setting_changed`); a setting changed to one that
+  cannot be loaded runs no action and is logged, never failing the write.
+  Its receivers were connected weakly and without a `dispatch_uid`: a
+  processor nobody kept was garbage-collected at once and did nothing, and
+  a second one kept alive ran every action twice. They are now connected
+  strongly under a fixed `dispatch_uid` per signal: building a processor
+  replaces the one connected before (`connect()` connects one again). The
+  class attribute `workflow_actions = {}`, shadowed by every instance, is
+  now a property (assignable, to give a processor a mapping of its own);
+  the dead `ScrudSignalProcessor()` in the test app's `ready()` is gone
+  (#16).
 
 ### Upgrading
 
@@ -78,6 +92,11 @@
 - `scrud_post_save` sends two more keyword arguments, `transitions` and
   `transition_error`: an `on_save` action (or receiver) that names its
   keyword arguments must also take `**kwargs`.
+- A `ScrudSignalProcessor` (or subclass) instance built in addition to the
+  default one now replaces it rather than running alongside it: build it
+  in the `ready()` of an app listed after `scrud_django`, and do not count
+  on both running. The signals hold it: one built without keeping a
+  reference now runs, until another is built.
 
 ## 0.14.0
 

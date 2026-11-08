@@ -19,8 +19,6 @@ from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 from scrud_django.scrud_signals import (
     ScrudSignalProcessor,
-    scrud_post_delete,
-    scrud_post_save,
 )
 
 from .workflow_actions import actions, todo_on_delete, todo_on_save
@@ -31,18 +29,10 @@ TODO = "tests://ToDo"
 
 @pytest.fixture
 def processor():
-    """A `ScrudSignalProcessor` built under the test's settings, its
-    receivers disconnected afterwards."""
-    built = []
-
-    def build():
-        built.append(ScrudSignalProcessor())
-        return built[-1]
-
-    yield build
-    for p in built:
-        scrud_post_save.disconnect(p.post_save_trigger)
-        scrud_post_delete.disconnect(p.post_delete_trigger)
+    """A `ScrudSignalProcessor` built under the test's settings; the app's
+    processor, which it replaced, is connected again afterwards."""
+    yield ScrudSignalProcessor
+    apps.get_app_config("scrud_django").processor.connect()
 
 
 @pytest.mark.parametrize("setting", [[PATH], (PATH,)])
@@ -50,9 +40,9 @@ def test_a_list_or_a_tuple_of_paths_loads_the_actions(setting, processor):
     with override_settings(SCRUD_WORKFLOW_ACTIONS=setting):
         assert workflow_actions() == actions
         built = processor()
-    assert built.determine_action("on_save", "tests://ToDo") is todo_on_save
-    assert built.determine_action("on_delete", "tests://ToDo") is todo_on_delete
-    assert built.determine_action("on_save", "tests://Other") is None
+        assert built.determine_action("on_save", "tests://ToDo") is todo_on_save
+        assert built.determine_action("on_delete", "tests://ToDo") is todo_on_delete
+        assert built.determine_action("on_save", "tests://Other") is None
 
 
 @pytest.mark.parametrize("setting", [[], ()])
@@ -60,7 +50,9 @@ def test_an_empty_sequence_has_no_actions(setting, processor):
     with override_settings(SCRUD_WORKFLOW_ACTIONS=setting):
         assert workflow_actions() == {}
         built = processor()
-    assert built.determine_action("on_save", "tests://ToDo") is None
+        assert built.determine_action("on_save", "tests://ToDo") is None
+    # A processor reads the setting as it is now, not as it was built.
+    assert built.determine_action("on_save", "tests://ToDo") is todo_on_save
 
 
 @pytest.mark.parametrize(
@@ -227,3 +219,105 @@ def test_a_write_of_a_type_whose_entry_is_not_a_mapping_stands(
     records = logged_on_actions_logger(caplog)
     assert len(records) == 2
     assert all(TODO in r.getMessage() for r in records)
+
+
+# The app's processor follows the setting (override_settings included), and
+# one processor receives the signals at a time: building another replaces it.
+
+
+@pytest.fixture
+def todo_actions_run(monkeypatch):
+    """The ToDo actions of ``tests.workflow_actions.actions`` that ran:
+    ``("save", pk)`` and ``("delete", pk)``. The app's processor is connected
+    again afterwards, whichever processor a test built."""
+    calls = []
+
+    def on_save(sender, instance, **kwargs):
+        calls.append(("save", instance.pk))
+
+    def on_delete(sender, instance, pk=None, **kwargs):
+        calls.append(("delete", pk))
+
+    monkeypatch.setitem(actions[TODO], "on_save", on_save)
+    monkeypatch.setitem(actions[TODO], "on_delete", on_delete)
+    yield calls
+    apps.get_app_config("scrud_django").processor.connect()
+
+
+def save_and_delete_a_todo(django_capture_on_commit_callbacks):
+    reverse("todos-list")
+    with django_capture_on_commit_callbacks(execute=True):
+        todo = ResourceRegistration.register({"title": "t"}, "todos")
+        ResourceRegistration.delete("todos", str(todo.pk))
+    return todo.pk
+
+
+@pytest.mark.django_db
+def test_the_app_processor_follows_override_settings(
+    todo_actions_run, django_capture_on_commit_callbacks
+):
+    app_processor = apps.get_app_config("scrud_django").processor
+    # on_delete is None there: no action.
+    with setting_of("none_is_no_action"):
+        assert app_processor.determine_action("on_delete", TODO) is None
+        pk = save_and_delete_a_todo(django_capture_on_commit_callbacks)
+    assert todo_actions_run == []
+    with setting_of("unregistered"):
+        assert app_processor.determine_action("on_save", TODO) is None
+    # The test settings again.
+    pk = save_and_delete_a_todo(django_capture_on_commit_callbacks)
+    assert todo_actions_run == [("save", pk), ("delete", pk)]
+
+
+@pytest.mark.django_db
+def test_a_setting_changed_to_one_that_cannot_be_loaded_fails_no_write(
+    todo_actions_run, caplog, django_capture_on_commit_callbacks
+):
+    with override_settings(SCRUD_WORKFLOW_ACTIONS=["tests.workflow_actions.nothing"]):
+        pk = save_and_delete_a_todo(django_capture_on_commit_callbacks)
+    assert not Resource.objects.filter(pk=pk).exists()
+    assert todo_actions_run == []
+    records = logged_on_actions_logger(caplog)
+    assert len(records) == 2
+    assert all("SCRUD_WORKFLOW_ACTIONS" in r.getMessage() for r in records)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("keep", [True, False], ids=["kept", "unreferenced"])
+def test_a_second_processor_replaces_the_first(
+    keep, todo_actions_run, django_capture_on_commit_callbacks
+):
+    import gc
+
+    second = ScrudSignalProcessor()
+    if not keep:
+        # Held by the signals: not collected, and still delivering.
+        del second
+        gc.collect()
+    pk = save_and_delete_a_todo(django_capture_on_commit_callbacks)
+    # Once each, not once per processor.
+    assert todo_actions_run == [("save", pk), ("delete", pk)]
+
+
+@pytest.mark.django_db
+def test_a_subclass_instance_replaces_the_default_processor(
+    todo_actions_run, django_capture_on_commit_callbacks
+):
+    received = []
+
+    class Recording(ScrudSignalProcessor):
+        def post_save_trigger(self, sender, **kwargs):
+            received.append("save")
+            super().post_save_trigger(sender, **kwargs)
+
+    Recording()
+    pk = save_and_delete_a_todo(django_capture_on_commit_callbacks)
+    assert received == ["save"]
+    assert todo_actions_run == [("save", pk), ("delete", pk)]
+    # The app's processor connected again: the subclass receives no more.
+    apps.get_app_config("scrud_django").processor.connect()
+    received.clear()
+    todo_actions_run.clear()
+    pk = save_and_delete_a_todo(django_capture_on_commit_callbacks)
+    assert received == []
+    assert todo_actions_run == [("save", pk), ("delete", pk)]
