@@ -542,8 +542,8 @@ def test_a_queryset_delete_deletes_only_the_rows_it_locked(committed_types):
     slow = threading.local()
     original_lock = resource_module.lock_for_delete
 
-    def lock_then_wait(queryset, using):
-        locked = original_lock(queryset, using)
+    def lock_then_wait(queryset, using, *args, **kwargs):
+        locked = original_lock(queryset, using, *args, **kwargs)
         if getattr(slow, "on", False):
             time.sleep(1.0)  # between the lock and the Collector
         return locked
@@ -730,8 +730,8 @@ def test_a_delete_of_a_policy_holding_its_row_and_an_api_put_do_not_deadlock(
     original_lock = resource_module.lock_for_delete
     slow = threading.local()
 
-    def lock_then_wait(queryset, using):
-        locked = original_lock(queryset, using)
+    def lock_then_wait(queryset, using, *args, **kwargs):
+        locked = original_lock(queryset, using, *args, **kwargs)
         if getattr(slow, "on", False):
             time.sleep(0.6)  # holding the policy's row
         return locked
