@@ -19,6 +19,30 @@
   Django's delete, which sets the instance's `pk` to `None`.
   `scrud_post_delete` now also sends `pk`, the deleted resource's primary
   key, taken before the delete; `instance` is unchanged (#7).
+- `SCRUD_WORKFLOW_ACTIONS` entries are checked. A type's entry that is not
+  a mapping made every write of the type a 500 (`TypeError` inside the
+  write); it now runs no action, and is logged on the new
+  `scrud_django.workflow_actions` logger. A misspelled key or type URI, or a
+  value that is not callable (a dotted path), ran nothing, silently or with
+  an anonymous log at commit. New system checks report them:
+  `scrud_django.E007` (an entry that is not a mapping, or a setting that
+  cannot be loaded), `E008` (a key other than `on_save` and `on_delete`),
+  `E009` (a value neither callable nor `None`) and the database check
+  `W005` (`check --database <alias>`: a type URI that is not a registered
+  resource type). An action that raises is logged once, on
+  `scrud_django.workflow_actions`, with its qualified name, the type URI,
+  `on_save` or `on_delete` and the resource's pk; it is no longer logged by
+  `transaction.on_commit` on `django.db.backends.base` (#10).
+
+### Upgrading
+
+- Run `manage.py check` and `manage.py check --database <alias>`: the new
+  `scrud_django.E007`-`E009` errors fail `check` (and `runserver`, `migrate`)
+  on a `SCRUD_WORKFLOW_ACTIONS` entry that never worked; fix or remove it. A
+  `None` action is accepted (no action). Route the
+  `scrud_django.workflow_actions` logger where you watch errors; a log
+  filter or alert on `django.db.backends.base` for action failures no longer
+  sees them.
 
 ## 0.14.0
 

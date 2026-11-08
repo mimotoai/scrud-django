@@ -1,7 +1,14 @@
+import logging
+from collections.abc import Mapping
+
 from django.db import router, transaction
 from django.dispatch import Signal
 
 from .conf import workflow_actions
+
+# Workflow actions that fail, and SCRUD_WORKFLOW_ACTIONS entries skipped at
+# write time (`ScrudSignalProcessor`).
+logger = logging.getLogger("scrud_django.workflow_actions")
 
 # Sent by ``ResourceMixin.save()`` / ``delete()`` inside the write, before it
 # commits (and before the API's post-save check, which may still roll it
@@ -31,14 +38,65 @@ def write_alias(sender, kwargs):
     )
 
 
+def action_name(action):
+    """`action`'s qualified name (``module.qualname``), or its ``repr`` for
+    a callable without one (a ``functools.partial``)."""
+    qualname = getattr(action, "__qualname__", None)
+    if qualname is None:
+        return repr(action)
+    module = getattr(action, "__module__", None)
+    return f"{module}.{qualname}" if module else qualname
+
+
+class WorkflowActionCall:
+    """A workflow action's call, ``action(sender, **kwargs)``, as
+    ``transaction.on_commit`` runs it. An exception it raises is logged on
+    the ``scrud_django.workflow_actions`` logger, with the action's qualified
+    name, the type URI, the kind of action (`kind`, ``on_save`` or
+    ``on_delete``), the resource's pk (``scrud_post_delete``'s ``pk``, as the
+    deleted instance has none) and the traceback, and not raised again:
+    ``on_commit``'s ``robust`` would log it a second time, anonymously, on
+    ``django.db.backends.base``. Its ``__qualname__`` (which that log names)
+    is the action's, should anything else go wrong."""
+
+    def __init__(self, action, kind, sender, kwargs):
+        self.action = action
+        self.kind = kind
+        self.sender = sender
+        self.kwargs = kwargs
+        self.name = action_name(action)
+        self.__qualname__ = f"workflow action {self.name}"
+
+    def pk(self):
+        if "pk" in self.kwargs:
+            return self.kwargs["pk"]
+        return getattr(self.kwargs.get("instance"), "pk", None)
+
+    def __call__(self):
+        try:
+            self.action(self.sender, **self.kwargs)
+        except Exception as error:
+            logger.error(
+                "Workflow action %s (%s for %s pk %s, %s) failed: %s",
+                self.name,
+                self.kind,
+                self.kwargs.get("resource_type_uri"),
+                self.pk(),
+                self.kwargs.get("action"),
+                error,
+                exc_info=True,
+            )
+
+
 class ScrudSignalProcessor:
     """Runs the ``SCRUD_WORKFLOW_ACTIONS`` of a resource's type on
     ``scrud_post_save`` (``on_save``) and ``scrud_post_delete``
     (``on_delete``), once the write commits (``transaction.on_commit`` on its
     database): a write rolled back (a post-save 403, any error) runs none of
     them, and outside a transaction they run at once. An action that raises
-    never fails the write, in a transaction or not (``robust``): Django logs
-    the error on the ``django.db.backends.base`` logger."""
+    never fails the write, in a transaction or not: `WorkflowActionCall`
+    logs it on the ``scrud_django.workflow_actions`` logger. Nor does a bad
+    entry of the setting (`determine_action`)."""
 
     workflow_actions = {}
     post_save_literal = 'on_save'
@@ -54,28 +112,54 @@ class ScrudSignalProcessor:
         action = self.determine_action(
             self.post_save_literal, kwargs.get(self.resource_type_uri_literal)
         )
-        if action:
-            self.run_on_commit(action, sender, kwargs)
+        if action is not None:
+            self.run_on_commit(action, sender, kwargs, self.post_save_literal)
 
     def post_delete_trigger(self, sender, **kwargs):
         action = self.determine_action(
             self.post_delete_literal, kwargs.get(self.resource_type_uri_literal)
         )
-        if action:
-            self.run_on_commit(action, sender, kwargs)
+        if action is not None:
+            self.run_on_commit(action, sender, kwargs, self.post_delete_literal)
 
-    def run_on_commit(self, action, sender, kwargs):
+    def run_on_commit(self, action, sender, kwargs, kind=None):
         """Call ``action(sender, **kwargs)`` when the write's transaction
-        commits."""
+        commits, through a `WorkflowActionCall` that logs its failure as
+        `kind` of action. ``robust`` is a backstop: the call does not
+        raise."""
         transaction.on_commit(
-            lambda: action(sender, **kwargs),
+            WorkflowActionCall(action, kind, sender, kwargs),
             using=write_alias(sender, kwargs),
             robust=True,
         )
 
     def determine_action(self, post_literal, type_uri):
-        actions = self.workflow_actions.get(type_uri, None)
-        if actions is not None:
-            if post_literal in actions:
-                return actions[post_literal]
-        return None
+        """The `post_literal` (``on_save`` or ``on_delete``) action of
+        `type_uri`, or None. Never raises, so never fails the write: an entry
+        that is not a mapping, or an action that is not callable, is logged
+        on the ``scrud_django.workflow_actions`` logger and runs nothing (the
+        ``scrud_django.E007`` and ``E009`` checks report them). A missing key
+        or ``None`` is no action."""
+        actions = self.workflow_actions.get(type_uri)
+        if actions is None:
+            return None
+        if not isinstance(actions, Mapping):
+            logger.error(
+                "SCRUD_WORKFLOW_ACTIONS: the entry for %r is not a mapping (%r); "
+                "no %s action runs (scrud_django.E007).",
+                type_uri,
+                actions,
+                post_literal,
+            )
+            return None
+        action = actions.get(post_literal)
+        if action is not None and not callable(action):
+            logger.error(
+                "SCRUD_WORKFLOW_ACTIONS: the %s action for %r is not callable "
+                "(%r); it does not run (scrud_django.E009).",
+                post_literal,
+                type_uri,
+                action,
+            )
+            return None
+        return action

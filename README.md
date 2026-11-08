@@ -392,6 +392,16 @@ Actions and receivers are called with the signal's keyword arguments:
 `scrud_post_delete` adds `pk`, the deleted resource's primary key (the
 `instance` is the deleted one, whose `pk` Django has set to `None`).
 
+A setting that is not a list or tuple of paths to mappings stops the process
+at startup (`ImproperlyConfigured`). `manage.py check` reports a type's entry
+that is not a mapping (`scrud_django.E007`), a key other than `on_save` and
+`on_delete` (`E008`) and a value that is neither callable nor `None`
+(`E009`); `check --database <alias>` warns about a type URI that is not a
+registered resource type (`W005`). At write time such an entry runs nothing
+and never fails the write. Neither does an action that raises: it is logged,
+with its traceback, on the `scrud_django.workflow_actions` logger, naming
+the action, the type URI, `on_save` or `on_delete` and the resource's pk.
+
 ### Upgrading
 
 Version 0.14.0 adopts django-scoped-rbac 0.12 and scrudful 0.10, which change

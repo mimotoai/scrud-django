@@ -76,6 +76,19 @@ def failing_on_save(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def failing_on_delete(monkeypatch):
+    """A ToDo ``on_delete`` action that raises; returns the pks it was given."""
+    calls = []
+
+    def on_delete(sender, instance, pk=None, **kwargs):
+        calls.append(pk)
+        raise ActionFailed(f"on_delete failed for {pk}")
+
+    monkeypatch.setitem(actions[TODO], "on_delete", on_delete)
+    return calls
+
+
 def logged_action_failures(caplog):
     return [
         record
@@ -336,7 +349,20 @@ def test_scrud_post_save_still_fires_inside_the_write(
     assert ran == [("save", todo.pk)]
 
 
-# An action that raises never fails the write (``robust``): Django logs it.
+# An action that raises never fails the write: it is logged, once, on the
+# scrud_django.workflow_actions logger, naming the action, the type, the kind
+# of action and the resource's pk.
+
+ACTIONS_LOGGER = "scrud_django.workflow_actions"
+
+
+def assert_names_the_failed_action(record, kind, pk):
+    assert record.name == ACTIONS_LOGGER
+    message = record.getMessage()
+    assert f"tests.test_post_commit.failing_{kind}.<locals>.{kind}" in message, message
+    assert TODO in message
+    assert f"{kind} " in message
+    assert f"pk {pk}" in message
 
 
 @pytest.mark.django_db
@@ -354,6 +380,7 @@ def test_an_action_that_raises_on_commit_does_not_fail_the_write(
     assert failing_on_save == [pk]
     (record,) = logged_action_failures(caplog)
     assert f"on_save failed for {pk}" in record.getMessage()
+    assert_names_the_failed_action(record, "on_save", pk)
 
 
 @pytest.mark.django_db
@@ -385,6 +412,26 @@ def test_an_action_that_raises_outside_a_transaction_does_not_raise(
     assert failing_on_save == [-1]
     (record,) = logged_action_failures(caplog)
     assert "on_save failed for -1" in record.getMessage()
+    assert_names_the_failed_action(record, "on_save", -1)
+
+
+@pytest.mark.django_db
+def test_an_on_delete_action_that_raises_is_logged_with_the_deleted_pk(
+    failing_on_delete, caplog, django_capture_on_commit_callbacks
+):
+    todo = a_todo()
+    todo_pk = todo.pk
+    with django_capture_on_commit_callbacks(execute=True):
+        response = admin_client().delete(
+            reverse("todos-detail", args=[todo_pk]),
+            HTTP_IF_MATCH=quote_etag(todo.etag),
+        )
+    assert response.status_code == 204, response.content
+    assert not Resource.objects.filter(pk=todo_pk).exists()
+    assert failing_on_delete == [todo_pk]
+    (record,) = logged_action_failures(caplog)
+    assert f"on_delete failed for {todo_pk}" in record.getMessage()
+    assert_names_the_failed_action(record, "on_delete", todo_pk)
 
 
 class RolledBack(Exception):

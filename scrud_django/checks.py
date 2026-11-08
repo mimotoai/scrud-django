@@ -499,3 +499,136 @@ def check_list_filters(app_configs, **kwargs):
     from django.urls import get_resolver
 
     return list_filter_errors(get_resolver().url_patterns)
+
+
+ACTIONS_HINT = (
+    "Each entry of a mapping SCRUD_WORKFLOW_ACTIONS names maps a type URI to "
+    "{'on_save': callable, 'on_delete': callable} (either key may be left out, "
+    "or given None: no action)."
+)
+
+
+def check_workflow_actions(app_configs, **kwargs):
+    """The entries of ``SCRUD_WORKFLOW_ACTIONS``, as `workflow_actions` merges
+    them (read afresh, not as ``ScrudSignalProcessor`` loaded them at
+    startup). At write time a bad entry runs no action and is logged on the
+    ``scrud_django.workflow_actions`` logger at every write of its type;
+    this reports it before that:
+
+    - ``scrud_django.E007`` for a type whose entry is not a mapping, or for a
+      setting that cannot be loaded at all (``ScrudConfig.ready()`` refuses
+      that at startup, so only a setting changed since gets here);
+    - ``scrud_django.E008`` for a key other than ``on_save`` and
+      ``on_delete`` (a misspelled one runs nothing);
+    - ``scrud_django.E009`` for a value that is neither callable nor ``None``
+      (a dotted path is not imported).
+
+    Whether each type is registered takes the database:
+    `check_workflow_action_types` (``scrud_django.W005``)."""
+    from collections.abc import Mapping
+
+    from django.core.exceptions import ImproperlyConfigured
+
+    from scrud_django.conf import WORKFLOW_ACTION_KINDS, workflow_actions
+
+    try:
+        all_actions = workflow_actions()
+    except (ImproperlyConfigured, ImportError) as error:
+        return [
+            checks.Error(
+                f"SCRUD_WORKFLOW_ACTIONS cannot be loaded: {error}",
+                hint=ACTIONS_HINT,
+                id="scrud_django.E007",
+            )
+        ]
+    found = []
+    allowed = ", ".join(map(repr, WORKFLOW_ACTION_KINDS))
+    for type_uri, entry in all_actions.items():
+        if not isinstance(entry, Mapping):
+            found.append(
+                checks.Error(
+                    f"SCRUD_WORKFLOW_ACTIONS: the entry for {type_uri!r} is "
+                    f"{entry!r}, not a mapping: no action runs for its writes.",
+                    hint=ACTIONS_HINT,
+                    obj=type_uri,
+                    id="scrud_django.E007",
+                )
+            )
+            continue
+        for key, action in entry.items():
+            if key not in WORKFLOW_ACTION_KINDS:
+                found.append(
+                    checks.Error(
+                        f"SCRUD_WORKFLOW_ACTIONS: the entry for {type_uri!r} has "
+                        f"the unknown key {key!r}, which never runs.",
+                        hint=f"Its keys must be among {allowed}.",
+                        obj=type_uri,
+                        id="scrud_django.E008",
+                    )
+                )
+            elif action is not None and not callable(action):
+                found.append(
+                    checks.Error(
+                        f"SCRUD_WORKFLOW_ACTIONS: the {key} action for "
+                        f"{type_uri!r} is {action!r}, which is not callable: "
+                        "it never runs.",
+                        hint=(
+                            "Give the function itself (import it in the module "
+                            "of the mapping), not its dotted path."
+                        ),
+                        obj=type_uri,
+                        id="scrud_django.E009",
+                    )
+                )
+    return found
+
+
+def check_workflow_action_types(app_configs, databases=None, **kwargs):
+    """A database check (``manage.py check --database <alias>``, and
+    ``migrate``): a Warning (``scrud_django.W005``) for each type URI in
+    ``SCRUD_WORKFLOW_ACTIONS`` that is not a registered resource type on the
+    database ``ResourceType`` is written to (``router.db_for_write``), if it
+    is among `databases` and migrated (`scrud_migrations_pending`): a
+    misspelled type URI runs nothing. Resource types are registered when the
+    URLconf is imported, which this does first (as Django's URL checks do).
+    A setting that cannot be loaded is `check_workflow_actions`'s to
+    report."""
+    from django.core.exceptions import ImproperlyConfigured
+    from django.db import router
+    from django.db.utils import OperationalError, ProgrammingError
+    from django.urls import get_resolver
+
+    from scrud_django.conf import workflow_actions
+    from scrud_django.models import ResourceType
+
+    alias = router.db_for_write(ResourceType)
+    if alias not in (databases or ()) or scrud_migrations_pending(alias):
+        return []
+    try:
+        type_uris = list(workflow_actions())
+    except (ImproperlyConfigured, ImportError):
+        return []
+    try:
+        get_resolver().url_patterns  # noqa: B018 (registers the types)
+    except Exception:  # noqa: BLE001
+        return []  # Django's URL checks report a URLconf that fails.
+    try:
+        registered = set(
+            ResourceType.objects.using(alias).values_list("type_uri", flat=True)
+        )
+    except (OperationalError, ProgrammingError):
+        return []
+    return [
+        checks.Warning(
+            f"SCRUD_WORKFLOW_ACTIONS has actions for {type_uri!r}, which is not a "
+            f"resource type registered on database {alias!r}: they never run.",
+            hint=(
+                "Fix the type URI (it is the resource type's type_uri, as "
+                "registered with ResourceTypeRegistration), or remove the entry."
+            ),
+            obj=type_uri,
+            id="scrud_django.W005",
+        )
+        for type_uri in type_uris
+        if type_uri not in registered
+    ]
