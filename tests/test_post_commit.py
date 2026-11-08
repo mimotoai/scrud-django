@@ -506,3 +506,95 @@ def test_scrud_post_delete_names_the_deleted_row():
         scrud_post_delete.disconnect(record)
     # The instance is Django's deleted instance (no pk); `pk` names its row.
     assert received == [(None, todo_pk), (None, other_pk)]
+
+
+# A queryset's delete() (bulk deletes, the admin's "delete selected") sends
+# scrud_post_delete for each resource it deletes, as Resource.delete() does.
+
+
+@pytest.mark.django_db
+def test_a_queryset_delete_runs_on_delete_once_per_row_after_commit(
+    ran, django_capture_on_commit_callbacks
+):
+    todos = [a_todo() for _ in range(3)]
+    kept = a_todo()
+    profile = ResourceRegistration.register({"name": "x"}, "partner-profiles")
+    deleted = [*todos[:2], profile]
+    received = []
+
+    def record(sender, instance, **kwargs):
+        received.append((sender, instance.pk, kwargs))
+
+    ran.clear()
+    scrud_post_delete.connect(record)
+    try:
+        with django_capture_on_commit_callbacks() as callbacks:
+            Resource.objects.filter(pk__in=[r.pk for r in deleted]).delete()
+            # The signal fired inside the delete; the actions wait for commit.
+            assert len(received) == 3
+            assert ran == []
+    finally:
+        scrud_post_delete.disconnect(record)
+    assert sorted(kwargs["pk"] for _, _, kwargs in received) == sorted(
+        r.pk for r in deleted
+    )
+    for sender, instance_pk, kwargs in received:
+        assert sender is Resource
+        # Django's deleted instance, as for Resource.delete().
+        assert instance_pk is None
+        assert kwargs["using"] == "default"
+        assert kwargs["action"] == "DELETE"
+        expected_type = (
+            "tests://PartnerProfiles" if kwargs["pk"] == profile.pk else TODO
+        )
+        assert kwargs["resource_type_uri"] == expected_type
+    for callback in callbacks:
+        callback()
+    # Once per deleted ToDo (the profile's type has no action).
+    assert sorted(ran) == sorted(("delete", t.etag, t.pk) for t in todos[:2])
+    assert Resource.objects.filter(pk__in=[todos[2].pk, kept.pk]).count() == 2
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("commit", [False, True], ids=["rolled-back", "committed"])
+def test_a_queryset_delete_acts_only_when_it_commits(commit, ran, committed_types):
+    todos = [a_todo() for _ in range(2)]
+    pks = [t.pk for t in todos]
+    ran.clear()
+    try:
+        with transaction.atomic():
+            Resource.objects.filter(pk__in=pks).delete()
+            assert ran == []
+            if not commit:
+                raise RolledBack
+    except RolledBack:
+        pass
+    assert Resource.objects.filter(pk__in=pks).count() == (0 if commit else 2)
+    assert sorted(ran) == (
+        sorted(("delete", t.etag, t.pk) for t in todos) if commit else []
+    )
+
+
+@pytest.mark.django_db
+def test_a_raw_save_sends_no_scrud_signal(ran, django_capture_on_commit_callbacks):
+    """A raw save (``loaddata``, a django-reversion revert) is Django's
+    ``save_base(raw=True)``: it sends ``post_save`` with ``raw=True``, but no
+    scrud signal, so no workflow action runs (fixtures have no side
+    effects)."""
+    todo = a_todo()
+    received = []
+
+    def record(sender, **kwargs):
+        received.append(kwargs)
+
+    ran.clear()
+    scrud_post_save.connect(record)
+    try:
+        with django_capture_on_commit_callbacks(execute=True):
+            todo.content = dict(IN_PROGRESS)
+            todo.save_base(raw=True)
+    finally:
+        scrud_post_save.disconnect(record)
+    assert Resource.objects.get(pk=todo.pk).content == IN_PROGRESS
+    assert received == []
+    assert ran == []

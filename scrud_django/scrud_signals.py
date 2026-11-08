@@ -10,8 +10,9 @@ from .conf import workflow_actions
 # write time (`ScrudSignalProcessor`).
 logger = logging.getLogger("scrud_django.workflow_actions")
 
-# Sent by ``ResourceMixin.save()`` / ``delete()`` inside the write, before it
-# commits (and before the API's post-save check, which may still roll it
+# Sent by ``ResourceMixin.save()`` / ``delete()``, and ``scrud_post_delete``
+# by ``ResourceQuerySet.delete()`` for each resource it deletes, inside the
+# write, before it commits (and before the API's post-save check, which may still roll it
 # back): a receiver may read or change the database in the write's
 # transaction. Work that leaves the database belongs in
 # ``transaction.on_commit``, as `ScrudSignalProcessor` runs the configured
@@ -20,6 +21,9 @@ logger = logging.getLogger("scrud_django.workflow_actions")
 # was read from (a read replica under a primary/replica router).
 # ``scrud_post_delete`` also sends ``pk``, the deleted row's primary key:
 # ``instance`` is Django's deleted instance, whose pk is None by then.
+# Neither is sent by a raw save (``loaddata``, a django-reversion revert:
+# ``save_base(raw=True)``, as Django's ``raw`` means no side effects),
+# ``QuerySet.update()``, ``bulk_create()`` or ``bulk_update()``.
 scrud_post_save = Signal()
 scrud_post_delete = Signal()
 

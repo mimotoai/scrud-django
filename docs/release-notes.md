@@ -33,6 +33,14 @@
   `scrud_django.workflow_actions`, with its qualified name, the type URI,
   `on_save` or `on_delete` and the resource's pk; it is no longer logged by
   `transaction.on_commit` on `django.db.backends.base` (#10).
+- A `Resource.objects` queryset's `delete()` (bulk deletes, and the admin's
+  "delete selected") sent no `scrud_post_delete`, so no `on_delete` action
+  ran for the resources it deleted. It now sends one per deleted resource,
+  inside the delete, with `pk`, `using`, `resource_type_uri` and
+  `action='DELETE'`, as `Resource.delete()` does, and the actions run when
+  it commits. Raw saves (`loaddata`, django-reversion's revert),
+  `QuerySet.update()`, `bulk_create()` and `bulk_update()` still send no
+  scrud signal; this is now documented (README "Workflow actions") (#11).
 
 ### Upgrading
 
@@ -43,6 +51,9 @@
   `scrud_django.workflow_actions` logger where you watch errors; a log
   filter or alert on `django.db.backends.base` for action failures no longer
   sees them.
+- `on_delete` actions and `scrud_post_delete` receivers now also run for
+  queryset and admin bulk deletes, once per deleted resource: make sure they
+  can take a bulk delete's volume.
 
 ## 0.14.0
 

@@ -306,10 +306,12 @@ lock before the row by itself.
 Lists filter resources by their `ResourceContext` rows, one per context the
 content names, which `Resource.save()` (and so `ResourceRegistration` and the
 API) keeps in step. Rows written with `QuerySet.update()`, `bulk_create()` or
-`bulk_update()` go stale. `manage.py scrud_sync_contexts --check` lists the
-resources whose rows disagree with their content (exit status 1 if any), and
-`manage.py scrud_sync_contexts` re-syncs them; the `scrud_django.W004`
-database check reports resources that have no row at all.
+`bulk_update()` go stale (and run no workflow action, see
+[Workflow actions](#workflow-actions)). `manage.py scrud_sync_contexts
+--check` lists the resources whose rows disagree with their content (exit
+status 1 if any), and `manage.py scrud_sync_contexts` re-syncs them; the
+`scrud_django.W004` database check reports resources that have no row at
+all.
 
 DRF's own default permission is `AllowAny`. The scrud-django viewsets set
 `IsAuthorized` themselves, but any other view in your project (and any view you
@@ -391,6 +393,16 @@ Actions and receivers are called with the signal's keyword arguments:
 `DELETE`); `scrud_post_save` adds `update_fields` and `transition_data`, and
 `scrud_post_delete` adds `pk`, the deleted resource's primary key (the
 `instance` is the deleted one, whose `pk` Django has set to `None`).
+
+The signals are sent by `Resource.save()` and `delete()` (the API,
+`ResourceRegistration`, the admin's change and delete pages) and, for each
+resource it deletes, by a `Resource.objects` queryset's `delete()` (bulk
+deletes, the admin's "delete selected"). `QuerySet.update()`,
+`bulk_create()` and `bulk_update()` send none. Nor does a raw save:
+`loaddata` and a django-reversion revert (`Version.revert()`) call
+`save_base(raw=True)`, and as in Django, loading data runs no side effects.
+To act on a revert, connect a receiver to Django's `post_save` for
+`Resource`, which they send with `raw=True` (`loaddata` too).
 
 A setting that is not a list or tuple of paths to mappings stops the process
 at startup (`ImproperlyConfigured`). `manage.py check` reports a type's entry
