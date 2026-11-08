@@ -388,11 +388,34 @@ receiver whose work leaves the database should wrap it in
 write went to (the router's `db_for_write`), even for an instance read from a
 replica.
 
-Actions and receivers are called with the signal's keyword arguments:
-`instance`, `using`, `resource_type_uri` and `action` (`CREATE`, `UPDATE` or
-`DELETE`); `scrud_post_save` adds `update_fields` and `transition_data`, and
-`scrud_post_delete` adds `pk`, the deleted resource's primary key (the
-`instance` is the deleted one, whose `pk` Django has set to `None`).
+Actions and receivers are called as `action(sender, **kwargs)`, with the
+signal's keyword arguments: `instance`, `using`, `resource_type_uri` and
+`action` (`CREATE`, `UPDATE` or `DELETE`); `scrud_post_save` adds
+`update_fields` and `transition_data`, and `scrud_post_delete` adds `pk`, the
+deleted resource's primary key (the `instance` is the deleted one, whose
+`pk` Django has set to `None`). `transition_data` is a
+`scrud_django.workflow.TransitionData` (`prior_state`, `proposed_state`,
+`transition`) under the workflow policy in effect in the resource's first
+context, or `None` when no policy applies (or the transition cannot be
+determined). Its `transition` is the policy's transition name,
+`__SAME_STATE__` for an update that stays in its state, or `__INITIALIZE__`
+(no `prior_state`) for a create and for an update that moves the resource
+into that context. The requesting user is not passed: read it from a
+`contextvars.ContextVar` that a middleware sets (see the example below),
+since receivers and actions run in the request's thread.
+
+Actions are delivered:
+
+- **At most once.** An action waits in the connection's in-memory list of
+  `on_commit` callbacks: a crash between the COMMIT and the call loses it,
+  and nothing retries it. One that raises is logged (below) and dropped.
+- **Synchronously**, in the thread that wrote, after the commit: in a
+  request, before the response, so a slow action (SMTP, an HTTP call) adds
+  to the request's latency. Outside a transaction an action runs at once.
+- **In write order**, per database connection.
+- **With the live `instance`**: changes made to it after the write, in the
+  same transaction, are visible. Rely on `transition_data`, or snapshot
+  what you need in a `scrud_post_save` receiver.
 
 The signals are sent by `Resource.save()` and `delete()` (the API,
 `ResourceRegistration`, the admin's change and delete pages) and, for each
@@ -413,6 +436,81 @@ registered resource type (`W005`). At write time such an entry runs nothing
 and never fails the write. Neither does an action that raises: it is logged,
 with its traceback, on the `scrud_django.workflow_actions` logger, naming
 the action, the type URI, `on_save` or `on_delete` and the resource's pk.
+
+An event that must not be lost belongs in a transactional outbox: a
+receiver stores it in a table in the write's own transaction, so it
+commits or rolls back with the write, and a worker delivers it later, at
+least once:
+
+```python
+# myapp/models.py
+from django.db import models
+
+
+class OutboxEvent(models.Model):
+    resource_pk = models.BigIntegerField()
+    type_uri = models.TextField()
+    action = models.CharField(max_length=6)  # CREATE, UPDATE or DELETE
+    transition = models.JSONField(null=True)
+    user_id = models.BigIntegerField(null=True)
+    content = models.JSONField(null=True)
+    sent_at = models.DateTimeField(null=True)
+
+
+# myapp/outbox.py, imported in your AppConfig.ready()
+import dataclasses
+from contextvars import ContextVar
+
+from django.db import transaction
+from django.dispatch import receiver
+from django.utils import timezone
+from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save
+
+from .models import OutboxEvent
+
+current_request = ContextVar("current_request", default=None)
+
+
+def current_request_middleware(get_response):  # add it to MIDDLEWARE
+    def middleware(request):
+        token = current_request.set(request)
+        try:
+            return get_response(request)
+        finally:
+            current_request.reset(token)
+
+    return middleware
+
+
+@receiver([scrud_post_save, scrud_post_delete], dispatch_uid="myapp.outbox")
+def store_event(sender, instance, using, resource_type_uri, action, **kwargs):
+    transition = kwargs.get("transition_data")
+    # DRF sets the user it authenticates on the Django request too.
+    user = getattr(current_request.get(), "user", None)
+    OutboxEvent.objects.using(using).create(
+        resource_pk=kwargs.get("pk", instance.pk),  # pk: sent for a delete
+        type_uri=resource_type_uri,
+        action=action,
+        transition=dataclasses.asdict(transition) if transition else None,
+        user_id=user.pk if user is not None and user.is_authenticated else None,
+        content=instance.content,
+    )
+
+
+def send_events(deliver, batch=100):
+    """Run by a worker (cron, Celery beat). `deliver` must be idempotent
+    (keyed on the event's pk): an event is sent again if marking it fails."""
+    with transaction.atomic():
+        events = (
+            OutboxEvent.objects.select_for_update(skip_locked=True)
+            .filter(sent_at=None)
+            .order_by("pk")[:batch]
+        )
+        for event in events:
+            deliver(event)
+            event.sent_at = timezone.now()
+            event.save(update_fields=["sent_at"])
+```
 
 ### Upgrading
 

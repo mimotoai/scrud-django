@@ -41,6 +41,12 @@
   it commits. Raw saves (`loaddata`, django-reversion's revert),
   `QuerySet.update()`, `bulk_create()` and `bulk_update()` still send no
   scrud signal; this is now documented (README "Workflow actions") (#11).
+- README "Workflow actions" now states how actions are delivered (at most
+  once, synchronously after the commit and before the response, in write
+  order per connection, with the live instance), what `transition_data`
+  holds (`None` without a policy, `__SAME_STATE__`, `__INITIALIZE__`), how
+  to get the requesting user (a middleware-set `ContextVar`), and shows a
+  transactional outbox for events that must not be lost (#12).
 
 ### Upgrading
 
