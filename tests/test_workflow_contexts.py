@@ -347,6 +347,53 @@ def test_a_move_into_a_context_is_reported_as_a_creation_there(
     ]
 
 
+# States whose conditions overlap: a "high" priority ToDo is "published",
+# the first state it matches, whatever its status.
+OVERLAPPING_POLICY = {
+    "resource_type": TODO,
+    "initial_states": {"draft": 'status == "not started" && priority != "high"'},
+    "states": {
+        "published": 'priority == "high"',
+        "review": 'status == "in progress"',
+    },
+    "transitions": {
+        "submit": {"from": "draft", "to": "review"},
+        "publish": {"from": "review", "to": "published"},
+    },
+}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_transition_is_authorized_into_the_state_the_content_is_stored_in(
+    reported_transitions,
+):
+    # The body is "in progress" ("review", where "submit" leads) and "high"
+    # priority, so it would be stored in "published". A writer who may only
+    # "submit" may not make it: no transition leads from "draft" there.
+    from scrud_django.workflow import TransitionData
+
+    store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
+    user = user_with((workflow_writer("submit"), "w"))
+    resource = todo(rbac_context="w")
+    Given.http.force_authenticate(user)
+    reported_transitions.clear()
+    put_todo(
+        resource,
+        dict(NOT_STARTED, status="in progress", priority="high", rbac_context="w"),
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_workflow_error()
+    assert_unchanged(resource)
+    assert reported_transitions == []
+
+    submitted = dict(NOT_STARTED, status="in progress", rbac_context="w")
+    put_todo(resource, submitted)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert Resource.objects.get(pk=resource.pk).content == submitted
+    assert reported_transitions == [TransitionData("review", "draft", "submit")]
+
+
 @pytest.mark.django_db
 @test_context
 def test_default_policy_authorizes_transitions_in_other_contexts():

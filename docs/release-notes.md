@@ -1,5 +1,36 @@
 # Change Log
 
+## Unreleased
+
+### Fixes
+
+* A workflow write is authorized into the state its content is stored in.
+  A resource's state is the first state (the initial states, then `states`,
+  in the policy's order) whose condition its content meets, but an update's
+  new state was looked up only among the states a transition leads to from
+  the stored one. Where state conditions overlap, an update could be
+  authorized (and reported to `scrud_post_save` and workflow actions) as
+  one transition while its content was stored in another state, one that
+  no transition the writer may make leads to. An update's new state is now
+  its content's first matching state, as for stored content, and a
+  transition must lead there from the stored state. Under a policy whose
+  conditions overlap, writes that were accepted before can be refused
+  (400, `workflow-transition-invalid`), and the transition a write is
+  checked and reported as can change:
+  * an update whose content is stored in a state no transition leads to
+    from the stored state is refused, even if it also meets the condition
+    of a state that one does lead to;
+  * an update whose content still meets its stored state's condition
+    first stays in that state: it is `__SAME_STATE__` (refused in a
+    `restrict_update` state), no longer a transition to a later-listed
+    state it also matches, so a grant needs `__SAME_STATE__` to make it;
+  * a create (or a move into a context) whose content meets an initial
+    state's condition but is stored in another state, possible only where
+    `states` redefines an initial state's name, is not a valid initial
+    state.
+
+  Policies whose state conditions do not overlap are unaffected.
+
 ## 0.14.0
 
 This release requires django-scoped-rbac 0.12.1 and scrudful 0.10.1

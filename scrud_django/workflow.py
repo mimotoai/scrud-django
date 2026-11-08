@@ -97,9 +97,9 @@ class WorkflowPolicy:
         return proposed_data
 
     def validate_initial_state(self, data):
-        """The initial state `data` is in; raises
+        """The initial state `data` is in (`initial_state`); raises
         ``WorkflowInvalidInitialStateError`` if it is in none."""
-        proposed_state = self.determine_state(data, self.initial_state_expressions)
+        proposed_state = self.initial_state(data)
         if proposed_state is None:
             raise WorkflowInvalidInitialStateError(self.reference, proposed_state)
         return proposed_state
@@ -109,6 +109,23 @@ class WorkflowPolicy:
         prior state, its initial state as the proposed one."""
         return TransitionData(self.validate_initial_state(data), None, "__INITIALIZE__")
 
+    def state(self, data):
+        """The state content `data` is stored in: the first of all the states
+        (`state_expressions`: the initial states, then ``states``) whose
+        condition it meets, or ``None``. A write is authorized into this state
+        and the next one leaves from it."""
+        return self.determine_state(data, self.state_expressions)
+
+    def initial_state(self, data):
+        """The initial state a create of `data` makes, or ``None``: the first
+        initial state whose condition `data` meets, provided that it is also
+        the state `data` is stored in (`state`). The two differ only where
+        ``states`` redefines an initial state's name."""
+        initial_state = self.determine_state(data, self.initial_state_expressions)
+        if initial_state is None or initial_state != self.state(data):
+            return None
+        return initial_state
+
     def validate_transition(self, proposed_data, prior_data):
         """Given a proposed state and a previous state determine if the proposed
         transition is allowed by this policy.
@@ -116,50 +133,37 @@ class WorkflowPolicy:
         self.determine_transition(proposed_data, prior_data)
 
     def determine_transition(self, proposed_data, prior_data):
+        """The `TransitionData` of replacing `prior_data` with `proposed_data`:
+        from the state the stored content is in to the state the new content
+        will be stored in (`state` of each), and the transition between them.
+        Raises ``WorkflowInvalidStateError`` when `proposed_data` is in no
+        state (and `prior_data` is in one), and ``WorkflowTransitionError``
+        when no transition leads from the prior state to the proposed one.
+        Content that stays in its state is the ``__SAME_STATE__`` transition
+        (unless a transition of the policy leads from that state to itself),
+        refused for a state in ``restrict_update``.
+        """
         # TODO add prior state to Resource instead
-        prior_state = self.determine_state(prior_data, self.state_expressions)
+        prior_state = self.state(prior_data)
+        proposed_state = self.state(proposed_data)
         if prior_state is not None:
-            state_expressions = dict(
-                map(
-                    lambda s: (s, self.state_expressions[s]),
-                    self.allowed_transitions.get(prior_state, {}),
-                )
-            )
-        else:
-            state_expressions = self.state_expressions
-        proposed_state = self.determine_state(proposed_data, state_expressions)
-
-        if prior_state is not None and proposed_state is None:
-            # fallback and determine if the proposed_data matches any defined state
-            proposed_state = self.determine_state(proposed_data, self.state_expressions)
             if proposed_state is None:
                 raise WorkflowInvalidStateError(self.reference)
-            else:
-                if prior_state == proposed_state:
-                    if proposed_state not in self.restrict_update:
-                        return TransitionData(
-                            proposed_state, prior_state, "__SAME_STATE__"
-                        )
-                    raise WorkflowTransitionError(
-                        self.reference,
-                        prior_state,
-                        proposed_state,
-                        message='Update not allowed on this state',
-                    )
+            transition = self.allowed_transitions.get(prior_state, {}).get(
+                proposed_state
+            )
+            if transition is not None:
+                return TransitionData(proposed_state, prior_state, transition)
+            if prior_state == proposed_state:
+                if proposed_state not in self.restrict_update:
+                    return TransitionData(proposed_state, prior_state, "__SAME_STATE__")
                 raise WorkflowTransitionError(
-                    self.reference, prior_state, proposed_state
+                    self.reference,
+                    prior_state,
+                    proposed_state,
+                    message='Update not allowed on this state',
                 )
-        elif (
-            prior_state not in self.allowed_transitions
-            or proposed_state not in self.allowed_transitions[prior_state]
-        ):
-            raise WorkflowTransitionError(self.reference, prior_state, proposed_state)
-
-        return TransitionData(
-            proposed_state,
-            prior_state,
-            self.allowed_transitions[prior_state][proposed_state],
-        )
+        raise WorkflowTransitionError(self.reference, prior_state, proposed_state)
 
     def determine_state(self, data, state_expressions):
         """Apply the `state_expressions` to identify the current state of the data.

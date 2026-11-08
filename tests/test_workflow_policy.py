@@ -7,7 +7,7 @@ from scrud_django.exceptions import (
     WorkflowInvalidStateError,
     WorkflowTransitionError,
 )
-from scrud_django.workflow import WorkflowPolicy
+from scrud_django.workflow import TransitionData, WorkflowPolicy
 
 workflow_policy = WorkflowPolicy(
     {
@@ -136,3 +136,93 @@ def test_restrict_update_may_be_absent_or_a_list_of_states():
     WorkflowPolicy(policy)
     WorkflowPolicy(dict(policy, restrict_update=[]))
     WorkflowPolicy(dict(policy, restrict_update=["start"]))
+
+
+# States whose conditions overlap: content that is "review" and published is
+# stored in "published", the first state it matches.
+overlapping_policy = {
+    "initial_states": {"draft": 'status == "draft" && published == false'},
+    "states": {
+        "published": "published == true",
+        "review": 'status == "review"',
+    },
+    "transitions": {
+        "submit": {"from": "draft", "to": "review"},
+        "publish": {"from": "review", "to": "published"},
+    },
+}
+draft = {"status": "draft", "published": False}
+
+
+def test_transition_is_authorized_into_the_state_the_content_is_stored_in():
+    policy = WorkflowPolicy(overlapping_policy)
+    proposed = {"status": "review", "published": True}
+    assert policy.determine_state(proposed, policy.state_expressions) == "published"
+    # "submit" leads from "draft" to "review", which the content also matches,
+    # but it would be stored in "published": no transition leads there.
+    with pytest.raises(WorkflowTransitionError) as excinfo:
+        policy.determine_transition(proposed, draft)
+    error = excinfo.value
+    assert (error.prior_state, error.proposed_state) == ("draft", "published")
+    with pytest.raises(WorkflowTransitionError):
+        policy.validate(proposed, draft)
+
+    submitted = {"status": "review", "published": False}
+    assert policy.determine_transition(submitted, draft) == TransitionData(
+        "review", "draft", "submit"
+    )
+    published = {"status": "review", "published": True}
+    assert policy.determine_transition(published, submitted) == TransitionData(
+        "published", "review", "publish"
+    )
+
+
+def test_content_staying_in_its_state_is_a_same_state_update():
+    # "archive" leads from "review" to "archived", which the content also
+    # matches; it is stored in "review", its first match, so it stays there.
+    policy = {
+        "initial_states": {"review": 'status == "review"'},
+        "states": {"archived": "archived == true"},
+        "transitions": {"archive": {"from": "review", "to": "archived"}},
+    }
+    prior = {"status": "review", "archived": False}
+    proposed = {"status": "review", "archived": True}
+    assert WorkflowPolicy(policy).determine_transition(
+        proposed, prior
+    ) == TransitionData("review", "review", "__SAME_STATE__")
+
+    restricted = WorkflowPolicy(dict(policy, restrict_update=["review"]))
+    with pytest.raises(WorkflowTransitionError) as excinfo:
+        restricted.determine_transition(proposed, prior)
+    error = excinfo.value
+    assert (error.prior_state, error.proposed_state) == ("review", "review")
+    assert error.message == "Update not allowed on this state"
+
+
+def test_initial_state_is_the_state_the_content_is_stored_in():
+    # "states" redefines "draft": content stored by its "states" condition is
+    # in "draft" only if it meets that one.
+    policy = WorkflowPolicy(
+        {
+            "initial_states": {"draft": 'status == "draft"'},
+            "states": {
+                "published": "published == true",
+                "draft": 'status == "draft" && published == false',
+            },
+            "transitions": {"publish": {"from": "draft", "to": "published"}},
+        }
+    )
+    published_draft = {"status": "draft", "published": True}
+    assert policy.determine_state(published_draft, policy.state_expressions) == (
+        "published"
+    )
+    with pytest.raises(WorkflowInvalidInitialStateError):
+        policy.validate(published_draft)
+    with pytest.raises(WorkflowInvalidInitialStateError):
+        policy.initial_transition(published_draft)
+
+    unpublished = {"status": "draft", "published": False}
+    assert policy.validate(unpublished) == unpublished
+    assert policy.initial_transition(unpublished) == TransitionData(
+        "draft", None, "__INITIALIZE__"
+    )
