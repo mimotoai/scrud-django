@@ -21,6 +21,16 @@ logger = logging.getLogger("scrud_django.workflow_actions")
 # was read from (a read replica under a primary/replica router).
 # ``scrud_post_delete`` also sends ``pk``, the deleted row's primary key:
 # ``instance`` is Django's deleted instance, whose pk is None by then.
+# ``scrud_post_save`` also sends the save's workflow transitions
+# (``ResourceMixin.get_transitions``): ``transition_data``, the
+# ``TransitionData`` under the policy of the first context the content names
+# that has one (``None``: no policy applies, or the transition is invalid);
+# ``transition_error``, the workflow error that made it ``None`` (else
+# ``None``); and ``transitions``, context -> ``TransitionData`` (``None``:
+# invalid there) for every context the stored resource or the content is in
+# under a policy: a transition where it stays, ``__INITIALIZE__`` where it
+# enters (or is created), ``__LEAVE__`` (no proposed state; the prior state
+# is the one it left) where it leaves.
 # Neither is sent by a raw save (``loaddata``, a django-reversion revert:
 # ``save_base(raw=True)``, as Django's ``raw`` means no side effects),
 # ``QuerySet.update()``, ``bulk_create()`` or ``bulk_update()``.

@@ -26,8 +26,10 @@ CEL_ENVIRONMENT = new_environment({})
 WORKFLOW_POLICY_TYPE_URI = "http://api.openteams.com/json-ld/WorkflowPolicy"
 
 # The transitions scrud-django names itself: ``__INITIALIZE__`` (a create) and
-# ``__SAME_STATE__`` (an update that stays in its state). A policy may not
-# define a transition with this prefix.
+# ``__SAME_STATE__`` (an update that stays in its state), and ``__LEAVE__``,
+# which ``scrud_post_save`` reports for a context a write moves a resource out
+# of (``resource_mixin.LEAVE_TRANSITION``). A policy may not define a
+# transition with this prefix.
 RESERVED_TRANSITION_PREFIX = "__"
 
 

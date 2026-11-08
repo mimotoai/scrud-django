@@ -47,6 +47,21 @@
   holds (`None` without a policy, `__SAME_STATE__`, `__INITIALIZE__`), how
   to get the requesting user (a middleware-set `ContextVar`), and shows a
   transactional outbox for events that must not be lost (#12).
+- `scrud_post_save`'s `transition_data` lost information: a move into a
+  context was reported as `__INITIALIZE__` without the state left, only the
+  first context with a policy was reported, and `None` meant either "no
+  policy applies" or "the transition is invalid" (a server-side write the
+  workflow check did not see). `scrud_post_save` (and so every `on_save`
+  action) now also sends `transitions`, a mapping of each context the
+  stored resource or the new content is in, where a policy applies, to the
+  write's `TransitionData` there: the transition where the resource stays
+  (`None` if invalid there), `__INITIALIZE__` where it enters, and the new
+  reserved `__LEAVE__` (no proposed state; the prior state is the one it
+  left) where it leaves; and `transition_error`, the workflow error that
+  made `transition_data` `None`. `transition_data` itself is unchanged,
+  except that a save whose row is not on the database written to (an
+  instance copied with `save(using=...)`) is reported as a create instead
+  of raising `AttributeError` (#15).
 
 ### Upgrading
 
@@ -60,6 +75,9 @@
 - `on_delete` actions and `scrud_post_delete` receivers now also run for
   queryset and admin bulk deletes, once per deleted resource: make sure they
   can take a bulk delete's volume.
+- `scrud_post_save` sends two more keyword arguments, `transitions` and
+  `transition_error`: an `on_save` action (or receiver) that names its
+  keyword arguments must also take `**kwargs`.
 
 ## 0.14.0
 

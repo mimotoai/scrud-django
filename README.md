@@ -391,16 +391,24 @@ replica.
 Actions and receivers are called as `action(sender, **kwargs)`, with the
 signal's keyword arguments: `instance`, `using`, `resource_type_uri` and
 `action` (`CREATE`, `UPDATE` or `DELETE`); `scrud_post_save` adds
-`update_fields` and `transition_data`, and `scrud_post_delete` adds `pk`, the
-deleted resource's primary key (the `instance` is the deleted one, whose
-`pk` Django has set to `None`). `transition_data` is a
-`scrud_django.workflow.TransitionData` (`prior_state`, `proposed_state`,
-`transition`) under the workflow policy in effect in the resource's first
-context, or `None` when no policy applies (or the transition cannot be
-determined). Its `transition` is the policy's transition name,
+`update_fields`, `transition_data`, `transition_error` and `transitions`,
+and `scrud_post_delete` adds `pk`, the deleted resource's primary key (the
+`instance` is the deleted one, whose `pk` Django has set to `None`).
+`transition_data` is a `scrud_django.workflow.TransitionData`
+(`prior_state`, `proposed_state`, `transition`) under the workflow policy in
+effect in the resource's first context that has one, or `None` when no
+policy applies or the transition is invalid (a server-side write the
+workflow check did not see); `transition_error` is then the workflow error,
+and `None` otherwise. Its `transition` is the policy's transition name,
 `__SAME_STATE__` for an update that stays in its state, or `__INITIALIZE__`
 (no `prior_state`) for a create and for an update that moves the resource
-into that context. The requesting user is not passed: read it from a
+into that context. `transitions` maps every context the stored resource or
+the new content is in, where a policy applies, to the write's
+`TransitionData` there (`None` if invalid there): a transition where the
+resource stays, `__INITIALIZE__` where it enters, and `__LEAVE__` (no
+`proposed_state`; `prior_state` is the state it left) where it leaves. A
+save of an instance whose row is not on the database written to (a copy
+with `save(using=...)`) is reported as a create. The requesting user is not passed: read it from a
 `contextvars.ContextVar` that a middleware sets (see the example below),
 since receivers and actions run in the request's thread.
 

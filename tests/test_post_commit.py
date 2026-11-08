@@ -349,6 +349,62 @@ def test_scrud_post_save_still_fires_inside_the_write(
     assert ran == [("save", todo.pk)]
 
 
+@pytest.mark.django_db
+def test_an_on_save_action_gets_transitions_and_transition_error(
+    monkeypatch, django_capture_on_commit_callbacks
+):
+    from scrud_django.workflow import TransitionData
+
+    todo = a_todo(dict(NOT_STARTED, rbac_context="a"))
+    received = []
+
+    def on_save(sender, instance, **kwargs):
+        received.append(kwargs)
+
+    monkeypatch.setitem(actions[TODO], "on_save", on_save)
+    with django_capture_on_commit_callbacks(execute=True):
+        ResourceRegistration.update(
+            dict(IN_PROGRESS, rbac_context="a"), "todos", str(todo.pk)
+        )
+    (kwargs,) = received
+    started = TransitionData("in progress", "not started", "start")
+    assert kwargs["transition_data"] == started
+    assert kwargs["transitions"] == {"a": started}
+    assert kwargs["transition_error"] is None
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_a_save_to_a_database_without_the_row_is_reported_as_a_create():
+    """A fetched instance copied to another database (``save(using=...)``)
+    whose row is not there: no prior content, so it is reported as a create
+    (``__INITIALIZE__``), not an ``AttributeError``."""
+    from scrud_django.models import ResourceType
+    from scrud_django.workflow import TransitionData
+
+    todo = a_todo(dict(IN_PROGRESS, rbac_context="a"))
+    # The type (without its documents) on "other", for the row's foreign key.
+    copy = ResourceType.objects.get(pk=todo.resource_type_id)
+    copy.schema_id = copy.context_id = copy.indexing_policy_id = None
+    ResourceType.objects.using("other").bulk_create([copy])
+    received = []
+
+    def record(sender, **kwargs):
+        received.append(kwargs)
+
+    scrud_post_save.connect(record, weak=False, dispatch_uid="test-missing-row")
+    try:
+        todo.save(using="other")
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-missing-row")
+    assert Resource.objects.using("other").get(pk=todo.pk).content == todo.content
+    (kwargs,) = received
+    assert kwargs["using"] == "other"
+    initialized = TransitionData("in progress", None, "__INITIALIZE__")
+    assert kwargs["transition_data"] == initialized
+    assert kwargs["transitions"] == {"a": initialized}
+    assert kwargs["transition_error"] is None
+
+
 # An action that raises never fails the write: it is logged, once, on the
 # scrud_django.workflow_actions logger, naming the action, the type, the kind
 # of action and the resource's pk.
