@@ -335,6 +335,38 @@ by ordinary writers. If untrusted users may hold those grants, CEL evaluation
 would need a time or cost bound, and patterns that scoped-rbac or `re` cannot
 run in bounded time would have to be refused.
 
+<a id="policy-defaults-are-fallbacks"></a>
+## policy-defaults-are-fallbacks: a stored workflow policy replaces the settings default
+
+Decision: `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` gives a type's
+policy only in a context without a stored `WorkflowPolicy` for it; a stored
+one replaces it there, and writing one is an administrative grant
+([policy-grants-are-admin](#policy-grants-are-admin)).
+
+`scrud_django.workflow.workflow_policies_for` takes a context's stored policy
+for the type when there is one (`stored_policies_in`) and the settings
+default (`default_workflow_policy_for`) only otherwise; the two are never
+combined. A `WorkflowPolicy` write is authorized like any resource's, by
+grants on the `WorkflowPolicy` type in the policy's `rbac_context`, and
+`WorkflowValidator.validate_policy` checks only that the policy is valid
+and the only one for its type there, not the writer's rights on the type it
+governs. So whoever may POST (or PUT) a `WorkflowPolicy` in a context can,
+with no rights on the governed type, replace the deployment's default for
+any type there, loosening it, and rename or redefine transitions, which
+changes what every `scrud_workflow` grant in that context allows (a grant's
+`authorized_transitions` are names, looked up in whichever policy applies).
+Deleting the stored policy restores the default. No deployment-wide workflow
+invariant can be enforced through the defaults; the README ("Workflow
+policies") says so.
+
+A future "floor" mode could make the default binding: a setting under which
+a stored policy may only restrict its type's default (for instance, every
+transition it defines must be one the default defines between the same
+states, under the same name), checked by `validate_policy` and by the
+`scrud_django.E005` database check, or under which a write must pass both
+policies. Another option is to require, for a `WorkflowPolicy` write, a
+grant on the governed type as well. Neither is planned.
+
 <a id="eager-callable-default-policies"></a>
 ## eager-callable-default-policies: a callable default that raises fails every type
 

@@ -245,6 +245,18 @@
   on both running. The signals hold it: one built without keeping a
   reference now runs, until another is built.
 
+### Documentation
+
+* `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` gives fallbacks, not
+  floors: a stored `WorkflowPolicy` for a type in a context replaces the
+  default there, and may be looser. Writing one needs grants on the
+  `WorkflowPolicy` type only, not on the type it governs, and it can rename
+  or redefine the transitions that the context's `scrud_workflow` grants
+  name. The behaviour is unchanged; the README ("Workflow policies") now
+  says so
+  ([policy-defaults-are-fallbacks](follow-ups.md#policy-defaults-are-fallbacks)).
+  Treat writes of `WorkflowPolicy` as administrative grants (#17).
+
 ## 0.14.0
 
 This release requires django-scoped-rbac 0.12.1 and scrudful 0.10.1

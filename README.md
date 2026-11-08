@@ -398,6 +398,20 @@ state unreachable: `manage.py check --database default` warns
 type's JSON Schema does not define and the schema allows no others
 (`additionalProperties` absent or `false`); stored policies are not checked.
 
+A settings default is a fallback, not a floor: a stored `WorkflowPolicy` for
+a type in a context replaces the default for that type there (deleting it
+restores the default); it is not combined with it and need not be stricter.
+Writing a `WorkflowPolicy` is authorized by grants on the `WorkflowPolicy`
+type in its context alone, not on the type it governs. So whoever may POST a
+`WorkflowPolicy` in a context can, with no rights on the governed type, give
+any type there a workflow of their own, looser than the default, and rename or
+redefine its transitions, which changes what every `scrud_workflow` grant in
+that context allows (its `authorized_transitions` name transitions). Treat
+`http.POST`, `http.PUT` and `http.DELETE` on
+`http://api.openteams.com/json-ld/WorkflowPolicy` as administrative grants;
+no deployment-wide workflow invariant can be enforced through the defaults
+(`docs/follow-ups.md`, `policy-defaults-are-fallbacks`).
+
 A policy's state conditions must be mutually exclusive: content is in the
 one state whose condition it meets. The order of the conditions decides
 nothing, since a policy stored in a JSON column does not keep it
