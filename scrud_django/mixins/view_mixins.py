@@ -1300,10 +1300,13 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         ``SCRUD_WORKFLOW_ACTIONS`` `ScrudSignalProcessor` defers) does not
         load it through the read router. The check and this re-caching run
         in one transaction on the write database, so that a write outside
-        `dispatch`'s transaction (a POST with no preconditions, or with
-        ``If-Match: *`` and no ``If-None-Match``) commits only once the type
-        is cached again: the check's own transaction, outermost, would
-        commit, and run what waits on the commit, before."""
+        `dispatch`'s transaction commits only once the type is cached again:
+        the check's own transaction, outermost, would commit, and run what
+        waits on the commit, before. Outside it are a POST to the list with
+        no precondition to evaluate (`list_preconditions_to_evaluate`: none
+        of ``If-Match``, ``If-None-Match`` and ``If-Unmodified-Since``, or
+        ``If-Match: *`` and no ``If-None-Match``) and a POST to an item (an
+        ``@action`` creating)."""
         saved = []
 
         def recorded_save():

@@ -180,15 +180,16 @@ def test_a_create_refused_after_its_save_runs_no_side_effect(
     ids=["refused-403", "reserved-context-400", "created"],
 )
 def test_a_committed_create_runs_its_side_effects_only_if_it_stands(
-    committed_types, context, client, status, ran, indexed
+    context, client, status, ran, indexed, committed_types
 ):
     # Committed for real: a POST with no preconditions runs in no
     # transaction of the request's, so save_checked's is the outermost and
     # its commit, or its rollback, decides what runs. (In a test's own
     # transaction, as above, nothing commits until after the response.)
-    # committed_types comes first, so that `indexed` misses the types it
-    # registers.
     before = Resource.objects.count()
+    # Only the POST's: not what committed_types registered.
+    ran.clear()
+    indexed.clear()
     moved = todos_moved_after_save(context) if context else nullcontext()
     with moved:
         response = client().post(reverse("todos-list"), NOT_STARTED, format="json")

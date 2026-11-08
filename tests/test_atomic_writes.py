@@ -257,10 +257,11 @@ def test_what_runs_on_a_writes_commit_reads_no_type_through_the_read_router(
 ):
     # Search indexing reads the saved resource's type and its indexing policy
     # on commit; the save check refreshed that resource, emptying its related
-    # objects. Committed for real: a POST outside dispatch's transaction (no
-    # preconditions, or If-Match: * and no If-None-Match) commits inside
-    # save_checked (a test's own transaction would hold what runs on commit
-    # back until after the response).
+    # objects. Committed for real: a POST to the list with no precondition
+    # to evaluate (none, or If-Match: * and no If-None-Match) runs outside
+    # dispatch's transaction and commits inside save_checked (a test's own
+    # transaction would hold what runs on commit back until after the
+    # response).
     todo = a_todo()
     client = admin_client()
     with routed_reads() as reads, recorded_indexing() as prepared:
@@ -580,7 +581,11 @@ def test_the_locked_lookup_selects_for_update_on_the_write_database(method):
 @contextmanager
 def scrud_transactions():
     """The database each transaction scrud_django opens names (``using``,
-    ``None`` for none: Django's default alias, whatever the router says)."""
+    ``None`` for none: Django's default alias, whatever the router says),
+    with ``with`` or as a decorator (``@transaction.atomic(...)``, entered
+    from contextlib's wrapper: the decorated function is what opens it)."""
+    import contextlib
+    import inspect
     import sys
 
     import scrud_django
@@ -589,8 +594,14 @@ def scrud_transactions():
     opened = []
     original = transaction.Atomic.__enter__
 
+    def opener(frame):
+        filename = frame.f_code.co_filename
+        if filename == contextlib.__file__ and "func" in frame.f_locals:
+            return inspect.unwrap(frame.f_locals["func"]).__code__.co_filename
+        return filename
+
     def enter(self):
-        if sys._getframe(1).f_code.co_filename.startswith(package):
+        if opener(sys._getframe(1)).startswith(package):
             opened.append(self.using)
         return original(self)
 
@@ -611,11 +622,15 @@ def scrud_transactions():
     ids=["post", "post-if-match-any", "post-if-match", "put", "delete"],
 )
 def test_a_writes_transactions_open_on_the_write_database(method, headers):
-    # A deployment routing writes away from the default alias: every
-    # transaction a write opens (dispatch's, save_checked's, the save's)
-    # names the write database, so that what runs on its commit waits for
-    # that database's commit (a transaction on the default alias would not
-    # hold it back).
+    # Every transaction scrud_django opens for a write (dispatch's,
+    # save_checked's, the save's) names the write database (`using`). Here
+    # that is the default alias, so a bare atomic() would behave the same;
+    # it is caught by its `using` (None), and one naming the default alias
+    # by test_every_transaction_scrud_django_opens_names_its_database. In a
+    # deployment routing writes elsewhere, a transaction on the default
+    # alias would not hold back what runs on the write database's commit:
+    # the save check's own transaction there would be outermost, and commit
+    # before the type is cached again.
     todo = a_todo()
     client = admin_client()
     if headers == "list-etag":
@@ -634,6 +649,78 @@ def test_a_writes_transactions_open_on_the_write_database(method, headers):
             )
     assert response.status_code in (200, 201, 204), response.content
     assert opened and set(opened) == {write_db()}, opened
+
+
+def unnamed_transactions(source):
+    """The lines of `source` that open a transaction naming no database: a
+    ``transaction.atomic`` (or ``transaction.Atomic``) not called, as a bare
+    decorator, or called with no ``using``, or with ``None`` or
+    ``DEFAULT_DB_ALIAS``; or an import of ``atomic`` itself, which the
+    other checks would not see."""
+    import ast
+
+    tree = ast.parse(source)
+    parents = {
+        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
+    }
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "django.db.transaction":
+            found.append(node.lineno)
+        if not (
+            isinstance(node, ast.Attribute)
+            and node.attr in ("atomic", "Atomic")
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "transaction"
+        ):
+            continue
+        call = parents.get(node)
+        if not (isinstance(call, ast.Call) and call.func is node):
+            found.append(node.lineno)
+            continue
+        using = [k.value for k in call.keywords if k.arg == "using"] + call.args[:1]
+        if not using or any(
+            (isinstance(u, ast.Constant) and u.value is None)
+            or (isinstance(u, ast.Name) and u.id == "DEFAULT_DB_ALIAS")
+            for u in using
+        ):
+            found.append(node.lineno)
+    return found
+
+
+@pytest.mark.parametrize(
+    "source, lines",
+    [
+        ("with transaction.atomic(using=db):\n    pass\n", []),
+        ("with transaction.atomic(db):\n    pass\n", []),
+        ("with transaction.atomic():\n    pass\n", [1]),
+        ("with transaction.atomic(savepoint=False):\n    pass\n", [1]),
+        ("with transaction.atomic(using=None):\n    pass\n", [1]),
+        ("with transaction.atomic(using=DEFAULT_DB_ALIAS):\n    pass\n", [1]),
+        ("@transaction.atomic\ndef f():\n    pass\n", [1]),
+        ("@transaction.atomic()\ndef f():\n    pass\n", [1]),
+        ("from django.db.transaction import atomic\n", [1]),
+    ],
+)
+def test_unnamed_transactions_finds_each_form(source, lines):
+    assert unnamed_transactions(source) == lines
+
+
+def test_every_transaction_scrud_django_opens_names_its_database():
+    # Static, so that it covers code no request reaches (the serializer's
+    # update, the checks) and a `using` the request tests cannot tell from
+    # the write database's here: the default alias.
+    from pathlib import Path
+
+    import scrud_django
+
+    package = Path(scrud_django.__path__[0])
+    found = {
+        str(path.relative_to(package)): lines
+        for path in sorted(package.rglob("*.py"))
+        if (lines := unnamed_transactions(path.read_text()))
+    }
+    assert found == {}
 
 
 @pytest.mark.django_db(databases=["default", "other"])
