@@ -282,6 +282,62 @@ must then use the ETag of the first response), or disable the frame's inputs
 while a request is in flight. Test: in a browser, tick two checkboxes in
 quick succession against a slow server; both are saved.
 
+<a id="ui-typeterm-invariants"></a>
+## ui-typeterm-invariants: UI types state their invariants in docstrings, not code
+
+`TypeTerm` (`scrud_django/ui/selectors.py`) documents that exactly one of `iri`
+and `schema_type` is set, and that `format` and `enum` go only with a
+`schema_type`, but nothing enforces it: `TypeTerm(iri="x", schema_type="string")`
+builds, and `_term_matches` then reads it as an IRI term. The engine names and
+the stored modes are spelled three times (`engines.ENGINE_NAMES`,
+`cascade.STORED_MODES`, the `enum`s in `UIComponent-schema.json`), so one can
+change without the others. The UI JSON Schemas have no top-level
+`additionalProperties: false` (a misspelt `stylesheet` or `scope` key is stored
+and silently ignored), and the scope names in a component's `scopes` have no
+`pattern`, so a scope the selector grammar cannot name
+(`[A-Za-z][A-Za-z0-9_-]*`) is accepted and never matches. Why: the checks
+were kept to what rendering needs. Suggested fix: validate in
+`TypeTerm.__post_init__` (raise `ValueError`); make the engine and mode names
+enums in one module and check the schema documents against them in a test;
+add `additionalProperties: false` to both schemas (after checking stored
+content for extra keys) and a scope-name `pattern` to `scopes`' values. Test:
+`TypeTerm(iri="x", schema_type="string")` and `TypeTerm(iri="x", enum=True)`
+raise; a component with `"scopes": {"items": "1bad"}` or an unknown top-level
+key is a 400; the schema's `engine` and `mode` enums equal the module's.
+
+<a id="ui-selector-iri-suffix"></a>
+## ui-selector-iri-suffix: `ex:Foo[enum]` and `string[format=a:b]` parse as plain IRIs
+
+`parse_selector` takes any last token containing `:` for an IRI before it
+looks for a `[format=...]` or `[enum]` suffix. So `ex:Foo[enum]` is the IRI
+`http://example.org/todo#Foo[enum]` and `string[format=a:b]` the IRI
+`string[format=a:b]`: both are saved without a 400 and never match a node, and
+the author is not told why their rule does nothing. Why: the IRI branch was
+checked first, and IRIs take no suffix. Suggested fix: check for a bracket
+suffix first, and refuse it on an IRI (`SelectorError`: a suffix needs a schema
+type), and let a format name contain `:` only if that is intended (else refuse
+it). Test: `parse_selector("ex:Foo[enum]", ...)` and
+`parse_selector("string[format=a:b]", ...)` raise `SelectorError` (or the
+second parses as `string` with format `a:b`), and a stylesheet with either is
+a 400.
+
+<a id="ui-number-input-partial"></a>
+## ui-number-input-partial: a half-typed or cleared number input removes the value
+
+`scrud-ui.js`'s `fieldValue` returns `undefined` for a number input whose value
+is empty or not a number, and `applyPointer` removes the key for `undefined`. A
+browser reports a half-typed number (`1e`, `-`) as `""`, so a `change` while it
+is half-typed, or clearing the field, sends a PUT without the property: the
+stored number is deleted (or the PUT is refused for a required one, with the
+form re-rendered from a body that lacks it). Only an empty input over a `null`
+or missing value is left alone (it is untouched). Why: empty was taken to mean
+"no value". Suggested fix: skip (leave the embedded value as it is) a number
+input whose `validity.badInput` is set or whose value is empty over a stored
+number, unless the schema allows `null` (then write `null`); or mark the input
+invalid and send nothing. Test: in a browser, a list item with `"count": 3`;
+type `1e` and blur, then clear the field and blur; the stored `count` stays 3
+(or becomes `null` where the schema allows it), and no PUT removes it.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>
