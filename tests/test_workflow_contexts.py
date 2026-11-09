@@ -10,6 +10,7 @@ resource is in **and** every context the body names.
 """
 
 import json
+import logging
 from uuid import uuid4
 
 import pytest
@@ -1478,6 +1479,78 @@ def test_a_server_side_move_into_a_context_in_no_initial_state_reports_its_error
         "w": TransitionData(None, "done", "__LEAVE__"),
         "v": None,
     }
+
+
+# A save that skipped the WorkflowValidator (the admin, ResourceRegistration,
+# server code) is still saved when it is invalid: each context's workflow
+# error is logged on the scrud_django.workflow logger, not only reported.
+WORKFLOW_LOGGER = "scrud_django.workflow"
+
+
+def workflow_warnings(caplog):
+    return [
+        record
+        for record in caplog.records
+        if record.name == WORKFLOW_LOGGER and record.levelno == logging.WARNING
+    ]
+
+
+def assert_logs_workflow_error(record, resource, context, message):
+    logged = record.getMessage()
+    assert f"pk {resource.pk}" in logged, logged
+    assert TODO in logged, logged
+    assert f"context {context!r}" in logged, logged
+    assert message in logged, logged
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_save_past_the_workflow_check_logs_each_contexts_error(
+    caplog, reported_saves
+):
+    from scrud_django.workflow import TransitionData
+
+    store_policy(B_POLICY)
+    resource = todo(rbac_context=["a", "b"])
+    assert workflow_warnings(caplog) == []
+    # Valid in "a" ("finish", and the context transition_data reports), but
+    # "done" is no state of "b"'s policy: only "b"'s error is logged, though
+    # transition_error (the picked context's) is None.
+    reported_saves.clear()
+    resource.content = dict(NOT_STARTED, status="done", rbac_context=["a", "b"])
+    resource.save()
+    (reported,) = reported_saves
+    assert reported["transition_data"] == TransitionData(
+        "done", "not started", "finish"
+    )
+    assert reported["transition_error"] is None
+    assert reported["transitions"]["b"] is None
+    (record,) = workflow_warnings(caplog)
+    assert_logs_workflow_error(
+        record, resource, "b", "The request does not match a valid state"
+    )
+
+    # Invalid in both: one warning per context, in the contexts' order.
+    caplog.clear()
+    created = todo(rbac_context=["a", "b"], status="done")
+    first, second = workflow_warnings(caplog)
+    initial = "The request is not a valid initial state."
+    assert_logs_workflow_error(first, created, "a", initial)
+    assert_logs_workflow_error(second, created, "b", initial)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_valid_write_logs_no_workflow_error(caplog):
+    user = user_with((TODO_WRITER, "a"))
+    resource = todo(rbac_context="a")
+    Given.http.force_authenticate(user)
+    put_todo(resource, dict(NOT_STARTED, status="in progress", rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    resource.refresh_from_db()
+    resource.content = dict(resource.content, status="done")
+    resource.save()
+    assert workflow_warnings(caplog) == []
 
 
 @pytest.mark.django_db

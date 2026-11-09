@@ -467,7 +467,12 @@ as is content that meets the conditions of more than one state.
 the new content is in, where a policy applies, to the write's
 `TransitionData` there (`None` if invalid there): a transition where the
 resource stays, `__INITIALIZE__` where it enters, and `__LEAVE__` (no
-`proposed_state`; `prior_state` is the state it left) where it leaves. A
+`proposed_state`; `prior_state` is the state it left) where it leaves.
+Only API writes are checked against the workflow: a save that skipped the
+check (the admin, `ResourceRegistration`, server code) is saved even where
+it is invalid, and each context where it is invalid is logged as a WARNING
+on the `scrud_django.workflow` logger, naming the resource's pk, its type
+URI, the context and the error. A
 save of an instance whose row is not on the database written to (a copy
 with `save(using=...)`) is reported as a create. The requesting user is not passed: read it from a
 `contextvars.ContextVar` that a middleware sets (see the example below),

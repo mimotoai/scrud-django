@@ -187,6 +187,14 @@ you deploy it.
   in `transitions` there too), and a save whose row is not on the database
   written to (an instance copied with `save(using=...)`) is reported as a
   create instead of raising `AttributeError` (#15).
+* A save that skipped the workflow check (the admin, `ResourceRegistration`,
+  server code) and is invalid under a context's workflow policy was saved
+  silently: `transition_error` names the error of the first context with a
+  policy only, and nothing logged it. `Resource.save()` now logs each
+  context where the save is invalid as a WARNING on the new
+  `scrud_django.workflow` logger, naming the resource's pk, its type URI,
+  the context, the policy and the error. The signal's arguments are
+  unchanged.
 * `ScrudSignalProcessor` read `SCRUD_WORKFLOW_ACTIONS` once, when it was
   built, so `override_settings(SCRUD_WORKFLOW_ACTIONS=...)` did not change
   the actions the app ran. It now reads the setting on first use and again
@@ -278,6 +286,9 @@ you deploy it.
 * `scrud_post_save` sends two more keyword arguments, `transitions` and
   `transition_error`: an `on_save` action (or receiver) that names its
   keyword arguments must also take `**kwargs`.
+* Route the new `scrud_django.workflow` logger where you watch warnings:
+  it reports server-side saves (the admin, `ResourceRegistration`, your
+  code) that are invalid under a workflow policy and were saved anyway.
 * A `ScrudSignalProcessor` (or subclass) instance built in addition to the
   default one now replaces it rather than running alongside it: build it
   in the `ready()` of an app listed after `scrud_django`, and do not count

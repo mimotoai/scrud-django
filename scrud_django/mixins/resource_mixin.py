@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Mapping
 from typing import NamedTuple
 
@@ -22,6 +23,10 @@ from ..scrud_signals import scrud_post_delete, scrud_post_save
 
 workflow_policy_type_uri = WORKFLOW_POLICY_TYPE_URI
 
+# The workflow errors of saves that skipped the ``WorkflowValidator``
+# (`ResourceMixin.save`).
+logger = logging.getLogger("scrud_django.workflow")
+
 # The transition ``scrud_post_save``'s ``transitions`` reports in a context a
 # write moves the resource out of: ``TransitionData(None, <the state it was
 # in there>, LEAVE_TRANSITION)``. Reserved (``RESERVED_TRANSITION_PREFIX``):
@@ -41,9 +46,9 @@ WORKFLOW_ERRORS = (
 
 
 class Transitions(NamedTuple):
-    """What ``scrud_post_save`` reports of a save's workflow transitions
-    (`ResourceMixin.get_transitions`), as its keyword arguments of the same
-    names."""
+    """A save's workflow transitions (`ResourceMixin.get_transitions`):
+    ``scrud_post_save`` sends the first three as its keyword arguments of
+    the same names; `ResourceMixin.save` logs `errors`."""
 
     # Under the policy of the first context the content names that has one
     # (`ResourceMixin.workflow_context_and_policy`); ``None`` when no policy
@@ -54,6 +59,10 @@ class Transitions(NamedTuple):
     # Context -> `TransitionData` (``None``: invalid there), for every
     # context the stored resource or the content is in under a policy.
     transitions: dict
+    # Context -> the workflow error that made its `transitions` entry
+    # ``None``, for each such context (not sent with the signal: `save`
+    # logs them).
+    errors: dict
 
 
 def rbac_contexts_of(content):
@@ -139,7 +148,14 @@ class ResourceMixin(ScrudfulMixin):
     ) -> None:
         """``Model.save()``, then ``scrud_post_save``, sent with ``using`` the
         database the save wrote to (`_write_db`) and the save's transitions
-        (`get_transitions`), read before it writes."""
+        (`get_transitions`), read before it writes.
+
+        A save is not checked against the workflow (the ``WorkflowValidator``
+        checks API writes; the admin, ``ResourceRegistration`` and server
+        code skip it): an invalid one is still saved, and each context where
+        it is invalid is logged as a WARNING on the ``scrud_django.workflow``
+        logger, naming the resource's pk, its type URI, the context and the
+        workflow error (`log_workflow_errors`)."""
         db = self._write_db(using)
         transitions = self.get_transitions(db)
         action = 'CREATE' if self._state.adding else 'UPDATE'
@@ -160,6 +176,32 @@ class ResourceMixin(ScrudfulMixin):
             transitions=transitions.transitions,
             action=action,
         )
+        self.log_workflow_errors(transitions.errors)
+
+    def log_workflow_errors(self, errors):
+        """Log each workflow error of `errors` (context -> error, from
+        `get_transitions`) as a WARNING on the ``scrud_django.workflow``
+        logger. An API write passed the ``WorkflowValidator`` and has none;
+        a save that skipped it (the admin, ``ResourceRegistration``, server
+        code) would otherwise be invalid silently in every context but the
+        one ``transition_error`` reports."""
+        for context, error in errors.items():
+            logger.warning(
+                "Resource pk %s of %s was saved past its workflow in context "
+                "%r (policy %r): %s (prior state %r, proposed state %r%s).",
+                self.pk,
+                self.resource_type.type_uri,
+                context,
+                error.policy,
+                error.message,
+                error.prior_state,
+                error.proposed_state,
+                (
+                    f", matching states {error.matching_states!r}"
+                    if isinstance(error, WorkflowAmbiguousStateError)
+                    else ""
+                ),
+            )
 
     def delete(self, using=None, keep_parents=False) -> tuple[int, dict[str, int]]:
         """``Model.delete()``, then ``scrud_post_delete``, sent with ``using``
@@ -260,6 +302,11 @@ class ResourceMixin(ScrudfulMixin):
             transition_data,
             transition_error,
             {context: data for context, (data, _) in reported.items()},
+            {
+                context: error
+                for context, (_, error) in reported.items()
+                if error is not None
+            },
         )
 
     def transition_in(self, workflow, prior_data, entering=False, leaving=False):
