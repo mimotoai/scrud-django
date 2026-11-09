@@ -368,7 +368,11 @@
   // ---- htmx integration -------------------------------------------------
 
   var htmx = window.htmx;
-  if (!htmx || typeof document === 'undefined') return;
+  if (typeof document === 'undefined') return;
+  if (!htmx) {
+    console.error('scrud-ui: htmx is not loaded; scrud-ui.js is inactive');
+    return;
+  }
 
   htmx.config.selfRequestsOnly = true;
   // htmx 2.0.4 also sends DELETE's form values as URL params, and the Delete
@@ -422,7 +426,15 @@
     var triggering = detail.triggeringEvent;
     if (!elt || !elt.matches || !elt.matches(FRAME)) return;
     if (!triggering || !triggering.target) return;
-    if (frameOf(triggering.target) !== elt) evt.preventDefault();
+    if (frameOf(triggering.target) !== elt) {
+      // Expected: the inner frame handles it, so this is debug, not a warning.
+      console.debug(
+        'scrud-ui: cancelled request of outer frame ' +
+          elt.getAttribute('data-scrud-href') +
+          '; the event target belongs to an inner frame'
+      );
+      evt.preventDefault();
+    }
   });
 
   document.addEventListener('htmx:configRequest', function (evt) {

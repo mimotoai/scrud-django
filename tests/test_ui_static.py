@@ -719,3 +719,15 @@ def test_invalid_fields_cancel_the_put_and_show_a_notice():
         "This form could not be saved: invalid fields /n, /__proto__/x."
     ]
     assert out["second"] is False and out["after"] == 0
+
+
+def test_scrud_ui_logs_missing_htmx_and_cancelled_outer_frames():
+    source = SCRUD_UI.read_text()
+    assert (
+        "console.error('scrud-ui: htmx is not loaded; scrud-ui.js is inactive')"
+        in source
+    )
+    assert "console.debug(" in source
+    # The debug call names the frame href and sits before the cancellation.
+    cancel = source[source.index("console.debug(") :]
+    assert cancel.index("data-scrud-href") < cancel.index("evt.preventDefault()")
