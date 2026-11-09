@@ -269,3 +269,56 @@ def test_array_edit_append_field_named_items():
 def test_label_uses_input_id():
     out = render("string-edit", pointer="/a", input_id="zz", label="A")
     assert 'id="zz"' in out and 'for="zz"' in out
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "javascript:alert(1)",
+        "JaVaScRiPt:x",
+        " javascript:x",
+        "data:text/html,x",
+        "//evil.example",
+        "/\\evil.example",
+        "vbscript:x",
+    ],
+)
+def test_uri_unsafe_schemes_are_plain_text(bad):
+    out = render("uri", value=bad)
+    assert "<a" not in out and "href" not in out
+    assert 'class="scrud-uri"' in out
+
+
+@pytest.mark.parametrize(
+    "good", ["https://ex.com/a", "HTTP://ex.com", "mailto:a@ex.com", "/relative"]
+)
+def test_uri_safe_values_link(good):
+    assert f'<a class="scrud-uri" href="{good}"' in render("uri", value=good)
+
+
+def test_uri_href_is_escaped():
+    out = render("uri", value="https://ex.com/a?b=<c>&d=1")
+    assert 'href="https://ex.com/a?b=&lt;c&gt;&amp;d=1"' in out
+
+
+@pytest.mark.parametrize("empty", [None, ""])
+def test_uri_empty_renders_nothing(empty):
+    out = render("uri", value=empty)
+    assert "href" not in out and "None" not in out and "<a" not in out
+
+
+def test_enum_numeric_and_boolean_selection():
+    out = render("enum-edit", value=2, pointer="/n", schema={"enum": [1, 2, 3]})
+    assert out.count(" selected") == 1 and '<option value="2" selected>' in out
+    out = render("enum-edit", value=True, pointer="/b", schema={"enum": [1, True]})
+    assert out.count(" selected") == 1 and '<option value="True" selected>' in out
+    out = render("enum-edit", value=1, pointer="/b", schema={"enum": [True, 1]})
+    assert out.count(" selected") == 1 and '<option value="1" selected>' in out
+
+
+def test_number_not_localized():
+    from django.utils import translation
+
+    with translation.override("fr"):
+        assert 'value="1.5"' in render("number-edit", value=1.5, pointer="/n")
+        assert "1.5" in render("number", value=1.5)
