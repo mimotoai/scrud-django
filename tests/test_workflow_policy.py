@@ -588,6 +588,28 @@ def test_a_condition_that_fails_to_evaluate_is_logged_at_debug(caplog):
     assert debug_records(caplog) == []
 
 
+def test_a_condition_whose_result_is_not_a_boolean_is_logged_at_debug(caplog):
+    # A condition that reads a property as it is: its value, a string, is
+    # no boolean, so it cannot be decided: no match, and logged once.
+    caplog.set_level(logging.DEBUG, logger=WORKFLOW_LOGGER)
+    policy = WorkflowPolicy(
+        {
+            "resource_type": "tests://T",
+            "initial_states": {
+                "flagged": "status",
+                "open": 'status == "x"',
+            },
+        }
+    )
+    assert policy.state({"status": "x"}) == "open"
+    (record,) = debug_records(caplog)
+    message = record.getMessage()
+    assert "'flagged'" in message, message
+    assert "'status'" in message, message
+    assert "not a boolean" in message, message
+    assert "'open'" not in message, message
+
+
 def test_undeclared_properties_flags_a_misspelled_property():
     # The CEL type checker's message is parsed (UNDECLARED_REFERENCE): a
     # change of its format must fail here, not silently report nothing.

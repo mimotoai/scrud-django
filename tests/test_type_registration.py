@@ -599,11 +599,15 @@ def test_rows_of_the_same_revision_are_read_oldest_first():
 
 
 @pytest.mark.django_db
-def test_registration_updates_the_row_that_reads_use():
+@pytest.mark.parametrize(
+    "latest_first", [True, False], ids=["latest stored first", "latest stored last"]
+)
+def test_registration_updates_the_row_that_reads_use(latest_first):
     # Two rows of one type (stored past registration, or by two processes
     # at once: `type-registration-race`). A process start updates the row
     # `get_resource_type_for` reads, the latest revision, not whichever the
-    # database returns first.
+    # database returns first, nor the oldest or newest primary key: "10"
+    # is stored before "9" (the lower key) and after it.
     def stored(revision):
         return ResourceType.objects.create(
             type_uri=TYPE_URI,
@@ -613,8 +617,14 @@ def test_registration_updates_the_row_that_reads_use():
             modified_at=now(),
         )
 
-    older = stored("9")
-    latest = stored("10")
+    if latest_first:
+        latest = stored("10")
+        older = stored("9")
+        assert latest.pk < older.pk
+    else:
+        older = stored("9")
+        latest = stored("10")
+        assert latest.pk > older.pk
     registered = registration.ResourceTypeRegistration(
         TYPE_URI,
         slug=SLUG,
