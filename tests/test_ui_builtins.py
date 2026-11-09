@@ -43,11 +43,58 @@ def test_string_view_and_edit():
         pointer="/items/0/text",
         label="Text",
         mode="edit",
+        schema={"type": "string", "maxLength": 100},
     )
     assert 'name="/items/0/text"' in edit
     assert 'value="Buy milk"' in edit
     assert "<label" in edit
     assert "<form" not in edit
+    assert "<textarea" not in edit
+
+
+@pytest.mark.parametrize(
+    "value, schema",
+    [
+        ("line 1\nline <2>", {"type": "string", "maxLength": 100}),
+        ("line 1\r\nline <2>", {"type": "string", "format": "email"}),
+        ("short <2>", {"type": "string"}),
+        ("short <2>", {}),
+        ("short <2>", {"type": "string", "maxLength": 201}),
+    ],
+)
+def test_string_edit_textarea(value, schema):
+    # A text input's value loses CR and LF in the browser: multi-line text,
+    # and strings that may be long, edit in a textarea.
+    out = render(
+        "string-edit",
+        value=value,
+        pointer="/a",
+        input_id="scrud-x",
+        label="A",
+        schema=schema,
+        errors=["Bad"],
+    )
+    assert "<input" not in out
+    escaped = value.replace("<", "&lt;").replace(">", "&gt;")
+    # the newline after the start tag keeps a leading newline of the value
+    assert (
+        f'<textarea id="scrud-x" name="/a" aria-invalid="true">\n{escaped}</textarea>'
+        in out
+    )
+    assert '<label for="scrud-x">A</label>' in out
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "string", "maxLength": 200},
+        {"type": "string", "format": "email"},
+    ],
+)
+def test_string_edit_single_line_input(schema):
+    out = render("string-edit", value="a <b>", pointer="/a", schema=schema)
+    assert "<textarea" not in out
+    assert 'type="text"' in out and 'value="a &lt;b&gt;"' in out
 
 
 def test_boolean_edit_checked():

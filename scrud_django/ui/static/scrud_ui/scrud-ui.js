@@ -117,11 +117,57 @@
     return field.value;
   }
 
+  /** The value at `pointer` in `doc`, or undefined (never throws). */
+  function valueAt(doc, pointer) {
+    var segs;
+    try {
+      segs = parsePointer(pointer);
+    } catch (err) {
+      return undefined;
+    }
+    var node = doc;
+    for (var i = 0; i < segs.length; i++) {
+      if (node === null || typeof node !== 'object') return undefined;
+      var seg = segs[i];
+      if (Array.isArray(node)) {
+        if (!isIndex(seg) || Number(seg) >= node.length) return undefined;
+        node = node[Number(seg)];
+      } else {
+        if (!own(node, seg)) return undefined;
+        node = node[seg];
+      }
+    }
+    return node;
+  }
+
+  var TEXT_LIKE = ['text', 'textarea', 'url', 'date', 'number'];
+
+  /**
+   * Whether `field` (a text-like input) still shows the value embedded at its
+   * pointer. A text input's value has lost CR and LF (the browser strips
+   * them), and a textarea's line breaks are LF: compared accordingly, so that
+   * an untouched field leaves the embedded value exactly as it is.
+   */
+  function untouched(field, embedded) {
+    if (TEXT_LIKE.indexOf(field.type) < 0) return false;
+    var value = field.value == null ? '' : String(field.value);
+    if (typeof embedded === 'number') {
+      return value !== '' && Number(value) === embedded;
+    }
+    if (typeof embedded !== 'string') return false;
+    if (field.type === 'textarea') {
+      return embedded.replace(/\r\n?/g, '\n') === value.replace(/\r\n?/g, '\n');
+    }
+    return embedded.replace(/[\r\n]/g, '') === value.replace(/[\r\n]/g, '');
+  }
+
   /**
    * Build the JSON body: a deep copy of `content` with every field applied at
    * its pointer. `fields` are {name, type, value, checked} (DOM inputs fit).
-   * Fields sharing a `<prefix>/-` become one new element appended to the
-   * array at <prefix>; a group whose fields are all empty is dropped.
+   * A text-like field that still shows the embedded value is skipped
+   * (`untouched`). Fields sharing a `<prefix>/-` become one new element
+   * appended to the array at <prefix>; a group whose fields are all empty is
+   * dropped.
    */
   function buildBody(content, fields) {
     var body = JSON.parse(JSON.stringify(content));
@@ -137,6 +183,7 @@
       }
       var dash = segs.indexOf('-');
       if (dash < 0) {
+        if (untouched(field, valueAt(content, field.name))) return;
         try {
           applyPointer(body, field.name, fieldValue(field));
         } catch (err) {

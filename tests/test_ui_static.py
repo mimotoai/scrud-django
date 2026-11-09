@@ -196,3 +196,59 @@ def test_apply_pointer_arrays_and_groups_under_node():
 def test_confirm_handler_returns_early_without_triggering_target():
     source = SCRUD_UI.read_text()
     assert "if (!triggering || !triggering.target) return;" in source
+
+
+UNTOUCHED_SCRIPT = r"""
+const vm = require('vm'), fs = require('fs');
+const window = {};
+const ctx = vm.createContext({window, htmx: {config: {}, defineExtension() {}}});
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const U = window.ScrudUI;
+const content = {
+  title: 'line 1\nline 2', crlf: 'a\r\nb', n: 1.5,
+  items: [{text: 'x\ny', done: false}],
+};
+const out = {};
+// A text input's value has lost the newlines: untouched, it changes nothing.
+out.checkbox = U.buildBody(content, [
+  {name: '/title', type: 'text', value: 'line 1line 2'},
+  {name: '/items/0/text', type: 'text', value: 'xy'},
+  {name: '/n', type: 'number', value: '1.5'},
+  {name: '/items/0/done', type: 'checkbox', checked: true},
+]);
+// A textarea's value has LF line breaks (CRLF normalized): untouched.
+out.textarea = U.buildBody(content, [
+  {name: '/crlf', type: 'textarea', value: 'a\nb'},
+  {name: '/title', type: 'textarea', value: 'line 1\nline 2'},
+]);
+// Edits still apply, including one that only removes a line break.
+out.edited = U.buildBody(content, [
+  {name: '/title', type: 'text', value: 'new'},
+  {name: '/crlf', type: 'textarea', value: 'ab'},
+  {name: '/n', type: 'number', value: '2'},
+]);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_build_body_keeps_untouched_multiline_strings():
+    if shutil.which("node") is None:
+        pytest.skip("node is not available")
+    done = subprocess.run(
+        ["node", "-e", UNTOUCHED_SCRIPT, str(SCRUD_UI)],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["checkbox"] == {
+        "title": "line 1\nline 2",
+        "crlf": "a\r\nb",
+        "n": 1.5,
+        "items": [{"text": "x\ny", "done": True}],
+    }
+    assert out["textarea"]["crlf"] == "a\r\nb"
+    assert out["textarea"]["title"] == "line 1\nline 2"
+    assert out["edited"]["title"] == "new"
+    assert out["edited"]["crlf"] == "ab"
+    assert out["edited"]["n"] == 2

@@ -563,7 +563,8 @@ def test_input_ids_unique(admin_login):
     }
     content = {"a-b": "1", "a": {"b": "2"}, "c/d": "3", "c~1d": "4"}
     output = render_node_type(node_type(schema), content, admin_login)
-    ids = re.findall(r'<input[^>]* id="([^"]+)"', output)
+    # strings without maxLength edit in a textarea
+    ids = re.findall(r'<(?:input|textarea)[^>]* id="([^"]+)"', output)
     assert len(ids) == 4 and len(set(ids)) == 4
     assert all(re.fullmatch(r"[^\s]+", i) for i in ids)
     assert 'name="/c~1d"' in output and 'name="/c~01d"' in output
