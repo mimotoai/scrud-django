@@ -71,6 +71,7 @@ def test_stored_components_cannot_reach_the_request_or_settings(
     made = make_component("probe", "x")
     make_stylesheet("probing", [("ex:TodoList", "probe")])
     made.content = {**made.content, "engine": engine}
+    rendered = False
     for probe in probes:
         made.content = {
             **made.content,
@@ -79,11 +80,15 @@ def test_stored_components_cannot_reach_the_request_or_settings(
         made.save()
         output = render_with(probe, engine, todo_list, todo_reader_login)
         assert_nothing_leaks(output, todo_reader_login)
+        rendered = rendered or 'class="probe"' in output
         # rendered empty, or failed and fell back to the built-in
         if 'class="probe"' in output:
             assert '<p class="probe">[]</p>' in output, probe
         else:
             assert "scrud-object" in output and "Groceries" in output, probe
+    # the probe component was used at least once, so the checks above are not
+    # vacuous
+    assert rendered
 
 
 @pytest.mark.django_db

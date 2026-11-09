@@ -294,8 +294,9 @@ def load_stored(view, request, response) -> None:
     db = getattr(view, "locked_write_db", None)
     unlocked = getattr(view, "unlocked_lookups", None)
     try:
-        # A savepoint: a failed lookup leaves the request's transaction
-        # usable.
+        # A savepoint only when the view names a write database (`db`): a
+        # failed lookup then leaves the request's transaction usable. Without
+        # one the lookup runs in the request's own transaction.
         with (
             transaction.atomic(using=db) if db else nullcontext(),
             unlocked() if unlocked is not None else nullcontext(),
