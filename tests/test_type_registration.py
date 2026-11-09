@@ -9,6 +9,7 @@ for it fails (an error, not a 404). A slug's "latest revision" is the
 highest number, not the last string."""
 
 import json
+import threading
 from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
@@ -171,6 +172,41 @@ def test_a_retried_registration_is_pending_until_its_transaction_commits(
     # The commit forgets it.
     for callback in callbacks:
         callback()
+    assert SLUG not in registration.PENDING_REGISTRATIONS
+
+
+@pytest.mark.django_db
+def test_a_pending_registration_runs_without_the_process_lock(
+    deferred_routes, django_capture_on_commit_callbacks
+):
+    # A registration writes rows, whose locks last until the caller's
+    # transaction commits. Run under the process lock, a thread waiting in
+    # the database for those row locks would hold it, and the thread holding
+    # them would block on it reading another pending type: a deadlock the
+    # database cannot detect. The lock guards PENDING_REGISTRATIONS only.
+    register = registration.PENDING_REGISTRATIONS[SLUG]
+    acquired = []
+
+    def try_the_lock():
+        if registration._PENDING_LOCK.acquire(blocking=False):
+            registration._PENDING_LOCK.release()
+            acquired.append(True)
+        else:
+            acquired.append(False)
+
+    def register_while_another_thread_tries_the_lock():
+        other = threading.Thread(target=try_the_lock)
+        other.start()
+        other.join()
+        return register()
+
+    registration.PENDING_REGISTRATIONS[SLUG] = (
+        register_while_another_thread_tries_the_lock
+    )
+    with django_capture_on_commit_callbacks(execute=True):
+        registered = registration.get_resource_type_for(SLUG)
+    assert acquired == [True]
+    assert registered.type_uri == TYPE_URI
     assert SLUG not in registration.PENDING_REGISTRATIONS
 
 

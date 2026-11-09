@@ -203,8 +203,11 @@ you deploy it.
   `ResourceRegistration`): the process serves the type once the database is
   back. Until then, a request for the type fails with the retry's error (a
   500), not a 404. A retry inside a transaction that is rolled back is
-  retried again. `migrate`, `makemigrations` and `check` on a database not
-  yet migrated still work.
+  retried again. Two threads reading a pending type at once may each
+  register it, as two processes starting at once may
+  ([type-registration-race](follow-ups.md#type-registration-race)).
+  `migrate`, `makemigrations` and `check` on a database not yet migrated
+  still work.
 * A process start rewrote every existing type's row: under `DEBUG` with a
   new ETag and modification time, otherwise as it was, each time with a
   django-reversion revision. A type whose row and documents are unchanged

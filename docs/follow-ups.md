@@ -46,12 +46,15 @@ the lookup reads the write database, not a replica that may lag behind,
 which narrowed the window from the replica's lag to the time between the
 lookup and the insert. A registration that fails with a database error when
 the URLconf is imported is retried when the type is next read
-(`register_or_defer`, `retry_registration`): retries in one process run one
-at a time, but a retry inside a request's transaction stays pending until
-that commits, so another thread of the process reading the type before then
-can register it again, and for a new type insert a second row, as a second
-process would. `json_resource_type` and the built-in types now register in
-a transaction on `type_db()` (`register_or_defer`), without a lock. Fix: in
+(`register_or_defer`, `retry_registration`), without holding the process's
+lock (which guards the pending list only: held while the registration
+waited for row locks in the database, it could deadlock with the thread
+holding them), and stays pending until the reader's transaction commits. So
+two threads of one process reading a pending type at once, or one reading it
+while another's retry is not committed yet, can each register it, and for a
+new type each insert a row, as two processes would. `json_resource_type`
+and the built-in types now register in a transaction on `type_db()`
+(`register_or_defer`, and `retry_registration`'s), without a lock. Fix: in
 that transaction (and around a `ResourceTypeRegistration` made directly),
 first take a lock (scoped-rbac's `conditional.lock_collection` of
 `ResourceType`, which needs that transaction, or a row of its own) and look

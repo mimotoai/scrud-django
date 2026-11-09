@@ -384,37 +384,41 @@ def retry_registration(slug):
     the caller's), raising its error if it fails again. It is forgotten as
     pending once that transaction commits: if the caller's is rolled back
     (a refused write), so is the registration, and it is retried on the
-    next read. Registrations retry one at a time in a process; another
-    process may register the same new type at once
-    (``type-registration-race`` in ``docs/follow-ups.md``).
+    next read.
+
+    The process lock guards `PENDING_REGISTRATIONS` only; the registration
+    runs without it. Its row locks last until the caller's transaction
+    commits, so under the lock a thread waiting for them in the database
+    would hold it while the thread holding them waited for it (reading
+    another pending type): a deadlock the database cannot detect. Two
+    threads of a process may then register the same type at once, as two
+    processes may (``type-registration-race`` in ``docs/follow-ups.md``).
 
     A pending type registered under another slug (its stored row's, kept
     outside ``DEBUG``) than the one its routes were built for raises
     ``ImproperlyConfigured``: its routes would read a type that is not
     there."""
-    if slug not in PENDING_REGISTRATIONS:
-        return
     with _PENDING_LOCK:
         register = PENDING_REGISTRATIONS.get(slug)
-        if register is None:
-            return
-        db = type_db()
-        with transaction.atomic(using=db):
-            registered = register().resource_type
-            if registered.slug != slug:
-                raise ImproperlyConfigured(
-                    f"The resource type {registered.type_uri!r} is stored with "
-                    f"the slug {registered.slug!r}, but its routes were built "
-                    f"for {slug!r}: register it with its stored slug, or under "
-                    "DEBUG to store the new one."
-                )
+    if register is None:
+        return
+    db = type_db()
+    with transaction.atomic(using=db):
+        registered = register().resource_type
+        if registered.slug != slug:
+            raise ImproperlyConfigured(
+                f"The resource type {registered.type_uri!r} is stored with "
+                f"the slug {registered.slug!r}, but its routes were built "
+                f"for {slug!r}: register it with its stored slug, or under "
+                "DEBUG to store the new one."
+            )
 
-            def forget():
-                with _PENDING_LOCK:
-                    if PENDING_REGISTRATIONS.get(slug) is register:
-                        del PENDING_REGISTRATIONS[slug]
+        def forget():
+            with _PENDING_LOCK:
+                if PENDING_REGISTRATIONS.get(slug) is register:
+                    del PENDING_REGISTRATIONS[slug]
 
-            transaction.on_commit(forget, using=db)
+        transaction.on_commit(forget, using=db)
     logger.info("Registered resource type %r, which was pending.", slug)
 
 
