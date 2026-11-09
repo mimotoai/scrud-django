@@ -3,8 +3,10 @@
 Django templates compile on a standalone engine with no loaders and no tag
 libraries, so `{% load %}` of app tags is unavailable, and `{% include %}` and
 `{% extends %}` (which would need a loader) are refused at compile time. Jinja2
-templates compile on an environment with no loader. Both engines autoescape;
-`SafeString` values (child HTML) pass through unescaped.
+templates run in a `SandboxedEnvironment`, which blocks access to dunder
+attributes and unsafe callables; Jinja `include`, `extends` and `import` fail at
+render time because there is no loader. Both engines autoescape; `SafeString`
+values (child HTML) pass through unescaped.
 """
 
 from functools import lru_cache
@@ -45,14 +47,23 @@ def _compile_django(source: str) -> CompiledTemplate:
     )
 
 
+@lru_cache(maxsize=1)
+def _jinja_environment():
+    """The sandboxed Jinja2 environment, built on first use (lazy import)."""
+    import jinja2
+    from jinja2.sandbox import SandboxedEnvironment
+
+    return SandboxedEnvironment(
+        autoescape=True, undefined=jinja2.Undefined, loader=None
+    )
+
+
 def _compile_jinja2(source: str) -> CompiledTemplate:
     try:
         import jinja2
     except ImportError as error:
         raise TemplateCompileError("jinja2 is not installed") from error
-    environment = jinja2.Environment(
-        autoescape=True, undefined=jinja2.Undefined, loader=None
-    )
+    environment = _jinja_environment()
     try:
         template = environment.from_string(source)
     except jinja2.TemplateSyntaxError as error:

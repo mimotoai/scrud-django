@@ -91,3 +91,27 @@ def test_update_with_bad_template_is_400(admin_login):
     )
     Then.http.status_code_is(400)
     assert Http.response.json()["type"].endswith("ui-template-invalid")
+
+
+def _jinja_output(source):
+    """Render a Jinja source; a SecurityError counts as blocked (None)."""
+    from jinja2.exceptions import SecurityError
+
+    try:
+        return str(compile_template("jinja2", source).render({}))
+    except (TemplateCompileError, SecurityError):
+        return None
+
+
+def test_jinja_sandbox_blocks_dunder_access():
+    output = _jinja_output("{{ ''.__class__.__mro__ }}")
+    assert output is None or "<class" not in output
+    output = _jinja_output("{{ ''.__class__.__mro__[1].__subclasses__()|length }}")
+    assert output is None or not output.strip().isdigit()
+
+
+def test_jinja_sandbox_blocks_globals_escape():
+    output = _jinja_output("{{ cycler.__init__.__globals__ }}")
+    assert output is None or "os" not in output and "{" not in output
+    output = _jinja_output("{{ cycler.__init__.__globals__.os.getcwd() }}")
+    assert output is None or "/" not in output
