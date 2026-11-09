@@ -1,1 +1,1 @@
-{{ value }}
+<div class="scrud-field scrud-boolean-edit"><input type="checkbox" id="f{{ pointer|cut:"/" }}" name="{{ pointer }}"{% if value %} checked{% endif %}{% if errors %} aria-invalid="true"{% endif %}><label for="f{{ pointer|cut:"/" }}">{{ label|default:pointer }}</label>{% if errors %}<ul class="scrud-errors" role="alert">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}</div>

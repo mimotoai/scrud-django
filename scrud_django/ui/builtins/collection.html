@@ -1,1 +1,1 @@
-{{ value }}
+<section class="scrud-collection">{% if label %}<h2>{{ label }}</h2>{% endif %}<p class="scrud-count">{{ count }}</p><ul>{% for child in children %}<li>{{ child }}</li>{% endfor %}</ul><nav class="scrud-pager">{% if previous %}<a rel="prev" href="{{ previous }}">Previous</a>{% endif %}{% if next %}<a rel="next" href="{{ next }}">Next</a>{% endif %}</nav></section>

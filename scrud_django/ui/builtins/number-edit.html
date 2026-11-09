@@ -1,1 +1,1 @@
-{{ value }}
+<div class="scrud-field scrud-number-edit"><label for="f{{ pointer|cut:"/" }}">{{ label|default:pointer }}</label><input type="number" step="{% if schema.type == "integer" %}1{% else %}any{% endif %}" id="f{{ pointer|cut:"/" }}" name="{{ pointer }}" value="{{ value|default_if_none:"" }}"{% if errors %} aria-invalid="true"{% endif %}>{% if errors %}<ul class="scrud-errors" role="alert">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}</div>
