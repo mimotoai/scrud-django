@@ -12,7 +12,8 @@ from uuid import uuid4
 
 import pytest
 from django.apps import apps
-from django.db import connection, connections
+from django.db import connection, connections, transaction
+from django.test import override_settings
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
@@ -22,7 +23,7 @@ from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
-from scrud_django.scrud_signals import scrud_post_save
+from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save, write_alias
 from scrud_django.search_indexes import ResourceIndex
 
 from .factories import UserFactory
@@ -40,16 +41,17 @@ IN_PROGRESS = {
 
 @pytest.fixture
 def ran(monkeypatch):
-    """The ToDo actions that ran: ``("save", pk)`` and ``("delete", etag)``
-    (a deleted instance has no pk)."""
+    """The ToDo actions that ran: ``("save", pk)`` and ``("delete", etag,
+    pk)``. A deleted instance has no pk: the ``pk`` the action is given
+    names the deleted row."""
     calls = []
     entry = actions[TODO]
 
     def on_save(sender, instance, **kwargs):
         calls.append(("save", instance.pk))
 
-    def on_delete(sender, instance, **kwargs):
-        calls.append(("delete", instance.etag))
+    def on_delete(sender, instance, pk=None, **kwargs):
+        calls.append(("delete", instance.etag, pk))
 
     monkeypatch.setitem(entry, "on_save", on_save)
     monkeypatch.setitem(entry, "on_delete", on_delete)
@@ -71,6 +73,19 @@ def failing_on_save(monkeypatch):
         raise ActionFailed(f"on_save failed for {instance.pk}")
 
     monkeypatch.setitem(actions[TODO], "on_save", on_save)
+    return calls
+
+
+@pytest.fixture
+def failing_on_delete(monkeypatch):
+    """A ToDo ``on_delete`` action that raises; returns the pks it was given."""
+    calls = []
+
+    def on_delete(sender, instance, pk=None, **kwargs):
+        calls.append(pk)
+        raise ActionFailed(f"on_delete failed for {pk}")
+
+    monkeypatch.setitem(actions[TODO], "on_delete", on_delete)
     return calls
 
 
@@ -148,6 +163,30 @@ def todos_moved_after_save(context="other"):
 def a_todo(content=NOT_STARTED):
     reverse("todos-list")
     return ResourceRegistration.register(dict(content), "todos")
+
+
+class ReplicaRouter:
+    """Reads from "other" (a read replica), writes to default."""
+
+    def db_for_read(self, model, **hints):
+        return "other"
+
+    def db_for_write(self, model, **hints):
+        return "default"
+
+    def allow_relation(self, obj1, obj2, **hints):
+        return True
+
+
+def read_from_the_replica(todo):
+    """`todo` as a read through `ReplicaRouter` returns it: its
+    ``_state.db`` is "other". (The test's "other" database is not a copy of
+    default, so it is read from default, with its type, and given the
+    replica's alias.)"""
+    resources = Resource.objects.using("default").select_related("resource_type")
+    instance = resources.get(pk=todo.pk)
+    instance._state.db = "other"
+    return instance
 
 
 @pytest.mark.django_db
@@ -281,7 +320,7 @@ def test_a_delete_runs_its_side_effects_once_after_commit(
     assert indexed == []
     for callback in callbacks:
         callback()
-    assert ran == [("delete", todo.etag)]
+    assert ran == [("delete", todo.etag, todo.pk)]
     # The index entry is named before the instance loses its pk.
     assert indexed == [("remove", f"scrud_django.resource.{todo.pk}")]
 
@@ -310,7 +349,76 @@ def test_scrud_post_save_still_fires_inside_the_write(
     assert ran == [("save", todo.pk)]
 
 
-# An action that raises never fails the write (``robust``): Django logs it.
+@pytest.mark.django_db
+def test_an_on_save_action_gets_transitions_and_transition_error(
+    monkeypatch, django_capture_on_commit_callbacks
+):
+    from scrud_django.workflow import TransitionData
+
+    todo = a_todo(dict(NOT_STARTED, rbac_context="a"))
+    received = []
+
+    def on_save(sender, instance, **kwargs):
+        received.append(kwargs)
+
+    monkeypatch.setitem(actions[TODO], "on_save", on_save)
+    with django_capture_on_commit_callbacks(execute=True):
+        ResourceRegistration.update(
+            dict(IN_PROGRESS, rbac_context="a"), "todos", str(todo.pk)
+        )
+    (kwargs,) = received
+    started = TransitionData("in progress", "not started", "start")
+    assert kwargs["transition_data"] == started
+    assert kwargs["transitions"] == {"a": started}
+    assert kwargs["transition_error"] is None
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_a_save_to_a_database_without_the_row_is_reported_as_a_create():
+    """A fetched instance copied to another database (``save(using=...)``)
+    whose row is not there: no prior content, so it is reported as a create
+    (``__INITIALIZE__``), not an ``AttributeError``."""
+    from scrud_django.models import ResourceType
+    from scrud_django.workflow import TransitionData
+
+    todo = a_todo(dict(IN_PROGRESS, rbac_context="a"))
+    # The type (without its documents) on "other", for the row's foreign key.
+    copy = ResourceType.objects.get(pk=todo.resource_type_id)
+    copy.schema_id = copy.context_id = copy.indexing_policy_id = None
+    ResourceType.objects.using("other").bulk_create([copy])
+    received = []
+
+    def record(sender, **kwargs):
+        received.append(kwargs)
+
+    scrud_post_save.connect(record, weak=False, dispatch_uid="test-missing-row")
+    try:
+        todo.save(using="other")
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-missing-row")
+    assert Resource.objects.using("other").get(pk=todo.pk).content == todo.content
+    (kwargs,) = received
+    assert kwargs["using"] == "other"
+    initialized = TransitionData("in progress", None, "__INITIALIZE__")
+    assert kwargs["transition_data"] == initialized
+    assert kwargs["transitions"] == {"a": initialized}
+    assert kwargs["transition_error"] is None
+
+
+# An action that raises never fails the write: it is logged, once, on the
+# scrud_django.workflow_actions logger, naming the action, the type, the kind
+# of action and the resource's pk.
+
+ACTIONS_LOGGER = "scrud_django.workflow_actions"
+
+
+def assert_names_the_failed_action(record, kind, pk):
+    assert record.name == ACTIONS_LOGGER
+    message = record.getMessage()
+    assert f"tests.test_post_commit.failing_{kind}.<locals>.{kind}" in message, message
+    assert TODO in message
+    assert f"{kind} " in message
+    assert f"pk {pk}" in message
 
 
 @pytest.mark.django_db
@@ -328,6 +436,7 @@ def test_an_action_that_raises_on_commit_does_not_fail_the_write(
     assert failing_on_save == [pk]
     (record,) = logged_action_failures(caplog)
     assert f"on_save failed for {pk}" in record.getMessage()
+    assert_names_the_failed_action(record, "on_save", pk)
 
 
 @pytest.mark.django_db
@@ -359,3 +468,330 @@ def test_an_action_that_raises_outside_a_transaction_does_not_raise(
     assert failing_on_save == [-1]
     (record,) = logged_action_failures(caplog)
     assert "on_save failed for -1" in record.getMessage()
+    assert_names_the_failed_action(record, "on_save", -1)
+
+
+@pytest.mark.django_db
+def test_an_on_delete_action_that_raises_is_logged_with_the_deleted_pk(
+    failing_on_delete, caplog, django_capture_on_commit_callbacks
+):
+    todo = a_todo()
+    todo_pk = todo.pk
+    with django_capture_on_commit_callbacks(execute=True):
+        response = admin_client().delete(
+            reverse("todos-detail", args=[todo_pk]),
+            HTTP_IF_MATCH=quote_etag(todo.etag),
+        )
+    assert response.status_code == 204, response.content
+    assert not Resource.objects.filter(pk=todo_pk).exists()
+    assert failing_on_delete == [todo_pk]
+    (record,) = logged_action_failures(caplog)
+    assert f"on_delete failed for {todo_pk}" in record.getMessage()
+    assert_names_the_failed_action(record, "on_delete", todo_pk)
+
+
+class RolledBack(Exception):
+    pass
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "other"])
+@pytest.mark.parametrize("commit", [False, True], ids=["rolled-back", "committed"])
+def test_a_delete_of_a_resource_read_from_a_replica_acts_when_it_commits(
+    commit, ran, committed_types
+):
+    # Committed for real, on both databases: "other" is in autocommit, so an
+    # action registered there would run at once, inside the delete.
+    todo = read_from_the_replica(a_todo())
+    todo_pk = todo.pk
+    ran.clear()
+    with override_settings(DATABASE_ROUTERS=["tests.test_post_commit.ReplicaRouter"]):
+        try:
+            with transaction.atomic(using="default"):
+                todo.delete()
+                # The delete's action waits for the write database's commit.
+                assert ran == []
+                if not commit:
+                    raise RolledBack
+        except RolledBack:
+            pass
+    assert Resource.objects.using("default").filter(pk=todo_pk).exists() != commit
+    assert ran == ([("delete", todo.etag, todo_pk)] if commit else [])
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_scrud_signals_name_the_database_written_to_not_the_one_read_from():
+    todo = read_from_the_replica(a_todo())
+    received = []
+
+    def record(sender, using=None, **kwargs):
+        received.append(using)
+
+    scrud_post_save.connect(record)
+    scrud_post_delete.connect(record)
+    try:
+        with override_settings(
+            DATABASE_ROUTERS=["tests.test_post_commit.ReplicaRouter"]
+        ):
+            # A sender that names no database: the router's write database.
+            assert write_alias(Resource, {"instance": todo}) == "default"
+            todo.save()
+            todo._state.db = "other"
+            todo.delete()
+    finally:
+        scrud_post_save.disconnect(record)
+        scrud_post_delete.disconnect(record)
+    assert received == ["default", "default"]
+
+
+@pytest.mark.django_db
+def test_scrud_post_delete_names_the_deleted_row():
+    todo = a_todo()
+    todo_pk = todo.pk
+    received = []
+
+    def record(sender, instance, pk=None, **kwargs):
+        received.append((instance.pk, pk))
+
+    scrud_post_delete.connect(record)
+    try:
+        ResourceRegistration.delete("todos", str(todo_pk))
+        other = a_todo()
+        other_pk = other.pk
+        other.delete()
+    finally:
+        scrud_post_delete.disconnect(record)
+    # The instance is Django's deleted instance (no pk); `pk` names its row.
+    assert received == [(None, todo_pk), (None, other_pk)]
+
+
+# A queryset's delete() (bulk deletes, the admin's "delete selected") sends
+# scrud_post_delete for each resource it deletes, as Resource.delete() does.
+
+
+@pytest.mark.django_db
+def test_a_queryset_delete_runs_on_delete_once_per_row_after_commit(
+    ran, django_capture_on_commit_callbacks
+):
+    todos = [a_todo() for _ in range(3)]
+    kept = a_todo()
+    profile = ResourceRegistration.register({"name": "x"}, "partner-profiles")
+    deleted = [*todos[:2], profile]
+    received = []
+
+    def record(sender, instance, **kwargs):
+        received.append((sender, instance.pk, kwargs))
+
+    ran.clear()
+    scrud_post_delete.connect(record)
+    try:
+        with django_capture_on_commit_callbacks() as callbacks:
+            Resource.objects.filter(pk__in=[r.pk for r in deleted]).delete()
+            # The signal fired inside the delete; the actions wait for commit.
+            assert len(received) == 3
+            assert ran == []
+    finally:
+        scrud_post_delete.disconnect(record)
+    assert sorted(kwargs["pk"] for _, _, kwargs in received) == sorted(
+        r.pk for r in deleted
+    )
+    for sender, instance_pk, kwargs in received:
+        assert sender is Resource
+        # Django's deleted instance, as for Resource.delete().
+        assert instance_pk is None
+        assert kwargs["using"] == "default"
+        assert kwargs["action"] == "DELETE"
+        expected_type = (
+            "tests://PartnerProfiles" if kwargs["pk"] == profile.pk else TODO
+        )
+        assert kwargs["resource_type_uri"] == expected_type
+    for callback in callbacks:
+        callback()
+    # Once per deleted ToDo (the profile's type has no action).
+    assert sorted(ran) == sorted(("delete", t.etag, t.pk) for t in todos[:2])
+    assert Resource.objects.filter(pk__in=[todos[2].pk, kept.pk]).count() == 2
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("commit", [False, True], ids=["rolled-back", "committed"])
+def test_a_queryset_delete_acts_only_when_it_commits(commit, ran, committed_types):
+    todos = [a_todo() for _ in range(2)]
+    pks = [t.pk for t in todos]
+    ran.clear()
+    try:
+        with transaction.atomic():
+            Resource.objects.filter(pk__in=pks).delete()
+            assert ran == []
+            if not commit:
+                raise RolledBack
+    except RolledBack:
+        pass
+    assert Resource.objects.filter(pk__in=pks).count() == (0 if commit else 2)
+    assert sorted(ran) == (
+        sorted(("delete", t.etag, t.pk) for t in todos) if commit else []
+    )
+
+
+@pytest.mark.django_db
+def test_a_queryset_delete_logs_each_failing_action_and_deletes_every_row(
+    failing_on_delete, caplog, django_capture_on_commit_callbacks
+):
+    # One action raising does not keep the next from running, nor the rows
+    # from being deleted: each failure is logged with its own pk.
+    todos = [a_todo() for _ in range(2)]
+    pks = sorted(t.pk for t in todos)
+    with django_capture_on_commit_callbacks(execute=True):
+        Resource.objects.filter(pk__in=pks).delete()
+    assert not Resource.objects.filter(pk__in=pks).exists()
+    assert sorted(failing_on_delete) == pks
+    records = logged_action_failures(caplog)
+    assert len(records) == 2
+    for pk in pks:
+        (record,) = [r for r in records if f"pk {pk}," in r.getMessage()]
+        assert f"on_delete failed for {pk}" in record.getMessage()
+        assert_names_the_failed_action(record, "on_delete", pk)
+
+
+def todos_on_other(count):
+    """`count` ToDos stored on the "other" database (and not on default),
+    with their type, for a queryset delete there."""
+    from scrud_django.models import ResourceType
+
+    todos = [a_todo() for _ in range(count)]
+    copy = ResourceType.objects.get(pk=todos[0].resource_type_id)
+    copy.schema_id = copy.context_id = copy.indexing_policy_id = None
+    ResourceType.objects.using("other").bulk_create([copy])
+    for todo in todos:
+        todo.save(using="other")
+        Resource.objects.using("default").filter(pk=todo.pk).delete()
+    return todos
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "other"])
+@pytest.mark.parametrize("commit", [False, True], ids=["rolled-back", "committed"])
+def test_a_queryset_delete_on_another_database_acts_when_it_commits_there(
+    commit, ran, committed_types
+):
+    # Committed for real: default is in autocommit, so an action
+    # registered there (not on "other") would run at once, inside the
+    # delete.
+    todos = todos_on_other(2)
+    pks = [t.pk for t in todos]
+    received = []
+
+    def record(sender, using=None, pk=None, **kwargs):
+        received.append((using, pk))
+
+    ran.clear()
+    scrud_post_delete.connect(record)
+    try:
+        try:
+            with transaction.atomic(using="other"):
+                Resource.objects.using("other").filter(pk__in=pks).delete()
+                assert sorted(received) == sorted(("other", pk) for pk in pks)
+                assert ran == []
+                if not commit:
+                    raise RolledBack
+        except RolledBack:
+            pass
+    finally:
+        scrud_post_delete.disconnect(record)
+    remaining = Resource.objects.using("other").filter(pk__in=pks).count()
+    assert remaining == (0 if commit else 2)
+    assert sorted(ran) == (
+        sorted(("delete", t.etag, t.pk) for t in todos) if commit else []
+    )
+
+
+@pytest.mark.django_db
+def test_a_raw_save_sends_no_scrud_signal(ran, django_capture_on_commit_callbacks):
+    """A raw save (``loaddata``, a django-reversion revert) is Django's
+    ``save_base(raw=True)``: it sends ``post_save`` with ``raw=True``, but no
+    scrud signal, so no workflow action runs (fixtures have no side
+    effects)."""
+    todo = a_todo()
+    received = []
+
+    def record(sender, **kwargs):
+        received.append(kwargs)
+
+    ran.clear()
+    scrud_post_save.connect(record)
+    try:
+        with django_capture_on_commit_callbacks(execute=True):
+            todo.content = dict(IN_PROGRESS)
+            todo.save_base(raw=True)
+    finally:
+        scrud_post_save.disconnect(record)
+    assert Resource.objects.get(pk=todo.pk).content == IN_PROGRESS
+    assert received == []
+    assert ran == []
+
+
+@pytest.fixture
+def stamp_deletion_disconnected():
+    """`scrud_django.models.resource.stamp_deletion`, which hands
+    `ResourceQuerySet.delete` the instances it deleted, disconnected (as by
+    a project that disconnected it), and connected again afterwards."""
+    from django.db.models.signals import post_delete
+
+    from scrud_django.models import resource as resource_module
+
+    uid = "scrud_django.stamp_deletion"
+    assert post_delete.disconnect(sender=Resource, dispatch_uid=uid)
+    try:
+        yield
+    finally:
+        post_delete.connect(
+            resource_module.stamp_deletion, sender=Resource, dispatch_uid=uid
+        )
+
+
+@pytest.mark.django_db
+def test_a_queryset_delete_that_could_not_signal_a_deletion_logs_it(
+    stamp_deletion_disconnected, caplog, django_capture_on_commit_callbacks
+):
+    # Without the receiver the delete cannot tell which instances it
+    # deleted: it sends no scrud_post_delete for them (their on_delete
+    # actions do not run), and says so, naming them, rather than dropping
+    # them silently.
+    todos = [a_todo() for _ in range(2)]
+    kept = a_todo()
+    pks = sorted(t.pk for t in todos)
+    received = []
+
+    def record(sender, pk=None, **kwargs):
+        received.append(pk)
+
+    scrud_post_delete.connect(record)
+    try:
+        with django_capture_on_commit_callbacks(execute=True):
+            Resource.objects.filter(pk__in=[*pks, kept.pk + 1000]).delete()
+    finally:
+        scrud_post_delete.disconnect(record)
+    assert not Resource.objects.filter(pk__in=pks).exists()
+    assert Resource.objects.filter(pk=kept.pk).exists()
+    assert received == []
+    errors = [
+        record
+        for record in caplog.records
+        if record.name == "scrud_django.workflow_actions"
+        and record.levelno == logging.ERROR
+    ]
+    assert [record.getMessage() for record in errors] == [
+        "A queryset delete on database 'default' deleted 2 resources but sent "
+        f"scrud_post_delete for 0: none for pks {pks}, whose on_delete "
+        "actions do not run and whose contexts are not stamped as left. Is the "
+        "post_delete receiver scrud_django.stamp_deletion disconnected?"
+    ]
+
+
+@pytest.mark.django_db
+def test_a_queryset_delete_logs_no_error_when_it_signals_every_deletion(
+    caplog, django_capture_on_commit_callbacks
+):
+    todos = [a_todo() for _ in range(2)]
+    with django_capture_on_commit_callbacks(execute=True):
+        Resource.objects.filter(pk__in=[t.pk for t in todos]).delete()
+    assert [
+        record for record in caplog.records if record.levelno >= logging.ERROR
+    ] == []

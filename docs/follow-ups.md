@@ -37,14 +37,28 @@ other databases. The same padding applied to `stored_policies_for`'s
 `type_uri` and inserts it when there is none, without a lock or a unique
 constraint on `type_uri`. Two processes starting together on a database
 without the type (a fresh deployment) can both find none and both insert
-one: the slug then has two rows, and `get_resource_type_for` takes one of
-them (the latest revision, then whichever the database returns first), so
-resources may be stored under either. Since 0.14.0 the lookup reads the
-write database, not a replica that may lag behind, which narrowed the window
-from the replica's lag to the time between the lookup and the insert. Fix:
-run the registration in a transaction (`transaction.atomic` on `type_db()`)
-that first takes a lock (scoped-rbac's `conditional.lock_collection` of
-`ResourceType`, which needs that transaction, or a row of its own) and looks
+one: the slug then has two rows. `get_resource_type_for` takes the highest
+revision and, of rows of the same revision, the first stored (lowest primary
+key), so every process now reads and stores resources under the same one,
+and registration updates that one (before #18 each took whichever the
+database returned first, so resources could be stored under either, and a
+start could update a row no process read), and the other is left unused. Since 0.14.0
+the lookup reads the write database, not a replica that may lag behind,
+which narrowed the window from the replica's lag to the time between the
+lookup and the insert. A registration that fails with a database error when
+the URLconf is imported is retried when the type is next read
+(`register_or_defer`, `retry_registration`), without holding the process's
+lock (which guards the pending list only: held while the registration
+waited for row locks in the database, it could deadlock with the thread
+holding them), and stays pending until the reader's transaction commits. So
+two threads of one process reading a pending type at once, or one reading it
+while another's retry is not committed yet, can each register it, and for a
+new type each insert a row, as two processes would. `json_resource_type`
+and the built-in types now register in a transaction on `type_db()`
+(`register_or_defer`, and `retry_registration`'s), without a lock. Fix: in
+that transaction (and around a `ResourceTypeRegistration` made directly),
+first take a lock (scoped-rbac's `conditional.lock_collection` of
+`ResourceType`, which needs that transaction, or a row of its own) and look
 up again under it, or add a unique constraint on `type_uri` (a migration;
 check existing databases for duplicates first) and catch the
 `IntegrityError`. Test: on PostgreSQL, with
@@ -334,6 +348,38 @@ someone with an administrative grant can write them, so this is not reachable
 by ordinary writers. If untrusted users may hold those grants, CEL evaluation
 would need a time or cost bound, and patterns that scoped-rbac or `re` cannot
 run in bounded time would have to be refused.
+
+<a id="policy-defaults-are-fallbacks"></a>
+## policy-defaults-are-fallbacks: a stored workflow policy replaces the settings default
+
+Decision: `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]` gives a type's
+policy only in a context without a stored `WorkflowPolicy` for it; a stored
+one replaces it there, and writing one is an administrative grant
+([policy-grants-are-admin](#policy-grants-are-admin)).
+
+`scrud_django.workflow.workflow_policies_for` takes a context's stored policy
+for the type when there is one (`stored_policies_in`) and the settings
+default (`default_workflow_policy_for`) only otherwise; the two are never
+combined. A `WorkflowPolicy` write is authorized like any resource's, by
+grants on the `WorkflowPolicy` type in the policy's `rbac_context`, and
+`WorkflowValidator.validate_policy` checks only that the policy is valid
+and the only one for its type there, not the writer's rights on the type it
+governs. So whoever may POST (or PUT) a `WorkflowPolicy` in a context can,
+with no rights on the governed type, replace the deployment's default for
+any type there, loosening it, and rename or redefine transitions, which
+changes what every `scrud_workflow` grant in that context allows (a grant's
+`authorized_transitions` are names, looked up in whichever policy applies).
+Deleting the stored policy restores the default. No deployment-wide workflow
+invariant can be enforced through the defaults; the README ("Workflow
+policies") says so.
+
+A future "floor" mode could make the default binding: a setting under which
+a stored policy may only restrict its type's default (for instance, every
+transition it defines must be one the default defines between the same
+states, under the same name), checked by `validate_policy` and by the
+`scrud_django.E005` database check, or under which a write must pass both
+policies. Another option is to require, for a `WorkflowPolicy` write, a
+grant on the governed type as well. Neither is planned.
 
 <a id="eager-callable-default-policies"></a>
 ## eager-callable-default-policies: a callable default that raises fails every type

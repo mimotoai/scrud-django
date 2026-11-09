@@ -17,7 +17,7 @@
     "transitions": { "$ref": "#/definitions/TransitionDefinitionObject" },
     "restrict_update": {
       "type": "array",
-      "description": "States whose content may not be updated in place (no same-state update).",
+      "description": "States whose content may not be updated in place (no same-state update), except by a transition whose from and to each name that state alone.",
       "items": { "type": "string" }
     }
   },
@@ -25,7 +25,7 @@
   "definitions": {
     "StateDefinitionObject": {
       "type": "object",
-      "description": "An object whose properties are state definitions.",
+      "description": "An object whose properties are state definitions. A state is named in initial_states or in states, not in both.",
       "additionalProperties": { "$ref": "#/definitions/StateDefinition" }
     },
     "StateDefinition": {
@@ -37,20 +37,10 @@
       "description": "An object whose properties are transition definitions.",
       "additionalProperties": { "$ref": "#/definitions/TransitionDefinition" }
     },
-    "TransitionDefinition": {
-      "oneOf":  [
-        { "$ref": "#/definitions/TransitionSpecificationList" },
-        { "$ref": "#/definitions/TransitionSpecification"}
-      ]
-    },
-    "TransitionSpecificationList": {
-      "type": "array",
-      "description": "A list of transition specifications.",
-      "items": { "$ref": "#/definitions/TransitionSpecification" }
-    },
+    "TransitionDefinition": { "$ref": "#/definitions/TransitionSpecification" },
     "TransitionSpecification": {
       "type": "object",
-      "description": "An allowed transition from one or more states to one or more states.",
+      "description": "An allowed transition from one or more states to one or more states. At most one transition of a policy may lead from a given state to a given state (itself included).",
       "properties": {
         "from": { "$ref": "#/definitions/TransitionNodeDefinition" },
         "to": { "$ref": "#/definitions/TransitionNodeDefinition" }

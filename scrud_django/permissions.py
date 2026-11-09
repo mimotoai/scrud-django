@@ -339,14 +339,17 @@ def authorized_transitions(resource, configuration):
       no workflow policy applies (there is no transition), so a grant
       conditioned on it allows no write there.
     - In the other checks of a POST or PUT that the workflow check covers (a
-      scrud resource view's request check, a PUT's object check, and the
-      post-save check of a write the workflow check authorized) it allows: the
+      scrud resource viewset's ``create`` or ``update`` action,
+      ``ResourceViewMixin.checks_workflow``: its request check, a PUT's object
+      check, and the post-save check of a write the workflow check
+      authorized) it allows: the
       transition is only known to the `WorkflowValidator`, which authorizes it
       in every context of the write; otherwise the workflow validation would
       run twice.
     - Anywhere else it denies: a GET or HEAD (detail or list), a DELETE, a
-      write the workflow check does not cover (e.g. on a view of your own),
-      and whether a refused resource is readable (403 or 404). A role that
+      write the workflow check does not cover (e.g. a POST ``@action`` of a
+      scrud viewset, or a view of your own), and whether a refused resource
+      is readable (403 or 404). A role that
       should read needs its own ``http.GET`` grant.
 
     ``authorized_transitions`` must be a list of strings; anything else (a

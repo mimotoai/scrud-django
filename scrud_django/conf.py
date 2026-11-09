@@ -128,6 +128,12 @@ def reset_default_workflow_policies(setting, **kwargs):
         _DEFAULT_WORKFLOW_POLICIES = None
 
 
+# The keys of a type's entry in SCRUD_WORKFLOW_ACTIONS: the action run when a
+# write of a resource of the type commits (the ``scrud_django.E008`` check
+# reports any other key).
+WORKFLOW_ACTION_KINDS = ("on_save", "on_delete")
+
+
 def workflow_action_settings():
     return getattr(settings, "SCRUD_WORKFLOW_ACTIONS", [])
 
@@ -138,7 +144,9 @@ def workflow_actions():
     paths, merged in order (a later one replaces an earlier one's entry for
     a type). Raises ``ImproperlyConfigured`` for a setting that is not such a
     sequence (a string, a mapping, ``None``...) or a path to anything other
-    than a mapping."""
+    than a mapping (``ScrudConfig.ready()`` calls it, so the process does not
+    start). The entries themselves are checked by
+    `scrud_django.checks.check_workflow_actions`."""
     setting = workflow_action_settings()
     if isinstance(setting, (str, bytes)) or not isinstance(setting, Sequence):
         raise ImproperlyConfigured(
@@ -155,3 +163,24 @@ def workflow_actions():
             )
         all_actions.update(actions_by_type_uri)
     return all_actions
+
+
+_WORKFLOW_ACTIONS = None
+
+
+def configured_workflow_actions():
+    """`workflow_actions`, loaded on first use and kept until
+    ``SCRUD_WORKFLOW_ACTIONS`` changes (``setting_changed``, as
+    ``override_settings`` sends it): what `ScrudSignalProcessor` runs. Raises
+    as `workflow_actions` does."""
+    global _WORKFLOW_ACTIONS
+    if _WORKFLOW_ACTIONS is None:
+        _WORKFLOW_ACTIONS = workflow_actions()
+    return _WORKFLOW_ACTIONS
+
+
+@receiver(setting_changed)
+def reset_workflow_actions(setting, **kwargs):
+    global _WORKFLOW_ACTIONS
+    if setting == "SCRUD_WORKFLOW_ACTIONS":
+        _WORKFLOW_ACTIONS = None

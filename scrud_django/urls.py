@@ -1,9 +1,5 @@
 """SCRUD DJANGO URL Configuration."""
 
-import logging
-from itertools import chain
-
-from django.db.utils import OperationalError, ProgrammingError
 from django.urls import include, path
 from scoped_rbac.models import Role, RoleAssignment
 
@@ -30,22 +26,10 @@ urlpatterns = [
     path("semantic/", include("scoped_rbac.semantic_urls")),
 ]
 
-try:
-    registration.register_json_schema_resource_type()
-    registration.register_json_ld_resource_type()
-    registration.register_indexing_policy_resource_type()
-    registration.workflow_policy_resource_type()
-
-    urlpatterns.extend(
-        chain(
-            registration.JSON_SCHEMA_REGISTRATION_.urls,
-            registration.JSON_LD_REGISTRATION_.urls,
-            registration.INDEXING_POLICY_REGISTRATION_.urls,
-            registration.WORKFLOW_POLICY_REGISTRATION_.urls,
-        )
-    )
-except (OperationalError, ProgrammingError) as e:
-    logging.error(e)
+# Served even when the database cannot register the types now (at `migrate`,
+# or while it is unreachable): each is registered when it is first read
+# (`registration.register_or_defer`).
+urlpatterns.extend(registration.built_in_resource_type_urls())
 
 services.add_service(collection_type_uri_for(Role.resource_type.iri), "role")
 services.add_service(

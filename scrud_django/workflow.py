@@ -1,4 +1,6 @@
 import copy
+import logging
+import re
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -9,13 +11,14 @@ from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac.cel import (
     InvalidExpression,
     compile_expression,
-    is_true,
+    evaluate,
     new_environment,
 )
 
 from scrud_django.exceptions import (
     DefaultPolicyReference,
     StoredPolicyReference,
+    WorkflowAmbiguousStateError,
     WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
     WorkflowTransitionError,
@@ -23,18 +26,40 @@ from scrud_django.exceptions import (
 
 CEL_ENVIRONMENT = new_environment({})
 
+# State conditions that fail to evaluate (DEBUG), failures of W005's type
+# checker (`undeclared_properties`, DEBUG), and saves that skipped the
+# workflow check (``ResourceMixin.save``, WARNING).
+logger = logging.getLogger("scrud_django.workflow")
+
 WORKFLOW_POLICY_TYPE_URI = "http://api.openteams.com/json-ld/WorkflowPolicy"
 
-# The transitions scrud-django names itself: ``__INITIALIZE__`` (a create) and
-# ``__SAME_STATE__`` (an update that stays in its state). A policy may not
-# define a transition with this prefix.
+# The transitions scrud-django names itself. A policy may not define a
+# transition with their prefix, `RESERVED_TRANSITION_PREFIX`.
+# A create, and a move into a context: no prior state.
+INITIALIZE = "__INITIALIZE__"
+# An update that stays in its state (unless a transition of the policy leads
+# from that state to itself).
+SAME_STATE = "__SAME_STATE__"
+# What ``scrud_post_save``'s ``transitions`` reports for a context a write
+# moves a resource out of: no proposed state, the prior state the one it
+# left. No grant is asked for it (the ``WorkflowValidator`` checks a move
+# out of a context as a transition from the stored content there).
+LEAVE = "__LEAVE__"
+RESERVED_TRANSITIONS = (INITIALIZE, SAME_STATE, LEAVE)
 RESERVED_TRANSITION_PREFIX = "__"
 
 
-@dataclass
+@dataclass(frozen=True)
 class TransitionData:
-    proposed_state: str
-    prior_state: str
+    """A write's transition under one policy: from `prior_state` (``None``
+    for a create or a move into the context) to `proposed_state` (``None``
+    for a move out of it, `LEAVE`), by `transition`, the policy's
+    transition name or a reserved one (`INITIALIZE`, `SAME_STATE`,
+    `LEAVE`). Immutable: the same instance may be reported to several
+    receivers."""
+
+    proposed_state: str | None
+    prior_state: str | None
     transition: str
 
 
@@ -47,10 +72,12 @@ class WorkflowPolicy:
     Constructing a policy checks it and raises ``ImproperlyConfigured`` for a
     policy that is not an object, ``initial_states``, ``states`` or
     ``transitions`` that are present but not objects, a state condition that is
-    not a string or does not compile, a transition that is not an object
+    not a string or does not compile, a state named in both ``initial_states``
+    and ``states``, a transition that is not an object
     with ``from`` and ``to`` naming defined states or whose name starts with
-    ``__`` (reserved), or a ``restrict_update`` that is not a list of defined
-    state names. These are the checks a
+    ``__`` (reserved), two transitions that lead from one state to another
+    (a pair of states has at most one transition), or a ``restrict_update``
+    that is not a list of defined state names. These are the checks a
     ``WorkflowPolicy`` write must pass; they are not a proof that every write
     under the policy succeeds.
     """
@@ -71,6 +98,9 @@ class WorkflowPolicy:
         self.state_expressions = {}
         # from state -> to state -> transition name
         self.allowed_transitions = {}
+        # state -> the transition whose "from" and "to" each name that state
+        # alone: the one way to update a restrict_update state in place.
+        self.in_place_transitions = {}
         self.compile_state_expressions()
         self.compile_allowed_transitions()
         self.restrict_update = self.compile_restrict_update()
@@ -97,17 +127,37 @@ class WorkflowPolicy:
         return proposed_data
 
     def validate_initial_state(self, data):
-        """The initial state `data` is in; raises
-        ``WorkflowInvalidInitialStateError`` if it is in none."""
-        proposed_state = self.determine_state(data, self.initial_state_expressions)
+        """The initial state `data` is in (`initial_state`); raises
+        ``WorkflowInvalidInitialStateError`` if it is in none, and
+        ``WorkflowAmbiguousStateError`` if it meets the conditions of more
+        than one state."""
+        proposed_state = self.initial_state(data)
         if proposed_state is None:
             raise WorkflowInvalidInitialStateError(self.reference, proposed_state)
         return proposed_state
 
     def initial_transition(self, data):
-        """The ``__INITIALIZE__`` `TransitionData` of a create of `data`: no
-        prior state, its initial state as the proposed one."""
-        return TransitionData(self.validate_initial_state(data), None, "__INITIALIZE__")
+        """The ``__INITIALIZE__`` (`INITIALIZE`) `TransitionData` of a
+        create of `data`: no prior state, its initial state as the proposed
+        one."""
+        return TransitionData(self.validate_initial_state(data), None, INITIALIZE)
+
+    def state(self, data):
+        """The state content `data` is stored in: the one state, among the
+        initial states and ``states`` (`state_expressions`), whose condition
+        it meets, or ``None``. Raises ``WorkflowAmbiguousStateError`` when it
+        meets the conditions of more than one (`determine_state`). A write is
+        authorized into this state and the next one leaves from it."""
+        return self.determine_state(data, self.state_expressions)
+
+    def initial_state(self, data):
+        """The initial state a create of `data` makes, or ``None``: the state
+        `data` is stored in (`state`, which raises
+        ``WorkflowAmbiguousStateError`` for content that meets the
+        conditions of more than one state, initial or not) when it is one of
+        the initial states."""
+        state = self.state(data)
+        return state if state in self.initial_state_expressions else None
 
     def validate_transition(self, proposed_data, prior_data):
         """Given a proposed state and a previous state determine if the proposed
@@ -116,67 +166,102 @@ class WorkflowPolicy:
         self.determine_transition(proposed_data, prior_data)
 
     def determine_transition(self, proposed_data, prior_data):
+        """The `TransitionData` of replacing `prior_data` with `proposed_data`:
+        from the state the stored content is in to the state the new content
+        will be stored in (`state` of each), and the transition between them.
+        Raises ``WorkflowAmbiguousStateError`` when either content meets the
+        conditions of more than one state (the stored content's error says
+        it is the stored resource's: such content, stored before this check
+        or after a policy edit, can no longer be updated until the policy's
+        conditions exclude each other), ``WorkflowInvalidStateError`` when
+        `proposed_data` is in no state (and `prior_data` is in one), and
+        ``WorkflowTransitionError`` when no transition leads from the prior
+        state to the proposed one.
+        Content that stays in its state is the ``__SAME_STATE__`` transition
+        (unless a transition of the policy leads from that state to itself).
+        For a state in ``restrict_update`` it is refused, unless a transition
+        names that state alone as its ``from`` and its ``to``
+        (`in_place_transitions`): a transition whose lists lead from the state
+        to itself among other states does not update it in place.
+        """
         # TODO add prior state to Resource instead
-        prior_state = self.determine_state(prior_data, self.state_expressions)
+        try:
+            prior_state = self.state(prior_data)
+        except WorkflowAmbiguousStateError as e:
+            raise WorkflowAmbiguousStateError(
+                self.reference, e.matching_states, stored=True
+            ) from e
+        proposed_state = self.state(proposed_data)
         if prior_state is not None:
-            state_expressions = dict(
-                map(
-                    lambda s: (s, self.state_expressions[s]),
-                    self.allowed_transitions.get(prior_state, {}),
-                )
-            )
-        else:
-            state_expressions = self.state_expressions
-        proposed_state = self.determine_state(proposed_data, state_expressions)
-
-        if prior_state is not None and proposed_state is None:
-            # fallback and determine if the proposed_data matches any defined state
-            proposed_state = self.determine_state(proposed_data, self.state_expressions)
             if proposed_state is None:
                 raise WorkflowInvalidStateError(self.reference)
-            else:
-                if prior_state == proposed_state:
-                    if proposed_state not in self.restrict_update:
-                        return TransitionData(
-                            proposed_state, prior_state, "__SAME_STATE__"
-                        )
+            transition = self.allowed_transitions.get(prior_state, {}).get(
+                proposed_state
+            )
+            if prior_state == proposed_state and proposed_state in self.restrict_update:
+                transition = self.in_place_transitions.get(proposed_state)
+                if transition is None:
                     raise WorkflowTransitionError(
                         self.reference,
                         prior_state,
                         proposed_state,
                         message='Update not allowed on this state',
                     )
-                raise WorkflowTransitionError(
-                    self.reference, prior_state, proposed_state
-                )
-        elif (
-            prior_state not in self.allowed_transitions
-            or proposed_state not in self.allowed_transitions[prior_state]
-        ):
-            raise WorkflowTransitionError(self.reference, prior_state, proposed_state)
-
-        return TransitionData(
-            proposed_state,
-            prior_state,
-            self.allowed_transitions[prior_state][proposed_state],
-        )
+            if transition is not None:
+                return TransitionData(proposed_state, prior_state, transition)
+            if prior_state == proposed_state:
+                return TransitionData(proposed_state, prior_state, SAME_STATE)
+        raise WorkflowTransitionError(self.reference, prior_state, proposed_state)
 
     def determine_state(self, data, state_expressions):
-        """Apply the `state_expressions` to identify the current state of the data.
-        First match is returned. Later revisions of this class may enable partial
-        orders based on state conditions referencing each other, meaning the "most"
-        matching expression in the first matched partial order will be the ultimate
-        match. Data that is not a mapping (content stored before 0.12.0 could be
-        a list) is in no state: ``None``.
+        """The one state of `state_expressions` whose condition `data`
+        meets, or ``None``. Every condition is evaluated: content that meets
+        more than one is ambiguous (``WorkflowAmbiguousStateError``, naming
+        them), never resolved by the conditions' order, which a policy stored
+        in a JSON column does not keep (PostgreSQL's ``jsonb`` and MySQL's
+        JSON reorder an object's keys). Data that is not a mapping (content
+        stored before 0.12.0 could be a list) is in no state: ``None``.
         """
-        if not isinstance(data, Mapping):
-            return None
-        for name, condition in state_expressions.items():
-            # Evaluation errors, such as a property missing from the provided data,
-            # count as not matching.
-            if is_true(condition, data):
-                return name
+        matches = self.matching_states(data, state_expressions)
+        if len(matches) > 1:
+            raise WorkflowAmbiguousStateError(self.reference, matches)
+        return matches[0] if matches else None
 
+    def matching_states(self, data, state_expressions):
+        """The names of the `state_expressions` whose condition `data` (a
+        mapping, else none) meets. An evaluation error, such as a property
+        missing from `data`, or a result that is not ``true``, is no match
+        (scoped-rbac's ``evaluate``). A condition that cannot be decided (an
+        evaluation error or a result that is not a boolean) is logged at
+        DEBUG on the ``scrud_django.workflow`` logger, naming the policy
+        (`reference`), the state and the condition's text: a misspelled
+        property fails on every content. scoped-rbac logs the evaluation
+        error itself at DEBUG on ``scoped_rbac.cel``. A condition that is
+        ``false`` is not logged."""
+        if not isinstance(data, Mapping):
+            return []
+        matches = []
+        for name, condition in state_expressions.items():
+            outcome = evaluate(condition, data)
+            if outcome is True:
+                matches.append(name)
+            elif outcome is None:
+                logger.debug(
+                    "The condition %r of workflow state %r of policy %r cannot "
+                    "be decided (an evaluation error, or not a boolean); it is "
+                    "no match.",
+                    self.condition_text(name),
+                    name,
+                    self.reference,
+                )
+        return matches
+
+    def condition_text(self, name):
+        """The CEL text of state `name`'s condition, as the policy gives it."""
+        for key in ("initial_states", "states"):
+            states = self.policy.get(key)
+            if isinstance(states, Mapping) and name in states:
+                return states[name]
         return None
 
     def mapping_of(self, key, what):
@@ -200,6 +285,12 @@ class WorkflowPolicy:
         self.state_expressions = dict(self.initial_state_expressions)
         states = self.mapping_of("states", what)
         for name, condition in states.items():
+            if name in self.initial_state_expressions:
+                # Creates would read one condition, updates the other.
+                raise ImproperlyConfigured(
+                    f"Invalid workflow state {name!r}: it is named in both "
+                    "initial_states and states; a state has one condition."
+                )
             self.state_expressions[name] = self.compile_expression(condition, name)
 
     def compile_expression(self, state_condition, name=None):
@@ -214,6 +305,11 @@ class WorkflowPolicy:
             raise ImproperlyConfigured(f"Invalid workflow state condition: {e}") from e
 
     def compile_allowed_transitions(self):
+        """`allowed_transitions` (and `in_place_transitions`) from the
+        policy's ``transitions``: each leads from every state of its ``from``
+        to every state of its ``to``. Two transitions that lead from one
+        state to another are an ``ImproperlyConfigured``: which one a write
+        is (and so which grant it needs) would depend on their order."""
         transitions = self.mapping_of("transitions", "transition names to transitions")
 
         def as_list(x):
@@ -226,7 +322,7 @@ class WorkflowPolicy:
                 raise ImproperlyConfigured(
                     f"Invalid workflow transition {transition_name!r}: a name must "
                     f"be a string not starting with {RESERVED_TRANSITION_PREFIX!r}, "
-                    "which is reserved (__INITIALIZE__, __SAME_STATE__)."
+                    f"which is reserved ({', '.join(RESERVED_TRANSITIONS)})."
                 )
             if not (
                 isinstance(transition_policy, Mapping)
@@ -245,13 +341,26 @@ class WorkflowPolicy:
                         f"Invalid workflow transition {transition_name!r}: "
                         f"{state!r} is not a defined state."
                     )
-            for source, target in product(transition_from, transition_to):
+            # A state a list names twice is one pair, not a duplicate.
+            sources = list(dict.fromkeys(transition_from))
+            targets = list(dict.fromkeys(transition_to))
+            for source, target in product(sources, targets):
                 source_transitions = self.allowed_transitions.setdefault(source, {})
+                other = source_transitions.get(target)
+                if other is not None:
+                    raise ImproperlyConfigured(
+                        f"Invalid workflow transitions {other!r} and "
+                        f"{transition_name!r}: both lead from {source!r} to "
+                        f"{target!r}; a pair of states may have one transition."
+                    )
                 source_transitions[target] = transition_name
+            if len(sources) == 1 and sources == targets:
+                self.in_place_transitions[sources[0]] = transition_name
 
     def compile_restrict_update(self):
-        """The states whose content may not change in place: ``restrict_update``,
-        absent or a list of defined state names."""
+        """The states whose content may not change in place (but through
+        their `in_place_transitions`): ``restrict_update``, absent or a list
+        of defined state names."""
         restrict_update = self.policy.get("restrict_update", [])
         if not isinstance(restrict_update, list) or not all(
             isinstance(state, str) and state in self.state_expressions
@@ -262,6 +371,59 @@ class WorkflowPolicy:
                 f"state names, not {restrict_update!r}."
             )
         return frozenset(restrict_update)
+
+
+# How CEL's type checker names an identifier it cannot resolve.
+UNDECLARED_REFERENCE = re.compile(r"undeclared reference to '([^']+)'")
+CEL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _undeclared_references(condition, variables):
+    """The names CEL's type checker cannot resolve in `condition`, given
+    `variables` (declared as ``dyn``): top-level names, as their first
+    segment, and functions. ``set()`` if it compiles."""
+    from cel_expr_python import cel
+
+    environment = cel.NewEnv(
+        variables={
+            name: cel.Type.DYN for name in variables if CEL_IDENTIFIER.match(name)
+        }
+    )
+    try:
+        environment.compile(condition, disable_check=False)
+    except RuntimeError as e:
+        return {name.split(".")[0] for name in UNDECLARED_REFERENCE.findall(str(e))}
+    return set()
+
+
+def undeclared_properties(condition, properties):
+    """The top-level properties the CEL state `condition` reads that are not
+    among `properties`, sorted. A state condition is compiled without type
+    checking (`compile_expression`), so one that reads a misspelled
+    property compiles, and that property is missing from every resource.
+    The cel package exposes no expression's references; its type checker
+    names the identifiers it cannot resolve, given the declared variables.
+    A name that still does not resolve once declared as a variable is a
+    function (``foo(x)``, ``x.foo()``), not a property. Other type errors
+    are ignored, and a condition that does not compile reads none. A
+    failure of the type checker itself reports none either, and is logged
+    at DEBUG on the ``scrud_django.workflow`` logger, with its traceback."""
+    try:
+        missing = _undeclared_references(condition, properties)
+        if not missing:
+            return []
+        functions = _undeclared_references(condition, set(properties) | missing)
+    except Exception:  # noqa: BLE001
+        # Never fail a system check on one condition; say why it reported
+        # nothing.
+        logger.debug(
+            "The properties workflow state condition %r reads could not be "
+            "told; none is reported.",
+            condition,
+            exc_info=True,
+        )
+        return []
+    return sorted(missing - functions)
 
 
 def _type_uri(resource_type):
@@ -286,35 +448,77 @@ def stored_policies_for(resource_type, context):
     `rbac_contexts_of`, so a policy that names no ``rbac_context`` is in the
     default context ``""``) include `context`, oldest first. There is at most
     one, unless policies were stored past the API's check (or before it).
-    The type is compared again in Python, exactly: MariaDB compares the
-    content's ``resource_type`` in SQL as text that pads with spaces."""
+    `stored_policies_in` for one context."""
+    return stored_policies_in(resource_type, [context])[context]
+
+
+def stored_policies_in(resource_type, contexts):
+    """`stored_policies_for` each of `contexts`, in one query: a dict from
+    each context to its list of policies (oldest first).
+
+    The query selects the type's policies in SQL by their `ResourceContext`
+    rows (``ContextField``: compared exactly, as bytes on MySQL and MariaDB),
+    so a write reads the policies of its own contexts, not every tenant's.
+    Those rows are an index of the content: ``Resource.save()`` keeps them
+    in step, ``QuerySet.update()``, ``bulk_create()`` and ``bulk_update()``
+    do not. A policy left out by stale rows would let the writes in its
+    contexts skip it, so the query also selects, by content, a policy with
+    no row at all (``scrud_django.W004``), one whose ``rbac_context`` is
+    one of `contexts` or a list (``scrud_django.W001``) and, when `contexts`
+    has the default context, one whose ``rbac_context`` is absent or
+    ``null``. What it can still miss takes a ``QuerySet.update()`` of a
+    policy's ``rbac_context`` to another JSON type (a number, an object:
+    the default context) while its rows name another context; ``manage.py
+    scrud_sync_contexts`` repairs those rows.
+
+    The type and contexts are compared again in Python, exactly: a list or a
+    stale row selects more than its contexts, and MariaDB compares content
+    values in SQL as text that pads with spaces."""
     from django.db import router
+    from django.db.models import Exists, OuterRef, Q
+    from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
     from scrud_django.mixins.resource_mixin import rbac_contexts_of
-    from scrud_django.models import Resource
+    from scrud_django.models import Resource, ResourceContext
 
     type_uri = _type_uri(resource_type)
+    contexts = list(dict.fromkeys(contexts))
+    if not contexts:
+        return {}
+    rows = ResourceContext.objects.filter(resource=OuterRef("pk"))
+    in_contexts = Exists(rows.filter(rbac_context__in=contexts)) | ~Exists(rows)
+    # A list (as JSON text; a string starting with "[" too). Not a
+    # ``__0__isnull`` lookup: MySQL reads ``$[0]`` of a string as the string.
+    in_contexts |= Q(content__rbac_context__startswith="[")
+    for context in contexts:
+        in_contexts |= Q(content__rbac_context=context)
+    if DEFAULT_CONTEXT in contexts:
+        in_contexts |= Q(content__rbac_context__isnull=True)
+        in_contexts |= Q(content__rbac_context=None)
     # The write database: a write's uniqueness re-check (and the policy a
     # write is checked under) must not read a stale replica. The policy's
     # type comes with it (a refused transition links the policy by it,
     # exceptions.StoredPolicyReference), not loaded later through the read
     # router.
-    stored = (
-        Resource.objects.using(router.db_for_write(Resource))
+    stored = [
+        policy
+        for policy in Resource.objects.using(router.db_for_write(Resource))
         .select_related("resource_type")
         .filter(
+            in_contexts,
             resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI,
             content__resource_type=type_uri,
         )
         .order_by("pk")
-    )
-    return [
-        policy
-        for policy in stored
         if isinstance(policy.content, dict)
         and policy.content.get("resource_type") == type_uri
-        and context in rbac_contexts_of(policy.content)
     ]
+    found = {}
+    for context in contexts:
+        found[context] = [
+            policy for policy in stored if context in rbac_contexts_of(policy.content)
+        ]
+    return found
 
 
 # How many compiled stored policies `workflow_policy_for` keeps
@@ -430,18 +634,31 @@ def workflow_policy_for(resource_type, context):
     govern fail until all but one are deleted.
 
     The one lookup of a policy: the `WorkflowValidator` and
-    ``ResourceMixin.get_workflow_policy`` both use it. A stored policy is
-    compiled once per version (`STORED_POLICY_CACHE`); the stored resources
-    are read on every call.
+    ``ResourceMixin.get_workflow_policy`` both use it, through
+    `workflow_policies_for`. A stored policy is compiled once per version
+    (`STORED_POLICY_CACHE`); the stored resources are read on every call.
     """
-    stored = stored_policies_for(resource_type, context)
-    if len(stored) > 1:
-        raise ImproperlyConfigured(
-            f"{len(stored)} WorkflowPolicy resources (pks "
-            f"{[policy.pk for policy in stored]}) apply to "
-            f"{_type_uri(resource_type)!r} in context {context!r}; there must be "
-            "at most one."
-        )
-    if stored:
-        return STORED_POLICY_CACHE.get(stored[0])
-    return default_workflow_policy_for(resource_type)
+    return next(workflow_policies_for(resource_type, [context]))[1]
+
+
+def workflow_policies_for(resource_type, contexts):
+    """``(context, policy)`` for each of `contexts` in turn, the policy as
+    `workflow_policy_for` gives it, the stored policies of all of them read
+    in one query (`stored_policies_in`) when the first is asked for. A
+    context's ``ImproperlyConfigured`` is raised when its turn comes, so a
+    caller that stops at an earlier context does not see it."""
+    contexts = list(contexts)
+    stored = stored_policies_in(resource_type, contexts)
+    for context in contexts:
+        policies = stored[context]
+        if len(policies) > 1:
+            raise ImproperlyConfigured(
+                f"{len(policies)} WorkflowPolicy resources (pks "
+                f"{[policy.pk for policy in policies]}) apply to "
+                f"{_type_uri(resource_type)!r} in context {context!r}; there must "
+                "be at most one."
+            )
+        if policies:
+            yield context, STORED_POLICY_CACHE.get(policies[0])
+        else:
+            yield context, default_workflow_policy_for(resource_type)

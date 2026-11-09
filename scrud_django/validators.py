@@ -34,8 +34,8 @@ from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     WorkflowPolicy,
     default_workflow_policy_for,
-    stored_policies_for,
-    workflow_policy_for,
+    stored_policies_in,
+    workflow_policies_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -185,12 +185,10 @@ def check_policy_is_unique(content, pk=None):
     `lock_workflow_policy_type` (``ResourceViewMixin.save_checked``), so that
     of two concurrent writes the second is refused."""
     resource_type = content.get("resource_type")
-    for rbac_context in rbac_contexts_of(content):
-        others = [
-            policy
-            for policy in stored_policies_for(resource_type, rbac_context)
-            if policy.pk != pk
-        ]
+    contexts = rbac_contexts_of(content)
+    stored = stored_policies_in(resource_type, contexts)
+    for rbac_context in contexts:
+        others = [policy for policy in stored[rbac_context] if policy.pk != pk]
         if others:
             raise WorkflowPolicyInvalidError(
                 f"A WorkflowPolicy for {resource_type!r} already exists in "
@@ -256,7 +254,7 @@ class WorkflowValidator:
         )
         contexts = list(dict.fromkeys(stored_contexts + rbac_contexts_of(data)))
         if contexts:
-            policies = [(c, workflow_policy_for(resource_type, c)) for c in contexts]
+            policies = list(workflow_policies_for(resource_type, contexts))
         else:
             policies = [(None, default_workflow_policy_for(resource_type))]
         # The request is needed only where a policy applies; without one (a

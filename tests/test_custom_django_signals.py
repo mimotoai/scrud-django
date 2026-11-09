@@ -1,3 +1,4 @@
+from django.apps import apps
 from django.test import TestCase
 
 from scrud_django.conf import workflow_actions
@@ -41,13 +42,9 @@ class TestCustomDjangoSignals(TestCase):
         self.addCleanup(scrud_post_delete.disconnect, self.handler)
         scrud_post_save.connect(self.handler)
         self.addCleanup(scrud_post_save.disconnect, self.handler)
+        # It replaces the app's processor, which is connected again after.
         self.signal_processor = ScrudSignalProcessorMock()
-        self.addCleanup(
-            scrud_post_delete.disconnect, self.signal_processor.post_delete_trigger
-        )
-        self.addCleanup(
-            scrud_post_save.disconnect, self.signal_processor.post_save_trigger
-        )
+        self.addCleanup(apps.get_app_config("scrud_django").processor.connect)
 
     def handler(self, sender, **kwargs):
         self.type_uri = kwargs.get('resource_type_uri')

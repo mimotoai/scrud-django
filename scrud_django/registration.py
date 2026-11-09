@@ -1,13 +1,17 @@
+import functools
 import importlib.resources
 import json
 import logging
+import threading
 from contextlib import contextmanager
 from uuid import uuid4
 
 import reversion
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.db import router, transaction
-from django.db.utils import OperationalError, ProgrammingError
+from django.db.models.functions import Length
+from django.db.utils import InterfaceError, OperationalError, ProgrammingError
 from django.shortcuts import get_list_or_404, get_object_or_404
 from django.urls import path
 from django.utils import timezone
@@ -19,6 +23,8 @@ from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     lock_workflow_policy_type,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def write_db(instance=None):
@@ -126,6 +132,16 @@ TYPE_DOCUMENTS = (
 )
 
 
+def latest_revision_first(queryset):
+    """`queryset` of ``ResourceType`` rows ordered latest revision first: a
+    longer revision, then the greater string (``"10"`` after ``"9"``), and
+    rows of the same revision oldest (lowest primary key) first. Reads
+    (`get_resource_type_for`) and registration (`ResourceTypeRegistration`)
+    order a type's rows this way, so that registration updates the row
+    every process reads."""
+    return queryset.order_by(Length("revision").desc(), "-revision", "pk")
+
+
 def get_resource_type_for(slug, using=None):
     """The latest revision of the resource type `slug` (404 if none), read on
     database `using` (``None``: as the router reads it). Read on a given
@@ -133,8 +149,23 @@ def get_resource_type_for(slug, using=None):
     database: loaded later, as related objects, they would be read where
     ``db_for_read`` (given the type as hint) says, which for a router that
     ignores the hint is a replica that may not have the type's latest
-    schema."""
-    queryset = ResourceType.objects.filter(slug=slug).order_by("-revision")
+    schema.
+
+    A slug has one row, unless rows were stored past registration (which
+    updates a type's row in place) or two processes registered a new type at
+    once (``type-registration-race`` in ``docs/follow-ups.md``). The latest
+    revision is the highest number (``"10"`` after ``"9"``): a longer
+    revision, then the greater string, which orders revisions written as
+    numbers without leading zeros (as registration's are) numerically on
+    every database; rows of the same revision are read oldest (lowest
+    primary key) first, so every process reads the same one.
+
+    A type whose registration is pending (`register_or_defer`: it failed with
+    a database error when its routes were built) is registered first
+    (`retry_registration`), and that registration's error raised if it fails
+    again."""
+    retry_registration(slug)
+    queryset = latest_revision_first(ResourceType.objects.filter(slug=slug))
     if using is not None:
         queryset = queryset.using(using).select_related(*TYPE_DOCUMENTS)
     return get_list_or_404(queryset[:1])[0]
@@ -182,8 +213,9 @@ class ResourceTypeRegistration:
         # below with the files (register_json_file): a lagging replica would
         # leave a schema edited since in place, add a second row for a type
         # it does not have yet, and (outside DEBUG) save its stale copy of
-        # the row back.
-        search = (
+        # the row back. Of several rows of the type (`type-registration-race`),
+        # the one reads use (`latest_revision_first`) is updated.
+        search = latest_revision_first(
             ResourceType.objects.using(type_db())
             .select_related(*TYPE_DOCUMENTS)
             .filter(type_uri=resource_type_uri)
@@ -191,30 +223,9 @@ class ResourceTypeRegistration:
 
         self.viewset_class = viewset_class or views.ResourceViewSet
 
-        if search:
-            self.resource_type = search[0]
-            # update everything if settings.DEBUG (in development)
-            if settings.DEBUG:
-                self.resource_type = ResourceType(
-                    type_uri=resource_type_uri,
-                    schema_uri=schema_uri,
-                    context_uri=context_uri,
-                    slug=slug,
-                    etag=uuid4().hex,
-                    modified_at=timezone.now(),
-                    uses_reversion=uses_reversion,
-                    revision=revision,
-                )
-                self.resource_type.pk = search[0].pk
-                # The stored schema, context and indexing policy are updated
-                # in place below (register_json_file), not stored again on
-                # every process start.
-                self.resource_type.schema = search[0].schema
-                self.resource_type.context = search[0].context
-                self.resource_type.indexing_policy = search[0].indexing_policy
-
-        else:
-            resource_type = ResourceType(
+        stored = search[0] if search else None
+        if stored is None:
+            self.resource_type = ResourceType(
                 type_uri=resource_type_uri,
                 schema_uri=schema_uri,
                 context_uri=context_uri,
@@ -224,7 +235,28 @@ class ResourceTypeRegistration:
                 uses_reversion=uses_reversion,
                 revision=revision,
             )
-            self.resource_type = resource_type
+        elif settings.DEBUG:
+            # Under DEBUG (in development) the row follows the arguments.
+            # The stored schema, context and indexing policy are updated in
+            # place below (register_json_file), not stored again on every
+            # process start.
+            self.resource_type = ResourceType(
+                pk=stored.pk,
+                type_uri=resource_type_uri,
+                schema_uri=schema_uri,
+                context_uri=context_uri,
+                slug=slug,
+                etag=stored.etag,
+                modified_at=stored.modified_at,
+                uses_reversion=uses_reversion,
+                revision=revision,
+                schema=stored.schema,
+                context=stored.context,
+                indexing_policy=stored.indexing_policy,
+            )
+        else:
+            self.resource_type = stored
+        before = None if stored is None else stored_fields(stored)
 
         if schema_resource is None and schema_func:
             self.resource_type.schema = register_json_schema(
@@ -247,11 +279,18 @@ class ResourceTypeRegistration:
         else:
             self.resource_type.indexing_policy = indexing_policy_resource
         self.resource_type.uses_reversion = uses_reversion
-        with reversion.create_revision():
-            self.resource_type.save()
-            reversion.set_comment(
-                'Update resourcetype' if search else 'Add resourcetype'
-            )
+        # A process start that changes nothing writes nothing: the row (its
+        # ETag and modification time included) and its reversion history
+        # stay as they are.
+        if before is None or stored_fields(self.resource_type) != before:
+            if before is not None and settings.DEBUG:
+                self.resource_type.etag = uuid4().hex
+                self.resource_type.modified_at = timezone.now()
+            with reversion.create_revision():
+                self.resource_type.save()
+                reversion.set_comment(
+                    'Update resourcetype' if search else 'Add resourcetype'
+                )
 
         # Register with service catalog
         if register_service:
@@ -260,37 +299,230 @@ class ResourceTypeRegistration:
 
     def register_urls(self):
         """Register resource type url."""
-        scrud_list = self.viewset_class.as_view(
-            {
-                'get': 'list',
-                'head': 'list',
-                'post': 'create',
-            },  # noqa: E231
-            resource_type_name=self.resource_type.slug,
+        self.urls = resource_type_urls(self.resource_type.slug, self.viewset_class)
+
+
+def stored_fields(resource_type):
+    """The fields of `resource_type`'s row that registration sets, other than
+    its ETag and modification time, which follow a change of them."""
+    return {
+        field.attname: getattr(resource_type, field.attname)
+        for field in ResourceType._meta.concrete_fields
+        if field.attname not in ("id", "etag", "modified_at")
+    }
+
+
+def resource_type_urls(slug, viewset_class):
+    """The list and detail routes of the resource type `slug`, served by
+    `viewset_class`. They need no database: the views read the type by its
+    slug (`get_resource_type_for`) on each request."""
+    names = ResourceType(slug=slug)
+    scrud_list = viewset_class.as_view(
+        {
+            'get': 'list',
+            'head': 'list',
+            'post': 'create',
+        },  # noqa: E231
+        resource_type_name=slug,
+    )
+    scrud_detail = viewset_class.as_view(
+        {
+            'get': 'retrieve',
+            'head': 'retrieve',
+            'put': 'update',
+            'delete': 'destroy',
+        },
+        resource_type_name=slug,
+    )
+    return [
+        path(f'{slug}/', scrud_list, name=names.route_name_list()),
+        path(f'{slug}/<str:slug>/', scrud_detail, name=names.route_name_detail()),
+    ]
+
+
+# Resource types whose registration failed with a database error when their
+# routes were built (`register_or_defer`), by slug: the function that
+# registers each. A type is registered when it is next read
+# (`retry_registration`, from `get_resource_type_for`) and forgotten here once
+# that registration commits.
+_PENDING_REGISTRATIONS = {}
+# Database alias -> what `probe` found there: True (reachable and migrated),
+# False (unreachable, or not migrated) or None (it could not be told: the
+# probe failed otherwise). Kept while registrations keep failing, as at a
+# URLconf import while the database is unreachable, where asking again would
+# cost every registration a second connection timeout; forgotten when a
+# registration succeeds or a pending one is retried (`retry_registration`).
+_PROBED = {}
+_PENDING_LOCK = threading.RLock()
+
+
+def register_or_defer(
+    register, type_uri, slug, viewset_class, register_service=True, retry=None
+):
+    """The routes of the resource type `slug` that `register` registers (a
+    function returning its `ResourceTypeRegistration`), run in a
+    transaction on `type_db`.
+
+    When it fails with a database error (``OperationalError`` or
+    ``ProgrammingError``: the database is unreachable, or not migrated yet,
+    as when ``migrate`` or ``check`` imports the URLconf), the routes are
+    still returned, built from `slug` and `viewset_class` (they need no
+    database), the type is added to the service catalog (`type_uri`) when
+    `register_service`, and its registration is left pending
+    (`_PENDING_REGISTRATIONS`): it is retried when the type is next read, so
+    a process that started while the database was unreachable serves the
+    type once it is back, without a restart. Until then a request for the
+    type fails with the retry's error (a 500), not a 404. The retry calls
+    `retry` (default: `register`).
+
+    The failure is logged as a warning while the database is unreachable,
+    not migrated, or its migration state cannot be read (a database error;
+    `migrated_and_reachable`), and as an error on a database that is
+    reachable and migrated: there it is a fault (a missing grant, a schema
+    out of step with the migrations) that fails every request for the type
+    until it is fixed. It is an error too when the migration state cannot
+    be told for another reason (a broken migration graph), which `probe`
+    logs with its traceback. The answer is kept for the registrations that
+    fail after it (`_PROBED`)."""
+    db = type_db()
+    try:
+        with transaction.atomic(using=db):
+            urls = register().urls
+    except (OperationalError, ProgrammingError) as e:
+        migrated = probe(db)
+        if migrated is None:
+            logger.error(
+                "Could not register resource type %r (%s: %s) on database %r, "
+                "whose migration state could not be told (logged above): "
+                "requests for it fail until its registration succeeds. Its "
+                "routes are served, and its registration is retried when it is "
+                "next read.",
+                slug,
+                type(e).__name__,
+                e,
+                db,
+            )
+        elif migrated:
+            logger.error(
+                "Could not register resource type %r (%s: %s) on database %r, "
+                "which is reachable and migrated: requests for it fail until "
+                "its registration succeeds. Its routes are served, and its "
+                "registration is retried when it is next read.",
+                slug,
+                type(e).__name__,
+                e,
+                db,
+            )
+        else:
+            logger.warning(
+                "Could not register resource type %r (%s: %s): database %r is "
+                "unreachable or not migrated (as before the first migrate). Its "
+                "routes are served, and it is registered when it is next read.",
+                slug,
+                type(e).__name__,
+                e,
+                db,
+            )
+        with _PENDING_LOCK:
+            _PENDING_REGISTRATIONS[slug] = retry or register
+        if register_service:
+            services.add_service(type_uri, slug)
+        return resource_type_urls(slug, viewset_class)
+    with _PENDING_LOCK:
+        _PROBED.pop(db, None)
+    return urls
+
+
+def probe(alias):
+    """`migrated_and_reachable` for database `alias`, or ``None`` when it
+    raises (not a database error: a broken migration graph, of any app, a
+    misconfigured database), which is logged as an error with its traceback
+    on the ``scrud_django.registration`` logger. The answer is kept
+    (`_PROBED`) for the registrations that fail after it."""
+    with _PENDING_LOCK:
+        if alias in _PROBED:
+            return _PROBED[alias]
+    try:
+        migrated = migrated_and_reachable(alias)
+    except Exception as error:  # noqa: BLE001
+        # Log and go on: the URLconf import must not fail on it.
+        logger.error(
+            "Could not tell whether database %r is reachable and migrated: %s: %s",
+            alias,
+            type(error).__name__,
+            error,
+            exc_info=True,
         )
-        scrud_detail = self.viewset_class.as_view(
-            {
-                'get': 'retrieve',
-                'head': 'retrieve',
-                'put': 'update',
-                'delete': 'destroy',
-            },
-            resource_type_name=self.resource_type.slug,
-        )
-        self.urls = [
-            path(
-                f'{self.resource_type.slug}/',
-                scrud_list,
-                # name=f'{resource_type.slug}-list',
-                name=self.resource_type.route_name_list(),
-            ),
-            path(
-                f'{self.resource_type.slug}/<str:slug>/',
-                scrud_detail,
-                # name=f'{resource_type.slug}-detail',
-                name=self.resource_type.route_name_detail(),
-            ),
-        ]
+        migrated = None
+    with _PENDING_LOCK:
+        _PROBED[alias] = migrated
+    return migrated
+
+
+def migrated_and_reachable(alias):
+    """Whether database `alias` can be reached and has all of scrud_django's
+    migrations applied (`scrud_django.checks.scrud_migrations_pending`).
+    ``False`` on a database error (``OperationalError``,
+    ``ProgrammingError``, ``InterfaceError``): the database is unreachable,
+    or its migration table cannot be read. Any other error, such as a broken
+    migration graph (``NodeNotFoundError``, ``BadMigrationError``, of any
+    app), ``ConnectionDoesNotExist`` or ``ImproperlyConfigured``, is raised:
+    it says nothing about the database."""
+    from scrud_django.checks import scrud_migrations_pending
+
+    try:
+        return not scrud_migrations_pending(alias)
+    except (OperationalError, ProgrammingError, InterfaceError):
+        return False
+
+
+def retry_registration(slug):
+    """Register the resource type `slug` if its registration is pending
+    (`register_or_defer`), in a transaction on `type_db` (a savepoint inside
+    the caller's), raising its error if it fails again. It is forgotten as
+    pending once that transaction commits, and logged then: if the caller's
+    is rolled back (a refused write), so is the registration, and it is
+    retried on the next read. A retry also forgets what `probe` found on
+    `type_db`: a registration that fails after it asks again.
+
+    The process lock guards `_PENDING_REGISTRATIONS` (and `_PROBED`) only;
+    the registration runs without it. Its row locks last until the caller's
+    transaction commits, so under the lock a thread waiting for them in the
+    database would hold it while the thread holding them waited for it
+    (reading another pending type): a deadlock the database cannot detect.
+    Two threads of a process may then register the same type at once, as
+    two processes may (``type-registration-race`` in
+    ``docs/follow-ups.md``).
+
+    A pending type registered under another slug (its stored row's, kept
+    outside ``DEBUG``) than the one its routes were built for raises
+    ``ImproperlyConfigured``: its routes would read a type that is not
+    there."""
+    with _PENDING_LOCK:
+        register = _PENDING_REGISTRATIONS.get(slug)
+    if register is None:
+        return
+    db = type_db()
+    with _PENDING_LOCK:
+        _PROBED.pop(db, None)
+    with transaction.atomic(using=db):
+        registered = register().resource_type
+        if registered.slug != slug:
+            raise ImproperlyConfigured(
+                f"The resource type {registered.type_uri!r} is stored with "
+                f"the slug {registered.slug!r}, but its routes were built "
+                f"for {slug!r}: register it with its stored slug, or under "
+                "DEBUG to store the new one."
+            )
+
+        def forget():
+            with _PENDING_LOCK:
+                if _PENDING_REGISTRATIONS.get(slug) is not register:
+                    return
+                del _PENDING_REGISTRATIONS[slug]
+            logger.info("Registered resource type %r, which was pending.", slug)
+
+        transaction.on_commit(forget, using=db)
 
 
 class ResourceRegistration:
@@ -442,10 +674,10 @@ WORKFLOW_POLICY_RESOURCE_TYPE_ = None
 WORKFLOW_POLICY_REGISTRATION_ = None
 
 
-def register_json_schema_resource_type():
+def register_json_schema_resource_type(force=False):
     global JSON_SCHEMA_RESOURCE_TYPE_
     global JSON_SCHEMA_REGISTRATION_
-    if JSON_SCHEMA_RESOURCE_TYPE_ is None:
+    if JSON_SCHEMA_RESOURCE_TYPE_ is None or force:
         from scrud_django.views import JsonSchemaViewSet
 
         JSON_SCHEMA_REGISTRATION_ = ResourceTypeRegistration(
@@ -459,10 +691,10 @@ def register_json_schema_resource_type():
     return JSON_SCHEMA_RESOURCE_TYPE_
 
 
-def register_json_ld_resource_type():
+def register_json_ld_resource_type(force=False):
     global JSON_LD_RESOURCE_TYPE_
     global JSON_LD_REGISTRATION_
-    if JSON_LD_RESOURCE_TYPE_ is None:
+    if JSON_LD_RESOURCE_TYPE_ is None or force:
         from scrud_django.views import JsonLdViewSet
 
         JSON_LD_REGISTRATION_ = ResourceTypeRegistration(
@@ -475,10 +707,10 @@ def register_json_ld_resource_type():
     return JSON_LD_RESOURCE_TYPE_
 
 
-def register_indexing_policy_resource_type():
+def register_indexing_policy_resource_type(force=False):
     global INDEXING_POLICY_RESOURCE_TYPE_
     global INDEXING_POLICY_REGISTRATION_
-    if INDEXING_POLICY_RESOURCE_TYPE_ is None:
+    if INDEXING_POLICY_RESOURCE_TYPE_ is None or force:
         INDEXING_POLICY_REGISTRATION_ = ResourceTypeRegistration(
             resource_type_uri="http://api.openteams.com/json-ld/IndexingPolicy",
             revision="1",
@@ -498,10 +730,10 @@ def register_indexing_policy_resource_type():
     return INDEXING_POLICY_RESOURCE_TYPE_
 
 
-def workflow_policy_resource_type():
+def workflow_policy_resource_type(force=False):
     global WORKFLOW_POLICY_RESOURCE_TYPE_
     global WORKFLOW_POLICY_REGISTRATION_
-    if WORKFLOW_POLICY_RESOURCE_TYPE_ is None:
+    if WORKFLOW_POLICY_RESOURCE_TYPE_ is None or force:
         WORKFLOW_POLICY_REGISTRATION_ = ResourceTypeRegistration(
             resource_type_uri="http://api.openteams.com/json-ld/WorkflowPolicy",
             revision="1",
@@ -576,9 +808,15 @@ def json_resource_type(
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
     of `context_resource, context_path, context_uri`.
+
+    Returns the type's routes. When the database fails (unreachable, or not
+    migrated yet), they are returned all the same and the registration is
+    retried when the type is next read (`register_or_defer`).
     """
-    try:
-        resource_type_registration = ResourceTypeRegistration(
+    from scrud_django import views
+
+    def register():
+        return ResourceTypeRegistration(
             resource_type_uri,
             revision,
             slug=slug,
@@ -593,13 +831,77 @@ def json_resource_type(
             uses_reversion=uses_reversion,
             register_service=register_service,
         )
-        return resource_type_registration.urls
-    except (OperationalError, ProgrammingError):
-        logging.warning(
-            "Failed to register resource type due to OperationalError. "
-            "This is expected for migrations."
+
+    return register_or_defer(
+        register,
+        resource_type_uri,
+        slug,
+        viewset_class or views.ResourceViewSet,
+        register_service=register_service,
+    )
+
+
+def built_in_resource_type_urls():
+    """The routes of the built-in resource types (JSON Schema, JSON-LD
+    context, indexing policy and workflow policy documents), each registered
+    first, or its registration left pending on a database error
+    (`register_or_defer`). ``scrud_django.urls`` serves them."""
+    from scrud_django import views
+
+    def registered(register_type, registration_name):
+        def register(force=False):
+            register_type(force=force)
+            return globals()[registration_name]
+
+        return register
+
+    built_in = (
+        (
+            register_json_schema_resource_type,
+            "JSON_SCHEMA_REGISTRATION_",
+            "http://json-schema.org/draft-04/schema",
+            "json-schema",
+            views.JsonSchemaViewSet,
+        ),
+        (
+            register_json_ld_resource_type,
+            "JSON_LD_REGISTRATION_",
+            "http://www.w3.org/ns/json-ld#context",
+            "json-ld",
+            views.JsonLdViewSet,
+        ),
+        (
+            register_indexing_policy_resource_type,
+            "INDEXING_POLICY_REGISTRATION_",
+            "http://api.openteams.com/json-ld/IndexingPolicy",
+            "indexing-policies",
+            views.ResourceViewSet,
+        ),
+        (
+            workflow_policy_resource_type,
+            "WORKFLOW_POLICY_REGISTRATION_",
+            WORKFLOW_POLICY_TYPE_URI,
+            "workflow-policies",
+            views.ResourceViewSet,
+        ),
+    )
+    urls = []
+    for register_type, registration_name, type_uri, slug, viewset_class in built_in:
+        register = registered(register_type, registration_name)
+        urls.extend(
+            register_or_defer(
+                register,
+                type_uri,
+                slug,
+                viewset_class,
+                # A retry registers the type again rather than return the
+                # one cached: one registered (as another type's document
+                # type) in a transaction that was then rolled back is cached
+                # but not stored.
+                retry=functools.partial(register, force=True),
+            )
         )
-    return []
+    return urls
 
 
 def resource_types(*args):
