@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
@@ -545,3 +546,73 @@ def test_transition_data_is_immutable_and_hashable():
     assert started.transition == "start"
     assert started == TransitionData("in progress", "not started", "start")
     assert {started: 1}[TransitionData("in progress", "not started", "start")] == 1
+
+
+# A condition whose evaluation fails (a property missing from the content)
+# is no match; it is logged at DEBUG on the scrud_django.workflow logger,
+# naming the policy and the state, so that a misspelled property can be
+# found. A condition that is false is not logged.
+WORKFLOW_LOGGER = "scrud_django.workflow"
+
+
+def debug_records(caplog):
+    return [
+        record
+        for record in caplog.records
+        if record.name == WORKFLOW_LOGGER and record.levelno == logging.DEBUG
+    ]
+
+
+def test_a_condition_that_fails_to_evaluate_is_logged_at_debug(caplog):
+    caplog.set_level(logging.DEBUG, logger=WORKFLOW_LOGGER)
+    policy = WorkflowPolicy(
+        {
+            "resource_type": "tests://T",
+            "initial_states": {
+                "urgent": 'priority == "HIGH"',
+                "open": 'status == "OPEN"',
+            },
+        }
+    )
+    assert policy.state({"status": "OPEN"}) == "open"
+    (record,) = debug_records(caplog)
+    message = record.getMessage()
+    assert "'urgent'" in message, message
+    assert "DefaultPolicyReference('tests://T')" in message, message
+    assert "'open'" not in message, message
+    assert "priority" in message, message
+
+    # False conditions (both properties present) are not logged.
+    caplog.clear()
+    assert policy.state({"status": "CLOSED", "priority": "LOW"}) is None
+    assert debug_records(caplog) == []
+
+
+def test_undeclared_properties_flags_a_misspelled_property():
+    # The CEL type checker's message is parsed (UNDECLARED_REFERENCE): a
+    # change of its format must fail here, not silently report nothing.
+    from scrud_django.workflow import undeclared_properties
+
+    assert undeclared_properties('stauts == "done"', {"status"}) == ["stauts"]
+    assert undeclared_properties(
+        'stauts == "x" || status == "y" || foo(status)', {"status"}
+    ) == ["stauts"]
+    assert undeclared_properties('status == "done"', {"status"}) == []
+
+
+def test_undeclared_properties_logs_a_failure_of_the_type_checker(monkeypatch, caplog):
+    from scrud_django import workflow
+
+    caplog.set_level(logging.DEBUG, logger=WORKFLOW_LOGGER)
+
+    def broken(condition, variables):
+        raise RuntimeError("the type checker broke")
+
+    monkeypatch.setattr(workflow, "_undeclared_references", broken)
+    # Never fails a system check: nothing is reported, and the failure is
+    # logged with its traceback.
+    assert workflow.undeclared_properties('stauts == "done"', {"status"}) == []
+    (record,) = debug_records(caplog)
+    assert "'stauts == \"done\"'" in record.getMessage(), record.getMessage()
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], RuntimeError)

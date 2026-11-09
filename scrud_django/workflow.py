@@ -1,4 +1,5 @@
 import copy
+import logging
 import re
 import threading
 from collections import OrderedDict
@@ -6,11 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 
+from cel_expr_python import cel
 from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac.cel import (
     InvalidExpression,
     compile_expression,
-    is_true,
     new_environment,
 )
 
@@ -24,6 +25,10 @@ from scrud_django.exceptions import (
 )
 
 CEL_ENVIRONMENT = new_environment({})
+
+# State conditions that fail to evaluate (DEBUG), and saves that skipped the
+# workflow check (``ResourceMixin.save``, WARNING).
+logger = logging.getLogger("scrud_django.workflow")
 
 WORKFLOW_POLICY_TYPE_URI = "http://api.openteams.com/json-ld/WorkflowPolicy"
 
@@ -221,18 +226,35 @@ class WorkflowPolicy:
             raise WorkflowAmbiguousStateError(self.reference, matches)
         return matches[0] if matches else None
 
-    @staticmethod
-    def matching_states(data, state_expressions):
+    def matching_states(self, data, state_expressions):
         """The names of the `state_expressions` whose condition `data` (a
         mapping, else none) meets. An evaluation error, such as a property
-        missing from `data`, or a result that is not ``true``, is no match."""
+        missing from `data`, or a result that is not ``true``, is no match
+        (as scoped-rbac's ``is_true`` decides). A condition whose evaluation
+        fails, or gives no boolean, is logged at DEBUG on the
+        ``scrud_django.workflow`` logger, naming the policy (`reference`)
+        and the state: a misspelled property fails on every content. A
+        condition that is ``false`` is not logged."""
         if not isinstance(data, Mapping):
             return []
-        return [
-            name
-            for name, condition in state_expressions.items()
-            if is_true(condition, data)
-        ]
+        matches = []
+        for name, condition in state_expressions.items():
+            result = condition.eval(data=data)
+            if result.type() == cel.Type.BOOL:
+                if result.value() is True:
+                    matches.append(name)
+                continue
+            if result.type() == cel.Type.ERROR:
+                outcome = f"failed to evaluate: {result.value()}"
+            else:
+                outcome = f"is not a boolean ({result.type()})"
+            logger.debug(
+                "The condition of workflow state %r of policy %r %s; it is no match.",
+                name,
+                self.reference,
+                outcome,
+            )
+        return matches
 
     def mapping_of(self, key, what):
         """The policy's `key` (``{}`` when absent), which must be an object (of
@@ -375,14 +397,23 @@ def undeclared_properties(condition, properties):
     names the identifiers it cannot resolve, given the declared variables.
     A name that still does not resolve once declared as a variable is a
     function (``foo(x)``, ``x.foo()``), not a property. Other type errors
-    are ignored, and a condition that does not compile reads none."""
+    are ignored, and a condition that does not compile reads none. A
+    failure of the type checker itself reports none either, and is logged
+    at DEBUG on the ``scrud_django.workflow`` logger, with its traceback."""
     try:
         missing = _undeclared_references(condition, properties)
         if not missing:
             return []
         functions = _undeclared_references(condition, set(properties) | missing)
     except Exception:  # noqa: BLE001
-        # Never fail a system check on one condition.
+        # Never fail a system check on one condition; say why it reported
+        # nothing.
+        logger.debug(
+            "The properties workflow state condition %r reads could not be "
+            "told; none is reported.",
+            condition,
+            exc_info=True,
+        )
         return []
     return sorted(missing - functions)
 

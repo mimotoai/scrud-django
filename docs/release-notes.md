@@ -120,7 +120,11 @@ you deploy it.
   checked. The README's new "Workflow policies" section also says that a
   state condition reads `rbac_context` as stored (a list for a resource in
   several contexts), unlike a grant's condition, which reads the context
-  being checked.
+  being checked. A state condition that fails to evaluate (a property
+  the content lacks) or gives no boolean is no match, as before, and is
+  now logged at DEBUG on the `scrud_django.workflow` logger, naming the
+  policy and the state; so is a failure of W005's type checker, which
+  reported nothing silently.
 * A resource read from a read replica (a router whose `db_for_read` names
   another alias than its `db_for_write`) and then deleted ran its `on_delete`
   workflow action at once, on the replica's connection, before the delete
