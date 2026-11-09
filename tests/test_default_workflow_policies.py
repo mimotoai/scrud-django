@@ -15,10 +15,14 @@ from rest_framework.test import APIClient
 
 from scrud_django import conf
 from scrud_django.checks import check_default_workflow_policies
+from scrud_django.models import ResourceType
 from scrud_django.workflow import WorkflowPolicy, default_workflow_policy_for
 
 from .factories import UserFactory
-from .fixtures import partner_profile_post_data  # noqa: F401
+from .fixtures import (
+    partner_profile_post_data,  # noqa: F401
+    unapply_a_scrud_migration,
+)
 
 TODO = "tests://ToDo"
 
@@ -344,3 +348,73 @@ def test_a_condition_may_read_rbac_context(monkeypatch):
             scrud_checks.check_default_policy_conditions(None, databases=["default"])
             == []
         )
+
+
+def misspelled_todo_policy():
+    """The ToDo policy with a condition reading ``stauts``, which the ToDo
+    schema does not define: W005 reports it, unless the check skips."""
+    states = dict(todo_policy()["states"], done='stauts == "done"')
+    return dict(todo_policy(), states=states)
+
+
+def migrations_pending(policy):
+    unapply_a_scrud_migration("default")
+    return {TODO: policy}
+
+
+def type_not_registered(policy):
+    return {"tests://NotRegistered": policy}
+
+
+def schema_not_stored(policy):
+    ResourceType.objects.filter(type_uri=TODO).update(schema=None)
+    return {TODO: policy}
+
+
+def default_invalid(policy):
+    return {TODO: dict(policy, restrict_update="not started")}
+
+
+def schema_open(policy):
+    schema = ResourceType.objects.get(type_uri=TODO).schema
+    schema.content = dict(schema.content, additionalProperties=True)
+    schema.save()
+    return {TODO: policy}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "skipped, errors",
+    [
+        # Checked once migrated: migrate must be able to run.
+        (migrations_pending, []),
+        # No schema to compare with.
+        (type_not_registered, []),
+        (schema_not_stored, []),
+        # E001 alone reports it.
+        (default_invalid, ["scrud_django.E001"]),
+        # The schema allows other properties: nothing can be told.
+        (schema_open, []),
+    ],
+    ids=[
+        "migrations pending",
+        "type not registered",
+        "schema not stored",
+        "default invalid",
+        "schema open",
+    ],
+)
+def test_the_condition_check_skips_what_it_cannot_tell(skipped, errors):
+    from scrud_django.checks import check_default_policy_conditions
+
+    reverse("todos-list")
+    policy = misspelled_todo_policy()
+    with override_settings(
+        SCRUD_WORKFLOW={"DEFAULT_WORKFLOW_POLICIES": {TODO: policy}}
+    ):
+        found = check_default_policy_conditions(None, databases=["default"])
+        assert [(m.id, m.obj) for m in found] == [("scrud_django.W005", TODO)]
+    defaults = skipped(policy)
+    with override_settings(SCRUD_WORKFLOW={"DEFAULT_WORKFLOW_POLICIES": defaults}):
+        assert [e.id for e in check_default_workflow_policies(None)] == errors
+        assert check_default_policy_conditions(None, databases=["default"]) == []
