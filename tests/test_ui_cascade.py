@@ -1,8 +1,11 @@
 """The stylesheet cascade and component resolution."""
 
+import logging
+
 import pytest
 from django.urls import reverse
 
+from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.cascade import (
     builtin_component,
@@ -286,3 +289,83 @@ def test_components_loaded_once_per_memo():
         load_components({"a"})
         load_components({"a"})
     assert len(queries) == 2
+
+
+def skipped_warnings(caplog):
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "scrud_django.ui.cascade" and r.levelno == logging.WARNING
+    ]
+
+
+@pytest.mark.django_db
+def test_skipped_rules_are_logged_once_per_request(caplog):
+    """A stored rule the cascade skips (a selector that does not parse, no
+    component name) is logged, with its stylesheet's pk and name and the
+    reason: once per request, however many context sets read it."""
+    make_component("a")
+    sheet = make_stylesheet("bad", [("ex:L", "a"), ("nope", "a")])
+    Resource.objects.filter(pk=sheet.pk).update(
+        content={
+            **sheet.content,
+            "rules": [*sheet.content["rules"], {"select": "ex:L"}],
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="scrud_django.ui.cascade"):
+        with rules_memo():
+            effective_rules([])
+            effective_rules(["p"])
+            effective_rules(["q"])
+    found = skipped_warnings(caplog)
+    assert len(found) == 2, found
+    bad_selector = next(m for m in found if "nope" in m)
+    assert str(sheet.pk) in bad_selector and "'bad'" in bad_selector
+    assert "not an IRI" in bad_selector
+    no_component = next(m for m in found if m is not bad_selector)
+    assert str(sheet.pk) in no_component and "rule 2" in no_component
+    # still resolved by the good rule
+    assert resolve() == "a"
+
+
+@pytest.mark.django_db
+def test_duplicate_stylesheet_loser_is_logged(caplog):
+    make_component("a")
+    winner = make_stylesheet("dup", [("ex:L", "a")], context="p")
+    loser = make_stylesheet("dup", [("ex:L", "a")], context="p")
+    with caplog.at_level(logging.WARNING, logger="scrud_django.ui.cascade"):
+        with rules_memo():
+            effective_rules(["p"])
+            effective_rules(["p", "q"])
+    found = skipped_warnings(caplog)
+    assert len(found) == 1, found
+    assert f"stylesheet {loser.pk}" in found[0] and str(winner.pk) in found[0]
+    assert "'dup'" in found[0]
+
+
+@pytest.mark.django_db
+def test_skipped_components_are_logged(caplog):
+    """A stored component the cascade cannot use (a duplicate name, outside
+    the default context, an unknown engine or mode, no template) is logged
+    with its pk, name and the reason."""
+    winner = make_component("dup")
+    loser = make_component("dup")
+    elsewhere = make_component("elsewhere")
+    Resource.objects.filter(pk=elsewhere.pk).update(
+        content={**elsewhere.content, "rbac_context": "p"}
+    )
+    broken = make_component("broken")
+    Resource.objects.filter(pk=broken.pk).update(
+        content={**broken.content, "mode": "sideways"}
+    )
+    with caplog.at_level(logging.WARNING, logger="scrud_django.ui.cascade"):
+        with rules_memo():
+            loaded = load_components({"dup", "elsewhere", "broken"})
+            load_components({"dup", "other"})
+    assert set(loaded) == {"dup"}
+    found = skipped_warnings(caplog)
+    assert len(found) == 3, found
+    duplicate = next(m for m in found if f"component {loser.pk}" in m)
+    assert "'dup'" in duplicate and str(winner.pk) in duplicate
+    assert any(f"component {elsewhere.pk}" in m and "'elsewhere'" in m for m in found)
+    assert any(f"component {broken.pk}" in m and "sideways" in m for m in found), found

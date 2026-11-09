@@ -38,7 +38,15 @@ from django.utils.cache import patch_cache_control, patch_vary_headers
 from django.utils.html import format_html
 from django.utils.http import quote_etag
 from django.utils.safestring import SafeString, mark_safe
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import (
+    APIException,
+    AuthenticationFailed,
+    NotAuthenticated,
+    NotFound,
+    ParseError,
+    PermissionDenied,
+    UnsupportedMediaType,
+)
 from rest_framework.renderers import BaseRenderer, BrowsableAPIRenderer
 from rest_framework.response import Response
 
@@ -247,14 +255,26 @@ def remember_stored(view, request, obj) -> None:
         )
 
 
+# What a lookup refused to the user raises: 401, 403, 404.
+_LOOKUP_REFUSALS = (
+    Http404,
+    DjangoPermissionDenied,
+    NotAuthenticated,
+    AuthenticationFailed,
+    PermissionDenied,
+    NotFound,
+)
+
+
 def load_stored(view, request, response) -> None:
     """For a refused PUT (400, 403) that negotiated HTML, refused before the
     view looked the resource up (scoped-rbac's request check refuses on the
     body): look it up now, through the view's own ``get_object()``, with its
     filter and object permission checks for the PUT, but without the row
     lock (``unlocked_lookups``): a refused request never waits for it or
-    holds it. Refused, missing or not readable (a database error), nothing
-    is remembered and the response is a notice."""
+    holds it. Refused (401, 403, 404), or not readable (a database error,
+    another API error, logged), nothing is remembered and the response is
+    a notice."""
     if (
         request.method != "PUT"
         or negotiated_html(request) is None
@@ -273,9 +293,9 @@ def load_stored(view, request, response) -> None:
             unlocked() if unlocked is not None else nullcontext(),
         ):
             obj = view.get_object()
-    except (Http404, DjangoPermissionDenied, APIException):
+    except _LOOKUP_REFUSALS:
         return
-    except (DatabaseError, transaction.TransactionManagementError):
+    except (APIException, DatabaseError, transaction.TransactionManagementError):
         logger.warning(
             "scrud-ui: looking up %s for a refused PUT failed",
             getattr(request, "path", "?"),
@@ -449,14 +469,15 @@ def _title(resource_type) -> str:
 
 
 def _resource_type(view):
-    """The view's resource type, or ``None`` (a view without one, or one
-    whose type cannot be read)."""
+    """The view's resource type, or ``None`` (a view without one, or whose
+    type is not registered: a 404). Any other error reading it propagates
+    (to `ScrudHTMLRenderer.render`'s last resort, which logs it)."""
     get_resource_type = getattr(view, "get_resource_type", None)
     if get_resource_type is None:
         return None
     try:
         return get_resource_type()
-    except Exception:
+    except Http404:
         return None
 
 
@@ -469,10 +490,11 @@ def _envelope(data):
 
 
 def _submitted(request):
-    """The JSON object the request sent, or ``None``."""
+    """The JSON object the request sent, or ``None`` (none, or one its
+    parser refused)."""
     try:
         body = request.data
-    except Exception:
+    except (ParseError, UnsupportedMediaType):
         return None
     # DRF leaves an empty QueryDict where a body failed to parse.
     if isinstance(body, QueryDict) or not isinstance(body, Mapping):

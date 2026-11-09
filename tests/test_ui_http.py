@@ -739,19 +739,43 @@ def test_render_failure_of_an_error_keeps_its_status(
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("error", ["DatabaseError", "TransactionManagementError"])
+@pytest.mark.parametrize(
+    "error,logged",
+    [
+        ("DatabaseError", True),
+        ("TransactionManagementError", True),
+        ("ValidationError", True),
+        ("Throttled", True),
+        ("NotFound", False),
+        ("Http404", False),
+        ("PermissionDenied", False),
+        ("NotAuthenticated", False),
+    ],
+)
 @test_context
-def test_refused_put_stored_lookup_failure_is_notice(todo_list, monkeypatch, error):
-    """A refused PUT whose stored resource cannot be looked up (a database
-    error) answers with the notices only, keeping its status."""
+def test_refused_put_stored_lookup_failure_is_notice(
+    todo_list, monkeypatch, caplog, error, logged
+):
+    """A refused PUT whose stored resource cannot be looked up answers with
+    the notices only, keeping its status. A refusal of the lookup (401, 403,
+    404) is expected and not logged; anything else (a database error,
+    another API error) is logged as a warning."""
     from django.db import DatabaseError
     from django.db.transaction import TransactionManagementError
+    from django.http import Http404
+    from rest_framework import exceptions
 
     from scrud_django.mixins.view_mixins import ResourceViewMixin
 
     errors = {
         "DatabaseError": DatabaseError,
         "TransactionManagementError": TransactionManagementError,
+        "ValidationError": exceptions.ValidationError,
+        "Throttled": lambda message: exceptions.Throttled(detail=message),
+        "NotFound": exceptions.NotFound,
+        "Http404": Http404,
+        "PermissionDenied": exceptions.PermissionDenied,
+        "NotAuthenticated": exceptions.NotAuthenticated,
     }
 
     def failing(self):
@@ -762,14 +786,22 @@ def test_refused_put_stored_lookup_failure_is_notice(todo_list, monkeypatch, err
     )
     monkeypatch.setattr(ResourceViewMixin, "get_object", failing)
     Given.http.force_authenticate(user)
-    put_json(
-        detail_url(todo_list),
-        three_items(todo_list),
-        HTTP_IF_MATCH=f'"{todo_list.etag}"',
-        HTTP_ACCEPT=HTML,
-        HTTP_HX_REQUEST="true",
-    )
+    with caplog.at_level(logging.WARNING, logger="scrud_django.ui.renderer"):
+        put_json(
+            detail_url(todo_list),
+            three_items(todo_list),
+            HTTP_IF_MATCH=f'"{todo_list.etag}"',
+            HTTP_ACCEPT=HTML,
+            HTTP_HX_REQUEST="true",
+        )
     Then.http.status_code_is(403)
+    warned = [
+        r
+        for r in caplog.records
+        if r.name == "scrud_django.ui.renderer" and r.levelno == logging.WARNING
+    ]
+    assert bool(warned) == logged, [r.getMessage() for r in warned]
+    assert all(r.exc_info for r in warned)
     assert_html()
     output = html()
     # the problem's notice only: the condition's message needs the stored
@@ -835,3 +867,40 @@ def test_refused_html_put_takes_no_row_lock(todo_list, todo_reader_login, who):
     else:
         assert "<form" not in output and FRAME not in output
         assert "Item 2" not in output
+
+
+def test_resource_type_of_a_view_without_one_is_none():
+    """A view whose type is not registered (404) has none; any other error
+    reading it is not hidden."""
+    from django.db import DatabaseError
+    from django.http import Http404
+
+    def raising(error):
+        def get_resource_type():
+            raise error
+
+        return SimpleNamespace(get_resource_type=get_resource_type)
+
+    assert renderer._resource_type(SimpleNamespace()) is None
+    assert renderer._resource_type(raising(Http404())) is None
+    with pytest.raises(DatabaseError):
+        renderer._resource_type(raising(DatabaseError("down")))
+
+
+def test_submitted_body_refused_by_its_parser_is_none():
+    """A body that failed to parse is no submitted body; any other error
+    reading it is not hidden."""
+    from rest_framework.exceptions import ParseError, UnsupportedMediaType
+
+    class Request:
+        def __init__(self, error):
+            self.error = error
+
+        @property
+        def data(self):
+            raise self.error
+
+    assert renderer._submitted(Request(ParseError())) is None
+    assert renderer._submitted(Request(UnsupportedMediaType("text/plain"))) is None
+    with pytest.raises(RuntimeError):
+        renderer._submitted(Request(RuntimeError("boom")))

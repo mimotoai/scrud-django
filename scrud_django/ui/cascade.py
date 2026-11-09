@@ -5,12 +5,17 @@ straight from `Resource.objects` (the router's read database), never through
 views or permission code. Only components in the default context ``""`` exist,
 and the built-ins (``scrud:`` names) back them. Where names are duplicated (a
 race in the uniqueness check), the lowest pk wins.
+
+A stored stylesheet, rule or component the cascade cannot use (unnamed, a
+duplicate name's loser, a selector that does not parse, an unknown engine or
+mode) is skipped, and logged as a warning (`_skipped`), once per `rules_memo`.
 """
 
 import contextlib
 import contextvars
 import importlib.resources
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import cache, lru_cache
@@ -28,6 +33,8 @@ from scrud_django.ui.selectors import (
     selector_matches,
 )
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
+
+logger = logging.getLogger(__name__)
 
 BUILTIN_PREFIX = "scrud:"
 STORED_MODES = ("view", "edit")
@@ -138,8 +145,10 @@ def _stylesheet_rows():
     rows = []
     for pk, etag, content in _stored(UI_STYLESHEET_TYPE_URI):
         name = _name_of(content)
-        if name is not None:
-            rows.append((pk, etag, content, name, rbac_contexts_of(content)))
+        if name is None:
+            _skipped("stylesheet", pk, None, "it has no name")
+            continue
+        rows.append((pk, etag, content, name, rbac_contexts_of(content)))
     if memo is not None:
         memo[_STYLESHEETS] = rows
     return rows
@@ -152,30 +161,62 @@ def _stylesheets_by_context(contexts):
     found: dict[str, dict] = {}
     for pk, etag, content, name, sheet_contexts in _stylesheet_rows():
         for context in sheet_contexts:
-            if context in wanted:
-                found.setdefault(context, {}).setdefault(name, (pk, etag, content))
+            if context not in wanted:
+                continue
+            winner = found.setdefault(context, {}).setdefault(name, (pk, etag, content))
+            if winner[0] != pk:
+                _skipped(
+                    "stylesheet",
+                    pk,
+                    name,
+                    f"stylesheet {winner[0]} has its name in context {context!r}",
+                )
     return found
 
 
-def _sheet_rules(content, rank_of):
-    """The rules of one stylesheet's `content`, ranked by `rank_of(index)`;
-    a rule that does not parse is skipped."""
+def _sheet_rules(content, rank_of, pk=None):
+    """The rules of one stylesheet's `content` (stored stylesheet `pk`, or
+    ``None``: the default one), ranked by `rank_of(index)`; a rule that does
+    not parse is skipped (and logged)."""
     prefixes = content.get("prefixes")
     prefixes = prefixes if isinstance(prefixes, Mapping) else {}
     rules = content.get("rules")
+    name = _name_of(content)
     out = []
     for index, rule in enumerate(rules if isinstance(rules, list) else []):
         if not isinstance(rule, Mapping):
+            _skipped("stylesheet", pk, name, f"rule {index} is not an object")
             continue
         select, component = rule.get("select"), rule.get("component")
         if not isinstance(select, str) or not isinstance(component, str):
+            _skipped(
+                "stylesheet",
+                pk,
+                name,
+                f"rule {index} has no string select and component",
+            )
             continue
         try:
             selector = parse_selector(select, dict(prefixes))
-        except SelectorError:
+        except SelectorError as error:
+            _skipped("stylesheet", pk, name, f"rule {index} ({select!r}): {error}")
             continue
         out.append(Rule(selector, component, rank_of(index)))
     return out
+
+
+def _skipped(kind, pk, name, reason):
+    """Log (a warning) that the cascade skips stored `kind` `pk` (called
+    `name`), or a part of it, for `reason`: once inside a `rules_memo` (one
+    request), every time outside one."""
+    memo = _memo.get()
+    if memo is not None:
+        warned = memo.setdefault(_WARNED, set())
+        key = (kind, pk, reason)
+        if key in warned:
+            return
+        warned.add(key)
+    logger.warning("scrud-ui: skipped %s %s (%r): %s", kind, pk, name, reason)
 
 
 def _order_of(content):
@@ -228,18 +269,18 @@ def effective_rules(
     rules = _sheet_rules(_default_stylesheet(), lambda i: (0, 0, i))
     for pk, _etag, content in by_context.get(DEFAULT_CONTEXT, {}).values():
         order = _order_of(content)
-        rules += _sheet_rules(content, lambda i, o=order, p=pk: (1, o, p, i))
+        rules += _sheet_rules(content, lambda i, o=order, p=pk: (1, o, p, i), pk)
     for k, context in enumerate(contexts):
         for pk, _etag, content in by_context.get(context, {}).values():
             order = _order_of(content)
             rules += _sheet_rules(
-                content, lambda i, o=order, p=pk, k=k: (2, k, o, p, i)
+                content, lambda i, o=order, p=pk, k=k: (2, k, o, p, i), pk
             )
     for j, name in enumerate(linked):
         for context in (DEFAULT_CONTEXT, *contexts):
             sheet = by_context.get(context, {}).get(name)
             if sheet is not None:
-                rules += _sheet_rules(sheet[2], lambda i, j=j: (3, j, i))
+                rules += _sheet_rules(sheet[2], lambda i, j=j: (3, j, i), sheet[0])
                 break
     result = tuple(rules)
     if memo is not None:
@@ -271,24 +312,32 @@ def load_components(names: set[str]) -> dict[str, Component]:
     return found
 
 
-# The keys of the stored components and stylesheets in a `rules_memo` (no
-# rules key is a str).
+# The keys of the stored components and stylesheets, and of what `_skipped`
+# logged, in a `rules_memo` (no rules key is a str).
 _COMPONENTS = "components"
 _STYLESHEETS = "stylesheets"
+_WARNED = "warned"
 
 
 def _stored_components(names):
     """``{name: Component}`` of the usable stored components called one of
     `names` (``None``: any name)."""
     found = {}
-    seen = set()
+    seen = {}
     for pk, etag, content in _stored(UI_COMPONENT_TYPE_URI):
         name = _name_of(content)
-        if name is None or name in seen or (names is not None and name not in names):
+        if name is None:
+            _skipped("component", pk, None, "it has no name")
+            continue
+        if names is not None and name not in names:
             continue
         if DEFAULT_CONTEXT not in rbac_contexts_of(content):
+            _skipped("component", pk, name, "it is not in the default context")
             continue
-        seen.add(name)  # the lowest pk wins, even if it is unusable
+        if name in seen:
+            _skipped("component", pk, name, f"component {seen[name]} has its name")
+            continue
+        seen[name] = pk  # the lowest pk wins, even if it is unusable
         component = _stored_component(name, pk, etag, content)
         if component is not None:
             found[name] = component
@@ -298,8 +347,10 @@ def _stored_components(names):
 def _stored_component(name, pk, etag, content):
     engine, mode, template = (content.get(k) for k in ("engine", "mode", "template"))
     if engine not in ENGINE_NAMES or mode not in STORED_MODES:
+        _skipped("component", pk, name, f"unknown engine {engine!r} or mode {mode!r}")
         return None
     if not isinstance(template, str):
+        _skipped("component", pk, name, "its template is not a string")
         return None
     scopes = content.get("scopes")
     scopes = (
