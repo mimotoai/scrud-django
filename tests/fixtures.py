@@ -34,13 +34,20 @@ __all__ = [
     'partner_profiles',
     'regular_login',
     'role_allow_all',
+    'role_todo_creator',
     'serialize_page',
     'serialize_resource_envelope',
     'serialize_resource',
+    'todo_creator_login',
+    'todo_item',
     'todo_list',
     'todo_owner_login',
+    'todo_viewer_login',
+    'todo_writer_login',
     'todo_reader_login',
     'ui_author_login',
+    'ui_reader_login',
+    'ui_stylesheet_author_login',
     'unapply_a_scrud_migration',
 ]
 
@@ -273,6 +280,71 @@ def ui_author_login(db):
     types = [uri for t in UI_TYPE_URIS for uri in (t, collection_type_uri_for(t))]
     return assign_role(
         {f"http.{m}": types for m in ("GET", "POST", "PUT", "DELETE")},
+        DEFAULT_CONTEXT,
+    )
+
+
+@pytest.fixture
+def ui_reader_login(db):
+    """May read to-do lists in "project-a", but holds no grant on the UI
+    components and stylesheets."""
+    return assign_role(
+        {
+            "http.GET": [
+                TYPE_URI_TODO_LIST,
+                collection_type_uri_for(TYPE_URI_TODO_LIST),
+            ]
+        },
+        "project-a",
+    )
+
+
+@pytest.fixture
+def ui_stylesheet_author_login(db):
+    """May write UI stylesheets (not components) in "project-a" only."""
+    types = [UI_STYLESHEET_TYPE_URI, collection_type_uri_for(UI_STYLESHEET_TYPE_URI)]
+    return assign_role(
+        {f"http.{m}": types for m in ("GET", "POST", "PUT", "DELETE")}, "project-a"
+    )
+
+
+TYPE_URI_TODO = "tests://ToDo"
+
+
+@pytest.fixture
+def todo_item(db):
+    """A workflow-governed to-do in the default context, "not started"."""
+    reverse("todos-list")  # the URLconf registers the types
+    return ResourceRegistration.register(
+        {
+            "title": "Buy milk",
+            "status": "not started",
+            "priority": "medium",
+            "assignee": "http://somewhere.example/someone",
+        },
+        "todos",
+    )
+
+
+@pytest.fixture
+def todo_viewer_login(db):
+    """May only read to-dos in the default context."""
+    return assign_role({"http.GET": [TYPE_URI_TODO]}, DEFAULT_CONTEXT)
+
+
+@pytest.fixture
+def todo_writer_login(db):
+    """May PUT to-dos whose status stays "not started" or becomes anything,
+    but not read them: the condition's message must stay hidden."""
+    return assign_role(
+        {
+            "http.PUT": {
+                TYPE_URI_TODO: {
+                    "condition": 'status != "done"',
+                    "message": "Done is not for you",
+                }
+            }
+        },
         DEFAULT_CONTEXT,
     )
 
