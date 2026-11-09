@@ -468,3 +468,9 @@ def test_array_edit_append_row_with_only_nested_fields_has_no_input():
         append_fields=[{"name": "meta", "type": "object", "pointer_name": "meta"}],
     )
     assert "<input" not in out and "<label" not in out
+
+
+@pytest.mark.parametrize("item_type", ["object", "array"])
+def test_array_edit_no_append_row_for_object_or_array_items(item_type):
+    out = render("array-edit", pointer="/x", append_item_type=item_type)
+    assert "<input" not in out and "scrud-append" not in out

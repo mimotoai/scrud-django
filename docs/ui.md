@@ -139,7 +139,9 @@ follow the same rule.
 integer, `step="any"` for a number) or a checkbox for numeric and boolean item
 properties, and a text input otherwise. A property whose type is `object` or
 `array` gets no input (a text input cannot produce one), so a new item is
-created without it and a required one fails server validation with a notice. For an array of items that are not
+created without it and a required one fails server validation with a notice.
+An array whose items are objects without `properties`, or arrays, gets no
+append row at all. For an array of items that are not
 objects it renders one input named `<pointer>/-` of the item type, from the
 `append_item_type` context key (`None` for object items), so the client sends
 a number or a boolean, not a string.

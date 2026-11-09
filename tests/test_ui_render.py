@@ -802,3 +802,15 @@ def test_append_row_renders_no_input_for_nested_properties(admin_login):
     output = render_node_type(node_type(schema), {"rows": []}, admin_login)
     assert 'name="/rows/-/name"' in output
     assert "/rows/-/meta" not in output and "/rows/-/tags" not in output
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "items", [{"type": "object"}, {"type": "array", "items": {"type": "string"}}]
+)
+def test_no_append_row_for_items_that_are_objects_without_properties_or_arrays(
+    admin_login, items
+):
+    schema = {"type": "object", "properties": {"xs": {"type": "array", "items": items}}}
+    output = render_node_type(node_type(schema), {"xs": []}, admin_login)
+    assert "/xs/-" not in output and "scrud-append" not in output
