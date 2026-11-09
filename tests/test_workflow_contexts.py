@@ -10,6 +10,7 @@ resource is in **and** every context the body names.
 """
 
 import json
+import logging
 from uuid import uuid4
 
 import pytest
@@ -350,8 +351,8 @@ def test_a_move_into_a_context_is_reported_as_a_creation_there(
 # States whose conditions overlap: a "high" priority ToDo that is "in
 # progress" meets the conditions of both "published" and "review". Stored
 # in a JSON column, the policy's states may come back in either order
-# (PostgreSQL's jsonb and MySQL's JSON reorder keys): such content is in
-# neither state, whatever the database.
+# (PostgreSQL's jsonb and MySQL's JSON reorder keys): such content is
+# ambiguous (no one state), whatever the database.
 OVERLAPPING_POLICY = {
     "resource_type": TODO,
     "initial_states": {"draft": 'status == "not started" && priority != "high"'},
@@ -430,6 +431,7 @@ def test_a_resource_stored_in_more_than_one_state_cannot_be_updated(
     reported_saves,
 ):
     from scrud_django.exceptions import WorkflowAmbiguousStateError
+    from scrud_django.workflow import TransitionData
 
     stored = store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
     # Stored server-side, past the workflow check: reported with the error.
@@ -463,6 +465,55 @@ def test_a_resource_stored_in_more_than_one_state_cannot_be_updated(
     resource.save()
     (reported,) = reported_saves
     assert reported["transitions"]["w"] is None
+    # Entering "a" (the default policy) is a creation there, the context
+    # transition_data reports: valid, so no transition_error.
+    initialized = TransitionData("not started", None, "__INITIALIZE__")
+    assert reported["transitions"]["a"] == initialized
+    assert reported["transition_data"] == initialized
+    assert reported["transition_error"] is None
+
+
+def put_moving_an_ambiguous_resource_out_of_its_context(user, reported_saves):
+    """A PUT by `user` moving a ToDo stored (server-side) in "w", whose
+    content meets two states of "w"'s policy, into "a", where its new
+    content is a valid creation: refused, as the stored content's state in
+    "w" is ambiguous. Returns the stored policy and the resource."""
+    stored = store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
+    resource = todo(**dict(AMBIGUOUS, rbac_context="w"))
+    Given.http.force_authenticate(user)
+    reported_saves.clear()
+    put_todo(resource, dict(NOT_STARTED, rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_unchanged(resource)
+    assert reported_saves == []
+    return stored
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_ambiguous_stored_resource_cannot_be_moved_out_of_its_context(
+    reported_saves,
+):
+    # A writer who may read "w"'s policy is told the stored resource is
+    # ambiguous, and in which states.
+    user = user_with((TODO_WRITER, "w"), (TODO_WRITER, "a"), (READ_POLICIES, "w"))
+    stored = put_moving_an_ambiguous_resource_out_of_its_context(user, reported_saves)
+    assert_references_stored_policy(stored)
+    body = Http.response.json()
+    assert body["matching_states"] == ["published", "review"], body
+    assert body["message"] == ambiguous_state_message("The stored resource"), body
+    assert (body["prior_state"], body["proposed_state"]) == (None, None), body
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_ambiguous_stored_resource_moved_out_by_a_non_reader_is_generic(
+    reported_saves,
+):
+    # A writer who may not read "w"'s policy gets the generic error.
+    user = user_with((TODO_WRITER, "w"), (TODO_WRITER, "a"))
+    stored = put_moving_an_ambiguous_resource_out_of_its_context(user, reported_saves)
+    assert_generic_workflow_error(stored)
 
 
 # "done" and "canceled" may not change in place: "reopen" leads to "done"
@@ -775,6 +826,29 @@ def test_several_stored_policies_in_a_context_fail_closed():
 
 
 @pytest.mark.django_db
+def test_a_server_side_save_fails_closed_on_duplicate_policies_of_any_context():
+    # A server-side save reads the policy of every context it concerns (to
+    # report its transitions), as an API write does: several policies in
+    # a secondary context, or in one it leaves, fail it closed, before it
+    # writes, though its first context has a policy of its own.
+    secondary = todo(rbac_context=["a", "p"])
+    leaving = todo(rbac_context="p")
+    staying = todo(rbac_context="a")
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    for resource, rbac_context in ((secondary, ["a", "p"]), (leaving, "a")):
+        before = Resource.objects.get(pk=resource.pk)
+        resource.content = dict(NOT_STARTED, title="edited", rbac_context=rbac_context)
+        with pytest.raises(ImproperlyConfigured, match="2 WorkflowPolicy"):
+            resource.save()
+        assert_unchanged(before)
+    # A resource in no such context is saved.
+    staying.content = dict(NOT_STARTED, title="edited", rbac_context="a")
+    staying.save()
+    assert Resource.objects.get(pk=staying.pk).content["title"] == "edited"
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize(
     "rbac_context", [["a", "b"], [], None, 5, {"@id": "x"}], ids=repr
 )
@@ -858,7 +932,9 @@ def test_a_malformed_policy_is_refused_past_a_relaxed_schema(
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("name", ["__SAME_STATE__", "__INITIALIZE__", "__mine"])
+@pytest.mark.parametrize(
+    "name", ["__SAME_STATE__", "__INITIALIZE__", "__LEAVE__", "__mine"]
+)
 @test_context
 def test_reserved_transition_names_are_refused(regular_login, name):
     policy = dict(
@@ -1436,6 +1512,120 @@ def test_an_invalid_server_side_save_reports_its_transition_error(reported_saves
     assert (error.prior_state, error.proposed_state) == ("done", "not started")
     # The context's transition is no valid one: None there.
     assert reported["transitions"] == {"a": None}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_server_side_create_in_no_initial_state_reports_its_error(reported_saves):
+    from scrud_django.exceptions import WorkflowInvalidInitialStateError
+
+    # "done" is no initial state of the default policy: the API refuses
+    # such a create; a server-side one is saved, and reported as an invalid
+    # transition is, None with the error, not as an __INITIALIZE__ into no
+    # state.
+    reported_saves.clear()
+    todo(rbac_context="a", status="done")
+    (reported,) = reported_saves
+    assert reported["transition_data"] is None
+    error = reported["transition_error"]
+    assert isinstance(error, WorkflowInvalidInitialStateError), error
+    assert (error.prior_state, error.proposed_state) == (None, None)
+    assert reported["transitions"] == {"a": None}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_server_side_move_into_a_context_in_no_initial_state_reports_its_error(
+    reported_saves,
+):
+    from scrud_django.exceptions import WorkflowInvalidInitialStateError
+    from scrud_django.workflow import TransitionData
+
+    # Entering "v" is a create there, and "done" is no initial state.
+    resource = todo(rbac_context="w", status="done")
+    reported_saves.clear()
+    resource.content = dict(resource.content, rbac_context="v")
+    resource.save()
+    (reported,) = reported_saves
+    assert reported["transition_data"] is None
+    error = reported["transition_error"]
+    assert isinstance(error, WorkflowInvalidInitialStateError), error
+    assert reported["transitions"] == {
+        "w": TransitionData(None, "done", "__LEAVE__"),
+        "v": None,
+    }
+
+
+# A save that skipped the WorkflowValidator (the admin, ResourceRegistration,
+# server code) is still saved when it is invalid: each context's workflow
+# error is logged on the scrud_django.workflow logger, not only reported.
+WORKFLOW_LOGGER = "scrud_django.workflow"
+
+
+def workflow_warnings(caplog):
+    return [
+        record
+        for record in caplog.records
+        if record.name == WORKFLOW_LOGGER and record.levelno == logging.WARNING
+    ]
+
+
+def assert_logs_workflow_error(record, resource, context, message):
+    logged = record.getMessage()
+    assert f"pk {resource.pk}" in logged, logged
+    assert TODO in logged, logged
+    assert f"context {context!r}" in logged, logged
+    assert message in logged, logged
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_save_past_the_workflow_check_logs_each_contexts_error(
+    caplog, reported_saves
+):
+    from scrud_django.workflow import TransitionData
+
+    store_policy(B_POLICY)
+    resource = todo(rbac_context=["a", "b"])
+    assert workflow_warnings(caplog) == []
+    # Valid in "a" ("finish", and the context transition_data reports), but
+    # "done" is no state of "b"'s policy: only "b"'s error is logged, though
+    # transition_error (the picked context's) is None.
+    reported_saves.clear()
+    resource.content = dict(NOT_STARTED, status="done", rbac_context=["a", "b"])
+    resource.save()
+    (reported,) = reported_saves
+    assert reported["transition_data"] == TransitionData(
+        "done", "not started", "finish"
+    )
+    assert reported["transition_error"] is None
+    assert reported["transitions"]["b"] is None
+    (record,) = workflow_warnings(caplog)
+    assert_logs_workflow_error(
+        record, resource, "b", "The request does not match a valid state"
+    )
+
+    # Invalid in both: one warning per context, in the contexts' order.
+    caplog.clear()
+    created = todo(rbac_context=["a", "b"], status="done")
+    first, second = workflow_warnings(caplog)
+    initial = "The request is not a valid initial state."
+    assert_logs_workflow_error(first, created, "a", initial)
+    assert_logs_workflow_error(second, created, "b", initial)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_valid_write_logs_no_workflow_error(caplog):
+    user = user_with((TODO_WRITER, "a"))
+    resource = todo(rbac_context="a")
+    Given.http.force_authenticate(user)
+    put_todo(resource, dict(NOT_STARTED, status="in progress", rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_200_OK)
+    resource.refresh_from_db()
+    resource.content = dict(resource.content, status="done")
+    resource.save()
+    assert workflow_warnings(caplog) == []
 
 
 @pytest.mark.django_db

@@ -40,7 +40,7 @@
     "TransitionDefinition": { "$ref": "#/definitions/TransitionSpecification" },
     "TransitionSpecification": {
       "type": "object",
-      "description": "An allowed transition from one or more states to one or more states. At most one transition of a policy may lead from a given state to another.",
+      "description": "An allowed transition from one or more states to one or more states. At most one transition of a policy may lead from a given state to a given state (itself included).",
       "properties": {
         "from": { "$ref": "#/definitions/TransitionNodeDefinition" },
         "to": { "$ref": "#/definitions/TransitionNodeDefinition" }

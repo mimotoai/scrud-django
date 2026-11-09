@@ -205,12 +205,16 @@ def test_a_write_of_a_type_whose_entry_is_not_a_mapping_stands(
 ):
     reverse("todos-list")
     app_processor = apps.get_app_config("scrud_django").processor
-    monkeypatch.setitem(app_processor.workflow_actions, TODO, todo_on_save)
     registered = []
     monkeypatch.setattr(
         app_processor, "run_on_commit", lambda *args, **kwargs: registered.append(args)
     )
-    with django_capture_on_commit_callbacks(execute=True):
+    # The ToDo entry is the action itself, not a mapping.
+    with (
+        setting_of("not_a_mapping"),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        assert app_processor.workflow_actions[TODO] is todo_on_save
         todo = ResourceRegistration.register({"title": "t"}, "todos")
         ResourceRegistration.delete("todos", str(todo.pk))
     assert not Resource.objects.filter(pk=todo.pk).exists()
@@ -219,6 +223,32 @@ def test_a_write_of_a_type_whose_entry_is_not_a_mapping_stands(
     records = logged_on_actions_logger(caplog)
     assert len(records) == 2
     assert all(TODO in r.getMessage() for r in records)
+
+
+def test_the_setting_derived_actions_are_read_only(processor):
+    """A processor's actions read from the setting are the settings cache,
+    shared by every processor: they cannot be changed through one. A
+    mapping assigned to a processor is its own, and stays as assigned."""
+    from scrud_django import conf
+
+    app_processor = apps.get_app_config("scrud_django").processor
+    shared = app_processor.workflow_actions
+    with pytest.raises(TypeError):
+        shared["tests://Other"] = {"on_save": todo_on_save}
+    with pytest.raises(TypeError):
+        del shared[TODO]
+    assert "tests://Other" not in conf.configured_workflow_actions()
+    assert conf.configured_workflow_actions()[TODO] is actions[TODO]
+    assert shared[TODO] is actions[TODO]
+    assert dict(shared) == conf.configured_workflow_actions()
+
+    built = processor()
+    own = {TODO: {"on_save": todo_on_save}}
+    built.workflow_actions = own
+    assert built.workflow_actions is own
+    built.workflow_actions[TODO] = {"on_delete": todo_on_delete}
+    assert own == {TODO: {"on_delete": todo_on_delete}}
+    assert conf.configured_workflow_actions()[TODO] is actions[TODO]
 
 
 # The app's processor follows the setting (override_settings included), and

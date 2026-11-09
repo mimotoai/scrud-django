@@ -1,3 +1,6 @@
+import dataclasses
+import logging
+
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac.cel import InvalidExpression
@@ -8,7 +11,13 @@ from scrud_django.exceptions import (
     WorkflowInvalidStateError,
     WorkflowTransitionError,
 )
-from scrud_django.workflow import TransitionData, WorkflowPolicy
+from scrud_django.workflow import (
+    INITIALIZE,
+    LEAVE,
+    SAME_STATE,
+    TransitionData,
+    WorkflowPolicy,
+)
 
 workflow_policy = WorkflowPolicy(
     {
@@ -169,12 +178,12 @@ def reordered(policy):
     )
 
 
-def test_transition_is_authorized_into_the_state_the_content_is_stored_in():
+def test_content_meeting_two_states_is_refused():
     policy = WorkflowPolicy(overlapping_policy)
     proposed = {"status": "review", "published": True}
-    # The content meets "published" and "review": it is in neither, whatever
-    # the order of their conditions. "submit" leads from "draft" to "review",
-    # but the update is refused.
+    # The content meets "published" and "review": its state is ambiguous,
+    # whatever the order of their conditions. "submit" leads from "draft" to
+    # "review", but the update is refused.
     with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
         policy.state(proposed)
     assert excinfo.value.matching_states == ["published", "review"]
@@ -270,8 +279,8 @@ def test_content_staying_in_its_state_is_a_same_state_update():
         "transitions": {"archive": {"from": "review", "to": "archived"}},
     }
     prior = {"status": "review", "archived": False}
-    # Content that is "review" and archived meets both conditions: it is in
-    # neither, and the update is refused, under restrict_update or not.
+    # Content that is "review" and archived meets both conditions: its state
+    # is ambiguous, and the update is refused, under restrict_update or not.
     overlapping = {"status": "review", "archived": True}
     restricted = WorkflowPolicy(dict(policy, restrict_update=["review"]))
     for workflow in (WorkflowPolicy(policy), restricted):
@@ -315,7 +324,7 @@ def test_a_state_in_both_initial_states_and_states_is_refused():
 
 def test_initial_state_is_the_state_the_content_is_stored_in():
     # Content that meets an initial state's condition and a later state's is
-    # in neither: a create of it is refused, as an update to it is.
+    # ambiguous: a create of it is refused, as an update to it is.
     policy = WorkflowPolicy(
         {
             "initial_states": {"draft": 'status == "draft"'},
@@ -507,3 +516,103 @@ def test_one_transition_naming_a_state_twice_is_no_duplicate():
     assert policy.determine_transition(published, {"status": "draft"}) == (
         TransitionData("published", "draft", "publish")
     )
+
+
+@pytest.mark.parametrize("name", ["__INITIALIZE__", "__SAME_STATE__", "__LEAVE__"])
+def test_a_reserved_transition_name_is_refused_naming_every_reserved_one(name):
+    assert (INITIALIZE, SAME_STATE, LEAVE) == (
+        "__INITIALIZE__",
+        "__SAME_STATE__",
+        "__LEAVE__",
+    )
+    with pytest.raises(ImproperlyConfigured) as excinfo:
+        WorkflowPolicy(
+            {
+                "initial_states": {"draft": 'status == "draft"'},
+                "transitions": {name: {"from": "draft", "to": "draft"}},
+            }
+        )
+    assert str(excinfo.value) == (
+        f"Invalid workflow transition {name!r}: a name must be a string not "
+        "starting with '__', which is reserved (__INITIALIZE__, __SAME_STATE__, "
+        "__LEAVE__)."
+    )
+
+
+def test_transition_data_is_immutable_and_hashable():
+    started = TransitionData("in progress", "not started", "start")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        started.transition = "finish"
+    assert started.transition == "start"
+    assert started == TransitionData("in progress", "not started", "start")
+    assert {started: 1}[TransitionData("in progress", "not started", "start")] == 1
+
+
+# A condition whose evaluation fails (a property missing from the content)
+# is no match; it is logged at DEBUG on the scrud_django.workflow logger,
+# naming the policy and the state, so that a misspelled property can be
+# found. A condition that is false is not logged.
+WORKFLOW_LOGGER = "scrud_django.workflow"
+
+
+def debug_records(caplog):
+    return [
+        record
+        for record in caplog.records
+        if record.name == WORKFLOW_LOGGER and record.levelno == logging.DEBUG
+    ]
+
+
+def test_a_condition_that_fails_to_evaluate_is_logged_at_debug(caplog):
+    caplog.set_level(logging.DEBUG, logger=WORKFLOW_LOGGER)
+    policy = WorkflowPolicy(
+        {
+            "resource_type": "tests://T",
+            "initial_states": {
+                "urgent": 'priority == "HIGH"',
+                "open": 'status == "OPEN"',
+            },
+        }
+    )
+    assert policy.state({"status": "OPEN"}) == "open"
+    (record,) = debug_records(caplog)
+    message = record.getMessage()
+    assert "'urgent'" in message, message
+    assert "DefaultPolicyReference('tests://T')" in message, message
+    assert "'open'" not in message, message
+    assert "priority" in message, message
+
+    # False conditions (both properties present) are not logged.
+    caplog.clear()
+    assert policy.state({"status": "CLOSED", "priority": "LOW"}) is None
+    assert debug_records(caplog) == []
+
+
+def test_undeclared_properties_flags_a_misspelled_property():
+    # The CEL type checker's message is parsed (UNDECLARED_REFERENCE): a
+    # change of its format must fail here, not silently report nothing.
+    from scrud_django.workflow import undeclared_properties
+
+    assert undeclared_properties('stauts == "done"', {"status"}) == ["stauts"]
+    assert undeclared_properties(
+        'stauts == "x" || status == "y" || foo(status)', {"status"}
+    ) == ["stauts"]
+    assert undeclared_properties('status == "done"', {"status"}) == []
+
+
+def test_undeclared_properties_logs_a_failure_of_the_type_checker(monkeypatch, caplog):
+    from scrud_django import workflow
+
+    caplog.set_level(logging.DEBUG, logger=WORKFLOW_LOGGER)
+
+    def broken(condition, variables):
+        raise RuntimeError("the type checker broke")
+
+    monkeypatch.setattr(workflow, "_undeclared_references", broken)
+    # Never fails a system check: nothing is reported, and the failure is
+    # logged with its traceback.
+    assert workflow.undeclared_properties('stauts == "done"', {"status"}) == []
+    (record,) = debug_records(caplog)
+    assert "'stauts == \"done\"'" in record.getMessage(), record.getMessage()
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], RuntimeError)

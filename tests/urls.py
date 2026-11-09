@@ -3,7 +3,7 @@ from uuid import uuid4
 from django.contrib import admin
 from django.urls import include, path
 from django.utils.timezone import now
-from rest_framework import routers, serializers, status, viewsets
+from rest_framework import generics, routers, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
@@ -16,9 +16,11 @@ from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
 from scrudful.rest_framework import hsr_urls, scrudful, scrudful_viewset
 
 from scrud_django import registration
+from scrud_django.filters import ResourceRbacFilter
 from scrud_django.mixins.view_mixins import (
     GenericViewMixin,
     ReadableMixin,
+    ResourceViewMixin,
     ScrudfulMeta,
 )
 from scrud_django.models import ResourceType
@@ -543,6 +545,59 @@ urlpatterns.append(
 )
 
 
+class ReopeningToDoViewSet(ResourceViewSet):
+    """The ToDos, with a PUT ``@action`` of an item (``reopen``, not the
+    viewset's ``update``) that writes the resource itself: a grant
+    conditioned on ``scrud_workflow`` must not authorize it either."""
+
+    @action(detail=True, methods=["put"])
+    @scrudful(**ACTION)
+    def reopen(self, request, slug):
+        resource = self.get_object()
+        resource.content = dict(resource.content, status="not started")
+        resource.save()
+        return Response({"reopened": slug})
+
+
+urlpatterns.append(
+    path(
+        "reopening/todos/<slug>/reopen/",
+        ReopeningToDoViewSet.as_view({"put": "reopen"}, resource_type_name="todos"),
+        name="reopening-todos-reopen",
+    )
+)
+
+
+class ToDoReopenView(
+    ReadableMixin, AccessControlledAPIView, ResourceViewMixin, generics.GenericAPIView
+):
+    """A PUT of an item served by a view that is not a viewset (DRF's
+    ``view.action`` is ``None``), writing the resource itself: a grant
+    conditioned on ``scrud_workflow`` must not authorize it."""
+
+    permission_classes = [IsAuthorized]
+    parser_classes = [RbacJSONParser]
+    filter_backends = [ResourceRbacFilter]
+    resource_type_name = "todos"
+    resource_type_iri = "tests://ToDo"
+
+    @scrudful(**ACTION)
+    def put(self, request, slug):
+        resource = self.get_object()
+        resource.content = dict(resource.content, status="not started")
+        resource.save()
+        return Response({"reopened": slug})
+
+
+urlpatterns.append(
+    path(
+        "todo-reopen/<slug>/",
+        ToDoReopenView.as_view(),
+        name="todo-reopen",
+    )
+)
+
+
 def custom_list_etag(view_instance, request, **kwargs):
     return "custom"
 
@@ -569,9 +624,9 @@ class CustomListEtagResourceViewSet(ResourceViewSet):
 
 class NoteBulkViewSet(NoteViewSet):
     """The notes again, whose POST (``as_view({"post": "bulk"})``) is a
-    handler of its own, no @action, decorated as E007 asks an action: it
-    calls ``create``, which scrudful skips as a nested handler, so nothing
-    evaluates."""
+    handler of its own, no @action, decorated as scrudful.E007 asks an
+    action: it calls ``create``, which scrudful skips as a nested handler, so
+    nothing evaluates."""
 
     @scrudful(**ACTION)
     def bulk(self, request):

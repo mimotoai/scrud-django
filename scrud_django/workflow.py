@@ -1,4 +1,5 @@
 import copy
+import logging
 import re
 import threading
 from collections import OrderedDict
@@ -6,11 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 
+from cel_expr_python import cel
 from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac.cel import (
     InvalidExpression,
     compile_expression,
-    is_true,
     new_environment,
 )
 
@@ -25,20 +26,39 @@ from scrud_django.exceptions import (
 
 CEL_ENVIRONMENT = new_environment({})
 
+# State conditions that fail to evaluate (DEBUG), and saves that skipped the
+# workflow check (``ResourceMixin.save``, WARNING).
+logger = logging.getLogger("scrud_django.workflow")
+
 WORKFLOW_POLICY_TYPE_URI = "http://api.openteams.com/json-ld/WorkflowPolicy"
 
-# The transitions scrud-django names itself: ``__INITIALIZE__`` (a create) and
-# ``__SAME_STATE__`` (an update that stays in its state), and ``__LEAVE__``,
-# which ``scrud_post_save`` reports for a context a write moves a resource out
-# of (``resource_mixin.LEAVE_TRANSITION``). A policy may not define a
-# transition with this prefix.
+# The transitions scrud-django names itself. A policy may not define a
+# transition with their prefix, `RESERVED_TRANSITION_PREFIX`.
+# A create, and a move into a context: no prior state.
+INITIALIZE = "__INITIALIZE__"
+# An update that stays in its state (unless a transition of the policy leads
+# from that state to itself).
+SAME_STATE = "__SAME_STATE__"
+# What ``scrud_post_save``'s ``transitions`` reports for a context a write
+# moves a resource out of: no proposed state, the prior state the one it
+# left. No grant is asked for it (the ``WorkflowValidator`` checks a move
+# out of a context as a transition from the stored content there).
+LEAVE = "__LEAVE__"
+RESERVED_TRANSITIONS = (INITIALIZE, SAME_STATE, LEAVE)
 RESERVED_TRANSITION_PREFIX = "__"
 
 
-@dataclass
+@dataclass(frozen=True)
 class TransitionData:
-    proposed_state: str
-    prior_state: str
+    """A write's transition under one policy: from `prior_state` (``None``
+    for a create or a move into the context) to `proposed_state` (``None``
+    for a move out of it, `LEAVE`), by `transition`, the policy's
+    transition name or a reserved one (`INITIALIZE`, `SAME_STATE`,
+    `LEAVE`). Immutable: the same instance may be reported to several
+    receivers."""
+
+    proposed_state: str | None
+    prior_state: str | None
     transition: str
 
 
@@ -116,9 +136,10 @@ class WorkflowPolicy:
         return proposed_state
 
     def initial_transition(self, data):
-        """The ``__INITIALIZE__`` `TransitionData` of a create of `data`: no
-        prior state, its initial state as the proposed one."""
-        return TransitionData(self.validate_initial_state(data), None, "__INITIALIZE__")
+        """The ``__INITIALIZE__`` (`INITIALIZE`) `TransitionData` of a
+        create of `data`: no prior state, its initial state as the proposed
+        one."""
+        return TransitionData(self.validate_initial_state(data), None, INITIALIZE)
 
     def state(self, data):
         """The state content `data` is stored in: the one state, among the
@@ -188,7 +209,7 @@ class WorkflowPolicy:
             if transition is not None:
                 return TransitionData(proposed_state, prior_state, transition)
             if prior_state == proposed_state:
-                return TransitionData(proposed_state, prior_state, "__SAME_STATE__")
+                return TransitionData(proposed_state, prior_state, SAME_STATE)
         raise WorkflowTransitionError(self.reference, prior_state, proposed_state)
 
     def determine_state(self, data, state_expressions):
@@ -205,18 +226,35 @@ class WorkflowPolicy:
             raise WorkflowAmbiguousStateError(self.reference, matches)
         return matches[0] if matches else None
 
-    @staticmethod
-    def matching_states(data, state_expressions):
+    def matching_states(self, data, state_expressions):
         """The names of the `state_expressions` whose condition `data` (a
         mapping, else none) meets. An evaluation error, such as a property
-        missing from `data`, or a result that is not ``true``, is no match."""
+        missing from `data`, or a result that is not ``true``, is no match
+        (as scoped-rbac's ``is_true`` decides). A condition whose evaluation
+        fails, or gives no boolean, is logged at DEBUG on the
+        ``scrud_django.workflow`` logger, naming the policy (`reference`)
+        and the state: a misspelled property fails on every content. A
+        condition that is ``false`` is not logged."""
         if not isinstance(data, Mapping):
             return []
-        return [
-            name
-            for name, condition in state_expressions.items()
-            if is_true(condition, data)
-        ]
+        matches = []
+        for name, condition in state_expressions.items():
+            result = condition.eval(data=data)
+            if result.type() == cel.Type.BOOL:
+                if result.value() is True:
+                    matches.append(name)
+                continue
+            if result.type() == cel.Type.ERROR:
+                outcome = f"failed to evaluate: {result.value()}"
+            else:
+                outcome = f"is not a boolean ({result.type()})"
+            logger.debug(
+                "The condition of workflow state %r of policy %r %s; it is no match.",
+                name,
+                self.reference,
+                outcome,
+            )
+        return matches
 
     def mapping_of(self, key, what):
         """The policy's `key` (``{}`` when absent), which must be an object (of
@@ -276,7 +314,7 @@ class WorkflowPolicy:
                 raise ImproperlyConfigured(
                     f"Invalid workflow transition {transition_name!r}: a name must "
                     f"be a string not starting with {RESERVED_TRANSITION_PREFIX!r}, "
-                    "which is reserved (__INITIALIZE__, __SAME_STATE__)."
+                    f"which is reserved ({', '.join(RESERVED_TRANSITIONS)})."
                 )
             if not (
                 isinstance(transition_policy, Mapping)
@@ -359,14 +397,23 @@ def undeclared_properties(condition, properties):
     names the identifiers it cannot resolve, given the declared variables.
     A name that still does not resolve once declared as a variable is a
     function (``foo(x)``, ``x.foo()``), not a property. Other type errors
-    are ignored, and a condition that does not compile reads none."""
+    are ignored, and a condition that does not compile reads none. A
+    failure of the type checker itself reports none either, and is logged
+    at DEBUG on the ``scrud_django.workflow`` logger, with its traceback."""
     try:
         missing = _undeclared_references(condition, properties)
         if not missing:
             return []
         functions = _undeclared_references(condition, set(properties) | missing)
     except Exception:  # noqa: BLE001
-        # Never fail a system check on one condition.
+        # Never fail a system check on one condition; say why it reported
+        # nothing.
+        logger.debug(
+            "The properties workflow state condition %r reads could not be "
+            "told; none is reported.",
+            condition,
+            exc_info=True,
+        )
         return []
     return sorted(missing - functions)
 

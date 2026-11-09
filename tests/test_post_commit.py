@@ -632,6 +632,77 @@ def test_a_queryset_delete_acts_only_when_it_commits(commit, ran, committed_type
 
 
 @pytest.mark.django_db
+def test_a_queryset_delete_logs_each_failing_action_and_deletes_every_row(
+    failing_on_delete, caplog, django_capture_on_commit_callbacks
+):
+    # One action raising does not keep the next from running, nor the rows
+    # from being deleted: each failure is logged with its own pk.
+    todos = [a_todo() for _ in range(2)]
+    pks = sorted(t.pk for t in todos)
+    with django_capture_on_commit_callbacks(execute=True):
+        Resource.objects.filter(pk__in=pks).delete()
+    assert not Resource.objects.filter(pk__in=pks).exists()
+    assert sorted(failing_on_delete) == pks
+    records = logged_action_failures(caplog)
+    assert len(records) == 2
+    for pk in pks:
+        (record,) = [r for r in records if f"pk {pk}," in r.getMessage()]
+        assert f"on_delete failed for {pk}" in record.getMessage()
+        assert_names_the_failed_action(record, "on_delete", pk)
+
+
+def todos_on_other(count):
+    """`count` ToDos stored on the "other" database (and not on default),
+    with their type, for a queryset delete there."""
+    from scrud_django.models import ResourceType
+
+    todos = [a_todo() for _ in range(count)]
+    copy = ResourceType.objects.get(pk=todos[0].resource_type_id)
+    copy.schema_id = copy.context_id = copy.indexing_policy_id = None
+    ResourceType.objects.using("other").bulk_create([copy])
+    for todo in todos:
+        todo.save(using="other")
+        Resource.objects.using("default").filter(pk=todo.pk).delete()
+    return todos
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "other"])
+@pytest.mark.parametrize("commit", [False, True], ids=["rolled-back", "committed"])
+def test_a_queryset_delete_on_another_database_acts_when_it_commits_there(
+    commit, ran, committed_types
+):
+    # Committed for real: default is in autocommit, so an action
+    # registered there (not on "other") would run at once, inside the
+    # delete.
+    todos = todos_on_other(2)
+    pks = [t.pk for t in todos]
+    received = []
+
+    def record(sender, using=None, pk=None, **kwargs):
+        received.append((using, pk))
+
+    ran.clear()
+    scrud_post_delete.connect(record)
+    try:
+        try:
+            with transaction.atomic(using="other"):
+                Resource.objects.using("other").filter(pk__in=pks).delete()
+                assert sorted(received) == sorted(("other", pk) for pk in pks)
+                assert ran == []
+                if not commit:
+                    raise RolledBack
+        except RolledBack:
+            pass
+    finally:
+        scrud_post_delete.disconnect(record)
+    remaining = Resource.objects.using("other").filter(pk__in=pks).count()
+    assert remaining == (0 if commit else 2)
+    assert sorted(ran) == (
+        sorted(("delete", t.etag, t.pk) for t in todos) if commit else []
+    )
+
+
+@pytest.mark.django_db
 def test_a_raw_save_sends_no_scrud_signal(ran, django_capture_on_commit_callbacks):
     """A raw save (``loaddata``, a django-reversion revert) is Django's
     ``save_base(raw=True)``: it sends ``post_save`` with ``raw=True``, but no

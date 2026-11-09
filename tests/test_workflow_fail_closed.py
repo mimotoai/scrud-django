@@ -247,6 +247,64 @@ def test_a_plain_post_grant_authorizes_a_custom_write_action():
     assert Resource.objects.get(pk=stored.pk).content == dict(PLAN, status="done")
 
 
+# A PUT that is not the viewset's update: an @action
+# (tests.urls.ReopeningToDoViewSet.reopen, view.action "reopen"), and a
+# view that is not a viewset (tests.urls.ToDoReopenView, view.action None).
+# Neither runs the WorkflowValidator: scrud_workflow refuses them.
+
+REOPEN_ROUTES = ["reopening-todos-reopen", "todo-reopen"]
+
+
+def reopen(route, resource):
+    When.http.put(
+        reverse(route, args=[resource.pk]),
+        data=json.dumps(dict(PLAN, status="not started")),
+        content_type="application/json",
+        **if_match(resource),
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("route", REOPEN_ROUTES)
+@pytest.mark.parametrize(
+    "definition",
+    [
+        {"http.PUT": {TODO: scrud_workflow([])}},
+        {"http.PUT": {TODO: scrud_workflow(["__SAME_STATE__"])}},
+        {"*": {TODO: scrud_workflow(["__INITIALIZE__", "__SAME_STATE__", "cancel"])}},
+    ],
+    ids=["none", "same-state", "every-action"],
+)
+@test_context
+def test_a_scrud_workflow_grant_does_not_authorize_another_put(route, definition):
+    stored = todo(dict(PLAN, status="done"))
+    Given.http.force_authenticate(user_with((definition, "team")))
+    reopen(route, stored)
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.get(pk=stored.pk).content == dict(PLAN, status="done")
+
+    # Its OPTIONS does not offer the PUT either.
+    When.http.options(reverse(route, args=[stored.pk]))
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert "PUT" not in Http.response["Allow"], Http.response["Allow"]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("route", REOPEN_ROUTES)
+@test_context
+def test_a_plain_put_grant_authorizes_another_put(route):
+    stored = todo(dict(PLAN, status="done"))
+    Given.http.force_authenticate(
+        user_with(({"http.GET": [TODO], "http.PUT": [TODO]}, "team"))
+    )
+    When.http.options(reverse(route, args=[stored.pk]))
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert "PUT" in Http.response["Allow"], Http.response["Allow"]
+    reopen(route, stored)
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert Resource.objects.get(pk=stored.pk).content == PLAN
+
+
 @pytest.mark.django_db
 @test_context
 def test_a_scrud_workflow_grant_still_offers_its_create_and_update():
