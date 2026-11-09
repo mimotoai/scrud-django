@@ -5,9 +5,11 @@ from scrudful.rest_framework import scrudful_viewset
 from scrud_django.exceptions import (
     UIComponentNameTakenError,
     UIStylesheetNameTakenError,
+    UITemplateInvalidError,
 )
 from scrud_django.models import Resource
 from scrud_django.registration import write_db
+from scrud_django.ui.engines import TemplateCompileError, compile_template
 from scrud_django.views import ResourceViewSet
 
 
@@ -49,6 +51,11 @@ class UIComponentViewSet(UIContentValidationMixin, ResourceViewSet):
             content__name=name
         ):
             raise UIComponentNameTakenError(name)
+        if isinstance(content, dict) and "template" in content:
+            try:
+                compile_template(content.get("engine"), content["template"])
+            except TemplateCompileError as error:
+                raise UITemplateInvalidError(error) from error
 
 
 @scrudful_viewset

@@ -130,6 +130,19 @@ class UIComponentNameTakenError(ScrudException):
         self.title = "UI component name taken"
 
 
+class UITemplateInvalidError(ScrudException):
+    """A UI component whose template does not compile."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_template_invalid"
+
+    def __init__(self, reason):
+        super().__init__(f"The component template is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-template-invalid"
+        self.title = "UI template invalid"
+
+
 class UIStylesheetNameTakenError(ScrudException):
     """A UI stylesheet whose ``name`` another stylesheet in the same context
     already has."""
