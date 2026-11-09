@@ -2,9 +2,10 @@
 
 `ScrudHTMLRenderer` renders what the view answered, as the JSON renderer
 would: a success's body (a resource, a page of a list) through the render
-tree, and an error as a notice, never with resource content. It is chosen by
-content negotiation (``Accept: text/html``), ahead of DRF's browsable API,
-which ``?format=api`` still reaches (`ui_renderers`).
+tree, and an error as a notice, never with stored resource content (but see
+the refused PUT and the 412, below). It is chosen by content negotiation
+(``Accept: text/html``), ahead of DRF's browsable API, which ``?format=api``
+still reaches (`ui_renderers`).
 
 A request with ``HX-Request`` gets a fragment; any other gets a page, the
 fragment wrapped in the page component (the term ``scrud:page``, resolved in
@@ -12,11 +13,13 @@ the root scope). The fragment protocol's request headers (`SCOPE_HEADER`,
 `POINTER_HEADER`) say which node to render and in which scope chain; they
 select presentation only, never what is authorized.
 
-The one response that renders something other than the view's data is a
-refused PUT (400, 403): the body the user submitted comes back as the edit
+The errors that render more than a notice: a refused PUT (400, 403), where
+the body the user submitted (never the stored content) comes back as the edit
 form, with the messages, provided the user may PUT the stored resource as the
-view loaded it (`remember_stored`, `load_stored`). A 412 answers a stale form
-with a notice and a frame that reloads the current state.
+view loaded it (`remember_stored`, `load_stored`); and a 412, which answers a
+stale form with a notice and a frame that reloads the current state (a GET
+with the viewer's own rights). A success that fails to render is a 500 with a
+notice.
 """
 
 import copy
@@ -184,15 +187,19 @@ def finalize_html(request, response) -> None:
     """For a request that negotiated HTML: render `response` with the
     `ScrudHTMLRenderer`, as ``text/html; charset=utf-8``, whatever renderer
     and media type an exception handler set (``application/problem+json``),
-    and vary it on the fragment protocol's headers."""
+    vary it on the fragment protocol's headers, and keep caches from storing
+    it (``Cache-Control: private, no-cache, no-store``)."""
     renderer = negotiated_html(request)
     if renderer is None:
         return
     patch_vary_headers(response, VARY)
     # The HTML depends on the stylesheets, components and grants as well as
-    # the resource (whose ETag it carries): always revalidated, never shared.
-    # A page and its htmx fragments share that ETag, so neither is stored
-    # (a revalidated 304 could otherwise show one as the other).
+    # the resource, whose ETag it carries; and a page and its htmx fragments
+    # share that ETag, so a stored copy revalidated with a 304 could show one
+    # as the other, or stale presentation. So no cache stores it (no-store;
+    # private and no-cache for caches that ignore no-store). A client that
+    # resends an old ETag itself still gets a 304 (ui-html-shared-etag in
+    # docs/follow-ups.md).
     patch_cache_control(response, private=True, no_cache=True, no_store=True)
     if not isinstance(response, Response):
         return

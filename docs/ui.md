@@ -11,6 +11,15 @@ The browser side is [htmx](https://htmx.org/) and a small script, `scrud-ui.js`.
 Without `scrud_django.ui` in `INSTALLED_APPS`, scrud-django behaves exactly as
 before.
 
+This is phase 1 of the UI. The later phases are planned, not built:
+
+* **Phase 1** (this release): server-rendered HTML for every resource, stored
+  components and stylesheets written by a trusted role, and the browser writing
+  whole resources with plain JSON `PUT`s.
+* **Phase 2**: per-field editability, and policy evaluation in the browser
+  through js-scoped-rbac.
+* **Phase 3**: components written by untrusted authors, in a sandbox.
+
 ## Enabling the app
 
 Install the `ui` extra (it adds Jinja2) and add the app. It needs
@@ -64,8 +73,8 @@ every page. Stored Jinja templates run in `jinja2.sandbox.SandboxedEnvironment`.
 Stored Django templates run on a standalone engine with no loaders and no tag
 libraries, so `{% load %}` of app tags is unavailable and `{% include %}` and
 `{% extends %}` are refused at save. Both engines autoescape, and child HTML
-passes through unescaped. Letting untrusted authors write components is a later
-phase.
+passes through unescaped. Letting untrusted authors write components is phase
+3.
 
 ### The node context
 
@@ -210,7 +219,8 @@ with a rank (higher wins):
 For a node, the best rule is the one with the most scopes, then the earliest
 matching node term (a class beats a property, which beats a format, an enum and
 the bare type), then the highest rank. The best rule whose component exists and
-serves the render mode is used. The first one that is not usable is skipped.
+serves the render mode is used: every better rule whose component is missing or
+does not serve the mode is skipped.
 
 Presentation is resolved with system rights: reading stylesheets and components
 does not need a grant on their types. A user who can read a resource sees it
@@ -254,7 +264,6 @@ named by JSON Pointer (`name="/items/0/text"`):
   resource's frame is removed from the page, with the list item that held only
   it, and a `scrud:deleted` event is dispatched on `document` with
   `detail.href`, the resource's URL.
-
 * The root edit `<form>` has `novalidate`: the browser's constraint validation
   (for example an `<input type="url">` holding a stored URI that is not
   absolute) must not block a submit. The server's JSON Schema validation is the
@@ -267,10 +276,11 @@ their JSON Pointer inside the frame.
 
 ### Refused writes
 
-A 400 or 403 PUT re-renders the submitted body in edit mode with the messages,
-provided the user may PUT the stored resource. Its decisions, contexts and ETag
-come from the stored resource, never from the request. Policy condition messages
-are shown only to a user who may read the stored resource, and only in HTML; the
+A 400 or 403 PUT re-renders the submitted body (never the stored content) in
+edit mode with the messages, provided the user may PUT the stored resource; any
+other user gets the notices only. Its decisions, contexts and ETag come from
+the stored resource, never from the request. Policy condition messages are
+shown only to a user who may read the stored resource, and only in HTML; the
 JSON error bodies are unchanged. A 412 shows a notice and reloads the frame with
 the current state.
 
@@ -286,17 +296,25 @@ These select presentation only, never what is authorized. HTML responses carry
 `Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer` and
 `Cache-Control: private, no-cache, no-store` (a page and its fragments share
 one ETag, so a cache must not keep either; the ETag stays, and the client sends
-it as `If-Match`). An error is the same status as JSON (401,
-403, 404, ...) with a `text/html` notice, and never includes resource content.
+it as `If-Match`). An error is the same status as JSON (401, 403, 404, ...) with
+a `text/html` notice, and never includes stored resource content: a refused 400
+or 403 PUT may echo the body the user submitted as the edit form, and a 412 adds
+a frame that reloads the current state with the viewer's rights (see Refused
+writes, above). A success whose HTML fails to render is answered with a 500 and
+a notice.
 
 ## Security
 
 * Components are written by a trusted, global-only role: anyone who may write
   `UIComponent` resources controls the markup of every page. A component can
-  carry client scripts, and they run in the page with the viewer's rights. Phase
-  3 is about untrusted authors.
-* Stored templates are sandboxed as described above, and escape everything
-  they are given.
+  carry client scripts, and they run in the page with the viewer's rights.
+  Untrusted authors are phase 3.
+* Stored Jinja templates run in Jinja's sandbox; stored Django templates run on
+  a restricted engine (no loaders, no tag libraries), which is not a sandbox.
+  Both escape everything they are given.
+* Components are presentation, not access control. A component is only given
+  what the viewer may read, so it cannot reveal more; but hiding a field in a
+  component does not keep it from the viewer, who can read it as JSON.
 * The page loads only its own scripts. Recommended Content-Security-Policy:
   `script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self';
   frame-ancestors 'self'`. `scrud-ui.js` sets htmx's `selfRequestsOnly`.
@@ -324,5 +342,5 @@ users are `owner`/`owner` (reads and edits the list), `reader`/`reader` (reads
 it) and `author`/`author` (writes the UI components and stylesheets); these
 passwords are for the demo only.
 
-Known limitations of this phase are recorded in the [follow-ups](follow-ups.md),
+Known limitations of phase 1 are recorded in the [follow-ups](follow-ups.md),
 under the `ui-` names.

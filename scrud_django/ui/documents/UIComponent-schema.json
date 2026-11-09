@@ -34,7 +34,7 @@
     },
     "stylesheets": {
       "type": "array",
-      "description": "Names of the stylesheets that apply to this component.",
+      "description": "Names of stylesheets that also apply to the component's descendants (its subtree below it), not to the component's own node.",
       "items": { "type": "string" }
     },
     "label": { "type": "string" },

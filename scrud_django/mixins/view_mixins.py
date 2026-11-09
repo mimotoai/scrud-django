@@ -1089,7 +1089,11 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
     def initial(self, request, *args, **kwargs):
         """Forget the resource types `get_resource_type` read (a view
         instance serves one request; this keeps a reused one from serving a
-        stale type), DRF's, then, inside a locked write (`dispatch`), the
+        stale type), DRF's, then, with ``scrud_django.ui`` installed, the
+        fragment protocol's headers of a request that negotiated HTML
+        (``scrud_django.ui.renderer.check_ui_headers``: a 400 for an invalid
+        ``Scrud-UI-Pointer``, after authentication and authorization, before
+        a PUT writes), then, inside a locked write (`dispatch`), the
         ``WorkflowPolicy`` type lock (`lock_if_workflow_policy`) before the
         row is read: every ``WorkflowPolicy`` write locks the type row and then
         the policy's row, in that order, so two cannot deadlock."""

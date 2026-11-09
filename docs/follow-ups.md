@@ -189,7 +189,8 @@ name; at most one is accepted.
 Editors get edit mode for the whole resource, so a view-only component (a
 compact sidebar list, say) is still served in edit mode and must be written as an
 `edit` component (the demo's `todo-list-compact` is). Why: the mode is decided
-once from the PUT decision. A phase-2 fix could let a rule request a mode.
+once from the PUT decision. A fix (with phase 2's per-field editability, see
+[Server-rendered UI](ui.md)) could let a rule request a mode.
 Test: a rule that asks for `view` in a scope renders its view component for an
 editor.
 
@@ -234,21 +235,26 @@ first three characters. Test: those values render as text.
 ## ui-json-vary-accept: JSON from UI-enabled resource views does not send `Vary: Accept`
 
 The same URL now has an HTML representation, but its JSON responses do not
-vary on `Accept`, so a shared cache could serve one representation for the
-other. HTML responses are `private, no-cache, no-store`, which limits it. Suggested fix:
-add `Accept` to `Vary` on the JSON responses of the views when the UI app is
-installed. Test: a JSON GET carries `Vary: Accept`.
+vary on `Accept`, so a cache could serve a stored JSON response to an HTML
+request. HTML responses are `private, no-cache, no-store`, so an HTML response
+is never stored and served for JSON; but that does nothing for the JSON
+responses, which a cache may still store and then serve to an HTML request. Suggested fix: add `Accept` to
+`Vary` on the JSON responses of the views when the UI app is installed. Test:
+a JSON GET carries `Vary: Accept`.
 
 <a id="ui-html-shared-etag"></a>
 ## ui-html-shared-etag: HTML responses reuse the resource's strong ETag and Last-Modified
 
 The HTML depends on the stylesheets, components and the viewer's grants as well
 as the resource, but carries the resource's ETag and `Last-Modified`, so a
-conditional GET can answer 304 for HTML that would now differ. Mitigated by
-`Cache-Control: private, no-cache, no-store` (nothing is stored, and a changed
-component does not change the validators). Suggested fix: a weak ETag for HTML
-derived from the resource's and the presentation's. Test: change a component;
-a conditional GET with the old validator gets a 200.
+conditional GET can answer 304 for HTML that would now differ. `Cache-Control:
+private, no-cache, no-store` keeps browser and proxy caches from storing the
+HTML, so they hold no stale copy to revalidate. It does not change the
+validators: a client that keeps an ETag itself and resends it (`If-None-Match`)
+after a component, stylesheet or grant changed still gets a 304, and keeps
+showing the old HTML. Suggested fix: a weak ETag for HTML derived from the
+resource's and the presentation's (and the viewer's decisions). Test: change a
+component; a conditional GET with the old validator gets a 200.
 
 <a id="ui-number-precision"></a>
 ## ui-number-precision: a browser edit rewrites numbers JSON.parse cannot keep

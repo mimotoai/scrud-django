@@ -148,8 +148,9 @@ COMPONENTS = [
     },
     {
         # A list in the sidebar: a link to it and its item count. In edit
-        # mode, since its owner may write it (phase 1 renders a resource the
-        # user may write in edit mode); it renders no inputs.
+        # mode, since its owner may write it (a resource the user may write
+        # renders wholly in edit mode: ui-one-mode-per-resource in
+        # docs/follow-ups.md); it renders no inputs.
         "name": "todo-list-compact",
         "engine": "django",
         "mode": "edit",
