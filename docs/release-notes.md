@@ -184,14 +184,15 @@ you deploy it.
   first context with a policy was reported, and `None` meant either "no
   policy applies" or "the transition is invalid" (a server-side write the
   workflow check did not see). `scrud_post_save` (and so every `on_save`
-  action) now also sends `transitions`, a mapping of each context the
-  stored resource or the new content is in, where a policy applies, to the
-  write's `TransitionData` there: the transition where the resource stays
-  (`None` if invalid there), `__INITIALIZE__` where it enters, and the new
-  reserved `__LEAVE__` (no proposed state; the prior state is the one it
-  left) where it leaves; and `transition_error`, the workflow error that
-  made `transition_data` `None`. `transition_data` itself changed as
-  described under #5 (content that meets the conditions of more than one
+  action) now also sends `transitions`, a read-only mapping
+  (`types.MappingProxyType`, the same one for every receiver) of each
+  context the stored resource or the new content is in, where a policy
+  applies, to the write's `TransitionData` there: the transition where the
+  resource stays (`None` if invalid there), `__INITIALIZE__` where it
+  enters, and the new reserved `__LEAVE__` (no proposed state; the prior
+  state is the one it left) where it leaves; and `transition_error`, the
+  workflow error that made `transition_data` `None`. `transition_data`
+  itself changed as described under #5 (content that meets the conditions of more than one
   state is `None`, with the error) and the `restrict_update` fix (#9: an
   in-place update of a restricted state through a transition whose lists
   lead from it to itself is `None`, with the error, no longer that

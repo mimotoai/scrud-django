@@ -17,8 +17,9 @@ logger = logging.getLogger("scrud_django.workflow_actions")
 # description. Keyword arguments: ``signal``, ``sender``, ``instance``,
 # ``using`` (the database written to, `write_alias`), ``resource_type_uri``
 # and ``action``; ``scrud_post_save`` adds ``update_fields``,
-# ``transition_data``, ``transition_error`` and ``transitions``
-# (``ResourceMixin.get_transitions``), ``scrud_post_delete`` adds ``pk``.
+# ``transition_data``, ``transition_error`` and ``transitions`` (a
+# read-only mapping; ``ResourceMixin.get_transitions``), ``scrud_post_delete``
+# adds ``pk``.
 scrud_post_save = Signal()
 scrud_post_delete = Signal()
 

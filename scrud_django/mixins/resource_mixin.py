@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import NamedTuple
 
 from django.db import models, router
@@ -41,7 +42,9 @@ WORKFLOW_ERRORS = (
 class Transitions(NamedTuple):
     """A save's workflow transitions (`ResourceMixin.get_transitions`):
     ``scrud_post_save`` sends the first three as its keyword arguments of
-    the same names; `ResourceMixin.save` logs `errors`."""
+    the same names; `ResourceMixin.save` logs `errors`. Its mappings are
+    read-only views (``MappingProxyType``): the same one reaches every
+    receiver, and none can change what the others are given."""
 
     # Under the policy of the first context the content names that has one
     # (`ResourceMixin.workflow_context_and_policy`); ``None`` when no policy
@@ -51,11 +54,11 @@ class Transitions(NamedTuple):
     transition_error: WorkflowTransitionError | None
     # Context -> `TransitionData` (``None``: invalid there), for every
     # context the stored resource or the content is in under a policy.
-    transitions: dict[str | None, TransitionData | None]
+    transitions: Mapping[str | None, TransitionData | None]
     # Context -> the workflow error that made its `transitions` entry
     # ``None``, for each such context (not sent with the signal: `save`
     # logs them).
-    errors: dict[str | None, WorkflowTransitionError]
+    errors: Mapping[str | None, WorkflowTransitionError]
 
 
 def rbac_contexts_of(content):
@@ -147,8 +150,12 @@ class ResourceMixin(ScrudfulMixin):
         checks API writes; the admin, ``ResourceRegistration`` and server
         code skip it): an invalid one is still saved, and each context where
         it is invalid is logged as a WARNING on the ``scrud_django.workflow``
-        logger, naming the resource's pk, its type URI, the context and the
-        workflow error (`log_workflow_errors`)."""
+        logger, naming the resource's pk, its type URI, the context, the
+        policy and the workflow error (`log_workflow_errors`), with the
+        states the content meets when it meets several. It is logged once
+        the row is written and before ``scrud_post_save`` is sent, so that a
+        receiver that raises cannot keep it from being logged (the save may
+        still roll back)."""
         db = self._write_db(using)
         transitions = self.get_transitions(db)
         action = 'CREATE' if self._state.adding else 'UPDATE'
@@ -158,6 +165,7 @@ class ResourceMixin(ScrudfulMixin):
             using=using,
             update_fields=update_fields,
         )
+        self.log_workflow_errors(transitions.errors)
         scrud_post_save.send(
             sender=self.__class__,
             instance=self,
@@ -169,7 +177,6 @@ class ResourceMixin(ScrudfulMixin):
             transitions=transitions.transitions,
             action=action,
         )
-        self.log_workflow_errors(transitions.errors)
 
     def log_workflow_errors(self, errors):
         """Log each workflow error of `errors` (context -> error, from
@@ -180,8 +187,9 @@ class ResourceMixin(ScrudfulMixin):
         one ``transition_error`` reports."""
         for context, error in errors.items():
             logger.warning(
-                "Resource pk %s of %s was saved past its workflow in context "
-                "%r (policy %r): %s (prior state %r, proposed state %r%s).",
+                "Saving resource pk %s of %s skipped the workflow check, which "
+                "it fails in context %r (policy %r): %s (prior state %r, "
+                "proposed state %r%s).",
                 self.pk,
                 self.resource_type.type_uri,
                 context,
@@ -249,8 +257,8 @@ class ResourceMixin(ScrudfulMixin):
           (an invalid transition, or content that meets the conditions of
           more than one state, which a write that skipped the
           ``WorkflowValidator`` still saves), else ``None``;
-        - ``transitions``: for each context the stored resource or the
-          content is in (stored ones first, as the ``WorkflowValidator``
+        - ``transitions``, a read-only mapping (``MappingProxyType``): for
+          each context the stored resource or the content is in (stored ones first, as the ``WorkflowValidator``
           checks them) where a policy applies (`workflow_policies_for`), the
           write there. (`rbac_contexts_of` always names one context at
           least; a resource whose `rbac_contexts` named none, as an
@@ -296,14 +304,18 @@ class ResourceMixin(ScrudfulMixin):
         picked = next((c for c in contexts if policies[c] is not None), None)
         transition_data, transition_error = reported.get(picked, (None, None))
         return Transitions(
-            transition_data,
-            transition_error,
-            {context: data for context, (data, _) in reported.items()},
-            {
-                context: error
-                for context, (_, error) in reported.items()
-                if error is not None
-            },
+            transition_data=transition_data,
+            transition_error=transition_error,
+            transitions=MappingProxyType(
+                {context: data for context, (data, _) in reported.items()}
+            ),
+            errors=MappingProxyType(
+                {
+                    context: error
+                    for context, (_, error) in reported.items()
+                    if error is not None
+                }
+            ),
         )
 
     def transition_in(self, workflow, prior_data, entering=False, leaving=False):

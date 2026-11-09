@@ -516,6 +516,34 @@ def test_an_ambiguous_stored_resource_moved_out_by_a_non_reader_is_generic(
     assert_generic_workflow_error(stored)
 
 
+@pytest.mark.django_db
+@test_context
+def test_an_ambiguous_stored_resource_is_hidden_from_a_writer_who_cannot_read_it(
+    reported_saves,
+):
+    # The writer may read "w"'s policy, but not the stored resource: the
+    # states its stored content meets would tell of that content, so the
+    # error is the generic one, naming no state and no policy.
+    stored = store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
+    resource = todo(**dict(AMBIGUOUS, rbac_context="w"))
+    put_only = {"http.PUT": workflow_writer("submit", "publish")["http.PUT"]}
+    user = user_with((put_only, "w"), (READ_POLICIES, "w"))
+    Given.http.force_authenticate(user)
+    reported_saves.clear()
+    put_todo(
+        resource, dict(NOT_STARTED, status="done", priority="high", rbac_context="w")
+    )
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_generic_workflow_error(stored)
+    body = Http.response.json()
+    assert "matching_states" not in body, body
+    content = Http.response.content.decode()
+    for state in ("published", "review", "draft"):
+        assert state not in content, content
+    assert_unchanged(resource)
+    assert reported_saves == []
+
+
 # "done" and "canceled" may not change in place: "reopen" leads to "done"
 # from both (a self-loop of "done" only through its list), "amend" from
 # "canceled" to itself (one state on each side: an edit in place).
@@ -1612,6 +1640,78 @@ def test_a_save_past_the_workflow_check_logs_each_contexts_error(
     initial = "The request is not a valid initial state."
     assert_logs_workflow_error(first, created, "a", initial)
     assert_logs_workflow_error(second, created, "b", initial)
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_ambiguous_server_side_save_logs_the_matching_states(caplog):
+    store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
+    created = todo(**dict(AMBIGUOUS, rbac_context="w"))
+    (record,) = workflow_warnings(caplog)
+    assert_logs_workflow_error(
+        record,
+        created,
+        "w",
+        "matching states ['published', 'review']",
+    )
+    assert ambiguous_state_message("The request") in record.getMessage()
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_save_past_the_workflow_check_is_logged_before_the_signal(caplog):
+    # A scrud_post_save receiver that raises does not keep the save's
+    # workflow errors from being logged: they are logged first. The log
+    # does not say the save committed (the receiver's error may roll it
+    # back).
+    from scrud_django.scrud_signals import scrud_post_save
+
+    class ReceiverFailed(Exception):
+        pass
+
+    def failing(sender, **kwargs):
+        raise ReceiverFailed
+
+    reverse("todos-list")
+    scrud_post_save.connect(failing, weak=False, dispatch_uid="test-failing")
+    try:
+        with pytest.raises(ReceiverFailed):
+            todo(rbac_context="a", status="done")
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-failing")
+    (record,) = workflow_warnings(caplog)
+    logged = record.getMessage()
+    assert "context 'a'" in logged, logged
+    assert "The request is not a valid initial state." in logged, logged
+    assert "skipped the workflow check" in logged, logged
+    assert "was saved" not in logged, logged
+
+
+@pytest.mark.django_db
+@test_context
+def test_scrud_post_save_sends_its_transitions_read_only(reported_saves):
+    from types import MappingProxyType
+
+    from scrud_django.workflow import TransitionData
+
+    # "done" -> "not started" is no transition of the default policy.
+    resource = todo(rbac_context="a", status="done")
+    reported_saves.clear()
+    resource.content = dict(NOT_STARTED, rbac_context="a")
+    errors = resource.get_transitions().errors
+    assert isinstance(errors, MappingProxyType), errors
+    assert list(errors) == ["a"]
+    with pytest.raises(TypeError):
+        del errors["a"]
+    resource.save()
+    (reported,) = reported_saves
+    transitions = reported["transitions"]
+    assert isinstance(transitions, MappingProxyType), transitions
+    assert transitions == {"a": None}
+    # The same mapping reaches every receiver (and the on_save action):
+    # none can change what the others are given.
+    with pytest.raises(TypeError):
+        transitions["a"] = TransitionData("not started", "done", "reopen")
 
 
 @pytest.mark.django_db

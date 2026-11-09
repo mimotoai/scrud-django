@@ -489,9 +489,10 @@ invalid in a context when no transition leads from the stored state to the
 new one (or a `restrict_update` forbids staying), when a create or move in
 is in no initial state (`WorkflowInvalidInitialStateError`), or when the new
 or stored content meets the conditions of more than one state
-(`WorkflowAmbiguousStateError`). `transitions` maps every context the stored
-resource or the new content is in, where a policy applies, to the write's
-`TransitionData` there (`None` if invalid there): a transition where the
+(`WorkflowAmbiguousStateError`). `transitions` is a read-only mapping
+(`types.MappingProxyType`, shared by every receiver; copy it with `dict()`
+to change it) of every context the stored resource or the new content is
+in, where a policy applies, to the write's `TransitionData` there (`None` if invalid there): a transition where the
 resource stays, `__INITIALIZE__` where it enters, and `__LEAVE__` (no
 `proposed_state`; `prior_state` is the state it left) where it leaves. A
 save of an instance whose row is not on the database written to (a copy
@@ -500,8 +501,10 @@ with `save(using=...)`) is reported as a create.
 Only API writes are checked against the workflow, so only a save that skipped
 the check (the admin, `ResourceRegistration`, server code) can be invalid: it
 is saved anyway, reported as above, and each context where it is invalid is
-logged as a WARNING on the `scrud_django.workflow` logger, naming the
-resource's pk, its type URI, the context and the error. Such a save still
+logged as a WARNING on the `scrud_django.workflow` logger (before
+`scrud_post_save` is sent, so a receiver that raises cannot suppress it),
+naming the resource's pk, its type URI, the context, the policy and the
+error (with the states the content meets, when it meets several). Such a save still
 reads the policy of every context it concerns, and fails
 (`ImproperlyConfigured`) where one has several stored policies or an invalid
 one, as an API write does.
