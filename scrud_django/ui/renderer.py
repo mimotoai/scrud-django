@@ -57,7 +57,7 @@ from rest_framework.response import Response
 from scrud_django.exceptions import UIHeaderInvalidError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.permissions import content_of
-from scrud_django.ui.authz import DENIED, decisions_for, refusal_messages
+from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messages
 from scrud_django.ui.cascade import (
     BUILTIN_PREFIX,
     builtin_component,
@@ -365,8 +365,10 @@ def _body(data, status, request, view, response):
 
 def _refused_put(problem, status, request, view, resource_type, scope_chain, pointer):
     """A refused PUT: the submitted body as the edit form, with the problem's
-    messages, when the user may PUT the stored resource the view loaded (at
-    its ETag, with its decisions and contexts); else the notices only."""
+    messages, only when the user may read the stored resource the view loaded
+    (decision for GET allowed) and may not be denied a PUT of it (at its ETag,
+    with its decisions and contexts); else the notices only, with no form and
+    no ETag, as JSON would reveal neither."""
     stored = view.__dict__.get(_STORED_ATTR) if view is not None else None
     body = _submitted(request)
     if resource_type is None or not isinstance(stored, Stored):
@@ -376,7 +378,7 @@ def _refused_put(problem, status, request, view, resource_type, scope_chain, poi
     if status == 403 and body is not None:
         messages = refusal_messages(request, type_uri, body, stored.content)
     decisions = decisions_for(request, type_uri, stored.content)
-    if body is None or decisions["PUT"] == DENIED:
+    if body is None or decisions["GET"] != ALLOWED or decisions["PUT"] == DENIED:
         return _notices(_problem_messages(problem, status) + messages)
     errors = _field_errors(problem)
     errors[""] = [_problem_message(problem, status), *errors.get("", []), *messages]

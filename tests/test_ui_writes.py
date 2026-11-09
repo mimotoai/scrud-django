@@ -158,14 +158,6 @@ def test_workflow_refusal_over_html_names_the_same_transition(todo_creator_login
     assert html_text.startswith('<form class="scrud-resource"')
 
 
-WRITER_REASON = (
-    "production bug: a user who may PUT but not GET a resource, refused on a"
-    " condition, gets the edit form of their body at the STORED resource's"
-    " ETag over HTML (renderer._refused_put decides on PUT alone, Ruling 2);"
-    " the JSON refusal tells them neither"
-)
-
-
 def refused_writer_put(writer, pointer=None):
     todo = new_todo(title="Stored title")
     body = {**TODO, "title": "Submitted title", "status": "done"}
@@ -204,7 +196,6 @@ def test_non_reader_gets_no_condition_message_or_stored_content(
 
 
 @pytest.mark.django_db
-@pytest.mark.xfail(strict=True, reason=WRITER_REASON)
 @pytest.mark.parametrize("pointer", [None, "/title"])
 @test_context
 def test_non_reader_gets_no_form_and_no_stored_etag(todo_writer_login, pointer):

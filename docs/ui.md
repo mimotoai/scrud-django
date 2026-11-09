@@ -299,8 +299,9 @@ their JSON Pointer inside the frame.
 ### Refused writes
 
 A 400 or 403 PUT re-renders the submitted body (never the stored content) in
-edit mode with the messages, provided the user may PUT the stored resource; any
-other user gets the notices only. Its decisions, contexts and ETag come from
+edit mode with the messages, provided the user may read the stored resource
+(as JSON would let them) and may PUT it; any other user, including one who may
+PUT but not GET, gets the notices only: no form, no ETag, no content. Its decisions, contexts and ETag come from
 the stored resource, never from the request. Policy condition messages are
 shown only to a user who may read the stored resource, and only in HTML; the
 JSON error bodies are unchanged. A 412 (PUT or DELETE) shows a notice and reloads
