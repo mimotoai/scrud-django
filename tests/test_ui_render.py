@@ -779,3 +779,26 @@ def test_append_fields_escape_names_and_resolve_types(admin_login):
         r'<input type="number" step="1" id="[^"]+" name="/rows/-/a~1b">', output
     )
     assert re.search(r'<input type="checkbox" id="[^"]+" name="/rows/-/c~0d">', output)
+
+
+@pytest.mark.django_db
+def test_append_row_renders_no_input_for_nested_properties(admin_login):
+    schema = {
+        "type": "object",
+        "properties": {
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "meta": {"type": "object"},
+                        "tags": {"type": ["array", "null"]},
+                    },
+                },
+            }
+        },
+    }
+    output = render_node_type(node_type(schema), {"rows": []}, admin_login)
+    assert 'name="/rows/-/name"' in output
+    assert "/rows/-/meta" not in output and "/rows/-/tags" not in output

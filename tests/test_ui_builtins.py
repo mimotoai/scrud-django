@@ -443,3 +443,28 @@ def test_number_not_localized():
     with translation.override("fr"):
         assert 'value="1.5"' in render("number-edit", value=1.5, pointer="/n")
         assert "1.5" in render("number", value=1.5)
+
+
+def test_array_edit_append_row_skips_object_and_array_fields():
+    out = render(
+        "array-edit",
+        pointer="/x",
+        input_id="n",
+        append_fields=[
+            {"name": "meta", "type": "object", "pointer_name": "meta"},
+            {"name": "name", "type": "string", "pointer_name": "name"},
+            {"name": "tags", "type": "array", "pointer_name": "tags"},
+        ],
+    )
+    assert 'name="/x/-/name"' in out
+    assert "meta" not in out and "tags" not in out
+    assert out.count("<input") == 1 and out.count("<label") == 1
+
+
+def test_array_edit_append_row_with_only_nested_fields_has_no_input():
+    out = render(
+        "array-edit",
+        pointer="/x",
+        append_fields=[{"name": "meta", "type": "object", "pointer_name": "meta"}],
+    )
+    assert "<input" not in out and "<label" not in out
