@@ -276,6 +276,20 @@ must then use the ETag of the first response), or disable the frame's inputs
 while a request is in flight. Test: in a browser, tick two checkboxes in
 quick succession against a slow server; both are saved.
 
+<a id="ui-cached-fragment-as-page"></a>
+## ui-cached-fragment-as-page: a navigation can show a cached htmx fragment instead of the page
+
+A page and the htmx fragments of the same URL (the demo's sidebar loads
+`/api/todo-lists/` as a fragment) carry the same ETag. Seen in Chromium
+against the demo: after the sidebar's fragment request, navigating to the
+list URL revalidated with that ETag, got a 304, and showed the cached
+fragment (no `<head>`, so no htmx or `scrud-ui.js`, and nothing on the page
+can write) despite `Vary: HX-Request`. Related to
+[ui-html-shared-etag](#ui-html-shared-etag). Suggested fix: a different (weak)
+ETag for a fragment and for a page, or `Cache-Control: no-store` on
+fragments. Test: a page and a fragment of one URL carry different ETags, and
+a conditional page GET with the fragment's ETag gets a 200 page.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>
