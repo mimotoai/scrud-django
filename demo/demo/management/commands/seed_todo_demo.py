@@ -88,6 +88,7 @@ body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
 .todo-layout { display: flex; gap: 2rem; padding: 1rem 2rem; }
 .todo-layout aside { flex: 0 0 16rem; border-right: 1px solid #ddd; padding-right: 1rem; }
 .todo-layout main { flex: 1; }
+.todo-readonly { color: #888; font-size: .85rem }
 .todo-list ul { list-style: none; padding: 0; }
 .todo-row { display: flex; gap: .5rem; align-items: center; margin: .25rem 0; }
 .todo-row input[type=text] { width: 20rem; }
@@ -115,7 +116,24 @@ COMPONENTS = [
         "scopes": {"items": "row"},
         "template": (
             '<section class="todo-list"><h1>{{ value.title }}</h1>'
-            "{{ children.items }}</section>"
+            "{% for prop, html in child_items %}"
+            "{% if prop == 'items' %}{{ html }}{% endif %}{% endfor %}"
+            "</section>"
+        ),
+    },
+    {
+        # The same list for a reader: styled and read-only.
+        "name": "todo-list-view",
+        "engine": "django",
+        "mode": "view",
+        "label": "To-do list (read-only)",
+        "scopes": {"items": "row"},
+        "template": (
+            '<section class="todo-list"><h1>{{ value.title }}</h1>'
+            '<p class="todo-readonly">Read-only view</p>'
+            "{% for prop, html in child_items %}"
+            "{% if prop == 'items' %}{{ html }}{% endif %}{% endfor %}"
+            "</section>"
         ),
     },
     {
@@ -180,6 +198,7 @@ STYLESHEETS = [
         "rbac_context": DEFAULT_CONTEXT,
         "prefixes": PREFIXES,
         "rules": rules(
+            ("ex:TodoList", "todo-list-view"),
             ("ex:TodoList", "todo-list-detail"),
             ("sidebar ex:TodoList", "todo-list-compact"),
             ("row ex:TodoItem", "todo-row"),
