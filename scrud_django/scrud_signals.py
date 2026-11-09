@@ -179,11 +179,11 @@ class ScrudSignalProcessor:
         if action is not None:
             self.run_on_commit(action, sender, kwargs, self.post_delete_literal)
 
-    def run_on_commit(self, action, sender, kwargs, kind=None):
+    def run_on_commit(self, action, sender, kwargs, kind):
         """Call ``action(sender, **kwargs)`` when the write's transaction
         commits, through a `WorkflowActionCall` that logs its failure as
-        `kind` of action. ``robust`` is a backstop: the call does not
-        raise."""
+        `kind` of action (`post_save_literal` or `post_delete_literal`).
+        ``robust`` is a backstop: the call does not raise."""
         transaction.on_commit(
             WorkflowActionCall(action, kind, sender, kwargs),
             using=write_alias(sender, kwargs),

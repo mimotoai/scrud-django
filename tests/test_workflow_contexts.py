@@ -859,7 +859,9 @@ def test_a_malformed_policy_is_refused_past_a_relaxed_schema(
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("name", ["__SAME_STATE__", "__INITIALIZE__", "__mine"])
+@pytest.mark.parametrize(
+    "name", ["__SAME_STATE__", "__INITIALIZE__", "__LEAVE__", "__mine"]
+)
 @test_context
 def test_reserved_transition_names_are_refused(regular_login, name):
     policy = dict(

@@ -27,18 +27,33 @@ CEL_ENVIRONMENT = new_environment({})
 
 WORKFLOW_POLICY_TYPE_URI = "http://api.openteams.com/json-ld/WorkflowPolicy"
 
-# The transitions scrud-django names itself: ``__INITIALIZE__`` (a create) and
-# ``__SAME_STATE__`` (an update that stays in its state), and ``__LEAVE__``,
-# which ``scrud_post_save`` reports for a context a write moves a resource out
-# of (``resource_mixin.LEAVE_TRANSITION``). A policy may not define a
-# transition with this prefix.
+# The transitions scrud-django names itself. A policy may not define a
+# transition with their prefix, `RESERVED_TRANSITION_PREFIX`.
+# A create, and a move into a context: no prior state.
+INITIALIZE = "__INITIALIZE__"
+# An update that stays in its state (unless a transition of the policy leads
+# from that state to itself).
+SAME_STATE = "__SAME_STATE__"
+# What ``scrud_post_save``'s ``transitions`` reports for a context a write
+# moves a resource out of: no proposed state, the prior state the one it
+# left. No grant is asked for it (the ``WorkflowValidator`` checks a move
+# out of a context as a transition from the stored content there).
+LEAVE = "__LEAVE__"
+RESERVED_TRANSITIONS = (INITIALIZE, SAME_STATE, LEAVE)
 RESERVED_TRANSITION_PREFIX = "__"
 
 
-@dataclass
+@dataclass(frozen=True)
 class TransitionData:
-    proposed_state: str
-    prior_state: str
+    """A write's transition under one policy: from `prior_state` (``None``
+    for a create or a move into the context) to `proposed_state` (``None``
+    for a move out of it, `LEAVE`), by `transition`, the policy's
+    transition name or a reserved one (`INITIALIZE`, `SAME_STATE`,
+    `LEAVE`). Immutable: the same instance may be reported to several
+    receivers."""
+
+    proposed_state: str | None
+    prior_state: str | None
     transition: str
 
 
@@ -116,9 +131,10 @@ class WorkflowPolicy:
         return proposed_state
 
     def initial_transition(self, data):
-        """The ``__INITIALIZE__`` `TransitionData` of a create of `data`: no
-        prior state, its initial state as the proposed one."""
-        return TransitionData(self.validate_initial_state(data), None, "__INITIALIZE__")
+        """The ``__INITIALIZE__`` (`INITIALIZE`) `TransitionData` of a
+        create of `data`: no prior state, its initial state as the proposed
+        one."""
+        return TransitionData(self.validate_initial_state(data), None, INITIALIZE)
 
     def state(self, data):
         """The state content `data` is stored in: the one state, among the
@@ -188,7 +204,7 @@ class WorkflowPolicy:
             if transition is not None:
                 return TransitionData(proposed_state, prior_state, transition)
             if prior_state == proposed_state:
-                return TransitionData(proposed_state, prior_state, "__SAME_STATE__")
+                return TransitionData(proposed_state, prior_state, SAME_STATE)
         raise WorkflowTransitionError(self.reference, prior_state, proposed_state)
 
     def determine_state(self, data, state_expressions):
@@ -276,7 +292,7 @@ class WorkflowPolicy:
                 raise ImproperlyConfigured(
                     f"Invalid workflow transition {transition_name!r}: a name must "
                     f"be a string not starting with {RESERVED_TRANSITION_PREFIX!r}, "
-                    "which is reserved (__INITIALIZE__, __SAME_STATE__)."
+                    f"which is reserved ({', '.join(RESERVED_TRANSITIONS)})."
                 )
             if not (
                 isinstance(transition_policy, Mapping)

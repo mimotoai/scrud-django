@@ -286,6 +286,17 @@ you deploy it.
 * `scrud_post_save` sends two more keyword arguments, `transitions` and
   `transition_error`: an `on_save` action (or receiver) that names its
   keyword arguments must also take `**kwargs`.
+* `scrud_django.workflow.TransitionData` is now immutable (a frozen
+  dataclass; the same instance may reach several receivers): code that
+  assigned to its `proposed_state`, `prior_state` or `transition` must build
+  a new one (`dataclasses.replace`). The reserved transition names are the
+  new constants `scrud_django.workflow.INITIALIZE`, `SAME_STATE` and
+  `LEAVE`; a policy's refused reserved name (`__` prefix) now lists all
+  three.
+* `ScrudSignalProcessor.run_on_commit(action, sender, kwargs, kind)` takes
+  the kind of action (`on_save` or `on_delete`, which a failure's log
+  names) as a required fourth argument: a subclass that overrides or calls
+  it must take or pass it.
 * Route the new `scrud_django.workflow` logger where you watch warnings:
   it reports server-side saves (the admin, `ResourceRegistration`, your
   code) that are invalid under a workflow policy and were saved anyway.

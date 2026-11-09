@@ -9,6 +9,7 @@ from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.models.resource_type import ResourceType
 from scrud_django.workflow import (
+    LEAVE,
     WORKFLOW_POLICY_TYPE_URI,
     TransitionData,
     WorkflowAmbiguousStateError,
@@ -26,14 +27,6 @@ workflow_policy_type_uri = WORKFLOW_POLICY_TYPE_URI
 # The workflow errors of saves that skipped the ``WorkflowValidator``
 # (`ResourceMixin.save`).
 logger = logging.getLogger("scrud_django.workflow")
-
-# The transition ``scrud_post_save``'s ``transitions`` reports in a context a
-# write moves the resource out of: ``TransitionData(None, <the state it was
-# in there>, LEAVE_TRANSITION)``. Reserved (``RESERVED_TRANSITION_PREFIX``):
-# no policy defines it, and no grant is asked for it (the
-# ``WorkflowValidator`` checks a move out of a context as a transition from
-# the stored content under that context's policy).
-LEAVE_TRANSITION = "__LEAVE__"
 
 # The workflow errors a report of a transition (`ResourceMixin.get_transitions`)
 # catches: a write that skipped the ``WorkflowValidator`` is still saved.
@@ -55,14 +48,14 @@ class Transitions(NamedTuple):
     # applies or the transition is invalid there.
     transition_data: TransitionData | None
     # The workflow error that made `transition_data` ``None``, else ``None``.
-    transition_error: Exception | None
+    transition_error: WorkflowTransitionError | None
     # Context -> `TransitionData` (``None``: invalid there), for every
     # context the stored resource or the content is in under a policy.
-    transitions: dict
+    transitions: dict[str | None, TransitionData | None]
     # Context -> the workflow error that made its `transitions` entry
     # ``None``, for each such context (not sent with the signal: `save`
     # logs them).
-    errors: dict
+    errors: dict[str | None, WorkflowTransitionError]
 
 
 def rbac_contexts_of(content):
@@ -263,10 +256,10 @@ class ResourceMixin(ScrudfulMixin):
           write there. A context it stays in: the transition under its
           policy (``None`` if invalid); one it enters (or a create's): its
           ``__INITIALIZE__`` (``None`` if the content is in no initial state
-          there); one it leaves: ``TransitionData(None, <the
-          state it was in there>, "__LEAVE__")``; ``None`` in any of them
-          where the content's (or stored content's) state is ambiguous. A
-          context without a policy is left out.
+          there); one it leaves: ``TransitionData(None, <the state it was
+          in there>, "__LEAVE__")`` (`LEAVE`); ``None`` in any of them where
+          the content's (or stored content's) state is ambiguous. A context
+          without a policy is left out.
 
         Each context's policy is read once."""
         prior_data = self.stored_content(using)
@@ -321,7 +314,7 @@ class ResourceMixin(ScrudfulMixin):
         try:
             if leaving:
                 prior_state = workflow.state(prior_data)
-                return TransitionData(None, prior_state, LEAVE_TRANSITION), None
+                return TransitionData(None, prior_state, LEAVE), None
             if prior_data is None or entering:
                 # A create has no prior state; its proposed state is the
                 # initial state the content is in. Content in none is an
