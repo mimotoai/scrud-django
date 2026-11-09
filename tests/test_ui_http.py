@@ -154,7 +154,7 @@ def assert_not_cached():
     cache_control = {
         v.strip() for v in Http.response.get("Cache-Control", "").split(",")
     }
-    assert {"private", "no-cache"} <= cache_control, cache_control
+    assert {"private", "no-cache", "no-store"} <= cache_control, cache_control
 
 
 def assert_html():
@@ -196,6 +196,10 @@ def test_html_detail_page_and_fragment(todo_list, todo_owner_login):
     assert "<!doctype" not in fragment.lower()
     assert fragment.startswith('<form class="scrud-resource"')
     assert etag_attribute(Http.response["ETag"]) in fragment
+    assert Http.response["ETag"]
+    # A page and its fragments share one ETag: neither may be stored, or a
+    # revalidation could show one as the other.
+    assert_not_cached()
 
 
 @pytest.mark.django_db
@@ -208,6 +212,7 @@ def test_json_unchanged_and_browsable_api_reachable(todo_list, todo_owner_login)
     assert Http.response["Content-Type"] == "application/json"
     assert Http.response.json() == todo_list.content
     assert "no-cache" not in Http.response.get("Cache-Control", "")
+    assert "no-store" not in Http.response.get("Cache-Control", "")
     When.http.get(url + "?format=api", HTTP_ACCEPT=HTML)
     Then.http.status_code_is(200)
     assert "Django REST framework" in html()

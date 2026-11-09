@@ -177,7 +177,9 @@ def finalize_html(request, response) -> None:
     patch_vary_headers(response, VARY)
     # The HTML depends on the stylesheets, components and grants as well as
     # the resource (whose ETag it carries): always revalidated, never shared.
-    patch_cache_control(response, private=True, no_cache=True)
+    # A page and its htmx fragments share that ETag, so neither is stored
+    # (a revalidated 304 could otherwise show one as the other).
+    patch_cache_control(response, private=True, no_cache=True, no_store=True)
     if not isinstance(response, Response):
         return
     request.accepted_renderer = renderer

@@ -151,6 +151,9 @@
   function untouched(field, embedded) {
     if (TEXT_LIKE.indexOf(field.type) < 0) return false;
     var value = field.value == null ? '' : String(field.value);
+    // An empty input over null or a missing value is how the browser shows
+    // them: leave them as they are rather than writing "".
+    if (value === '' && (embedded === null || embedded === undefined)) return true;
     if (typeof embedded === 'number') {
       return value !== '' && Number(value) === embedded;
     }
@@ -263,6 +266,9 @@
   if (!htmx || typeof document === 'undefined') return;
 
   htmx.config.selfRequestsOnly = true;
+  // htmx 2.0.4 also sends DELETE's form values as URL params, and the Delete
+  // button sits inside the root edit form.
+  htmx.config.methodsThatUseUrlParams = ['get'];
   htmx.config.responseHandling = [
     { code: '204', swap: false },
     { code: '2..', swap: true },

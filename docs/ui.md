@@ -255,6 +255,13 @@ named by JSON Pointer (`name="/items/0/text"`):
   it, and a `scrud:deleted` event is dispatched on `document` with
   `detail.href`, the resource's URL.
 
+* The root edit `<form>` has `novalidate`: the browser's constraint validation
+  (for example an `<input type="url">` holding a stored URI that is not
+  absolute) must not block a submit. The server's JSON Schema validation is the
+  authority.
+* An empty text, textarea, url, date or number input over a `null` or missing
+  value is untouched: it stays `null` or missing instead of becoming `""`.
+
 Custom components that want to be editable need only render inputs named by
 their JSON Pointer inside the frame.
 
@@ -277,7 +284,9 @@ the current state.
 
 These select presentation only, never what is authorized. HTML responses carry
 `Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer` and
-`Cache-Control: private, no-cache`. An error is the same status as JSON (401,
+`Cache-Control: private, no-cache, no-store` (a page and its fragments share
+one ETag, so a cache must not keep either; the ETag stays, and the client sends
+it as `If-Match`). An error is the same status as JSON (401,
 403, 404, ...) with a `text/html` notice, and never includes resource content.
 
 ## Security

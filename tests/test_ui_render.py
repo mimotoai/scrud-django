@@ -131,6 +131,19 @@ def test_unstyled_list_renders_generic(todo_list, todo_owner_login):
 
 
 @pytest.mark.django_db
+def test_edit_root_form_is_novalidate(todo_list, todo_owner_login, todo_reader_login):
+    """Server-side JSON Schema validation is the authority: the browser's
+    constraint validation (a stored non-absolute URI in an `<input
+    type=url>`) must not block the submit."""
+    root = html_of(todo_list, todo_owner_login)
+    assert re.match(r"<form [^>]*\bnovalidate\b", root)
+    node = html_of(todo_list, todo_owner_login, pointer="/items/1")
+    assert node.startswith("<div ") and "novalidate" not in node
+    view = html_of(todo_list, todo_reader_login)
+    assert view.startswith("<div ") and "novalidate" not in view
+
+
+@pytest.mark.django_db
 def test_reader_gets_view_mode(todo_list, todo_reader_login, todo_owner_login):
     output = html_of(todo_list, todo_reader_login)
     assert "Buy milk" in output

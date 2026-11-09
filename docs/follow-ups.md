@@ -235,7 +235,7 @@ first three characters. Test: those values render as text.
 
 The same URL now has an HTML representation, but its JSON responses do not
 vary on `Accept`, so a shared cache could serve one representation for the
-other. HTML responses are `private, no-cache`, which limits it. Suggested fix:
+other. HTML responses are `private, no-cache, no-store`, which limits it. Suggested fix:
 add `Accept` to `Vary` on the JSON responses of the views when the UI app is
 installed. Test: a JSON GET carries `Vary: Accept`.
 
@@ -245,7 +245,7 @@ installed. Test: a JSON GET carries `Vary: Accept`.
 The HTML depends on the stylesheets, components and the viewer's grants as well
 as the resource, but carries the resource's ETag and `Last-Modified`, so a
 conditional GET can answer 304 for HTML that would now differ. Mitigated by
-`Cache-Control: private, no-cache` (the client revalidates, and a changed
+`Cache-Control: private, no-cache, no-store` (nothing is stored, and a changed
 component does not change the validators). Suggested fix: a weak ETag for HTML
 derived from the resource's and the presentation's. Test: change a component;
 a conditional GET with the old validator gets a 200.
@@ -275,20 +275,6 @@ Suggested fix: `hx-sync="this:queue last"` on the frame (the queued request
 must then use the ETag of the first response), or disable the frame's inputs
 while a request is in flight. Test: in a browser, tick two checkboxes in
 quick succession against a slow server; both are saved.
-
-<a id="ui-cached-fragment-as-page"></a>
-## ui-cached-fragment-as-page: a navigation can show a cached htmx fragment instead of the page
-
-A page and the htmx fragments of the same URL (the demo's sidebar loads
-`/api/todo-lists/` as a fragment) carry the same ETag. Seen in Chromium
-against the demo: after the sidebar's fragment request, navigating to the
-list URL revalidated with that ETag, got a 304, and showed the cached
-fragment (no `<head>`, so no htmx or `scrud-ui.js`, and nothing on the page
-can write) despite `Vary: HX-Request`. Related to
-[ui-html-shared-etag](#ui-html-shared-etag). Suggested fix: a different (weak)
-ETag for a fragment and for a page, or `Cache-Control: no-store` on
-fragments. Test: a page and a fragment of one URL carry different ETags, and
-a conditional page GET with the fragment's ETag gets a 200 page.
 
 # Decided
 

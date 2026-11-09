@@ -483,6 +483,11 @@ def _frame(
     # Only a root frame is a form: a node frame (a fragment of the resource)
     # may be swapped into its root's form, and forms do not nest.
     tag = "form" if mode == "edit" and pointer == "" else "div"
+    if tag == "form":
+        # Server-side JSON Schema validation is the authority: the browser's
+        # constraint validation (a stored non-absolute URI in an
+        # `<input type="url">`) must not block the submit.
+        attributes.append(("novalidate", ""))
     parts = [
         mark_safe(f"<{tag}"),
         *(format_html(' {}="{}"', name, value) for name, value in attributes),

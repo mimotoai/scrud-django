@@ -60,6 +60,13 @@ def test_scrud_ui_source_is_safe_and_declares_extension():
     assert "selfRequestsOnly" in source and "responseHandling" in source
 
 
+def test_delete_does_not_send_form_values_as_url_params():
+    """htmx 2.0.4 puts a form's values in the URL for DELETE by default, and
+    the Delete button sits inside the root edit form."""
+    source = SCRUD_UI.read_text()
+    assert "htmx.config.methodsThatUseUrlParams = ['get'];" in source
+
+
 @pytest.mark.django_db
 @test_context
 def test_page_references_static(todo_list, todo_owner_login):
@@ -399,3 +406,49 @@ def test_fields_of_keeps_only_the_frames_resource():
     assert out["outer"] == ["/title", "/items/0/done"]
     assert out["embedded"] == ["/title", "/secret"]
     assert out["node"] == ["/items/0/done"]
+
+
+NULL_SCRIPT = r"""
+const vm = require('vm'), fs = require('fs');
+const window = {};
+const ctx = vm.createContext({window, htmx: {config: {}, defineExtension() {}}});
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const U = window.ScrudUI;
+const content = {a: null, t: null, done: false, items: [null]};
+const out = {};
+// Empty text-like inputs over null or a missing key stay as they were.
+out.untouched = U.buildBody(content, [
+  {name: '/a', type: 'text', value: ''},
+  {name: '/missing', type: 'text', value: ''},
+  {name: '/t', type: 'textarea', value: ''},
+  {name: '/u', type: 'url', value: ''},
+  {name: '/d', type: 'date', value: ''},
+  {name: '/n', type: 'number', value: ''},
+  {name: '/done', type: 'checkbox', checked: true},
+]);
+// Typing a value over null applies.
+out.typed = U.buildBody(content, [{name: '/a', type: 'text', value: 'x'}]);
+// An empty string over a present string is a real edit (clearing).
+out.cleared = U.buildBody({s: 'x'}, [{name: '/s', type: 'text', value: ''}]);
+// Append-row inputs are unchanged: a group with a value still appends.
+out.append = U.buildBody({l: []}, [{name: '/l/-', type: 'text', value: 'v'}]);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_build_body_keeps_null_and_missing_under_empty_inputs():
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", NULL_SCRIPT, str(SCRUD_UI)], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["untouched"] == {
+        "a": None,
+        "t": None,
+        "done": True,
+        "items": [None],
+    }
+    assert out["typed"]["a"] == "x"
+    assert out["cleared"] == {"s": ""}
+    assert out["append"] == {"l": ["v"]}
