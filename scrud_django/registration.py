@@ -132,6 +132,16 @@ TYPE_DOCUMENTS = (
 )
 
 
+def latest_revision_first(queryset):
+    """`queryset` of ``ResourceType`` rows ordered latest revision first: a
+    longer revision, then the greater string (``"10"`` after ``"9"``), and
+    rows of the same revision oldest (lowest primary key) first. Reads
+    (`get_resource_type_for`) and registration (`ResourceTypeRegistration`)
+    order a type's rows this way, so that registration updates the row
+    every process reads."""
+    return queryset.order_by(Length("revision").desc(), "-revision", "pk")
+
+
 def get_resource_type_for(slug, using=None):
     """The latest revision of the resource type `slug` (404 if none), read on
     database `using` (``None``: as the router reads it). Read on a given
@@ -155,9 +165,7 @@ def get_resource_type_for(slug, using=None):
     (`retry_registration`), and that registration's error raised if it fails
     again."""
     retry_registration(slug)
-    queryset = ResourceType.objects.filter(slug=slug).order_by(
-        Length("revision").desc(), "-revision", "pk"
-    )
+    queryset = latest_revision_first(ResourceType.objects.filter(slug=slug))
     if using is not None:
         queryset = queryset.using(using).select_related(*TYPE_DOCUMENTS)
     return get_list_or_404(queryset[:1])[0]
@@ -205,8 +213,9 @@ class ResourceTypeRegistration:
         # below with the files (register_json_file): a lagging replica would
         # leave a schema edited since in place, add a second row for a type
         # it does not have yet, and (outside DEBUG) save its stale copy of
-        # the row back.
-        search = (
+        # the row back. Of several rows of the type (`type-registration-race`),
+        # the one reads use (`latest_revision_first`) is updated.
+        search = latest_revision_first(
             ResourceType.objects.using(type_db())
             .select_related(*TYPE_DOCUMENTS)
             .filter(type_uri=resource_type_uri)
@@ -357,25 +366,57 @@ def register_or_defer(
     a process that started while the database was unreachable serves the
     type once it is back, without a restart. Until then a request for the
     type fails with the retry's error (a 500), not a 404. The retry calls
-    `retry` (default: `register`)."""
+    `retry` (default: `register`).
+
+    The failure is logged as a warning while the database is unreachable or
+    not migrated (`migrated_and_reachable`), and as an error on a database
+    that is reachable and migrated: there it is a fault (a missing grant, a
+    schema out of step with the migrations) that fails every request for the
+    type until it is fixed."""
+    db = type_db()
     try:
-        with transaction.atomic(using=type_db()):
+        with transaction.atomic(using=db):
             return register().urls
     except (OperationalError, ProgrammingError) as e:
-        logger.warning(
-            "Could not register resource type %r (%s: %s); its routes are "
-            "served and it is registered when it is next read. This is "
-            "expected while the database is not migrated (migrate, "
-            "makemigrations, check).",
-            slug,
-            type(e).__name__,
-            e,
-        )
+        if migrated_and_reachable(db):
+            logger.error(
+                "Could not register resource type %r (%s: %s) on database %r, "
+                "which is reachable and migrated: requests for it fail until "
+                "its registration succeeds. Its routes are served, and its "
+                "registration is retried when it is next read.",
+                slug,
+                type(e).__name__,
+                e,
+                db,
+            )
+        else:
+            logger.warning(
+                "Could not register resource type %r (%s: %s): database %r is "
+                "unreachable or not migrated (as before the first migrate). Its "
+                "routes are served, and it is registered when it is next read.",
+                slug,
+                type(e).__name__,
+                e,
+                db,
+            )
         with _PENDING_LOCK:
             PENDING_REGISTRATIONS[slug] = retry or register
         if register_service:
             services.add_service(type_uri, slug)
         return resource_type_urls(slug, viewset_class)
+
+
+def migrated_and_reachable(alias):
+    """Whether database `alias` can be reached and has all of scrud_django's
+    migrations applied (`scrud_django.checks.scrud_migrations_pending`).
+    ``False`` when that cannot be told (the database is unreachable, or its
+    migration table cannot be read): it never raises."""
+    from scrud_django.checks import scrud_migrations_pending
+
+    try:
+        return not scrud_migrations_pending(alias)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def retry_registration(slug):
@@ -384,37 +425,41 @@ def retry_registration(slug):
     the caller's), raising its error if it fails again. It is forgotten as
     pending once that transaction commits: if the caller's is rolled back
     (a refused write), so is the registration, and it is retried on the
-    next read. Registrations retry one at a time in a process; another
-    process may register the same new type at once
-    (``type-registration-race`` in ``docs/follow-ups.md``).
+    next read.
+
+    The process lock guards `PENDING_REGISTRATIONS` only; the registration
+    runs without it. Its row locks last until the caller's transaction
+    commits, so under the lock a thread waiting for them in the database
+    would hold it while the thread holding them waited for it (reading
+    another pending type): a deadlock the database cannot detect. Two
+    threads of a process may then register the same type at once, as two
+    processes may (``type-registration-race`` in ``docs/follow-ups.md``).
 
     A pending type registered under another slug (its stored row's, kept
     outside ``DEBUG``) than the one its routes were built for raises
     ``ImproperlyConfigured``: its routes would read a type that is not
     there."""
-    if slug not in PENDING_REGISTRATIONS:
-        return
     with _PENDING_LOCK:
         register = PENDING_REGISTRATIONS.get(slug)
-        if register is None:
-            return
-        db = type_db()
-        with transaction.atomic(using=db):
-            registered = register().resource_type
-            if registered.slug != slug:
-                raise ImproperlyConfigured(
-                    f"The resource type {registered.type_uri!r} is stored with "
-                    f"the slug {registered.slug!r}, but its routes were built "
-                    f"for {slug!r}: register it with its stored slug, or under "
-                    "DEBUG to store the new one."
-                )
+    if register is None:
+        return
+    db = type_db()
+    with transaction.atomic(using=db):
+        registered = register().resource_type
+        if registered.slug != slug:
+            raise ImproperlyConfigured(
+                f"The resource type {registered.type_uri!r} is stored with "
+                f"the slug {registered.slug!r}, but its routes were built "
+                f"for {slug!r}: register it with its stored slug, or under "
+                "DEBUG to store the new one."
+            )
 
-            def forget():
-                with _PENDING_LOCK:
-                    if PENDING_REGISTRATIONS.get(slug) is register:
-                        del PENDING_REGISTRATIONS[slug]
+        def forget():
+            with _PENDING_LOCK:
+                if PENDING_REGISTRATIONS.get(slug) is register:
+                    del PENDING_REGISTRATIONS[slug]
 
-            transaction.on_commit(forget, using=db)
+        transaction.on_commit(forget, using=db)
     logger.info("Registered resource type %r, which was pending.", slug)
 
 

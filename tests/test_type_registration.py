@@ -9,12 +9,14 @@ for it fails (an error, not a 404). A slug's "latest revision" is the
 highest number, not the last string."""
 
 import json
+import logging
+import threading
 from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
-from django.db import OperationalError, connections
+from django.db import OperationalError, ProgrammingError, connections, transaction
 from django.test import override_settings
 from django.urls import include, path, reverse
 from django.utils.timezone import now
@@ -24,6 +26,7 @@ from scrud_django import registration, services
 from scrud_django.models import Resource, ResourceType
 
 from .factories import UserFactory
+from .fixtures import unapply_a_scrud_migration
 
 TYPE_URI = "tests://Deferred"
 SLUG = "deferred-things"
@@ -63,6 +66,14 @@ def resource_types_unreachable(execute, sql, params, many, context):
 
 def type_connection():
     return connections[registration.type_db()]
+
+
+def resource_types_denied(execute, sql, params, many, context):
+    """A connection's ``execute_wrapper``: reading the ``ResourceType`` table
+    is refused (a missing grant), the rest of the database works."""
+    if ResourceType._meta.db_table in sql:
+        raise ProgrammingError("permission denied for table resourcetype")
+    return execute(sql, params, many, context)
 
 
 @pytest.fixture
@@ -174,6 +185,142 @@ def test_a_retried_registration_is_pending_until_its_transaction_commits(
     assert SLUG not in registration.PENDING_REGISTRATIONS
 
 
+class Refused(Exception):
+    """A write refused after it read a pending type."""
+
+
+@pytest.mark.django_db
+def test_a_retried_registration_is_rolled_back_with_its_transaction(
+    deferred_routes, django_capture_on_commit_callbacks
+):
+    # A write reads the pending type (registering it), then is refused: its
+    # transaction is rolled back, the registration with it.
+    resources = Resource.objects.count()
+    with django_capture_on_commit_callbacks(execute=True) as callbacks:
+        with pytest.raises(Refused), transaction.atomic():
+            registration.get_resource_type_for(SLUG)
+            assert ResourceType.objects.filter(type_uri=TYPE_URI).exists()
+            raise Refused
+    assert callbacks == []
+    assert not ResourceType.objects.filter(type_uri=TYPE_URI).exists()
+    assert Resource.objects.count() == resources  # Nor its schema.
+    assert SLUG in registration.PENDING_REGISTRATIONS
+    # The next read registers it again, and it is forgotten once that
+    # commits.
+    with django_capture_on_commit_callbacks(execute=True):
+        registered = registration.get_resource_type_for(SLUG)
+    assert registered.type_uri == TYPE_URI
+    assert ResourceType.objects.get(slug=SLUG).schema.content == SCHEMA
+    assert SLUG not in registration.PENDING_REGISTRATIONS
+
+
+@pytest.mark.django_db
+def test_a_pending_registration_runs_without_the_process_lock(
+    deferred_routes, django_capture_on_commit_callbacks
+):
+    # A registration writes rows, whose locks last until the caller's
+    # transaction commits. Run under the process lock, a thread waiting in
+    # the database for those row locks would hold it, and the thread holding
+    # them would block on it reading another pending type: a deadlock the
+    # database cannot detect. The lock guards PENDING_REGISTRATIONS only.
+    register = registration.PENDING_REGISTRATIONS[SLUG]
+    acquired = []
+
+    def try_the_lock():
+        if registration._PENDING_LOCK.acquire(blocking=False):
+            registration._PENDING_LOCK.release()
+            acquired.append(True)
+        else:
+            acquired.append(False)
+
+    def register_while_another_thread_tries_the_lock():
+        other = threading.Thread(target=try_the_lock)
+        other.start()
+        other.join()
+        return register()
+
+    registration.PENDING_REGISTRATIONS[SLUG] = (
+        register_while_another_thread_tries_the_lock
+    )
+    with django_capture_on_commit_callbacks(execute=True):
+        registered = registration.get_resource_type_for(SLUG)
+    assert acquired == [True]
+    assert registered.type_uri == TYPE_URI
+    assert SLUG not in registration.PENDING_REGISTRATIONS
+
+
+UNREACHABLE_OR_NOT_MIGRATED = (
+    f"Could not register resource type {SLUG!r} ({{error}}): database "
+    "'default' is unreachable or not migrated (as before the first migrate). "
+    "Its routes are served, and it is registered when it is next read."
+)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "migrated, failure, level, message",
+    [
+        # Unreachable (it cannot tell whether it is migrated): a transient
+        # failure.
+        (
+            True,
+            unreachable,
+            logging.WARNING,
+            UNREACHABLE_OR_NOT_MIGRATED.format(
+                error="OperationalError: could not connect to server: "
+                "Connection refused"
+            ),
+        ),
+        # Not migrated (migrate, makemigrations or check before migrate).
+        (
+            False,
+            resource_types_denied,
+            logging.WARNING,
+            UNREACHABLE_OR_NOT_MIGRATED.format(
+                error="ProgrammingError: permission denied for table resourcetype"
+            ),
+        ),
+        # Reachable and migrated: a fault (a missing grant, a schema bug)
+        # that fails every request for the type until it is fixed.
+        (
+            True,
+            resource_types_denied,
+            logging.ERROR,
+            f"Could not register resource type {SLUG!r} (ProgrammingError: "
+            "permission denied for table resourcetype) on database 'default', "
+            "which is reachable and migrated: requests for it fail until its "
+            "registration succeeds. Its routes are served, and its "
+            "registration is retried when it is next read.",
+        ),
+    ],
+    ids=["unreachable", "not migrated", "migrated"],
+)
+def test_a_failed_registration_is_an_error_on_a_migrated_database(
+    migrated, failure, level, message, caplog
+):
+    if not migrated:
+        unapply_a_scrud_migration(registration.type_db())
+    try:
+        with type_connection().execute_wrapper(failure):
+            urls = registration.json_resource_type(
+                resource_type_uri=TYPE_URI,
+                slug=SLUG,
+                schema_func=lambda: json.dumps(SCHEMA),
+            )
+        # Deferred either way: the URLconf import does not fail.
+        assert [route.name for route in urls] == [f"{SLUG}-list", f"{SLUG}-detail"]
+        assert SLUG in registration.PENDING_REGISTRATIONS
+    finally:
+        registration.PENDING_REGISTRATIONS.pop(SLUG, None)
+        services.services.pop(TYPE_URI, None)
+    logged = [
+        (record.levelno, record.getMessage())
+        for record in caplog.records
+        if record.name == "scrud_django.registration"
+    ]
+    assert logged == [(level, message)]
+
+
 @pytest.fixture
 def forgotten_built_in_types():
     """The built-in types `registration` caches forgotten, as in a process
@@ -262,3 +409,34 @@ def test_rows_of_the_same_revision_are_read_oldest_first():
     first = a_type_row("raced", "1")
     a_type_row("raced", "1")
     assert registration.get_resource_type_for("raced").pk == first.pk
+
+
+@pytest.mark.django_db
+def test_registration_updates_the_row_that_reads_use():
+    # Two rows of one type (stored past registration, or by two processes
+    # at once: `type-registration-race`). A process start updates the row
+    # `get_resource_type_for` reads, the latest revision, not whichever the
+    # database returns first.
+    def stored(revision):
+        return ResourceType.objects.create(
+            type_uri=TYPE_URI,
+            slug=SLUG,
+            revision=revision,
+            etag=uuid4().hex,
+            modified_at=now(),
+        )
+
+    older = stored("9")
+    latest = stored("10")
+    registered = registration.ResourceTypeRegistration(
+        TYPE_URI,
+        slug=SLUG,
+        schema_func=lambda: SCHEMA,
+        register_service=False,
+    ).resource_type
+    assert registered.pk == latest.pk
+    assert registration.get_resource_type_for(SLUG).pk == latest.pk
+    latest.refresh_from_db()
+    older.refresh_from_db()
+    assert latest.schema.content == SCHEMA
+    assert older.schema is None

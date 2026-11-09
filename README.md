@@ -94,7 +94,13 @@ Run the database at READ COMMITTED, the supported transaction isolation level
 (PostgreSQL's default; Django's MySQL backend, which MariaDB uses too, sets it
 unless `OPTIONS["isolation_level"]` says otherwise). `manage.py check --database
 <alias>`, with the alias your router gives for `Resource` writes (and
-`migrate` of it), warns about another (`scrud_django.W002`). A file SQLite
+`migrate` of it), warns about another (`scrud_django.W002`). The database
+checks (`W003`-`W006`, and `E002`, `E003`, `E005` and `W001` for stored
+workflow policies) report nothing on a database whose scrud_django
+migrations are not all applied, so that `migrate` can run; one that fails
+reading a migrated database (a missing grant, a schema out of step with the
+migrations) warns `scrud_django.W007`, naming the check and the error,
+rather than passing. A file SQLite
 database that takes concurrent writes needs
 `"OPTIONS": {"transaction_mode": "IMMEDIATE"}`: otherwise a second concurrent
 writer fails with "database is locked" instead of waiting.
@@ -155,12 +161,14 @@ urlpatterns = [
 text, for example read from a file of your package, as the demo's
 `demo/demo/urls.py` does). A POST or PUT body is validated against the
 schema, whose `$ref`s may only point inside it (`#/...`). The registration
-runs when the URLconf is imported. When the database fails then (before the
-first `migrate`, which is expected, or while it is unreachable), it logs a
-warning (logger `scrud_django.registration`) and still returns the routes;
-the type is registered when a request (or code) next reads it, so the
-process serves it once the database is back, and until then a request for
-it fails (500), not 404. A process start stores nothing when the type and
+runs when the URLconf is imported. When the database fails then, it still
+returns the routes and logs the failure (logger
+`scrud_django.registration`): a warning while the database is unreachable
+or not migrated (before the first `migrate`, which is expected), an error
+when it is reachable and migrated (a missing grant, a schema out of step
+with the migrations), which needs fixing. The type is registered when a
+request (or code) next reads it, so the process serves it once the database
+is back, and until then a request for it fails (500), not 404. A process start stores nothing when the type and
 its documents are unchanged; under `DEBUG`, a type's row follows the
 registration's arguments (`slug`, `revision`, `schema_uri`, ...); outside
 it, the stored row keeps its slug, revision and URIs, and only its

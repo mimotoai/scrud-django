@@ -203,8 +203,11 @@ you deploy it.
   `ResourceRegistration`): the process serves the type once the database is
   back. Until then, a request for the type fails with the retry's error (a
   500), not a 404. A retry inside a transaction that is rolled back is
-  retried again. `migrate`, `makemigrations` and `check` on a database not
-  yet migrated still work.
+  retried again. Two threads reading a pending type at once may each
+  register it, as two processes starting at once may
+  ([type-registration-race](follow-ups.md#type-registration-race)).
+  `migrate`, `makemigrations` and `check` on a database not yet migrated
+  still work.
 * A process start rewrote every existing type's row: under `DEBUG` with a
   new ETag and modification time, otherwise as it was, each time with a
   django-reversion revision. A type whose row and documents are unchanged
@@ -217,7 +220,16 @@ you deploy it.
   without leading zeros numerically on every database), and rows of the
   same revision are read oldest first, so that every process reads the
   same one ([type-registration-race](follow-ups.md#type-registration-race))
-  (#18).
+  (#18). A process start updates that same row; it updated whichever row
+  the database returned first, which reads might not use.
+
+* The database checks passed silently when reading a migrated database
+  failed (`scrud_django.W005` and `W006`, new in this release, and the
+  `W003`, `W004` and stored workflow policy checks), and `W006` when the
+  URLconf could not be imported, hiding a fault such as a missing grant. Each
+  now warns `scrud_django.W007`, naming the check, the database and the
+  error. A database that is not migrated is still not checked, so that
+  `migrate` runs.
 
 ### Upgrading
 
@@ -278,7 +290,10 @@ you deploy it.
 * A resource type registration that fails with a database error at URLconf
   import is now logged by the `scrud_django.registration` logger (it was
   the root logger), naming the type, and `scrud_django.urls` no longer logs
-  an error for it. `manage.py check` on a database that is not migrated
+  an error for it. It is a warning while the database is unreachable or not
+  migrated, and an error (no longer "expected") on a database that is
+  reachable and migrated, where it is a fault, such as a missing grant, that
+  fails every request for the type: alert on errors from that logger. `manage.py check` on a database that is not migrated
   reports a `scrudful.W001` warning for more routes (those of the types
   that could not be registered, which were missing before). They are
   warnings only (`migrate` runs), and are not reported once the database

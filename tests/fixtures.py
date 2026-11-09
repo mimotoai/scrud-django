@@ -35,6 +35,7 @@ __all__ = [
     'serialize_page',
     'serialize_resource_envelope',
     'serialize_resource',
+    'unapply_a_scrud_migration',
 ]
 
 ROOT_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -46,6 +47,20 @@ DATA_PATH = os.path.join(ROOT_PATH, 'data')
 RESOURCE_ENDPOINT_PREFIX = "partner-profiles"
 RESOURCE_ENDPOINT_DETAIL_NAME = f"{RESOURCE_ENDPOINT_PREFIX}-detail"
 RESOURCE_ENDPOINT_LIST_NAME = f"{RESOURCE_ENDPOINT_PREFIX}-list"
+
+
+def unapply_a_scrud_migration(alias="default"):
+    """Record scrud_django's latest migration as not applied on database
+    `alias`, inside the test's transaction (rolled back after it): the
+    database then counts as not migrated (``scrud_migrations_pending``),
+    as before ``migrate`` of an upgrade, though its tables are there."""
+    from django.db import connections
+    from django.db.migrations.recorder import MigrationRecorder
+
+    recorded = MigrationRecorder(connections[alias]).migration_qs.filter(
+        app="scrud_django"
+    )
+    recorded.filter(pk=recorded.order_by("-name")[0].pk).delete()
 
 
 def last_modified_for(resource):
