@@ -701,3 +701,45 @@ def test_render_failure_is_a_notice_without_content(
     assert "Groceries" not in output and "Buy milk" not in output
     assert "boom" not in output and "Traceback" not in output
     assert any(r.exc_info for r in caplog.records)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("error", ["DatabaseError", "TransactionManagementError"])
+@test_context
+def test_refused_put_stored_lookup_failure_is_notice(todo_list, monkeypatch, error):
+    """A refused PUT whose stored resource cannot be looked up (a database
+    error) answers with the notices only, keeping its status."""
+    from django.db import DatabaseError
+    from django.db.transaction import TransactionManagementError
+
+    from scrud_django.mixins.view_mixins import ResourceViewMixin
+
+    errors = {
+        "DatabaseError": DatabaseError,
+        "TransactionManagementError": TransactionManagementError,
+    }
+
+    def failing(self):
+        raise errors[error]("lookup failed")
+
+    user = assign_role(
+        {"http.GET": [TYPE_URI_TODO_LIST], **CONDITIONAL_PUT}, "project-a"
+    )
+    monkeypatch.setattr(ResourceViewMixin, "get_object", failing)
+    Given.http.force_authenticate(user)
+    put_json(
+        detail_url(todo_list),
+        three_items(todo_list),
+        HTTP_IF_MATCH=f'"{todo_list.etag}"',
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+    )
+    Then.http.status_code_is(403)
+    assert_html()
+    output = html()
+    # the problem's notice only: the condition's message needs the stored
+    # resource
+    assert 'class="scrud-notice scrud-notice-error"' in output
+    assert "Forbidden" in output
+    assert "<form" not in output and FRAME not in output
+    assert "Item 2" not in output and "lookup failed" not in output

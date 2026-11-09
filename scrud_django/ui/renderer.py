@@ -30,7 +30,8 @@ from http import HTTPStatus
 from urllib.parse import urlsplit
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
-from django.db import transaction
+from django.db import DatabaseError, transaction
+from django.db.transaction import TransactionManagementError
 from django.http import Http404, QueryDict
 from django.middleware.csrf import get_token
 from django.templatetags.static import static
@@ -243,8 +244,9 @@ def load_stored(view, request, response) -> None:
     """For a refused PUT (400, 403) that negotiated HTML, refused before the
     view looked the resource up (scoped-rbac's request check refuses on the
     body): look it up now, through the view's own ``get_object()``, with its
-    filter and object permission checks for the PUT. Refused or missing,
-    nothing is remembered and the response is a notice."""
+    filter and object permission checks for the PUT. Refused, missing or
+    not readable (a database error), nothing is remembered and the response
+    is a notice."""
     if (
         request.method != "PUT"
         or negotiated_html(request) is None
@@ -259,6 +261,13 @@ def load_stored(view, request, response) -> None:
         with transaction.atomic(using=db) if db else nullcontext():
             obj = view.get_object()
     except (Http404, DjangoPermissionDenied, APIException):
+        return
+    except (DatabaseError, TransactionManagementError):
+        logger.warning(
+            "scrud-ui: looking up %s for a refused PUT failed",
+            getattr(request, "path", "?"),
+            exc_info=True,
+        )
         return
     remember_stored(view, request, obj)
 
