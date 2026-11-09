@@ -461,7 +461,9 @@ def _frame(
             ("hx-target", "this"),
             ("hx-swap", "outerHTML"),
         ]
-    tag = "form" if mode == "edit" else "div"
+    # Only a root frame is a form: a node frame (a fragment of the resource)
+    # may be swapped into its root's form, and forms do not nest.
+    tag = "form" if mode == "edit" and pointer == "" else "div"
     parts = [
         mark_safe(f"<{tag}"),
         *(format_html(' {}="{}"', name, value) for name, value in attributes),

@@ -172,6 +172,20 @@ class UIStylesheetNameTakenError(ScrudException):
         self.title = "UI stylesheet name taken"
 
 
+class UIHeaderInvalidError(ScrudException):
+    """An HTML request whose fragment header (``Scrud-UI-Pointer``) is
+    invalid."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_header_invalid"
+
+    def __init__(self, header, reason):
+        super().__init__(f"The {header} header is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-header-invalid"
+        self.title = "UI header invalid"
+
+
 class RequestBodyMissingError(ScrudException):
     """A POST or PUT (or PATCH) with an empty body, or a body without a
     ``Content-Length`` (chunked), which DRF does not read. DRF reads either

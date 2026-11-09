@@ -591,7 +591,11 @@ def test_pointer_renders_node_frame(todo_list, todo_owner_login):
     assert 'data-scrud-pointer="/items/1"' in output
     assert "Buy eggs" in output and "Buy milk" not in without_content(output)
     assert 'name="/items/1/done"' in output
+    # only a root frame is a form: a node frame may sit inside one
+    assert output.startswith('<div class="scrud-resource"')
+    assert "<form" not in output
     assert f'hx-put="{detail_url(todo_list)}"' in output
+    assert 'hx-ext="scrud-json"' in output
     assert "hx-delete" not in output
     # the frame carries the whole content, from which the PUT body is built
     assert scripted_content(output) == [todo_list.content]
