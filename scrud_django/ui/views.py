@@ -4,12 +4,14 @@ from scrudful.rest_framework import scrudful_viewset
 
 from scrud_django.exceptions import (
     UIComponentNameTakenError,
+    UISelectorInvalidError,
     UIStylesheetNameTakenError,
     UITemplateInvalidError,
 )
 from scrud_django.models import Resource
 from scrud_django.registration import write_db
 from scrud_django.ui.engines import TemplateCompileError, compile_template
+from scrud_django.ui.selectors import SelectorError, parse_selector
 from scrud_django.views import ResourceViewSet
 
 
@@ -64,6 +66,7 @@ class UIStylesheetViewSet(UIContentValidationMixin, ResourceViewSet):
         super().validate_content(content, instance=instance)
         if not isinstance(content, dict):
             return
+        self.validate_selectors(content)
         name = content.get("name")
         context = content.get("rbac_context", "")
         if name is None or not isinstance(context, str):
@@ -71,3 +74,17 @@ class UIStylesheetViewSet(UIContentValidationMixin, ResourceViewSet):
         for other in self.other_resources(instance).filter(content__name=name):
             if other.content.get("rbac_context", "") == context:
                 raise UIStylesheetNameTakenError(name, context)
+
+    def validate_selectors(self, content):
+        """Parse every rule's selector with the stylesheet's own prefixes."""
+        prefixes = content.get("prefixes")
+        if not isinstance(prefixes, dict):
+            prefixes = {}
+        for rule in content.get("rules") or []:
+            select = rule.get("select") if isinstance(rule, dict) else None
+            if not isinstance(select, str):
+                continue
+            try:
+                parse_selector(select, prefixes)
+            except SelectorError as error:
+                raise UISelectorInvalidError(error) from error

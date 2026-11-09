@@ -28,7 +28,7 @@ def component(**overrides):
 def stylesheet(**overrides):
     return {
         "name": "theme",
-        "rules": [{"select": "$.todos", "component": "todo-row"}],
+        "rules": [{"select": "array", "component": "todo-row"}],
         **overrides,
     }
 

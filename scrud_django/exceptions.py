@@ -130,6 +130,19 @@ class UIComponentNameTakenError(ScrudException):
         self.title = "UI component name taken"
 
 
+class UISelectorInvalidError(ScrudException):
+    """A UI stylesheet rule whose selector does not parse."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_selector_invalid"
+
+    def __init__(self, reason):
+        super().__init__(f"The stylesheet selector is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-selector-invalid"
+        self.title = "UI selector invalid"
+
+
 class UITemplateInvalidError(ScrudException):
     """A UI component whose template does not compile."""
 
