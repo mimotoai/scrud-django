@@ -44,6 +44,9 @@ def without_ui_app():
         (BROWSER, "", HTML),
         ("text/html", "", HTML),
         ("application/json;q=0.9,text/html;q=0.8", "", JSON),
+        # DRF ignores q-values: the first renderer (JSON) that matches any
+        # listed type wins, so a higher q for HTML does not select HTML.
+        ("text/html;q=0.9,application/json;q=0.8", "", JSON),
         (None, "?format=json", JSON),
         ("*/*", "?format=json", JSON),
         ("*/*", "?format=api", HTML),

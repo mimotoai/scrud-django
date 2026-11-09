@@ -1,5 +1,7 @@
 """Compiling stored Django and Jinja2 templates."""
 
+import json
+
 import pytest
 from django.urls import reverse
 from django.utils.safestring import SafeString
@@ -115,3 +117,39 @@ def test_jinja_sandbox_blocks_globals_escape():
     assert output is None or "os" not in output and "{" not in output
     output = _jinja_output("{{ cycler.__init__.__globals__.os.getcwd() }}")
     assert output is None or "/" not in output
+
+
+@pytest.fixture
+def no_jinja2(monkeypatch):
+    """`import jinja2` raises ImportError; no cached environment survives."""
+    import sys
+
+    from scrud_django.ui import engines
+
+    engines._jinja_environment.cache_clear()
+    engines.cached_template.cache_clear()
+    monkeypatch.setitem(sys.modules, "jinja2", None)
+    yield
+    engines._jinja_environment.cache_clear()
+    engines.cached_template.cache_clear()
+
+
+def test_jinja2_not_installed_is_a_compile_error(no_jinja2):
+    with pytest.raises(TemplateCompileError, match="jinja2 is not installed"):
+        compile_template("jinja2", "{{ value }}")
+
+
+@pytest.mark.django_db
+@test_context
+def test_posting_a_jinja2_component_without_jinja2_is_400(admin_login, no_jinja2):
+    Given.http.force_authenticate(admin_login)
+    body = {
+        "name": "j",
+        "engine": "jinja2",
+        "mode": "view",
+        "template": "<li>{{ value }}</li>",
+    }
+    When.http.post(reverse("ui-components-list"), data=body, format="json")
+    Then.http.status_code_is(400)
+    assert Http.response.json()["type"].endswith("ui-template-invalid")
+    assert "jinja2 is not installed" in json.dumps(Http.response.json())

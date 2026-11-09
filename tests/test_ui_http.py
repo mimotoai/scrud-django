@@ -962,3 +962,99 @@ def test_submitted_body_refused_by_its_parser_is_none():
     assert renderer._submitted(Request(UnsupportedMediaType("text/plain"))) is None
     with pytest.raises(RuntimeError):
         renderer._submitted(Request(RuntimeError("boom")))
+
+
+@pytest.mark.django_db
+@test_context
+def test_html_if_none_match_is_304_with_no_body(todo_list, todo_owner_login):
+    Given.http.force_authenticate(todo_owner_login)
+    When.http.get(detail_url(todo_list), HTTP_ACCEPT=HTML)
+    Then.http.status_code_is(200)
+    etag = Http.response["ETag"]
+    When.http.get(detail_url(todo_list), HTTP_ACCEPT=HTML, HTTP_IF_NONE_MATCH=etag)
+    Then.http.status_code_is(304)
+    assert Http.response.content == b""
+    assert Http.response["ETag"] == etag
+    assert_not_cached()
+
+
+@pytest.mark.django_db
+@test_context
+def test_html_form_encoded_put_is_415_notice_without_content(
+    todo_list, todo_owner_login
+):
+    Given.http.force_authenticate(todo_owner_login)
+    When.http.put(
+        detail_url(todo_list),
+        data="title=x",
+        content_type="application/x-www-form-urlencoded",
+        HTTP_ACCEPT=HTML,
+        HTTP_IF_MATCH=f'"{todo_list.etag}"',
+    )
+    Then.http.status_code_is(415)
+    assert_html()
+    output = html()
+    assert 'class="scrud-notice scrud-notice-error"' in output
+    assert "Unsupported media type" in output
+    assert "scrud-content" not in output and FRAME not in output
+    assert "<form" not in output
+
+
+@pytest.mark.django_db
+@test_context
+def test_html_post_create_returns_fragment_for_the_new_resource(
+    todo_owner_login,
+):
+    Given.http.force_authenticate(todo_owner_login)
+    body = {"title": "Fresh list", "rbac_context": "project-a", "items": []}
+    When.http.post(
+        list_url(),
+        data=json.dumps(body),
+        content_type="application/json",
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+    )
+    Then.http.status_code_is(201)
+    assert_html()
+    location = Http.response["Location"]
+    output = html()
+    assert output.startswith('<form class="scrud-resource"')
+    assert "<html" not in output
+    assert "Fresh list" in without_content(output)
+    assert frame_hrefs(output)[0] == location.removeprefix("http://testserver")
+    assert etag_attribute(Http.response["ETag"]) in output
+
+
+@pytest.mark.django_db
+@test_context
+def test_html_post_invalid_create_is_400_notice(todo_owner_login):
+    Given.http.force_authenticate(todo_owner_login)
+    body = {"title": 5, "rbac_context": "project-a", "items": []}
+    When.http.post(
+        list_url(),
+        data=json.dumps(body),
+        content_type="application/json",
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+    )
+    Then.http.status_code_is(400)
+    assert_html()
+    output = html()
+    assert 'class="scrud-notice scrud-notice-error"' in output
+    assert "must be string" in output
+    assert "Location" not in Http.response
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("route", [list_url, detail_url])
+@test_context
+def test_html_options_is_204_with_allow(todo_list, todo_owner_login, route):
+    """OPTIONS with Accept text/html answers as it does for JSON: 204 and the
+    Allow header, not an error and not an HTML page."""
+    Given.http.force_authenticate(todo_owner_login)
+    url = list_url() if route is list_url else detail_url(todo_list)
+    When.http.options(url, HTTP_ACCEPT=HTML)
+    Then.http.status_code_is(204)
+    assert Http.response.content == b""
+    allow = {m.strip() for m in Http.response["Allow"].split(",")}
+    assert {"GET", "OPTIONS"} <= allow
