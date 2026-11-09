@@ -6,6 +6,7 @@ This will support queries, such as:
 """
 
 import contextvars
+import logging
 from contextlib import nullcontext
 from uuid import uuid4
 
@@ -21,6 +22,10 @@ from scrud_django.mixins.resource_mixin import ResourceMixin, rbac_contexts_of
 from scrud_django.models.fields import ContextField
 from scrud_django.models.resource_type import ResourceType
 from scrud_django.scrud_signals import scrud_post_delete
+
+# Deletions a queryset delete could not send ``scrud_post_delete`` for
+# (`ResourceQuerySet.delete`): their ``on_delete`` actions do not run.
+actions_logger = logging.getLogger("scrud_django.workflow_actions")
 
 # The ``rbac_context`` column of `ResourceContext` and `ResourceRemoval`
 # (`ContextField`): in characters, or in bytes on MySQL and MariaDB.
@@ -146,6 +151,36 @@ def in_transaction(using):
 _PENDING_STAMPS = contextvars.ContextVar("scrud_pending_stamps", default=None)
 
 
+def report_unsignalled(model, locked, deleted, removed, signalled, using):
+    """Log, as an ERROR on the ``scrud_django.workflow_actions`` logger, that
+    a `ResourceQuerySet.delete` on database `using` deleted `removed` rows
+    of `model` but sent ``scrud_post_delete`` for `signalled` only (the
+    instances `stamp_deletion` handed it, `deleted`, by pk), naming
+    the pks among `locked` that are gone without a ``scrud_post_delete``:
+    their ``on_delete`` actions do not run, and their contexts are not
+    stamped as left (``ResourceRemoval``)."""
+    candidates = [pk for pk in locked if pk not in deleted]
+    remaining = set()
+    for start in range(0, len(candidates), DELETE_BATCH_SIZE):
+        batch = candidates[start : start + DELETE_BATCH_SIZE]
+        remaining.update(
+            model._base_manager.using(using)
+            .filter(pk__in=batch)
+            .values_list("pk", flat=True)
+        )
+    missing = [pk for pk in candidates if pk not in remaining]
+    actions_logger.error(
+        "A queryset delete on database %r deleted %d resources but sent "
+        "scrud_post_delete for %d: none for pks %s, whose on_delete actions do "
+        "not run and whose contexts are not stamped as left. Is the "
+        "post_delete receiver scrud_django.stamp_deletion disconnected?",
+        using,
+        removed,
+        signalled,
+        missing,
+    )
+
+
 class ResourceQuerySet(models.QuerySet):
     def delete(self):
         """``QuerySet.delete()``, stamping the contexts the deleted resources
@@ -168,7 +203,11 @@ class ResourceQuerySet(models.QuerySet):
         primary key, ``using`` the database, ``resource_type_uri`` its type's
         URI (read with the keys `lock_for_delete` locks, not a query per row)
         and ``action`` ``DELETE``. ``QuerySet.update()``, ``bulk_create()``
-        and ``bulk_update()`` send no scrud signal.
+        and ``bulk_update()`` send no scrud signal. The instances come from
+        the ``post_delete`` receiver `stamp_deletion`: when Django reports
+        more resources deleted than were signalled (that receiver
+        disconnected), the missing pks are logged as an ERROR on the
+        ``scrud_django.workflow_actions`` logger (`report_unsignalled`).
 
         It first locks the rows it deletes, in primary key order
         (`lock_for_delete`), as an API write locks its row first, and then
@@ -203,6 +242,7 @@ class ResourceQuerySet(models.QuerySet):
                 contexts_by_type.setdefault(type_id, set()).add(context)
             for type_id in sorted(contexts_by_type):
                 stamp_removals(type_id, sorted(contexts_by_type[type_id]), db)
+            signalled = 0
             for pk in locked:
                 if pk in deleted:
                     scrud_post_delete.send(
@@ -213,6 +253,10 @@ class ResourceQuerySet(models.QuerySet):
                         resource_type_uri=type_uris[pk],
                         action='DELETE',
                     )
+                    signalled += 1
+            removed = result[1].get(self.model._meta.label, 0)
+            if removed != signalled:
+                report_unsignalled(self.model, locked, deleted, removed, signalled, db)
         return result
 
     delete.alters_data = True

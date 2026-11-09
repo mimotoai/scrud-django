@@ -9,7 +9,8 @@ from django.dispatch import Signal
 from .conf import configured_workflow_actions
 
 # Workflow actions that fail, and SCRUD_WORKFLOW_ACTIONS entries skipped at
-# write time (`ScrudSignalProcessor`).
+# write time (`ScrudSignalProcessor`); also deletions a queryset delete could
+# not send scrud_post_delete for (``models.resource.report_unsignalled``).
 logger = logging.getLogger("scrud_django.workflow_actions")
 
 # Sent inside the write, before it commits: README "Workflow actions" says
@@ -180,13 +181,16 @@ class ScrudSignalProcessor:
 
     def determine_action(self, post_literal, type_uri):
         """The `post_literal` (``on_save`` or ``on_delete``) action of
-        `type_uri`, or None. Never raises, so never fails the write: an entry
+        `type_uri`, or None. A bad entry never fails the write: an entry
         that is not a mapping, or an action that is not callable, is logged
         on the ``scrud_django.workflow_actions`` logger and runs nothing (the
         ``scrud_django.E007`` and ``E009`` checks report them). A missing key
         or ``None`` is no action, and so is every action of a setting changed
-        (``override_settings``) to one that cannot be loaded, which is
-        logged."""
+        (``override_settings``) to one that cannot be loaded
+        (``ImproperlyConfigured``, or ``ImportError`` importing a path it
+        names), which is logged. Any other error loading the setting (one
+        that importing the module of a mapping it names raises) is not
+        caught: it propagates, and fails the write."""
         try:
             all_actions = self.workflow_actions
         except (ImproperlyConfigured, ImportError) as error:

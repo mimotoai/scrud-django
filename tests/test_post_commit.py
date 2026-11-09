@@ -725,3 +725,73 @@ def test_a_raw_save_sends_no_scrud_signal(ran, django_capture_on_commit_callback
     assert Resource.objects.get(pk=todo.pk).content == IN_PROGRESS
     assert received == []
     assert ran == []
+
+
+@pytest.fixture
+def stamp_deletion_disconnected():
+    """`scrud_django.models.resource.stamp_deletion`, which hands
+    `ResourceQuerySet.delete` the instances it deleted, disconnected (as by
+    a project that disconnected it), and connected again afterwards."""
+    from django.db.models.signals import post_delete
+
+    from scrud_django.models import resource as resource_module
+
+    uid = "scrud_django.stamp_deletion"
+    assert post_delete.disconnect(sender=Resource, dispatch_uid=uid)
+    try:
+        yield
+    finally:
+        post_delete.connect(
+            resource_module.stamp_deletion, sender=Resource, dispatch_uid=uid
+        )
+
+
+@pytest.mark.django_db
+def test_a_queryset_delete_that_could_not_signal_a_deletion_logs_it(
+    stamp_deletion_disconnected, caplog, django_capture_on_commit_callbacks
+):
+    # Without the receiver the delete cannot tell which instances it
+    # deleted: it sends no scrud_post_delete for them (their on_delete
+    # actions do not run), and says so, naming them, rather than dropping
+    # them silently.
+    todos = [a_todo() for _ in range(2)]
+    kept = a_todo()
+    pks = sorted(t.pk for t in todos)
+    received = []
+
+    def record(sender, pk=None, **kwargs):
+        received.append(pk)
+
+    scrud_post_delete.connect(record)
+    try:
+        with django_capture_on_commit_callbacks(execute=True):
+            Resource.objects.filter(pk__in=[*pks, kept.pk + 1000]).delete()
+    finally:
+        scrud_post_delete.disconnect(record)
+    assert not Resource.objects.filter(pk__in=pks).exists()
+    assert Resource.objects.filter(pk=kept.pk).exists()
+    assert received == []
+    errors = [
+        record
+        for record in caplog.records
+        if record.name == "scrud_django.workflow_actions"
+        and record.levelno == logging.ERROR
+    ]
+    assert [record.getMessage() for record in errors] == [
+        "A queryset delete on database 'default' deleted 2 resources but sent "
+        f"scrud_post_delete for 0: none for pks {pks}, whose on_delete "
+        "actions do not run and whose contexts are not stamped as left. Is the "
+        "post_delete receiver scrud_django.stamp_deletion disconnected?"
+    ]
+
+
+@pytest.mark.django_db
+def test_a_queryset_delete_logs_no_error_when_it_signals_every_deletion(
+    caplog, django_capture_on_commit_callbacks
+):
+    todos = [a_todo() for _ in range(2)]
+    with django_capture_on_commit_callbacks(execute=True):
+        Resource.objects.filter(pk__in=[t.pk for t in todos]).delete()
+    assert [
+        record for record in caplog.records if record.levelno >= logging.ERROR
+    ] == []

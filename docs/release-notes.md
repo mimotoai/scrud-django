@@ -170,9 +170,13 @@ you deploy it.
   ran for the resources it deleted. It now sends one per deleted resource,
   inside the delete, with `pk`, `using`, `resource_type_uri` and
   `action='DELETE'`, as `Resource.delete()` does, and the actions run when
-  it commits. Raw saves (`loaddata`, django-reversion's revert),
-  `QuerySet.update()`, `bulk_create()` and `bulk_update()` still send no
-  scrud signal; this is now documented (README "Workflow actions") (#11).
+  it commits. Should Django report more resources deleted than were
+  signalled (the `post_delete` receiver `scrud_django.stamp_deletion`
+  disconnected), the missing pks are logged as an error on
+  `scrud_django.workflow_actions`. Raw saves (`loaddata`,
+  django-reversion's revert), `QuerySet.update()`, `bulk_create()` and
+  `bulk_update()` still send no scrud signal; this is now documented
+  (README "Workflow actions") (#11).
 * README "Workflow actions" now states how actions are delivered (at most
   once, synchronously after the commit and before the response, in write
   order per connection, with the live instance), what `transition_data`
