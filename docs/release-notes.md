@@ -1,6 +1,12 @@
 # Change Log
 
-## Unreleased
+## 0.15.0
+
+This release fixes the workflow authorization and post-write notification
+issues found in a design review of 0.14.0 (scrud-django#5 to #18). Some of
+the fixes refuse writes and policies that 0.14.0 accepted, and change what
+workflow actions receive and when they run: work through Upgrading before
+you deploy it.
 
 ### Fixes
 

@@ -587,6 +587,16 @@ def send_events(deliver, batch=100):
 
 ### Upgrading
 
+Version 0.15.0 refuses workflow writes whose content meets more than one
+state, policies with two transitions for one pair of states or a state in both
+`initial_states` and `states`, and `scrud_workflow` grants on writes of your own
+`@action`s; it adds keyword arguments to `scrud_post_save`, runs `on_delete`
+actions for bulk deletes, and logs failed actions on
+`scrud_django.workflow_actions`. Run `manage.py check --database default`
+and work through the Upgrading list of the
+[0.15.0 release notes](https://gitlab.com/dcharbon/scrud-django/-/blob/develop/docs/release-notes.md)
+before upgrading.
+
 Version 0.14.0 adopts django-scoped-rbac 0.12 and scrudful 0.10, which change
 OPTIONS (a 204 linking an HTTP Schema Resource) and need the `hsr_urls()`
 include, `SCRUDFUL["BASE_URL"]` and a scoped-rbac migration. Work through the
