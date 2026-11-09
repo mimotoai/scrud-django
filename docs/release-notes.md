@@ -175,10 +175,18 @@ you deploy it.
   (`None` if invalid there), `__INITIALIZE__` where it enters, and the new
   reserved `__LEAVE__` (no proposed state; the prior state is the one it
   left) where it leaves; and `transition_error`, the workflow error that
-  made `transition_data` `None`. `transition_data` itself is unchanged,
-  except that a save whose row is not on the database written to (an
-  instance copied with `save(using=...)`) is reported as a create instead
-  of raising `AttributeError` (#15).
+  made `transition_data` `None`. `transition_data` itself changed as
+  described under #5 (content that meets the conditions of more than one
+  state is `None`, with the error) and the `restrict_update` fix (#9: an
+  in-place update of a restricted state through a transition whose lists
+  lead from it to itself is `None`, with the error, no longer that
+  transition), and in two more cases: a create, or a move into the
+  context, whose content is in no initial state is `None` with a
+  `WorkflowInvalidInitialStateError` as `transition_error` (it was
+  `TransitionData(None, None, "__INITIALIZE__")`, with no error; `None`
+  in `transitions` there too), and a save whose row is not on the database
+  written to (an instance copied with `save(using=...)`) is reported as a
+  create instead of raising `AttributeError` (#15).
 * `ScrudSignalProcessor` read `SCRUD_WORKFLOW_ACTIONS` once, when it was
   built, so `override_settings(SCRUD_WORKFLOW_ACTIONS=...)` did not change
   the actions the app ran. It now reads the setting on first use and again

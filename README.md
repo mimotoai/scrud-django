@@ -460,7 +460,10 @@ workflow check did not see); `transition_error` is then the workflow error,
 and `None` otherwise. Its `transition` is the policy's transition name,
 `__SAME_STATE__` for an update that stays in its state, or `__INITIALIZE__`
 (no `prior_state`) for a create and for an update that moves the resource
-into that context. `transitions` maps every context the stored resource or
+into that context; a create or move in whose content is in no initial
+state is invalid there (`None`, with a `WorkflowInvalidInitialStateError`),
+as is content that meets the conditions of more than one state.
+`transitions` maps every context the stored resource or
 the new content is in, where a policy applies, to the write's
 `TransitionData` there (`None` if invalid there): a transition where the
 resource stays, `__INITIALIZE__` where it enters, and `__LEAVE__` (no

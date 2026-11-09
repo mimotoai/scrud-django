@@ -190,8 +190,8 @@ class ResourceMixin(ScrudfulMixin):
         one the stored resource was not in (a move into it), are reported as
         ``__INITIALIZE__`` there (no prior state, the initial state the
         content is in), as the ``WorkflowValidator`` checks them. ``None``
-        when no policy applies or the transition is invalid
-        (``transition_error`` tells them apart)."""
+        when no policy applies or the transition is invalid, content in no
+        initial state included (``transition_error`` tells them apart)."""
         return self.get_transitions(using).transition_data
 
     def stored_content(self, using=None):
@@ -220,7 +220,8 @@ class ResourceMixin(ScrudfulMixin):
           resource in no context: the settings default, under ``None``), the
           write there. A context it stays in: the transition under its
           policy (``None`` if invalid); one it enters (or a create's): its
-          ``__INITIALIZE__``; one it leaves: ``TransitionData(None, <the
+          ``__INITIALIZE__`` (``None`` if the content is in no initial state
+          there); one it leaves: ``TransitionData(None, <the
           state it was in there>, "__LEAVE__")``; ``None`` in any of them
           where the content's (or stored content's) state is ambiguous. A
           context without a policy is left out.
@@ -265,19 +266,21 @@ class ResourceMixin(ScrudfulMixin):
         """``(TransitionData or None, workflow error or None)``: this save
         under `workflow` in a context the resource `entering` moves into,
         `leaving` moves out of, or else stays in, from `prior_data` (``None``:
-        a create). Content that meets the conditions of more than one state
-        (``WorkflowAmbiguousStateError``) is reported as ``None`` with the
-        error, as an invalid transition is."""
+        a create). An invalid transition, a create (or move in) whose
+        content is in no initial state (``WorkflowInvalidInitialStateError``)
+        and content that meets the conditions of more than one state
+        (``WorkflowAmbiguousStateError``) are reported as ``None`` with the
+        error, never raised."""
         try:
             if leaving:
                 prior_state = workflow.state(prior_data)
                 return TransitionData(None, prior_state, LEAVE_TRANSITION), None
             if prior_data is None or entering:
                 # A create has no prior state; its proposed state is the
-                # initial state the content is in (``None`` if none: this is
-                # a report, the `WorkflowValidator` validates).
-                initial_state = workflow.initial_state(self.content)
-                return TransitionData(initial_state, None, "__INITIALIZE__"), None
+                # initial state the content is in. Content in none is an
+                # invalid create (``WorkflowInvalidInitialStateError``), as
+                # the `WorkflowValidator` checks it.
+                return workflow.initial_transition(self.content), None
             return workflow.determine_transition(self.content, prior_data), None
         except WORKFLOW_ERRORS as error:
             # Workflow validation is the WorkflowValidator's: the error is

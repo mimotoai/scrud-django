@@ -1440,6 +1440,48 @@ def test_an_invalid_server_side_save_reports_its_transition_error(reported_saves
 
 @pytest.mark.django_db
 @test_context
+def test_a_server_side_create_in_no_initial_state_reports_its_error(reported_saves):
+    from scrud_django.exceptions import WorkflowInvalidInitialStateError
+
+    # "done" is no initial state of the default policy: the API refuses
+    # such a create; a server-side one is saved, and reported as an invalid
+    # transition is, None with the error, not as an __INITIALIZE__ into no
+    # state.
+    reported_saves.clear()
+    todo(rbac_context="a", status="done")
+    (reported,) = reported_saves
+    assert reported["transition_data"] is None
+    error = reported["transition_error"]
+    assert isinstance(error, WorkflowInvalidInitialStateError), error
+    assert (error.prior_state, error.proposed_state) == (None, None)
+    assert reported["transitions"] == {"a": None}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_server_side_move_into_a_context_in_no_initial_state_reports_its_error(
+    reported_saves,
+):
+    from scrud_django.exceptions import WorkflowInvalidInitialStateError
+    from scrud_django.workflow import TransitionData
+
+    # Entering "v" is a create there, and "done" is no initial state.
+    resource = todo(rbac_context="w", status="done")
+    reported_saves.clear()
+    resource.content = dict(resource.content, rbac_context="v")
+    resource.save()
+    (reported,) = reported_saves
+    assert reported["transition_data"] is None
+    error = reported["transition_error"]
+    assert isinstance(error, WorkflowInvalidInitialStateError), error
+    assert reported["transitions"] == {
+        "w": TransitionData(None, "done", "__LEAVE__"),
+        "v": None,
+    }
+
+
+@pytest.mark.django_db
+@test_context
 def test_a_write_under_no_policy_reports_no_transition_and_no_error():
     from scrud_django.scrud_signals import scrud_post_save
 
