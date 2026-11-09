@@ -16,6 +16,18 @@ def render(short, **context):
     context.setdefault("pointer", "")
     context.setdefault("label", "")
     context.setdefault("children", {})
+    children = context["children"]
+    context.setdefault(
+        "child_items", list(children.items()) if isinstance(children, dict) else []
+    )
+    context.setdefault("input_id", "scrud-f-" + context["pointer"].replace("/", "~1"))
+    schema_items = (
+        context["schema"].get("items") if isinstance(context["schema"], dict) else None
+    )
+    props = schema_items.get("properties", {}) if isinstance(schema_items, dict) else {}
+    context.setdefault(
+        "append_fields", [{"name": k, "type": v.get("type")} for k, v in props.items()]
+    )
     context.setdefault("errors", [])
     context.setdefault("value_json", json.dumps(context["value"], indent=2))
     template = cached_template(component.cache_key, "django", component.template)
@@ -230,3 +242,30 @@ def test_notice_context():
 def test_all_builtins_render_with_minimal_context():
     for name in BUILTIN_NAMES:
         render(name[len("scrud:") :])
+
+
+def test_object_with_property_named_items_and_keys():
+    kids = {"items": mark_safe("<b>I</b>"), "keys": mark_safe("<b>K</b>")}
+    for short in ("object", "object-edit"):
+        out = render(short, children=kids, child_items=list(kids.items()))
+        assert "<b>I</b>" in out and "<b>K</b>" in out
+        assert "items" in out and "keys" in out
+
+
+def test_array_edit_append_field_named_items():
+    out = render(
+        "array-edit",
+        pointer="/x",
+        input_id="scrud-f-~1x",
+        append_fields=[
+            {"name": "items", "type": "string"},
+            {"name": "keys", "type": "boolean"},
+        ],
+    )
+    assert 'name="/x/-/items"' in out and 'name="/x/-/keys"' in out
+    assert 'id="scrud-f-~1x-new-1"' in out and 'for="scrud-f-~1x-new-2"' in out
+
+
+def test_label_uses_input_id():
+    out = render("string-edit", pointer="/a", input_id="zz", label="A")
+    assert 'id="zz"' in out and 'for="zz"' in out
