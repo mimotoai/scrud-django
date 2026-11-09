@@ -187,6 +187,31 @@
   now a property (assignable, to give a processor a mapping of its own);
   the dead `ScrudSignalProcessor()` in the test app's `ready()` is gone
   (#16).
+* A resource type whose registration failed with a database error when the
+  URLconf was imported (`json_resource_type` and the built-in types of
+  `scrud_django.urls`) had no routes until the process restarted: a worker
+  that started while the database was briefly unreachable answered 404 for
+  those types, with only a warning ("expected for migrations") logged.
+  The routes need no database, so they are now always returned, and the
+  registration is retried when the type is next read (by a request or by
+  `ResourceRegistration`): the process serves the type once the database is
+  back. Until then, a request for the type fails with the retry's error (a
+  500), not a 404. A retry inside a transaction that is rolled back is
+  retried again. `migrate`, `makemigrations` and `check` on a database not
+  yet migrated still work.
+* A process start rewrote every existing type's row: under `DEBUG` with a
+  new ETag and modification time, otherwise as it was, each time with a
+  django-reversion revision. A type whose row and documents are unchanged
+  is now not written. Under `DEBUG`, a type whose row does change still
+  gets a new ETag and modification time.
+* A slug's "latest revision" (`get_resource_type_for`, where a slug has
+  more than one row) was the greatest `revision` string, so `"9"` was read
+  before `"10"`. It is now the highest number (a longer revision first,
+  then the greater string, which orders revisions written as numbers
+  without leading zeros numerically on every database), and rows of the
+  same revision are read oldest first, so that every process reads the
+  same one ([type-registration-race](follow-ups.md#type-registration-race))
+  (#18).
 
 ### Upgrading
 
@@ -244,6 +269,14 @@
   in the `ready()` of an app listed after `scrud_django`, and do not count
   on both running. The signals hold it: one built without keeping a
   reference now runs, until another is built.
+* A resource type registration that fails with a database error at URLconf
+  import is now logged by the `scrud_django.registration` logger (it was
+  the root logger), naming the type, and `scrud_django.urls` no longer logs
+  an error for it. `manage.py check` on a database that is not migrated
+  reports a `scrudful.W001` warning for more routes (those of the types
+  that could not be registered, which were missing before). They are
+  warnings only (`migrate` runs), and are not reported once the database
+  is migrated.
 
 ### Documentation
 
