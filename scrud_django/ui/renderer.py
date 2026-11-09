@@ -245,9 +245,10 @@ def load_stored(view, request, response) -> None:
     """For a refused PUT (400, 403) that negotiated HTML, refused before the
     view looked the resource up (scoped-rbac's request check refuses on the
     body): look it up now, through the view's own ``get_object()``, with its
-    filter and object permission checks for the PUT. Refused, missing or
-    not readable (a database error), nothing is remembered and the response
-    is a notice."""
+    filter and object permission checks for the PUT, but without the row
+    lock (``unlocked_lookups``): a refused request never waits for it or
+    holds it. Refused, missing or not readable (a database error), nothing
+    is remembered and the response is a notice."""
     if (
         request.method != "PUT"
         or negotiated_html(request) is None
@@ -257,9 +258,14 @@ def load_stored(view, request, response) -> None:
     ):
         return
     db = getattr(view, "locked_write_db", None)
+    unlocked = getattr(view, "unlocked_lookups", None)
     try:
-        # A savepoint: a failed lookup leaves the request's transaction usable.
-        with transaction.atomic(using=db) if db else nullcontext():
+        # A savepoint: a failed lookup leaves the request's transaction
+        # usable.
+        with (
+            transaction.atomic(using=db) if db else nullcontext(),
+            unlocked() if unlocked is not None else nullcontext(),
+        ):
             obj = view.get_object()
     except (Http404, DjangoPermissionDenied, APIException):
         return

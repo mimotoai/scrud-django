@@ -748,3 +748,60 @@ def test_refused_put_stored_lookup_failure_is_notice(todo_list, monkeypatch, err
     assert "Forbidden" in output
     assert "<form" not in output and FRAME not in output
     assert "Item 2" not in output and "lookup failed" not in output
+
+
+@contextmanager
+def recorded_row_locks():
+    """The models whose rows ``select_for_update`` was asked to lock, in
+    order: SQLite ignores the lock, so the request for it is recorded."""
+    from unittest import mock
+
+    from django.db.models import QuerySet
+
+    locks = []
+    original = QuerySet.select_for_update
+
+    def select_for_update(self, *args, **kwargs):
+        locks.append(self.model.__name__)
+        return original(self, *args, **kwargs)
+
+    with mock.patch.object(QuerySet, "select_for_update", select_for_update):
+        yield locks
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("who", ["anonymous", "reader", "conditional"])
+@test_context
+def test_refused_html_put_takes_no_row_lock(todo_list, todo_reader_login, who):
+    """A PUT refused before the view looked the resource up (by the request
+    check, or unauthenticated) neither waits for nor holds the row lock when
+    its HTML answer looks the stored resource up: LockedWriteMixin's refused
+    requests never lock."""
+    users = {
+        "reader": todo_reader_login,
+        "conditional": assign_role(
+            {"http.GET": [TYPE_URI_TODO_LIST], **CONDITIONAL_PUT}, "project-a"
+        ),
+    }
+    if who in users:
+        Given.http.force_authenticate(users[who])
+    with recorded_row_locks() as locks:
+        put_json(
+            detail_url(todo_list),
+            three_items(todo_list),
+            HTTP_IF_MATCH=f'"{todo_list.etag}"',
+            HTTP_ACCEPT=HTML,
+            HTTP_HX_REQUEST="true",
+        )
+    assert Http.response.status_code in (401, 403), Http.response.status_code
+    assert_html()
+    assert "Resource" not in locks, locks
+    output = html()
+    if who == "conditional":
+        # the refused re-render is unchanged: the submitted body as the form
+        assert "At most 3 items" in output
+        assert output.startswith('<form class="scrud-resource"')
+        assert "Item 2" in without_content(output)
+    else:
+        assert "<form" not in output and FRAME not in output
+        assert "Item 2" not in output

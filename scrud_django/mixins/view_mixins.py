@@ -672,10 +672,30 @@ class LockedWriteMixin:
     def locked(self, queryset):
         """`queryset`, inside a locked write (`dispatch`) read on its
         database with its rows locked (``select_for_update``) until the
-        request's transaction ends."""
+        request's transaction ends; inside `unlocked_lookups`, read there
+        without the lock."""
         if self.locked_write_db is not None:
-            queryset = queryset.using(self.locked_write_db).select_for_update()
+            queryset = queryset.using(self.locked_write_db)
+            if not self.lookups_unlocked:
+                queryset = queryset.select_for_update()
         return queryset
+
+    # True inside `unlocked_lookups`.
+    lookups_unlocked = False
+
+    @contextmanager
+    def unlocked_lookups(self):
+        """Inside the block, a locked write's lookups (`locked`, and
+        ``get_object()``) read its database as they would, filtered and
+        checked the same, but lock no row: for a lookup made after the
+        request was refused (the HTML answer to a refused PUT,
+        `scrud_django.ui.renderer.load_stored`), which must neither wait for
+        the row lock nor hold it."""
+        previous, self.lookups_unlocked = self.lookups_unlocked, True
+        try:
+            yield
+        finally:
+            self.lookups_unlocked = previous
 
 
 class ListValidatorsMixin:
@@ -1204,7 +1224,8 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         once normalised is a 404 first, as scoped-rbac's
         ``check_object_permissions`` answers it for an object of its own. The
         `Resource` is returned. Inside a locked write (`dispatch`) the lookup
-        reads the write database with the row locked (`locked`), whatever
+        reads the write database with the row locked (`locked`; not inside
+        `unlocked_lookups`), whatever
         database a ``get_queryset()`` of a subclass selects (``using()``). A
         ``get_queryset()`` or filter backend of a subclass that makes the
         queryset one PostgreSQL cannot lock ``FOR UPDATE`` (``DISTINCT``,
@@ -1730,10 +1751,10 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
         preconditions, the object check and the write read the row as the
         last writer committed it. A lookup that finds a row the lock did not
         take (one that came to match the URL after the key was read) is a
-        404."""
+        404. Inside `unlocked_lookups` no row is locked."""
         previous, self._scrud_in_get_object = self._scrud_in_get_object, True
         try:
-            if self.locked_write_db is None:
+            if self.locked_write_db is None or self.lookups_unlocked:
                 return super().get_object()
             locked = self.lock_object_row()
             obj = super().get_object()
