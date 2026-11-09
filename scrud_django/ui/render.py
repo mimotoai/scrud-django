@@ -399,6 +399,9 @@ class _Walk:
             "append_fields": self.append_fields(node),
             "append_item_type": self.append_item_type(node),
         }
+        context["append_row"] = has_append_input(
+            context["append_fields"], context["append_item_type"]
+        )
         component = node.component
         builtin = component.name.startswith(BUILTIN_PREFIX)
         if not builtin or component.name == "scrud:json":
@@ -460,8 +463,11 @@ class _Walk:
         if node.kind != "array":
             return None
         items, _ = _resolve_ref(self.root_schema, node.schema.get("items"))
-        if isinstance(items.get("properties"), dict):
-            return None
+        properties = items.get("properties")
+        if isinstance(properties, dict):
+            # Items with properties are appended by field; with none, there is
+            # nothing to input (an object item, whatever its ``type``).
+            return None if properties else "object"
         return _append_type(items)
 
     def top_errors(self) -> list[str]:
@@ -679,6 +685,19 @@ def _schema_terms(schema, schema_type, kind):
     if schema_type == "integer":
         terms.append(TypeTerm(schema_type="number"))
     return terms
+
+
+_NESTED = ("object", "array")
+
+
+def has_append_input(append_fields, append_item_type):
+    """Whether an array's append row has an input to render: one of the
+    items' properties that is not an object or array, or, for items without
+    properties, an item type that is not an object or array. The
+    ``append_row`` context key of ``scrud:array-edit``."""
+    if append_fields:
+        return any(field["type"] not in _NESTED for field in append_fields)
+    return append_item_type not in _NESTED
 
 
 def _append_type(schema):

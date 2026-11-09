@@ -94,6 +94,7 @@ Every template is given plain JSON, plus its children's already rendered HTML:
 | `errors` | The messages for this node from a refused write. Always empty for the resource itself: its messages (and those for nodes that are not rendered) are shown as notices at the top of the frame. |
 | `value_json` | The value as indented JSON (filled for stored components and `scrud:json`). |
 | `input_id` | An HTML id unique to the node, for labels. |
+| `append_row` | For an array node: whether the append row has an input to render. It is false when every item property is an object or array, or when the items are objects without properties (or empty `properties`) or arrays; `scrud:array-edit` then renders no `scrud-append` element. |
 | `append_fields` | For an array node: `[{name, type, pointer_name}]` of its items' properties, for an append form. `type` is the property's schema type (the first non-null one of a list, through a local `$ref`), or `None`; `pointer_name` is `name` escaped as a JSON Pointer reference token (`~` as `~0`, `/` as `~1`), for input names such as `{{ pointer }}/-/{{ field.pointer_name }}`. |
 
 Be careful with the name `items`. In a Django template `children.items`
@@ -141,7 +142,7 @@ properties, and a text input otherwise. A property whose type is `object` or
 `array` gets no input (a text input cannot produce one), so a new item is
 created without it and a required one fails server validation with a notice.
 An array whose items are objects without `properties`, or arrays, gets no
-append row at all. For an array of items that are not
+append row at all, as does one whose item properties are all objects or arrays. For an array of items that are not
 objects it renders one input named `<pointer>/-` of the item type, from the
 `append_item_type` context key (`None` for object items), so the client sends
 a number or a boolean, not a string.

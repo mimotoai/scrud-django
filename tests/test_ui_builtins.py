@@ -7,6 +7,7 @@ from django.utils.safestring import mark_safe
 
 from scrud_django.ui.cascade import BUILTIN_NAMES, builtin_component
 from scrud_django.ui.engines import cached_template
+from scrud_django.ui.render import has_append_input
 
 
 def escape_segment(name):
@@ -35,6 +36,10 @@ def render(short, **context):
             {"name": k, "type": v.get("type"), "pointer_name": escape_segment(k)}
             for k, v in props.items()
         ],
+    )
+    context.setdefault(
+        "append_row",
+        has_append_input(context["append_fields"], context.get("append_item_type")),
     )
     context.setdefault("errors", [])
     context.setdefault("value_json", json.dumps(context["value"], indent=2))
@@ -468,6 +473,7 @@ def test_array_edit_append_row_with_only_nested_fields_has_no_input():
         append_fields=[{"name": "meta", "type": "object", "pointer_name": "meta"}],
     )
     assert "<input" not in out and "<label" not in out
+    assert "scrud-append" not in out
 
 
 @pytest.mark.parametrize("item_type", ["object", "array"])

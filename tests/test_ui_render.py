@@ -806,7 +806,13 @@ def test_append_row_renders_no_input_for_nested_properties(admin_login):
 
 @pytest.mark.django_db
 @pytest.mark.parametrize(
-    "items", [{"type": "object"}, {"type": "array", "items": {"type": "string"}}]
+    "items",
+    [
+        {"type": "object"},
+        {"type": "object", "properties": {}},
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "object", "properties": {"m": {"type": "object"}}},
+    ],
 )
 def test_no_append_row_for_items_that_are_objects_without_properties_or_arrays(
     admin_login, items
