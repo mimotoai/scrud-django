@@ -34,6 +34,21 @@ api_urlpatterns.extend(
                 .read_text()
             ),
         ),
+        registration.json_resource_type(
+            resource_type_uri="http://example.org/todo#TodoList",
+            revision="1",
+            slug="todo-lists",
+            schema_func=lambda: (
+                importlib.resources.files("demo")
+                .joinpath("TodoList-schema.json")
+                .read_text()
+            ),
+            context_func=lambda: (
+                importlib.resources.files("demo")
+                .joinpath("TodoList-ld.json")
+                .read_text()
+            ),
+        ),
     )
 )
 
