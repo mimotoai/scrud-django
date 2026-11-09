@@ -143,7 +143,8 @@ def test_build_body_under_node():
         {"text": "b", "done": True},
     ]
     assert out["dropped"]["items"] == [{"text": "a", "done": False}]
-    assert out["number"] == {}
+    # a cleared number never deletes the stored one (buildBody reports it)
+    assert out["number"] == {"n": 1}
     assert out["untouched"]["items"] == [{"text": "a", "done": False}]
 
 
@@ -210,7 +211,7 @@ def test_apply_pointer_arrays_and_groups_under_node():
     assert out["zero"] == "error"
     assert out["hyphenKey"] == {"-x": [{"n": "v"}]}
     assert out["keepsOthers"] == {"l": [1, 2], "t": "b"}
-    assert out["noShift"] == {"l": [{}, {"n": 2}]}
+    assert out["noShift"] == {"l": [{"n": 1}, {"n": 2}]}
     assert out["warned"] == 1
 
 
@@ -284,6 +285,7 @@ const document = {
   addEventListener(name, fn) { handlers[name] = fn; },
   querySelector() { return null; },
   dispatchEvent(e) { dispatched.push({type: e.type, detail: e.detail}); return true; },
+  createElement(tag) { return el(tag.toUpperCase()); },
 };
 function CustomEvent(type, init) { this.type = type; this.detail = init && init.detail; }
 function el(tag, attrs, parent, props) {
@@ -293,6 +295,14 @@ function el(tag, attrs, parent, props) {
     getAttribute(n) { return n in this.attrs ? this.attrs[n] : null; },
     hasAttribute(n) { return n in this.attrs; },
     appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
+    insertBefore(c, ref) {
+      c.parentNode = this;
+      const at = ref ? this.children.indexOf(ref) : -1;
+      if (at < 0) this.children.push(c); else this.children.splice(at, 0, c);
+      return c;
+    },
+    setAttribute(n, v) { this.attrs[n] = v; },
+    get firstChild() { return this.children[0] || null; },
     removeChild(c) {
       this.children = this.children.filter((x) => x !== c);
       c.parentNode = null;
@@ -307,8 +317,13 @@ function el(tag, attrs, parent, props) {
     },
     querySelectorAll(sel) {
       const found = [];
+      const scripts = sel === 'script.scrud-content';
       const walk = (n) => n.children.forEach((c) => {
-        if (typeof c.name === 'string' && c.name.charAt(0) === '/') found.push(c);
+        if (scripts) {
+          if (c.tagName === 'SCRIPT' && c.attrs.class === 'scrud-content') found.push(c);
+        } else if (typeof c.name === 'string' && c.name.charAt(0) === '/') {
+          found.push(c);
+        }
         walk(c);
       });
       walk(this);
@@ -482,3 +497,205 @@ def test_build_body_appends_typed_primitive_items():
     assert out["fraction"] == {"nums": [2.5]}
     assert out["empty"] == {"nums": [1]}
     assert out["flag"] == {"f": [True]}
+
+
+INVALID_SCRIPT = r"""
+const vm = require('vm'), fs = require('fs');
+const window = {};
+const ctx = vm.createContext({window, htmx: {config: {}, defineExtension() {}}});
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const U = window.ScrudUI;
+const out = {};
+const run = (content, fields) => {
+  const errors = [];
+  const body = U.buildBody(content, fields, errors);
+  return {body, errors};
+};
+out.unsafe = run({t: 'a'}, [
+  {name: '/__proto__/x', type: 'text', value: '1'},
+  {name: '/a/constructor/b', type: 'text', value: '1'},
+  {name: '/items/-/prototype', type: 'text', value: '1'},
+  {name: '/t', type: 'text', value: 'b'},
+]);
+out.bad = run({l: [1], t: 'a'}, [
+  {name: 'no-slash', type: 'text', value: 'x'},
+  {name: '/l/5', type: 'text', value: 'x'},
+  {name: '/t', type: 'text', value: 'b'},
+]);
+out.clean = run({t: 'a'}, [{name: '/t', type: 'text', value: 'b'}]);
+// numbers: empty or NaN over a stored number is an error, the key is kept
+out.cleared = run({n: 3, m: 4}, [
+  {name: '/n', type: 'number', value: ''},
+  {name: '/m', type: 'number', value: 'abc'},
+]);
+// untouched: empty over null or missing is left as it is, with no error
+out.untouchedNumber = run({n: null}, [
+  {name: '/n', type: 'number', value: ''},
+  {name: '/k', type: 'number', value: ''},
+]);
+out.edited = run({n: 3}, [{name: '/n', type: 'number', value: '4'}]);
+// no errors argument: still returns the body
+out.noArg = U.buildBody({n: 3}, [{name: '/n', type: 'number', value: ''}]);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_build_body_reports_invalid_fields_and_number_clears():
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", INVALID_SCRIPT, str(SCRUD_UI)], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["unsafe"]["errors"] == [
+        "/__proto__/x",
+        "/a/constructor/b",
+        "/items/-/prototype",
+    ]
+    assert out["unsafe"]["body"] == {"t": "b"}
+    assert out["bad"]["errors"] == ["no-slash", "/l/5"]
+    assert out["bad"]["body"] == {"l": [1], "t": "b"}
+    assert out["clean"] == {"body": {"t": "b"}, "errors": []}
+    assert out["cleared"]["errors"] == ["/n", "/m"]
+    assert out["cleared"]["body"] == {"n": 3, "m": 4}
+    assert out["untouchedNumber"] == {"body": {"n": None}, "errors": []}
+    assert out["edited"] == {"body": {"n": 4}, "errors": []}
+    assert out["noArg"] == {"n": 3}
+
+
+def test_client_listens_for_failed_requests():
+    source = SCRUD_UI.read_text()
+    assert "'htmx:responseError'" in source and "'htmx:sendError'" in source
+    assert "'htmx:beforeSwap'" in source
+    assert "textContent" in source and "innerHTML" not in source
+
+
+NOTICE_SCRIPT = (
+    STUB_DOM
+    + r"""
+out.texts = [
+  U.noticeText(404, 'put'), U.noticeText(0, 'put'), U.noticeText(undefined, 'put'),
+  U.noticeText(500, 'delete'), U.noticeText(0, 'delete'),
+];
+out.invalid = [U.invalidFieldsText(['/a']), U.invalidFieldsText(['/a', '/b'])];
+out.shows = [
+  ['put', 404], ['put', 400], ['put', 412], ['delete', 409], ['delete', 412],
+  ['delete', 403], ['delete', 404], ['put', 500], ['delete', 428],
+].map(([v, s]) => U.showsClientNotice(v, s));
+
+const root = frame('/l/1/');
+const content = el('SCRIPT', {class: 'scrud-content'}, root);
+const input = el('INPUT', {name: '/n'}, root, {type: 'number', value: ''});
+const button = el('BUTTON', {'hx-delete': '/l/1/'}, root);
+const notices = () => root.children.filter((c) => /scrud-client-notice/.test(c.className || ''));
+
+// a failed PUT: a notice at the top of the frame, set with textContent
+handlers['htmx:responseError']({detail: {
+  elt: root, xhr: {status: 404}, requestConfig: {verb: 'put'}}});
+out.afterError = notices().map((n) => ({
+  text: n.textContent, role: n.attrs.role, cls: n.className, first: root.children[0] === n}));
+// a second one replaces the first
+handlers['htmx:sendError']({detail: {elt: root, requestConfig: {verb: 'put'}}});
+out.afterSend = notices().map((n) => n.textContent);
+out.kept = root.children.includes(input) && root.parentNode === null;
+// the server re-renders a refused PUT: no client notice for a swapped status
+const other = frame('/l/2/');
+handlers['htmx:responseError']({detail: {
+  elt: other, xhr: {status: 400}, requestConfig: {verb: 'put'}}});
+out.swapped = other.children.length;
+// a failed DELETE (403) is not swapped, and its notice goes in the frame
+const evt = {detail: {elt: button, xhr: {status: 403}, requestConfig: {verb: 'delete'},
+  shouldSwap: true, isError: true}};
+handlers['htmx:beforeSwap'](evt);
+out.deleteSwap = evt.detail.shouldSwap;
+const evt409 = {detail: {elt: button, xhr: {status: 409}, requestConfig: {verb: 'delete'},
+  shouldSwap: true, isError: true}};
+handlers['htmx:beforeSwap'](evt409);
+out.delete409Swap = evt409.detail.shouldSwap;
+handlers['htmx:responseError']({detail: {
+  elt: button, xhr: {status: 403}, requestConfig: {verb: 'delete'}}});
+out.afterDelete = notices().map((n) => n.textContent);
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_failed_requests_show_a_client_notice():
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", NOTICE_SCRIPT, str(SCRUD_UI)], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["texts"] == [
+        "Your change was not saved (HTTP 404).",
+        "Your change was not saved (network error).",
+        "Your change was not saved (network error).",
+        "The item was not deleted (HTTP 500).",
+        "The item was not deleted (network error).",
+    ]
+    assert out["invalid"] == [
+        "This form could not be saved: invalid field /a.",
+        "This form could not be saved: invalid fields /a, /b.",
+    ]
+    # swapped by the server: PUT 400, 412; DELETE 409, 412 (a notice and a reload)
+    assert out["shows"] == [True, False, False, False, False, True, True, True, True]
+    assert out["afterError"] == [
+        {
+            "text": "Your change was not saved (HTTP 404).",
+            "role": "alert",
+            "cls": "scrud-notice scrud-notice-error scrud-client-notice",
+            "first": True,
+        }
+    ]
+    assert out["afterSend"] == ["Your change was not saved (network error)."]
+    assert out["kept"] is True
+    assert out["swapped"] == 0
+    assert out["deleteSwap"] is False and out["delete409Swap"] is True
+    assert out["afterDelete"] == ["The item was not deleted (HTTP 403)."]
+
+
+CANCEL_SCRIPT = (
+    STUB_DOM
+    + r"""
+const root = frame('/l/1/');
+root.attrs['hx-put'] = '/l/1/';
+const content = el('SCRIPT', {class: 'scrud-content'}, root, {textContent: '{"n": 3, "t": "a"}'});
+const n = el('INPUT', {name: '/n'}, root, {type: 'number', value: ''});
+const t = el('INPUT', {name: '/t'}, root, {type: 'text', value: 'b'});
+const bad = el('INPUT', {name: '/__proto__/x'}, root, {type: 'text', value: '1'});
+const notices = () => root.children.filter((c) => /scrud-client-notice/.test(c.className || ''));
+const configure = () => {
+  let prevented = false;
+  handlers['htmx:configRequest']({
+    detail: {elt: root, verb: 'put', headers: {}},
+    preventDefault() { prevented = true; },
+  });
+  return prevented;
+};
+out.first = configure();
+out.text = notices().map((c) => c.textContent);
+// fix the inputs: the request goes ahead and the notice is gone
+n.value = '4';
+bad.disabled = true;
+out.second = configure();
+out.after = notices().length;
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_invalid_fields_cancel_the_put_and_show_a_notice():
+    source = SCRUD_UI.read_text()
+    assert "preventDefault" in source
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", CANCEL_SCRIPT, str(SCRUD_UI)], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["first"] is True
+    assert out["text"] == [
+        "This form could not be saved: invalid fields /n, /__proto__/x."
+    ]
+    assert out["second"] is False and out["after"] == 0

@@ -171,26 +171,49 @@
    * (`untouched`). Fields sharing a `<prefix>/-` become one new element
    * appended to the array at <prefix>; a group whose fields are all empty is
    * dropped.
+   *
+   * Pure: when `errors` (an array) is given, the name of every field that
+   * could not be applied is pushed on it: an invalid pointer, an unsafe
+   * segment (`__proto__`, `constructor`, `prototype`), or an empty or
+   * non-numeric number input over a stored number. The body is still computed
+   * from the other fields, and such a field leaves the content as it is; the
+   * caller decides what to do with the errors.
    */
-  function buildBody(content, fields) {
+  function buildBody(content, fields, errors) {
     var body = JSON.parse(JSON.stringify(content));
     var groups = [];
     var byPrefix = {};
+    function fail(field, err) {
+      if (err) warn(field, err);
+      if (errors) errors.push(field.name);
+    }
     fields.forEach(function (field) {
       var segs;
       try {
         segs = parsePointer(field.name);
       } catch (err) {
-        warn(field, err);
+        fail(field, err);
+        return;
+      }
+      if (segs.some(function (s) { return UNSAFE.indexOf(s) >= 0; })) {
+        fail(field, new Error('unsafe pointer segment'));
         return;
       }
       var dash = segs.indexOf('-');
       if (dash < 0) {
-        if (untouched(field, valueAt(content, field.name))) return;
+        var embedded = valueAt(content, field.name);
+        if (untouched(field, embedded)) return;
+        var value = fieldValue(field);
+        if (value === undefined && field.type === 'number' && typeof embedded === 'number') {
+          // cleared or half-typed (the browser reports "1e" as ""): never
+          // delete the stored number
+          fail(field);
+          return;
+        }
         try {
-          applyPointer(body, field.name, fieldValue(field));
+          applyPointer(body, field.name, value);
         } catch (err) {
-          warn(field, err);
+          fail(field, err);
         }
         return;
       }
@@ -215,7 +238,7 @@
           try {
             applyPointer(element, g.rest, value);
           } catch (err) {
-            warn(g.field, err);
+            fail(g.field, err);
           }
         }
       });
@@ -223,7 +246,7 @@
         try {
           applyPointer(body, group.prefix + '/-', element);
         } catch (err) {
-          warn(group.fields[0].field, err);
+          fail(group.fields[0].field, err);
         }
       }
     });
@@ -253,11 +276,73 @@
     );
   }
 
+  var NOTICE_CLASS = 'scrud-client-notice';
+
+  /**
+   * The notice for a request that failed: `status` is the HTTP status, or
+   * falsy for a network failure; `verb` is the request's ("delete" or not).
+   */
+  function noticeText(status, verb) {
+    var what =
+      String(verb).toLowerCase() === 'delete'
+        ? 'The item was not deleted'
+        : 'Your change was not saved';
+    return what + (status ? ' (HTTP ' + status + ').' : ' (network error).');
+  }
+
+  function invalidFieldsText(names) {
+    return (
+      'This form could not be saved: invalid field' +
+      (names.length === 1 ? ' ' : 's ') +
+      names.join(', ') +
+      '.'
+    );
+  }
+
+  /**
+   * Whether a failed request needs a client-side notice: not when the server
+   * answers with a body that is swapped in. A refused PUT (400, 403) is
+   * re-rendered by the server, a 412 or a 409 DELETE is a notice with a frame
+   * that reloads the current state; any other failed DELETE is not swapped
+   * (see `htmx:beforeSwap`).
+   */
+  function showsClientNotice(verb, status) {
+    if (String(verb).toLowerCase() === 'delete') {
+      return !(status === 409 || status === 412);
+    }
+    return [400, 403, 409, 412, 428].indexOf(status) < 0;
+  }
+
+  function clearNotice(frame) {
+    Array.prototype.slice.call(frame.children || []).forEach(function (child) {
+      if (String(child.className || '').split(' ').indexOf(NOTICE_CLASS) >= 0) {
+        frame.removeChild(child);
+      }
+    });
+  }
+
+  /**
+   * Insert a notice (the markup of the server's `scrud:notice`) at the top of
+   * `frame`, replacing a previous client notice. The text is set as text.
+   */
+  function showNotice(frame, text) {
+    clearNotice(frame);
+    var notice = document.createElement('div');
+    notice.className = 'scrud-notice scrud-notice-error ' + NOTICE_CLASS;
+    notice.setAttribute('role', 'alert');
+    notice.textContent = text;
+    frame.insertBefore(notice, frame.firstChild);
+  }
+
   window.ScrudUI = {
     applyPointer: applyPointer,
     buildBody: buildBody,
     fieldsOf: fieldsOf,
-    parsePointer: parsePointer
+    invalidFieldsText: invalidFieldsText,
+    noticeText: noticeText,
+    parsePointer: parsePointer,
+    showNotice: showNotice,
+    showsClientNotice: showsClientNotice
   };
 
   // ---- htmx integration -------------------------------------------------
@@ -329,6 +414,19 @@
     setDefault(headers, 'X-CSRFToken', csrfToken());
     var frame = frameOf(detail.elt);
     if (!frame) return;
+    if (verb === 'put' && isPut(detail.elt)) {
+      // An input that cannot be applied would be silently lost by a PUT that
+      // otherwise succeeds: send nothing and say so.
+      clearNotice(frame);
+      var content = contentOf(frame);
+      var invalid = [];
+      if (content) buildBody(content, fieldsOf(frame), invalid);
+      if (invalid.length) {
+        evt.preventDefault();
+        showNotice(frame, invalidFieldsText(invalid));
+        return;
+      }
+    }
     var etag = frame.getAttribute('data-scrud-etag');
     if (etag) setDefault(headers, 'If-Match', quoteEtag(etag));
     setDefault(headers, 'Scrud-UI-Scope', frame.getAttribute('data-scrud-scope'));
@@ -371,6 +469,33 @@
       );
     }
   });
+
+  // A failed DELETE is never swapped in, except the 409 and 412 that the server
+  // answers with a notice and a frame that reloads the current state: swapping
+  // a bare notice would make the item look deleted.
+  document.addEventListener('htmx:beforeSwap', function (evt) {
+    var detail = evt.detail || {};
+    var config = detail.requestConfig || {};
+    var status = detail.xhr && detail.xhr.status;
+    if (String(config.verb).toLowerCase() !== 'delete' || !(status >= 400)) return;
+    if (!showsClientNotice('delete', status)) return;
+    detail.shouldSwap = false;
+    detail.isError = true;
+  });
+
+  // A failure nothing is swapped in for (401, 404, 415, 5xx, no network) is
+  // shown in the frame that made the request.
+  function failed(evt) {
+    var detail = evt.detail || {};
+    var config = detail.requestConfig || {};
+    var status = detail.xhr && detail.xhr.status;
+    var verb = String(config.verb).toLowerCase();
+    if (status && !showsClientNotice(verb, status)) return;
+    var frame = frameOf(detail.elt);
+    if (frame) showNotice(frame, noticeText(status, verb));
+  }
+  document.addEventListener('htmx:responseError', failed);
+  document.addEventListener('htmx:sendError', failed);
 
   htmx.defineExtension('scrud-json', {
     encodeParameters: function (xhr, parameters, elt) {
