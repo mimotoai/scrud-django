@@ -126,7 +126,9 @@ test-postgres:
 # database aliases at the service when SCRUD_TEST_MYSQL_HOST is set (utf8mb4,
 # READ COMMITTED). The driver, mysqlclient, is not a dev dependency: it
 # builds against the client library, so the job installs the build packages
-# and adds it to the locked environment with `--with`.
+# and adds it to the locked environment with `--with`. It also installs
+# Node.js, which tests/test_ui_static.py needs to run scrud-ui.js's helpers;
+# SCRUD_TEST_REQUIRE_NODE makes those tests fail rather than skip without it.
 test-mysql:
   stage: test
   parallel:
@@ -141,6 +143,7 @@ test-mysql:
     SCRUD_TEST_MYSQL_HOST: mysql
     SCRUD_TEST_MYSQL_PASSWORD: scrud
     MYSQLCLIENT: mysqlclient==2.3.0
+    SCRUD_TEST_REQUIRE_NODE: "1"
   cache:
     when: always
     key:
@@ -150,7 +153,8 @@ test-mysql:
       - .uv-cache
   script:
     - apt-get update -qq
-    - apt-get install -y -qq --no-install-recommends build-essential default-libmysqlclient-dev pkg-config > /dev/null
+    - apt-get install -y -qq --no-install-recommends build-essential default-libmysqlclient-dev pkg-config nodejs > /dev/null
+    - node --version
     - uv run --locked --with "$MYSQLCLIENT" python -V
     # The service may still be starting: wait for it (up to 2 minutes).
     - |

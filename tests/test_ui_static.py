@@ -1,9 +1,11 @@
 """Static assets of the UI: vendored htmx and the ``scrud-json`` extension.
 
 Browser behaviour is covered in the browser tests; these checks are
-Python-side only, plus one optional run of the pure helpers under node."""
+Python-side, plus runs of scrud-ui.js under node (against a stub DOM where
+it needs one), which skip without node (`require_node`)."""
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -22,6 +24,21 @@ STATIC_DIR = Path(renderer.__file__).parent / "static" / "scrud_ui"
 HTMX = STATIC_DIR / "htmx.min.js"
 SCRUD_UI = STATIC_DIR / "scrud-ui.js"
 HTML = "text/html"
+
+
+def require_node():
+    """Skip the test when node is not on PATH: the scrud-ui.js helpers run
+    under node. CI's test-mysql job installs it and sets
+    SCRUD_TEST_REQUIRE_NODE, which turns the skip into a failure."""
+    if shutil.which("node") is not None:
+        return
+    reason = (
+        "node is not on PATH: the scrud-ui.js tests need Node.js"
+        " (CI's test-mysql job installs it)"
+    )
+    if os.environ.get("SCRUD_TEST_REQUIRE_NODE"):
+        pytest.fail(reason + "; SCRUD_TEST_REQUIRE_NODE is set")
+    pytest.skip(reason)
 
 
 def detail_url(resource):
@@ -105,8 +122,7 @@ console.log(JSON.stringify(out));
 
 
 def test_build_body_under_node():
-    if shutil.which("node") is None:
-        pytest.skip("node is not available")
+    require_node()
     done = subprocess.run(
         ["node", "-e", NODE_SCRIPT, str(SCRUD_UI)],
         capture_output=True,
@@ -125,8 +141,7 @@ def test_build_body_under_node():
 
 
 def test_apply_pointer_ignores_prototype_keys():
-    if shutil.which("node") is None:
-        pytest.skip("node is not available")
+    require_node()
     script = NODE_SCRIPT.split("const content")[0] + (
         "U.applyPointer({}, '/__proto__/x', 1);"
         "U.applyPointer({}, '/a/constructor/prototype/y', 1);"
@@ -174,8 +189,7 @@ console.log(JSON.stringify(out));
 
 
 def test_apply_pointer_arrays_and_groups_under_node():
-    if shutil.which("node") is None:
-        pytest.skip("node is not available")
+    require_node()
     done = subprocess.run(
         ["node", "-e", POINTER_SCRIPT, str(SCRUD_UI)],
         capture_output=True,
@@ -232,8 +246,7 @@ console.log(JSON.stringify(out));
 
 
 def test_build_body_keeps_untouched_multiline_strings():
-    if shutil.which("node") is None:
-        pytest.skip("node is not available")
+    require_node()
     done = subprocess.run(
         ["node", "-e", UNTOUCHED_SCRIPT, str(SCRUD_UI)],
         capture_output=True,
@@ -339,8 +352,7 @@ console.log(JSON.stringify(out));
 def test_delete_removes_the_frame():
     source = SCRUD_UI.read_text()
     assert "htmx:afterRequest" in source and "scrud:deleted" in source
-    if shutil.which("node") is None:
-        pytest.skip("node is not available")
+    require_node()
     done = subprocess.run(
         ["node", "-e", DELETE_SCRIPT, str(SCRUD_UI)],
         capture_output=True,
@@ -375,8 +387,7 @@ console.log(JSON.stringify(out));
 
 
 def test_fields_of_keeps_only_the_frames_resource():
-    if shutil.which("node") is None:
-        pytest.skip("node is not available")
+    require_node()
     done = subprocess.run(
         ["node", "-e", FIELDS_SCRIPT, str(SCRUD_UI)],
         capture_output=True,
