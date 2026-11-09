@@ -220,7 +220,8 @@ you deploy it.
   without leading zeros numerically on every database), and rows of the
   same revision are read oldest first, so that every process reads the
   same one ([type-registration-race](follow-ups.md#type-registration-race))
-  (#18).
+  (#18). A process start updates that same row; it updated whichever row
+  the database returned first, which reads might not use.
 
 * The database checks passed silently when reading a migrated database
   failed (`scrud_django.W005` and `W006`, new in this release, and the

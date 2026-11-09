@@ -132,6 +132,16 @@ TYPE_DOCUMENTS = (
 )
 
 
+def latest_revision_first(queryset):
+    """`queryset` of ``ResourceType`` rows ordered latest revision first: a
+    longer revision, then the greater string (``"10"`` after ``"9"``), and
+    rows of the same revision oldest (lowest primary key) first. Reads
+    (`get_resource_type_for`) and registration (`ResourceTypeRegistration`)
+    order a type's rows this way, so that registration updates the row
+    every process reads."""
+    return queryset.order_by(Length("revision").desc(), "-revision", "pk")
+
+
 def get_resource_type_for(slug, using=None):
     """The latest revision of the resource type `slug` (404 if none), read on
     database `using` (``None``: as the router reads it). Read on a given
@@ -155,9 +165,7 @@ def get_resource_type_for(slug, using=None):
     (`retry_registration`), and that registration's error raised if it fails
     again."""
     retry_registration(slug)
-    queryset = ResourceType.objects.filter(slug=slug).order_by(
-        Length("revision").desc(), "-revision", "pk"
-    )
+    queryset = latest_revision_first(ResourceType.objects.filter(slug=slug))
     if using is not None:
         queryset = queryset.using(using).select_related(*TYPE_DOCUMENTS)
     return get_list_or_404(queryset[:1])[0]
@@ -205,8 +213,9 @@ class ResourceTypeRegistration:
         # below with the files (register_json_file): a lagging replica would
         # leave a schema edited since in place, add a second row for a type
         # it does not have yet, and (outside DEBUG) save its stale copy of
-        # the row back.
-        search = (
+        # the row back. Of several rows of the type (`type-registration-race`),
+        # the one reads use (`latest_revision_first`) is updated.
+        search = latest_revision_first(
             ResourceType.objects.using(type_db())
             .select_related(*TYPE_DOCUMENTS)
             .filter(type_uri=resource_type_uri)

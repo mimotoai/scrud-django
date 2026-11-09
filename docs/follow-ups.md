@@ -39,9 +39,10 @@ constraint on `type_uri`. Two processes starting together on a database
 without the type (a fresh deployment) can both find none and both insert
 one: the slug then has two rows. `get_resource_type_for` takes the highest
 revision and, of rows of the same revision, the first stored (lowest primary
-key), so every process now reads and stores resources under the same one
-(before #18 it took whichever the database returned first, so resources
-could be stored under either), and the other is left unused. Since 0.14.0
+key), so every process now reads and stores resources under the same one,
+and registration updates that one (before #18 each took whichever the
+database returned first, so resources could be stored under either, and a
+start could update a row no process read), and the other is left unused. Since 0.14.0
 the lookup reads the write database, not a replica that may lag behind,
 which narrowed the window from the replica's lag to the time between the
 lookup and the insert. A registration that fails with a database error when
