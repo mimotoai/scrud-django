@@ -77,8 +77,9 @@ def check_default_policy_conditions(app_configs, databases=None, **kwargs):
     ``migrate``): a Warning (``scrud_django.W005``) for each state condition
     of a settings default workflow policy that reads a top-level property
     (`scrud_django.workflow.undeclared_properties`) which the JSON Schema of
-    the policy's type, as stored on a migrated database of `databases`, does
-    not define (`schema_properties`; ``rbac_context`` is always allowed).
+    the policy's type, as stored on a migrated database of `databases`
+    (`not_checked` skips the others), does not define (`schema_properties`;
+    ``rbac_context`` is always allowed).
     State conditions compile without type checking, so a misspelled
     property passes ``scrud_django.E001`` and makes its state unreachable.
     Nothing is reported for a type that is not registered there, whose
@@ -96,7 +97,7 @@ def check_default_policy_conditions(app_configs, databases=None, **kwargs):
     found = []
     policies = DefaultWorkflowPolicies().policies
     for alias in databases or ():
-        if not policies or scrud_migrations_pending(alias):
+        if not policies or not_checked(alias):
             continue
         try:
             schemas = list(
@@ -149,13 +150,47 @@ def scrud_migrations_pending(alias):
     return bool(wanted - set(loader.applied_migrations))
 
 
+def scrud_tables_on(alias):
+    """Whether database `alias` holds scrud_django's tables: whether the
+    routers let one of its models (``Resource``, ``ResourceType``,
+    ``ResourceContext``, ``ResourceRemoval``) be migrated there
+    (``router.allow_migrate_model``). Django records an app's migrations as
+    applied on every database ``migrate`` runs on, even one where the
+    routers skip all of its operations (an analytics database), so
+    `scrud_migrations_pending` cannot tell such a database from a migrated
+    one."""
+    from django.db import router
+
+    from scrud_django.models import (
+        Resource,
+        ResourceContext,
+        ResourceRemoval,
+        ResourceType,
+    )
+
+    return any(
+        router.allow_migrate_model(alias, model)
+        for model in (Resource, ResourceType, ResourceContext, ResourceRemoval)
+    )
+
+
+def not_checked(alias):
+    """Whether the database checks skip database `alias`, reporting nothing
+    there: it holds none of scrud_django's tables (`scrud_tables_on`), or
+    lacks some of its migrations (`scrud_migrations_pending`), so that
+    ``migrate`` can apply them. On any other database an error reading
+    scrud_django's tables is a fault (`could_not_run`)."""
+    return not scrud_tables_on(alias) or scrud_migrations_pending(alias)
+
+
 def could_not_run(checked, alias, problem, hint=None):
     """A Warning (``scrud_django.W007``) that the database check reporting
     `checked` (its IDs) failed on database `alias`, which is migrated,
-    with `problem` (an error, as text). On a database that is not migrated
-    the database checks report nothing, so that ``migrate`` can run; on a
-    migrated one an error reading it is a fault (a missing grant, a schema
-    out of step with the migrations), which passing would hide."""
+    with `problem` (an error, as text). On a database that is not migrated,
+    or holds none of scrud_django's tables, the database checks report
+    nothing (`not_checked`), so that ``migrate`` can run; on a migrated one
+    an error reading it is a fault (a missing grant, a schema out of step
+    with the migrations), which passing would hide."""
     return checks.Warning(
         f"The {checked} database check could not run on database {alias!r}, "
         f"which is migrated ({problem}): it reports nothing there.",
@@ -180,8 +215,9 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
     lacks some (`scrud_migrations_pending`, such as a 0.11 database before
     ``migrate``) it reports nothing, so that ``migrate`` can apply them; the
     policies could not be fixed or deleted before (a write needs the tables
-    the migrations create). Run ``check --database <alias>`` after
-    ``migrate``. It reports:
+    the migrations create). Nor does it on one that holds none of
+    scrud_django's tables (`scrud_tables_on`; `not_checked`). Run ``check
+    --database <alias>`` after ``migrate``. It reports:
 
     - ``scrud_django.E002`` for each resource type and context with more than
       one: `workflow_policy_for` picks none, so the writes they govern fail
@@ -195,8 +231,9 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
       ``restrict_update``, or ``initial_states``, ``states``, ``transitions``
       or conditions of the wrong type), as a policy stored before 0.12.0 or
       server-side may not, or that cannot be checked at all (any other error
-      compiling it is reported, never raised): every write of its type in its contexts fails with
-      ``ImproperlyConfigured`` (a 500) until it is fixed or deleted;
+      compiling it is reported, never raised): every write of its type in
+      its contexts fails with ``ImproperlyConfigured`` (a 500) until it is
+      fixed or deleted;
     - ``scrud_django.W001`` for each policy stored with a list ``rbac_context``
       (before 0.12.0, or server-side). It applies in each of those contexts, and
       updating or deleting it needs rights in all of them.
@@ -213,7 +250,7 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
 
     found = []
     for alias in databases or ():
-        if scrud_migrations_pending(alias):
+        if not_checked(alias):
             continue  # Checked once migrated (see above).
         try:
             stored = list(
@@ -312,9 +349,9 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
 def check_overlong_contexts(app_configs, databases=None, **kwargs):
     """A database check (``manage.py check --database default``, and
     ``migrate``): a Warning (``scrud_django.W003``) naming the resources, on
-    each migrated database of `databases` (`scrud_migrations_pending`), with
-    a context longer than ``MAX_CONTEXT_BYTES`` (2048) bytes of UTF-8, which
-    only a resource stored before 0.12.0 can have. Migration 0008 gave such a
+    each migrated database of `databases` (`not_checked` skips the others),
+    with a context longer than ``MAX_CONTEXT_BYTES`` (2048) bytes of UTF-8,
+    which only a resource stored before 0.12.0 can have. Migration 0008 gave such a
     context no ``ResourceContext`` row: lists leave the resource out in it
     (superusers' lists excepted), and saving its content fails with
     ``ValueError`` until it is given a shorter context. Only resources whose
@@ -331,7 +368,7 @@ def check_overlong_contexts(app_configs, databases=None, **kwargs):
 
     found = []
     for alias in databases or ():
-        if scrud_migrations_pending(alias):
+        if not_checked(alias):
             continue
         candidates = (
             Resource.objects.using(alias)
@@ -376,9 +413,9 @@ def check_overlong_contexts(app_configs, databases=None, **kwargs):
 def check_context_drift(app_configs, databases=None, **kwargs):
     """A database check (``manage.py check --database default``, and
     ``migrate``): a Warning (``scrud_django.W004``) naming the resources, on
-    each migrated database of `databases` (`scrud_migrations_pending`), that
-    have no ``ResourceContext`` row although their content names a context
-    a row can hold: written without ``Resource.save()`` (a 0.11 process still
+    each migrated database of `databases` (`not_checked` skips the others),
+    that have no ``ResourceContext`` row although their content names a
+    context a row can hold: written without ``Resource.save()`` (a 0.11 process still
     writing after ``migrate``, ``bulk_create()``). Lists leave them out
     (superusers' lists excepted).
 
@@ -396,7 +433,7 @@ def check_context_drift(app_configs, databases=None, **kwargs):
 
     found = []
     for alias in databases or ():
-        if scrud_migrations_pending(alias):
+        if not_checked(alias):
             continue
         candidates = (
             Resource.objects.using(alias)
@@ -650,7 +687,8 @@ ACTIONS_HINT = (
 
 def check_workflow_actions(app_configs, **kwargs):
     """The entries of ``SCRUD_WORKFLOW_ACTIONS``, as `workflow_actions` merges
-    them (read afresh, not as ``ScrudSignalProcessor`` keeps them loaded). At write time a bad entry runs no action and is logged on the
+    them (read afresh, not as ``ScrudSignalProcessor`` keeps them loaded).
+    At write time a bad entry runs no action and is logged on the
     ``scrud_django.workflow_actions`` logger at every write of its type;
     this reports it before that:
 
@@ -727,7 +765,7 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
     ``migrate``): a Warning (``scrud_django.W006``) for each type URI in
     ``SCRUD_WORKFLOW_ACTIONS`` that is not a registered resource type on the
     database ``ResourceType`` is written to (``router.db_for_write``), if it
-    is among `databases` and migrated (`scrud_migrations_pending`): a
+    is among `databases`, migrated and holds the tables (`not_checked`): a
     misspelled type URI runs nothing. Resource types are registered when the
     URLconf is imported, which this does first (as Django's URL checks do).
     A setting that cannot be loaded is `check_workflow_actions`'s to
@@ -743,7 +781,7 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
     from scrud_django.models import ResourceType
 
     alias = router.db_for_write(ResourceType)
-    if alias not in (databases or ()) or scrud_migrations_pending(alias):
+    if alias not in (databases or ()) or not_checked(alias):
         return []
     try:
         type_uris = list(workflow_actions())

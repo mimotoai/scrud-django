@@ -263,7 +263,9 @@ you deploy it.
   URLconf could not be imported, hiding a fault such as a missing grant. Each
   now warns `scrud_django.W007`, naming the check, the database and the
   error. A database that is not migrated is still not checked, so that
-  `migrate` runs.
+  `migrate` runs, and neither is one that holds none of scrud_django's
+  tables (a router's `allow_migrate` keeps them out), though Django records
+  scrud_django's migrations as applied there.
 
 ### Upgrading
 
