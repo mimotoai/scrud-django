@@ -137,3 +137,62 @@ def test_apply_pointer_ignores_prototype_keys():
     )
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == [None, None]
+
+
+POINTER_SCRIPT = r"""
+const vm = require('vm'), fs = require('fs');
+const window = {};
+const warnings = [];
+const ctx = vm.createContext({
+  window, htmx: {config: {}, defineExtension() {}},
+  console: {warn: (m) => warnings.push(m)},
+});
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const U = window.ScrudUI;
+const attempt = (doc, pointer, value) => {
+  try { U.applyPointer(doc, pointer, value); return doc; }
+  catch (e) { return 'error'; }
+};
+const out = {};
+out.length = attempt({l: [1, 2]}, '/l/length', '0');
+out.range = attempt({l: [1, 2]}, '/l/5', 'x');
+out.append = attempt({l: [1, 2]}, '/l/2', 'x');
+out.zero = attempt({l: [1, 2]}, '/l/01', 'x');
+out.hyphenKey = U.buildBody({'-x': []}, [
+  {name: '/-x/-/n', type: 'text', value: 'v'},
+]);
+out.keepsOthers = U.buildBody({l: [1, 2], t: 'a'}, [
+  {name: '/l/length', type: 'text', value: '0'},
+  {name: '/t', type: 'text', value: 'b'},
+]);
+out.noShift = U.buildBody({l: [{n: 1}, {n: 2}]}, [
+  {name: '/l/0/n', type: 'number', value: ''},
+]);
+out.warned = warnings.length;
+console.log(JSON.stringify(out));
+"""
+
+
+def test_apply_pointer_arrays_and_groups_under_node():
+    if shutil.which("node") is None:
+        pytest.skip("node is not available")
+    done = subprocess.run(
+        ["node", "-e", POINTER_SCRIPT, str(SCRUD_UI)],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["length"] == "error"
+    assert out["range"] == "error"
+    assert out["append"] == {"l": [1, 2, "x"]}
+    assert out["zero"] == "error"
+    assert out["hyphenKey"] == {"-x": [{"n": "v"}]}
+    assert out["keepsOthers"] == {"l": [1, 2], "t": "b"}
+    assert out["noShift"] == {"l": [{}, {"n": 2}]}
+    assert out["warned"] == 1
+
+
+def test_confirm_handler_returns_early_without_triggering_target():
+    source = SCRUD_UI.read_text()
+    assert "if (!triggering || !triggering.target) return;" in source

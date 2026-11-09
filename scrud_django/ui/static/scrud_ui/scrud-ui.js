@@ -55,16 +55,22 @@
       var seg = segs[i];
       if (UNSAFE.indexOf(seg) >= 0) return doc;
       var last = i === segs.length - 1;
-      var key = Array.isArray(node) && seg === '-' ? node.length : seg;
+      var key = seg;
+      if (Array.isArray(node)) {
+        if (seg === '-') {
+          key = node.length;
+        } else if (!isIndex(seg)) {
+          throw new Error('invalid array index "' + seg + '" in ' + pointer);
+        } else if (Number(seg) > node.length) {
+          throw new Error('array index out of range in ' + pointer);
+        } else {
+          key = Number(seg);
+        }
+      }
       if (last) {
         if (value === undefined) {
-          if (Array.isArray(node)) {
-            if (isIndex(String(key)) && Number(key) < node.length) {
-              node.splice(Number(key), 1);
-            }
-          } else if (own(node, key)) {
-            delete node[key];
-          }
+          // never remove array elements by index; objects lose the key
+          if (!Array.isArray(node) && own(node, key)) delete node[key];
         } else {
           node[key] = value;
         }
@@ -79,6 +85,20 @@
       node = child;
     }
     return doc;
+  }
+
+  function escapeSegment(seg) {
+    return seg.replace(/~/g, '~0').replace(/\//g, '~1');
+  }
+
+  function joinPointer(segs) {
+    return segs.map(function (s) { return '/' + escapeSegment(s); }).join('');
+  }
+
+  function warn(field, err) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('scrud-ui: skipped input ' + field.name + ': ' + err.message);
+    }
   }
 
   function isEmpty(field) {
@@ -108,19 +128,29 @@
     var groups = [];
     var byPrefix = {};
     fields.forEach(function (field) {
-      var segs = parsePointer(field.name);
-      var dash = segs.indexOf('-');
-      if (dash < 0) {
-        applyPointer(body, field.name, fieldValue(field));
+      var segs;
+      try {
+        segs = parsePointer(field.name);
+      } catch (err) {
+        warn(field, err);
         return;
       }
-      var prefix = field.name.slice(0, field.name.indexOf('/-'));
+      var dash = segs.indexOf('-');
+      if (dash < 0) {
+        try {
+          applyPointer(body, field.name, fieldValue(field));
+        } catch (err) {
+          warn(field, err);
+        }
+        return;
+      }
+      var prefix = joinPointer(segs.slice(0, dash));
       var group = byPrefix[prefix];
       if (!group) {
         group = byPrefix[prefix] = { prefix: prefix, fields: [] };
         groups.push(group);
       }
-      var rest = field.name.slice(prefix.length + 2);
+      var rest = joinPointer(segs.slice(dash + 1));
       group.fields.push({ rest: rest, field: field });
     });
     groups.forEach(function (group) {
@@ -132,10 +162,20 @@
           element = value;
         } else {
           if (element === null || typeof element !== 'object') element = {};
-          applyPointer(element, g.rest, value);
+          try {
+            applyPointer(element, g.rest, value);
+          } catch (err) {
+            warn(g.field, err);
+          }
         }
       });
-      if (element !== undefined) applyPointer(body, group.prefix + '/-', element);
+      if (element !== undefined) {
+        try {
+          applyPointer(body, group.prefix + '/-', element);
+        } catch (err) {
+          warn(group.fields[0].field, err);
+        }
+      }
     });
     return body;
   }
@@ -169,7 +209,7 @@
 
   function csrfToken() {
     var meta = document.querySelector('meta[name=csrf-token]');
-    return meta ? meta.getAttribute('content') : '';
+    return (meta && meta.getAttribute('content')) || null;
   }
 
   function hasHeader(headers, name) {
@@ -212,7 +252,8 @@
     var detail = evt.detail || {};
     var elt = detail.elt;
     var triggering = detail.triggeringEvent;
-    if (!elt || !elt.matches || !elt.matches(FRAME) || !triggering) return;
+    if (!elt || !elt.matches || !elt.matches(FRAME)) return;
+    if (!triggering || !triggering.target) return;
     if (frameOf(triggering.target) !== elt) evt.preventDefault();
   });
 
