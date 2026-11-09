@@ -217,6 +217,7 @@ def test_load_components():
 def test_builtin_modes():
     assert builtin_component("scrud:object").mode == "view"
     assert builtin_component("scrud:string-edit").mode == "edit"
+    assert builtin_component("scrud:uri-edit").mode == "edit"
     for name in ("null", "uri", "json", "page", "collection", "notice"):
         assert builtin_component(f"scrud:{name}").mode == "any"
     assert builtin_component("scrud:json").engine == "django"
@@ -230,7 +231,10 @@ def test_builtin_modes():
         ([TypeTerm(schema_type="null")], "edit", "scrud:null"),
         ([TypeTerm(schema_type="integer")], "view", "scrud:number"),
         ([TypeTerm(schema_type="integer")], "edit", "scrud:number-edit"),
-        ([TypeTerm(schema_type="string", format="uri")], "edit", "scrud:uri"),
+        # a URI edits in scrud:uri-edit (an edit-only built-in), and views
+        # in scrud:uri
+        ([TypeTerm(schema_type="string", format="uri")], "edit", "scrud:uri-edit"),
+        ([TypeTerm(schema_type="string", format="uri")], "view", "scrud:uri"),
         ([TypeTerm(schema_type="string", format="date")], "view", "scrud:string"),
         ([TypeTerm(schema_type="string", format="date")], "edit", "scrud:date-edit"),
         ([TypeTerm(schema_type="string", enum=True)], "edit", "scrud:enum-edit"),

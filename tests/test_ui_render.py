@@ -724,3 +724,20 @@ def test_render_query_count_independent_of_contexts(admin_login):
 
     two, five = count(2), count(5)
     assert two == five, (two, five)
+
+
+@pytest.mark.django_db
+def test_uri_edits_as_url_input(admin_login):
+    schema = {
+        "type": "object",
+        "properties": {"home": {"type": "string", "format": "uri"}},
+    }
+    content = {"home": "https://example.org/"}
+    output = render_node_type(node_type(schema), content, admin_login)
+    assert re.search(
+        r'<input type="url" id="[^"]+" name="/home" value="https://example.org/">',
+        output,
+    )
+    view = render_node_type(node_type(schema), content, admin_login, mode="view")
+    assert '<a class="scrud-uri" href="https://example.org/">' in view
+    assert "<input" not in view

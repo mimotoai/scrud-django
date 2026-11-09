@@ -43,6 +43,7 @@ _EDIT_BUILTINS = (
     "boolean-edit",
     "enum-edit",
     "date-edit",
+    "uri-edit",
 )
 
 

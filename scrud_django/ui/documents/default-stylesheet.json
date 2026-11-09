@@ -68,6 +68,10 @@
       "component": "scrud:uri"
     },
     {
+      "select": "string[format=uri]",
+      "component": "scrud:uri-edit"
+    },
+    {
       "select": "scrud:page",
       "component": "scrud:page"
     }

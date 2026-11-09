@@ -173,6 +173,27 @@ def test_enum_edit_options():
     assert 'name="/c"' in out
 
 
+def test_uri_edit():
+    out = render(
+        "uri-edit",
+        value="https://ex.com/a?b=<c>",
+        pointer="/link",
+        input_id="scrud-l",
+        label="Link",
+        schema={"type": "string", "format": "uri"},
+        errors=["Bad"],
+    )
+    assert (
+        '<input type="url" id="scrud-l" name="/link"'
+        ' value="https://ex.com/a?b=&lt;c&gt;" aria-invalid="true">'
+    ) in out
+    assert '<label for="scrud-l">Link</label>' in out
+    assert "<textarea" not in out
+    # a multi-line value is no URI: still an input, never a textarea
+    assert "<textarea" not in render("uri-edit", value="a\nb", pointer="/l")
+    assert 'value=""' in render("uri-edit", value=None, pointer="/l")
+
+
 def test_null_and_uri():
     assert "scrud-null" in render("null")
     out = render("uri", value="https://example.com/x")
@@ -215,6 +236,7 @@ def test_no_errors_no_alert():
         "string-edit",
         "number",
         "uri",
+        "uri-edit",
         "enum-edit",
         "date-edit",
         "json",
