@@ -250,6 +250,32 @@ component does not change the validators). Suggested fix: a weak ETag for HTML
 derived from the resource's and the presentation's. Test: change a component;
 a conditional GET with the old validator gets a 200.
 
+<a id="ui-number-precision"></a>
+## ui-number-precision: a browser edit rewrites numbers JSON.parse cannot keep
+
+`scrud-ui.js` builds a PUT's body from the content embedded in the frame,
+parsed with `JSON.parse`. An integer beyond 2^53 is rounded
+(`9007199254740993` becomes `9007199254740992`) and `1.0` becomes `1`, and the
+body carries those values for every number in the resource, not only the
+edited ones, so any edit (a checkbox) writes them back. Untouched inputs are
+skipped, but the embedded content itself is already rounded. Suggested fix:
+send only the changed pointers (a JSON Patch or merge on the server), or parse
+and serialize the embedded content without going through JavaScript numbers.
+Test: a resource with `9007199254740993` and `1.0`; tick a checkbox in the
+browser; the stored content keeps both as they were.
+
+<a id="ui-inflight-edit-dropped"></a>
+## ui-inflight-edit-dropped: an edit made while a PUT is in flight is lost
+
+A frame PUTs on every `change`. With htmx's default synchronization, a change
+made while the frame's previous PUT is still in flight issues no request (it
+is dropped), and the first response then swaps the frame, which visually
+reverts the second change: the user sees it undone and it was never sent.
+Suggested fix: `hx-sync="this:queue last"` on the frame (the queued request
+must then use the ETag of the first response), or disable the frame's inputs
+while a request is in flight. Test: in a browser, tick two checkboxes in
+quick succession against a slow server; both are saved.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

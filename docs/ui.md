@@ -82,7 +82,7 @@ Every template is given plain JSON, plus its children's already rendered HTML:
 | `child_items` | An object node: `[[property, html], ...]` in schema order. Empty otherwise. |
 | `resource` | `{href, etag, type, contexts, decisions}`; `decisions` is `{GET, PUT, DELETE}`, each `allowed`, `possibly` or `denied`. |
 | `scope` | The node's scope chain, a list of names. |
-| `errors` | The messages for this node from a refused write. |
+| `errors` | The messages for this node from a refused write. Always empty for the resource itself: its messages (and those for nodes that are not rendered) are shown as notices at the top of the frame. |
 | `value_json` | The value as indented JSON (filled for stored components and `scrud:json`). |
 | `input_id` | An HTML id unique to the node, for labels. |
 | `append_fields` | For an array node: `[{name, type, pointer_name}]` of its items' properties, for an append form. `type` is the property's schema type (the first non-null one of a list, through a local `$ref`), or `None`; `pointer_name` is `name` escaped as a JSON Pointer reference token (`~` as `~0`, `/` as `~1`), for input names such as `{{ pointer }}/-/{{ field.pointer_name }}`. |
@@ -107,21 +107,45 @@ overwritten.
 | Mode | Components |
 |---|---|
 | view | `scrud:object`, `scrud:array`, `scrud:string`, `scrud:number`, `scrud:boolean` |
-| edit | `scrud:object-edit`, `scrud:array-edit`, `scrud:string-edit`, `scrud:number-edit`, `scrud:boolean-edit`, `scrud:enum-edit`, `scrud:date-edit` |
+| edit | `scrud:object-edit`, `scrud:array-edit`, `scrud:string-edit`, `scrud:number-edit`, `scrud:boolean-edit`, `scrud:enum-edit`, `scrud:date-edit`, `scrud:uri-edit` |
 | any | `scrud:null`, `scrud:uri`, `scrud:json`, `scrud:page`, `scrud:collection`, `scrud:notice` |
 
 When no rule picks a usable component, the node gets the built-in for its
 schema type (an integer uses the number one). In edit mode that is the `-edit`
 built-in when there is one; a type without one (`null`) uses its any-mode
 built-in; anything else renders as `scrud:json`, as does a node with no schema
-type. `scrud:uri` links only `http:`, `https:`, `mailto:` and a single leading
-`/`; any other value is shown as text.
+type. `scrud:uri` links only values that start with `http://`, `https://` or
+`mailto:` (in any case), or with a single `/` (not `//` or `/\`); any other
+value is shown as text. In edit mode, `string[format=uri]` uses
+`scrud:uri-edit`, an `<input type="url">`.
+
+`scrud:string-edit` renders a `<textarea>` when the value contains a line break
+(CR or LF), or when the string may be long: its schema has neither `format` nor
+`maxLength`, or a `maxLength` over 200. Otherwise it renders
+`<input type="text">`. A browser strips line breaks from a text input's value,
+so multi-line text must not be edited in one. A custom string component should
+follow the same rule.
+
+`scrud:array-edit`'s append row renders a number input (`step="1"` for an
+integer, `step="any"` for a number) or a checkbox for numeric and boolean item
+properties, and a text input otherwise.
 
 `scrud:page` wraps a page (not a fragment). Its context is
 `{title, csrf_token, static{htmx, scrud_ui}, body}`. A custom page component,
-chosen by a rule on `scrud:page`, must include the CSRF meta tag
+chosen by a rule on `scrud:page`, must be `mode: view` (one in edit mode is
+ignored, and the built-in is used). It must include the CSRF meta tag
 (`<meta name="csrf-token" content="{{ csrf_token }}">`) and both scripts
 (`static.htmx` and `static.scrud_ui`), or the browser cannot write.
+
+`scrud:collection` renders a page of a list. Its context is
+`{children, count, next, previous, label}`: `children` is the list of each
+resource's rendered frame, `count` the list's total count, `next` and
+`previous` the URLs of the neighbouring pages (or `None`), and `label` the
+schema's `title` (or `""`). Each resource in it is rendered in its own frame,
+with its own contexts' stylesheets.
+
+`scrud:notice` renders one message. Its context is `{message, level}`, where
+`level` is `"error"` for every notice the server renders.
 
 ## UI stylesheets
 
@@ -192,7 +216,9 @@ Presentation is resolved with system rights: reading stylesheets and components
 does not need a grant on their types. A user who can read a resource sees it
 styled even if the policy gives them no access to the stylesheets. Stylesheets in
 the resource's contexts are applied, so a context's own presentation applies to
-the resources in it.
+the resources in it. Stylesheets and components are read once per rendered
+response, whatever the number of contexts on the page; an edit to one applies
+from the next response.
 
 ## Modes, editing and the write path
 
@@ -206,15 +232,28 @@ ordinary JSON `PUT` with `If-Match`, built client-side by `scrud-ui.js` from the
 content embedded in the frame (`<script class="scrud-content">`) and the inputs
 named by JSON Pointer (`name="/items/0/text"`):
 
-* A root frame is a `<form>`; a node frame (a fragment of the resource) is a
-  `<div>`. Only the innermost frame acts on an event.
-* A root submit includes the inputs of nested frames.
+* In edit mode a root frame is a `<form>`; a node frame (a fragment of the
+  resource) is a `<div>`, and so is every frame in view mode. Only the
+  innermost frame acts on an event.
+* A frame applies only the inputs of its own resource: those whose closest
+  frame has the same `data-scrud-href`. A root submit so includes the inputs of
+  its node frames, but never those of an embedded frame for another resource.
+* A text-like input (`text`, `textarea`, `url`, `date`, `number`) that still
+  shows the value embedded at its pointer is not applied, so an untouched field
+  leaves the content exactly as it was (a text input has lost its line breaks;
+  a textarea's line breaks are compared as LF).
 * An input named `<pointer>/-` appends an element to an array. Inputs that share
   the prefix (`/items/-/text`, `/items/-/done`) form one new element; a group
   whose inputs are all empty is dropped.
-* Array indexes are strict: an index past the end of the array is an error and
-  the input is skipped.
+* Array indexes are strict. An index equal to the array's length appends; an
+  index greater than the length, or one that is not a canonical non-negative
+  integer (`01`, `-1`, `length`), is an error, and the input is skipped.
 * The CSRF token comes from the page's `csrf-token` meta tag.
+* The Delete button (shown when the user may DELETE the resource) asks for
+  confirmation and sends a `DELETE` with `If-Match`. On success (a 204) the
+  resource's frame is removed from the page, with the list item that held only
+  it, and a `scrud:deleted` event is dispatched on `document` with
+  `detail.href`, the resource's URL.
 
 Custom components that want to be editable need only render inputs named by
 their JSON Pointer inside the frame.
@@ -250,8 +289,11 @@ These select presentation only, never what is authorized. HTML responses carry
 * Stored templates are sandboxed as described above, and escape everything
   they are given.
 * The page loads only its own scripts. Recommended Content-Security-Policy:
-  `script-src 'self'` and `connect-src 'self'`. `scrud-ui.js` sets htmx's
-  `selfRequestsOnly`.
+  `script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self';
+  frame-ancestors 'self'`. `scrud-ui.js` sets htmx's `selfRequestsOnly`.
+  `script-src 'self'` blocks inline scripts, those in components included:
+  ship a component's scripts as static files, or have the site allow them with
+  CSP nonces or hashes.
 * The vendored htmx is **2.0.4** (`scrud_ui/htmx.min.js`), sha384
   `HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+`.
 
