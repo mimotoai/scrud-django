@@ -1,0 +1,75 @@
+{
+  "name": "scrud:default",
+  "prefixes": {},
+  "order": 0,
+  "rules": [
+    {
+      "select": "object",
+      "component": "scrud:object"
+    },
+    {
+      "select": "object",
+      "component": "scrud:object-edit"
+    },
+    {
+      "select": "array",
+      "component": "scrud:array"
+    },
+    {
+      "select": "array",
+      "component": "scrud:array-edit"
+    },
+    {
+      "select": "string",
+      "component": "scrud:string"
+    },
+    {
+      "select": "string",
+      "component": "scrud:string-edit"
+    },
+    {
+      "select": "number",
+      "component": "scrud:number"
+    },
+    {
+      "select": "number",
+      "component": "scrud:number-edit"
+    },
+    {
+      "select": "boolean",
+      "component": "scrud:boolean"
+    },
+    {
+      "select": "boolean",
+      "component": "scrud:boolean-edit"
+    },
+    {
+      "select": "integer",
+      "component": "scrud:number"
+    },
+    {
+      "select": "integer",
+      "component": "scrud:number-edit"
+    },
+    {
+      "select": "null",
+      "component": "scrud:null"
+    },
+    {
+      "select": "string[enum]",
+      "component": "scrud:enum-edit"
+    },
+    {
+      "select": "string[format=date]",
+      "component": "scrud:date-edit"
+    },
+    {
+      "select": "string[format=uri]",
+      "component": "scrud:uri"
+    },
+    {
+      "select": "scrud:page",
+      "component": "scrud:page"
+    }
+  ]
+}
