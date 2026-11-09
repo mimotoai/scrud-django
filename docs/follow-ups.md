@@ -171,6 +171,85 @@ object), as `defers_to_object_checks` requires. Test: a reader granted `http.GET
 `rbac_context != "x"` (and the list type outright) GETs a resource stored
 in `"y"`: expect 200 (and 404 for one in `"x"`); get 403 today.
 
+<a id="ui-name-uniqueness-race"></a>
+## ui-name-uniqueness-race: concurrent creates can duplicate a UI component or stylesheet name
+
+UI component names are unique site-wide and stylesheet names unique per
+context, but `UIContentValidationMixin` checks that with a query, without a
+lock or a database constraint, so two concurrent creates of the same name can
+both succeed. Resolution is deterministic: the lowest pk wins
+(`scrud_django.ui.cascade`), so a duplicate is shadowed, not an error. Suggested
+fix: serialize the check as `serialized_policy_save` does for policies, or add a
+unique index on a generated name column. Test: two threads creating the same
+name; at most one is accepted.
+
+<a id="ui-one-mode-per-resource"></a>
+## ui-one-mode-per-resource: a resource renders wholly in view or edit mode
+
+Editors get edit mode for the whole resource, so a view-only component (a
+compact sidebar list, say) is still served in edit mode and must be written as an
+`edit` component (the demo's `todo-list-compact` is). Why: the mode is decided
+once from the PUT decision. A phase-2 fix could let a rule request a mode.
+Test: a rule that asks for `view` in a scope renders its view component for an
+editor.
+
+<a id="ui-412-notice-persists"></a>
+## ui-412-notice-persists: the 412 notice stays after the next successful edit
+
+A 412 answers with a notice and a frame that reloads itself; the notice is
+outside the reloaded frame, so it stays on the page after the next successful
+edit. Suggested fix: give the notice an element that `scrud-ui.js` removes on the
+next successful swap. Test: a stale edit, then a good one; the notice is gone.
+
+<a id="ui-sidebar-staleness"></a>
+## ui-sidebar-staleness: other frames do not refresh after an edit
+
+An edit swaps only its own frame, so another frame showing the same resource
+(the demo sidebar's item count) stays as it was until reloaded. Suggested fix:
+have the write's response trigger a refresh of frames with the same
+`data-scrud-href` (`HX-Trigger`). Test: edit an item; the sidebar count changes
+without a reload.
+
+<a id="ui-absolute-hrefs-host"></a>
+## ui-absolute-hrefs-host: collection-envelope hrefs are absolute, so a host alias cannot write to them
+
+A list's envelope gives each resource an absolute `href`, which the collection
+frame uses as `hx-put`. With `selfRequestsOnly`, a page served at a different
+host alias than the one in the href (`localhost` against `127.0.0.1`) is not
+allowed to write to them. Suggested fix: render the path of the href (the
+renderer already does this for a created resource). Test: a list fetched at one
+host whose envelope names another; the edit form's `hx-put` is a path.
+
+<a id="ui-uri-relative-whitespace"></a>
+## ui-uri-relative-whitespace: `scrud:uri` treats `/\t/evil.example` as a relative link
+
+`scrud:uri` links a value that starts with one `/` (and not `//` or `/\`). A
+tab or LF after the slash (`/\t/evil.example`, `/\n/evil.example`) passes that
+test, but browsers strip tab and LF from URLs, which makes it protocol-relative:
+an off-site link. It is not script execution (the scheme is still http(s)).
+Suggested fix: refuse a value with ASCII control characters or whitespace in the
+first three characters. Test: those values render as text.
+
+<a id="ui-json-vary-accept"></a>
+## ui-json-vary-accept: JSON from UI-enabled resource views does not send `Vary: Accept`
+
+The same URL now has an HTML representation, but its JSON responses do not
+vary on `Accept`, so a shared cache could serve one representation for the
+other. HTML responses are `private, no-cache`, which limits it. Suggested fix:
+add `Accept` to `Vary` on the JSON responses of the views when the UI app is
+installed. Test: a JSON GET carries `Vary: Accept`.
+
+<a id="ui-html-shared-etag"></a>
+## ui-html-shared-etag: HTML responses reuse the resource's strong ETag and Last-Modified
+
+The HTML depends on the stylesheets, components and the viewer's grants as well
+as the resource, but carries the resource's ETag and `Last-Modified`, so a
+conditional GET can answer 304 for HTML that would now differ. Mitigated by
+`Cache-Control: private, no-cache` (the client revalidates, and a changed
+component does not change the validators). Suggested fix: a weak ETag for HTML
+derived from the resource's and the presentation's. Test: change a component;
+a conditional GET with the old validator gets a 200.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

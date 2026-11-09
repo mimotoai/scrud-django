@@ -17,6 +17,14 @@ For haystack search support, install the `search` extra:
 uv add "scrud-django[search]"
 ```
 
+## Server-rendered UI
+
+The optional `scrud_django.ui` app (`pip install "scrud-django[ui]"`) serves
+every resource URL as `text/html` as well, rendered on the server through
+templates and stylesheets stored as resources, layered per RBAC context and
+shown exactly as the viewer is authorized, with htmx for editing. See the
+[UI documentation](docs/ui.md).
+
 ## Configuration
 
 ### Required
