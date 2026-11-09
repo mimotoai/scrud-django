@@ -206,7 +206,10 @@ you deploy it.
   strongly under a fixed `dispatch_uid` per signal: building a processor
   replaces the one connected before (`connect()` connects one again). The
   class attribute `workflow_actions = {}`, shadowed by every instance, is
-  now a property (assignable, to give a processor a mapping of its own);
+  now a property: a read-only view of the setting's actions, which every
+  processor shares (`processor.workflow_actions[uri] = ...` raises
+  `TypeError` rather than changing them for all), unless a mapping of the
+  processor's own is assigned to it, which it returns as assigned;
   the dead `ScrudSignalProcessor()` in the test app's `ready()` is gone
   (#16).
 * A resource type whose registration failed with a database error when the

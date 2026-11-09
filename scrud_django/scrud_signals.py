@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Mapping
+from types import MappingProxyType
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db import router, transaction
@@ -139,12 +140,15 @@ class ScrudSignalProcessor:
     @property
     def workflow_actions(self):
         """Type URI -> ``{"on_save": ..., "on_delete": ...}``: the mapping
-        assigned to this processor, else ``SCRUD_WORKFLOW_ACTIONS``'s
+        assigned to this processor, as assigned, else a read-only view
+        (``MappingProxyType``) of ``SCRUD_WORKFLOW_ACTIONS``'s
         (`configured_workflow_actions`: loaded once, and again after the
-        setting changes, as under ``override_settings``)."""
+        setting changes, as under ``override_settings``), which every
+        processor shares: to change it, change the setting or assign this
+        processor a mapping of its own."""
         if self._workflow_actions is not None:
             return self._workflow_actions
-        return configured_workflow_actions()
+        return MappingProxyType(configured_workflow_actions())
 
     @workflow_actions.setter
     def workflow_actions(self, actions):
