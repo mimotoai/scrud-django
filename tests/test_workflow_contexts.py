@@ -351,8 +351,8 @@ def test_a_move_into_a_context_is_reported_as_a_creation_there(
 # States whose conditions overlap: a "high" priority ToDo that is "in
 # progress" meets the conditions of both "published" and "review". Stored
 # in a JSON column, the policy's states may come back in either order
-# (PostgreSQL's jsonb and MySQL's JSON reorder keys): such content is in
-# neither state, whatever the database.
+# (PostgreSQL's jsonb and MySQL's JSON reorder keys): such content is
+# ambiguous (no one state), whatever the database.
 OVERLAPPING_POLICY = {
     "resource_type": TODO,
     "initial_states": {"draft": 'status == "not started" && priority != "high"'},

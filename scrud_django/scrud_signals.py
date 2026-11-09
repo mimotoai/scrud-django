@@ -12,30 +12,13 @@ from .conf import configured_workflow_actions
 # write time (`ScrudSignalProcessor`).
 logger = logging.getLogger("scrud_django.workflow_actions")
 
-# Sent by ``ResourceMixin.save()`` / ``delete()``, and ``scrud_post_delete``
-# by ``ResourceQuerySet.delete()`` for each resource it deletes, inside the
-# write, before it commits (and before the API's post-save check, which may still roll it
-# back): a receiver may read or change the database in the write's
-# transaction. Work that leaves the database belongs in
-# ``transaction.on_commit``, as `ScrudSignalProcessor` runs the configured
-# workflow actions. ``using`` is the database the write went to (`write_alias`),
-# which ``on_commit`` must name: not the instance's ``_state.db``, the one it
-# was read from (a read replica under a primary/replica router).
-# ``scrud_post_delete`` also sends ``pk``, the deleted row's primary key:
-# ``instance`` is Django's deleted instance, whose pk is None by then.
-# ``scrud_post_save`` also sends the save's workflow transitions
-# (``ResourceMixin.get_transitions``): ``transition_data``, the
-# ``TransitionData`` under the policy of the first context the content names
-# that has one (``None``: no policy applies, or the transition is invalid);
-# ``transition_error``, the workflow error that made it ``None`` (else
-# ``None``); and ``transitions``, context -> ``TransitionData`` (``None``:
-# invalid there) for every context the stored resource or the content is in
-# under a policy: a transition where it stays, ``__INITIALIZE__`` where it
-# enters (or is created), ``__LEAVE__`` (no proposed state; the prior state
-# is the one it left) where it leaves.
-# Neither is sent by a raw save (``loaddata``, a django-reversion revert:
-# ``save_base(raw=True)``, as Django's ``raw`` means no side effects),
-# ``QuerySet.update()``, ``bulk_create()`` or ``bulk_update()``.
+# Sent inside the write, before it commits: README "Workflow actions" says
+# when (and when not) and what each argument holds; keep it the one full
+# description. Keyword arguments: ``signal``, ``sender``, ``instance``,
+# ``using`` (the database written to, `write_alias`), ``resource_type_uri``
+# and ``action``; ``scrud_post_save`` adds ``update_fields``,
+# ``transition_data``, ``transition_error`` and ``transitions``
+# (``ResourceMixin.get_transitions``), ``scrud_post_delete`` adds ``pk``.
 scrud_post_save = Signal()
 scrud_post_delete = Signal()
 

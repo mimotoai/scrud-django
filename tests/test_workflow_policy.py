@@ -178,12 +178,12 @@ def reordered(policy):
     )
 
 
-def test_transition_is_authorized_into_the_state_the_content_is_stored_in():
+def test_content_meeting_two_states_is_refused():
     policy = WorkflowPolicy(overlapping_policy)
     proposed = {"status": "review", "published": True}
-    # The content meets "published" and "review": it is in neither, whatever
-    # the order of their conditions. "submit" leads from "draft" to "review",
-    # but the update is refused.
+    # The content meets "published" and "review": its state is ambiguous,
+    # whatever the order of their conditions. "submit" leads from "draft" to
+    # "review", but the update is refused.
     with pytest.raises(WorkflowAmbiguousStateError) as excinfo:
         policy.state(proposed)
     assert excinfo.value.matching_states == ["published", "review"]
@@ -279,8 +279,8 @@ def test_content_staying_in_its_state_is_a_same_state_update():
         "transitions": {"archive": {"from": "review", "to": "archived"}},
     }
     prior = {"status": "review", "archived": False}
-    # Content that is "review" and archived meets both conditions: it is in
-    # neither, and the update is refused, under restrict_update or not.
+    # Content that is "review" and archived meets both conditions: its state
+    # is ambiguous, and the update is refused, under restrict_update or not.
     overlapping = {"status": "review", "archived": True}
     restricted = WorkflowPolicy(dict(policy, restrict_update=["review"]))
     for workflow in (WorkflowPolicy(policy), restricted):
@@ -324,7 +324,7 @@ def test_a_state_in_both_initial_states_and_states_is_refused():
 
 def test_initial_state_is_the_state_the_content_is_stored_in():
     # Content that meets an initial state's condition and a later state's is
-    # in neither: a create of it is refused, as an update to it is.
+    # ambiguous: a create of it is refused, as an update to it is.
     policy = WorkflowPolicy(
         {
             "initial_states": {"draft": 'status == "draft"'},

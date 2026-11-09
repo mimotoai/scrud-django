@@ -98,7 +98,10 @@ you deploy it.
   `Resource.save()`) still governs its contexts, the query also selects
   policies by content: one without any row, one whose `rbac_context` is
   the checked context or a list, and, in the default context, one that
-  names none.
+  names none. This reduces the policies returned, decoded and compiled to
+  those of the checked contexts (and the stale ones); the database still
+  evaluates the filter on every `WorkflowPolicy` row of the type, since
+  the content fallbacks are OR'd into it.
 * A workflow policy that names a state in both `initial_states` and
   `states` is invalid: the state had two conditions, a create reading one
   and an update the other. It is refused like the other invalid policies
@@ -115,12 +118,17 @@ you deploy it.
 * The new `scrud_django.W005` database check (`manage.py check --database
   default`, and `migrate`) warns when a state condition of a settings
   default policy reads a top-level property that the JSON Schema of its
-  type does not define (and the schema allows no other properties:
-  `additionalProperties` absent or `false`, no `patternProperties`, `$ref`
-  or `allOf`-style composition). State conditions compile without type
-  checking, so a misspelled property was accepted and made its state
-  unreachable. `rbac_context` is always allowed; stored policies are not
-  checked. The README's new "Workflow policies" section also says that a
+  type does not define. State conditions compile without type checking,
+  so a misspelled property was accepted and made its state unreachable.
+  `rbac_context` is always allowed; stored policies are not checked. It
+  reports nothing for a type that is not registered on the database
+  checked, or whose schema is not stored there; for a schema without a
+  `properties` object, or one that may allow other properties
+  (`additionalProperties` `true` or a schema; absent counts as `false`)
+  or add some through `patternProperties`, `allOf`, `anyOf`, `oneOf`,
+  `$ref`, `if`/`then`/`else`, `dependencies`, `dependentSchemas` or
+  `unevaluatedProperties`; for a default that is invalid (E001 reports
+  it); and on a database that is not migrated. The README's new "Workflow policies" section also says that a
   state condition reads `rbac_context` as stored (a list for a resource in
   several contexts), unlike a grant's condition, which reads the context
   being checked. A state condition that fails to evaluate (a property
@@ -283,9 +291,24 @@ you deploy it.
   allowing such edits, add a transition from that state to itself alone
   (`{"from": "published", "to": "published"}`) and grant it to the roles
   that should make them.
-* Run `manage.py check` and `manage.py check --database <alias>`: the new
-  `scrud_django.E007`-`E009` errors fail `check` (and `runserver`, `migrate`)
-  on a `SCRUD_WORKFLOW_ACTIONS` entry that never worked; fix or remove it. A
+* A grant conditioned on `scrud_workflow` no longer authorizes a write
+  other than a scrud viewset's `create` (POST to the list) and `update`
+  (PUT to the detail route): a POST or PUT `@action` of a `ResourceViewSet`
+  subclass, or a view of your own that is not a viewset, is now a 403 for a
+  role holding only such a grant, and its OPTIONS no longer offers the
+  method (#8). Give a role that should call such an action a grant for its
+  method that is not conditioned on `scrud_workflow` (and check its writes
+  in the action), or, for an action that writes only through `create` or
+  `update` (so the workflow check runs), override
+  `ResourceViewMixin.checks_workflow` to include it.
+* Run `manage.py check --database <alias>` for each database alias: it
+  also runs the checks that take no database (`scrud_django.E001` and
+  `E007`-`E009` among them), while the database checks look only at the
+  alias passed (`E002`, `E003`, `E005`, `W005`: the policies and types
+  stored there), and `W006` only when that alias is the one `ResourceType`
+  is written to (`router.db_for_write`). The new `E007`-`E009` errors fail
+  `check` (and `runserver`, `migrate`) on a `SCRUD_WORKFLOW_ACTIONS` entry
+  that never worked; fix or remove it. A
   `None` action is accepted (no action). Route the
   `scrud_django.workflow_actions` logger where you watch errors; a log
   filter or alert on `django.db.backends.base` for action failures no longer

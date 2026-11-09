@@ -403,8 +403,17 @@ being checked. State conditions are compiled without type checking, so a
 misspelled property (`stauts == "done"`) is accepted, never present, and its
 state unreachable: `manage.py check --database default` warns
 (`scrud_django.W005`) where a default policy's condition reads a property its
-type's JSON Schema does not define and the schema allows no others
-(`additionalProperties` absent or `false`); stored policies are not checked.
+type's JSON Schema does not define (`rbac_context` is always allowed); stored
+policies are not checked. It says nothing where it cannot tell: for a type not
+registered on that database or whose schema is not stored there, a schema
+without a `properties` object or one that may allow other properties
+(`additionalProperties` `true` or a schema; absent counts as `false`) or add
+some (`patternProperties`, `allOf`, `anyOf`, `oneOf`, `$ref`,
+`if`/`then`/`else`, `dependencies`, `dependentSchemas`,
+`unevaluatedProperties`), a default that is invalid (`scrud_django.E001`), or
+a database that is not migrated. A condition that fails to evaluate (a
+property the content lacks) is no match, and is logged at DEBUG on the
+`scrud_django.workflow` logger, naming the policy and the state.
 
 A settings default is a fallback, not a floor: a stored `WorkflowPolicy` for
 a type in a context replaces the default for that type there (deleting it
@@ -447,36 +456,45 @@ write went to (the router's `db_for_write`), even for an instance read from a
 replica.
 
 Actions and receivers are called as `action(sender, **kwargs)`, with the
-signal's keyword arguments: `instance`, `using`, `resource_type_uri` and
-`action` (`CREATE`, `UPDATE` or `DELETE`); `scrud_post_save` adds
-`update_fields`, `transition_data`, `transition_error` and `transitions`,
-and `scrud_post_delete` adds `pk`, the deleted resource's primary key (the
-`instance` is the deleted one, whose `pk` Django has set to `None`).
+keyword arguments Django gives a receiver: `signal` (the signal sent),
+`instance`, `using`, `resource_type_uri` and `action` (`CREATE`, `UPDATE` or
+`DELETE`); `scrud_post_save` adds `update_fields`, `transition_data`,
+`transition_error` and `transitions`, and `scrud_post_delete` adds `pk`, the
+deleted resource's primary key (the `instance` is the deleted one, whose `pk`
+Django has set to `None`).
+
 `transition_data` is a `scrud_django.workflow.TransitionData`
-(`prior_state`, `proposed_state`, `transition`) under the workflow policy in
-effect in the resource's first context that has one, or `None` when no
-policy applies or the transition is invalid (a server-side write the
-workflow check did not see); `transition_error` is then the workflow error,
-and `None` otherwise. Its `transition` is the policy's transition name,
-`__SAME_STATE__` for an update that stays in its state, or `__INITIALIZE__`
-(no `prior_state`) for a create and for an update that moves the resource
-into that context; a create or move in whose content is in no initial
-state is invalid there (`None`, with a `WorkflowInvalidInitialStateError`),
-as is content that meets the conditions of more than one state.
-`transitions` maps every context the stored resource or
-the new content is in, where a policy applies, to the write's
+(`prior_state`, `proposed_state`, `transition`; immutable) under the
+workflow policy in effect in the first context the content names that has
+one, or `None` when no policy applies or the write is invalid there;
+`transition_error` is then the workflow error, and `None` otherwise. Its
+`transition` is the policy's transition name, `__SAME_STATE__` for an update
+that stays in its state, or `__INITIALIZE__` (no `prior_state`) for a create
+and for an update that moves the resource into that context. A write is
+invalid in a context when no transition leads from the stored state to the
+new one (or a `restrict_update` forbids staying), when a create or move in
+is in no initial state (`WorkflowInvalidInitialStateError`), or when the new
+or stored content meets the conditions of more than one state
+(`WorkflowAmbiguousStateError`). `transitions` maps every context the stored
+resource or the new content is in, where a policy applies, to the write's
 `TransitionData` there (`None` if invalid there): a transition where the
 resource stays, `__INITIALIZE__` where it enters, and `__LEAVE__` (no
-`proposed_state`; `prior_state` is the state it left) where it leaves.
-Only API writes are checked against the workflow: a save that skipped the
-check (the admin, `ResourceRegistration`, server code) is saved even where
-it is invalid, and each context where it is invalid is logged as a WARNING
-on the `scrud_django.workflow` logger, naming the resource's pk, its type
-URI, the context and the error. A
+`proposed_state`; `prior_state` is the state it left) where it leaves. A
 save of an instance whose row is not on the database written to (a copy
-with `save(using=...)`) is reported as a create. The requesting user is not passed: read it from a
-`contextvars.ContextVar` that a middleware sets (see the example below),
-since receivers and actions run in the request's thread.
+with `save(using=...)`) is reported as a create.
+
+Only API writes are checked against the workflow, so only a save that skipped
+the check (the admin, `ResourceRegistration`, server code) can be invalid: it
+is saved anyway, reported as above, and each context where it is invalid is
+logged as a WARNING on the `scrud_django.workflow` logger, naming the
+resource's pk, its type URI, the context and the error. Such a save still
+reads the policy of every context it concerns, and fails
+(`ImproperlyConfigured`) where one has several stored policies or an invalid
+one, as an API write does.
+
+The requesting user is not passed: read it from a `contextvars.ContextVar`
+that a middleware sets (see the example below), since receivers and actions
+run in the request's thread.
 
 Actions are delivered:
 
@@ -542,7 +560,7 @@ class OutboxEvent(models.Model):
 import dataclasses
 from contextvars import ContextVar
 
-from django.db import transaction
+from django.db import router, transaction
 from django.dispatch import receiver
 from django.utils import timezone
 from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save
@@ -580,28 +598,39 @@ def store_event(sender, instance, using, resource_type_uri, action, **kwargs):
 
 def send_events(deliver, batch=100):
     """Run by a worker (cron, Celery beat). `deliver` must be idempotent
-    (keyed on the event's pk): an event is sent again if marking it fails."""
-    with transaction.atomic():
+    (keyed on the event's pk): an event is sent again if marking it fails.
+    store_event writes each event where its write went (`using`): route
+    OutboxEvent's writes to the alias scrud_django's models are written to,
+    so that this reads them there, not from a replica."""
+    using = router.db_for_write(OutboxEvent)
+    with transaction.atomic(using=using):
         events = (
-            OutboxEvent.objects.select_for_update(skip_locked=True)
+            OutboxEvent.objects.using(using)
+            .select_for_update(skip_locked=True)
             .filter(sent_at=None)
             .order_by("pk")[:batch]
         )
         for event in events:
             deliver(event)
             event.sent_at = timezone.now()
-            event.save(update_fields=["sent_at"])
+            event.save(using=using, update_fields=["sent_at"])
 ```
 
 ### Upgrading
 
-Version 0.15.0 refuses workflow writes whose content meets more than one
-state, policies with two transitions for one pair of states or a state in both
-`initial_states` and `states`, and `scrud_workflow` grants on writes of your own
-`@action`s; it adds keyword arguments to `scrud_post_save`, runs `on_delete`
-actions for bulk deletes, and logs failed actions on
-`scrud_django.workflow_actions`. Run `manage.py check --database default`
-and work through the Upgrading list of the
+Version 0.15.0 refuses workflow writes whose content (new or stored) meets
+more than one state; policies with two transitions for one pair of states or a
+state in both `initial_states` and `states`; an update in place of a
+`restrict_update` state through a transition whose `from` or `to` lists other
+states too (only a transition from that state to itself alone allows it); and
+POST or PUT `@action`s of your viewsets (and views that are not viewsets) for a
+role whose only grant there is conditioned on `scrud_workflow` (403: give it a
+grant that is not). It adds keyword arguments to `scrud_post_save`, makes
+`TransitionData` immutable, runs `on_delete` actions for bulk deletes, fails a
+server-side save closed on duplicate policies in any context it concerns, and
+logs failed actions on `scrud_django.workflow_actions` and invalid server-side
+saves on `scrud_django.workflow`. Run `manage.py check --database <alias>` for
+each database and work through the Upgrading list of the
 [0.15.0 release notes](https://gitlab.com/dcharbon/scrud-django/-/blob/develop/docs/release-notes.md)
 before upgrading.
 

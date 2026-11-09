@@ -251,9 +251,12 @@ class ResourceMixin(ScrudfulMixin):
           ``WorkflowValidator`` still saves), else ``None``;
         - ``transitions``: for each context the stored resource or the
           content is in (stored ones first, as the ``WorkflowValidator``
-          checks them) where a policy applies (`workflow_policies_for`; a
-          resource in no context: the settings default, under ``None``), the
-          write there. A context it stays in: the transition under its
+          checks them) where a policy applies (`workflow_policies_for`), the
+          write there. (`rbac_contexts_of` always names one context at
+          least; a resource whose `rbac_contexts` named none, as an
+          override might, would be reported under ``None`` with the
+          settings default, as the ``WorkflowValidator`` checks it:
+          defensive.) A context it stays in: the transition under its
           policy (``None`` if invalid); one it enters (or a create's): its
           ``__INITIALIZE__`` (``None`` if the content is in no initial state
           there); one it leaves: ``TransitionData(None, <the state it was
@@ -264,6 +267,7 @@ class ResourceMixin(ScrudfulMixin):
         Each context's policy is read once."""
         prior_data = self.stored_content(using)
         stored_contexts = rbac_contexts_of(prior_data) if prior_data is not None else []
+        # Defensive: `rbac_contexts_of` never gives no context.
         contexts = list(self.rbac_contexts) or [None]
         concerned = list(dict.fromkeys(stored_contexts + contexts))
         named = [context for context in concerned if context is not None]
@@ -333,8 +337,10 @@ class ResourceMixin(ScrudfulMixin):
         For a resource in several contexts it is the policy in effect
         (`workflow_policy_for`: the stored policy there, else the settings
         default) in the **first** context its content names, in the order of
-        its ``rbac_context`` list; for one in a single context, that context's;
-        for one in no context, the settings default. Its content decides, so
+        its ``rbac_context`` list; for one in a single context, that context's
+        (`rbac_contexts_of` gives the default context ``""`` to content that
+        names none; `workflow_context_and_policy` gives the settings default
+        to a resource in none, defensively). Its content decides, so
         it is deterministic. A context with neither is skipped; ``None`` when
         none has one. Validation and authorization are the
         `WorkflowValidator`'s, which checks every context."""
@@ -342,10 +348,12 @@ class ResourceMixin(ScrudfulMixin):
 
     def workflow_context_and_policy(self):
         """``(context, policy)`` of `get_workflow_policy`: the context whose
-        policy it is (``None`` for a resource in no context), or
-        ``(None, None)``."""
+        policy it is, or ``(None, None)``."""
         contexts = self.rbac_contexts
         if not contexts:
+            # Defensive: `rbac_contexts_of` never gives no context; an
+            # `rbac_contexts` override that did would be checked under the
+            # settings default, as the ``WorkflowValidator`` checks it.
             return None, default_workflow_policy_for(self.resource_type)
         for context, policy in workflow_policies_for(self.resource_type, contexts):
             if policy is not None:
