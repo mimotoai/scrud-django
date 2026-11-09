@@ -222,6 +222,14 @@ you deploy it.
   same one ([type-registration-race](follow-ups.md#type-registration-race))
   (#18).
 
+* The database checks passed silently when reading a migrated database
+  failed (`scrud_django.W005` and `W006`, new in this release, and the
+  `W003`, `W004` and stored workflow policy checks), and `W006` when the
+  URLconf could not be imported, hiding a fault such as a missing grant. Each
+  now warns `scrud_django.W007`, naming the check, the database and the
+  error. A database that is not migrated is still not checked, so that
+  `migrate` runs.
+
 ### Upgrading
 
 * A workflow policy in which two transitions cover the same (from, to) pair

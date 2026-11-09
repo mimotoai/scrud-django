@@ -84,7 +84,9 @@ def check_default_policy_conditions(app_configs, databases=None, **kwargs):
     Nothing is reported for a type that is not registered there, whose
     schema is not stored (``schema_uri``) or may allow other properties, or
     for a default that is invalid (``scrud_django.E001`` reports it).
-    Stored ``WorkflowPolicy`` resources are not checked."""
+    Stored ``WorkflowPolicy`` resources are not checked. A database error
+    reading a migrated database is reported (`could_not_run`,
+    ``scrud_django.W007``)."""
     from django.db.utils import OperationalError, ProgrammingError
 
     from scrud_django.conf import DefaultWorkflowPolicies
@@ -103,7 +105,8 @@ def check_default_policy_conditions(app_configs, databases=None, **kwargs):
                 .order_by("pk")
                 .values_list("type_uri", "schema__content")
             )
-        except (OperationalError, ProgrammingError):
+        except (OperationalError, ProgrammingError) as error:
+            found.append(could_not_run("scrud_django.W005", alias, error_text(error)))
             continue
         for type_uri, schema in schemas:
             properties = schema_properties(schema)
@@ -146,6 +149,30 @@ def scrud_migrations_pending(alias):
     return bool(wanted - set(loader.applied_migrations))
 
 
+def could_not_run(checked, alias, problem, hint=None):
+    """A Warning (``scrud_django.W007``) that the database check reporting
+    `checked` (its IDs) failed on database `alias`, which is migrated,
+    with `problem` (an error, as text). On a database that is not migrated
+    the database checks report nothing, so that ``migrate`` can run; on a
+    migrated one an error reading it is a fault (a missing grant, a schema
+    out of step with the migrations), which passing would hide."""
+    return checks.Warning(
+        f"The {checked} database check could not run on database {alias!r}, "
+        f"which is migrated ({problem}): it reports nothing there.",
+        hint=hint
+        or (
+            "Fix the error (a missing grant on scrud_django's tables? a schema "
+            "out of step with its migrations?) and run manage.py check "
+            f"--database {alias} again."
+        ),
+        id="scrud_django.W007",
+    )
+
+
+def error_text(error):
+    return f"{type(error).__name__}: {error}"
+
+
 def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
     """A database check (``manage.py check --database default``, and
     ``migrate``) of the stored ``WorkflowPolicy`` resources, on each of
@@ -173,6 +200,9 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
     - ``scrud_django.W001`` for each policy stored with a list ``rbac_context``
       (before 0.12.0, or server-side). It applies in each of those contexts, and
       updating or deleting it needs rights in all of them.
+
+    A database error reading a migrated database is reported
+    (`could_not_run`, ``scrud_django.W007``).
     """
     from django.core.exceptions import ImproperlyConfigured
     from django.db.utils import OperationalError, ProgrammingError
@@ -191,8 +221,15 @@ def check_stored_workflow_policies(app_configs, databases=None, **kwargs):
                 .filter(resource_type__type_uri=WORKFLOW_POLICY_TYPE_URI)
                 .order_by("pk")
             )
-        except (OperationalError, ProgrammingError):
-            continue  # Not migrated yet.
+        except (OperationalError, ProgrammingError) as error:
+            found.append(
+                could_not_run(
+                    "scrud_django.E002, E003, E005 and W001",
+                    alias,
+                    error_text(error),
+                )
+            )
+            continue
         by_type_and_context = {}
         listed = []
         for policy in stored:
@@ -282,7 +319,8 @@ def check_overlong_contexts(app_configs, databases=None, **kwargs):
     (superusers' lists excepted), and saving its content fails with
     ``ValueError`` until it is given a shorter context. Only resources whose
     ``rbac_context`` is over 512 characters long as JSON text are read (no
-    shorter one can be over 2048 bytes)."""
+    shorter one can be over 2048 bytes). A database error reading a migrated
+    database is reported (`could_not_run`, ``scrud_django.W007``)."""
     from django.db.models.fields.json import KeyTextTransform
     from django.db.models.functions import Length
     from django.db.utils import OperationalError, ProgrammingError
@@ -312,7 +350,8 @@ def check_overlong_contexts(app_configs, databases=None, **kwargs):
                 for pk, content in candidates.iterator()
                 if not all(map(context_fits, rbac_contexts_of(content)))
             ]
-        except (OperationalError, ProgrammingError):
+        except (OperationalError, ProgrammingError) as error:
+            found.append(could_not_run("scrud_django.W003", alias, error_text(error)))
             continue
         if not pks:
             continue
@@ -348,7 +387,8 @@ def check_context_drift(app_configs, databases=None, **kwargs):
     content left (a 0.11 process, or ``QuerySet.update()``, moved it): that
     takes comparing every resource's content with its rows, which
     ``manage.py scrud_sync_contexts --check`` does, too costly for a check
-    that every ``migrate`` runs."""
+    that every ``migrate`` runs. A database error reading a migrated database
+    is reported (`could_not_run`, ``scrud_django.W007``)."""
     from django.db.utils import OperationalError, ProgrammingError
 
     from scrud_django.models import Resource
@@ -368,7 +408,8 @@ def check_context_drift(app_configs, databases=None, **kwargs):
             pks = [
                 pk for pk, content in candidates.iterator() if context_rows_of(content)
             ]
-        except (OperationalError, ProgrammingError):
+        except (OperationalError, ProgrammingError) as error:
+            found.append(could_not_run("scrud_django.W004", alias, error_text(error)))
             continue
         if not pks:
             continue
@@ -690,7 +731,9 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
     misspelled type URI runs nothing. Resource types are registered when the
     URLconf is imported, which this does first (as Django's URL checks do).
     A setting that cannot be loaded is `check_workflow_actions`'s to
-    report."""
+    report. A URLconf that cannot be imported, or a database error reading
+    the migrated database, is reported (`could_not_run`,
+    ``scrud_django.W007``)."""
     from django.core.exceptions import ImproperlyConfigured
     from django.db import router
     from django.db.utils import OperationalError, ProgrammingError
@@ -708,14 +751,24 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
         return []
     try:
         get_resolver().url_patterns  # noqa: B018 (registers the types)
-    except Exception:  # noqa: BLE001
-        return []  # Django's URL checks report a URLconf that fails.
+    except Exception as error:  # noqa: BLE001
+        return [
+            could_not_run(
+                "scrud_django.W006",
+                alias,
+                f"the URLconf could not be imported: {error_text(error)}",
+                hint=(
+                    "Fix the URLconf (ROOT_URLCONF), which registers the resource "
+                    f"types, and run manage.py check --database {alias} again."
+                ),
+            )
+        ]
     try:
         registered = set(
             ResourceType.objects.using(alias).values_list("type_uri", flat=True)
         )
-    except (OperationalError, ProgrammingError):
-        return []
+    except (OperationalError, ProgrammingError) as error:
+        return [could_not_run("scrud_django.W006", alias, error_text(error))]
     return [
         checks.Warning(
             f"SCRUD_WORKFLOW_ACTIONS has actions for {type_uri!r}, which is not a "
