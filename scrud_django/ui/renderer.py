@@ -31,7 +31,6 @@ from urllib.parse import urlsplit
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.db import DatabaseError, transaction
-from django.db.transaction import TransactionManagementError
 from django.http import Http404, QueryDict
 from django.middleware.csrf import get_token
 from django.templatetags.static import static
@@ -262,7 +261,7 @@ def load_stored(view, request, response) -> None:
             obj = view.get_object()
     except (Http404, DjangoPermissionDenied, APIException):
         return
-    except (DatabaseError, TransactionManagementError):
+    except (DatabaseError, transaction.TransactionManagementError):
         logger.warning(
             "scrud-ui: looking up %s for a refused PUT failed",
             getattr(request, "path", "?"),
