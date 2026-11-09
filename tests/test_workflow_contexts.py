@@ -431,6 +431,7 @@ def test_a_resource_stored_in_more_than_one_state_cannot_be_updated(
     reported_saves,
 ):
     from scrud_django.exceptions import WorkflowAmbiguousStateError
+    from scrud_django.workflow import TransitionData
 
     stored = store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
     # Stored server-side, past the workflow check: reported with the error.
@@ -464,6 +465,55 @@ def test_a_resource_stored_in_more_than_one_state_cannot_be_updated(
     resource.save()
     (reported,) = reported_saves
     assert reported["transitions"]["w"] is None
+    # Entering "a" (the default policy) is a creation there, the context
+    # transition_data reports: valid, so no transition_error.
+    initialized = TransitionData("not started", None, "__INITIALIZE__")
+    assert reported["transitions"]["a"] == initialized
+    assert reported["transition_data"] == initialized
+    assert reported["transition_error"] is None
+
+
+def put_moving_an_ambiguous_resource_out_of_its_context(user, reported_saves):
+    """A PUT by `user` moving a ToDo stored (server-side) in "w", whose
+    content meets two states of "w"'s policy, into "a", where its new
+    content is a valid creation: refused, as the stored content's state in
+    "w" is ambiguous. Returns the stored policy and the resource."""
+    stored = store_policy(dict(OVERLAPPING_POLICY, rbac_context="w"))
+    resource = todo(**dict(AMBIGUOUS, rbac_context="w"))
+    Given.http.force_authenticate(user)
+    reported_saves.clear()
+    put_todo(resource, dict(NOT_STARTED, rbac_context="a"))
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    assert_unchanged(resource)
+    assert reported_saves == []
+    return stored
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_ambiguous_stored_resource_cannot_be_moved_out_of_its_context(
+    reported_saves,
+):
+    # A writer who may read "w"'s policy is told the stored resource is
+    # ambiguous, and in which states.
+    user = user_with((TODO_WRITER, "w"), (TODO_WRITER, "a"), (READ_POLICIES, "w"))
+    stored = put_moving_an_ambiguous_resource_out_of_its_context(user, reported_saves)
+    assert_references_stored_policy(stored)
+    body = Http.response.json()
+    assert body["matching_states"] == ["published", "review"], body
+    assert body["message"] == ambiguous_state_message("The stored resource"), body
+    assert (body["prior_state"], body["proposed_state"]) == (None, None), body
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_ambiguous_stored_resource_moved_out_by_a_non_reader_is_generic(
+    reported_saves,
+):
+    # A writer who may not read "w"'s policy gets the generic error.
+    user = user_with((TODO_WRITER, "w"), (TODO_WRITER, "a"))
+    stored = put_moving_an_ambiguous_resource_out_of_its_context(user, reported_saves)
+    assert_generic_workflow_error(stored)
 
 
 # "done" and "canceled" may not change in place: "reopen" leads to "done"
@@ -773,6 +823,29 @@ def test_several_stored_policies_in_a_context_fail_closed():
     with pytest.raises(ImproperlyConfigured, match="2 WorkflowPolicy"):
         workflow_policy_for(TODO, "p")
     assert workflow_policy_for(TODO, "q").resource is None
+
+
+@pytest.mark.django_db
+def test_a_server_side_save_fails_closed_on_duplicate_policies_of_any_context():
+    # A server-side save reads the policy of every context it concerns (to
+    # report its transitions), as an API write does: several policies in
+    # a secondary context, or in one it leaves, fail it closed, before it
+    # writes, though its first context has a policy of its own.
+    secondary = todo(rbac_context=["a", "p"])
+    leaving = todo(rbac_context="p")
+    staying = todo(rbac_context="a")
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    store_policy(dict(PERMISSIVE_POLICY, rbac_context="p"))
+    for resource, rbac_context in ((secondary, ["a", "p"]), (leaving, "a")):
+        before = Resource.objects.get(pk=resource.pk)
+        resource.content = dict(NOT_STARTED, title="edited", rbac_context=rbac_context)
+        with pytest.raises(ImproperlyConfigured, match="2 WorkflowPolicy"):
+            resource.save()
+        assert_unchanged(before)
+    # A resource in no such context is saved.
+    staying.content = dict(NOT_STARTED, title="edited", rbac_context="a")
+    staying.save()
+    assert Resource.objects.get(pk=staying.pk).content["title"] == "edited"
 
 
 @pytest.mark.django_db

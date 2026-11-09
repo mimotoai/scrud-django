@@ -293,6 +293,16 @@ you deploy it.
 * `on_delete` actions and `scrud_post_delete` receivers now also run for
   queryset and admin bulk deletes, once per deleted resource: make sure they
   can take a bulk delete's volume.
+* A server-side save (`Resource.save()`: the admin,
+  `ResourceRegistration`, your code) now reads the workflow policy of every
+  context the stored resource and the new content are in, to report
+  `transitions` (#15); it read only the first one's. Like an API write, it
+  now fails closed (`ImproperlyConfigured`, before it writes) where any of
+  those contexts has several stored `WorkflowPolicy` resources for its type,
+  also a secondary context or one it moves the resource out of, or an
+  invalid one. Run `manage.py check --database default` before deploying,
+  and delete all but one policy per type and context (`scrud_django.E002`)
+  and fix or delete the invalid ones (`scrud_django.E005`).
 * `scrud_post_save` sends two more keyword arguments, `transitions` and
   `transition_error`: an `on_save` action (or receiver) that names its
   keyword arguments must also take `**kwargs`.
