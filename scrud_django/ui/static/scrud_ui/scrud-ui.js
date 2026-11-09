@@ -227,9 +227,33 @@
     return body;
   }
 
+  function frameOf(el) {
+    return el && el.closest ? el.closest(FRAME) : null;
+  }
+
+  /**
+   * The inputs a PUT from `frame` applies: those named by a JSON Pointer whose
+   * own frame is of the same resource (the same data-scrud-href: the frame,
+   * or a node frame of it), never those of an embedded resource's frame.
+   * Disabled inputs and unchecked radios are left out.
+   */
+  function fieldsOf(frame) {
+    var href = frame.getAttribute('data-scrud-href');
+    return Array.prototype.filter.call(
+      frame.querySelectorAll('[name^="/"]'),
+      function (el) {
+        if (el.disabled) return false;
+        if (el.type === 'radio' && !el.checked) return false;
+        var own = frameOf(el);
+        return !!own && own.getAttribute('data-scrud-href') === href;
+      }
+    );
+  }
+
   window.ScrudUI = {
     applyPointer: applyPointer,
     buildBody: buildBody,
+    fieldsOf: fieldsOf,
     parsePointer: parsePointer
   };
 
@@ -245,10 +269,6 @@
     { code: '(400|403|409|412|428)', swap: true, error: true },
     { code: '.*', swap: false, error: true }
   ];
-
-  function frameOf(el) {
-    return el && el.closest ? el.closest(FRAME) : null;
-  }
 
   function quoteEtag(etag) {
     return /^(W\/)?"/.test(etag) ? etag : '"' + etag + '"';
@@ -283,16 +303,6 @@
     return null;
   }
 
-  function fieldsOf(frame) {
-    return Array.prototype.filter.call(
-      frame.querySelectorAll('[name^="/"]'),
-      function (el) {
-        if (el.disabled) return false;
-        return !(el.type === 'radio' && !el.checked);
-      }
-    );
-  }
-
   // Innermost frame only: an event inside nested frames is acted on by the
   // frame that encloses its target; outer frames' requests are cancelled.
   document.addEventListener('htmx:confirm', function (evt) {
@@ -319,6 +329,40 @@
     setDefault(headers, 'Scrud-UI-Pointer', frame.getAttribute('data-scrud-pointer'));
     if (verb === 'put' && isPut(detail.elt)) {
       headers['Content-Type'] = 'application/json';
+    }
+  });
+
+  /**
+   * After a successful DELETE of a frame's resource (its Delete button), remove
+   * the frame from the page (and the list item that held only it), and
+   * dispatch `scrud:deleted` on the document with the resource's href. The
+   * 204 itself swaps nothing.
+   */
+  document.addEventListener('htmx:afterRequest', function (evt) {
+    var detail = evt.detail || {};
+    var config = detail.requestConfig || {};
+    if (!detail.successful || String(config.verb).toLowerCase() !== 'delete') {
+      return;
+    }
+    var frame = frameOf(detail.elt);
+    if (!frame || !frame.parentNode) return;
+    var href = frame.getAttribute('data-scrud-href');
+    var path = detail.pathInfo && detail.pathInfo.requestPath;
+    if (path && path !== href) return; // something else in the frame was deleted
+    var parent = frame.parentNode;
+    parent.removeChild(frame);
+    if (
+      parent.tagName === 'LI' &&
+      parent.parentNode &&
+      !parent.children.length &&
+      !String(parent.textContent || '').trim()
+    ) {
+      parent.parentNode.removeChild(parent);
+    }
+    if (typeof CustomEvent === 'function') {
+      document.dispatchEvent(
+        new CustomEvent('scrud:deleted', { detail: { href: href } })
+      );
     }
   });
 

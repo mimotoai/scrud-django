@@ -252,3 +252,139 @@ def test_build_body_keeps_untouched_multiline_strings():
     assert out["edited"]["title"] == "new"
     assert out["edited"]["crlf"] == "ab"
     assert out["edited"]["n"] == 2
+
+
+# A minimal DOM: elements with attributes, parents, `closest`, `matches` and
+# `querySelectorAll('[name^="/"]')`, and a document that records its event
+# listeners and the events dispatched on it.
+STUB_DOM = r"""
+const vm = require('vm'), fs = require('fs');
+const handlers = {}, dispatched = [];
+const document = {
+  addEventListener(name, fn) { handlers[name] = fn; },
+  querySelector() { return null; },
+  dispatchEvent(e) { dispatched.push({type: e.type, detail: e.detail}); return true; },
+};
+function CustomEvent(type, init) { this.type = type; this.detail = init && init.detail; }
+function el(tag, attrs, parent, props) {
+  const node = Object.assign({
+    tagName: tag, attrs: attrs || {}, parentNode: null, children: [],
+    textContent: '',
+    getAttribute(n) { return n in this.attrs ? this.attrs[n] : null; },
+    hasAttribute(n) { return n in this.attrs; },
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c; },
+    removeChild(c) {
+      this.children = this.children.filter((x) => x !== c);
+      c.parentNode = null;
+      return c;
+    },
+    matches(sel) {
+      return sel === '.scrud-resource' && this.attrs.class === 'scrud-resource';
+    },
+    closest(sel) {
+      for (let n = this; n; n = n.parentNode) if (n.matches(sel)) return n;
+      return null;
+    },
+    querySelectorAll(sel) {
+      const found = [];
+      const walk = (n) => n.children.forEach((c) => {
+        if (typeof c.name === 'string' && c.name.charAt(0) === '/') found.push(c);
+        walk(c);
+      });
+      walk(this);
+      return found;
+    },
+  }, props || {});
+  if (attrs && 'name' in attrs) node.name = attrs.name;
+  if (parent) parent.appendChild(node);
+  return node;
+}
+const frame = (href, parent, pointer) =>
+  el('FORM', {class: 'scrud-resource', 'data-scrud-href': href,
+              'data-scrud-pointer': pointer || ''}, parent);
+const htmx = {config: {}, defineExtension() {}};
+const window = {htmx};
+const ctx = vm.createContext({window, document, CustomEvent, console});
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const U = window.ScrudUI;
+const out = {};
+"""
+
+DELETE_SCRIPT = (
+    STUB_DOM
+    + r"""
+const ul = el('UL');
+const li1 = el('LI', {}, ul), li2 = el('LI', {}, ul);
+const one = frame('/l/1/', li1), two = frame('/l/2/', li2);
+const button = el('BUTTON', {'hx-delete': '/l/1/'}, one);
+const after = handlers['htmx:afterRequest'];
+const fire = (detail) => after({detail: Object.assign({elt: button}, detail)});
+fire({successful: false, requestConfig: {verb: 'delete'},
+      pathInfo: {requestPath: '/l/1/'}});
+out.afterFailure = ul.children.length;
+fire({successful: true, requestConfig: {verb: 'put'},
+      pathInfo: {requestPath: '/l/1/'}});
+out.afterPut = ul.children.length;
+fire({successful: true, requestConfig: {verb: 'delete'},
+      pathInfo: {requestPath: '/l/1/'}});
+out.afterDelete = ul.children.length;
+out.removed = one.parentNode === null && li1.parentNode === null;
+out.kept = ul.children[0] === li2 && li2.children[0] === two;
+out.dispatched = dispatched;
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_delete_removes_the_frame():
+    source = SCRUD_UI.read_text()
+    assert "htmx:afterRequest" in source and "scrud:deleted" in source
+    if shutil.which("node") is None:
+        pytest.skip("node is not available")
+    done = subprocess.run(
+        ["node", "-e", DELETE_SCRIPT, str(SCRUD_UI)],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["afterFailure"] == 2
+    assert out["afterPut"] == 2
+    assert out["afterDelete"] == 1
+    assert out["removed"] is True and out["kept"] is True
+    assert out["dispatched"] == [{"type": "scrud:deleted", "detail": {"href": "/l/1/"}}]
+
+
+FIELDS_SCRIPT = (
+    STUB_DOM
+    + r"""
+const outer = frame('/a/');
+el('INPUT', {name: '/title'}, outer, {type: 'text', value: 't'});
+const embedded = frame('/b/', el('DIV', {}, outer));
+el('INPUT', {name: '/title'}, embedded, {type: 'text', value: 'other'});
+el('INPUT', {name: '/secret'}, embedded, {type: 'checkbox', checked: true});
+const node = frame('/a/', outer, '/items/0');
+el('INPUT', {name: '/items/0/done'}, node, {type: 'checkbox', checked: true});
+el('INPUT', {name: '/off'}, outer, {type: 'text', value: 'x', disabled: true});
+out.outer = U.fieldsOf(outer).map((f) => f.name);
+out.embedded = U.fieldsOf(embedded).map((f) => f.name);
+out.node = U.fieldsOf(node).map((f) => f.name);
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_fields_of_keeps_only_the_frames_resource():
+    if shutil.which("node") is None:
+        pytest.skip("node is not available")
+    done = subprocess.run(
+        ["node", "-e", FIELDS_SCRIPT, str(SCRUD_UI)],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    # the embedded resource's inputs are its own, never the outer frame's
+    assert out["outer"] == ["/title", "/items/0/done"]
+    assert out["embedded"] == ["/title", "/secret"]
+    assert out["node"] == ["/items/0/done"]
