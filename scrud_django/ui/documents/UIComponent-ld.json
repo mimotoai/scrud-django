@@ -1,0 +1,31 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UIComponent",
+  "rbac_context": {
+    "@id": "openteams:AccessControlContext"
+  },
+  "name": {
+    "@id": "openteams:UIComponentName"
+  },
+  "engine": {
+    "@id": "openteams:UITemplateEngine"
+  },
+  "mode": {
+    "@id": "openteams:UIComponentMode"
+  },
+  "template": {
+    "@id": "openteams:UITemplate"
+  },
+  "scopes": {
+    "@id": "openteams:UIScopes"
+  },
+  "stylesheets": {
+    "@id": "openteams:UIStylesheetReference"
+  },
+  "label": {
+    "@id": "openteams:UILabel"
+  },
+  "description": {
+    "@id": "openteams:UIDescription"
+  }
+}

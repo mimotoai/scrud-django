@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 search = ["django-haystack>=3.3", "whoosh-reloaded>=2.7.5"]
+ui = ["jinja2>=3.1,<4"]
 
 [project.urls]
 Repository = "https://gitlab.com/dcharbon/scrud-django"
@@ -36,7 +37,7 @@ dev = [
     "ruff",
     "pre-commit",
     "django-extensions",
-    "scrud-django[search]",
+    "scrud-django[search,ui]",
     # The PostgreSQL driver for the test suite on PostgreSQL (CI's
     # test-postgres job; tests/settings.py reads SCRUD_TEST_PG_*).
     "psycopg[binary]>=3.2,<4",

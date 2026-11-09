@@ -1,0 +1,38 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIStylesheet",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Stylesheet",
+  "description": "Rules that select nodes of a resource's JSON and assign each a UI component.",
+  "type": "object",
+  "properties": {
+    "rbac_context": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^(?!scrud:)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "The stylesheet's name, unique within its context."
+    },
+    "prefixes": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "order": {
+      "type": "integer",
+      "default": 0
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "select": { "type": "string" },
+          "component": { "type": "string" }
+        },
+        "required": ["select", "component"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["name", "rules"]
+}

@@ -100,6 +100,7 @@ SETTINGS: dict[str, Any] = dict(
         "rest_framework.authtoken",
         "scoped_rbac",
         "scrud_django",
+        "scrud_django.ui",
         "tests",
         "reversion",
     ),
