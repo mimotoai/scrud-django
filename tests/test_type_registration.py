@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
-from django.db import OperationalError, ProgrammingError, connections
+from django.db import OperationalError, ProgrammingError, connections, transaction
 from django.test import override_settings
 from django.urls import include, path, reverse
 from django.utils.timezone import now
@@ -182,6 +182,35 @@ def test_a_retried_registration_is_pending_until_its_transaction_commits(
     # The commit forgets it.
     for callback in callbacks:
         callback()
+    assert SLUG not in registration.PENDING_REGISTRATIONS
+
+
+class Refused(Exception):
+    """A write refused after it read a pending type."""
+
+
+@pytest.mark.django_db
+def test_a_retried_registration_is_rolled_back_with_its_transaction(
+    deferred_routes, django_capture_on_commit_callbacks
+):
+    # A write reads the pending type (registering it), then is refused: its
+    # transaction is rolled back, the registration with it.
+    resources = Resource.objects.count()
+    with django_capture_on_commit_callbacks(execute=True) as callbacks:
+        with pytest.raises(Refused), transaction.atomic():
+            registration.get_resource_type_for(SLUG)
+            assert ResourceType.objects.filter(type_uri=TYPE_URI).exists()
+            raise Refused
+    assert callbacks == []
+    assert not ResourceType.objects.filter(type_uri=TYPE_URI).exists()
+    assert Resource.objects.count() == resources  # Nor its schema.
+    assert SLUG in registration.PENDING_REGISTRATIONS
+    # The next read registers it again, and it is forgotten once that
+    # commits.
+    with django_capture_on_commit_callbacks(execute=True):
+        registered = registration.get_resource_type_for(SLUG)
+    assert registered.type_uri == TYPE_URI
+    assert ResourceType.objects.get(slug=SLUG).schema.content == SCHEMA
     assert SLUG not in registration.PENDING_REGISTRATIONS
 
 
