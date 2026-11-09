@@ -25,6 +25,7 @@ import logging
 import re
 from collections.abc import Mapping
 from contextlib import nullcontext
+from dataclasses import dataclass
 from http import HTTPStatus
 from urllib.parse import urlsplit
 
@@ -33,8 +34,9 @@ from django.db import transaction
 from django.http import Http404, QueryDict
 from django.middleware.csrf import get_token
 from django.templatetags.static import static
-from django.utils.cache import patch_vary_headers
+from django.utils.cache import patch_cache_control, patch_vary_headers
 from django.utils.html import format_html
+from django.utils.http import quote_etag
 from django.utils.safestring import SafeString, mark_safe
 from rest_framework.exceptions import APIException
 from rest_framework.renderers import BaseRenderer, BrowsableAPIRenderer
@@ -76,16 +78,25 @@ STATIC_HTMX = "scrud_ui/htmx.min.js"
 STATIC_SCRUD_UI = "scrud_ui/scrud-ui.js"
 
 STALE_MESSAGE = "This item changed since you opened it."
+RENDER_FAILED_MESSAGE = "Something went wrong rendering this page."
 
 # On the request: the ScrudHTMLRenderer content negotiation chose, else None.
 _NEGOTIATED_ATTR = "_scrud_ui_html_renderer"
-# On the view: a copy of the stored content a PUT replaces, as get_instance()
-# (or `load_stored`) loaded it through the view's checks; None if it could
-# not be.
-_STORED_ATTR = "_scrud_ui_stored_content"
+# On the view: the `Stored` resource a PUT replaces, as get_instance() (or
+# `load_stored`) first loaded it through the view's checks.
+_STORED_ATTR = "_scrud_ui_stored"
 
 # What fastjsonschema names a value it refuses: ``data.items[0].text``.
 _SCHEMA_NAME_TOKEN = re.compile(r"\.([^.\[]+)|\[(\d+)\]")
+
+
+@dataclass(frozen=True)
+class Stored:
+    """The resource a PUT replaces, as the view loaded it before the write:
+    a copy of its content, and its ETag (as the response's ``ETag``)."""
+
+    content: dict
+    etag: str
 
 
 class ScrudHTMLRenderer(BaseRenderer):
@@ -103,16 +114,24 @@ class ScrudHTMLRenderer(BaseRenderer):
         status = getattr(response, "status_code", 200)
         if status < 400 and (data is None or status in (204, 304)):
             return b""
-        with request_memo():
-            body, contexts = _body(data, status, request, view, response)
-            if not _is_htmx(request):
-                body = _page(
-                    body,
-                    request=request,
-                    resource_type=_resource_type(view),
-                    contexts=contexts,
-                    scope_chain=scope_chain_of(request),
-                )
+        try:
+            with request_memo():
+                body, contexts = _body(data, status, request, view, response)
+                if not _is_htmx(request):
+                    body = _page(
+                        body,
+                        request=request,
+                        resource_type=_resource_type(view),
+                        contexts=contexts,
+                        scope_chain=scope_chain_of(request),
+                    )
+        except Exception:
+            # The last resort: the response keeps its status, and shows no
+            # content (nor a traceback).
+            logger.exception(
+                "scrud-ui: rendering %s failed", getattr(request, "path", "?")
+            )
+            body = _notices([RENDER_FAILED_MESSAGE])
         return str(body).encode(self.charset)
 
 
@@ -156,6 +175,9 @@ def finalize_html(request, response) -> None:
     if renderer is None:
         return
     patch_vary_headers(response, VARY)
+    # The HTML depends on the stylesheets, components and grants as well as
+    # the resource (whose ETag it carries): always revalidated, never shared.
+    patch_cache_control(response, private=True, no_cache=True)
     if not isinstance(response, Response):
         return
     request.accepted_renderer = renderer
@@ -202,13 +224,19 @@ def pointer_of(request) -> str | None:
 
 
 def remember_stored(view, request, obj) -> None:
-    """Keep a copy of the content of `obj`, the resource a PUT that
-    negotiated HTML replaces, as the view's checked lookup returned it (its
-    ``get_instance``): if the write is refused, whether the submitted body
-    comes back as the edit form is decided on it. A copy, since the write
-    changes the instance."""
-    if request.method == "PUT" and negotiated_html(request) is not None:
-        view.__dict__[_STORED_ATTR] = copy.deepcopy(content_of(obj))
+    """Keep `obj`, the resource a PUT that negotiated HTML replaces, as the
+    view's checked lookup first returned it (its ``get_instance``), as
+    `Stored`: if the write is refused, whether the submitted body comes back
+    as the edit form, and how, is decided on it. Kept once per request, and
+    a copy, since the write changes the instance."""
+    if (
+        request.method == "PUT"
+        and negotiated_html(request) is not None
+        and _STORED_ATTR not in view.__dict__
+    ):
+        view.__dict__[_STORED_ATTR] = Stored(
+            content=copy.deepcopy(content_of(obj)), etag=quote_etag(obj.etag)
+        )
 
 
 def load_stored(view, request, response) -> None:
@@ -225,7 +253,6 @@ def load_stored(view, request, response) -> None:
         or pointer_of(request) is None
     ):
         return
-    view.__dict__[_STORED_ATTR] = None
     db = getattr(view, "locked_write_db", None)
     try:
         # A savepoint: a failed lookup leaves the request's transaction usable.
@@ -282,31 +309,37 @@ def _body(data, status, request, view, response):
 
 
 def _refused_put(problem, status, request, view, resource_type, scope_chain, pointer):
-    """A refused PUT: the submitted body as the edit form at the ETag it was
-    sent with, with the problem's messages, when the user may PUT the stored
-    resource the view loaded; else the notices only."""
+    """A refused PUT: the submitted body as the edit form, with the problem's
+    messages, when the user may PUT the stored resource the view loaded (at
+    its ETag, with its decisions and contexts); else the notices only."""
     stored = view.__dict__.get(_STORED_ATTR) if view is not None else None
     body = _submitted(request)
-    if resource_type is None or not isinstance(stored, Mapping):
+    if resource_type is None or not isinstance(stored, Stored):
         return _notices(_problem_messages(problem, status))
     type_uri = resource_type.type_uri
     messages = []
-    if status == 403 and isinstance(body, Mapping):
-        messages = refusal_messages(request, type_uri, body, stored)
-    if body is None or decisions_for(request, type_uri, stored)["PUT"] == DENIED:
+    if status == 403 and body is not None:
+        messages = refusal_messages(request, type_uri, body, stored.content)
+    decisions = decisions_for(request, type_uri, stored.content)
+    if body is None or decisions["PUT"] == DENIED:
         return _notices(_problem_messages(problem, status) + messages)
     errors = _field_errors(problem)
     errors[""] = [_problem_message(problem, status), *errors.get("", []), *messages]
+    # Only the body's values come from the request: what the user may do
+    # (the Delete button), the stylesheets' contexts and the ETag the form
+    # writes at (never an If-Match of "*") are the stored resource's.
     return render_resource(
         body,
         resource_type=resource_type,
         href=request.path,
-        etag=request.headers.get("If-Match"),
+        etag=stored.etag,
         request=request,
         scope_chain=scope_chain,
         pointer=pointer,
         errors=errors,
         mode="edit",
+        decisions=decisions,
+        contexts=rbac_contexts_of(stored.content),
     )
 
 

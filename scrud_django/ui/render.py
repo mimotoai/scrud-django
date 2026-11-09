@@ -64,6 +64,8 @@ def render_resource(
     pointer: str = "",
     errors: dict[str, list[str]] | None = None,
     mode: str | None = None,
+    decisions: dict[str, str] | None = None,
+    contexts: list[str] | None = None,
 ) -> SafeString:
     """`content` (a resource of `resource_type` at `href`) rendered for the
     user of `request`, in a resource frame: the node at `pointer` (the
@@ -71,7 +73,12 @@ def render_resource(
     of the resource. `errors` maps JSON Pointers to messages (``""``: the
     resource's, shown at the top of the frame). `mode` is ``"view"`` or
     ``"edit"``; ``None`` is ``"edit"`` when the user may (or possibly may)
-    PUT the resource."""
+    PUT the resource.
+
+    `decisions` (as `decisions_for` gives them) and `contexts` (whose
+    stylesheets apply) are those of `content` unless given: for content that
+    is not the stored resource (a refused PUT's body), pass the stored
+    resource's, so that nothing the request sent decides them."""
     with request_memo():
         return _render_resource(
             content,
@@ -84,6 +91,8 @@ def render_resource(
             errors=errors,
             mode=mode,
             rules_cache={},
+            decisions=decisions,
+            contexts=contexts,
         )
 
 
@@ -152,12 +161,15 @@ def _render_resource(
     errors,
     mode,
     rules_cache,
+    decisions=None,
+    contexts=None,
 ):
     type_uri = resource_type.type_uri
-    decisions = decisions_for(request, type_uri, content)
+    if decisions is None:
+        decisions = decisions_for(request, type_uri, content)
     if mode is None:
         mode = "edit" if decisions["PUT"] in (ALLOWED, POSSIBLY) else "view"
-    contexts = rbac_contexts_of(content)
+    contexts = rbac_contexts_of(content) if contexts is None else list(contexts)
     ld_context = _ld_context(resource_type.context)
     walk = _Walk(
         root_schema=_document(resource_type.schema),
