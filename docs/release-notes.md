@@ -281,7 +281,10 @@ you deploy it.
 * A resource type registration that fails with a database error at URLconf
   import is now logged by the `scrud_django.registration` logger (it was
   the root logger), naming the type, and `scrud_django.urls` no longer logs
-  an error for it. `manage.py check` on a database that is not migrated
+  an error for it. It is a warning while the database is unreachable or not
+  migrated, and an error (no longer "expected") on a database that is
+  reachable and migrated, where it is a fault, such as a missing grant, that
+  fails every request for the type: alert on errors from that logger. `manage.py check` on a database that is not migrated
   reports a `scrudful.W001` warning for more routes (those of the types
   that could not be registered, which were missing before). They are
   warnings only (`migrate` runs), and are not reported once the database

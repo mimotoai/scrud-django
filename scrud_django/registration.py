@@ -357,25 +357,57 @@ def register_or_defer(
     a process that started while the database was unreachable serves the
     type once it is back, without a restart. Until then a request for the
     type fails with the retry's error (a 500), not a 404. The retry calls
-    `retry` (default: `register`)."""
+    `retry` (default: `register`).
+
+    The failure is logged as a warning while the database is unreachable or
+    not migrated (`migrated_and_reachable`), and as an error on a database
+    that is reachable and migrated: there it is a fault (a missing grant, a
+    schema out of step with the migrations) that fails every request for the
+    type until it is fixed."""
+    db = type_db()
     try:
-        with transaction.atomic(using=type_db()):
+        with transaction.atomic(using=db):
             return register().urls
     except (OperationalError, ProgrammingError) as e:
-        logger.warning(
-            "Could not register resource type %r (%s: %s); its routes are "
-            "served and it is registered when it is next read. This is "
-            "expected while the database is not migrated (migrate, "
-            "makemigrations, check).",
-            slug,
-            type(e).__name__,
-            e,
-        )
+        if migrated_and_reachable(db):
+            logger.error(
+                "Could not register resource type %r (%s: %s) on database %r, "
+                "which is reachable and migrated: requests for it fail until "
+                "its registration succeeds. Its routes are served, and its "
+                "registration is retried when it is next read.",
+                slug,
+                type(e).__name__,
+                e,
+                db,
+            )
+        else:
+            logger.warning(
+                "Could not register resource type %r (%s: %s): database %r is "
+                "unreachable or not migrated (as before the first migrate). Its "
+                "routes are served, and it is registered when it is next read.",
+                slug,
+                type(e).__name__,
+                e,
+                db,
+            )
         with _PENDING_LOCK:
             PENDING_REGISTRATIONS[slug] = retry or register
         if register_service:
             services.add_service(type_uri, slug)
         return resource_type_urls(slug, viewset_class)
+
+
+def migrated_and_reachable(alias):
+    """Whether database `alias` can be reached and has all of scrud_django's
+    migrations applied (`scrud_django.checks.scrud_migrations_pending`).
+    ``False`` when that cannot be told (the database is unreachable, or its
+    migration table cannot be read): it never raises."""
+    from scrud_django.checks import scrud_migrations_pending
+
+    try:
+        return not scrud_migrations_pending(alias)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def retry_registration(slug):

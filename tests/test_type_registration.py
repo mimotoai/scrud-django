@@ -9,13 +9,14 @@ for it fails (an error, not a 404). A slug's "latest revision" is the
 highest number, not the last string."""
 
 import json
+import logging
 import threading
 from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
-from django.db import OperationalError, connections
+from django.db import OperationalError, ProgrammingError, connections
 from django.test import override_settings
 from django.urls import include, path, reverse
 from django.utils.timezone import now
@@ -25,6 +26,7 @@ from scrud_django import registration, services
 from scrud_django.models import Resource, ResourceType
 
 from .factories import UserFactory
+from .fixtures import unapply_a_scrud_migration
 
 TYPE_URI = "tests://Deferred"
 SLUG = "deferred-things"
@@ -64,6 +66,14 @@ def resource_types_unreachable(execute, sql, params, many, context):
 
 def type_connection():
     return connections[registration.type_db()]
+
+
+def resource_types_denied(execute, sql, params, many, context):
+    """A connection's ``execute_wrapper``: reading the ``ResourceType`` table
+    is refused (a missing grant), the rest of the database works."""
+    if ResourceType._meta.db_table in sql:
+        raise ProgrammingError("permission denied for table resourcetype")
+    return execute(sql, params, many, context)
 
 
 @pytest.fixture
@@ -208,6 +218,78 @@ def test_a_pending_registration_runs_without_the_process_lock(
     assert acquired == [True]
     assert registered.type_uri == TYPE_URI
     assert SLUG not in registration.PENDING_REGISTRATIONS
+
+
+UNREACHABLE_OR_NOT_MIGRATED = (
+    f"Could not register resource type {SLUG!r} ({{error}}): database "
+    "'default' is unreachable or not migrated (as before the first migrate). "
+    "Its routes are served, and it is registered when it is next read."
+)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "migrated, failure, level, message",
+    [
+        # Unreachable (it cannot tell whether it is migrated): a transient
+        # failure.
+        (
+            True,
+            unreachable,
+            logging.WARNING,
+            UNREACHABLE_OR_NOT_MIGRATED.format(
+                error="OperationalError: could not connect to server: "
+                "Connection refused"
+            ),
+        ),
+        # Not migrated (migrate, makemigrations or check before migrate).
+        (
+            False,
+            resource_types_denied,
+            logging.WARNING,
+            UNREACHABLE_OR_NOT_MIGRATED.format(
+                error="ProgrammingError: permission denied for table resourcetype"
+            ),
+        ),
+        # Reachable and migrated: a fault (a missing grant, a schema bug)
+        # that fails every request for the type until it is fixed.
+        (
+            True,
+            resource_types_denied,
+            logging.ERROR,
+            f"Could not register resource type {SLUG!r} (ProgrammingError: "
+            "permission denied for table resourcetype) on database 'default', "
+            "which is reachable and migrated: requests for it fail until its "
+            "registration succeeds. Its routes are served, and its "
+            "registration is retried when it is next read.",
+        ),
+    ],
+    ids=["unreachable", "not migrated", "migrated"],
+)
+def test_a_failed_registration_is_an_error_on_a_migrated_database(
+    migrated, failure, level, message, caplog
+):
+    if not migrated:
+        unapply_a_scrud_migration(registration.type_db())
+    try:
+        with type_connection().execute_wrapper(failure):
+            urls = registration.json_resource_type(
+                resource_type_uri=TYPE_URI,
+                slug=SLUG,
+                schema_func=lambda: json.dumps(SCHEMA),
+            )
+        # Deferred either way: the URLconf import does not fail.
+        assert [route.name for route in urls] == [f"{SLUG}-list", f"{SLUG}-detail"]
+        assert SLUG in registration.PENDING_REGISTRATIONS
+    finally:
+        registration.PENDING_REGISTRATIONS.pop(SLUG, None)
+        services.services.pop(TYPE_URI, None)
+    logged = [
+        (record.levelno, record.getMessage())
+        for record in caplog.records
+        if record.name == "scrud_django.registration"
+    ]
+    assert logged == [(level, message)]
 
 
 @pytest.fixture
