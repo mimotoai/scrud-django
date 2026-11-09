@@ -58,7 +58,10 @@ you deploy it.
   call such an action needs a grant for its method that is not conditioned
   on `scrud_workflow`; a subclass whose own action writes only through
   `create` or `update` (so the workflow check runs) may override
-  `checks_workflow` to include it.
+  `checks_workflow` to include it. The constant
+  `scrud_django.mixins.view_mixins.WORKFLOW_METHODS` (the methods the
+  operator allowed) is removed; `WORKFLOW_VIEW_ACTIONS` (action to method)
+  replaces it.
 
 * `restrict_update` is no longer bypassed by a transition whose lists lead
   from a restricted state to itself. A transition leads from every state of

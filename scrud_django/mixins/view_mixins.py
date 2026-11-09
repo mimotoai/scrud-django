@@ -147,11 +147,13 @@ def list_validators_needed(headers):
 # The methods whose body is the resource to store.
 BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
-# The actions of a resource viewset whose write the workflow check covers,
-# with the method each serves: the list's create and the detail route's
-# update (``registration.ResourceTypeRegistration.register_urls``). Any other
-# action (an ``@action``, a handler of your own) may write without it.
-WORKFLOW_ACTIONS = {"create": "POST", "update": "PUT"}
+# The viewset actions (DRF's ``view.action``) whose write the workflow check
+# covers, with the method each serves: the list's create and the detail
+# route's update (the routes ``registration.resource_type_urls`` builds). Any
+# other action (an ``@action``, a handler of your own) may write without it.
+# Not to be confused with ``SCRUD_WORKFLOW_ACTIONS``, the workflow actions
+# run after a write.
+WORKFLOW_VIEW_ACTIONS = {"create": "POST", "update": "PUT"}
 
 
 def check_body_present(request, view=None):
@@ -981,8 +983,8 @@ class ListValidatorsMixin:
         ``create`` decorated by ``scrudful_viewset`` runs, under the
         conditional create's lock (`create_list_validators`). It evaluates
         nothing for a POST handler whose ``@scrudful`` has no list
-        validators, such as an ``@action`` as E007 asks it (unless given
-        ``list_etag_func=ScrudfulMeta.list_etag_func`` and
+        validators, such as an ``@action`` as ``scrudful.E007`` asks it
+        (unless given ``list_etag_func=ScrudfulMeta.list_etag_func`` and
         ``list_last_modified_func=ScrudfulMeta.list_last_modified_func``),
         nor for a ``create`` such a handler calls (scrudful evaluates only
         the outer of two nested handlers): call this first there, or in that
@@ -1079,7 +1081,7 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         """Whether `request` is a write the workflow check
         (``WorkflowValidator``) covers: a POST the view serves as its
         ``create`` action or a PUT it serves as its ``update`` action
-        (`WORKFLOW_ACTIONS`), keyed on DRF's ``self.action``. Any other
+        (`WORKFLOW_VIEW_ACTIONS`), keyed on DRF's ``self.action``. Any other
         action, such as an ``@action`` that writes the resource itself, and
         a view with no action (``None``: a method the view does not serve,
         or a view that is not a viewset) is not: ``scrud_workflow`` refuses
@@ -1088,8 +1090,8 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         it."""
         action = getattr(self, "action", None)
         return (
-            action in WORKFLOW_ACTIONS
-            and request.method == WORKFLOW_ACTIONS[action]
+            action in WORKFLOW_VIEW_ACTIONS
+            and request.method == WORKFLOW_VIEW_ACTIONS[action]
             and request.method in self.allowed_methods
         )
 

@@ -569,9 +569,9 @@ class CustomListEtagResourceViewSet(ResourceViewSet):
 
 class NoteBulkViewSet(NoteViewSet):
     """The notes again, whose POST (``as_view({"post": "bulk"})``) is a
-    handler of its own, no @action, decorated as E007 asks an action: it
-    calls ``create``, which scrudful skips as a nested handler, so nothing
-    evaluates."""
+    handler of its own, no @action, decorated as scrudful.E007 asks an
+    action: it calls ``create``, which scrudful skips as a nested handler, so
+    nothing evaluates."""
 
     @scrudful(**ACTION)
     def bulk(self, request):
