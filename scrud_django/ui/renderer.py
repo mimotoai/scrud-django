@@ -16,9 +16,10 @@ select presentation only, never what is authorized.
 The errors that render more than a notice: a refused PUT (400, 403), where
 the body the user submitted (never the stored content) comes back as the edit
 form, with the messages, provided the user may PUT the stored resource as the
-view loaded it (`remember_stored`, `load_stored`); and a 412, which answers a
-stale form with a notice and a frame that reloads the current state (a GET
-with the viewer's own rights). A success that fails to render is a 500 with a
+view loaded it (`remember_stored`, `load_stored`); and a 412 of a PUT or
+DELETE, or a 409 DELETE (in use), which answer with a notice and a frame that
+reloads the current state (a GET with the viewer's own rights), so that the
+item never looks deleted. A success that fails to render is a 500 with a
 notice.
 """
 
@@ -321,8 +322,13 @@ def _body(data, status, request, view, response):
     method = getattr(request, "method", None)
     if status >= 400:
         problem = data if isinstance(data, Mapping) else {}
-        if status == 412 and method == "PUT":
-            return _stale(request, scope_chain, pointer or ""), []
+        if status == 412 and method in ("PUT", "DELETE"):
+            return _reloading(request, scope_chain, pointer or "", [STALE_MESSAGE]), []
+        if status == 409 and method == "DELETE":
+            # The resource is still there: never a bare notice in place of its
+            # frame, which would make it look deleted.
+            messages = _problem_messages(problem, status)
+            return _reloading(request, scope_chain, pointer or "", messages), []
         if status in (400, 403) and method == "PUT" and pointer is not None:
             return _refused_put(
                 problem, status, request, view, resource_type, scope_chain, pointer
@@ -392,12 +398,13 @@ def _refused_put(problem, status, request, view, resource_type, scope_chain, poi
     )
 
 
-def _stale(request, scope_chain, pointer):
-    """A 412's notice, and a frame that replaces itself with the current
-    state of the node, fetched in its scope chain."""
+def _reloading(request, scope_chain, pointer, messages):
+    """The notices of a write that left the resource as it was (a 412, or a
+    409 DELETE), and a frame that replaces itself with the current state of the
+    node, fetched in its scope chain."""
     headers = json.dumps({SCOPE_HEADER: " ".join(scope_chain), POINTER_HEADER: pointer})
     return mark_safe(
-        _notices([STALE_MESSAGE])
+        _notices(messages)
         + format_html(
             '<div class="scrud-reload" hx-get="{}" hx-trigger="load"'
             ' hx-swap="outerHTML" hx-headers="{}"></div>',

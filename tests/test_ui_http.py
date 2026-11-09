@@ -19,10 +19,12 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django import collection_type_uri_for
-from scrud_django.registration import ResourceRegistration
+from scrud_django.models import Resource
+from scrud_django.registration import ResourceRegistration, get_resource_type_for
 from scrud_django.scrud_signals import scrud_post_save
 from scrud_django.ui import render, renderer
 
+from .factories import UserFactory
 from .fixtures import *  # noqa
 from .fixtures import (
     RESOURCE_ENDPOINT_DETAIL_NAME,
@@ -444,6 +446,62 @@ def test_put_stale_etag_html_412(todo_list, todo_owner_login):
         "Scrud-UI-Pointer": "/items/0",
     }
     assert "Too late" not in output and "Buy milk" not in output
+
+
+def assert_notice_and_reload(url, scope="sidebar", pointer="/items/0"):
+    """A failed DELETE answers a notice and a frame that reloads the current
+    state, never the resource: the item must not look deleted."""
+    assert_html()
+    output = html()
+    assert 'class="scrud-notice' in output
+    assert f'hx-get="{url}"' in output and 'hx-trigger="load"' in output
+    headers = re.search(r'hx-headers="([^"]*)"', output).group(1)
+    assert json.loads(headers.replace("&quot;", '"')) == {
+        "Scrud-UI-Scope": scope,
+        "Scrud-UI-Pointer": pointer,
+    }
+    assert FRAME not in output and "<input" not in output
+    assert "scrud-content" not in output and "Buy milk" not in output
+    return output
+
+
+@pytest.mark.django_db
+@test_context
+def test_delete_stale_etag_html_412(todo_list, todo_owner_login):
+    url = detail_url(todo_list)
+    Given.http.force_authenticate(todo_owner_login)
+    When.http.delete(
+        url,
+        HTTP_IF_MATCH='"stale"',
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+        HTTP_SCRUD_UI_SCOPE="sidebar",
+        HTTP_SCRUD_UI_POINTER="/items/0",
+    )
+    Then.http.status_code_is(412)
+    assert STALE in assert_notice_and_reload(url)
+
+
+@pytest.mark.django_db
+@test_context
+def test_delete_of_a_resource_in_use_html_409():
+    """A schema a type uses is protected: the 409 keeps the item on the page,
+    with a notice and a frame that reloads its current state."""
+    reverse("todo-lists-list")
+    schema = get_resource_type_for("todo-lists").schema
+    url = reverse("json-schema-detail", args=[schema.pk])
+    Given.http.force_authenticate(UserFactory(is_staff=True, is_superuser=True))
+    When.http.delete(
+        url,
+        HTTP_IF_MATCH=quote_etag(schema.etag),
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+        HTTP_SCRUD_UI_SCOPE="sidebar",
+        HTTP_SCRUD_UI_POINTER="/items/0",
+    )
+    Then.http.status_code_is(409)
+    assert "in use" in assert_notice_and_reload(url).lower()
+    assert Resource.objects.filter(pk=schema.pk).exists()
 
 
 @pytest.mark.django_db
