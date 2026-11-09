@@ -478,7 +478,7 @@ deleted resource's primary key (the `instance` is the deleted one, whose `pk`
 Django has set to `None`).
 
 `transition_data` is a `scrud_django.workflow.TransitionData`
-(`prior_state`, `proposed_state`, `transition`; immutable) under the
+(`proposed_state`, `prior_state`, `transition`; immutable) under the
 workflow policy in effect in the first context the content names that has
 one, or `None` when no policy applies or the write is invalid there;
 `transition_error` is then the workflow error, and `None` otherwise. Its
@@ -492,11 +492,12 @@ or stored content meets the conditions of more than one state
 (`WorkflowAmbiguousStateError`). `transitions` is a read-only mapping
 (`types.MappingProxyType`, shared by every receiver; copy it with `dict()`
 to change it) of every context the stored resource or the new content is
-in, where a policy applies, to the write's `TransitionData` there (`None` if invalid there): a transition where the
-resource stays, `__INITIALIZE__` where it enters, and `__LEAVE__` (no
-`proposed_state`; `prior_state` is the state it left) where it leaves. A
-save of an instance whose row is not on the database written to (a copy
-with `save(using=...)`) is reported as a create.
+in, where a policy applies, to the write's `TransitionData` there (`None`
+if invalid there): a transition where the resource stays, `__INITIALIZE__`
+where it enters, and `__LEAVE__` (no `proposed_state`; `prior_state` is the
+state it left) where it leaves. A save of an instance whose row is not on
+the database written to (a copy with `save(using=...)`) is reported as a
+create.
 
 Only API writes are checked against the workflow, so only a save that skipped
 the check (the admin, `ResourceRegistration`, server code) can be invalid: it
@@ -504,8 +505,8 @@ is saved anyway, reported as above, and each context where it is invalid is
 logged as a WARNING on the `scrud_django.workflow` logger (before
 `scrud_post_save` is sent, so a receiver that raises cannot suppress it),
 naming the resource's pk, its type URI, the context, the policy and the
-error (with the states the content meets, when it meets several). Such a save still
-reads the policy of every context it concerns, and fails
+error (with the states the content meets, when it meets several). Such a
+save still reads the policy of every context it concerns, and fails
 (`ImproperlyConfigured`) where one has several stored policies or an invalid
 one, as an API write does.
 
@@ -644,9 +645,10 @@ POST or PUT `@action`s of your viewsets (and views that are not viewsets) for a
 role whose only grant there is conditioned on `scrud_workflow` (403: give it a
 grant that is not). It adds keyword arguments to `scrud_post_save`, makes
 `TransitionData` immutable, runs `on_delete` actions for bulk deletes, fails a
-server-side save closed on duplicate policies in any context it concerns, and
-logs failed actions on `scrud_django.workflow_actions` and invalid server-side
-saves on `scrud_django.workflow`. Run `manage.py check --database <alias>` for
+server-side save closed on duplicate policies, or an invalid one, in any
+context it concerns, and logs failed actions on
+`scrud_django.workflow_actions` and invalid server-side saves on
+`scrud_django.workflow`. Run `manage.py check --database <alias>` for
 each database and work through the Upgrading list of the
 [0.15.0 release notes](https://gitlab.com/dcharbon/scrud-django/-/blob/develop/docs/release-notes.md)
 before upgrading.

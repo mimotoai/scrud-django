@@ -116,7 +116,7 @@ you deploy it.
   (`json-invalid`) rather than by the policy check
   (`workflow-policy-invalid`).
 * The new `scrud_django.W005` database check (`manage.py check --database
-  default`, and `migrate`) warns when a state condition of a settings
+  <alias>`, and `migrate`) warns when a state condition of a settings
   default policy reads a top-level property that the JSON Schema of its
   type does not define. State conditions compile without type checking,
   so a misspelled property was accepted and made its state unreachable.
@@ -128,14 +128,15 @@ you deploy it.
   or add some through `patternProperties`, `allOf`, `anyOf`, `oneOf`,
   `$ref`, `if`/`then`/`else`, `dependencies`, `dependentSchemas` or
   `unevaluatedProperties`; for a default that is invalid (E001 reports
-  it); and on a database that is not migrated. The README's new "Workflow policies" section also says that a
-  state condition reads `rbac_context` as stored (a list for a resource in
-  several contexts), unlike a grant's condition, which reads the context
-  being checked. A state condition that fails to evaluate (a property
-  the content lacks) or gives no boolean is no match, as before, and is
-  now logged at DEBUG on the `scrud_django.workflow` logger, naming the
-  policy and the state; so is a failure of W005's type checker, which
-  reported nothing silently.
+  it); and on a database that is not migrated. The README's new "Workflow
+  policies" section also says that a state condition reads `rbac_context`
+  as stored (a list for a resource in several contexts), unlike a grant's
+  condition, which reads the context being checked. A state condition
+  that fails to evaluate (a property the content lacks) or gives no
+  boolean is no match, as before, and is now logged at DEBUG on the
+  `scrud_django.workflow` logger, naming the policy and the state. A
+  failure of W005's type checker on a condition reports nothing for it,
+  and is logged there at DEBUG with its traceback.
 * A resource read from a read replica (a router whose `db_for_read` names
   another alias than its `db_for_write`) and then deleted ran its `on_delete`
   workflow action at once, on the replica's connection, before the delete
@@ -196,25 +197,25 @@ you deploy it.
   enters, and the new reserved `__LEAVE__` (no proposed state; the prior
   state is the one it left) where it leaves; and `transition_error`, the
   workflow error that made `transition_data` `None`. `transition_data`
-  itself changed as described under #5 (content that meets the conditions of more than one
-  state is `None`, with the error) and the `restrict_update` fix (#9: an
-  in-place update of a restricted state through a transition whose lists
-  lead from it to itself is `None`, with the error, no longer that
-  transition), and in two more cases: a create, or a move into the
-  context, whose content is in no initial state is `None` with a
-  `WorkflowInvalidInitialStateError` as `transition_error` (it was
-  `TransitionData(None, None, "__INITIALIZE__")`, with no error; `None`
-  in `transitions` there too), and a save whose row is not on the database
-  written to (an instance copied with `save(using=...)`) is reported as a
-  create instead of raising `AttributeError` (#15).
-* A save that skipped the workflow check (the admin, `ResourceRegistration`,
-  server code) and is invalid under a context's workflow policy was saved
-  silently: `transition_error` names the error of the first context with a
-  policy only, and nothing logged it. `Resource.save()` now logs each
-  context where the save is invalid as a WARNING on the new
-  `scrud_django.workflow` logger, naming the resource's pk, its type URI,
-  the context, the policy and the error. The signal's arguments are
-  unchanged.
+  itself changed as described under #5 (content that meets the conditions
+  of more than one state is `None`, with the error) and the
+  `restrict_update` fix (#9: an in-place update of a restricted state
+  through a transition whose lists lead from it to itself is `None`, with
+  the error, no longer that transition), and in two more cases: a create,
+  or a move into the context, whose content is in no initial state is
+  `None` with a `WorkflowInvalidInitialStateError` as `transition_error`
+  (it was `TransitionData(None, None, "__INITIALIZE__")`, with no error),
+  and is `None` in `transitions` there too; and a save whose row is not on
+  the database written to (an instance copied with `save(using=...)`) is
+  reported as a create instead of raising `AttributeError` (#15).
+* A server-side save (the admin, `ResourceRegistration`, server code) of
+  an invalid transition, one the workflow check would have refused, was
+  saved silently: its `transition_data` was `None`, and nothing was
+  logged. `Resource.save()` now logs each context where the save is
+  invalid as a WARNING on the new `scrud_django.workflow` logger, once the
+  row is written and before `scrud_post_save` is sent, naming the
+  resource's pk, its type URI, the context, the policy and the error (and
+  the states the content meets, when it meets several).
 * `ScrudSignalProcessor` read `SCRUD_WORKFLOW_ACTIONS` once, when it was
   built, so `override_settings(SCRUD_WORKFLOW_ACTIONS=...)` did not change
   the actions the app ran. It now reads the setting on first use and again
@@ -261,23 +262,24 @@ you deploy it.
   same one ([type-registration-race](follow-ups.md#type-registration-race))
   (#18). A process start updates that same row; it updated whichever row
   the database returned first, which reads might not use.
-
-* The database checks passed silently when reading a migrated database
-  failed (`scrud_django.W005` and `W006`, new in this release, and the
-  `W003`, `W004` and stored workflow policy checks), and `W006` when the
-  URLconf could not be imported, hiding a fault such as a missing grant. Each
-  now warns `scrud_django.W007`, naming the check, the database and the
-  error. A database that is not migrated is still not checked, so that
-  `migrate` runs, and neither is one that holds none of scrud_django's
-  tables (a router's `allow_migrate` keeps them out), though Django records
-  scrud_django's migrations as applied there.
+* The `W003`, `W004` and stored workflow policy (`E002`, `E003`, `E005`,
+  `W001`) database checks passed silently when reading a migrated database
+  failed, hiding a fault such as a missing grant. They now warn
+  `scrud_django.W007`, naming the checks, the database and the error. The
+  new `W005` and `W006` report such a failure with `W007` too, and so does
+  `W006` when the URLconf cannot be imported. A database that is not
+  migrated is still not checked, so that `migrate` runs, and neither is
+  one that holds none of scrud_django's tables (a router's `allow_migrate`
+  keeps them out), though Django records scrud_django's migrations as
+  applied there.
 
 ### Upgrading
 
 * A workflow policy in which two transitions cover the same (from, to) pair
-  of states is now invalid. Run `manage.py check --database default` (and
-  `manage.py check` for `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`)
-  before deploying, and give each pair one transition: a stored invalid
+  of states is now invalid. Run `manage.py check --database <alias>` for
+  each database that stores `WorkflowPolicy` resources (and `manage.py
+  check` for `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`) before
+  deploying, and give each pair one transition: a stored invalid
   policy fails every write of its type in its contexts closed
   (`ImproperlyConfigured`, a 500) until it is fixed or deleted, and an
   invalid default fails every write of its type.
@@ -301,8 +303,9 @@ you deploy it.
   both hold, and give each state a condition that excludes the others'.
 * A workflow policy that names a state in both `initial_states` and
   `states` is now invalid. Before deploying, run `manage.py check
-  --database default` and `manage.py check`, and give each such state one
-  name and one condition: a stored invalid policy fails every write of its
+  --database <alias>` for each database that stores `WorkflowPolicy`
+  resources, and `manage.py check`, and give each such state one name and
+  one condition: a stored invalid policy fails every write of its
   type in its contexts closed (`ImproperlyConfigured`, a 500) until it is
   fixed or deleted, and an invalid default every write of its type.
 * An update in place of a state in `restrict_update` through a transition
@@ -342,9 +345,10 @@ you deploy it.
   now fails closed (`ImproperlyConfigured`, before it writes) where any of
   those contexts has several stored `WorkflowPolicy` resources for its type,
   also a secondary context or one it moves the resource out of, or an
-  invalid one. Run `manage.py check --database default` before deploying,
-  and delete all but one policy per type and context (`scrud_django.E002`)
-  and fix or delete the invalid ones (`scrud_django.E005`).
+  invalid one. Before deploying, run `manage.py check --database <alias>`
+  for each database that stores `WorkflowPolicy` resources, and delete all
+  but one policy per type and context (`scrud_django.E002`) and fix or
+  delete the invalid ones (`scrud_django.E005`).
 * `scrud_post_save` sends two more keyword arguments, `transitions` and
   `transition_error`: an `on_save` action (or receiver) that names its
   keyword arguments must also take `**kwargs`.
@@ -359,6 +363,12 @@ you deploy it.
   the kind of action (`on_save` or `on_delete`, which a failure's log
   names) as a required fourth argument: a subclass that overrides or calls
   it must take or pass it.
+* `ScrudSignalProcessor.workflow_actions` is now a read-only view of the
+  `SCRUD_WORKFLOW_ACTIONS` setting's mapping, which every processor
+  shares: a subclass that changed it in `__init__`
+  (`self.workflow_actions[uri] = ...`) now gets a `TypeError`. Assign the
+  processor a mapping of its own (`self.workflow_actions = {...}`), or put
+  the actions in the setting.
 * Route the new `scrud_django.workflow` logger where you watch warnings:
   it reports server-side saves (the admin, `ResourceRegistration`, your
   code) that are invalid under a workflow policy and were saved anyway.

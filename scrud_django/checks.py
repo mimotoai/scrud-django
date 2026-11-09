@@ -185,15 +185,18 @@ def not_checked(alias):
 
 def could_not_run(checked, alias, problem, hint=None):
     """A Warning (``scrud_django.W007``) that the database check reporting
-    `checked` (its IDs) failed on database `alias`, which is migrated,
-    with `problem` (an error, as text). On a database that is not migrated,
+    `checked` (its IDs; several, ``"scrud_django.E002, E003, E005 and
+    W001"``, are named as checks) failed on database `alias`, which is
+    migrated, with `problem` (an error, as text). On a database that is not migrated,
     or holds none of scrud_django's tables, the database checks report
     nothing (`not_checked`), so that ``migrate`` can run; on a migrated one
     an error reading it is a fault (a missing grant, a schema out of step
     with the migrations), which passing would hide."""
+    several = "," in checked or " and " in checked
     return checks.Warning(
-        f"The {checked} database check could not run on database {alias!r}, "
-        f"which is migrated ({problem}): it reports nothing there.",
+        f"The {checked} database {'checks' if several else 'check'} could not "
+        f"run on database {alias!r}, which is migrated ({problem}): "
+        f"{'they report' if several else 'it reports'} nothing there.",
         hint=hint
         or (
             "Fix the error (a missing grant on scrud_django's tables? a schema "

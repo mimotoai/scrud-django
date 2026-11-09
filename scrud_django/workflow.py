@@ -26,7 +26,8 @@ from scrud_django.exceptions import (
 
 CEL_ENVIRONMENT = new_environment({})
 
-# State conditions that fail to evaluate (DEBUG), and saves that skipped the
+# State conditions that fail to evaluate (DEBUG), failures of W005's type
+# checker (`undeclared_properties`, DEBUG), and saves that skipped the
 # workflow check (``ResourceMixin.save``, WARNING).
 logger = logging.getLogger("scrud_django.workflow")
 

@@ -26,9 +26,12 @@ def scrud_tables_denied(execute, sql, params, many, context):
 
 
 def could_not_run(checked, problem, hint=None):
+    # The stored-policy checks' four IDs are named as checks.
+    several = "," in checked
     return checks.Warning(
-        f"The {checked} database check could not run on database 'default', "
-        f"which is migrated ({problem}): it reports nothing there.",
+        f"The {checked} database {'checks' if several else 'check'} could not "
+        f"run on database 'default', which is migrated ({problem}): "
+        f"{'they report' if several else 'it reports'} nothing there.",
         hint=hint
         or (
             "Fix the error (a missing grant on scrud_django's tables? a schema "
@@ -66,6 +69,17 @@ def test_a_database_check_that_cannot_read_a_migrated_database_warns(check, chec
     with connections["default"].execute_wrapper(scrud_tables_denied):
         found = check(None, databases=["default"])
     assert found == [could_not_run(checked, DENIED)]
+    # Several IDs (the stored-policy checks') are named as checks.
+    (warning,) = found
+    if checked == "scrud_django.E002, E003, E005 and W001":
+        assert warning.msg.startswith(
+            "The scrud_django.E002, E003, E005 and W001 database checks could "
+            "not run on database 'default'"
+        ), warning.msg
+        assert warning.msg.endswith(": they report nothing there."), warning.msg
+    else:
+        assert warning.msg.startswith(f"The {checked} database check could not")
+        assert warning.msg.endswith(": it reports nothing there."), warning.msg
     # Not run on a database it is not asked about.
     assert check(None) == []
 
