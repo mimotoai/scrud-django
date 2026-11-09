@@ -433,7 +433,10 @@ class _Walk:
         )
 
     def append_fields(self, node):
-        """``[{"name", "type"}]`` of the properties of an array node's items."""
+        """``[{"name", "type", "pointer_name"}]`` of the properties of an array
+        node's items: ``type`` is the property's schema type (the first
+        non-null one of a list, through its local ``$ref``), and
+        ``pointer_name`` the name escaped as a JSON Pointer reference token."""
         if node.kind != "array":
             return []
         items, _ = _resolve_ref(self.root_schema, node.schema.get("items"))
@@ -441,7 +444,11 @@ class _Walk:
         if not isinstance(properties, dict):
             return []
         return [
-            {"name": name, "type": sub.get("type") if isinstance(sub, dict) else None}
+            {
+                "name": name,
+                "type": _append_type(_resolve_ref(self.root_schema, sub)[0]),
+                "pointer_name": _escape_segment(name),
+            }
             for name, sub in properties.items()
         ]
 
@@ -655,6 +662,16 @@ def _schema_terms(schema, schema_type, kind):
     if schema_type == "integer":
         terms.append(TypeTerm(schema_type="number"))
     return terms
+
+
+def _append_type(schema):
+    """The schema type an append-row input is for: ``type``, or the first
+    non-null string of a ``type`` list; else ``None``."""
+    declared = schema.get("type")
+    for schema_type in declared if isinstance(declared, list) else [declared]:
+        if isinstance(schema_type, str) and schema_type != "null":
+            return schema_type
+    return None
 
 
 def _items_schema(schema, index):

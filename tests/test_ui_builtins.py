@@ -9,6 +9,10 @@ from scrud_django.ui.cascade import BUILTIN_NAMES, builtin_component
 from scrud_django.ui.engines import cached_template
 
 
+def escape_segment(name):
+    return name.replace("~", "~0").replace("/", "~1")
+
+
 def render(short, **context):
     component = builtin_component("scrud:" + short)
     context.setdefault("value", None)
@@ -26,7 +30,11 @@ def render(short, **context):
     )
     props = schema_items.get("properties", {}) if isinstance(schema_items, dict) else {}
     context.setdefault(
-        "append_fields", [{"name": k, "type": v.get("type")} for k, v in props.items()]
+        "append_fields",
+        [
+            {"name": k, "type": v.get("type"), "pointer_name": escape_segment(k)}
+            for k, v in props.items()
+        ],
     )
     context.setdefault("errors", [])
     context.setdefault("value_json", json.dumps(context["value"], indent=2))
@@ -141,6 +149,34 @@ def test_array_edit_has_append_row():
     assert 'name="/items/-/done"' in out
     assert 'type="checkbox"' in out
     assert "<form" not in out
+
+
+def test_array_edit_append_row_types_and_escaped_names():
+    out = render(
+        "array-edit",
+        pointer="/x",
+        input_id="n",
+        schema={
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "a/b": {"type": "integer"},
+                    "c~d": {"type": "number"},
+                    "<e>": {"type": "boolean"},
+                    "f": {"type": "string"},
+                },
+            },
+        },
+    )
+    assert (
+        '<label for="n-new-1">a/b</label> '
+        '<input type="number" step="1" id="n-new-1" name="/x/-/a~1b">'
+    ) in out
+    assert '<input type="number" step="any" id="n-new-2" name="/x/-/c~0d">' in out
+    assert '<label for="n-new-3">&lt;e&gt;</label>' in out
+    assert '<input type="checkbox" id="n-new-3" name="/x/-/&lt;e&gt;">' in out
+    assert '<input type="text" id="n-new-4" name="/x/-/f">' in out
 
 
 def test_array_edit_primitive_items():
@@ -327,8 +363,8 @@ def test_array_edit_append_field_named_items():
         pointer="/x",
         input_id="scrud-f-~1x",
         append_fields=[
-            {"name": "items", "type": "string"},
-            {"name": "keys", "type": "boolean"},
+            {"name": "items", "type": "string", "pointer_name": "items"},
+            {"name": "keys", "type": "boolean", "pointer_name": "keys"},
         ],
     )
     assert 'name="/x/-/items"' in out and 'name="/x/-/keys"' in out

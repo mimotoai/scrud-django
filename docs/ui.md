@@ -85,7 +85,7 @@ Every template is given plain JSON, plus its children's already rendered HTML:
 | `errors` | The messages for this node from a refused write. |
 | `value_json` | The value as indented JSON (filled for stored components and `scrud:json`). |
 | `input_id` | An HTML id unique to the node, for labels. |
-| `append_fields` | For an array node: `[{name, type}]` of its items' properties, for an append form. |
+| `append_fields` | For an array node: `[{name, type, pointer_name}]` of its items' properties, for an append form. `type` is the property's schema type (the first non-null one of a list, through a local `$ref`), or `None`; `pointer_name` is `name` escaped as a JSON Pointer reference token (`~` as `~0`, `/` as `~1`), for input names such as `{{ pointer }}/-/{{ field.pointer_name }}`. |
 
 Be careful with the name `items`. In a Django template `children.items`
 resolves to a property named `items` (as the to-do demo's schema has), so

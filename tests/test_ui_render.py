@@ -741,3 +741,28 @@ def test_uri_edits_as_url_input(admin_login):
     view = render_node_type(node_type(schema), content, admin_login, mode="view")
     assert '<a class="scrud-uri" href="https://example.org/">' in view
     assert "<input" not in view
+
+
+@pytest.mark.django_db
+def test_append_fields_escape_names_and_resolve_types(admin_login):
+    schema = {
+        "type": "object",
+        "properties": {
+            "rows": {"type": "array", "items": {"$ref": "#/definitions/row"}}
+        },
+        "definitions": {
+            "row": {
+                "type": "object",
+                "properties": {
+                    "a/b": {"type": ["integer", "null"]},
+                    "c~d": {"$ref": "#/definitions/flag"},
+                },
+            },
+            "flag": {"type": "boolean"},
+        },
+    }
+    output = render_node_type(node_type(schema), {"rows": []}, admin_login)
+    assert re.search(
+        r'<input type="number" step="1" id="[^"]+" name="/rows/-/a~1b">', output
+    )
+    assert re.search(r'<input type="checkbox" id="[^"]+" name="/rows/-/c~0d">', output)
