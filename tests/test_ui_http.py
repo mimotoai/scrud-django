@@ -688,8 +688,10 @@ def test_stored_is_kept_once():
 def test_render_failure_is_a_notice_without_content(
     todo_list, todo_owner_login, monkeypatch, caplog, fragment
 ):
-    """M-3: an unexpected error in the renderer keeps the status and shows a
-    notice, never content or a traceback."""
+    """M-3: an unexpected error in the renderer shows a notice, never content
+    or a traceback. A success becomes a 500 (htmx swaps no error into the
+    page as if it were the content), logged with the view and the status it
+    replaced."""
 
     def broken(*args, **kwargs):
         raise RuntimeError("boom")
@@ -699,13 +701,41 @@ def test_render_failure_is_a_notice_without_content(
     Given.http.force_authenticate(todo_owner_login)
     with caplog.at_level(logging.ERROR, logger="scrud_django.ui.renderer"):
         When.http.get(detail_url(todo_list), HTTP_ACCEPT=HTML, **headers)
-    Then.http.status_code_is(200)
+    Then.http.status_code_is(500)
     assert_html()
     output = html()
     assert "Something went wrong rendering this page." in output
     assert "Groceries" not in output and "Buy milk" not in output
     assert "boom" not in output and "Traceback" not in output
-    assert any(r.exc_info for r in caplog.records)
+    failures = [r for r in caplog.records if r.exc_info]
+    assert failures
+    message = failures[0].getMessage()
+    assert "ResourceViewSet" in message and "200" in message, message
+
+
+@pytest.mark.django_db
+@test_context
+def test_render_failure_of_an_error_keeps_its_status(
+    todo_list, todo_reader_login, monkeypatch
+):
+    """An error response whose notice fails to render keeps its status."""
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(renderer, "_body", broken)
+    Given.http.force_authenticate(todo_reader_login)
+    put_json(
+        detail_url(todo_list),
+        {**todo_list.content, "title": "Crafted"},
+        HTTP_IF_MATCH=f'"{todo_list.etag}"',
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+    )
+    Then.http.status_code_is(403)
+    assert_html()
+    assert "Something went wrong rendering this page." in html()
+    assert "Crafted" not in html()
 
 
 @pytest.mark.django_db

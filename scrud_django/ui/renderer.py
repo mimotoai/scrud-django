@@ -126,11 +126,17 @@ class ScrudHTMLRenderer(BaseRenderer):
                         scope_chain=scope_chain_of(request),
                     )
         except Exception:
-            # The last resort: the response keeps its status, and shows no
-            # content (nor a traceback).
+            # The last resort: a notice, with no content (nor a traceback). A
+            # success becomes a 500, so that htmx treats it as an error; an
+            # error keeps its status.
             logger.exception(
-                "scrud-ui: rendering %s failed", getattr(request, "path", "?")
+                "scrud-ui: rendering %s (%s, status %s) failed",
+                getattr(request, "path", "?"),
+                type(view).__name__,
+                status,
             )
+            if response is not None and status < 400:
+                response.status_code = 500
             body = _notices([RENDER_FAILED_MESSAGE])
         return str(body).encode(self.charset)
 
