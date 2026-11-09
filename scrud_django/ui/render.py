@@ -397,6 +397,7 @@ class _Walk:
             "value_json": "",
             "input_id": self.id_prefix + _id_part(node.pointer),
             "append_fields": self.append_fields(node),
+            "append_item_type": self.append_item_type(node),
         }
         component = node.component
         builtin = component.name.startswith(BUILTIN_PREFIX)
@@ -451,6 +452,17 @@ class _Walk:
             }
             for name, sub in properties.items()
         ]
+
+    def append_item_type(self, node):
+        """The schema type of an array node's items when they are not objects
+        (as `_append_type`), else ``None``: the type of the single append
+        input."""
+        if node.kind != "array":
+            return None
+        items, _ = _resolve_ref(self.root_schema, node.schema.get("items"))
+        if isinstance(items.get("properties"), dict):
+            return None
+        return _append_type(items)
 
     def top_errors(self) -> list[str]:
         """The messages for the resource, then those for nodes not rendered

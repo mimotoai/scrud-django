@@ -452,3 +452,33 @@ def test_build_body_keeps_null_and_missing_under_empty_inputs():
     assert out["typed"]["a"] == "x"
     assert out["cleared"] == {"s": ""}
     assert out["append"] == {"l": ["v"]}
+
+
+PRIMITIVE_APPEND_SCRIPT = r"""
+const vm = require('vm'), fs = require('fs');
+const window = {};
+const ctx = vm.createContext({window, htmx: {config: {}, defineExtension() {}}});
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const U = window.ScrudUI;
+const out = {};
+out.number = U.buildBody({nums: [1]}, [{name: '/nums/-', type: 'number', value: '5'}]);
+out.fraction = U.buildBody({nums: []}, [{name: '/nums/-', type: 'number', value: '2.5'}]);
+out.empty = U.buildBody({nums: [1]}, [{name: '/nums/-', type: 'number', value: ''}]);
+out.flag = U.buildBody({f: []}, [{name: '/f/-', type: 'checkbox', checked: true}]);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_build_body_appends_typed_primitive_items():
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", PRIMITIVE_APPEND_SCRIPT, str(SCRUD_UI)],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["number"] == {"nums": [1, 5]}
+    assert out["fraction"] == {"nums": [2.5]}
+    assert out["empty"] == {"nums": [1]}
+    assert out["flag"] == {"f": [True]}

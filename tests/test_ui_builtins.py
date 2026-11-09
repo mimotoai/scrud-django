@@ -371,6 +371,22 @@ def test_array_edit_append_field_named_items():
     assert 'id="scrud-f-~1x-new-1"' in out and 'for="scrud-f-~1x-new-2"' in out
 
 
+@pytest.mark.parametrize(
+    "item_type, expected",
+    [
+        ("integer", '<input type="number" step="1" name="/nums/-"'),
+        ("number", '<input type="number" step="any" name="/nums/-"'),
+        ("boolean", '<input type="checkbox" name="/nums/-"'),
+        ("string", '<input type="text" name="/nums/-"'),
+        (None, '<input type="text" name="/nums/-"'),
+    ],
+)
+def test_array_edit_append_input_for_primitive_items(item_type, expected):
+    out = render("array-edit", pointer="/nums", append_item_type=item_type)
+    assert expected in out
+    assert out.count("<input") == 1
+
+
 def test_label_uses_input_id():
     out = render("string-edit", pointer="/a", input_id="zz", label="A")
     assert 'id="zz"' in out and 'for="zz"' in out
