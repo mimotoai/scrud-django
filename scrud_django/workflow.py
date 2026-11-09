@@ -7,11 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 
-from cel_expr_python import cel
 from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac.cel import (
     InvalidExpression,
     compile_expression,
+    evaluate,
     new_environment,
 )
 
@@ -230,31 +230,38 @@ class WorkflowPolicy:
         """The names of the `state_expressions` whose condition `data` (a
         mapping, else none) meets. An evaluation error, such as a property
         missing from `data`, or a result that is not ``true``, is no match
-        (as scoped-rbac's ``is_true`` decides). A condition whose evaluation
-        fails, or gives no boolean, is logged at DEBUG on the
-        ``scrud_django.workflow`` logger, naming the policy (`reference`)
-        and the state: a misspelled property fails on every content. A
-        condition that is ``false`` is not logged."""
+        (scoped-rbac's ``evaluate``). A condition that cannot be decided (an
+        evaluation error or a result that is not a boolean) is logged at
+        DEBUG on the ``scrud_django.workflow`` logger, naming the policy
+        (`reference`), the state and the condition's text: a misspelled
+        property fails on every content. scoped-rbac logs the evaluation
+        error itself at DEBUG on ``scoped_rbac.cel``. A condition that is
+        ``false`` is not logged."""
         if not isinstance(data, Mapping):
             return []
         matches = []
         for name, condition in state_expressions.items():
-            result = condition.eval(data=data)
-            if result.type() == cel.Type.BOOL:
-                if result.value() is True:
-                    matches.append(name)
-                continue
-            if result.type() == cel.Type.ERROR:
-                outcome = f"failed to evaluate: {result.value()}"
-            else:
-                outcome = f"is not a boolean ({result.type()})"
-            logger.debug(
-                "The condition of workflow state %r of policy %r %s; it is no match.",
-                name,
-                self.reference,
-                outcome,
-            )
+            outcome = evaluate(condition, data)
+            if outcome is True:
+                matches.append(name)
+            elif outcome is None:
+                logger.debug(
+                    "The condition %r of workflow state %r of policy %r cannot "
+                    "be decided (an evaluation error, or not a boolean); it is "
+                    "no match.",
+                    self.condition_text(name),
+                    name,
+                    self.reference,
+                )
         return matches
+
+    def condition_text(self, name):
+        """The CEL text of state `name`'s condition, as the policy gives it."""
+        for key in ("initial_states", "states"):
+            states = self.policy.get(key)
+            if isinstance(states, Mapping) and name in states:
+                return states[name]
+        return None
 
     def mapping_of(self, key, what):
         """The policy's `key` (``{}`` when absent), which must be an object (of
