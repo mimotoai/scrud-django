@@ -702,3 +702,25 @@ def test_render_query_count_is_constant(todo_owner_login):
     two, four = count(2), count(4)
     assert two == four
     assert two <= 6, two
+
+
+@pytest.mark.django_db
+def test_render_query_count_independent_of_contexts(admin_login):
+    # Each list is in its own context, with its own stylesheet there: the
+    # stylesheets are read once per render, whatever the number of contexts.
+    make_component("ctx-title", '<b class="t">{{ value }}</b>', mode="edit")
+
+    def count(n):
+        tag = uuid4().hex[:8]
+        lists = []
+        for i in range(n):
+            context = f"ctx-{tag}-{i}"
+            make_stylesheet(f"s-{i}", [("ex:title", "ctx-title")], context=context)
+            lists.append(make_list(f"L{i}", context=context))
+        with CaptureQueriesContext(connection) as queries:
+            output = collection_html(lists, admin_login)
+        assert output.count('<b class="t">') == n
+        return len(queries)
+
+    two, five = count(2), count(5)
+    assert two == five, (two, five)

@@ -126,16 +126,31 @@ def _name_of(content):
     return name if isinstance(name, str) else None
 
 
+def _stylesheet_rows():
+    """``(pk, etag, content, name, contexts)`` of every named stored
+    stylesheet, lowest pk first. Inside `rules_memo` they are read once (on
+    the first call), whatever the contexts asked for: one query per render,
+    not one per context set."""
+    memo = _memo.get()
+    if memo is not None and _STYLESHEETS in memo:
+        return memo[_STYLESHEETS]
+    rows = []
+    for pk, etag, content in _stored(UI_STYLESHEET_TYPE_URI):
+        name = _name_of(content)
+        if name is not None:
+            rows.append((pk, etag, content, name, rbac_contexts_of(content)))
+    if memo is not None:
+        memo[_STYLESHEETS] = rows
+    return rows
+
+
 def _stylesheets_by_context(contexts):
     """``{context: {name: (pk, etag, content)}}`` over the default context and
     `contexts`; the lowest pk wins a duplicate name in a context."""
     wanted = {DEFAULT_CONTEXT, *contexts}
     found: dict[str, dict] = {}
-    for pk, etag, content in _stored(UI_STYLESHEET_TYPE_URI):
-        name = _name_of(content)
-        if name is None:
-            continue
-        for context in rbac_contexts_of(content):
+    for pk, etag, content, name, sheet_contexts in _stylesheet_rows():
+        for context in sheet_contexts:
             if context in wanted:
                 found.setdefault(context, {}).setdefault(name, (pk, etag, content))
     return found
@@ -175,8 +190,9 @@ _memo: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
 @contextlib.contextmanager
 def rules_memo():
     """Memoise `effective_rules` inside the block (one request), and read the
-    stored components once there (`load_components`). Outside it nothing is
-    cached across calls."""
+    stored stylesheets and components once there (`load_components`). Enter
+    it around rendering only, after any write: an edit made inside the block
+    applies in the next one. Outside it nothing is cached across calls."""
     token = _memo.set({})
     try:
         yield
@@ -202,15 +218,12 @@ def effective_rules(
     in list order, then the `linked` stylesheets in order."""
     contexts = [c for c in dict.fromkeys(contexts) if c != DEFAULT_CONTEXT]
     linked = tuple(linked)
-    by_context = _stylesheets_by_context(contexts)
-    read = frozenset(
-        (pk, etag) for sheets in by_context.values() for pk, etag, _ in sheets.values()
-    )
     memo = _memo.get()
-    key = (tuple(contexts), linked, read)
+    key = (tuple(contexts), linked)
     if memo is not None and key in memo:
         return memo[key]
 
+    by_context = _stylesheets_by_context(contexts)
     rules = _sheet_rules(_default_stylesheet(), lambda i: (0, 0, i))
     for pk, _etag, content in by_context.get(DEFAULT_CONTEXT, {}).values():
         order = _order_of(content)
@@ -257,8 +270,10 @@ def load_components(names: set[str]) -> dict[str, Component]:
     return found
 
 
-# The key of the stored components in a `rules_memo` (no rules key is a str).
+# The keys of the stored components and stylesheets in a `rules_memo` (no
+# rules key is a str).
 _COMPONENTS = "components"
+_STYLESHEETS = "stylesheets"
 
 
 def _stored_components(names):

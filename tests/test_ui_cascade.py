@@ -112,7 +112,9 @@ def test_builtin_named_and_missing_components():
 
 
 @pytest.mark.django_db
-def test_rules_memo_invalidated_by_etag():
+def test_rules_memo_sees_edits_in_a_new_scope():
+    # A memo scope (one render, after any write) reads the stylesheets once:
+    # an edit applies in the next scope, not within one.
     make_component("a")
     make_component("b")
     sheet = make_stylesheet("s", [("ex:L", "a")])
@@ -124,9 +126,31 @@ def test_rules_memo_invalidated_by_etag():
             "ui-stylesheets",
             str(sheet.pk),
         )
+        assert effective_rules([]) is first
+    with rules_memo():
         second = effective_rules([])
         assert resolve_component(second, (), TERMS, "view").name == "b"
-        assert resolve_component(first, (), TERMS, "view").name == "a"
+    assert resolve_component(first, (), TERMS, "view").name == "a"
+
+
+@pytest.mark.django_db
+def test_stylesheets_read_once_per_memo():
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    make_stylesheet("s", [("ex:L", "scrud:json")], context="p1")
+    make_stylesheet("t", [("ex:L", "scrud:json")], context="p2")
+    with rules_memo():
+        with CaptureQueriesContext(connection) as queries:
+            effective_rules(["p1"])
+            effective_rules(["p2"])
+            effective_rules(["p1", "p2"], ("s",))
+        assert len(queries) == 1
+    # outside the memo each call reads them again
+    with CaptureQueriesContext(connection) as queries:
+        effective_rules(["p1"])
+        effective_rules(["p1"])
+    assert len(queries) == 2
 
 
 @pytest.mark.django_db
