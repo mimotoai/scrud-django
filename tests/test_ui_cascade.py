@@ -238,3 +238,23 @@ def test_fallback_without_matching_rules():
 def test_default_page_rule():
     assert resolve(terms=[TypeTerm(iri="scrud:page")]) == "scrud:page"
     assert resolve(terms=[TypeTerm(iri="scrud:page")], mode="edit") == "scrud:page"
+
+
+@pytest.mark.django_db
+def test_components_loaded_once_per_memo():
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    make_component("a")
+    make_component("b")
+    with rules_memo():
+        with CaptureQueriesContext(connection) as queries:
+            assert set(load_components({"a"})) == {"a"}
+            assert set(load_components({"b", "missing"})) == {"b"}
+            assert set(load_components({"a", "b"})) == {"a", "b"}
+        assert len(queries) == 1
+    # outside the memo each call reads them again
+    with CaptureQueriesContext(connection) as queries:
+        load_components({"a"})
+        load_components({"a"})
+    assert len(queries) == 2

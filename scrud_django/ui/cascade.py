@@ -174,13 +174,24 @@ _memo: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def rules_memo():
-    """Memoise `effective_rules` inside the block (one request). Outside it
-    nothing is cached across calls."""
+    """Memoise `effective_rules` inside the block (one request), and read the
+    stored components once there (`load_components`). Outside it nothing is
+    cached across calls."""
     token = _memo.set({})
     try:
         yield
     finally:
         _memo.reset(token)
+
+
+@contextlib.contextmanager
+def request_memo():
+    """`rules_memo`, unless one is active already: the block then shares it."""
+    if _memo.get() is not None:
+        yield
+        return
+    with rules_memo():
+        yield
 
 
 def effective_rules(
@@ -224,7 +235,8 @@ def effective_rules(
 
 def load_components(names: set[str]) -> dict[str, Component]:
     """The components called `names`, those that exist: built-ins for ``scrud:``
-    names, else stored components in the default context."""
+    names, else stored components in the default context. Inside `rules_memo`
+    the stored components are read once, on the first call that needs one."""
     found: dict[str, Component] = {}
     stored_names = set()
     for name in names:
@@ -234,17 +246,36 @@ def load_components(names: set[str]) -> dict[str, Component]:
         else:
             stored_names.add(name)
     if stored_names:
-        seen = set()
-        for pk, etag, content in _stored(UI_COMPONENT_TYPE_URI):
-            name = _name_of(content)
-            if name not in stored_names or name in seen:
-                continue
-            if DEFAULT_CONTEXT not in rbac_contexts_of(content):
-                continue
-            seen.add(name)  # the lowest pk wins, even if it is unusable
-            component = _stored_component(name, pk, etag, content)
-            if component is not None:
-                found[name] = component
+        memo = _memo.get()
+        if memo is None:
+            stored = _stored_components(stored_names)
+        else:
+            if _COMPONENTS not in memo:
+                memo[_COMPONENTS] = _stored_components(None)
+            stored = memo[_COMPONENTS]
+        found.update((n, stored[n]) for n in stored_names if n in stored)
+    return found
+
+
+# The key of the stored components in a `rules_memo` (no rules key is a str).
+_COMPONENTS = "components"
+
+
+def _stored_components(names):
+    """``{name: Component}`` of the usable stored components called one of
+    `names` (``None``: any name)."""
+    found = {}
+    seen = set()
+    for pk, etag, content in _stored(UI_COMPONENT_TYPE_URI):
+        name = _name_of(content)
+        if name is None or name in seen or (names is not None and name not in names):
+            continue
+        if DEFAULT_CONTEXT not in rbac_contexts_of(content):
+            continue
+        seen.add(name)  # the lowest pk wins, even if it is unusable
+        component = _stored_component(name, pk, etag, content)
+        if component is not None:
+            found[name] = component
     return found
 
 
