@@ -121,6 +121,50 @@ def test_component_duplicate_name_is_400(admin_login):
     assert Http.response.json()["type"].endswith("ui-component-name-taken")
 
 
+MALFORMED = [
+    ("ui-stylesheets", stylesheet(rules=5)),
+    ("ui-stylesheets", stylesheet(rules="array")),
+    ("ui-stylesheets", stylesheet(rules={"select": "array"})),
+    ("ui-stylesheets", stylesheet(rules=[5])),
+    ("ui-stylesheets", stylesheet(rules=[{"select": 5, "component": "x"}])),
+    ("ui-stylesheets", stylesheet(prefixes="x")),
+    ("ui-stylesheets", stylesheet(prefixes={"ex": 5})),
+    (
+        "ui-stylesheets",
+        stylesheet(prefixes={"ex": 5}, rules=[{"select": "ex:A", "component": "x"}]),
+    ),
+    ("ui-stylesheets", stylesheet(name=5)),
+    ("ui-stylesheets", stylesheet(name=["theme"])),
+    ("ui-stylesheets", stylesheet(rbac_context=5)),
+    ("ui-stylesheets", [stylesheet()]),
+    ("ui-components", component(template=5)),
+    ("ui-components", component(engine=5)),
+    ("ui-components", component(engine="other")),
+    ("ui-components", component(name=5)),
+    ("ui-components", component(name=["todo-row"])),
+    ("ui-components", [component()]),
+]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("write", ["POST", "PUT"])
+@pytest.mark.parametrize("slug,body", MALFORMED)
+@test_context
+def test_malformed_ui_content_is_400(admin_login, slug, body, write):
+    """A body of the wrong shape is refused by the type's schema (400), not
+    by an error in the write-time checks (500)."""
+    good = stylesheet() if slug == "ui-stylesheets" else component()
+    Given.http.force_authenticate(admin_login)
+    if write == "POST":
+        When.http.post(reverse(f"{slug}-list"), data=body, format="json")
+    else:
+        When.http.post(reverse(f"{slug}-list"), data=good, format="json")
+        Then.http.status_code_is(201)
+        location, etag = Http.response["Location"], Http.response["ETag"]
+        When.http.put(location, data=body, format="json", HTTP_IF_MATCH=etag)
+    Then.http.status_code_is(400)
+
+
 @pytest.mark.django_db
 @test_context
 def test_stylesheet_same_name_other_context_is_201(admin_login):

@@ -17,12 +17,14 @@ from scrud_django.views import ResourceViewSet
 
 class UIContentValidationMixin:
     """Checks the content of a UI resource before it is saved: `validate_content`
-    runs ahead of `create_resource` and `update` saving. (Later checks of the
-    content, such as template compilation, belong in `validate_content`.)"""
+    runs ahead of `create_resource` and `update` saving."""
 
     def validate_content(self, content, instance=None):
         """Raise a ``ScrudException`` when `content` (the request body) is
-        refused. `instance` is the resource an update replaces."""
+        refused. `instance` is the resource an update replaces. It runs
+        before the type's JSON Schema validates the body, so it must accept
+        a body of any shape: what it cannot check (a value of the wrong
+        type) it leaves to the schema, which refuses it (400)."""
 
     def create_resource(self, request):
         self.validate_content(request.data)
@@ -80,7 +82,8 @@ class UIStylesheetViewSet(UIContentValidationMixin, ResourceViewSet):
         prefixes = content.get("prefixes")
         if not isinstance(prefixes, dict):
             prefixes = {}
-        for rule in content.get("rules") or []:
+        rules = content.get("rules")
+        for rule in rules if isinstance(rules, list) else []:
             select = rule.get("select") if isinstance(rule, dict) else None
             if not isinstance(select, str):
                 continue
