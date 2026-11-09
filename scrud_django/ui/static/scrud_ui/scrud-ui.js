@@ -44,8 +44,12 @@
 
   /**
    * Set `value` at `pointer` in `doc` (mutating it, creating containers on
-   * the way). A `-` segment on an array appends. `undefined` removes the
-   * key. Returns `doc`.
+   * the way). A `-` segment on an array appends. `undefined` removes the key
+   * of an object (never an array element) and leaves `doc` as it is for the
+   * root pointer. A pointer with an unsafe segment (`__proto__`,
+   * `constructor`, `prototype`) is ignored: `doc` is returned unchanged.
+   * Throws an Error for an array index that is not a number or is past the
+   * end of the array. Returns `doc` (or `value` for the root pointer).
    */
   function applyPointer(doc, pointer, value) {
     var segs = parsePointer(pointer);
@@ -146,7 +150,13 @@
    * Whether `field` (a text-like input) still shows the value embedded at its
    * pointer. A text input's value has lost CR and LF (the browser strips
    * them), and a textarea's line breaks are LF: compared accordingly, so that
-   * an untouched field leaves the embedded value exactly as it is.
+   * an untouched field leaves the embedded value exactly as it is. An embedded
+   * number is compared numerically (`Number(value) === embedded`, so "3.0"
+   * matches 3), and an empty input never matches a number. An empty input
+   * over `null` or a missing value is untouched (it is how the browser shows
+   * them), while an empty input over a string is a change to "". Any other
+   * embedded type (boolean, object) is never untouched. Non-text-like fields
+   * are never untouched.
    */
   function untouched(field, embedded) {
     if (TEXT_LIKE.indexOf(field.type) < 0) return false;
@@ -280,14 +290,24 @@
 
   /**
    * The notice for a request that failed: `status` is the HTTP status, or
-   * falsy for a network failure; `verb` is the request's ("delete" or not).
+   * falsy for a network failure; `verb` is the request's. A GET is a failed
+   * load; a 5xx for a write may come after the change was committed (the
+   * response failed to render), so it does not claim the change was lost.
    */
   function noticeText(status, verb) {
+    verb = String(verb).toLowerCase();
+    var where = status ? ' (HTTP ' + status + ').' : ' (network error).';
+    if (verb === 'get') return 'This item could not be loaded' + where;
+    if (status >= 500) {
+      return (
+        'Something went wrong (HTTP ' + status + '). Reload to see the current state.'
+      );
+    }
     var what =
-      String(verb).toLowerCase() === 'delete'
+      verb === 'delete'
         ? 'The item was not deleted'
         : 'Your change was not saved';
-    return what + (status ? ' (HTTP ' + status + ').' : ' (network error).');
+    return what + where;
   }
 
   function invalidFieldsText(names) {
@@ -490,7 +510,7 @@
     var config = detail.requestConfig || {};
     var status = detail.xhr && detail.xhr.status;
     var verb = String(config.verb).toLowerCase();
-    if (status && !showsClientNotice(verb, status)) return;
+    if (verb !== 'get' && status && !showsClientNotice(verb, status)) return;
     var frame = frameOf(detail.elt);
     if (frame) showNotice(frame, noticeText(status, verb));
   }

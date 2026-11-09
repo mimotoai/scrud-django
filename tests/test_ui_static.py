@@ -1,8 +1,9 @@
 """Static assets of the UI: vendored htmx and the ``scrud-json`` extension.
 
-Browser behaviour is covered in the browser tests; these checks are
-Python-side, plus runs of scrud-ui.js under node (against a stub DOM where
-it needs one), which skip without node (`require_node`)."""
+The node tests here cover the pure helpers of scrud-ui.js (against a stub DOM
+where one is needed; they skip without node, `require_node`). The htmx wiring
+was verified manually in a browser; no automated browser test exists. The
+other checks are Python-side."""
 
 import json
 import os
@@ -576,6 +577,8 @@ NOTICE_SCRIPT = (
 out.texts = [
   U.noticeText(404, 'put'), U.noticeText(0, 'put'), U.noticeText(undefined, 'put'),
   U.noticeText(500, 'delete'), U.noticeText(0, 'delete'),
+  U.noticeText(500, 'put'), U.noticeText(503, 'delete'), U.noticeText(404, 'get'),
+  U.noticeText(0, 'get'),
 ];
 out.invalid = [U.invalidFieldsText(['/a']), U.invalidFieldsText(['/a', '/b'])];
 out.shows = [
@@ -615,6 +618,17 @@ out.delete409Swap = evt409.detail.shouldSwap;
 handlers['htmx:responseError']({detail: {
   elt: button, xhr: {status: 403}, requestConfig: {verb: 'delete'}}});
 out.afterDelete = notices().map((n) => n.textContent);
+// a failed GET (a reload frame's) is a load failure, not an unsaved change
+const gframe = frame('/l/3/');
+handlers['htmx:responseError']({detail: {
+  elt: gframe, xhr: {status: 404}, requestConfig: {verb: 'get'}}});
+handlers['htmx:responseError']({detail: {
+  elt: gframe, xhr: {status: 400}, requestConfig: {verb: 'get'}}});
+out.afterGet = gframe.children.filter((c) => /scrud-client-notice/.test(c.className || ''))
+  .map((n) => n.textContent);
+handlers['htmx:sendError']({detail: {elt: gframe, requestConfig: {verb: 'get'}}});
+out.afterGetSend = gframe.children.filter((c) => /scrud-client-notice/.test(c.className || ''))
+  .map((n) => n.textContent);
 console.log(JSON.stringify(out));
 """
 )
@@ -631,8 +645,12 @@ def test_failed_requests_show_a_client_notice():
         "Your change was not saved (HTTP 404).",
         "Your change was not saved (network error).",
         "Your change was not saved (network error).",
-        "The item was not deleted (HTTP 500).",
+        "Something went wrong (HTTP 500). Reload to see the current state.",
         "The item was not deleted (network error).",
+        "Something went wrong (HTTP 500). Reload to see the current state.",
+        "Something went wrong (HTTP 503). Reload to see the current state.",
+        "This item could not be loaded (HTTP 404).",
+        "This item could not be loaded (network error).",
     ]
     assert out["invalid"] == [
         "This form could not be saved: invalid field /a.",
@@ -653,6 +671,8 @@ def test_failed_requests_show_a_client_notice():
     assert out["swapped"] == 0
     assert out["deleteSwap"] is False and out["delete409Swap"] is True
     assert out["afterDelete"] == ["The item was not deleted (HTTP 403)."]
+    assert out["afterGet"] == ["This item could not be loaded (HTTP 400)."]
+    assert out["afterGetSend"] == ["This item could not be loaded (network error)."]
 
 
 CANCEL_SCRIPT = (
