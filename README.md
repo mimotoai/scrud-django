@@ -164,14 +164,19 @@ text, for example read from a file of your package, as the demo's
 schema, whose `$ref`s may only point inside it (`#/...`). The registration
 runs when the URLconf is imported. When the database fails then, it still
 returns the routes and logs the failure (logger
-`scrud_django.registration`): a warning while the database is unreachable
-or not migrated (before the first `migrate`, which is expected), an error
-when it is reachable and migrated (a missing grant, a schema out of step
-with the migrations), which needs fixing. The type is registered when a
-request (or code) next reads it, so the process serves it once the database
-is back, and until then a request for it fails (500), not 404. A process start stores nothing when the type and
-its documents are unchanged; under `DEBUG`, a type's row follows the
-registration's arguments (`slug`, `revision`, `schema_uri`, ...); outside
+`scrud_django.registration`): a warning while the database is
+unreachable, not migrated (before the first `migrate`, which is expected),
+or its migration state cannot be read (a database error); an error when it
+is reachable and migrated (a missing grant, a schema out of step with the
+migrations), which needs fixing, or when its migration state cannot be told
+for another reason (a broken migration graph, logged with its traceback).
+Whether it is migrated is asked once for the registrations that fail
+together, not once each. The type is registered when a request (or code)
+next reads it, so the process serves it once the database is back, and
+until then a request for it fails (500), not 404. A process start stores
+nothing when the type and its documents are unchanged; under `DEBUG`, a
+type's row follows the registration's arguments (`slug`, `revision`,
+`schema_uri`, ...); outside
 it, the stored row keeps its slug, revision and URIs, and only its
 documents (and `uses_reversion`) are updated. Pass
 `viewset_class=ResourceViewSetGenericFilter` (`scrud_django.views`) for a

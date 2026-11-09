@@ -11,7 +11,7 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import router, transaction
 from django.db.models.functions import Length
-from django.db.utils import OperationalError, ProgrammingError
+from django.db.utils import InterfaceError, OperationalError, ProgrammingError
 from django.shortcuts import get_list_or_404, get_object_or_404
 from django.urls import path
 from django.utils import timezone
@@ -345,7 +345,14 @@ def resource_type_urls(slug, viewset_class):
 # registers each. A type is registered when it is next read
 # (`retry_registration`, from `get_resource_type_for`) and forgotten here once
 # that registration commits.
-PENDING_REGISTRATIONS = {}
+_PENDING_REGISTRATIONS = {}
+# Database alias -> what `probe` found there: True (reachable and migrated),
+# False (unreachable, or not migrated) or None (it could not be told: the
+# probe failed otherwise). Kept while registrations keep failing, as at a
+# URLconf import while the database is unreachable, where asking again would
+# cost every registration a second connection timeout; forgotten when a
+# registration succeeds or a pending one is retried (`retry_registration`).
+_PROBED = {}
 _PENDING_LOCK = threading.RLock()
 
 
@@ -362,23 +369,40 @@ def register_or_defer(
     still returned, built from `slug` and `viewset_class` (they need no
     database), the type is added to the service catalog (`type_uri`) when
     `register_service`, and its registration is left pending
-    (`PENDING_REGISTRATIONS`): it is retried when the type is next read, so
+    (`_PENDING_REGISTRATIONS`): it is retried when the type is next read, so
     a process that started while the database was unreachable serves the
     type once it is back, without a restart. Until then a request for the
     type fails with the retry's error (a 500), not a 404. The retry calls
     `retry` (default: `register`).
 
-    The failure is logged as a warning while the database is unreachable or
-    not migrated (`migrated_and_reachable`), and as an error on a database
-    that is reachable and migrated: there it is a fault (a missing grant, a
-    schema out of step with the migrations) that fails every request for the
-    type until it is fixed."""
+    The failure is logged as a warning while the database is unreachable,
+    not migrated, or its migration state cannot be read (a database error;
+    `migrated_and_reachable`), and as an error on a database that is
+    reachable and migrated: there it is a fault (a missing grant, a schema
+    out of step with the migrations) that fails every request for the type
+    until it is fixed. It is an error too when the migration state cannot
+    be told for another reason (a broken migration graph), which `probe`
+    logs with its traceback. The answer is kept for the registrations that
+    fail after it (`_PROBED`)."""
     db = type_db()
     try:
         with transaction.atomic(using=db):
-            return register().urls
+            urls = register().urls
     except (OperationalError, ProgrammingError) as e:
-        if migrated_and_reachable(db):
+        migrated = probe(db)
+        if migrated is None:
+            logger.error(
+                "Could not register resource type %r (%s: %s) on database %r, "
+                "whose migration state could not be told (logged above): "
+                "requests for it fail until its registration succeeds. Its "
+                "routes are served, and its registration is retried when it is "
+                "next read.",
+                slug,
+                type(e).__name__,
+                e,
+                db,
+            )
+        elif migrated:
             logger.error(
                 "Could not register resource type %r (%s: %s) on database %r, "
                 "which is reachable and migrated: requests for it fail until "
@@ -400,22 +424,55 @@ def register_or_defer(
                 db,
             )
         with _PENDING_LOCK:
-            PENDING_REGISTRATIONS[slug] = retry or register
+            _PENDING_REGISTRATIONS[slug] = retry or register
         if register_service:
             services.add_service(type_uri, slug)
         return resource_type_urls(slug, viewset_class)
+    with _PENDING_LOCK:
+        _PROBED.pop(db, None)
+    return urls
+
+
+def probe(alias):
+    """`migrated_and_reachable` for database `alias`, or ``None`` when it
+    raises (not a database error: a broken migration graph, of any app, a
+    misconfigured database), which is logged as an error with its traceback
+    on the ``scrud_django.registration`` logger. The answer is kept
+    (`_PROBED`) for the registrations that fail after it."""
+    with _PENDING_LOCK:
+        if alias in _PROBED:
+            return _PROBED[alias]
+    try:
+        migrated = migrated_and_reachable(alias)
+    except Exception as error:  # noqa: BLE001
+        # Log and go on: the URLconf import must not fail on it.
+        logger.error(
+            "Could not tell whether database %r is reachable and migrated: %s: %s",
+            alias,
+            type(error).__name__,
+            error,
+            exc_info=True,
+        )
+        migrated = None
+    with _PENDING_LOCK:
+        _PROBED[alias] = migrated
+    return migrated
 
 
 def migrated_and_reachable(alias):
     """Whether database `alias` can be reached and has all of scrud_django's
     migrations applied (`scrud_django.checks.scrud_migrations_pending`).
-    ``False`` when that cannot be told (the database is unreachable, or its
-    migration table cannot be read): it never raises."""
+    ``False`` on a database error (``OperationalError``,
+    ``ProgrammingError``, ``InterfaceError``): the database is unreachable,
+    or its migration table cannot be read. Any other error, such as a broken
+    migration graph (``NodeNotFoundError``, ``BadMigrationError``, of any
+    app), ``ConnectionDoesNotExist`` or ``ImproperlyConfigured``, is raised:
+    it says nothing about the database."""
     from scrud_django.checks import scrud_migrations_pending
 
     try:
         return not scrud_migrations_pending(alias)
-    except Exception:  # noqa: BLE001
+    except (OperationalError, ProgrammingError, InterfaceError):
         return False
 
 
@@ -423,27 +480,31 @@ def retry_registration(slug):
     """Register the resource type `slug` if its registration is pending
     (`register_or_defer`), in a transaction on `type_db` (a savepoint inside
     the caller's), raising its error if it fails again. It is forgotten as
-    pending once that transaction commits: if the caller's is rolled back
-    (a refused write), so is the registration, and it is retried on the
-    next read.
+    pending once that transaction commits, and logged then: if the caller's
+    is rolled back (a refused write), so is the registration, and it is
+    retried on the next read. A retry also forgets what `probe` found on
+    `type_db`: a registration that fails after it asks again.
 
-    The process lock guards `PENDING_REGISTRATIONS` only; the registration
-    runs without it. Its row locks last until the caller's transaction
-    commits, so under the lock a thread waiting for them in the database
-    would hold it while the thread holding them waited for it (reading
-    another pending type): a deadlock the database cannot detect. Two
-    threads of a process may then register the same type at once, as two
-    processes may (``type-registration-race`` in ``docs/follow-ups.md``).
+    The process lock guards `_PENDING_REGISTRATIONS` (and `_PROBED`) only;
+    the registration runs without it. Its row locks last until the caller's
+    transaction commits, so under the lock a thread waiting for them in the
+    database would hold it while the thread holding them waited for it
+    (reading another pending type): a deadlock the database cannot detect.
+    Two threads of a process may then register the same type at once, as
+    two processes may (``type-registration-race`` in
+    ``docs/follow-ups.md``).
 
     A pending type registered under another slug (its stored row's, kept
     outside ``DEBUG``) than the one its routes were built for raises
     ``ImproperlyConfigured``: its routes would read a type that is not
     there."""
     with _PENDING_LOCK:
-        register = PENDING_REGISTRATIONS.get(slug)
+        register = _PENDING_REGISTRATIONS.get(slug)
     if register is None:
         return
     db = type_db()
+    with _PENDING_LOCK:
+        _PROBED.pop(db, None)
     with transaction.atomic(using=db):
         registered = register().resource_type
         if registered.slug != slug:
@@ -456,11 +517,12 @@ def retry_registration(slug):
 
         def forget():
             with _PENDING_LOCK:
-                if PENDING_REGISTRATIONS.get(slug) is register:
-                    del PENDING_REGISTRATIONS[slug]
+                if _PENDING_REGISTRATIONS.get(slug) is not register:
+                    return
+                del _PENDING_REGISTRATIONS[slug]
+            logger.info("Registered resource type %r, which was pending.", slug)
 
         transaction.on_commit(forget, using=db)
-    logger.info("Registered resource type %r, which was pending.", slug)
 
 
 class ResourceRegistration:

@@ -16,7 +16,15 @@ from uuid import uuid4
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
-from django.db import OperationalError, ProgrammingError, connections, transaction
+from django.db import (
+    InterfaceError,
+    OperationalError,
+    ProgrammingError,
+    connections,
+    transaction,
+)
+from django.db.migrations.exceptions import BadMigrationError, NodeNotFoundError
+from django.db.utils import ConnectionDoesNotExist
 from django.test import override_settings
 from django.urls import include, path, reverse
 from django.utils.timezone import now
@@ -76,6 +84,15 @@ def resource_types_denied(execute, sql, params, many, context):
     return execute(sql, params, many, context)
 
 
+@pytest.fixture(autouse=True)
+def forgotten_probes():
+    """No answer of `registration.migrated_and_reachable` is kept from one
+    test to the next (`registration.register_or_defer` keeps them)."""
+    registration._PROBED.clear()
+    yield
+    registration._PROBED.clear()
+
+
 @pytest.fixture
 def deferred_routes():
     """The routes `json_resource_type` returns for a new type while the
@@ -94,7 +111,7 @@ def deferred_routes():
         with override_settings(ROOT_URLCONF=urlconf):
             yield urls
     finally:
-        registration.PENDING_REGISTRATIONS.pop(SLUG, None)
+        registration._PENDING_REGISTRATIONS.pop(SLUG, None)
         services.services.pop(TYPE_URI, None)
 
 
@@ -109,7 +126,7 @@ def test_a_type_not_registered_at_import_is_served_once_the_database_is_back(
     ]
     assert reverse(f"{SLUG}-list") == f"/{SLUG}/"
     assert not ResourceType.objects.filter(type_uri=TYPE_URI).exists()
-    assert SLUG in registration.PENDING_REGISTRATIONS
+    assert SLUG in registration._PENDING_REGISTRATIONS
     assert TYPE_URI in services.catalog()
     user = UserFactory(is_staff=True, is_superuser=True)
 
@@ -127,7 +144,7 @@ def test_a_type_not_registered_at_import_is_served_once_the_database_is_back(
     assert response.status_code == 500, response.content
     assert isinstance(response.exc_info[1], OperationalError), response.exc_info
     assert not ResourceType.objects.filter(type_uri=TYPE_URI).exists()
-    assert SLUG in registration.PENDING_REGISTRATIONS
+    assert SLUG in registration._PENDING_REGISTRATIONS
 
     # Once it is back, the same process registers the type on its next read
     # and serves it.
@@ -140,7 +157,7 @@ def test_a_type_not_registered_at_import_is_served_once_the_database_is_back(
     stored = ResourceType.objects.get(type_uri=TYPE_URI)
     assert stored.slug == SLUG
     assert stored.schema.content == SCHEMA
-    assert SLUG not in registration.PENDING_REGISTRATIONS
+    assert SLUG not in registration._PENDING_REGISTRATIONS
 
     response = client.post(reverse(f"{SLUG}-list"), {"name": "a"}, format="json")
     assert response.status_code == 201, response.content
@@ -164,7 +181,7 @@ def test_a_pending_type_stored_under_another_slug_is_refused(deferred_routes):
     )
     with pytest.raises(ImproperlyConfigured, match="old-slug"):
         registration.get_resource_type_for(SLUG)
-    assert SLUG in registration.PENDING_REGISTRATIONS
+    assert SLUG in registration._PENDING_REGISTRATIONS
 
 
 @pytest.mark.django_db
@@ -178,11 +195,11 @@ def test_a_retried_registration_is_pending_until_its_transaction_commits(
     with django_capture_on_commit_callbacks(execute=False) as callbacks:
         registration.get_resource_type_for(SLUG)
     assert ResourceType.objects.filter(type_uri=TYPE_URI).exists()
-    assert SLUG in registration.PENDING_REGISTRATIONS
+    assert SLUG in registration._PENDING_REGISTRATIONS
     # The commit forgets it.
     for callback in callbacks:
         callback()
-    assert SLUG not in registration.PENDING_REGISTRATIONS
+    assert SLUG not in registration._PENDING_REGISTRATIONS
 
 
 class Refused(Exception):
@@ -191,10 +208,12 @@ class Refused(Exception):
 
 @pytest.mark.django_db
 def test_a_retried_registration_is_rolled_back_with_its_transaction(
-    deferred_routes, django_capture_on_commit_callbacks
+    deferred_routes, django_capture_on_commit_callbacks, caplog
 ):
     # A write reads the pending type (registering it), then is refused: its
-    # transaction is rolled back, the registration with it.
+    # transaction is rolled back, the registration with it, and nothing says
+    # it was registered.
+    caplog.set_level(logging.INFO, logger="scrud_django.registration")
     resources = Resource.objects.count()
     with django_capture_on_commit_callbacks(execute=True) as callbacks:
         with pytest.raises(Refused), transaction.atomic():
@@ -204,14 +223,18 @@ def test_a_retried_registration_is_rolled_back_with_its_transaction(
     assert callbacks == []
     assert not ResourceType.objects.filter(type_uri=TYPE_URI).exists()
     assert Resource.objects.count() == resources  # Nor its schema.
-    assert SLUG in registration.PENDING_REGISTRATIONS
-    # The next read registers it again, and it is forgotten once that
-    # commits.
+    assert SLUG in registration._PENDING_REGISTRATIONS
+    assert registration_logs(caplog) == []
+    # The next read registers it again, and it is forgotten (and logged as
+    # registered) once that commits.
     with django_capture_on_commit_callbacks(execute=True):
         registered = registration.get_resource_type_for(SLUG)
     assert registered.type_uri == TYPE_URI
     assert ResourceType.objects.get(slug=SLUG).schema.content == SCHEMA
-    assert SLUG not in registration.PENDING_REGISTRATIONS
+    assert SLUG not in registration._PENDING_REGISTRATIONS
+    assert registration_logs(caplog) == [
+        (logging.INFO, f"Registered resource type {SLUG!r}, which was pending.")
+    ]
 
 
 @pytest.mark.django_db
@@ -222,8 +245,8 @@ def test_a_pending_registration_runs_without_the_process_lock(
     # transaction commits. Run under the process lock, a thread waiting in
     # the database for those row locks would hold it, and the thread holding
     # them would block on it reading another pending type: a deadlock the
-    # database cannot detect. The lock guards PENDING_REGISTRATIONS only.
-    register = registration.PENDING_REGISTRATIONS[SLUG]
+    # database cannot detect. The lock guards _PENDING_REGISTRATIONS only.
+    register = registration._PENDING_REGISTRATIONS[SLUG]
     acquired = []
 
     def try_the_lock():
@@ -239,14 +262,14 @@ def test_a_pending_registration_runs_without_the_process_lock(
         other.join()
         return register()
 
-    registration.PENDING_REGISTRATIONS[SLUG] = (
+    registration._PENDING_REGISTRATIONS[SLUG] = (
         register_while_another_thread_tries_the_lock
     )
     with django_capture_on_commit_callbacks(execute=True):
         registered = registration.get_resource_type_for(SLUG)
     assert acquired == [True]
     assert registered.type_uri == TYPE_URI
-    assert SLUG not in registration.PENDING_REGISTRATIONS
+    assert SLUG not in registration._PENDING_REGISTRATIONS
 
 
 UNREACHABLE_OR_NOT_MIGRATED = (
@@ -296,7 +319,7 @@ UNREACHABLE_OR_NOT_MIGRATED = (
     ids=["unreachable", "not migrated", "migrated"],
 )
 def test_a_failed_registration_is_an_error_on_a_migrated_database(
-    migrated, failure, level, message, caplog
+    migrated, failure, level, message, probes, caplog
 ):
     if not migrated:
         unapply_a_scrud_migration(registration.type_db())
@@ -309,9 +332,9 @@ def test_a_failed_registration_is_an_error_on_a_migrated_database(
             )
         # Deferred either way: the URLconf import does not fail.
         assert [route.name for route in urls] == [f"{SLUG}-list", f"{SLUG}-detail"]
-        assert SLUG in registration.PENDING_REGISTRATIONS
+        assert SLUG in registration._PENDING_REGISTRATIONS
     finally:
-        registration.PENDING_REGISTRATIONS.pop(SLUG, None)
+        registration._PENDING_REGISTRATIONS.pop(SLUG, None)
         services.services.pop(TYPE_URI, None)
     logged = [
         (record.levelno, record.getMessage())
@@ -319,6 +342,170 @@ def test_a_failed_registration_is_an_error_on_a_migrated_database(
         if record.name == "scrud_django.registration"
     ]
     assert logged == [(level, message)]
+
+
+@pytest.fixture
+def probes(monkeypatch):
+    """The databases `registration.migrated_and_reachable` asks
+    `scrud_migrations_pending` about, in order; its answers are forgotten
+    before and after the test."""
+    from scrud_django import checks
+
+    asked = []
+    pending = checks.scrud_migrations_pending
+
+    def counted(alias):
+        asked.append(alias)
+        return pending(alias)
+
+    monkeypatch.setattr(checks, "scrud_migrations_pending", counted)
+    registration._PROBED.clear()
+    yield asked
+    registration._PROBED.clear()
+
+
+def register_deferred(slug=SLUG, type_uri=TYPE_URI):
+    return registration.json_resource_type(
+        resource_type_uri=type_uri,
+        slug=slug,
+        schema_func=lambda: json.dumps(SCHEMA),
+    )
+
+
+def forget_deferred(*slugs_and_type_uris):
+    for slug, type_uri in slugs_and_type_uris:
+        registration._PENDING_REGISTRATIONS.pop(slug, None)
+        services.services.pop(type_uri, None)
+
+
+def registration_logs(caplog):
+    return [
+        (record.levelno, record.getMessage())
+        for record in caplog.records
+        if record.name == "scrud_django.registration"
+    ]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "error",
+    [
+        NodeNotFoundError(
+            "Migration app.0002 dependencies reference nonexistent parent node",
+            ("app", "0001"),
+        ),
+        BadMigrationError("Migration 0002 in app app has no Migration class"),
+        ImproperlyConfigured("The database alias is misconfigured."),
+        ConnectionDoesNotExist("The connection 'replica' doesn't exist."),
+    ],
+    ids=[
+        "NodeNotFoundError",
+        "BadMigrationError",
+        "ImproperlyConfigured",
+        "ConnectionDoesNotExist",
+    ],
+)
+def test_a_registration_failure_is_an_error_when_the_probe_fails_otherwise(
+    error, monkeypatch, probes, caplog
+):
+    # Not a database error: a broken migration graph (another app's), or a
+    # misconfiguration. It does not say the database is unreachable or not
+    # migrated, so the failure is not a warning: the probe's error is
+    # logged with its traceback, and the failure as an error.
+    from scrud_django import checks
+
+    def broken(alias):
+        raise error
+
+    monkeypatch.setattr(checks, "scrud_migrations_pending", broken)
+    try:
+        with type_connection().execute_wrapper(resource_types_denied):
+            urls = register_deferred()
+        assert [route.name for route in urls] == [f"{SLUG}-list", f"{SLUG}-detail"]
+        assert SLUG in registration._PENDING_REGISTRATIONS
+    finally:
+        forget_deferred((SLUG, TYPE_URI))
+    assert registration_logs(caplog) == [
+        (
+            logging.ERROR,
+            "Could not tell whether database 'default' is reachable and "
+            f"migrated: {type(error).__name__}: {error}",
+        ),
+        (
+            logging.ERROR,
+            f"Could not register resource type {SLUG!r} (ProgrammingError: "
+            "permission denied for table resourcetype) on database 'default', "
+            "whose migration state could not be told (logged above): requests "
+            "for it fail until its registration succeeds. Its routes are "
+            "served, and its registration is retried when it is next read.",
+        ),
+    ]
+    probe_record = next(
+        record
+        for record in caplog.records
+        if record.name == "scrud_django.registration"
+    )
+    assert probe_record.exc_info is not None
+    assert probe_record.exc_info[1] is error
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("error", [OperationalError, ProgrammingError, InterfaceError])
+def test_a_database_error_reading_the_migration_state_is_a_warning(
+    error, monkeypatch, probes, caplog
+):
+    from scrud_django import checks
+
+    def failing(alias):
+        raise error("permission denied for table django_migrations")
+
+    monkeypatch.setattr(checks, "scrud_migrations_pending", failing)
+    try:
+        with type_connection().execute_wrapper(resource_types_denied):
+            register_deferred()
+    finally:
+        forget_deferred((SLUG, TYPE_URI))
+    assert registration_logs(caplog) == [
+        (
+            logging.WARNING,
+            UNREACHABLE_OR_NOT_MIGRATED.format(
+                error="ProgrammingError: permission denied for table resourcetype"
+            ),
+        )
+    ]
+
+
+@pytest.mark.django_db
+def test_the_probe_is_asked_once_per_database_until_a_retry(
+    probes, django_capture_on_commit_callbacks
+):
+    # While the database is unreachable each registration at URLconf import
+    # fails, after a connection timeout; asking again whether it is
+    # migrated would cost another. One answer serves them all, until the
+    # registration is retried (a request reads the type), after which the
+    # database is asked again.
+    other_slug, other_uri = "other-deferred-things", "tests://OtherDeferred"
+    try:
+        with type_connection().execute_wrapper(unreachable):
+            register_deferred()
+            register_deferred(other_slug, other_uri)
+        assert probes == ["default"]
+        with (
+            type_connection().execute_wrapper(unreachable),
+            pytest.raises(OperationalError),
+        ):
+            registration.get_resource_type_for(SLUG)
+        with type_connection().execute_wrapper(unreachable):
+            register_deferred()
+        assert probes == ["default", "default"]
+        # A registration that succeeds also forgets the answer.
+        with django_capture_on_commit_callbacks(execute=True):
+            register_deferred(other_slug, other_uri)
+        with type_connection().execute_wrapper(unreachable):
+            register_deferred()
+        assert probes == ["default", "default", "default"]
+    finally:
+        forget_deferred((SLUG, TYPE_URI), (other_slug, other_uri))
 
 
 @pytest.fixture
@@ -333,7 +520,7 @@ def forgotten_built_in_types():
         yield
     finally:
         for slug in BUILT_IN_SLUGS:
-            registration.PENDING_REGISTRATIONS.pop(slug, None)
+            registration._PENDING_REGISTRATIONS.pop(slug, None)
         for name, value in saved.items():
             setattr(registration, name, value)
 
@@ -348,13 +535,13 @@ def test_the_built_in_types_keep_their_routes_when_registration_fails(
     assert [route.name for route in urls] == [
         name for slug in BUILT_IN_SLUGS for name in (f"{slug}-list", f"{slug}-detail")
     ]
-    assert sorted(registration.PENDING_REGISTRATIONS) == sorted(BUILT_IN_SLUGS)
+    assert sorted(registration._PENDING_REGISTRATIONS) == sorted(BUILT_IN_SLUGS)
     # Read once the database is back, each is registered: its row was there
     # already, and is kept as it was.
     with django_capture_on_commit_callbacks(execute=True):
         policies = registration.get_resource_type_for("workflow-policies")
     assert policies.type_uri == "http://api.openteams.com/json-ld/WorkflowPolicy"
-    assert "workflow-policies" not in registration.PENDING_REGISTRATIONS
+    assert "workflow-policies" not in registration._PENDING_REGISTRATIONS
     assert registration.WORKFLOW_POLICY_RESOURCE_TYPE_ is not None
     assert set(ResourceType.objects.values_list("pk", "etag", "modified_at")) == (
         stored
@@ -379,7 +566,7 @@ def test_a_pending_built_in_type_is_registered_again_not_read_from_its_cache(
         schema_type = registration.get_resource_type_for("json-schema")
     assert schema_type.pk == ResourceType.objects.get(slug="json-schema").pk
     assert registration.JSON_SCHEMA_RESOURCE_TYPE_.pk == schema_type.pk
-    assert "json-schema" not in registration.PENDING_REGISTRATIONS
+    assert "json-schema" not in registration._PENDING_REGISTRATIONS
 
 
 def a_type_row(slug, revision):
