@@ -137,7 +137,10 @@ follow the same rule.
 
 `scrud:array-edit`'s append row renders a number input (`step="1"` for an
 integer, `step="any"` for a number) or a checkbox for numeric and boolean item
-properties, and a text input otherwise.
+properties, and a text input otherwise. For an array of items that are not
+objects it renders one input named `<pointer>/-` of the item type, from the
+`append_item_type` context key (`None` for object items), so the client sends
+a number or a boolean, not a string.
 
 `scrud:page` wraps a page (not a fragment). Its context is
 `{title, csrf_token, static{htmx, scrud_ui}, body}`. A custom page component,
@@ -263,13 +266,32 @@ named by JSON Pointer (`name="/items/0/text"`):
   confirmation and sends a `DELETE` with `If-Match`. On success (a 204) the
   resource's frame is removed from the page, with the list item that held only
   it, and a `scrud:deleted` event is dispatched on `document` with
-  `detail.href`, the resource's URL.
+  `detail.href`, the resource's URL. A failed delete never removes the frame.
+  A 409 (in use) or 412 (stale) is answered with a notice and a frame that
+  reloads the current state, as a stale PUT is; any other failed DELETE is not
+  swapped in, and a client notice is shown in the frame instead.
+* A request that fails with nothing to swap in (a PUT or DELETE answered 401,
+  404, 415 or 5xx, or a network failure) shows a client notice at the top of
+  the frame, with the markup of `scrud:notice` (`role="alert"`, an extra class
+  `scrud-client-notice`): "Your change was not saved (HTTP 404)." or "... (network
+  error).", and "The item was not deleted ..." for a DELETE. The text is set
+  as text, never as HTML. A new notice replaces the previous one; the frame is
+  not replaced, so the input keeps the user's change.
+* An input that cannot be applied cancels the PUT: an invalid JSON Pointer
+  name, an unsafe segment (`__proto__`, `constructor`, `prototype`), or a
+  number input that is empty or not a number over a stored number. The frame
+  shows "This form could not be saved: invalid field <name>." and nothing is
+  sent, so no edit is lost silently. The stored number is never deleted by a
+  cleared or half-typed number input; to clear a number the schema must allow
+  `null`, which this client does not yet write.
 * The root edit `<form>` has `novalidate`: the browser's constraint validation
   (for example an `<input type="url">` holding a stored URI that is not
   absolute) must not block a submit. The server's JSON Schema validation is the
   authority.
 * An empty text, textarea, url, date or number input over a `null` or missing
   value is untouched: it stays `null` or missing instead of becoming `""`.
+  An empty number input over a stored number is an invalid field (above).
+* A checkbox in an append row that is unchecked appends nothing.
 
 Custom components that want to be editable need only render inputs named by
 their JSON Pointer inside the frame.
@@ -281,8 +303,8 @@ edit mode with the messages, provided the user may PUT the stored resource; any
 other user gets the notices only. Its decisions, contexts and ETag come from
 the stored resource, never from the request. Policy condition messages are
 shown only to a user who may read the stored resource, and only in HTML; the
-JSON error bodies are unchanged. A 412 shows a notice and reloads the frame with
-the current state.
+JSON error bodies are unchanged. A 412 (PUT or DELETE) shows a notice and reloads
+the frame with the current state, and so does a 409 DELETE.
 
 ## Fragment protocol
 
