@@ -2,8 +2,9 @@
 
 Presentation is resolved with system rights: stylesheets and components are read
 straight from `Resource.objects` (the router's read database), never through
-views or permission code. Only components in the default context ``""`` exist,
-and the built-ins (``scrud:`` names) back them. Where names are duplicated (a
+views or permission code. Stored components and stylesheets are those visible
+on the selected branch (`effective_rows`; main's with none), and the built-ins
+(``scrud:`` names) back the components. Where names are duplicated (a
 race in the uniqueness check), the lowest pk wins.
 
 A stored stylesheet, rule or component the cascade cannot use (unnamed, a
@@ -142,16 +143,25 @@ def _stylesheet_rows():
     memo = _memo.get()
     if memo is not None and _STYLESHEETS in memo:
         return memo[_STYLESHEETS]
+    from scrud_django.ui.branches.effective import active_selection, effective_rows
+
     rows = []
-    for pk, etag, content in _stored(UI_STYLESHEET_TYPE_URI):
+    for pk, etag, content in effective_rows(UI_STYLESHEET_TYPE_URI, active_selection()):
         name = _name_of(content)
         if name is None:
             _skipped("stylesheet", pk, None, "it has no name")
             continue
-        rows.append((pk, etag, content, name, rbac_contexts_of(content)))
+        rows.append((pk, etag, content, name, _applies_to_contexts(content)))
     if memo is not None:
         memo[_STYLESHEETS] = rows
     return rows
+
+
+def _applies_to_contexts(content):
+    """The contexts a stylesheet applies in: its ``applies_to``, else (a row
+    stored before branches) its ``rbac_context``s."""
+    target = content.get("applies_to")
+    return [target] if isinstance(target, str) else rbac_contexts_of(content)
 
 
 def _stylesheets_by_context(contexts):
@@ -322,17 +332,16 @@ _WARNED = "warned"
 def _stored_components(names):
     """``{name: Component}`` of the usable stored components called one of
     `names` (``None``: any name)."""
+    from scrud_django.ui.branches.effective import active_selection, effective_rows
+
     found = {}
     seen = {}
-    for pk, etag, content in _stored(UI_COMPONENT_TYPE_URI):
+    for pk, etag, content in effective_rows(UI_COMPONENT_TYPE_URI, active_selection()):
         name = _name_of(content)
         if name is None:
             _skipped("component", pk, None, "it has no name")
             continue
         if names is not None and name not in names:
-            continue
-        if DEFAULT_CONTEXT not in rbac_contexts_of(content):
-            _skipped("component", pk, name, "it is not in the default context")
             continue
         if name in seen:
             _skipped("component", pk, name, f"component {seen[name]} has its name")

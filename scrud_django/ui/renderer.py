@@ -58,6 +58,7 @@ from scrud_django.exceptions import UIHeaderInvalidError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.permissions import content_of
 from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messages
+from scrud_django.ui.branches.effective import selection_for_request, using_selection
 from scrud_django.ui.cascade import (
     BUILTIN_PREFIX,
     builtin_component,
@@ -127,7 +128,7 @@ class ScrudHTMLRenderer(BaseRenderer):
         if status < 400 and (data is None or status in (204, 304)):
             return b""
         try:
-            with request_memo():
+            with request_memo(), using_selection(selection_for_request(request)):
                 body, contexts = _body(data, status, request, view, response)
                 if not _is_htmx(request):
                     body = _page(

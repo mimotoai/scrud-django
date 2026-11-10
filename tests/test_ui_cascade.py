@@ -345,27 +345,33 @@ def test_duplicate_stylesheet_loser_is_logged(caplog):
 
 @pytest.mark.django_db
 def test_skipped_components_are_logged(caplog):
-    """A stored component the cascade cannot use (a duplicate name, outside
-    the default context, an unknown engine or mode, no template) is logged
-    with its pk, name and the reason."""
+    """A stored component the cascade cannot use (a duplicate name, an unknown
+    engine or mode, no template) is logged with its pk, name and the reason."""
     winner = make_component("dup")
     loser = make_component("dup")
-    elsewhere = make_component("elsewhere")
-    Resource.objects.filter(pk=elsewhere.pk).update(
-        content={**elsewhere.content, "rbac_context": "p"}
-    )
     broken = make_component("broken")
     Resource.objects.filter(pk=broken.pk).update(
         content={**broken.content, "mode": "sideways"}
     )
     with caplog.at_level(logging.WARNING, logger="scrud_django.ui.cascade"):
         with rules_memo():
-            loaded = load_components({"dup", "elsewhere", "broken"})
+            loaded = load_components({"dup", "broken"})
             load_components({"dup", "other"})
     assert set(loaded) == {"dup"}
     found = skipped_warnings(caplog)
-    assert len(found) == 3, found
+    assert len(found) == 2, found
     duplicate = next(m for m in found if f"component {loser.pk}" in m)
     assert "'dup'" in duplicate and str(winner.pk) in duplicate
-    assert any(f"component {elsewhere.pk}" in m and "'elsewhere'" in m for m in found)
     assert any(f"component {broken.pk}" in m and "sideways" in m for m in found), found
+
+
+@pytest.mark.django_db
+def test_component_outside_the_default_context_is_usable():
+    """Components are no longer limited to the default context: a branch's
+    components carry the branch's context."""
+    stored = make_component("elsewhere")
+    Resource.objects.filter(pk=stored.pk).update(
+        content={**stored.content, "rbac_context": "p"}
+    )
+    with rules_memo():
+        assert set(load_components({"elsewhere"})) == {"elsewhere"}

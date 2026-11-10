@@ -15,6 +15,7 @@ from scrud_django.exceptions import (
 from scrud_django.models import Resource
 from scrud_django.registration import write_db
 from scrud_django.ui.branches import MAIN
+from scrud_django.ui.branches.effective import chain_of, effective_items
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
     applies_to,
@@ -23,7 +24,7 @@ from scrud_django.ui.branches.model import (
     item_key,
     kind_of,
 )
-from scrud_django.ui.branches.store import branches, ensure_main
+from scrud_django.ui.branches.store import BranchChainError, branches, ensure_main
 from scrud_django.ui.engines import TemplateCompileError, compile_template
 from scrud_django.ui.selectors import SelectorError, parse_selector
 from scrud_django.views import ResourceViewSet
@@ -58,7 +59,7 @@ class UIContentValidationMixin:
         ``main``). Refuse (400) an unknown branch, a move to another branch,
         and an ``rbac_context`` other than the item's `authorizing_context`
         there. Set ``branch``, a stylesheet's ``applies_to`` (`applies_to`)
-        and ``base`` (``None``) in `content`. ``None`` for a body the schema
+        and ``base`` (`base_of`) in `content`. ``None`` for a body the schema
         refuses (a ``branch``, ``rbac_context`` or ``applies_to`` that is not
         a string)."""
         stored = None if instance is None else branch_of(instance.content)
@@ -82,9 +83,30 @@ class UIContentValidationMixin:
         if context != expected:
             raise UIBranchContextError(expected)
         content["branch"] = branch.name
-        # The parent's item it overrides: set once effective state exists.
-        content["base"] = None
+        content["base"] = self.base_of(kind, content, branch)
         return branch
+
+    def base_of(self, kind, content, branch):
+        """The ETag of the parent's current effective item for the key of
+        `content` on `branch`, else ``None`` (no parent, or none there)."""
+        if branch.parent is None:
+            return None
+        write_db = self.write_database()
+        try:
+            chain = chain_of(branch.parent, branches(write_db))
+        except BranchChainError as error:
+            raise UIBranchInvalidError(str(error)) from error
+        rows = (
+            Resource.objects.using(write_db)
+            .filter(resource_type=self.get_resource_type())
+            .order_by("pk")
+            .values_list("pk", "etag", "content")
+        )
+        key = item_key(kind, content, chain[0])
+        for _pk, etag, stored in effective_items(kind, rows, chain):
+            if item_key(kind, stored, chain[0]) == key:
+                return etag
+        return None
 
     def save_checked(self, save, instance=None):
         """Save as `ResourceViewMixin.save_checked` does; an item written to
