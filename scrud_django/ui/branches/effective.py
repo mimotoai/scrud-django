@@ -30,6 +30,7 @@ from scrud_django.ui.cascade import _skipped, _stored
 logger = logging.getLogger(__name__)
 
 BRANCH_HEADER = "Scrud-UI-Branch"
+BRANCH_PARAMETER = "ui-branch"
 
 
 @dataclass(frozen=True)
@@ -67,12 +68,17 @@ def chain_of(name: str, all_branches: Mapping[str, Branch]) -> list[Branch]:
 
 
 def effective_items(
-    kind: str, rows: Iterable, chain: list[Branch], on_duplicate=None, on_unnamed=None
+    kind: str,
+    rows: Iterable,
+    chain: list[Branch],
+    on_duplicate=None,
+    on_unnamed=None,
+    include_deleted: bool = False,
 ) -> list[tuple]:
     """The ``(pk, etag, content)`` rows of `rows` (lowest pk first) visible on
     the branch whose chain (itself first, then its ancestors) is `chain`: for
     each item key, the row of the nearest branch that has one, but for
-    deletion markers. Lowest pk first. A row that loses its key to another
+    deletion markers (kept with `include_deleted`). Lowest pk first. A row that loses its key to another
     on the same branch (a race in the uniqueness check) is passed to
     `on_duplicate(loser_row, winner_row, key)`. A row without a string name
     is left out (and passed to `on_unnamed(row)`)."""
@@ -95,17 +101,19 @@ def effective_items(
                     if branch_of(winner[2]) == branch.name:
                         on_duplicate(row, winner, key)
     return sorted(
-        (row for row in seen.values() if not row[2].get("deleted")),
+        (row for row in seen.values() if include_deleted or not row[2].get("deleted")),
         key=lambda row: row[0],
     )
 
 
 def effective_rows(
-    type_uri: str, selection: Selection | None = None
+    type_uri: str,
+    selection: Selection | None = None,
+    include_deleted: bool = False,
 ) -> list[tuple[int, str, dict]]:
     """``(pk, etag, content)`` of the items of `type_uri` visible on the
     selected branch (default: `active_selection`), lowest pk first, deletion
-    markers removed. The rows are `cascade._stored`'s: one query per type per
+    markers removed (kept with `include_deleted`). The rows are `cascade._stored`'s: one query per type per
     response. The selection must be selectable (`selection_for_request`)."""
     selection = selection or active_selection()
     if selection.branch == MAIN:
@@ -123,15 +131,21 @@ def effective_rows(
     def unnamed(row):
         _skipped(kind, row[0], None, "it has no name")
 
-    return effective_items(kind, _stored(type_uri), chain, skipped, unnamed)
+    return effective_items(
+        kind, _stored(type_uri), chain, skipped, unnamed, include_deleted
+    )
 
 
 def selection_for_request(request) -> Selection:
-    """The selection `request` makes: its `BRANCH_HEADER`, unless that names
+    """The selection `request` makes: its `BRANCH_HEADER`, else its
+    `BRANCH_PARAMETER` query parameter, unless that names
     a branch that does not exist, whose chain is broken (logged), or that the
     user may not GET: then main."""
     headers = getattr(request, "headers", None)
     name = headers.get(BRANCH_HEADER) if headers is not None else None
+    if not name:
+        params = getattr(request, "GET", None)
+        name = params.get(BRANCH_PARAMETER) if params is not None else None
     if not name or name == MAIN:
         return Selection()
     all_branches = branches()

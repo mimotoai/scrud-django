@@ -15,7 +15,12 @@ from scrud_django.exceptions import (
 from scrud_django.models import Resource
 from scrud_django.registration import write_db
 from scrud_django.ui.branches import MAIN
-from scrud_django.ui.branches.effective import chain_of, effective_items
+from scrud_django.ui.branches.effective import (
+    chain_of,
+    effective_items,
+    effective_rows,
+    selection_for_request,
+)
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
     applies_to,
@@ -36,6 +41,20 @@ class UIContentValidationMixin:
 
     # The branch of the item being written (`validate_branch`), or None.
     item_branch = None
+
+    def filter_queryset(self, queryset):
+        """A list shows the effective items of the selected branch (main's
+        without a selection), deletion markers included; the RBAC list
+        filter then applies to each row."""
+        queryset = super().filter_queryset(queryset)
+        if getattr(self, "action", None) != "list":
+            return queryset
+        rows = effective_rows(
+            self.get_resource_type().type_uri,
+            selection_for_request(self.request),
+            include_deleted=True,
+        )
+        return queryset.filter(pk__in=[pk for pk, _etag, _content in rows])
 
     def validate_content(self, content, instance=None):
         """Raise a ``ScrudException`` when `content` (the request body) is
