@@ -1453,7 +1453,7 @@ The problem `type` is `https://api.openteams.com/http-problem/<name>`.
 
 ### Studio data as computed resources
 
-The studio's data that is not a stored resource is also served as four
+The studio's data that is not a stored resource is also served as
 [computed resource types](#computed-resource-types), so a studio built as a UI
 layer renders it through the cascade, and a branch can restyle it, like any
 resource. They are part of the API (under `scrud_django.urls`, not the
@@ -1473,6 +1473,7 @@ public. The bootstrap studio's strip and picker read the same functions
 | `ui-branch-status/<branch>/` | `http://api.openteams.com/json-ld/UIBranchStatus` | the branch's chain, changes, conflicts and browse URL |
 | `ui-type-catalog/all/` | `http://api.openteams.com/json-ld/UITypeCatalog` | the registered types |
 | `ui-selectable-branches/mine/` | `http://api.openteams.com/json-ld/UISelectableBranches` | the branches the user may select |
+| `ui-push-previews/<source>/?target=<name>` | `http://api.openteams.com/json-ld/UIPushPreview` | what a push would change ([below](#what-a-push-will-change)) |
 
 `<branch>` is a selection value: a branch name, or `<name>@pinned` for the
 branch at its branching point. The catalog's only key is `all` and the picker's
@@ -1541,6 +1542,52 @@ registered type with a slug, by slug, as the type browser lists them
 branches the branch picker lists (`main` first, then by name). `href` is the
 branch's resource, or `null` when the user may not `GET` it (as for `main`,
 which everyone may select) or it is not stored yet.
+
+### What a push will change
+
+`ui-push-previews/<source>/?target=<name>` shows what a
+[push](#pushing-and-restoring) of branch `<source>` into `<name>` (default:
+`<source>`'s parent) would write there, and the conflicts it would hit, before
+the author applies or proposes it. It computes the same plan the push writes
+(`scrud_django.ui.branches.sync.plan_push`), without writing anything:
+
+```json
+{"source": "wip", "target": "main",
+ "changes": [
+   {"kind": "component", "key": ["row"], "action": "update",
+    "before": {"name": "row", "template": "<b>main</b>", "rbac_context": "", "…": "…"},
+    "after": {"name": "row", "template": "<i>wip</i>", "branch": "main",
+              "rbac_context": "", "base": null, "…": "…"}},
+   {"kind": "component", "key": ["fresh"], "action": "create",
+    "before": null, "after": {"name": "fresh", "…": "…"}},
+   {"kind": "component", "key": ["gone"], "action": "delete",
+    "before": {"name": "gone", "…": "…"}, "after": null},
+   {"kind": "stylesheet", "key": ["acme-theme", "acme"], "action": "update"}],
+ "conflicts": [{"kind": "component", "key": ["row"],
+                "base": "3f…", "current": "9a…"}],
+ "unreadable_conflicts": 1}
+```
+
+- `changes` are the push's writes into the target, in the order it makes
+  them, one per row: `create` a new row, `update` the target's row with the
+  key, `delete` it. A deletion marker in the source deletes the target's row
+  and, where the target's parent (or a packaged layer) has the item, also
+  creates a marker (`"deleted": true`) that hides it: two entries.
+- `before` is the target's row a write updates or deletes; for a create, the
+  item the target shows there now, from its parent or a packaged layer
+  (`null` for none). `after` is the row exactly as the push stores it (its
+  `branch`, `rbac_context` and `base` on the target); `null` for a delete.
+- A write on an item the user may not `GET` (the target's row, the row as
+  written, or the source's row it comes from) is listed with its `kind`, `key`
+  and `action` only, without `before` and `after`.
+- `conflicts` are those the push would be refused for (409), on items the
+  user may read in the target, as the 409 lists them; `unreadable_conflicts`
+  counts the others. A push with any conflict, readable or not, is refused.
+- It needs `GET` on both branches (`main` needs none, as for a push), else
+  403; an unknown branch (or `?target=`) is a 404; and a push the server would
+  refuse anyway (from a branch with no parent, into itself or a descendant) is
+  a 400 `ui-branch-invalid`, as the push is. It does not check the grants the
+  push's writes need: applying it checks them (403 `ui-push-forbidden`).
 
 ## Security
 

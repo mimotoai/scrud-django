@@ -7,11 +7,14 @@ built as a UI layer renders it through the cascade like any resource:
   browse URL;
 - ``ui-type-catalog/all/``: the registered types, as the bootstrap studio
   lists them;
-- ``ui-selectable-branches/mine/``: the branches the user may select.
+- ``ui-selectable-branches/mine/``: the branches the user may select;
+- ``ui-push-previews/<source>/``: what a push of a branch would change in
+  its target (spec E3).
 
 Each answers only what its user may GET as JSON: a branch it may select
-(`selection.selectable`, else 404), an item the item's own read check allows
-(packaged layer items are public). The bootstrap studio's strip reads the
+(`selection.selectable`, else 404; the push preview needs GET on both of its
+branches, else 403), an item the item's own read check allows (packaged
+layer items are public). The bootstrap studio's strip reads the
 same functions (`scrud_django.ui.studio.page`)."""
 
 import contextlib
@@ -19,10 +22,12 @@ import importlib.resources
 
 from django.http import Http404
 from django.urls import reverse
+from rest_framework.exceptions import PermissionDenied
 
 from scrud_django import registration
 from scrud_django.computed import ComputedResourceViewSet
-from scrud_django.ui.branches import ITEM_KINDS, UI_BRANCH_SLUG
+from scrud_django.exceptions import UIBranchInvalidError
+from scrud_django.ui.branches import ITEM_KINDS, MAIN, UI_BRANCH_SLUG
 from scrud_django.ui.branches.effective import (
     Selection,
     chain_of,
@@ -37,6 +42,11 @@ from scrud_django.ui.branches.selection import (
     selection_value,
 )
 from scrud_django.ui.branches.store import BranchChainError, branches, published_root
+from scrud_django.ui.branches.sync import (
+    plan_push,
+    push_changes,
+    refuse_push_between,
+)
 from scrud_django.ui.cascade import request_memo
 from scrud_django.ui.layers import LAYER_BRANCH, LAYER_BRANCH_NAME, layer_conflicts
 from scrud_django.ui.studio.page import (
@@ -57,11 +67,14 @@ UI_BRANCH_ITEMS_SLUG = "ui-branch-items"
 UI_BRANCH_STATUS_SLUG = "ui-branch-status"
 UI_TYPE_CATALOG_SLUG = "ui-type-catalog"
 UI_SELECTABLE_BRANCHES_SLUG = "ui-selectable-branches"
+UI_PUSH_PREVIEWS_SLUG = "ui-push-previews"
 # The one key of the catalog and of the branch picker.
 CATALOG_KEY = "all"
 SELECTABLE_KEY = "mine"
 # The query parameter of the status that names the type to browse.
 TYPE_PARAMETER = "type"
+# The query parameter of the push preview that names the target branch.
+TARGET_PARAMETER = "target"
 
 
 @contextlib.contextmanager
@@ -228,11 +241,54 @@ class SelectableBranchesViewSet(ComputedResourceViewSet):
             return {"branches": found}
 
 
+class PushPreviewViewSet(ComputedResourceViewSet):
+    """``ui-push-previews/<source>/?target=<name>``: what a push of branch
+    `source` into branch ``target`` (default: `source`'s parent) would
+    change there (`plan_push`, `push_changes`) and the conflicts it would
+    hit, without writing. It needs GET on both branches (``main``, which
+    everyone may select, needs none, as for a push), else 403; an unknown
+    branch is a 404; a push the server would refuse, a 400
+    (`refuse_push_between`)."""
+
+    def compute(self, request, key):
+        with _stored_state():
+            all_branches = branches()
+            if key not in all_branches:
+                raise Http404("No such branch.")
+            source = all_branches[key]
+            name = request.query_params.get(TARGET_PARAMETER, source.parent)
+            if name is not None and name not in all_branches:
+                raise Http404("No such branch.")
+            for branch in (source.name, name):
+                if branch is not None and not (
+                    branch == MAIN or may_get(request, all_branches[branch])
+                ):
+                    raise PermissionDenied(
+                        f"A push preview needs GET on branch {branch!r}."
+                    )
+            # A source with no parent and no target is refused as a push
+            # from a root is.
+            refuse_push_between(source.name, name or source.name, all_branches)
+            try:
+                plan = plan_push(request, source.name, name, all_branches=all_branches)
+                changes = push_changes(request, plan, name, all_branches=all_branches)
+            except BranchChainError as error:  # a pinned snapshot is gone
+                raise UIBranchInvalidError(str(error)) from error
+            return {
+                "source": source.name,
+                "target": name,
+                "changes": changes,
+                "conflicts": plan.conflicts,
+                "unreadable_conflicts": plan.hidden_conflicts,
+            }
+
+
 STUDIO_COMPUTED_TYPES = (
     ("UIBranchItems", UI_BRANCH_ITEMS_SLUG, BranchItemsViewSet),
     ("UIBranchStatus", UI_BRANCH_STATUS_SLUG, BranchStatusViewSet),
     ("UITypeCatalog", UI_TYPE_CATALOG_SLUG, TypeCatalogViewSet),
     ("UISelectableBranches", UI_SELECTABLE_BRANCHES_SLUG, SelectableBranchesViewSet),
+    ("UIPushPreview", UI_PUSH_PREVIEWS_SLUG, PushPreviewViewSet),
 )
 
 

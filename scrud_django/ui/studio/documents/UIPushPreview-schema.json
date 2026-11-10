@@ -1,0 +1,62 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIPushPreview",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Push Preview",
+  "description": "Computed: what a push of the source branch into the target branch would write there, and the conflicts it would hit, as the requesting user may read them. Read-only; nothing is written.",
+  "type": "object",
+  "properties": {
+    "source": {
+      "type": "string",
+      "description": "The branch pushed."
+    },
+    "target": {
+      "type": "string",
+      "description": "The branch pushed into: ?target=, else the source's parent."
+    },
+    "changes": {
+      "type": "array",
+      "description": "Each write of the push into the target, in the order it is made. before and after are left out of a write on an item the user may not read (in the target, or in the source).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" },
+          "key": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The item's key: its name, and a stylesheet's applies_to."
+          },
+          "action": { "type": "string", "enum": ["create", "update", "delete"] },
+          "before": {
+            "type": ["object", "null"],
+            "description": "The target's row the write updates or deletes; for a create, the item the target shows beneath it (its parent's or a packaged layer's); null for none."
+          },
+          "after": {
+            "type": ["object", "null"],
+            "description": "The row as the push writes it; null for a delete."
+          }
+        },
+        "required": ["kind", "key", "action"]
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "description": "The conflicts of the source against the target on items the user may read there, as a refused push (409) lists them.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" },
+          "key": { "type": "array", "items": { "type": "string" } },
+          "base": { "type": ["string", "null"] },
+          "current": { "type": ["string", "null"] }
+        },
+        "required": ["kind", "key", "base", "current"]
+      }
+    },
+    "unreadable_conflicts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many other conflicts there are, on items the user may not read."
+    }
+  },
+  "required": ["source", "target", "changes", "conflicts", "unreadable_conflicts"]
+}
