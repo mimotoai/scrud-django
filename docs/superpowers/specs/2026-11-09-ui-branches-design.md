@@ -140,7 +140,7 @@ These would make the work a failure even if it technically ran:
 |---|---|
 | `name` | Unique site-wide (call). |
 | `rbac_context` | The branch's context. Grants there decide who may see, change, push from, or pull it, and for a published branch, who may open its prefix **(owner)**. |
-| `parent` | The branch it is based on, or none. Any chain is allowed **(call)**. |
+| `parent` | The branch it is based on, or none. Any chain is allowed **(call)**. Setting or changing it needs GET on the parent as stored; a parent the writer may not GET gets the same 400 as an unknown one (ruling R36, during implementation). |
 | `base` | `live` (default, **owner**) or `pinned`. Ignored without a parent. |
 | `branching_point` | The ancestor versions the branch started from, or last pulled (see Branching point). Always recorded **(owner)**. When `base` is `pinned`, this is also the state it unions with. |
 | `prefix` | Present only on a published branch: its URL prefix, e.g. `/`, `/admin/resources/`, `/msp/resources/` **(owner: published branches at prefixes)**. Unique. |
@@ -244,7 +244,9 @@ testing's changes, then its own.
      (ruling R28, during implementation);
   4. none: the published branch itself.
 - **Authorization:** the viewer must be allowed to GET the working branch, and
-  it must be in the prefix's tree. If not, the request renders on the published
+  every working branch among its ancestors (it shows their items; published
+  ancestors are the site's presentation, gated at their own prefix) (ruling
+  R36, during implementation), and it must be in the prefix's tree. If not, the request renders on the published
   branch, and the banner says the chosen branch was not available (call). It
   never fails the page.
 - **Banner:** every HTML page on a working branch shows a banner naming the
@@ -451,6 +453,13 @@ The consequence, stated here so it's a known tradeoff:
   published branch needs write on stylesheets in `acme`. This keeps phase 1's
   delegation: whoever may style `acme` can publish `acme` styles and nothing
   else. A push failing this check is refused (403) and writes nothing.
+- **Naming a branch you may not see.** An item write naming a branch the
+  writer may not GET is answered exactly as one naming an unknown branch
+  (400, naming nothing of it), but on `main` and for a stylesheet on a
+  published branch authorized in the context it applies to. A push naming a
+  source the pusher may not GET, or a target they may not GET with the wrong
+  `rbac_context`, is answered the same way (ruling R36, during
+  implementation).
 - **Reading through a branch** (JSON): inherited items are subject to the same
   read check as on the branch they come from (call). A viewer who can GET
   branch `alice` but has no read on stylesheets in `acme` doesn't see `acme`'s

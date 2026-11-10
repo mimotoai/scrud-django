@@ -421,13 +421,16 @@ def test_push_needs_put_on_source(admin_login):
     push()
     Then.http.status_code_is(403)
     assert stored_state() == before
-    # Nor without GET on the source.
+    # Nor without GET on the source: a source the pusher may not see is
+    # answered as an unknown branch, a 400 (ruling R36), before applying.
     user = assign_ui_role((UI_PUSH_TYPE_URI,), "")
     grant(user, {"http.PUT": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "alice")
     grant(user, {"http.PUT": [UI_COMPONENT_TYPE_URI]}, "")
     Given.http.force_authenticate(user)
     push()
-    Then.http.status_code_is(403)
+    Then.http.status_code_is(400)
+    assert Http.response.json()["type"].endswith("/ui-branch-invalid")
+    assert Http.response.json()["detail"] == "There is no UI branch named 'wip'."
     assert stored_state() == before
 
 

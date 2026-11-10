@@ -406,7 +406,7 @@ A branch is a resource of type `ui-branches`:
 |---|---|
 | `name` | Required. Unique site-wide, `^[a-z0-9][a-z0-9._-]{0,63}$`. A branch cannot be renamed. |
 | `rbac_context` | Required. The branch's context. It cannot change once the branch exists. |
-| `parent` | The name of the branch it is based on, or `null`. Any chain is allowed. |
+| `parent` | The name of the branch it is based on, or `null`. Any chain is allowed. Setting or changing it needs GET on the parent: a parent you may not GET is refused (400) exactly as one that does not exist. |
 | `base` | `live` (default) or `pinned`. `pinned` needs a parent. |
 | `branching_point` | Server-managed, as above. |
 | `prefix` | Present only on a published branch: its URL prefix, `/segment/.../` (lower-case letters, digits, `_` and `-`), unique. |
@@ -436,7 +436,10 @@ resource.
   `ui-branch` parameter (the header first; the cookie is not read for JSON).
   Without either it is `main`, or, under a prefix, the prefix's branch.
 * **Writing** an item names its branch in the body, `"branch": "<name>"`
-  (`main` when absent). The item's `rbac_context` must be its **authorizing
+  (`main` when absent). A branch you may not GET is answered as one that does
+  not exist (400, naming nothing of it), but for `main` and for a stylesheet
+  on a published branch that applies to another context (below), which need
+  no grant in the branch's context. The item's `rbac_context` must be its **authorizing
   context** on that branch, or the write is refused with a 400 that names it:
   * on a working branch, the context is the branch's, whatever the item
     applies to, so the grants needed are those on the item's type in the
@@ -496,7 +499,9 @@ push:
    grant a direct write of that item into the target would need: PUT where the
    target has its own row, POST for a new one, DELETE for a deletion marker,
    on the item's type in its authorizing context on the target. If any is
-   missing the push is refused (403) and nothing is written;
+   missing the push is refused (403) and nothing is written. A source the
+   pusher may not GET, or a target they may not GET named with the wrong
+   `rbac_context`, is answered as a branch that does not exist (400);
 2. is refused with 409 when any of the source's overrides was made against an
    item that the target has changed since (its `base` is not the target's
    current ETag). The body lists the `conflicts`, but only those on items the
@@ -565,14 +570,15 @@ point instead of live (this changes that viewer's rendering only, not the
 branch's `base`). A value that is not one of these is ignored. An empty header
 or parameter names the published branch. A branch that does not exist, is not
 in the prefix's tree, is pinned to a version that is missing, or that the
-viewer may not GET is **refused**: the page renders the published branch and
+viewer may not GET (the branch, or any working branch among its ancestors: a
+branch shows its ancestors' items) is **refused**: the page renders the published branch and
 the banner says the chosen one was not available. It never fails the page.
 Browsing changes HTML only: the cookie does not affect JSON.
 
 **The banner** is shown on every HTML page off the published branch (and when a
 branch was refused). It names the branch and its mode (`live`, or `pinned at
 <parent> v<N>`); lists the working branches in the prefix's tree that the
-viewer may GET, as a switcher; offers a link to view live or at the branching
+viewer may select, as a switcher; offers a link to view live or at the branching
 point; a link to share; and the way back to the published branch. The server
 renders it outside stored components, from package templates, so a page
 component that leaves it out has it added anyway. A full page also carries the

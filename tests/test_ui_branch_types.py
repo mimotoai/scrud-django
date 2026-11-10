@@ -6,7 +6,7 @@ from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.registration import ResourceRegistration
-from scrud_django.ui.branches import ITEM_KINDS, MAIN
+from scrud_django.ui.branches import ITEM_KINDS, MAIN, UI_BRANCH_TYPE_URI
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
     Branch,
@@ -27,7 +27,7 @@ from scrud_django.ui.cascade import rules_memo
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
-from .test_ui_http import PREFIXES, make_component, make_stylesheet
+from .test_ui_http import PREFIXES, grant, make_component, make_stylesheet
 
 
 def make_branch(name, context, parent="main", **fields):
@@ -69,6 +69,10 @@ def problem():
 @test_context
 def test_branch_create_needs_grant_in_its_context(ui_alice_login, ui_bob_login):
     body = {"name": "alice-wip", "rbac_context": "alice", "parent": "main"}
+    # Both may GET main, the parent (ruling R36; without it, see
+    # test_ui_branch_authz.test_creating_a_branch_of_main_needs_get_on_main).
+    for user in (ui_alice_login, ui_bob_login):
+        grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "")
     Given.http.force_authenticate(ui_alice_login)
     create("ui-branches", body)
     Then.http.status_code_is(201)
@@ -188,7 +192,10 @@ def test_item_rbac_context_must_be_the_authorizing_context(
 ):
     make_branch("alice-wip", "alice")
     # The author may write components in "": past the grant check, refused by
-    # the branch check.
+    # the branch check. They may GET the branch: a branch they may not see is
+    # answered as unknown instead, naming no context (ruling R36;
+    # test_ui_branch_authz).
+    grant(ui_author_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
     Given.http.force_authenticate(ui_author_login)
     create("ui-components", component(branch="alice-wip", rbac_context=""))
     Then.http.status_code_is(400)

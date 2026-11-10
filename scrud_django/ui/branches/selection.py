@@ -6,8 +6,9 @@ prefix), in that order, else the published branch of the request's prefix
 A value is ``<name>`` or ``<name>@pinned`` (`VALUE`, at most
 `MAX_VALUE_BYTES`); any other is ignored, as if absent. An empty header or
 parameter names the published branch. A branch that is unknown, whose chain
-is broken, that the viewer may not GET, that is not in the prefix's tree, or
-whose pinned snapshot is missing is refused: the published branch is used,
+is broken, that the viewer may not GET (it, or a working ancestor of it:
+`may_get_chain`), that is not in the prefix's tree, or whose pinned snapshot
+is missing is refused: the published branch is used,
 and `Chosen.refused` names it (the banner says so). A request with no
 selection, or one naming the published branch, reads no branch row (ruling
 R1)."""
@@ -311,7 +312,7 @@ def _selectable(request, selection, published) -> bool:
     except BranchChainError as error:
         logger.warning("scrud-ui: not rendering branch %r: %s", name, error)
         return False
-    if root.name != published or not may_get(request, all_branches[name]):
+    if root.name != published or not may_get_chain(request, chain):
         return False
     missing = _missing_snapshot(chain, selection.pinned)
     if missing is not None:
@@ -331,6 +332,29 @@ def may_get(request, branch: Branch) -> bool:
     return may_get_stored(request, _stored_contents().get(branch.pk))
 
 
+def may_get_chain(request, chain: list[Branch]) -> bool:
+    """Whether the user of `request` may GET the first branch of `chain` (a
+    branch, then its ancestors) and every working ancestor in it (ruling
+    R36): a branch shows its ancestors' items, so it would otherwise show a
+    working branch its viewer may not see. A published ancestor is not
+    checked: it is the site's presentation, opened at its own prefix only
+    with GET on it (`middleware.check_mount`)."""
+    branch, *ancestors = chain
+    return may_get(request, branch) and all(
+        may_get(request, ancestor) for ancestor in ancestors if not ancestor.published
+    )
+
+
+def branch_content(branch: Branch, using=None) -> Mapping | None:
+    """The content `branch` is stored with, read on `using` (default: the
+    router's read database), or, for the virtual ``main``, the content it is
+    reserved to have; ``None`` when its row is gone."""
+    if branch.pk is None:
+        return {"name": branch.name, "rbac_context": branch.context}
+    rows = Resource.objects.using(using) if using else Resource.objects
+    return rows.filter(pk=branch.pk).values_list("content", flat=True).first()
+
+
 def may_get_stored(request, content) -> bool:
     """Whether the user of `request` may GET the branch stored with
     `content`."""
@@ -343,7 +367,8 @@ def may_get_stored(request, content) -> bool:
 
 def selectable_branches(request) -> list[str]:
     """The names of the working branches in the tree of `request`'s
-    published branch that its user may GET, sorted."""
+    published branch that its user may select (GET, with their working
+    ancestors: `may_get_chain`), sorted."""
     published = published_branch(request)
     all_branches = branches()
     found = []
@@ -352,9 +377,10 @@ def selectable_branches(request) -> list[str]:
             continue
         try:
             root = published_root(name, all_branches)
+            chain = chain_of(name, all_branches)
         except BranchChainError:
             continue
-        if root.name == published and may_get(request, branch):
+        if root.name == published and may_get_chain(request, chain):
             found.append(name)
     return sorted(found)
 

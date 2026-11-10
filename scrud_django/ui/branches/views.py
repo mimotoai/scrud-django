@@ -20,6 +20,7 @@ from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import ITEM_KINDS, MAIN, PREFIX
 from scrud_django.ui.branches.model import MAIN_BRANCH, Branch, applies_to
+from scrud_django.ui.branches.selection import branch_content, may_get_stored
 from scrud_django.ui.branches.store import (
     BranchChainError,
     _read_branches,
@@ -84,7 +85,7 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
         if name == MAIN:
             self.check_main(content)
         all_branches = dict(branches(self.write_database()))
-        self.check_parent(name, content, parent, prefix, base, all_branches)
+        self.check_parent(name, content, parent, prefix, base, all_branches, instance)
         self.check_prefix(name, prefix, all_branches)
         if base == "pinned" and parent is None:
             raise UIBranchInvalidError(
@@ -201,11 +202,25 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
                 'its prefix "", and it has no parent.'
             )
 
-    def check_parent(self, name, content, parent, prefix, base, all_branches):
-        """The parent exists, and the chain of parents does not loop."""
+    def check_parent(
+        self, name, content, parent, prefix, base, all_branches, instance=None
+    ):
+        """The parent exists, and the chain of parents does not loop. On a
+        create, and on an update that changes the parent, the writer must
+        also be allowed to GET the parent as stored (ruling R36): a branch
+        shows its parent's items. A parent they may not GET is refused
+        exactly as an unknown one is, so the answer tells nothing about
+        it."""
         if parent is None:
             return
-        if parent not in all_branches:
+        changed = instance is None or instance.content.get("parent") != parent
+        if parent not in all_branches or (
+            changed
+            and not may_get_stored(
+                self.request,
+                branch_content(all_branches[parent], self.write_database()),
+            )
+        ):
             raise UIBranchInvalidError(
                 f"There is no UI branch named {parent!r} to be the parent."
             )
@@ -367,6 +382,10 @@ class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
         for name in (target, source):
             if name is not None and name not in all_branches:
                 raise UIBranchInvalidError(f"There is no UI branch named {name!r}.")
+        if source is not None and not self.may_get(all_branches[source]):
+            # Applying needs GET on the source anyway: one the pusher may not
+            # see is answered as unknown (ruling R36).
+            raise UIBranchInvalidError(f"There is no UI branch named {source!r}.")
         if source is not None:
             if all_branches[source].parent is None:
                 raise UIBranchInvalidError(
@@ -384,9 +403,19 @@ class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
                 )
         expected = all_branches[target].context
         if content.get("rbac_context") != expected:
+            if not self.may_get(all_branches[target]):
+                # Naming the context would describe a branch the pusher may
+                # not see (ruling R36).
+                raise UIBranchInvalidError(f"There is no UI branch named {target!r}.")
             raise UIBranchContextError(expected)
         content.pop("result", None)
         self.applying = content.get("state") == "applied"
+
+    def may_get(self, branch) -> bool:
+        """Whether the pusher may GET `branch` (``main`` always exists)."""
+        return branch.name == MAIN or may_get_stored(
+            self.request, branch_content(branch, self.write_database())
+        )
 
     def destroy(self, request, slug: str):
         """Delete a push that is not applied; an applied push is kept

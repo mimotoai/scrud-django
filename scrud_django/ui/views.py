@@ -30,7 +30,11 @@ from scrud_django.ui.branches.model import (
     item_key,
     kind_of,
 )
-from scrud_django.ui.branches.selection import choose
+from scrud_django.ui.branches.selection import (
+    branch_content,
+    choose,
+    may_get_stored,
+)
 from scrud_django.ui.branches.store import BranchChainError, branches, ensure_main
 from scrud_django.ui.branches.sync import resolve_conflict
 from scrud_django.ui.engines import TemplateCompileError, compile_template
@@ -90,7 +94,8 @@ class UIContentValidationMixin:
     def validate_branch(self, kind, content, instance=None):
         """The `Branch` the item `content` is written to, its ``branch`` (on
         an update, the stored item's when the body names none; else
-        ``main``). Refuse (400) an unknown branch, a move to another branch,
+        ``main``). Refuse (400) an unknown branch (and, alike, one the
+        writer may not see, `may_name_branch`), a move to another branch,
         and an ``rbac_context`` other than the item's `authorizing_context`
         there. Set ``branch``, a stylesheet's ``applies_to`` (`applies_to`)
         and ``base`` in `content`: on a create, `base_of`; on an update, the
@@ -110,7 +115,7 @@ class UIContentValidationMixin:
         branch = (
             MAIN_BRANCH if name == MAIN else branches(self.write_database()).get(name)
         )
-        if branch is None:
+        if branch is None or not self.may_name_branch(kind, content, branch):
             raise UIBranchInvalidError(f"There is no UI branch named {name!r}.")
         if kind == "stylesheet":
             content["applies_to"] = applies_to(content, branch)
@@ -123,6 +128,27 @@ class UIContentValidationMixin:
         else:  # server-managed: only `rebase` moves it (`validate_rebase`)
             content["base"] = instance.content.get("base")
         return branch
+
+    def may_name_branch(self, kind, content, branch) -> bool:
+        """Whether the writer may write the item `content` naming `branch`,
+        as far as seeing the branch goes (ruling R36): they may GET it.
+        Else the write is answered as for an unknown branch, which names
+        nothing of it (its context included). Two writes need no GET:
+        those on ``main``, which always exists, is reserved (ruling R1)
+        and is written as before branches; and a stylesheet on a published
+        branch that applies to a context other than the branch's, which is
+        authorized in that context alone (spec, "Authorization on
+        branches": whoever may style ``acme`` styles it on every published
+        branch)."""
+        if branch.name == MAIN:
+            return True
+        if kind == "stylesheet" and branch.published:
+            target = applies_to(content, branch)
+            if target and target != branch.context:
+                return True
+        return may_get_stored(
+            self.request, branch_content(branch, self.write_database())
+        )
 
     def validate_rebase(self, content, instance):
         """Remove the write-only ``rebase`` from `content` and say whether

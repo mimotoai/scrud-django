@@ -426,21 +426,6 @@ transactions each write an item to the same branch with a barrier between the
 branch lock and the version read, and assert the version numbers are distinct;
 it can fail today on those databases.
 
-<a id="ui-branch-enumeration"></a>
-## ui-branch-enumeration: item-write errors reveal which branches exist
-
-The spec says a viewer sees only the branches they may GET. An item write
-naming a branch gets 400 `There is no UI branch named 'x'` when it does not
-exist, or the `rbac_context` error naming the branch's context when it does, so
-a user who may write items can find branch names and contexts they may not GET.
-A push's errors do the same (`UIBranchContextError` names the target's context).
-
-Fix: answer the same 400 for an unknown branch and for one the writer may not
-GET, without naming the context. Test: as a user with POST on `ui-components`
-but no GET on branch `secret`, POST an item naming `secret` and one naming a
-branch that does not exist, and assert the responses are identical; they
-differ today.
-
 <a id="ui-bulk-delete-versions"></a>
 ## ui-bulk-delete-versions: a bulk delete records one version per item
 
