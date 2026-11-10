@@ -12,14 +12,20 @@ from collections.abc import Mapping
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.utils.encoders import JSONEncoder
+from scoped_rbac.rest import RbacJSONParser
 
-from scrud_django.mixins.view_mixins import ResourceViewMixin
+from scrud_django.mixins.view_mixins import ResourceViewMixin, ScrudfulMeta
 
 
 def computed_etag(content) -> str:
     """The strong ETag of `content`: the SHA-256 of its canonical JSON."""
     canonical = json.dumps(
-        content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        content,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        cls=JSONEncoder,
     )
     return '"' + hashlib.sha256(canonical.encode()).hexdigest() + '"'
 
@@ -43,6 +49,7 @@ class ComputedResourceViewSet(ResourceViewMixin, viewsets.ViewSet):
     computed = True
     http_method_names = ["get", "head", "options"]
     permission_classes = [IsAuthenticated]
+    parser_classes = [RbacJSONParser]
 
     def compute(self, request, key: str) -> Mapping:
         """The content for `key`, a mapping."""
@@ -54,4 +61,22 @@ class ComputedResourceViewSet(ResourceViewMixin, viewsets.ViewSet):
         headers = {"ETag": etag}
         if _matches(request.headers.get("If-None-Match", ""), etag):
             return Response(status=304, headers=headers)
+        links = [
+            f'<{url}>; rel="{rel}"; type="{media_type}"'
+            for url, rel, media_type in (
+                (
+                    ScrudfulMeta.schema_link_or_func(self, request),
+                    "describedby",
+                    "application/schema+json",
+                ),
+                (
+                    ScrudfulMeta.context_link_or_func(self, request),
+                    "http://www.w3.org/ns/json-ld#context",
+                    "application/ld+json",
+                ),
+            )
+            if url
+        ]
+        if links:
+            headers["Link"] = ", ".join(links)
         return Response(content, headers=headers)

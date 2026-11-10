@@ -421,9 +421,12 @@ urlpatterns += registration.computed_resource_type(
 ```
 
 It routes `branch-summaries/<key>/` only (route name `branch-summaries-detail`;
-no list route) and adds no revision history. A GET answers the content with an
+no list route, so a computed type is not in the service catalog, which gives
+each type's list URL) and adds no revision history. A GET answers the content with an
 `ETag` (the SHA-256 of its canonical JSON) and a 304 for a matching
-`If-None-Match`; any other method is a 405. The view requires an authenticated
+`If-None-Match`; any method other than GET, HEAD and OPTIONS is a 405. The response carries the
+`Link` headers to the type's schema and JSON-LD context, as a stored resource's
+does. The view requires an authenticated
 user and applies no authorization of its own to the content: `compute` must ask
 the same checks the stored resources' views do. The type is registered, so a
 published branch's prefix claims its slug, and HTML negotiation renders it

@@ -9,6 +9,7 @@ import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.computed import computed_etag
 from scrud_django.registration import get_resource_type_for
 
 from .fixtures import *  # noqa
@@ -132,14 +133,81 @@ def test_computed_type_under_published_prefix(todo_list, todo_reader_login):
 def test_anonymous_refused(todo_list):
     Given.http.force_authenticate(None)
     When.http.get(summary_url(), HTTP_ACCEPT=JSON)
-    assert Http.response.status_code in (401, 403)
+    Then.http.status_code_is(401)
     assert "Groceries" not in Http.response.content.decode()
 
 
 @pytest.mark.django_db
 @test_context
-def test_computed_type_listed_in_services(todo_reader_login):
+def test_computed_type_not_in_service_catalog(todo_reader_login):
     Given.http.force_authenticate(todo_reader_login)
     When.http.get(reverse("services"), HTTP_ACCEPT=JSON)
     Then.http.status_code_is(200)
-    assert Http.response.json()["tests://TodoSummary"].endswith("/api/todo-summaries/")
+    catalog = Http.response.json()
+    assert "tests://TodoList" in catalog
+    assert "tests://TodoSummary" not in catalog
+
+
+@pytest.mark.django_db
+@test_context
+def test_computed_type_links_to_schema_and_context(todo_list, todo_reader_login):
+    resource_type = get_resource_type_for("todo-summaries")
+    Given.http.force_authenticate(todo_reader_login)
+    When.http.get(summary_url(), HTTP_ACCEPT=JSON)
+    Then.http.status_code_is(200)
+    schema = reverse(
+        resource_type.schema.resource_type.route_name_detail(),
+        args=[resource_type.schema.id],
+    )
+    context = reverse(
+        resource_type.context.resource_type.route_name_detail(),
+        args=[resource_type.context.id],
+    )
+    link = Http.response["Link"]
+    assert f'{schema}>; rel="describedby"; type="application/schema+json"' in link
+    assert (
+        f'{context}>; rel="http://www.w3.org/ns/json-ld#context"; '
+        'type="application/ld+json"'
+    ) in link
+
+
+def test_computed_etag_of_encoder_types():
+    import datetime
+    import uuid
+    from decimal import Decimal
+
+    content = {
+        "at": datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.UTC),
+        "n": Decimal("1.5"),
+        "id": uuid.UUID(int=1),
+    }
+    assert computed_etag(content) == computed_etag(dict(reversed(content.items())))
+    assert computed_etag(content) != computed_etag({**content, "n": Decimal("2")})
+
+
+@pytest.mark.django_db
+@test_context
+def test_computed_type_405_as_html(todo_list, todo_owner_login):
+    Given.http.force_authenticate(todo_owner_login)
+    When.http.put(
+        summary_url(),
+        data=json.dumps({"context": "x"}),
+        content_type=JSON,
+        HTTP_ACCEPT=HTML,
+    )
+    Then.http.status_code_is(405)
+    assert_html()
+    assert "Groceries" not in html()
+
+
+@pytest.mark.django_db
+@test_context
+def test_computed_type_refused_under_prefix_without_branch_get(
+    todo_list, todo_reader_login
+):
+    publish("admin", ADMIN)
+    Given.http.force_authenticate(todo_reader_login)
+    url = f"{ADMIN}todo-summaries/project-a/"
+    When.http.get(url, HTTP_ACCEPT=JSON)
+    Then.http.status_code_is(403)
+    assert "Groceries" not in Http.response.content.decode()

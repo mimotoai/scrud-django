@@ -15,7 +15,6 @@ from django.db.utils import InterfaceError, OperationalError, ProgrammingError
 from django.shortcuts import get_list_or_404, get_object_or_404
 from django.urls import path
 from django.utils import timezone
-from rest_framework.reverse import reverse
 
 from scrud_django import services
 from scrud_django.models import Resource, ResourceType
@@ -855,7 +854,7 @@ def computed_resource_type(
     schema_func,
     context_func,
     viewset_class,
-    register_service: bool = True,
+    register_service: bool = False,
 ):
     """Registration of a computed, read-only resource type
     (`scrud_django.computed.ComputedResourceViewSet`): its `ResourceType` row
@@ -865,9 +864,10 @@ def computed_resource_type(
     keyword ``slug``, which the view passes to ``compute``.
 
     Returns the type's routes; the registration is retried when the type is
-    next read after a database error (`register_or_defer`). With
-    `register_service`, the service catalog lists the type at ``<slug>/``, the
-    URL its keys follow (it has no list)."""
+    next read after a database error (`register_or_defer`). A
+    computed type has no list, so it is left out of the service catalog (the
+    URL of each type's list); `register_service` (default false) is accepted
+    for symmetry with `json_resource_type` and a true value is not honoured."""
 
     def register():
         registration = ResourceTypeRegistration(
@@ -882,18 +882,6 @@ def computed_resource_type(
         registration.urls = computed_urls(slug, viewset_class)
         return registration
 
-    if register_service:
-        # The catalog gives a list's URL, and a computed type has none: it
-        # gives the URL its keys follow (``.../<slug>/``).
-        def base_url(request=None):
-            detail = reverse(
-                ResourceType(slug=slug).route_name_detail(),
-                args=["key"],
-                request=request,
-            )
-            return detail.removesuffix("key/")
-
-        services.add_service(resource_type_uri, base_url)
     return register_or_defer(
         register,
         resource_type_uri,
