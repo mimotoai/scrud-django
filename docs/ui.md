@@ -409,7 +409,7 @@ A branch is a resource of type `ui-branches`:
 | `parent` | The name of the branch it is based on, or `null`. Any chain is allowed. Setting or changing it needs GET on the parent: a parent you may not GET is refused (400) exactly as one that does not exist. |
 | `base` | `live` (default) or `pinned`. `pinned` needs a parent. |
 | `branching_point` | Server-managed, as above. |
-| `prefix` | Present only on a published branch: its URL prefix, `/segment/.../` (lower-case letters, digits, `_` and `-`), unique. |
+| `prefix` | Present only on a published branch: its URL prefix, `/segment/.../` (lower-case letters, digits, `_` and `-`), unique. Setting or changing it (or removing it) needs PUT on `ui-branches` in the context `""`; see [Prefixes](#prefixes). |
 | `conflicts` | Server-managed: the overrides a pull found changed in the parent (see [Pull and conflicts](#pull-and-conflicts)). |
 | `pull` | Write-only: `true` on an update pulls the parent's changes. |
 | `label`, `description` | Free text. |
@@ -639,15 +639,27 @@ without `scrud_django.ui` installed, there is no cost. A database error reading
 the branches is logged and the request falls through, so that other pages still
 answer.
 
-A system check reports a badly configured prefix as a **Warning**,
-`scrud_django_ui.W001` (not an error: it reports stored data, and an error
-would stop `migrate`; routing stays deterministic, the longest prefix wins). It
-reports a prefix under the API's URLs; one that overlaps another (the URLs one
-claims, `<prefix><type slug>/...`, include the other's: `/shop/` and
-`/shop/todo-lists/` do; `/` and `/admin/resources/` do not); and one that
-claims URLs your URLconf serves with another view. Django's admin has a
-catch-all route, so a prefix under `/admin/` is reported; the demo uses
-`/manage/`.
+**Who may publish.** A prefix claims URLs of the whole site: the viewers of
+those URLs then need GET on the branch, so a prefix can put a page of the
+project behind a branch's grants. Setting a branch's `prefix`, changing it, or
+removing it therefore needs **PUT on `ui-branches` in the context `""`** (the
+site's), besides the grants in the branch's own context; without it the write
+is refused (403). A grant in a branch's own context lets you write, push to
+and pull it, never publish it.
+
+A prefix is refused (400) when it is set or changed if it lies under the API's
+URLs; overlaps another branch's (the URLs one claims, `<prefix><type
+slug>/...`, include the other's: `/shop/` and `/shop/todo-lists/` do; `/` and
+`/admin/resources/` do not); or claims URLs your URLconf serves with another
+view, which it would hide. A project that serves its API at `/` can set no
+prefix. Django's admin has a catch-all route, so a prefix under `/admin/` is
+refused; the demo uses `/manage/`.
+
+A system check reports the same problems in stored prefixes (stored before
+this check, by other means, or made wrong by a later change of the URLconf) as
+a **Warning**, `scrud_django_ui.W001` (not an error: it reports stored data,
+and an error would stop `migrate`; routing stays deterministic, the longest
+prefix wins).
 
 ### CSS
 
@@ -675,9 +687,14 @@ year as private.
   its body in a hidden element, can hide it (see the follow-up
   [ui-banner-hideable](follow-ups.md#ui-banner-hideable)). Trust the writers
   of the branches you let people browse.
-* A prefix or a branch only selects presentation: it never changes what a
-  viewer may read or write. A mount that hides a field is presentation, not
-  access control.
+* A branch never changes what a viewer may read or write through the API's
+  views: under a prefix the same views answer with the same checks. A prefix
+  does add one: its URLs need GET on its branch. So publishing a prefix can
+  put URLs behind a branch's grants, and is site-level: it needs PUT on
+  `ui-branches` in the context `""` (see [Prefixes](#prefixes)), and a prefix
+  that would hide the project's own URLs, overlap another or lie under the
+  API's is refused. Grant it to the site's administrators only. A mount that
+  hides a field is presentation, not access control.
 * Stored Jinja templates run in Jinja's sandbox; stored Django templates run on
   a restricted engine (no loaders, no tag libraries), which is not a sandbox.
   Both escape everything they are given.
@@ -703,7 +720,7 @@ the published `customer` branch at `/todo/` (with its own CSS), and a working
 branch `testing-admin` over `admin`. The demo adds
 `PublishedBranchMiddleware` to its settings. The admin prefix is `/manage/`, not
 `/admin/resources/`, because Django's admin has a catch-all route under
-`/admin/` that the prefix check reports.
+`/admin/`, which a prefix there would hide.
 
 ```bash
 cd demo

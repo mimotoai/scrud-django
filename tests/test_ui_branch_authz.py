@@ -10,6 +10,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 
 from .fixtures import *  # noqa
+from .fixtures import assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_css import file_url, get_css, make_css
 from .test_ui_branch_push import push, pusher
@@ -174,3 +175,91 @@ def test_a_push_naming_an_unreadable_branch_is_answered_as_unknown():
         "detail": answers["nope"][1]["detail"].replace("nope", "secret"),
     }
     assert "bob" not in answers["secret"][1]["detail"]
+
+
+def publisher():
+    """May read and write branches in "alice", and publish them: PUT on
+    branches in "", the site's context (ruling R37)."""
+    user = assign_ui_role((UI_BRANCH_TYPE_URI,), "alice")
+    grant(user, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "")
+    return user
+
+
+def put_branch(stored, **fields):
+    When.http.put(
+        reverse("ui-branches-detail", args=[stored.pk]),
+        data={**stored.content, **fields},
+        format="json",
+        HTTP_IF_MATCH=f'"{stored.etag}"',
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_context_writer_cannot_claim_site_urls(ui_alice_login, todo_reader_login):
+    """The reviewer's probe (C2): alice, with grants only in "alice",
+    published a branch at ``/shop/`` and so put the project's page there
+    behind GET on her branch. Setting a prefix needs PUT on branches in ""."""
+    reverse("todo-lists-list")  # the URLconf registers the types
+    Given.http.force_authenticate(todo_reader_login)
+    When.http.get("/shop/todo-lists/")
+    Then.http.status_code_is(200)
+    Given.http.force_authenticate(ui_alice_login)
+    body = {"name": "shop", "rbac_context": "alice", "parent": None}
+    for prefix in ("/shop/", "/"):
+        create("ui-branches", {**body, "prefix": prefix})
+        Then.http.status_code_is(403)
+    # Nor by publishing a working branch (ruling R7 allows the switch).
+    own = make_branch("own", "alice", parent=None)
+    put_branch(own, prefix="/shop/")
+    Then.http.status_code_is(403)
+    Given.http.force_authenticate(todo_reader_login)
+    When.http.get("/shop/todo-lists/")
+    Then.http.status_code_is(200)
+    assert Http.response.content == b"The shop's to-do lists"
+
+
+@pytest.mark.django_db
+@test_context
+def test_changing_a_prefix_is_site_level(ui_alice_login):
+    """Moving a published branch, or unpublishing it, needs the site grant
+    too; an update that keeps the prefix does not."""
+    shop = make_branch("shop", "alice", parent=None, prefix="/shop-a/")
+    Given.http.force_authenticate(ui_alice_login)
+    put_branch(shop, label="The shop")
+    Then.http.status_code_is(200)
+    shop.refresh_from_db()
+    for prefix in ("/shop-b/", None):
+        put_branch(shop, prefix=prefix)
+        Then.http.status_code_is(403)
+    Given.http.force_authenticate(publisher())
+    put_branch(shop, prefix="/shop-b/")
+    Then.http.status_code_is(200)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_prefix_that_overlaps_shadows_or_lies_under_the_api_is_refused():
+    """What the system check warns of is refused at write time (ruling
+    R37): ``/shop/`` would hide the project's ``/shop/todo-lists/``, ``/api/``
+    is the API's, and ``/todo-lists/`` is among the URLs ``/`` claims."""
+    reverse("todo-lists-list")  # the URLconf registers the types
+    make_branch("everything", "alice", parent=None, prefix="/")
+    Given.http.force_authenticate(publisher())
+    body = {"name": "shop", "rbac_context": "alice", "parent": None}
+    details = []
+    for prefix in ("/shop/", "/api/", "/api/shop/", "/todo-lists/"):
+        create("ui-branches", {**body, "prefix": prefix})
+        Then.http.status_code_is(400)
+        assert problem()["type"].endswith("/ui-branch-invalid"), prefix
+        details.append(problem()["detail"])
+    assert "/shop/todo-lists/" in details[0]
+    assert "API" in details[1] and "API" in details[2]
+    assert "'everything'" in details[3]
+    # Nor by moving a published branch there.
+    elsewhere = make_branch("elsewhere", "alice", parent=None, prefix="/else/")
+    put_branch(elsewhere, prefix="/shop/")
+    Then.http.status_code_is(400)
+    # A prefix that claims nothing another does is accepted.
+    create("ui-branches", {**body, "prefix": "/shop-front/"})
+    Then.http.status_code_is(201)

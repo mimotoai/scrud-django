@@ -143,7 +143,7 @@ These would make the work a failure even if it technically ran:
 | `parent` | The branch it is based on, or none. Any chain is allowed **(call)**. Setting or changing it needs GET on the parent as stored; a parent the writer may not GET gets the same 400 as an unknown one (ruling R36, during implementation). |
 | `base` | `live` (default, **owner**) or `pinned`. Ignored without a parent. |
 | `branching_point` | The ancestor versions the branch started from, or last pulled (see Branching point). Always recorded **(owner)**. When `base` is `pinned`, this is also the state it unions with. |
-| `prefix` | Present only on a published branch: its URL prefix, e.g. `/`, `/admin/resources/`, `/msp/resources/` **(owner: published branches at prefixes)**. Unique. |
+| `prefix` | Present only on a published branch: its URL prefix, e.g. `/`, `/admin/resources/`, `/msp/resources/` **(owner: published branches at prefixes)**. Unique. Setting or changing it (null to a value or back included) needs PUT on `ui-branches` in the context `""`, a site-level grant: a prefix claims site URLs and gates them with GET on its branch (ruling R37, during implementation). |
 | `label`, `description` | Free text. |
 
 The upgrade creates one published branch, `main`, in context `""`, at the API
@@ -214,7 +214,9 @@ testing's changes, then its own.
 - **What a prefix claims.** A prefix claims only `<prefix><registered type
   slug>/...` (plus the CSS URLs). A prefix of `/` doesn't swallow the rest of
   the site. A system check reports a prefix that overlaps another prefix or a
-  URL in the project's URLconf (call). It reports a Warning,
+  URL in the project's URLconf (call). Setting or changing a prefix refuses
+  (400) one that overlaps another, is shadowed by the project's URLconf, or
+  lies under the API's URLs (ruling R37, during implementation). It reports a Warning,
   `scrud_django_ui.W001`, not an Error: it is a database check that runs at
   `migrate`, and stored data must not block migrations; routing stays
   deterministic, the longest prefix wins (ruling R26, during implementation).

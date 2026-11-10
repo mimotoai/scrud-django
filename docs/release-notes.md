@@ -26,8 +26,11 @@
 * The UI's `Vary` header adds `Scrud-UI-Branch` and `Cookie`. `scrud:page`
   gets a `css` list of the CSS file URLs; a custom page component should link
   them.
-* A system check, `scrud_django_ui.W001` (a Warning), reports published
-  branches' prefixes that overlap or hide the project's URLs.
+* Setting or changing a branch's prefix (publishing it at site URLs) needs
+  PUT on `ui-branches` in the context `""`, and refuses a prefix that overlaps
+  another, hides the project's URLs or lies under the API's. A system check,
+  `scrud_django_ui.W001` (a Warning), reports stored prefixes with those
+  problems.
 
 Behaviour for a site that creates no branch, and without the middleware, is
 unchanged. The middleware costs one query per request outside the API's URLs.

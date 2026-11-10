@@ -266,7 +266,10 @@ def test_a_branchs_context_is_fixed(admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_a_published_branch_may_change_its_prefix(admin_login):
+def test_a_published_branch_may_change_its_prefix(admin_login, settings):
+    # The API at /api/: under tests.urls it is at /, where every prefix is
+    # under the API's URLs and refused (ruling R37).
+    settings.ROOT_URLCONF = "tests.mounted_urls"
     admin = make_branch("admin", "alice", parent=None, prefix="/admin/")
     on("admin", "alice")
     store(
@@ -286,7 +289,10 @@ def test_a_published_branch_may_change_its_prefix(admin_login):
 @pytest.mark.parametrize("published", [True, False])
 @pytest.mark.django_db
 @test_context
-def test_publishing_is_fixed_while_stylesheets_apply_elsewhere(admin_login, published):
+def test_publishing_is_fixed_while_stylesheets_apply_elsewhere(
+    admin_login, published, settings
+):
+    settings.ROOT_URLCONF = "tests.mounted_urls"  # as above
     before, after = ("/wip/", None) if published else (None, "/wip/")
     wip = make_branch("wip", "alice", prefix=before)
     # A stylesheet that applies everywhere is authorized in the branch's

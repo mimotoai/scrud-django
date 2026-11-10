@@ -26,6 +26,7 @@ from scrud_django.ui.branches.store import (
 from scrud_django.ui.cascade import rules_memo
 
 from .fixtures import *  # noqa
+from .fixtures import assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_ui_http import PREFIXES, grant, make_component, make_stylesheet
 
@@ -109,7 +110,6 @@ def test_branch_refusals(ui_alice_login):
         {"name": "a", "rbac_context": "alice", "parent": "main"},
         {"name": "x", "rbac_context": "alice", "parent": "nope"},
         {"name": "Main!", "rbac_context": "alice", "parent": "main"},
-        {"name": "pub-2", "rbac_context": "alice", "parent": None, "prefix": "/admin/"},
         {"name": "pub-3", "rbac_context": "alice", "parent": None, "prefix": "/admin"},
         {"name": "pinned", "rbac_context": "alice", "parent": None, "base": "pinned"},
     ]
@@ -119,6 +119,21 @@ def test_branch_refusals(ui_alice_login):
         Then.http.status_code_is(400)
         assert problem()["type"].endswith("/ui-branch-invalid"), body
         details.append(problem()["detail"])
+    # Setting a prefix is site-level (ruling R37): alice may not; a writer
+    # who may PUT branches in "" gets the taken prefix's 400.
+    taken = {"name": "pub-2", "rbac_context": "alice", "parent": None}
+    taken["prefix"] = "/admin/"
+    create("ui-branches", taken)
+    Then.http.status_code_is(403)
+    publisher = assign_ui_role((UI_BRANCH_TYPE_URI,), "alice")
+    grant(publisher, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "")
+    Given.http.force_authenticate(publisher)
+    create("ui-branches", taken)
+    Then.http.status_code_is(400)
+    assert problem()["type"].endswith("/ui-branch-invalid")
+    assert "already has the prefix" in problem()["detail"]
+    details.append(problem()["detail"])
+    Given.http.force_authenticate(ui_alice_login)
     # re-parenting a under its child b
     When.http.put(
         reverse("ui-branches-detail", args=[a.pk]),

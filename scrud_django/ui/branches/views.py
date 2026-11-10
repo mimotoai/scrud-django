@@ -7,6 +7,8 @@ import re
 from collections.abc import Mapping
 
 from django.db import transaction
+from rest_framework.exceptions import PermissionDenied
+from scoped_rbac.policy import Permission
 from scrudful.rest_framework import scrudful_viewset
 
 from scrud_django.exceptions import (
@@ -16,9 +18,14 @@ from scrud_django.exceptions import (
     UIPushAppliedError,
 )
 from scrud_django.models import Resource
-from scrud_django.permissions import may_read_in_context, resource_contexts
-from scrud_django.registration import ResourceRegistration
-from scrud_django.ui.branches import ITEM_KINDS, MAIN, PREFIX
+from scrud_django.permissions import (
+    may_act_in_context,
+    may_read_in_context,
+    resource_contexts,
+)
+from scrud_django.registration import ResourceRegistration, type_db
+from scrud_django.ui.branches import ITEM_KINDS, MAIN, PREFIX, UI_BRANCH_TYPE_URI
+from scrud_django.ui.branches.checks import prefix_problems
 from scrud_django.ui.branches.model import MAIN_BRANCH, Branch, applies_to
 from scrud_django.ui.branches.selection import branch_content, may_get_stored
 from scrud_django.ui.branches.store import (
@@ -86,7 +93,7 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
             self.check_main(content)
         all_branches = dict(branches(self.write_database()))
         self.check_parent(name, content, parent, prefix, base, all_branches, instance)
-        self.check_prefix(name, prefix, all_branches)
+        self.check_prefix(name, content, prefix, all_branches, instance)
         if base == "pinned" and parent is None:
             raise UIBranchInvalidError(
                 "A pinned branch needs a parent: it is pinned to its parent's "
@@ -238,21 +245,50 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
         except BranchChainError as error:
             raise UIBranchInvalidError(str(error)) from error
 
-    def check_prefix(self, name, prefix, all_branches):
+    def check_prefix(self, name, content, prefix, all_branches, instance=None):
         """A prefix is ``""`` or ``/segment/.../``, and no other branch's
-        (the virtual ``main``'s ``""`` included)."""
-        if prefix is None:
-            return
-        if prefix and not PREFIX.fullmatch(prefix):
+        (the virtual ``main``'s ``""`` included). Setting one, or changing
+        it (to another, to none or from none), publishes URLs of the site,
+        and needs PUT on branches in the context ``""`` (`check_publisher`,
+        403; ruling R37); the new prefix must not lie under the API's URLs,
+        hide URLs the project's URLconf serves, or overlap another branch's
+        (`checks.prefix_problems`, 400)."""
+        if prefix is not None and prefix and not PREFIX.fullmatch(prefix):
             raise UIBranchInvalidError(
                 f'A branch prefix is "" or matches {PREFIX.pattern}; {prefix!r} '
                 "does not."
             )
+        stored = (
+            None if instance is None else branch_from(instance.pk, instance.content)
+        )
+        changed = prefix != (None if stored is None else stored.prefix)
+        if prefix is None and not changed:
+            return
+        if changed:
+            self.check_publisher(content)
+        if prefix is None:
+            return
         for other in all_branches.values():
             if other.name != name and other.prefix == prefix:
                 raise UIBranchInvalidError(
                     f"Branch {other.name!r} already has the prefix {prefix!r}."
                 )
+        if changed and prefix:
+            others = [b for b in all_branches.values() if b.name != name]
+            problems = prefix_problems(prefix, others, type_db())
+            if problems:
+                raise UIBranchInvalidError(" ".join(problems))
+
+    def check_publisher(self, content):
+        """Refuse (``PermissionDenied``, 403) unless the writer may PUT
+        branches in the context ``""``: a prefix claims URLs of the whole
+        site, which no grant in the branch's own context covers."""
+        permission = Permission("http.PUT", UI_BRANCH_TYPE_URI)
+        if not may_act_in_context(self.request, permission, content, [""]):
+            raise PermissionDenied(
+                "Setting or changing a branch's prefix publishes it at the "
+                "site's URLs: it needs PUT on UI branches in the context \"\"."
+            )
 
 
 def readable_version(request, version):
