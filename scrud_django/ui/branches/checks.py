@@ -3,12 +3,12 @@
 from django.core import checks
 from django.urls import NoReverseMatch, Resolver404, get_script_prefix, resolve
 
-CHECK_ID = "scrud_django_ui.E001"
+CHECK_ID = "scrud_django_ui.W001"
 
 
 def check_prefixes(app_configs, databases=None, **kwargs):
     """A database check (``manage.py check --database default``, and
-    ``migrate``): an Error (``scrud_django_ui.E001``) for each published
+    ``migrate``): a Warning (``scrud_django_ui.W001``) for each published
     branch's prefix, on each migrated database of `databases`, that
 
     - lies under the API's URLs (`selection.api_base`), where no prefix
@@ -20,8 +20,10 @@ def check_prefixes(app_configs, databases=None, **kwargs):
     - claims a URL that the project's URLconf serves with another view
       (``<prefix><type slug>/``), which the prefix would hide.
 
-    A database error reading a migrated database is reported
-    (``scrud_django.W007``)."""
+    A Warning, not an Error (ruling R26): it reports stored data, and an
+    Error from a database check would stop ``migrate``; routing stays
+    deterministic meanwhile (the longest prefix wins). A database error
+    reading a migrated database is reported (``scrud_django.W007``)."""
     from django.db.utils import OperationalError, ProgrammingError
 
     from scrud_django.checks import could_not_run, error_text, not_checked
@@ -90,7 +92,7 @@ def _shadowed(prefix, slugs):
 
 
 def _under_api(branch, base):
-    return checks.Error(
+    return checks.Warning(
         f"The prefix {branch.prefix!r} of branch {branch.name!r} is under the "
         f"API's URLs ({base!r}), where no prefix applies.",
         hint="Give the branch a prefix outside the API's URLs.",
@@ -99,7 +101,7 @@ def _under_api(branch, base):
 
 
 def _shadowing(branch, shadowed):
-    return checks.Error(
+    return checks.Warning(
         f"The prefix {branch.prefix!r} of branch {branch.name!r} claims URLs "
         f"that the project's URLconf serves: {', '.join(shadowed)}. The "
         "branch's resource views would hide them.",
@@ -109,7 +111,7 @@ def _shadowing(branch, shadowed):
 
 
 def _overlap(outer, inner):
-    return checks.Error(
+    return checks.Warning(
         f"The prefixes {outer.prefix!r} (branch {outer.name!r}) and "
         f"{inner.prefix!r} (branch {inner.name!r}) overlap: the URLs of "
         f"{inner.prefix!r} are among those {outer.prefix!r} claims.",

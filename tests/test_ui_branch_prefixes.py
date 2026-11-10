@@ -3,7 +3,9 @@ reach the same views as under the API's, with the same checks; only the
 presentation differs. These tests serve the API at ``/api/``
 (``tests.mounted_urls``)."""
 
+import hashlib
 import json
+import logging
 import re
 from html import unescape
 from urllib.parse import urlsplit
@@ -11,11 +13,13 @@ from urllib.parse import urlsplit
 import pytest
 from django.core import checks
 from django.db import connection
+from django.db.utils import OperationalError
 from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django import ui
 from scrud_django.models import Resource
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 
@@ -37,7 +41,7 @@ from .test_ui_http import (
 
 ADMIN = "/admin/resources/"
 CUSTOMER = "/"
-CHECK_ID = "scrud_django_ui.E001"
+CHECK_ID = "scrud_django_ui.W001"
 # Shows the decisions the component was given.
 TITLE = (
     "<{0}>{{{{ value.title }}}}|{{{{ resource.decisions.GET }}}}"
@@ -52,6 +56,21 @@ def api_at_api_path(settings):
     """The API at ``/api/``: ``tests.urls`` serves it at ``/``, where no
     prefix applies."""
     settings.ROOT_URLCONF = "tests.mounted_urls"
+
+
+def mount_cookie(prefix):
+    """The name of the branch cookie under `prefix` (ruling R28)."""
+    return f"{COOKIE}_{hashlib.sha256(prefix.encode()).hexdigest()[:12]}"
+
+
+def choose_by_link(url, branch):
+    """Follow a shared link to `branch` at `url`, then its confirmation's
+    Continue: the page, with the cookie set."""
+    page = get_html(f"{url}?ui-branch={branch}")
+    continue_href = re.search(
+        r'class="scrud-branch-continue" href="([^"]*)"', page
+    ).group(1)
+    return get_html(unescape(continue_href), HTTP_SEC_FETCH_SITE="same-origin")
 
 
 def publish(name, prefix, parent="main", context="project-a", **fields):
@@ -112,7 +131,7 @@ def path_of(href):
 
 
 def prefix_errors(*, overlap=None):
-    """The E001 errors the checks report."""
+    """The W001 warnings the checks report."""
     found = [m for m in checks.run_checks(databases=["default"]) if m.id == CHECK_ID]
     if overlap is not None:
         found = [m for m in found if ("overlap" in m.msg) == overlap]
@@ -369,7 +388,8 @@ def test_working_branch_browsed_under_its_root_prefix(todo_list, todo_reader_log
     assert path_of(continue_href) == mounted(ADMIN, todo_list)
     page = get_html(unescape(continue_href), HTTP_SEC_FETCH_SITE="same-origin")
     assert "<h6>Groceries" in page and "testing-admin" in page
-    cookie = Http.response.cookies.get(COOKIE)
+    assert COOKIE not in Http.response.cookies
+    cookie = Http.response.cookies.get(mount_cookie(ADMIN))
     assert cookie is not None and cookie.value == "testing-admin"
     assert cookie["path"] == ADMIN
     # The banner's links (switcher, toggle, copy, back) stay in the mount.
@@ -403,7 +423,9 @@ def test_overlapping_prefixes_reported_by_check(todo_list):
     assert len(overlaps) == 1, overlaps
     assert "/msp/resources/todo-lists/" in overlaps[0].msg
     assert "/msp/resources/" in overlaps[0].msg
-    assert isinstance(overlaps[0], checks.Error)
+    # A Warning, not an Error: it must not stop migrate (ruling R26).
+    assert type(overlaps[0]) is checks.Warning
+    assert overlaps[0].level == checks.WARNING
     assert prefix_errors(overlap=False) == []
     # A prefix and a type's slug that the project's URLconf already serves.
     publish("shop", "/shop/", parent="admin")
@@ -413,3 +435,89 @@ def test_overlapping_prefixes_reported_by_check(todo_list):
     # A prefix under the API's URLs, where no prefix applies.
     publish("v2", "/api/v2/", parent="admin")
     assert any("/api/v2/" in m.msg for m in prefix_errors(overlap=False))
+
+
+@pytest.mark.django_db
+@test_context
+def test_each_prefix_keeps_its_own_cookie(todo_list, todo_reader_login):
+    """A cookie set under ``/`` is sent to every prefix too: its own name
+    keeps it from shadowing another prefix's (ruling R28)."""
+    setup_admin_and_customer()
+    make_branch("testing-admin", "project-a", parent="admin")
+    put_item("ui-components", "title", TITLE.format("h6"), "testing-admin")
+    make_branch("testing-customer", "project-a", parent="customer")
+    put_item("ui-components", "title", TITLE.format("h5"), "testing-customer")
+    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    assert "<h6>Groceries" in choose_by_link(mounted(ADMIN, todo_list), "testing-admin")
+    page = choose_by_link(mounted(CUSTOMER, todo_list), "testing-customer")
+    assert "<h5>Groceries" in page
+    cookie = Http.response.cookies[mount_cookie(CUSTOMER)]
+    assert cookie.value == "testing-customer" and cookie["path"] == CUSTOMER
+    # The client sends both cookies everywhere, as a browser does for `/`.
+    sent = Http.api_client.cookies
+    assert sent[mount_cookie(ADMIN)].value == "testing-admin"
+    assert sent[mount_cookie(CUSTOMER)].value == "testing-customer"
+    # Each prefix reads its own, and neither shows a refused branch.
+    page = get_html(mounted(ADMIN, todo_list))
+    assert "<h6>Groceries" in page and "isn't available" not in page
+    assert "You are browsing branch <strong>testing-admin</strong>" in page
+    page = get_html(mounted(CUSTOMER, todo_list))
+    assert "<h5>Groceries" in page and "isn't available" not in page
+    # The API's URLs read neither.
+    page = get_html(api_url(todo_list))
+    assert "<h1>Groceries" in page and "scrud-branch-banner" not in page
+
+
+@pytest.mark.django_db
+@test_context
+def test_mounted_request_reads_branches_once(todo_list, todo_reader_login):
+    """A mounted JSON request costs one query over the API's: the
+    middleware's read of the branches, which check_mount reuses."""
+    setup_admin_and_customer()
+    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+
+    def queries(url):
+        get_json(url)  # warm up
+        with CaptureQueriesContext(connection) as captured:
+            get_json(url)
+        return len(captured)
+
+    assert queries(mounted(ADMIN, todo_list)) == queries(api_url(todo_list)) + 1
+
+
+@pytest.mark.django_db
+@test_context
+def test_database_error_mounts_nothing(todo_list, monkeypatch, caplog):
+    """A database error reading the branches leaves the request to the
+    project's URLconf, with a warning: its other pages still answer."""
+    from scrud_django.ui.branches import middleware
+
+    setup_admin_and_customer()
+
+    def unreachable(*args, **kwargs):
+        raise OperationalError("the database is unreachable")
+
+    monkeypatch.setattr(middleware, "stored_branches", unreachable)
+    for path, status in (("/shop/todo-lists/", 200), (mounted(ADMIN, todo_list), 404)):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=middleware.__name__):
+            When.http.get(path)
+        Then.http.status_code_is(status)
+        warnings = [r for r in caplog.records if r.name == middleware.__name__]
+        assert len(warnings) == 1, warnings
+        assert warnings[0].levelno == logging.WARNING
+        assert "unreachable" in warnings[0].getMessage()
+
+
+@pytest.mark.django_db
+@test_context
+def test_middleware_inert_without_ui(todo_list, todo_reader_login, monkeypatch):
+    """Without scrud_django.ui installed, the views would not check_mount:
+    so nothing is mounted."""
+    setup_admin_and_customer()
+    Given.http.force_authenticate(todo_reader_login)  # no GET on admin
+    get_json(mounted(ADMIN, todo_list), status=403)
+    monkeypatch.setattr(ui, "is_enabled", lambda: False)
+    get_json(api_url(todo_list))
+    When.http.get(mounted(ADMIN, todo_list), HTTP_ACCEPT="application/json")
+    Then.http.status_code_is(404)

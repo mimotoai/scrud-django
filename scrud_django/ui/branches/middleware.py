@@ -13,18 +13,25 @@ Install it after ``AuthenticationMiddleware``::
     ]
 """
 
+import logging
+
+from django.db.utils import OperationalError, ProgrammingError
 from django.urls import NoReverseMatch, Resolver404, get_script_prefix, resolve
 from rest_framework.exceptions import NotAuthenticated, PermissionDenied
 
+from scrud_django import ui
 from scrud_django.ui.branches import PREFIX
 from scrud_django.ui.branches.selection import (
     MOUNT_ATTR,
     Mount,
     api_base,
     may_get,
+    may_get_stored,
     mount_of,
 )
-from scrud_django.ui.branches.store import branches
+from scrud_django.ui.branches.store import branches, stored_branches
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["Mount", "PublishedBranchMiddleware", "check_mount", "mount_of"]
 
@@ -43,13 +50,14 @@ class PublishedBranchMiddleware:
     URL requested, so that the HTML's links stay in the mount. The longest
     such prefix wins. Any other request is left as it is: a prefix claims
     nothing else, so the project's URLconf answers it (a 404 when it has
-    nothing there)."""
+    nothing there). So is every request when ``scrud_django.ui`` is not
+    installed: its views would not `check_mount`."""
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        found = find_mount(request.path_info)
+        found = find_mount(request.path_info) if ui.is_enabled() else None
         if found is not None:
             mount, path_info = found
             setattr(request, MOUNT_ATTR, mount)
@@ -59,7 +67,9 @@ class PublishedBranchMiddleware:
 
 def find_mount(path_info: str) -> tuple[Mount, str] | None:
     """The `Mount` of a request for `path_info` and the API path it is
-    routed to, or ``None``."""
+    routed to, or ``None``. A database error reading the branches is logged
+    (a warning) and mounts nothing, so that the project's other pages still
+    answer before ``migrate`` or while the database is unreachable."""
     try:
         base = api_base()
     except NoReverseMatch:  # the project does not serve the UI's types
@@ -71,20 +81,34 @@ def find_mount(path_info: str) -> tuple[Mount, str] | None:
     if path_info.startswith(base_info):
         # The API's URLs are never mounted, and read no branch (ruling R1).
         return None
-    # Every other request reads the branches (one query): the cost of
-    # prefixes, which ``docs/ui.md`` tells.
+    # Every other request reads the stored branches: one query per request,
+    # the cost of prefixes (ruling R1). The Mount keeps the branch's content
+    # for check_mount, which so reads no branch again.
+    try:
+        stored = stored_branches()
+    except (OperationalError, ProgrammingError) as error:
+        logger.warning(
+            "scrud-ui: not routing %r to a published branch: reading the "
+            "branches failed (%s: %s)",
+            path_info,
+            type(error).__name__,
+            error,
+        )
+        return None
     published = [
-        branch
-        for branch in branches().values()
+        (branch, content)
+        for branch, content in stored.values()
         if branch.prefix and PREFIX.fullmatch(branch.prefix)
     ]
-    for branch in sorted(published, key=lambda b: len(b.prefix), reverse=True):
+    published.sort(key=lambda found: len(found[0].prefix), reverse=True)
+    for branch, content in published:
         if not path_info.startswith(branch.prefix):
             continue
         rest = path_info[len(branch.prefix) :]
         target = base_info + rest
         if routes_to_api(target, rest):
-            return Mount(branch.prefix, branch.name, base, script), target
+            mount = Mount(branch.prefix, branch.name, base, script, content)
+            return mount, target
     return None
 
 
@@ -132,15 +156,23 @@ def check_mount(request) -> None:
     mount = mount_of(request)
     if mount is None:
         return
-    branch = branches().get(mount.branch)
-    if (
-        branch is not None
-        and branch.prefix == mount.prefix
-        and may_get(request, branch)
-    ):
+    if _may_get_mounted(request, mount):
         return
     if getattr(request, "authenticators", None) and not getattr(
         request, "successful_authenticator", None
     ):
         raise NotAuthenticated()
     raise PermissionDenied()
+
+
+def _may_get_mounted(request, mount) -> bool:
+    """Whether the user of `request` may GET `mount`'s branch: as the
+    middleware read it (`Mount.content`), else as stored now."""
+    if mount.content is not None:
+        return may_get_stored(request, mount.content)
+    branch = branches().get(mount.branch)
+    return (
+        branch is not None
+        and branch.prefix == mount.prefix
+        and may_get(request, branch)
+    )

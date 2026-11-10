@@ -61,12 +61,12 @@ from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messag
 from scrud_django.ui.branches.chrome import banner, confirm_page
 from scrud_django.ui.branches.effective import BRANCH_HEADER, using_selection
 from scrud_django.ui.branches.selection import (
-    BRANCH_COOKIE,
     CONFIRM_PARAMETER,
     PARAM,
     Chosen,
     choose,
     cookie_branch,
+    cookie_name,
     cookie_path,
     frame_branch,
     in_mount,
@@ -219,8 +219,8 @@ def finalize_html(request, response) -> None:
     and media type an exception handler set (``application/problem+json``),
     vary it on the fragment protocol's headers, and keep caches from storing
     it (``Cache-Control: private, no-cache, no-store``). A GET whose
-    branch parameter came confirmed keeps the selection in `BRANCH_COOKIE`
-    (`remember_branch`)."""
+    branch parameter came confirmed keeps the selection in the prefix's
+    cookie (`remember_branch`)."""
     renderer = negotiated_html(request)
     if renderer is None:
         return
@@ -246,8 +246,9 @@ def finalize_html(request, response) -> None:
 def remember_branch(request, response) -> None:
     """For a GET whose branch parameter came confirmed (with the viewer's
     confirmation token: the banner's links and the confirmation's): set
-    `BRANCH_COOKIE` to the working branch it selected, scoped to the prefix
-    (``HttpOnly``, ``SameSite=Lax``), or delete it for the published branch.
+    the prefix's cookie (`selection.cookie_name`, scoped to the prefix by
+    `selection.cookie_path`; ``HttpOnly``, ``SameSite=Lax``) to the working
+    branch it selected, or delete it for the published branch.
     A refused branch leaves the cookie as it was. The cookie is only a
     preference: every request checks it again (`choose`)."""
     params = getattr(request, "GET", None)
@@ -260,12 +261,12 @@ def remember_branch(request, response) -> None:
     chosen = choose(request)
     if chosen.source != PARAM or not chosen.confirmed or chosen.refused:
         return
-    path = cookie_path(request)
+    name, path = cookie_name(request), cookie_path(request)
     if is_published(chosen, request):
-        response.delete_cookie(BRANCH_COOKIE, path=path, samesite="Lax")
+        response.delete_cookie(name, path=path, samesite="Lax")
         return
     response.set_cookie(
-        BRANCH_COOKIE,
+        name,
         selection_value(chosen.selection),
         path=path,
         secure=request.is_secure(),

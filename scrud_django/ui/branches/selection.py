@@ -1,7 +1,7 @@
 """The branch a request browses: chosen from its `BRANCH_HEADER`, its
-`BRANCH_PARAMETER` query parameter or its `BRANCH_COOKIE`, in that order, else
-the published branch of the request's prefix (`Mount`; ``main`` at the API
-URLs).
+`BRANCH_PARAMETER` query parameter or its cookie (`cookie_name`: one per
+prefix), in that order, else the published branch of the request's prefix
+(`Mount`; ``main`` at the API URLs).
 
 A value is ``<name>`` or ``<name>@pinned`` (`VALUE`, at most
 `MAX_VALUE_BYTES`); any other is ignored, as if absent. An empty header or
@@ -12,10 +12,11 @@ and `Chosen.refused` names it (the banner says so). A request with no
 selection, or one naming the published branch, reads no branch row (ruling
 R1)."""
 
+import hashlib
 import logging
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from django.middleware.csrf import get_token
@@ -40,6 +41,7 @@ from scrud_django.ui.types import UI_COMPONENT_SLUG
 
 logger = logging.getLogger(__name__)
 
+# The cookie's name at the API's URLs; under a prefix, `cookie_name`.
 BRANCH_COOKIE = "scrud_ui_branch"
 CONFIRM_PARAMETER = "ui-branch-confirm"
 CONFIRM_SALT = "scrud_django.ui.branch-confirm"
@@ -84,12 +86,15 @@ class Mount:
     """A request under the `prefix` of the published branch `branch`, which
     `PublishedBranchMiddleware` routed to the API's URL: `prefix` is a path
     as the URLconf matches it (under the script prefix, `script`), and
-    `api_base` is `api_base()`, a URL path."""
+    `api_base` is `api_base()`, a URL path. `content` is the branch as
+    stored when the middleware read it (`may_get_stored`), so that
+    `check_mount` reads no branch again; ``None``: read it then."""
 
     prefix: str
     branch: str
     api_base: str
     script: str = "/"
+    content: Mapping | None = field(default=None, compare=False, repr=False)
 
     @property
     def url_prefix(self) -> str:
@@ -135,9 +140,22 @@ def published_branch(request) -> str:
     return mount.branch if mount is not None else MAIN
 
 
+def cookie_name(request) -> str:
+    """The name of the cookie that keeps the branch chosen at `request`'s
+    URLs (ruling R28): `BRANCH_COOKIE` at the API's, else
+    ``scrud_ui_branch_<the first 12 hex digits of the SHA-256 of the
+    prefix>``. A cookie scoped to ``/`` is sent to every prefix too: its own
+    name keeps it from being read, or shadowing the cookie, there."""
+    mount = mount_of(request)
+    if mount is None:
+        return BRANCH_COOKIE
+    digest = hashlib.sha256(mount.prefix.encode("utf-8")).hexdigest()
+    return f"{BRANCH_COOKIE}_{digest[:12]}"
+
+
 def cookie_path(request) -> str:
-    """The path `BRANCH_COOKIE` is scoped to: the prefix's, else the API's,
-    so that a branch chosen under one prefix is not chosen under another."""
+    """The path the cookie (`cookie_name`) is scoped to: the prefix's, else
+    the API's."""
     mount = mount_of(request)
     return mount.url_prefix if mount is not None else api_base()
 
@@ -178,9 +196,10 @@ def frame_branch(request) -> str | None:
 
 
 def cookie_branch(request) -> str | None:
-    """The branch name `BRANCH_COOKIE` holds, when it is a selection value."""
+    """The branch name the request's cookie (`cookie_name`) holds, when it
+    is a selection value."""
     cookies = getattr(request, "COOKIES", None)
-    selection = parse_value(cookies.get(BRANCH_COOKIE) if cookies else None)
+    selection = parse_value(cookies.get(cookie_name(request)) if cookies else None)
     return selection.branch if selection is not None else None
 
 
@@ -233,7 +252,7 @@ def _values(request, cookie):
     yield PARAM, params.get(BRANCH_PARAMETER) if params is not None else None
     if cookie:
         cookies = getattr(request, "COOKIES", None)
-        yield COOKIE, cookies.get(BRANCH_COOKIE) if cookies else None
+        yield COOKIE, cookies.get(cookie_name(request)) if cookies else None
 
 
 def _published_selection(published):
@@ -309,7 +328,12 @@ def _selectable(request, selection, published) -> bool:
 
 def may_get(request, branch: Branch) -> bool:
     """Whether the user of `request` may GET `branch`, as stored."""
-    content = _stored_contents().get(branch.pk)
+    return may_get_stored(request, _stored_contents().get(branch.pk))
+
+
+def may_get_stored(request, content) -> bool:
+    """Whether the user of `request` may GET the branch stored with
+    `content`."""
     if not isinstance(content, Mapping):
         return False
     return may_read_in_context(

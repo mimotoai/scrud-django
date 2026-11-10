@@ -58,18 +58,27 @@ def branches(using=None) -> dict[str, Branch]:
 
 
 def _read_branches(using):
+    found = {name: branch for name, (branch, _) in stored_branches(using).items()}
+    found.setdefault(MAIN, MAIN_BRANCH)
+    return found
+
+
+def stored_branches(using=None) -> dict[str, tuple[Branch, Mapping]]:
+    """Every stored branch by name, with its stored content, lowest pk first
+    where a name is stored twice: one query on `using` (default: the
+    router's read database), never memoised. The virtual main is not
+    stored."""
     rows = Resource.objects.using(using) if using else Resource.objects
     rows = (
         rows.filter(resource_type__type_uri=UI_BRANCH_TYPE_URI)
         .order_by("pk")
         .values_list("pk", "content")
     )
-    found: dict[str, Branch] = {}
+    found: dict[str, tuple[Branch, Mapping]] = {}
     for pk, content in rows:
         name = content.get("name") if isinstance(content, Mapping) else None
         if isinstance(name, str) and name not in found:
-            found[name] = branch_from(pk, content)
-    found.setdefault(MAIN, MAIN_BRANCH)
+            found[name] = (branch_from(pk, content), content)
     return found
 
 
