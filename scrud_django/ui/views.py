@@ -358,16 +358,24 @@ class UIStylesheetViewSet(UIContentValidationMixin, ResourceViewSet):
                 raise UISelectorInvalidError(error) from error
 
 
-@scrudful_viewset
-class UICssViewSet(UIContentValidationMixin, ResourceViewSet):
+class UIItemTextValidationMixin:
+    """For the CSS and JS items: the text (`text_field`) is required unless
+    the item is a deletion marker, may not contain `closing_tag` (any case),
+    and the name is unique on the branch."""
+
+    text_field: str
+    closing_tag: str
+    invalid_error: type[Exception]
+    name_taken_error: type[Exception]
+
     def validate_content(self, content, instance=None):
         super().validate_content(content, instance=instance)
         if not isinstance(content, dict):
             return
-        require_unless_deleted(content, ("css",))
-        text = content.get("css")
-        if isinstance(text, str) and "</style" in text.lower():
-            raise UICssInvalidError()
+        require_unless_deleted(content, (self.text_field,))
+        text = content.get(self.text_field)
+        if isinstance(text, str) and self.closing_tag in text.lower():
+            raise self.invalid_error()
         name = content.get("name")
         branch = self.item_branch
         if (
@@ -375,34 +383,27 @@ class UICssViewSet(UIContentValidationMixin, ResourceViewSet):
             and branch is not None
             and same_item(
                 self.other_resources(instance).filter(content__name=name),
-                "css",
+                self.text_field,
                 content,
                 branch,
             )
         ):
-            raise UICssNameTakenError(name)
+            raise self.name_taken_error(name)
 
 
 @scrudful_viewset
-class UIJsViewSet(UIContentValidationMixin, ResourceViewSet):
-    def validate_content(self, content, instance=None):
-        super().validate_content(content, instance=instance)
-        if not isinstance(content, dict):
-            return
-        require_unless_deleted(content, ("js",))
-        text = content.get("js")
-        if isinstance(text, str) and "</script" in text.lower():
-            raise UIJsInvalidError()
-        name = content.get("name")
-        branch = self.item_branch
-        if (
-            name is not None
-            and branch is not None
-            and same_item(
-                self.other_resources(instance).filter(content__name=name),
-                "js",
-                content,
-                branch,
-            )
-        ):
-            raise UIJsNameTakenError(name)
+class UICssViewSet(
+    UIItemTextValidationMixin, UIContentValidationMixin, ResourceViewSet
+):
+    text_field = "css"
+    closing_tag = "</style"
+    invalid_error = UICssInvalidError
+    name_taken_error = UICssNameTakenError
+
+
+@scrudful_viewset
+class UIJsViewSet(UIItemTextValidationMixin, UIContentValidationMixin, ResourceViewSet):
+    text_field = "js"
+    closing_tag = "</script"
+    invalid_error = UIJsInvalidError
+    name_taken_error = UIJsNameTakenError
