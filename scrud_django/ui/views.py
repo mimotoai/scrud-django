@@ -7,6 +7,7 @@ from scrud_django.exceptions import (
     JsonValidationError,
     UIBranchContextError,
     UIBranchInvalidError,
+    UIBranchUnavailableError,
     UIComponentNameTakenError,
     UICssInvalidError,
     UICssNameTakenError,
@@ -31,6 +32,8 @@ from scrud_django.ui.branches.model import (
     kind_of,
 )
 from scrud_django.ui.branches.selection import (
+    HEADER,
+    PARAM,
     branch_content,
     choose,
     may_get_stored,
@@ -41,6 +44,9 @@ from scrud_django.ui.engines import TemplateCompileError, compile_template
 from scrud_django.ui.renderer import negotiated_html
 from scrud_django.ui.selectors import SelectorError, parse_selector
 from scrud_django.views import ResourceViewSet
+
+# Where a selection that a JSON list refuses came from (ruling R40).
+EXPLICIT = (HEADER, PARAM)
 
 
 class UIContentValidationMixin:
@@ -58,17 +64,20 @@ class UIContentValidationMixin:
         filter then applies to each row. A type that is no item kind (a
         branch, a push) lists every resource. The browsing cookie selects
         only for a list asked for as HTML: JSON is not affected by
-        browsing."""
+        browsing. A list not asked for as HTML whose header or parameter
+        names a branch that is refused is refused too
+        (`UIBranchUnavailableError`, 400; ruling R40), never answered with
+        the published branch's items; HTML renders the published branch
+        and says so in its banner."""
         queryset = super().filter_queryset(queryset)
         type_uri = self.get_resource_type().type_uri
         if getattr(self, "action", None) != "list" or kind_of(type_uri) is None:
             return queryset
         html = negotiated_html(self.request) is not None
-        rows = effective_rows(
-            type_uri,
-            choose(self.request, cookie=html).selection,
-            include_deleted=True,
-        )
+        chosen = choose(self.request, cookie=html)
+        if not html and chosen.refused is not None and chosen.source in EXPLICIT:
+            raise UIBranchUnavailableError(chosen.refused)
+        rows = effective_rows(type_uri, chosen.selection, include_deleted=True)
         return queryset.filter(pk__in=[pk for pk, _etag, _content in rows])
 
     def validate_content(self, content, instance=None):

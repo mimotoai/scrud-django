@@ -263,3 +263,44 @@ def test_a_prefix_that_overlaps_shadows_or_lies_under_the_api_is_refused():
     # A prefix that claims nothing another does is accepted.
     create("ui-branches", {**body, "prefix": "/shop-front/"})
     Then.http.status_code_is(201)
+
+
+def list_json(**extra):
+    When.http.get(
+        reverse("ui-components-list"), HTTP_ACCEPT="application/json", **extra
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_json_list_with_a_refused_selection_is_400(ui_author_login):
+    """A JSON list never answers a selection it refuses with another
+    branch's items (ruling R40): a branch that is unknown, that the reader
+    may not GET, or that is out of the tree of the URL's published branch
+    (here ``main``'s) gets the same 400, by header or parameter."""
+    make_branch("wip", "project-a")
+    make_branch("hidden", "bob")
+    make_branch("shop", "project-a", parent=None, prefix="/shop-front/")
+    make_branch("shop-wip", "project-a", parent="shop")
+    grant(ui_author_login, MAIN_GET, "project-a")
+    Given.http.force_authenticate(ui_author_login)
+    list_json(**{BRANCH_HEADER: "wip"})
+    Then.http.status_code_is(200)
+    answers = {}
+    for name in ("nope", "hidden", "shop-wip"):
+        for how in ({BRANCH_HEADER: name}, {"QUERY_STRING": f"ui-branch={name}"}):
+            list_json(**how)
+            Then.http.status_code_is(400)
+            assert problem()["type"].endswith("/ui-branch-unavailable"), name
+            answers[name] = problem()
+    for name in ("hidden", "shop-wip"):
+        assert answers[name] == {
+            **answers["nope"],
+            "detail": answers["nope"]["detail"].replace("nope", name),
+        }
+    assert "bob" not in answers["hidden"]["detail"]
+    # A value that is no selection is ignored, as before; an empty one names
+    # the published branch.
+    for how in ({BRANCH_HEADER: "Not A Branch!"}, {BRANCH_HEADER: ""}):
+        list_json(**how)
+        Then.http.status_code_is(200)

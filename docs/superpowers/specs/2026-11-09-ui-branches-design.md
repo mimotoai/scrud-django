@@ -273,7 +273,11 @@ testing's changes, then its own.
   changes only that viewer's rendering, not the branch's `base` setting. It is
   carried with the branch selection (header, parameter, cookie).
 - **JSON is not affected by browsing.** The active branch selects presentation
-  for `text/html` only.
+  for `text/html` only. A JSON item list that names a branch with the header or
+  the parameter, and whose selection is refused, is refused (400, problem type
+  `ui-branch-unavailable`, the same text for an unknown, an unreadable and an
+  out-of-tree branch), never answered with another branch's items (ruling R40,
+  during implementation).
 
 ## Pull
 

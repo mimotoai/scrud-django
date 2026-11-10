@@ -234,6 +234,27 @@ class UIBranchContextError(ScrudException):
         self.title = "UI item in the wrong context for its branch"
 
 
+class UIBranchUnavailableError(ScrudException):
+    """A JSON list of UI items whose request selects a branch (the
+    ``Scrud-UI-Branch`` header or the ``ui-branch`` parameter) that is
+    refused: unknown, not readable by the requester, out of the tree of the
+    URL's published branch, or pinned to a missing version. One answer for
+    all, so that it tells nothing about a branch the requester may not
+    see."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_branch_unavailable"
+
+    def __init__(self, branch):
+        super().__init__(
+            f"The UI branch {branch!r} is not available here: it does not "
+            "exist, you may not read it, or it is not in this URL's tree."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-branch-unavailable"
+        self.title = "UI branch unavailable"
+
+
 class UIBranchInUseError(ScrudException):
     """A DELETE of a UI branch that other branches name as their parent:
     409 Conflict, naming them."""

@@ -82,7 +82,10 @@ def test_inherited_items_keep_their_read_check(ui_alice_login):
 
 @pytest.mark.django_db
 @test_context
-def test_unreadable_branch_lists_main(todo_reader_login):
+def test_unreadable_branch_list_is_refused(todo_reader_login):
+    """A JSON list naming a branch the reader may not GET is refused (400),
+    not answered with main's items as before ruling R40: a client asking
+    for a branch must not take main's items for the branch's."""
     setup_wip()
     # May read components in both contexts, but not the branch itself.
     grant(todo_reader_login, {"http.GET": [UI_COMPONENT_TYPE_URI, COMPONENTS]}, "")
@@ -92,7 +95,13 @@ def test_unreadable_branch_lists_main(todo_reader_login):
         "project-a",
     )
     Given.http.force_authenticate(todo_reader_login)
-    assert set(listed(**{BRANCH_HEADER: "wip"})) == {("row", "main"), ("title", "main")}
+    When.http.get(reverse(LIST), **{BRANCH_HEADER: "wip"})
+    Then.http.status_code_is(400)
+    body = Http.response.json()
+    assert body["type"].endswith("/ui-branch-unavailable")
+    assert "content" not in body
+    # Without the selection, main's items are listed.
+    assert set(listed()) == {("row", "main"), ("title", "main")}
 
 
 @pytest.mark.django_db

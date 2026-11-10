@@ -23,6 +23,8 @@
   in the item's branch context instead of a global trusted role; on `main`
   (context `""`) the rules are the same as before. Viewing a branch means
   trusting everyone who can write to it: read the Security section.
+* A JSON list of UI items that names a branch (`Scrud-UI-Branch` header or
+  `ui-branch` parameter) it may not show answers 400 (`ui-branch-unavailable`).
 * The UI's `Vary` header adds `Scrud-UI-Branch` and `Cookie`. `scrud:page`
   gets a `css` list of the CSS file URLs; a custom page component should link
   them.

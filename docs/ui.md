@@ -434,7 +434,14 @@ resource.
   comes from, and a version shows only the items its reader may read. The
   branch a JSON list shows is chosen with the `Scrud-UI-Branch` header or the
   `ui-branch` parameter (the header first; the cookie is not read for JSON).
-  Without either it is `main`, or, under a prefix, the prefix's branch.
+  Without either it is `main`, or, under a prefix, the prefix's branch. A
+  JSON list whose header or parameter names a branch that is refused (one
+  that does not exist, that you may not GET with its working ancestors, that
+  is not in the tree of the URL's published branch, or that is pinned to a
+  missing version) is refused with 400, problem type `ui-branch-unavailable`,
+  with the same text whatever the reason; it never lists another branch's
+  items instead. (An HTML page renders the published branch and says so in
+  its banner.) A value that is not a branch name is ignored.
 * **Writing** an item names its branch in the body, `"branch": "<name>"`
   (`main` when absent). A branch you may not GET is answered as one that does
   not exist (400, naming nothing of it), but for `main` and for a stylesheet
