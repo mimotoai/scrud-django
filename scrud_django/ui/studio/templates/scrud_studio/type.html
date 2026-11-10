@@ -7,6 +7,7 @@
  data-branch="{{ branch.name }}"
  data-query="{{ query }}"
  data-editable="{{ editable|yesno:'true,false' }}"
+ data-pinned="{{ pinned|yesno:'true,false' }}"
  data-preview-url="{% url 'scrud-studio:preview' type.slug %}?{{ query }}"
  data-explain-url="{% url 'scrud-studio:explain' type.slug %}"
  data-options-url="{% url 'scrud-studio:new-component-options' type.slug %}"

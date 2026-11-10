@@ -4,6 +4,10 @@
 <p id="studio-editor-reason" class="studio-empty"></p>
 <textarea id="studio-editor-text" class="studio-code" rows="16" spellcheck="false" aria-labelledby="studio-editor-title"></textarea>
 <ul id="studio-editor-errors" class="studio-errors" role="alert"></ul>
+<div id="studio-editor-draft-box" class="studio-draft" hidden>
+<label for="studio-editor-draft">Your draft, not saved. The editor above shows the item as it is now; copy what you need from here.</label>
+<textarea id="studio-editor-draft" class="studio-code" rows="8" spellcheck="false" readonly></textarea>
+</div>
 <div class="studio-actions">
 <button id="studio-save" type="button">Save</button>
 <button id="studio-revert" type="button">Revert to inherited</button>

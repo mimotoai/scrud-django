@@ -23,7 +23,8 @@ from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_render import put_item
 from .test_ui_branch_types import make_branch
-from .test_ui_http import grant
+from .test_ui_branch_versions import versions_of
+from .test_ui_http import grant, make_component
 from .test_ui_static import require_node
 
 STUDIO_JS = (
@@ -238,11 +239,13 @@ function fetch(url, init) {
   const r = queue ? (queue.length > 1 ? queue.shift() : queue[0]) : {status: 599, body: {title: 'no route'}};
   const headers = {};
   Object.entries(r.headers || {}).forEach(([k, v]) => { headers[k.toLowerCase()] = v; });
-  return Promise.resolve({
+  const answer = {
     ok: r.status >= 200 && r.status < 300, status: r.status,
     headers: {get: (n) => (n.toLowerCase() in headers ? headers[n.toLowerCase()] : null)},
     json: () => (r.body === undefined ? Promise.reject(new Error('no body')) : Promise.resolve(JSON.parse(JSON.stringify(r.body)))),
-  });
+  };
+  if (r.delay) return new Promise((resolve) => setTimeout(() => resolve(answer), r.delay));
+  return Promise.resolve(answer);
 }
 
 const window = {};
@@ -260,6 +263,8 @@ const node = (pointer) => preview.querySelectorAll('scrud-node').find((n) => n.g
 const innermost = (n) => { while (n.children.some((c) => c.nodeType === 1)) n = n.children.find((c) => c.nodeType === 1); return n; };
 const click = (target) => { const ev = new Event_('click', {bubbles: true}); target.dispatchEvent(ev); return ev; };
 const submit = (form) => { const ev = new Event_('submit', {bubbles: true}); form.dispatchEvent(ev); return ev; };
+const change = (target) => { const ev = new Event_('change', {bubbles: true}); target.dispatchEvent(ev); return ev; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const saved = () => document.body.dispatchEvent(new Event_('scrud-studio-saved', {bubbles: true}));
 const out = {};
 const finish = () => {
@@ -279,8 +284,8 @@ SCENARIO
 def run_studio(page, preview, routes, scenario):
     """Run `scenario` (JS, inside an async function) on the parsed `page`
     and `preview` HTML with `routes` ``[{method, url, status, body,
-    headers}]`` answering ``fetch`` (several for one URL answer in turn, the
-    last again and again). Returns what the scenario put in ``out``, with
+    headers, delay}]`` answering ``fetch`` (several for one URL answer in
+    turn, the last again and again; ``delay`` ms later when given). Returns what the scenario put in ``out``, with
     ``calls``, ``created``, ``htmlWrites``, ``errors`` and ``srcSets``."""
     require_node()
     script = HARNESS.replace("SCENARIO", scenario)
@@ -299,13 +304,14 @@ def run_studio(page, preview, routes, scenario):
     return out
 
 
-def route(method, url, status=200, body=None, headers=None):
+def route(method, url, status=200, body=None, headers=None, delay=0):
     return {
         "method": method,
         "url": url,
         "status": status,
         "body": body,
         "headers": headers or {},
+        "delay": delay,
     }
 
 
@@ -449,6 +455,9 @@ def test_click_in_preview_explains_nearest_node(ui_alice_login):
     winner = explained["rules"][explained["winner"]]
     assert winner["component"].startswith("scrud:")
     assert winner["component"] in out["panel"] and "wins" in out["panel"]
+    # It comes from no branch: "built-in default", not "on " and nothing.
+    assert winner["branch"] == ""
+    assert "built-in default" in out["panel"] and " on )" not in out["panel"]
     assert "built-in" in out["editor"]
     assert out["matches"] == [[m["select"], m["label"]] for m in offered["matches"]]
     assert out["formHidden"] is False
@@ -576,7 +585,12 @@ def test_save_sends_if_match_and_a_412_reloads_the_editor(ui_alice_login):
         byId('studio-editor-text').value = '<i>mine</i>';
         click(byId('studio-save'));
         await settle();
-        out.after412 = {message: text('studio-message'), template: byId('studio-editor-text').value};
+        out.after412 = {
+          message: text('studio-message'), template: byId('studio-editor-text').value,
+          draft: byId('studio-editor-draft') && byId('studio-editor-draft').value,
+          draftReadOnly: byId('studio-editor-draft') && byId('studio-editor-draft').readOnly,
+          draftHidden: byId('studio-editor-draft-box') ? byId('studio-editor-draft-box').hidden : true,
+        };
         click(byId('studio-save'));
         await settle();
         out.after403 = text('studio-message');
@@ -611,6 +625,10 @@ def test_save_sends_if_match_and_a_412_reloads_the_editor(ui_alice_login):
     # 412: a notice, and the editor shows the item as it is now.
     assert "changed" in out["after412"]["message"]
     assert out["after412"]["template"] == "<u>theirs</u>"
+    # The author's draft stays visible beside it, read-only (ruling S17).
+    assert out["after412"]["draftHidden"] is False
+    assert out["after412"]["draft"] == "<i>mine</i>"
+    assert out["after412"]["draftReadOnly"] is True
     assert saves[1]["headers"]["If-Match"] == '"e2"'
     assert "may not" in out["after403"]
     assert "template: Unexpected end of block" in out["after400"]["errors"]
@@ -802,3 +820,219 @@ def test_new_component_form_posts_the_choice_and_says_whether_it_wins(
     assert "(fewer scopes)" in out["result"]
     # The saved event reloaded the preview.
     assert len(out["srcSets"]) == 1
+
+
+def setup_other(user):
+    """``wip`` as `setup_wip` makes it, with its own Jinja component
+    ``other``, which the branch strip lists."""
+    setup_wip(user)
+    put_item(
+        "ui-components", "other", "<p>{{ value }}</p>", "wip", "alice", engine="jinja2"
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_editor_keeps_its_item_after_save_and_revert(ui_alice_login):
+    """After a save or a revert the editor reopens the item it edits, not
+    the node's winner; after a new component it opens the winner (ruling
+    S17)."""
+    setup_other(ui_alice_login)
+    page = studio_page(branch="wip")
+    offered = {
+        "matches": [
+            {"select": "string", "label": "every string on this branch", "broad": True}
+        ],
+        "inside_type": None,
+        "where": [],
+        "applies_to": [""],
+        "name": "made",
+    }
+    saved = {"HX-Trigger": "scrud-studio-saved"}
+    out = run_studio(
+        page,
+        preview_page(branch="wip"),
+        [
+            route("GET", explain_url(POINTER), body=explanation("row")),
+            route("GET", explain_url(POINTER), body=explanation("row")),
+            route("GET", explain_url(POINTER), body=explanation("row")),
+            route("GET", explain_url(POINTER), body=explanation("made")),
+            route("GET", options_url(POINTER), body=offered),
+            route("GET", item_url("row"), body=item("<b>row</b>")),
+            route("GET", item_url("other"), body=item("<p>other</p>", name="other")),
+            route("GET", item_url("other"), body=item("<p>2</p>", name="other")),
+            route(
+                "GET",
+                item_url("other"),
+                body=item("<p>main</p>", name="other", own=False, etag='"m"'),
+            ),
+            route("GET", item_url("made"), body=item("<em>made</em>", name="made")),
+            route("POST", reverse("scrud-studio:save-item"), body={}, headers=saved),
+            route("POST", reverse("scrud-studio:revert-item"), headers=saved),
+            route(
+                "POST",
+                reverse("scrud-studio:new-component"),
+                201,
+                {"written": [{"kind": "component", "name": "made"}], "wins": True},
+                saved,
+            ),
+        ],
+        r"""
+        click(innermost(node('/items/0/text')));
+        await settle();
+        out.first = text('studio-editor-title');
+        click(byId('studio-changes').querySelector('[data-studio-open]'));
+        await settle();
+        out.opened = text('studio-editor-title');
+        byId('studio-editor-text').value = '<p>2</p>';
+        let from = calls.length;
+        click(byId('studio-save'));
+        await settle();
+        out.afterSave = {
+          title: text('studio-editor-title'), template: byId('studio-editor-text').value,
+          items: calls.slice(from).filter((c) => c.url.includes('/item?')).map((c) => c.url),
+        };
+        from = calls.length;
+        click(byId('studio-revert'));
+        await settle();
+        out.afterRevert = {
+          title: text('studio-editor-title'), source: text('studio-editor-source'),
+          items: calls.slice(from).filter((c) => c.url.includes('/item?')).map((c) => c.url),
+        };
+        from = calls.length;
+        submit(byId('studio-new-component'));
+        await settle();
+        out.afterCreate = {
+          title: text('studio-editor-title'),
+          items: calls.slice(from).filter((c) => c.url.includes('/item?')).map((c) => c.url),
+        };
+        """,
+    )
+    assert out["first"] == "Component row"
+    assert out["opened"] == "Component other"
+    assert out["afterSave"] == {
+        "title": "Component other",
+        "template": "<p>2</p>",
+        "items": [item_url("other")],
+    }
+    assert out["afterRevert"]["title"] == "Component other"
+    assert out["afterRevert"]["items"] == [item_url("other")]
+    assert "Inherited from main" in out["afterRevert"]["source"]
+    # A new component: the node's winner, the component just made.
+    assert out["afterCreate"] == {
+        "title": "Component made",
+        "items": [item_url("made")],
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_slow_item_never_replaces_a_newer_one(ui_alice_login):
+    setup_other(ui_alice_login)
+    out = run_studio(
+        studio_page(branch="wip"),
+        preview_page(branch="wip"),
+        [
+            route("GET", explain_url(POINTER), body=explanation("row")),
+            route("GET", options_url(POINTER), body=NO_OPTIONS),
+            route("GET", item_url("row"), body=item("<b>row</b>"), delay=60),
+            route("GET", item_url("other"), body=item("<p>other</p>", name="other")),
+        ],
+        r"""
+        // The node's winner is asked for, and answers slowly...
+        click(innermost(node('/items/0/text')));
+        await settle();
+        out.pending = text('studio-editor-title');
+        // ...after the author opened another item.
+        click(byId('studio-changes').querySelector('[data-studio-open]'));
+        await settle();
+        out.opened = text('studio-editor-title');
+        await sleep(150);
+        await settle();
+        out.title = text('studio-editor-title');
+        out.template = byId('studio-editor-text').value;
+        """,
+    )
+    assert out["pending"] != "Component row"
+    assert out["opened"] == "Component other"
+    assert out["title"] == "Component other" and out["template"] == "<p>other</p>"
+
+
+@pytest.mark.django_db
+@test_context
+def test_new_component_is_off_while_the_preview_is_pinned(ui_alice_login):
+    reverse("todo-lists-list")
+    make_component("base-row", "<b>{{ value }}</b>")
+    make_branch("wip", "alice", branching_point={"main": versions_of("main")[-1]})
+    grant(ui_alice_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(ui_alice_login)
+    page = studio_page(branch="wip", pinned="1")
+    query = "branch=wip%40pinned&mode=view"
+    assert f'data-query="{query.replace("&", "&amp;")}"' in page
+    offered = get(options_url(POINTER, query)).json()
+    assert offered["matches"]
+    out = run_studio(
+        page,
+        preview_page(branch="wip@pinned"),
+        [
+            route("GET", explain_url(POINTER, query), body=explanation("scrud:x")),
+            route("GET", options_url(POINTER, query), body=offered),
+            route("POST", reverse("scrud-studio:new-component"), 201, {"wins": True}),
+        ],
+        r"""
+        click(innermost(node('/items/0/text')));
+        await settle();
+        const form = byId('studio-new-component');
+        out.disabled = form.querySelector('fieldset').disabled;
+        out.form = text('studio-new-component');
+        out.prevented = submit(form).defaultPrevented;
+        await settle();
+        """,
+    )
+    assert out["disabled"] is True
+    assert "pinned" in out["form"]
+    assert out["prevented"] is True
+    assert not [c for c in out["calls"] if c["method"] == "POST"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_broad_labels_name_the_data_context(ui_alice_login):
+    setup_wip(ui_alice_login)
+    offered = {
+        "matches": [
+            {"select": "ex:Text", "label": "ex:Text", "broad": False},
+            {"select": "string", "label": "every string on this branch", "broad": True},
+        ],
+        "inside_type": None,
+        "where": [],
+        "applies_to": ["", "acme"],
+        "name": "made",
+    }
+    out = run_studio(
+        studio_page(branch="wip"),
+        preview_page(branch="wip"),
+        [
+            route("GET", explain_url(POINTER), body=explanation("scrud:x")),
+            route("GET", options_url(POINTER), body=offered),
+        ],
+        r"""
+        click(innermost(node('/items/0/text')));
+        await settle();
+        const form = byId('studio-new-component');
+        const labels = () => form.querySelector('select[name="match"]').options.map((o) => o.textContent);
+        out.everywhere = labels();
+        form.querySelector('select[name="match"]').value = 'string';
+        form.querySelector('select[name="applies_to"]').value = 'acme';
+        change(form.querySelector('select[name="applies_to"]'));
+        out.acme = labels();
+        out.match = form.querySelector('select[name="match"]').value;
+        form.querySelector('select[name="applies_to"]').value = '';
+        change(form.querySelector('select[name="applies_to"]'));
+        out.back = labels();
+        """,
+    )
+    assert out["everywhere"] == ["ex:Text", "every string on this branch"]
+    assert out["acme"] == ["ex:Text", "every string in acme on this branch"]
+    assert out["match"] == "string"
+    assert out["back"] == out["everywhere"]

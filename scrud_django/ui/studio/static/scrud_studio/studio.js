@@ -14,7 +14,9 @@
 //   revert (ruling S10).
 // - A successful write carries HX-Trigger: scrud-studio-saved, and this script
 //   dispatches that event on <body>. The preview, the panel and (through htmx)
-//   the branch strip then reload.
+//   the branch strip then reload, and the editor reopens the item it shows.
+//   Only a click on a node, or a new component made for it, opens the node's
+//   winning component (ruling S17).
 (function () {
   "use strict";
 
@@ -145,7 +147,10 @@
 
   function describeRule(rule) {
     if (!rule.readable) return "a rule you can't read";
-    var source = "stylesheet " + rule.stylesheet + " on " + rule.branch;
+    // The default stylesheet's rules come from no branch.
+    var source = rule.branch
+      ? "stylesheet " + rule.stylesheet + " on " + rule.branch
+      : "built-in default";
     if (rule.applies_to) source += ", applies to " + rule.applies_to;
     return rule.selector + " → " + rule.component + " (" + source + ")";
   }
@@ -170,10 +175,15 @@
     this.query = data("query");
     this.params = new URLSearchParams(this.query);
     this.editable = data("editable") === "true";
+    // A pinned preview shows the branching point, but a new component is
+    // made on the live branch: the action is off while pinned.
+    this.pinned = data("pinned") === "true";
     this.frame = byId("studio-preview");
     this.pointer = null;
     this.item = null;
     this.seq = 0;
+    this.openSeq = 0;
+    this.created = false;
     this.bound = new WeakSet();
   }
 
@@ -193,6 +203,9 @@
     });
     document.addEventListener("submit", function (event) {
       self.onSubmit(event);
+    });
+    document.addEventListener("change", function (event) {
+      self.onChange(event);
     });
   };
 
@@ -233,21 +246,19 @@
     return this.explain(true);
   };
 
-  // After a save: reload the preview, explain the node again, and reopen
-  // the item the editor shows (or the node's winner).
+  // After a write: reload the preview, explain the node again and reopen
+  // the item the editor shows. After a new component, open the node's
+  // winner instead: the component just made, when it wins.
   Studio.prototype.refresh = function () {
     if (this.frame) this.frame.setAttribute("src", this.url.preview);
-    var keep = this.item && this.item.kind !== "component";
-    if (this.pointer !== null) return this.explain(!keep).then(this.reopenIf(keep));
-    if (this.item) return this.reopen();
-    return Promise.resolve();
-  };
-
-  Studio.prototype.reopenIf = function (keep) {
+    var created = this.created;
+    this.created = false;
     var self = this;
-    return function () {
-      if (keep) return self.reopen();
-    };
+    var explained = this.pointer !== null ? this.explain(created) : Promise.resolve();
+    if (created) return explained;
+    return explained.then(function () {
+      return self.reopen();
+    });
   };
 
   Studio.prototype.nodeQuery = function (base) {
@@ -342,6 +353,7 @@
   };
 
   Studio.prototype.showMessage = function (text) {
+    this.openSeq++; // an item still loading must not replace the message
     this.item = null;
     byId("studio-editor").hidden = false;
     byId("studio-editor-title").textContent = "Editor";
@@ -353,7 +365,17 @@
     byId("studio-save").hidden = true;
     byId("studio-revert").hidden = true;
     clear(byId("studio-editor-errors"));
+    showDraft(null);
   };
+
+  // The author's draft, kept beside the editor after a save refused with a
+  // 412 (ruling S17); `null` hides it.
+  function showDraft(draft) {
+    var box = byId("studio-editor-draft-box");
+    if (!box) return;
+    byId("studio-editor-draft").value = typeof draft === "string" ? draft : "";
+    box.hidden = typeof draft !== "string";
+  }
 
   Studio.prototype.itemUrl = function (kind, name, appliesTo) {
     var params = new URLSearchParams();
@@ -365,12 +387,16 @@
   };
 
   // Open item {kind, name, applies_to} as the branch shows it. With
-  // `orNew`, an item the branch has none of opens as a new one.
-  Studio.prototype.open = function (kind, name, appliesTo, orNew) {
+  // `orNew`, an item the branch has none of opens as a new one; `draft`
+  // (text) is shown beside it. Only the latest open (or message) shows: a
+  // slow answer never replaces a newer one.
+  Studio.prototype.open = function (kind, name, appliesTo, orNew, draft) {
     var self = this;
+    var seq = ++this.openSeq;
     return getJson(this.itemUrl(kind, name, appliesTo)).then(function (got) {
+      if (seq !== self.openSeq) return;
       if (got.response.ok) {
-        self.showItem(got.data);
+        self.showItem(got.data, draft);
       } else if (orNew && got.response.status === 404) {
         self.showItem({
           kind: kind,
@@ -380,24 +406,24 @@
           isNew: true,
           etag: null,
           content: kind === "css" ? { css: "" } : {},
-        });
+        }, draft);
       } else {
         self.showMessage(refusal(got.response.status, got.data));
       }
     });
   };
 
-  Studio.prototype.reopen = function () {
+  Studio.prototype.reopen = function (draft) {
     var item = this.item;
     if (!item) return Promise.resolve();
-    return this.open(item.kind, item.name, item.applies_to, item.isNew);
+    return this.open(item.kind, item.name, item.applies_to, item.isNew, draft);
   };
 
   function editedField(kind) {
     return { component: "template", css: "css" }[kind] || null;
   }
 
-  Studio.prototype.showItem = function (item) {
+  Studio.prototype.showItem = function (item, draft) {
     this.item = item;
     var content = item.content || {};
     var field = editedField(item.kind);
@@ -431,6 +457,7 @@
     byId("studio-save").hidden = !editable;
     byId("studio-revert").hidden = !(this.editable && item.own);
     clear(byId("studio-editor-errors"));
+    showDraft(draft);
   };
 
   Studio.prototype.notify = function (text) {
@@ -438,8 +465,9 @@
   };
 
   // Report a write's answer: `done` on success; else the refusal, its field
-  // errors next to the editor and, on a 412, the item reopened as it is now.
-  Studio.prototype.reported = function (done) {
+  // errors next to the editor and, on a 412, the item reopened as it is now
+  // (with `keepDraft`, the editor's text kept beside it).
+  Studio.prototype.reported = function (done, keepDraft) {
     var self = this;
     return function (response, data) {
       var errors = byId("studio-editor-errors");
@@ -452,7 +480,9 @@
       fieldErrors(data).forEach(function (error) {
         errors.appendChild(make("li", error));
       });
-      if (response.status === 412) self.reopen();
+      if (response.status === 412) {
+        self.reopen(keepDraft ? byId("studio-editor-text").value : undefined);
+      }
     };
   };
 
@@ -469,7 +499,7 @@
     if (item.kind === "stylesheet") body.applies_to = item.applies_to;
     var headers = item.own && item.etag ? { "If-Match": item.etag } : {};
     if (item.isNew) item.isNew = false;
-    return send(this.url.save, body, headers, this.reported("Saved " + item.name + "."));
+    return send(this.url.save, body, headers, this.reported("Saved " + item.name + ".", true));
   };
 
   Studio.prototype.revert = function () {
@@ -541,6 +571,8 @@
           return [c, c ? "data in " + c : "every context"];
         })
       );
+      self.offered = data;
+      self.labelMatches(form);
       var inside = data.inside_type;
       var label = byId("studio-inside-label");
       var box = form.querySelector('input[name="inside_type"]');
@@ -554,8 +586,26 @@
           ", and select inside it"
         : "";
       show(byId("studio-new-name"), data.name ? "It will be called " + data.name + "." : "");
-      self.offered = data;
       form.hidden = false;
+    });
+  };
+
+  // A broad match's label, for the stylesheet of data context `context`:
+  // "every string in acme on this branch" (ruling S17).
+  function broadLabel(match, context) {
+    var suffix = " on this branch";
+    var label = match.label;
+    if (!match.broad || !context || label.slice(-suffix.length) !== suffix) return label;
+    return label.slice(0, -suffix.length) + " in " + context + suffix;
+  }
+
+  // Label the offered matches for the chosen applies_to.
+  Studio.prototype.labelMatches = function (form) {
+    var matches = (this.offered && this.offered.matches) || [];
+    var context = form.querySelector('select[name="applies_to"]').value;
+    var options = form.querySelector('select[name="match"]').options;
+    Array.prototype.forEach.call(options, function (option, index) {
+      if (matches[index]) option.textContent = broadLabel(matches[index], context);
     });
   };
 
@@ -580,7 +630,10 @@
     var instance = this.params.get("instance");
     if (instance) body.instance = instance;
     var result = byId("studio-new-result");
+    var self = this;
     return send(this.url.create, body, {}, function (response, data) {
+      // The refresh its saved event starts opens the node's winner.
+      self.created = response.ok;
       if (!response.ok) {
         var said = refusal(response.status, data);
         var errors = fieldErrors(data);
@@ -644,12 +697,18 @@
     var id = form && form.getAttribute ? form.getAttribute("id") : null;
     if (id === "studio-new-component") {
       event.preventDefault();
-      if (this.pointer !== null) this.createComponent(form);
+      if (this.pointer !== null && !this.pinned) this.createComponent(form);
     } else if (id === "studio-new-css") {
       event.preventDefault();
       var name = form.querySelector('input[name="name"]').value.trim();
       if (name) this.open("css", name, "", true);
     }
+  };
+
+  Studio.prototype.onChange = function (event) {
+    var target = event.target;
+    var form = target && target.closest ? target.closest("#studio-new-component") : null;
+    if (form && target.getAttribute("name") === "applies_to") this.labelMatches(form);
   };
 
   function start() {

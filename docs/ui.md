@@ -776,6 +776,19 @@ A branch-browsing confirmation token (`ui-branch-confirm`) needs the
 `csrftoken` cookie, including for HTTP Basic clients: keep the cookie from the
 first response.
 
+### The editor
+
+A click on a node opens its winning component in the editor, when it is a
+stored one you may read; the branch strip opens any item the branch changed.
+After a save or a revert the editor reopens the item it was showing, not the
+node's winner; after **New component** it opens the node's winner, the new
+component when its rule wins. A save refused with 412 (the item changed since
+you opened it) reloads the item and keeps your draft beside it, read-only, to
+copy from. **New component** is off while the preview is pinned: it would be
+made on the live branch, not on the snapshot the preview shows. A broad match
+names the data context the rule is for ("every string in acme on this
+branch").
+
 ### The studio API
 
 The studio page is built on a JSON API, and a later self-hosted studio would

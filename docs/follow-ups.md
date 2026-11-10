@@ -576,21 +576,6 @@ one that asks to confirm. Test: with the cookie set to `W`, change a CSS item of
 `W`'s parent after `W`'s branching point, open `?ui-branch=W@pinned`, fetch
 each linked CSS URL with the cookie and assert 200; one is 404 today.
 
-<a id="studio-editor-jumps-to-winner"></a>
-## studio-editor-jumps-to-winner: saving an item that is not the node's winner switches the editor
-
-In the studio, after a save the page refreshes the inspector and re-opens the
-node's winning item in the editor. When the item just saved is not the node's
-winner (for instance a stylesheet or a component the rule list shows but that
-lost), the editor jumps to the winner, and the author may go on typing into a
-different item than the one they saved. Nothing is lost or overwritten, since
-each save names its item and carries its ETag.
-
-Fix: after a save, refresh the inspector but keep the editor on the item that
-was saved. Test: in `tests/test_studio_client.py`,
-open a node, edit a non-winning item, save, and assert that the editor still
-names the saved item; it fails today.
-
 <a id="studio-branch-query-cost"></a>
 ## studio-branch-query-cost: the studio page and strip read the branch tables again for each part
 

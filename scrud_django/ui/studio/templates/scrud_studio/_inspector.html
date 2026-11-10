@@ -3,9 +3,10 @@
 <p id="studio-hint" class="studio-empty">Click a part of the preview to inspect it.</p>
 <div id="studio-explain" aria-live="polite"></div>
 <form id="studio-new-component" class="studio-new" hidden>
-<fieldset{% if not editable %} disabled{% endif %}>
+<fieldset{% if not editable or pinned %} disabled{% endif %}>
 <legend>New component for this node</legend>
-{% if not editable %}<p class="studio-empty">This branch is published: read-only. Pick a working branch to make components.</p>{% endif %}
+{% if not editable %}<p class="studio-empty">This branch is published: read-only. Pick a working branch to make components.</p>
+{% elif pinned %}<p class="studio-empty">The preview is pinned at the branching point, but a new component is made on the live branch. Unpin the preview to make one.</p>{% endif %}
 <label>Match <select name="match"></select></label>
 <label id="studio-inside-label" hidden><input type="checkbox" name="inside_type"> <span id="studio-inside"></span></label>
 <label>Where <select name="where"><option value="">anywhere</option></select></label>
