@@ -51,8 +51,8 @@
   differs from the installed layer item's ETag is a layer conflict, shown in
   the branch's effective items and reported by the new check
   `scrud_django_ui.W002` (a database check, a Warning); an invalid layer
-  declaration is the check Error `scrud_django_ui.E002` and is left out. Layer items are not rows and are not in
-  the item lists.
+  declaration is the check Error `scrud_django_ui.E002` and is left out. Layer
+  items are not rows and are not in the item lists.
 * Safe mode: `?ui-safe=1` renders from packaged layers, built-ins and the
   default stylesheet only, ignoring every branch's stored items, and says so
   in a notice on the page. It reveals nothing new and changes no

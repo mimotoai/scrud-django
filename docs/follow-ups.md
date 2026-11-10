@@ -1,6 +1,11 @@
 # Follow-ups
 
-Open follow-ups come first; the entries under `<a id="embed-literal-path-save-check"></a>
+Open follow-ups come first; the entries under `# Decided` are limitations
+kept by a decision, each saying what was decided and why. Record a new known
+issue or deferred bug here, above `# Decided`, as a section with an anchor
+(`<a id="short-slug"></a>` then `## short-slug: title`).
+
+<a id="embed-literal-path-save-check"></a>
 ## embed-literal-path-save-check: a literal non-resource embed path is refused only at render
 
 The spec (R9) asked that an embed whose path is a literal that is not a
@@ -37,11 +42,6 @@ per-item write grants, so it cannot say whether the user may apply the push
 preview a push as a user with GET on both branches but no write on one changed
 item type; the response should flag that item as not applicable and has no such
 field today.
-
-# Decided` are limitations
-kept by a decision, each saying what was decided and why. Record a new known
-issue or deferred bug here, above `# Decided`, as a section with an anchor
-(`<a id="short-slug"></a>` then `## short-slug: title`).
 
 <a id="mariadb-content-filter-padding"></a>
 ## mariadb-content-filter-padding: on MariaDB a list's query-parameter filter ignores trailing spaces
