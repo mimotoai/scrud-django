@@ -2,6 +2,8 @@
 resource type's JSON Schema, so that a type with no instances can be
 previewed."""
 
+import math
+
 from scrud_django.mixins.view_mixins import max_body_depth
 
 _PLACEHOLDER = "Lorem ipsum"
@@ -49,7 +51,8 @@ def _sample(schema, root, max_depth, depth, active):
     if declared in ("integer", "number"):
         minimum = schema.get("minimum")
         if isinstance(minimum, (int, float)) and not isinstance(minimum, bool):
-            return minimum
+            # The renderer types a fractional number as a number only.
+            return math.ceil(minimum) if declared == "integer" else minimum
         return 0
     if declared == "boolean":
         return False
@@ -62,6 +65,18 @@ def _sample(schema, root, max_depth, depth, active):
             return {}
         return {name: child(sub) for name, sub in properties.items()}
     if declared is None and "type" not in schema:
+        # As the renderer does, an untyped schema has its value's type.
+        if isinstance(schema.get("properties"), dict):
+            return {name: child(sub) for name, sub in schema["properties"].items()}
+        if isinstance(schema.get("items"), dict):
+            return [child(schema["items"])]
+        branches = schema.get("allOf")
+        if isinstance(branches, list):
+            values = [child(branch, depth) for branch in branches]
+            objects = [v for v in values if isinstance(v, dict)]
+            if objects:
+                return {k: v for o in objects for k, v in o.items()}
+            return next((v for v in values if v is not None), None)
         for key in ("oneOf", "anyOf"):
             branches = schema.get(key)
             if isinstance(branches, list):

@@ -4,12 +4,15 @@ import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.models import Resource, ResourceType
 from scrud_django.registration import get_resource_type_for
+from scrud_django.ui.render import render_resource
 from scrud_django.ui.studio.sample import sample_for
 from scrud_django.validators import compile_json_schema
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
+from .test_ui_render import request_for
 
 
 def test_sample_prefers_default_then_examples_then_enum():
@@ -128,3 +131,72 @@ def test_todo_list_sample_validates():
     sample = sample_for(schema)
     assert isinstance(sample, dict) and sample
     compile_json_schema(schema)(sample)
+
+
+def test_sample_infers_the_type_of_a_typeless_schema():
+    assert sample_for({"properties": {"a": {"type": "string"}}}) == {"a": "Lorem ipsum"}
+    assert sample_for({"items": {"type": "integer"}}) == [0]
+    assert sample_for({"properties": "x"}) is None
+    assert sample_for({}) is None
+    merged = sample_for(
+        {
+            "allOf": [
+                {"properties": {"a": {"type": "string"}}},
+                {"type": "object", "properties": {"b": {"type": "boolean"}}},
+            ]
+        }
+    )
+    assert merged == {"a": "Lorem ipsum", "b": False}
+    assert (
+        sample_for({"allOf": [{"foo": 1}, {"type": "string"}, {"type": "integer"}]})
+        == "Lorem ipsum"
+    )
+    assert sample_for({"allOf": []}) is None
+
+
+def test_integer_minimum_is_rounded_up():
+    assert sample_for({"type": "integer", "minimum": 2.5}) == 3
+    assert sample_for({"type": "integer", "minimum": -2.5}) == -2
+    assert sample_for({"type": "number", "minimum": 2.5}) == 2.5
+
+
+@pytest.mark.django_db
+def test_typeless_sample_renders_like_the_typed_one(admin_login):
+    typed = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "n": {"type": "integer", "minimum": 2.5},
+        },
+    }
+    typeless = {
+        "properties": {
+            "name": {"type": "string"},
+            "tags": {"items": {"type": "string"}},
+            "n": {"type": "integer", "minimum": 2.5},
+        }
+    }
+
+    def html(schema):
+        return str(
+            render_resource(
+                sample_for(schema),
+                resource_type=ResourceType(
+                    type_uri="tests://Node",
+                    slug="nodes",
+                    schema=Resource(content=schema),
+                    context=Resource(content={}),
+                ),
+                href="/nodes/1/",
+                etag="e",
+                request=request_for(admin_login),
+            )
+        )
+
+    assert sample_for(typeless) == {
+        "name": "Lorem ipsum",
+        "tags": ["Lorem ipsum"],
+        "n": 3,
+    }
+    assert html(typeless) == html(typed)
