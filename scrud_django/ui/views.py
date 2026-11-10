@@ -73,7 +73,9 @@ class UIContentValidationMixin:
         chosen = choose(self.request, cookie=html)
         if not html and chosen.refused is not None and chosen.source in EXPLICIT:
             raise UIBranchUnavailableError(chosen.refused)
-        rows = effective_rows(type_uri, chosen.selection, include_deleted=True)
+        rows = effective_rows(
+            type_uri, chosen.selection, include_deleted=True, authorized_only=False
+        )
         return queryset.filter(pk__in=[pk for pk, _etag, _content in rows])
 
     def validate_content(self, content, instance=None):

@@ -263,7 +263,11 @@ styled even if the policy gives them no access to the stylesheets. Stylesheets i
 the resource's contexts are applied, so a context's own presentation applies to
 the resources in it. Stylesheets and components are read once per rendered
 response, whatever the number of contexts on the page; an edit to one applies
-from the next response.
+from the next response. A stored component, stylesheet or CSS item whose
+`rbac_context` is not the context its write is authorized in on its branch
+(see [Authorizing contexts](#authorizing-contexts)), which only a write around
+the API can store, is not used, and is logged as a warning: on a branch, the
+parent's item shows instead.
 
 ## Modes, editing and the write path
 

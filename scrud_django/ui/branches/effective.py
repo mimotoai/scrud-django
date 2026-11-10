@@ -16,6 +16,7 @@ from scrud_django.ui.branches import MAIN
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
     Branch,
+    authorizing_context,
     branch_of,
     item_key,
     kind_of,
@@ -107,11 +108,19 @@ def effective_rows(
     type_uri: str,
     selection: Selection | None = None,
     include_deleted: bool = False,
+    authorized_only: bool = True,
 ) -> list[tuple[int, str, dict]]:
     """``(pk, etag, content)`` of the items of `type_uri` visible on the
     selected branch (default: `active_selection`), lowest pk first, deletion
-    markers removed (kept with `include_deleted`). The rows are `cascade._stored`'s: one query per type per
-    response. The selection must be selectable (`selection.choose`)."""
+    markers removed (kept with `include_deleted`). The rows are
+    `cascade._stored`'s: one query per response. The selection must be
+    selectable (`selection.choose`).
+
+    With `authorized_only` (rendering), a row whose ``rbac_context`` is not
+    its `authorizing_context` on its branch is skipped, as if absent, and
+    logged (ruling R41, minor 3): no write through the API stores one, so
+    it was stored around the checks that decide who controls a branch's
+    presentation. A JSON list shows the rows as stored (``False``)."""
     selection = selection or active_selection()
     if selection.branch == MAIN:
         chain = [MAIN_BRANCH]
@@ -122,6 +131,8 @@ def effective_rows(
     if rows is None:  # defensive: `selection.choose` already refused it
         chain = [MAIN_BRANCH]
         rows = _stored(type_uri)
+    if authorized_only:
+        rows = _authorized(kind, rows, chain)
 
     def skipped(loser, winner, key):
         reason = f"{kind} {winner[0]} has its name"
@@ -133,6 +144,33 @@ def effective_rows(
         _skipped(kind, row[0], None, "it has no name")
 
     return effective_items(kind, rows, chain, skipped, unnamed, include_deleted)
+
+
+def _authorized(kind, rows, chain):
+    """`rows` but those on a branch of `chain` whose ``rbac_context`` (``""``
+    when absent) is not their `authorizing_context` there (logged)."""
+    by_name = {branch.name: branch for branch in chain}
+    kept = []
+    for row in rows:
+        content = row[2]
+        branch = by_name.get(branch_of(content))
+        if branch is None or not isinstance(content, Mapping):
+            kept.append(row)  # not effective here, or skipped as unnamed
+            continue
+        context = content.get("rbac_context", "")
+        expected = authorizing_context(kind, content, branch)
+        if context == expected:
+            kept.append(row)
+            continue
+        name = content.get("name")
+        _skipped(
+            kind,
+            row[0],
+            name if isinstance(name, str) else None,
+            f"its rbac_context {context!r} is not {expected!r}, the context its "
+            f"write is authorized in on branch {branch.name!r}",
+        )
+    return kept
 
 
 def _pinned_at(chain, view_pinned):

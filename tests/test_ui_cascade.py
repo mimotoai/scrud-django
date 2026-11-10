@@ -368,10 +368,21 @@ def test_skipped_components_are_logged(caplog):
 @pytest.mark.django_db
 def test_component_outside_the_default_context_is_usable():
     """Components are no longer limited to the default context: a branch's
-    components carry the branch's context."""
-    stored = make_component("elsewhere")
+    components carry the branch's context. On main, whose context is "", a
+    component stored in "p" (around the API's checks) is skipped instead
+    (ruling R41, minor 3): it was usable before."""
+    from scrud_django.ui.branches.effective import Selection, using_selection
+
+    reverse("ui-branches-list")
+    ResourceRegistration.register(
+        {"name": "wip", "rbac_context": "p", "parent": "main"}, "ui-branches"
+    )
+    make_component("elsewhere", branch="wip", rbac_context="p")
+    with rules_memo(), using_selection(Selection("wip")):
+        assert set(load_components({"elsewhere"})) == {"elsewhere"}
+    stored = make_component("on-main")
     Resource.objects.filter(pk=stored.pk).update(
         content={**stored.content, "rbac_context": "p"}
     )
     with rules_memo():
-        assert set(load_components({"elsewhere"})) == {"elsewhere"}
+        assert load_components({"on-main"}) == {}

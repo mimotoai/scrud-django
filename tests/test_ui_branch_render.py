@@ -204,11 +204,45 @@ def test_rows_without_a_string_name_are_skipped_and_logged(
 
 @pytest.mark.django_db
 @test_context
-def test_component_in_another_context_on_main_is_rendered(todo_list, todo_reader_login):
+def test_component_in_another_context_on_main_is_skipped(
+    todo_list, todo_reader_login, caplog
+):
+    """A stored row whose rbac_context is not the context its write is
+    authorized in on its branch (here a component on main in "project-a",
+    stored around the API) is skipped by the cascade and logged: no write
+    through the API could have stored it, so whoever could write in
+    "project-a" must not control main's markup (ruling R41, minor 3; it was
+    rendered before)."""
     stored = make_component("row", "<b>{{ value.text }}</b>")
     Resource.objects.filter(pk=stored.pk).update(
         content={**stored.content, "rbac_context": "project-a"}
     )
     make_stylesheet("s", [("ex:TodoItem", "row")])
     Given.http.force_authenticate(todo_reader_login)
-    assert "<b>Buy milk</b>" in render_with(todo_list)
+    with caplog.at_level(logging.WARNING):
+        page = render_with(todo_list)
+    assert "<b>Buy milk</b>" not in page
+    assert "scrud-object" in page  # the built-in
+    assert any(
+        f"component {stored.pk} " in r.getMessage() and "'project-a'" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_unauthorized_override_lets_the_parent_item_show(
+    todo_list, todo_reader_login, caplog
+):
+    """On a branch, a row in a context other than the branch's is skipped
+    as if absent: the parent's item shows through (ruling R41, minor 3)."""
+    setup_main_and_wip()
+    put_item("ui-components", "row", "<u>{{ value.text }}</u>", "wip", context="bob")
+    Resource.objects.filter(
+        content__branch="wip", content__name="row", content__rbac_context="project-a"
+    ).delete()
+    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    with caplog.at_level(logging.WARNING):
+        page = render_with(todo_list, "wip")
+    assert "<b>Buy milk</b>" in page and "<u>Buy milk</u>" not in page
+    assert any("'bob'" in r.getMessage() for r in caplog.records)
