@@ -1198,7 +1198,9 @@ resource view, so the API's JSON-only rule does not apply.
 `branch`, `mode`, `scope`, `context` and `instance` are the `preview`
 parameters, read and checked the same way.
 
-- **Drafts.** `kind` is `component`, `stylesheet`, `css` or `js`; `content`
+- **Drafts.** At most 50 per request (more is 400
+  `ui-studio-preview-invalid`); one per item (a second draft of an item is
+  listed as an error). `kind` is `component`, `stylesheet`, `css` or `js`; `content`
   is the item as `save-item` takes it, with its `name` (and a stylesheet's
   `applies_to`). Each draft is shown as the branch's own row of the item, in
   place of its stored one, and ranks in the cascade where its save would put
@@ -1229,7 +1231,9 @@ parameters, read and checked the same way.
   `applies_to`, as the branch (drafts included) resolves it; the default
   stylesheet's rules can be marked by its name. Markers are computed with the
   cascade's own ranking, so they agree with the render and with `explain`. A
-  stylesheet the branch does not show marks nothing.
+  stylesheet the branch does not show marks nothing, and so does one the user
+  may not `GET` (as `explain` hides its rules): the response is then the same
+  as for a stylesheet that does not exist.
 
 The response is the preview document: the frame rendered as `preview`
 renders it (no write attributes, each node in a `<scrud-node
@@ -1250,7 +1254,10 @@ Content-Security-Policy: sandbox allow-scripts; default-src 'none';
 X-Frame-Options: SAMEORIGIN
 ```
 
-(on one line), with a nonce `<n>` new with each response. The branch's
+(on one line), with a nonce `<n>` new with each response. That includes the
+CSRF and login refusals and the errors Django itself answers (a body over
+`DATA_UPLOAD_MAX_MEMORY_SIZE` or with too many fields, 400; an unexpected
+error, 500), which the view answers as Django would, with these headers. The branch's
 scripts run (unlike in `preview`), but the document has an opaque origin
 (`allow-scripts` without `allow-same-origin`): they cannot reach the studio's
 page, the user's cookies or their session, whoever wrote them. A request made
@@ -1270,19 +1277,22 @@ frame's own origin is opaque; only a same-origin page may frame it):
 
 - `{"type": "scrud-preview:errors", "errors": [...]}` once, when loaded: the
   drafts left out, as listed above;
-- `{"type": "scrud-preview:select", "pointer": "<JSON Pointer>"}` on a click
-  inside a node: the nearest `<scrud-node>`'s pointer. The click's default is
-  prevented, so a link in the preview does not navigate it. Inside an
-  embedded resource the nearest node is the embedded resource's, and its
-  pointer is relative to that resource (its frame is the nearest
-  `.scrud-resource`).
+- `{"type": "scrud-preview:select", "pointer": "<JSON Pointer>", "href":
+  "<URL>" | null}` on a click inside a node: the nearest `<scrud-node>`'s
+  pointer, and the `data-scrud-href` of the resource frame it is in (its
+  nearest `.scrud-resource`; `null` outside one). Inside an embedded
+  resource the nearest node is the embedded resource's, its pointer relative
+  to that resource, and `href` is that resource's: compare it with the
+  preview's own frame to tell them apart. The click's default is prevented,
+  so a link in the preview does not navigate it.
 
 The receiving page must check `event.source` is its preview frame and accept
 these shapes only. The branch's scripts share the document and can post
 messages too, so treat both as data, never as instructions.
 
 Errors: 400 `ui-studio-preview-invalid` (the `request` field missing, not
-JSON, or a field of the wrong shape; `after_push` with drafts), 400
+JSON (nested too deep included), or a field of the wrong shape; more than 50
+drafts; `after_push` with drafts), 400
 `ui-branch-unavailable`, 400 `ui-studio-context-unavailable`, 400
 `ui-studio-branch-read-only` (drafts on a published branch), 403 (an
 `after_push` source the user may not `GET`), 404 for an unknown type, and the
@@ -1435,7 +1445,7 @@ as the push API does. Errors: as `save-item`.
 |---|---|---|
 | `ui-branch-unavailable` | 400 | the branch (or a push target) is unknown or the user may not select it; one answer for both |
 | `ui-studio-branch-read-only` | 400 | a write names a published branch (`main` or one with a prefix); refused before anything is dispatched; also drafts in a `live-preview` of one |
-| `ui-studio-preview-invalid` | 400 | a `live-preview` whose `request` field is missing, not JSON, has a field of the wrong shape, or sends `after_push` with drafts |
+| `ui-studio-preview-invalid` | 400 | a `live-preview` whose `request` field is missing, not JSON, has a field of the wrong shape, sends more than 50 drafts, or sends `after_push` with drafts |
 | `ui-studio-context-unavailable` | 400 | a sample or preview in a data context whose UI stylesheets the user may not read |
 | `ui-pointer-not-found` | 400 | `explain` (or the options) for a pointer to no node the preview renders |
 

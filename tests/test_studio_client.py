@@ -18,13 +18,16 @@ from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
 import scrud_django.ui.studio
+from scrud_django import collection_type_uri_for
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 
 from .fixtures import *  # noqa
+from .fixtures import TYPE_URI_TODO_LIST
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_render import put_item
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
+from .test_ui_embeds import host, make_list, url_of
 from .test_ui_http import grant, make_component
 from .test_ui_static import require_node
 
@@ -1070,6 +1073,9 @@ try {
   const item = node('/items/0');
   click(item);
   out.clicks = posted.splice(0);
+  // An element of the previewed resource's root node, outside its children.
+  const section = document.querySelector('section');
+  if (section) { click(section); out.sectionClicks = posted.splice(0); }
 } catch (e) { errors.push(String(e && e.stack || e)); }
 out.errors = errors; out.htmlWrites = htmlWrites;
 console.log(JSON.stringify(out));
@@ -1102,17 +1108,7 @@ def test_bridge_posts_select_and_errors(ui_alice_login):
         content_type="application/x-www-form-urlencoded",
     )
     Then.http.status_code_is(200)
-    page = Http.response.content.decode()
-    require_node()
-    done = subprocess.run(
-        ["node", "-e", BRIDGE_HARNESS, str(BRIDGE_JS)],
-        capture_output=True,
-        text=True,
-        input=json.dumps({"preview": tree(page)}),
-    )
-    assert done.returncode == 0, done.stderr
-    out = json.loads(done.stdout)
-    assert out["errors"] == [] and out["htmlWrites"] == []
+    out = run_bridge(Http.response.content.decode())
     # On load: the draft errors the page lists, to the parent, to any
     # origin (the frame's own is opaque).
     (loaded,) = out["loaded"]
@@ -1123,15 +1119,71 @@ def test_bridge_posts_select_and_errors(ui_alice_login):
     assert "template is invalid" in error["messages"][0]
     # A click outside every node posts nothing and is not prevented.
     assert out["outside"] is False and out["afterOutside"] == []
-    # A click inside a node selects the nearest one.
+    # The click selects the nearest node, with its resource frame's href.
+    sample = reverse("scrud-studio:sample", args=[SLUG])
     assert out["inside"] is True
     assert out["clicks"] == [
-        {
-            "message": {"type": "scrud-preview:select", "pointer": POINTER},
-            "origin": "*",
-        },
-        {
-            "message": {"type": "scrud-preview:select", "pointer": "/items/0"},
-            "origin": "*",
-        },
+        {"message": select(POINTER, sample), "origin": "*"},
+        {"message": select("/items/0", sample), "origin": "*"},
     ]
+    assert "sectionClicks" not in out
+
+
+def select(pointer, href):
+    return {"type": "scrud-preview:select", "pointer": pointer, "href": href}
+
+
+def run_bridge(page):
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", BRIDGE_HARNESS, str(BRIDGE_JS)],
+        capture_output=True,
+        text=True,
+        input=json.dumps({"preview": tree(page)}),
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["errors"] == [] and out["htmlWrites"] == []
+    return out
+
+
+@pytest.mark.django_db
+@test_context
+def test_bridge_tells_an_embeds_nodes_by_href(ui_alice_login):
+    """A node of an embedded resource has a pointer relative to it: the
+    select message's href is the embedded resource's, not the preview's."""
+    setup_wip(ui_alice_login)
+    grant(
+        ui_alice_login,
+        {
+            "http.GET": [
+                TYPE_URI_TODO_LIST,
+                collection_type_uri_for(TYPE_URI_TODO_LIST),
+            ]
+        },
+        "project-a",
+    )
+    other = make_list("Chores", items=["Sweep"])
+    host(
+        '<section class="host">{{ embed("' + url_of(other) + '", mode="view") }}'
+        "</section>"
+    )
+    body = {"type": SLUG, "branch": "wip", "scope": ["host"]}
+    When.http.post(
+        reverse("scrud-studio:live-preview"),
+        data=urlencode({"request": json.dumps(body)}),
+        content_type="application/x-www-form-urlencoded",
+    )
+    Then.http.status_code_is(200)
+    out = run_bridge(Http.response.content.decode())
+    assert out["loaded"][0]["message"] == {
+        "type": "scrud-preview:errors",
+        "errors": [],
+    }
+    # The host prints only the embed: these nodes are the embedded list's.
+    assert out["clicks"] == [
+        {"message": select(POINTER, url_of(other)), "origin": "*"},
+        {"message": select("/items/0", url_of(other)), "origin": "*"},
+    ]
+    sample = reverse("scrud-studio:sample", args=[SLUG])
+    assert out["sectionClicks"] == [{"message": select("", sample), "origin": "*"}]

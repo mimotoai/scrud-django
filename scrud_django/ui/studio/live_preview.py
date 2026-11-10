@@ -42,12 +42,13 @@ from scrud_django.ui.branches.model import branch_of, item_key
 from scrud_django.ui.branches.selection import branch_content, may_get_stored
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.cascade import (
+    RuleSource,
     _applies_to_contexts,
     _default_stylesheet,
     _name_of,
     rules_memo,
 )
-from scrud_django.ui.render import Mark, using_mark
+from scrud_django.ui.render import _JSON_SCRIPT_ESCAPES, Mark, using_mark
 from scrud_django.ui.renderer import STATIC_HTMX, STATIC_SCRUD_UI
 from scrud_django.ui.studio.drafts import (
     after_push_drafts,
@@ -61,12 +62,8 @@ logger = logging.getLogger(__name__)
 
 MODES = ("view", "edit")
 
-# What a ``<script>`` element must not contain raw (as Django's `json_script`).
-_JSON_SCRIPT_ESCAPES = {
-    ord(">"): "\\u003E",
-    ord("<"): "\\u003C",
-    ord("&"): "\\u0026",
-}
+# The most drafts one live preview request may send.
+MAX_DRAFTS = 50
 
 
 def new_nonce() -> str:
@@ -129,8 +126,11 @@ def parse_request(text) -> LiveRequest:
         raise UIStudioPreviewInvalidError("the form field 'request' is required.")
     try:
         body = json.loads(text)
-    except ValueError as error:
-        raise UIStudioPreviewInvalidError(f"it is not JSON ({error}).") from error
+    except (ValueError, RecursionError) as error:
+        # RecursionError: nested too deep for the parser.
+        raise UIStudioPreviewInvalidError("it is not JSON the server can read.") from (
+            error
+        )
     if not isinstance(body, dict):
         raise UIStudioPreviewInvalidError("it must be a JSON object.")
     slug = body.get("type")
@@ -148,6 +148,8 @@ def parse_request(text) -> LiveRequest:
     if isinstance(instance, bool) or not isinstance(instance, (int, str, type(None))):
         raise UIStudioPreviewInvalidError("'instance' must be a pk or null.")
     drafts = _optional(body, "drafts", list, [])
+    if len(drafts) > MAX_DRAFTS:
+        raise UIStudioPreviewInvalidError(f"send at most {MAX_DRAFTS} drafts.")
     if not all(isinstance(d, dict) and isinstance(d.get("kind"), str) for d in drafts):
         raise UIStudioPreviewInvalidError(
             "'drafts' must be a list of objects, each with a 'kind'."
@@ -197,13 +199,17 @@ def _optional(body, key, kind, default):
     return value
 
 
-def render_live_preview(request, resource_type, shown, live: LiveRequest, nonce: str):
+def render_live_preview(
+    request, resource_type, shown, live: LiveRequest, nonce: str, readable
+):
     """The live preview document of `live` for `request`'s user: what
     `shown` (``views._Shown``, its branch selectable) shows on its branch T,
     with `live`'s drafts (only those `validate_draft` accepts) or, with
     ``after_push``, the source's stored overrides (`after_push_drafts`)
     layered over T; T's CSS and JS inlined under `nonce`; the drafts'
-    errors listed; and `live`'s mark. Drafts on a published T are refused
+    errors listed; and `live`'s mark, unless `readable` (the inspector's
+    read check of a rule's `RuleSource`, ``views._readable``) refuses its
+    stylesheet. Drafts on a published T are refused
     (`UIStudioBranchReadOnlyError`); an ``after_push`` source the user may
     not GET, or that does not exist, is ``PermissionDenied`` (403), alike.
     Nothing is written."""
@@ -226,7 +232,7 @@ def render_live_preview(request, resource_type, shown, live: LiveRequest, nonce:
         using_selection(selection),
         using_drafts(target.name, drafts),
         rules_memo(),
-        using_mark(_mark(live.mark)),
+        using_mark(_mark(live.mark, readable)),
     ):
         frame = render_preview(
             request,
@@ -291,17 +297,22 @@ def _accepted(request, target, drafts, errors) -> list[Draft]:
     return accepted
 
 
-def _mark(mark) -> Mark | None:
+def _mark(mark, readable) -> Mark | None:
     """The `Mark` of a request's ``mark``, the stylesheet's branch as the
     selected branch (drafts included) resolves it: the branch of the row it
     shows for the stylesheet's name in that context, ``""`` for the default
-    stylesheet. ``None`` (nothing marked) when it shows none."""
+    stylesheet. ``None`` (nothing marked) when it shows none, and alike when
+    `readable` refuses that row's source, as the inspector hides its rules:
+    a mark tells nothing of a stylesheet its user may not read."""
     if mark is None:
         return None
     name, target = mark["stylesheet"], mark["applies_to"]
-    for _pk, _etag, content in effective_rows(UI_STYLESHEET_TYPE_URI):
+    for pk, _etag, content in effective_rows(UI_STYLESHEET_TYPE_URI):
         if _name_of(content) == name and target in _applies_to_contexts(content):
-            return Mark(name, target, mark["index"], branch_of(content))
+            branch = branch_of(content)
+            if not readable(RuleSource(pk, name, branch, target, content)):
+                return None
+            return Mark(name, target, mark["index"], branch)
     if name == _name_of(_default_stylesheet()) and target == "":
         return Mark(name, target, mark["index"], "")
     return None

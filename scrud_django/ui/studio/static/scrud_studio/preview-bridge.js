@@ -8,9 +8,14 @@
 //
 //   {"type": "scrud-preview:errors", "errors": [{"kind", "name", "messages"}]}
 //     once, when loaded: the drafts the preview left out, and why;
-//   {"type": "scrud-preview:select", "pointer": "<JSON Pointer>"}
-//     on a click inside a node: the nearest scrud-node's pointer (the click's
-//     default is prevented, so a link in the preview does not navigate).
+//   {"type": "scrud-preview:select", "pointer": "<JSON Pointer>",
+//    "href": "<data-scrud-href>" | null}
+//     on a click inside a node: the nearest scrud-node's pointer, and the
+//     data-scrud-href of the resource frame it is in (the nearest
+//     .scrud-resource; null outside one), so that a node of an embedded
+//     resource, whose pointer is relative to that resource, is told from the
+//     previewed resource's (the click's default is prevented, so a link in
+//     the preview does not navigate).
 //
 // The branch's own scripts run in the same document and can post messages
 // too: the page treats both as data, never as instructions.
@@ -50,9 +55,11 @@
         return;
       }
       event.preventDefault();
+      var frame = node.closest(".scrud-resource");
       post({
         type: "scrud-preview:select",
         pointer: node.getAttribute("data-pointer") || "",
+        href: frame ? frame.getAttribute("data-scrud-href") : null,
       });
     },
     true

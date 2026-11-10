@@ -9,10 +9,13 @@ API at ``/api/`` and the studio at ``/studio/`` (``tests.mounted_urls``)."""
 import json
 import re
 from html import unescape
+from unittest import mock
 from urllib.parse import urlencode
 
 import pytest
+from django.test import RequestFactory
 from django.urls import reverse
+from rest_framework.test import force_authenticate
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
@@ -23,6 +26,8 @@ from scrud_django.ui.branches import (
     UI_CSS_TYPE_URI,
     UI_JS_TYPE_URI,
 )
+from scrud_django.ui.studio import views
+from scrud_django.ui.studio.live_preview import MAX_DRAFTS
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
 from .fixtures import *  # noqa
@@ -356,7 +361,15 @@ def test_after_push_with_drafts_refused(admin_login):
     assert problem()["type"] == INVALID
     # A request that is not the expected JSON is invalid too.
     reverse("todo-lists-list")
-    for body in ("not json", "[]", json.dumps({"type": SLUG, "mode": "other"})):
+    too_many = [django_component(f"c{i}", "x") for i in range(MAX_DRAFTS + 1)]
+    for body in (
+        "not json",
+        "[]",
+        json.dumps({"type": SLUG, "mode": "other"}),
+        # Nested deeper than the JSON parser recurses: never a 500.
+        "[" * 200_000 + "]" * 200_000,
+        json.dumps({"type": SLUG, "drafts": too_many}),
+    ):
         When.http.post(
             reverse("scrud-studio:live-preview"),
             data=urlencode({"request": body}),
@@ -364,6 +377,9 @@ def test_after_push_with_drafts_refused(admin_login):
         )
         Then.http.status_code_is(400)
         assert problem()["type"] == INVALID
+        assert Http.response["Content-Security-Policy"].startswith("sandbox ")
+    # As many as allowed is fine.
+    live(drafts=too_many[:MAX_DRAFTS], branch="wip")
     When.http.post(
         reverse("scrud-studio:live-preview"),
         data=urlencode({}),
@@ -561,7 +577,9 @@ def test_mark_on_a_draft_rule(ui_alice_login):
         mark={"stylesheet": "studio", "applies_to": "", "index": 0},
     )
     assert nodes(page)["/items/0"] == ("wins", "wins")
-    # main's rule now loses to it.
+    # main's rule now loses to it (marking it needs GET on main's
+    # stylesheet, as the inspector's showing it does).
+    grant_items(ui_alice_login, "", UI_STYLESHEET_TYPE_URI, methods=("GET",))
     page = live(
         drafts=[
             django_component("row-d", "<i>{{ value.text }}</i>"),
@@ -670,7 +688,88 @@ def test_live_preview_is_a_post_with_csrf(ui_alice_login):
         content_type="application/x-www-form-urlencoded",
     )
     assert response.status_code == 403
-    assert client.get(reverse("scrud-studio:live-preview")).status_code == 405
+    assert response["Content-Security-Policy"].startswith("sandbox allow-scripts;")
+    assert response["X-Frame-Options"] == "SAMEORIGIN"
+    response = client.get(reverse("scrud-studio:live-preview"))
+    assert response.status_code == 405
+    assert response["Content-Security-Policy"].startswith("sandbox allow-scripts;")
+
+
+@pytest.mark.django_db
+@test_context
+def test_errors_django_answers_are_sandboxed_too(ui_alice_login, settings):
+    """An exception DRF does not answer (too many form fields, an error) is
+    answered as Django answers it, with the sandbox."""
+    reverse("todo-lists-list")
+    make_branch("wip", "alice")
+    Given.http.force_authenticate(ui_alice_login)
+    settings.DATA_UPLOAD_MAX_NUMBER_FIELDS = 3
+    When.http.post(
+        reverse("scrud-studio:live-preview"),
+        data=urlencode([("request", "{}"), *[(f"f{i}", "x") for i in range(5)]]),
+        content_type="application/x-www-form-urlencoded",
+    )
+    Then.http.status_code_is(400)
+    assert Http.response["Content-Security-Policy"].startswith("sandbox ")
+    assert Http.response["X-Frame-Options"] == "SAMEORIGIN"
+    settings.DATA_UPLOAD_MAX_NUMBER_FIELDS = 1000
+    # An unexpected error: Django's 500, sandboxed (the test settings
+    # propagate errors, as Django then does: not here).
+    settings.DEBUG_PROPAGATE_EXCEPTIONS = False
+    request = RequestFactory().post(
+        reverse("scrud-studio:live-preview"),
+        data=urlencode({"request": json.dumps({"type": SLUG, "branch": "main"})}),
+        content_type="application/x-www-form-urlencoded",
+    )
+    force_authenticate(request, user=ui_alice_login)
+    with mock.patch(
+        "scrud_django.ui.studio.views.render_live_preview",
+        side_effect=RuntimeError("boom"),
+    ):
+        response = views.live_preview(request)
+    assert response.status_code == 500
+    assert response["Content-Security-Policy"].startswith("sandbox allow-scripts;")
+    assert response["X-Frame-Options"] == "SAMEORIGIN"
+
+
+@pytest.mark.django_db
+@test_context
+def test_mark_tells_nothing_of_an_unreadable_stylesheet(login_no_roles):
+    """A user who may select wip but not GET its stylesheets marks nothing
+    with them, exactly as with a stylesheet that does not exist; the
+    inspector hides their rules alike."""
+    make_component("row", "<b>{{ value.text }}</b>")
+    wip_for(login_no_roles)
+    ResourceRegistration.register(
+        {
+            "name": "secret",
+            "prefixes": PREFIXES,
+            "rules": [{"select": "ex:TodoItem", "component": "row"}],
+            "applies_to": "",
+            **WIP,
+        },
+        "ui-stylesheets",
+    )
+    secret = {"stylesheet": "secret", "applies_to": "", "index": 0}
+    missing = {"stylesheet": "missing", "applies_to": "", "index": 0}
+
+    def without_nonce(page):
+        return re.sub(r'nonce="[^"]*"', "", page)
+
+    page = live(mark=secret)
+    assert "<b>Lorem ipsum</b>" in page  # the rule applies, and wins
+    assert "data-scrud-match" not in page
+    assert without_nonce(page) == without_nonce(live(mark=missing))
+    When.http.get(
+        reverse("scrud-studio:explain", args=[SLUG]),
+        {"branch": "wip", "pointer": "/items/0"},
+    )
+    Then.http.status_code_is(200)
+    explained = Http.response.json()
+    assert explained["rules"][explained["winner"]]["readable"] is False
+    # With GET on stylesheets in alice, the same mark marks the node.
+    grant_items(login_no_roles, "alice", UI_STYLESHEET_TYPE_URI, methods=("GET",))
+    assert nodes(live(mark=secret))["/items/0"] == ("wins", "wins")
 
 
 @pytest.mark.django_db
@@ -686,6 +785,8 @@ def test_embeds_in_live_preview_compose_server_side(todo_list, todo_owner_login)
     )
     user = todo_owner_login
     grant_items(user, "alice", UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI)
+    # To mark main's "s", as the inspector shows its rules.
+    grant_items(user, "", UI_STYLESHEET_TYPE_URI, methods=("GET",))
     wip_for(user)
     page = live(
         instance=todo_list.pk,

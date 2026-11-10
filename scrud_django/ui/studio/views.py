@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from functools import wraps
 
+from django.core.handlers.exception import response_for_exception
 from django.http import Http404, HttpResponse
 from django.shortcuts import render
 from django.urls import reverse
@@ -263,15 +264,24 @@ _NONCE_ATTR = "scrud_studio_preview_nonce"
 
 
 def _live_sandboxed(view):
-    """`view` with `live_preview_csp` on every response it gives, errors
-    included, its nonce new with each (on the request as `_NONCE_ATTR`)."""
+    """`view` with `live_preview_csp` and ``X-Frame-Options: SAMEORIGIN`` on
+    every response it gives, its nonce new with each (on the request as
+    `_NONCE_ATTR`). An exception DRF does not answer (a body over
+    ``DATA_UPLOAD_MAX_MEMORY_SIZE``, too many form fields, any error) is
+    answered here as Django would answer it (``response_for_exception``:
+    400 for a suspicious request, else 500, logged and signalled as usual),
+    so that its response is sandboxed too."""
 
     @wraps(view)
     def sandboxed(request, *args, **kwargs):
         nonce = new_nonce()
         setattr(request, _NONCE_ATTR, nonce)
-        response = view(request, *args, **kwargs)
+        try:
+            response = view(request, *args, **kwargs)
+        except Exception as error:
+            response = response_for_exception(request, error)
         response["Content-Security-Policy"] = live_preview_csp(nonce)
+        response["X-Frame-Options"] = "SAMEORIGIN"
         return response
 
     return sandboxed
@@ -300,7 +310,9 @@ def live_preview(request):
     if isinstance(shown, HttpResponse):
         return shown
     nonce = getattr(request._request, _NONCE_ATTR)
-    return render_live_preview(request, resource_type, shown, live, nonce)
+    return render_live_preview(
+        request, resource_type, shown, live, nonce, _readable(request)
+    )
 
 
 @api_view(["GET"])
