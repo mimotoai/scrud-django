@@ -2,6 +2,7 @@
 resource type's JSON Schema, so that a type with no instances can be
 previewed."""
 
+import copy
 import math
 
 from scrud_django.mixins.view_mixins import max_body_depth
@@ -18,7 +19,7 @@ _FORMATS = {
 def sample_for(schema, root=None, *, max_depth=None):
     """The sample value for `schema`, whose local ``$ref`` s resolve in `root`
     (default `schema`). ``default``, then the first of ``examples``, then the
-    first of ``enum``; otherwise a value by type. A ``$ref`` cycle, a node
+    first of ``enum`` (each a copy); otherwise a value by type. A ``$ref`` cycle, a node
     deeper than `max_depth` (default `max_body_depth()`) and any construct not
     understood give ``None``. It never raises."""
     if root is None:
@@ -34,11 +35,13 @@ def _sample(schema, root, max_depth, depth, active):
     schema, active = _resolve(root, schema, active)
     if schema is None:
         return None
+    # Copies: the caller may change the sample (`sample_of` sets its
+    # ``rbac_context``), never the schema it came from.
     if "default" in schema:
-        return schema["default"]
+        return copy.deepcopy(schema["default"])
     for key in ("examples", "enum"):
         if isinstance(schema.get(key), list) and schema[key]:
-            return schema[key][0]
+            return copy.deepcopy(schema[key][0])
 
     def child(sub, at=depth + 1):
         return _sample(sub, root, max_depth, at, active)

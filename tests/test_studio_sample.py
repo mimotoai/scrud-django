@@ -1,5 +1,8 @@
 """The studio's sample instance: a deterministic value built from a JSON Schema."""
 
+import copy
+from types import SimpleNamespace
+
 import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
@@ -7,6 +10,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scrud_django.models import Resource, ResourceType
 from scrud_django.registration import get_resource_type_for
 from scrud_django.ui.render import render_resource
+from scrud_django.ui.studio.preview import sample_of
 from scrud_django.ui.studio.sample import sample_for
 from scrud_django.validators import compile_json_schema
 
@@ -20,6 +24,34 @@ def test_sample_prefers_default_then_examples_then_enum():
     assert sample_for({"type": "string", "examples": ["e", "f"], "enum": ["x"]}) == "e"
     assert sample_for({"type": "integer", "enum": [7, 8]}) == 7
     assert sample_for({"default": None, "type": "string"}) is None
+
+
+def test_sample_never_shares_the_schemas_values():
+    """A ``default`` or ``examples`` value comes back as a copy: changing the
+    sample, as `sample_of` does with its ``rbac_context``, leaves the stored
+    schema alone."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "tags": {"type": "array", "default": [{"x": 1}]},
+            "meta": {"type": "object", "examples": [{"k": "v"}]},
+        },
+        "default": {"title": "t", "nested": {"a": [1]}},
+    }
+    before = copy.deepcopy(schema)
+    sample = sample_for(schema)
+    assert sample == schema["default"] and sample is not schema["default"]
+    sample["nested"]["a"].append(2)
+    assert schema == before
+    parts = sample_for(schema["properties"]["tags"])
+    parts[0]["x"] = 9
+    meta = sample_for(schema["properties"]["meta"])
+    meta["k"] = "changed"
+    assert schema == before
+    resource_type = SimpleNamespace(schema=SimpleNamespace(content=schema))
+    assert sample_of(resource_type, "acme")["rbac_context"] == "acme"
+    assert sample_of(resource_type)["rbac_context"] == ""
+    assert schema == before
 
 
 def test_sample_by_type_and_format():
