@@ -1,0 +1,36 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIBranchVersion",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Branch Version",
+  "description": "Read-only: a numbered state of a UI branch, recorded by the server on every change to the branch's own items.",
+  "type": "object",
+  "properties": {
+    "rbac_context": {
+      "type": "string",
+      "description": "The branch's context: grants there decide who may read the version."
+    },
+    "branch": {
+      "type": "string",
+      "description": "The name of the branch."
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The version's number: 1 for the branch's first, then each one more than the last."
+    },
+    "items": {
+      "type": "object",
+      "description": "The branch's own items (its overrides, deletion markers included) by kind (component, stylesheet), each the item's content.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "object" }
+      }
+    },
+    "ancestors": {
+      "type": "object",
+      "description": "The branching point: the version of every ancestor the branch was resolved against.",
+      "additionalProperties": { "type": "integer" }
+    }
+  },
+  "required": ["branch", "number", "rbac_context", "items", "ancestors"]
+}

@@ -74,7 +74,9 @@ def test_branch_create_needs_grant_in_its_context(ui_alice_login, ui_bob_login):
     Then.http.status_code_is(201)
     created = Http.response.json()
     assert created["base"] == "live"
-    assert created["branching_point"] == {}
+    # main's current version when alice-wip was created: its first, recorded
+    # then (main had none).
+    assert created["branching_point"] == {"main": 1}
     create("ui-branches", {**body, "name": "bob-wip", "rbac_context": "bob"})
     Then.http.status_code_is(403)
     Given.http.force_authenticate(ui_bob_login)

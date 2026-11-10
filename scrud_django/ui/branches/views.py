@@ -1,13 +1,22 @@
-"""The viewset of the UI branch resource type, with its write-time checks."""
+"""The viewsets of the UI branch resource type, with its write-time checks,
+and of the read-only UI branch versions."""
 
+import dataclasses
 import re
 
 from scrudful.rest_framework import scrudful_viewset
 
 from scrud_django.exceptions import UIBranchInvalidError
-from scrud_django.ui.branches import MAIN
-from scrud_django.ui.branches.model import MAIN_BRANCH, Branch
-from scrud_django.ui.branches.store import BranchChainError, ancestors, branches
+from scrud_django.models import Resource
+from scrud_django.ui.branches import ITEM_KINDS, MAIN
+from scrud_django.ui.branches.model import MAIN_BRANCH, Branch, applies_to
+from scrud_django.ui.branches.store import (
+    BranchChainError,
+    ancestors,
+    branch_from,
+    branches,
+)
+from scrud_django.ui.branches.versions import current_version
 from scrud_django.ui.views import UIContentValidationMixin
 from scrud_django.views import ResourceViewSet
 
@@ -21,10 +30,13 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
     def validate_content(self, content, instance=None):
         """Refuse (`UIBranchInvalidError`, 400) a bad, taken or changed name,
         a reserved ``main`` that is not as reserved, a missing parent, a
-        cycle of parents, a bad or taken prefix, and ``pinned`` without a
-        parent. Set ``base`` (default ``live``) and the server-managed
-        ``branching_point`` (``{}`` on create; kept on update) in
-        `content`, the request body that is saved."""
+        cycle of parents, a bad or taken prefix, ``pinned`` without a
+        parent, and on an update a changed ``rbac_context`` or a switch
+        between published and working that would change the authorizing
+        context of its items (`check_unchanged_authorization`). Set ``base``
+        (default ``live``) and the server-managed ``branching_point`` (on
+        create, the current version of every ancestor, `current_version`;
+        kept on update) in `content`, the request body that is saved."""
         super().validate_content(content, instance=instance)
         if not isinstance(content, dict):
             return
@@ -59,10 +71,60 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
                 "A pinned branch needs a parent: it is pinned to its parent's "
                 "branching point."
             )
+        if instance is not None:
+            self.check_unchanged_authorization(instance, content, prefix)
         content["base"] = base
-        content["branching_point"] = (
-            {} if instance is None else instance.content.get("branching_point", {})
+        if instance is None:
+            content["branching_point"] = self.branching_point(name, all_branches)
+        else:
+            content["branching_point"] = instance.content.get("branching_point", {})
+
+    def branching_point(self, name, all_branches):
+        """The current version of every ancestor of the new branch `name`
+        (in `all_branches`, which `check_parent` gave it), by name: each
+        ancestor's first is recorded now if it has none."""
+        using = self.write_database()
+        return {
+            ancestor.name: current_version(ancestor.name, using)
+            for ancestor in ancestors(name, all_branches)
+        }
+
+    def check_unchanged_authorization(self, instance, content, prefix):
+        """Refuse an update that changes the branch's ``rbac_context``, or
+        switches it between published (a prefix) and working (none) while
+        it has its own stylesheets that apply to a context: either would
+        change the context the stored items are authorized in
+        (`scrud_django.ui.branches.model.authorizing_context`). A published
+        branch may change its prefix."""
+        stored = branch_from(instance.pk, instance.content)
+        context = content.get("rbac_context", "")
+        if isinstance(context, str) and context != stored.context:
+            raise UIBranchInvalidError(
+                f"A branch's rbac_context cannot change (it is {stored.context!r}): "
+                "its items are authorized in it."
+            )
+        if (prefix is not None) == stored.published:
+            return
+        switched = dataclasses.replace(stored, prefix=prefix)
+        targeted = sorted(
+            {
+                item.get("name")
+                for item in Resource.objects.using(self.write_database())
+                .filter(
+                    resource_type__type_uri=ITEM_KINDS["stylesheet"],
+                    content__branch=stored.name,
+                )
+                .values_list("content", flat=True)
+                if applies_to(item, stored) or applies_to(item, switched)
+            },
+            key=str,
         )
+        if targeted:
+            raise UIBranchInvalidError(
+                "A branch cannot switch between published and working while "
+                "its own stylesheets apply to a context (their authorizing "
+                f"context would change): {', '.join(map(repr, targeted))}."
+            )
 
     def check_main(self, content):
         """``main`` is the published branch at the API URLs (ruling R1)."""
@@ -113,3 +175,12 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
                 raise UIBranchInvalidError(
                     f"Branch {other.name!r} already has the prefix {prefix!r}."
                 )
+
+
+@scrudful_viewset
+class UIBranchVersionViewSet(ResourceViewSet):
+    """Branch versions are recorded by the server
+    (`scrud_django.ui.branches.versions`) and never changed: a POST, PUT or
+    DELETE is 405. A version is read in its branch's context."""
+
+    http_method_names = ["get", "head", "options"]

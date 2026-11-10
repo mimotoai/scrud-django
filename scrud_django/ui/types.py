@@ -1,5 +1,5 @@
-"""The built-in UI resource types: UI components, UI stylesheets and UI
-branches."""
+"""The built-in UI resource types: UI components, UI stylesheets, UI branches
+and UI branch versions."""
 
 import importlib.resources
 
@@ -16,6 +16,8 @@ UI_STYLESHEET_RESOURCE_TYPE_ = None
 UI_STYLESHEET_REGISTRATION_ = None
 UI_BRANCH_RESOURCE_TYPE_ = None
 UI_BRANCH_REGISTRATION_ = None
+UI_BRANCH_VERSION_RESOURCE_TYPE_ = None
+UI_BRANCH_VERSION_REGISTRATION_ = None
 
 # The module-level caches above, for tests to forget.
 REGISTRATION_CACHES = [
@@ -25,6 +27,8 @@ REGISTRATION_CACHES = [
     "UI_STYLESHEET_REGISTRATION_",
     "UI_BRANCH_RESOURCE_TYPE_",
     "UI_BRANCH_REGISTRATION_",
+    "UI_BRANCH_VERSION_RESOURCE_TYPE_",
+    "UI_BRANCH_VERSION_REGISTRATION_",
 ]
 
 
@@ -90,12 +94,43 @@ def ui_branch_resource_type(force=False):
     return UI_BRANCH_RESOURCE_TYPE_
 
 
+def ui_branch_version_resource_type(force=False):
+    from scrud_django.ui.branches import (
+        UI_BRANCH_VERSION_SLUG,
+        UI_BRANCH_VERSION_TYPE_URI,
+    )
+
+    global UI_BRANCH_VERSION_RESOURCE_TYPE_
+    global UI_BRANCH_VERSION_REGISTRATION_
+    if UI_BRANCH_VERSION_RESOURCE_TYPE_ is None or force:
+        from scrud_django.ui.branches.views import UIBranchVersionViewSet
+
+        UI_BRANCH_VERSION_REGISTRATION_ = ResourceTypeRegistration(
+            resource_type_uri=UI_BRANCH_VERSION_TYPE_URI,
+            revision="1",
+            slug=UI_BRANCH_VERSION_SLUG,
+            schema_func=lambda: _document("UIBranchVersion-schema.json").read_text(),
+            context_func=lambda: _document("UIBranchVersion-ld.json").read_text(),
+            viewset_class=UIBranchVersionViewSet,
+            # Versions are never changed: a revision history would repeat
+            # each one.
+            uses_reversion=False,
+        )
+        UI_BRANCH_VERSION_RESOURCE_TYPE_ = UI_BRANCH_VERSION_REGISTRATION_.resource_type
+    return UI_BRANCH_VERSION_RESOURCE_TYPE_
+
+
 def ui_resource_type_urls():
     """The routes of the UI resource types, each registered first, or its
     registration left pending on a database error (`register_or_defer`).
     ``scrud_django.urls`` serves them when ``scrud_django.ui`` is installed."""
-    from scrud_django.ui.branches import UI_BRANCH_SLUG, UI_BRANCH_TYPE_URI
-    from scrud_django.ui.branches.views import UIBranchViewSet
+    from scrud_django.ui.branches import (
+        UI_BRANCH_SLUG,
+        UI_BRANCH_TYPE_URI,
+        UI_BRANCH_VERSION_SLUG,
+        UI_BRANCH_VERSION_TYPE_URI,
+    )
+    from scrud_django.ui.branches.views import UIBranchVersionViewSet, UIBranchViewSet
     from scrud_django.ui.views import UIComponentViewSet, UIStylesheetViewSet
 
     def registered(register_type, registration_name):
@@ -126,6 +161,13 @@ def ui_resource_type_urls():
             UI_BRANCH_TYPE_URI,
             UI_BRANCH_SLUG,
             UIBranchViewSet,
+        ),
+        (
+            ui_branch_version_resource_type,
+            "UI_BRANCH_VERSION_REGISTRATION_",
+            UI_BRANCH_VERSION_TYPE_URI,
+            UI_BRANCH_VERSION_SLUG,
+            UIBranchVersionViewSet,
         ),
     )
     urls = []

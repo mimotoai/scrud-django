@@ -206,6 +206,20 @@ class UIBranchContextError(ScrudException):
         self.title = "UI item in the wrong context for its branch"
 
 
+class UIBranchVersionMissingError(ScrudException):
+    """A version of a UI branch that is not stored
+    (`scrud_django.ui.branches.versions.snapshot`)."""
+
+    status_code = 404
+    default_detail = "Not Found"
+    default_code = "ui_branch_version_missing"
+
+    def __init__(self, branch, number):
+        super().__init__(f"UI branch {branch!r} has no version {number!r}.")
+        self.type = "https://api.openteams.com/http-problem/ui-branch-version-missing"
+        self.title = "UI branch version missing"
+
+
 class UIHeaderInvalidError(ScrudException):
     """An HTML request whose fragment header (``Scrud-UI-Pointer``) is
     invalid."""
