@@ -13,6 +13,7 @@ from scrud_django.exceptions import (
     UICssNameTakenError,
     UIJsInvalidError,
     UIJsNameTakenError,
+    UILayerNameReservedError,
     UISelectorInvalidError,
     UIStylesheetNameTakenError,
     UITemplateInvalidError,
@@ -40,6 +41,7 @@ from scrud_django.ui.branches.selection import (
 from scrud_django.ui.branches.store import BranchChainError, branches, ensure_main
 from scrud_django.ui.branches.sync import resolve_conflict
 from scrud_django.ui.engines import TemplateCompileError, compile_template
+from scrud_django.ui.layers import may_use_name
 from scrud_django.ui.renderer import negotiated_html
 from scrud_django.ui.selectors import SelectorError, parse_selector
 from scrud_django.views import ResourceViewSet
@@ -79,7 +81,10 @@ class UIContentValidationMixin:
         rows = effective_rows(
             type_uri, chosen.selection, include_deleted=True, authorized_only=False
         )
-        return queryset.filter(pk__in=[pk for pk, _etag, _content in rows])
+        # Not the packaged layers' items, which are no rows (pk None).
+        return queryset.filter(
+            pk__in=[pk for pk, _etag, _content in rows if pk is not None]
+        )
 
     def validate_content(self, content, instance=None):
         """Raise a ``ScrudException`` when `content` (the request body) is
@@ -92,11 +97,18 @@ class UIContentValidationMixin:
         the item's branch fields (`validate_branch`). `content` is the
         request body itself (``request.data``, the ``dict`` the JSON parser
         made), which `create_resource` and `update` then save: what this
-        sets in it is stored."""
+        sets in it is stored.
+
+        A name with a prefix (``abc:``) must be that of an installed layer's
+        item of the kind (and ``applies_to``) that the item overrides
+        (`layers.may_use_name`); else the write is refused
+        (`UILayerNameReservedError`, 400). So ``scrud:`` always is."""
         kind = kind_of(self.get_resource_type().type_uri)
         self.rebased = False
         if kind is not None and isinstance(content, dict):
             self.item_branch = self.validate_branch(kind, content, instance)
+            if not may_use_name(kind, content):
+                raise UILayerNameReservedError(content["name"])
             self.rebased = self.validate_rebase(content, instance)
             if self.rebased:
                 content["base"] = self.base_of(kind, content, self.item_branch)

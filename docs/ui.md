@@ -280,12 +280,15 @@ Rules are collected from the stylesheets that apply to the resource, each rule
 with a rank (higher wins):
 
 1. the default stylesheet `scrud:default` (`(0, 0, rule index)`);
-2. stylesheets in context `""`, by `order`, then by creation (`(1, order, pk,
+2. the stylesheets of the [packaged UI layers](#packaged-ui-layers), in
+   `INSTALLED_APPS` order, then by `order` (`(0, 1, layer index, order, rule
+   index)`);
+3. stylesheets in context `""`, by `order`, then by creation (`(1, order, pk,
    rule index)`);
-3. stylesheets in each of the resource's RBAC contexts, in the order of the
+4. stylesheets in each of the resource's RBAC contexts, in the order of the
    resource's context list, later contexts winning (`(2, context index, order,
    pk, rule index)`);
-4. stylesheets named by the `stylesheets` of the components above the node
+5. stylesheets named by the `stylesheets` of the components above the node
    (`(3, position, rule index)`), looked up in `""` and the resource's contexts.
 
 For a node, the best rule is the one with the most scopes, then the earliest
@@ -305,6 +308,65 @@ from the next response. A stored component, stylesheet or CSS item whose
 (see [Authorizing contexts](#authorizing-contexts)), which only a write around
 the API can store, is not used, and is logged as a warning: on a branch, the
 parent's item shows instead.
+
+## Packaged UI layers
+
+An installed app can ship a **UI layer**: components, stylesheets, CSS items
+and JS items as files in a package, read at runtime as the `scrud:` built-ins
+and the default stylesheet are. Unlike those, a layer item can be overridden by
+name on any branch. An app declares its layer with an attribute of its
+`AppConfig`:
+
+```python
+class StudioConfig(AppConfig):
+    name = "myapp.studio"
+    scrud_ui_layer = {"prefix": "studio:", "package": "myapp.studio.ui_layer"}
+```
+
+The package holds `component/*.json`, `stylesheet/*.json`, `css/*.json` and
+`js/*.json`. Each file is one item's content without the branch fields
+(`branch`, `rbac_context`, `deleted`, `base`): for example
+`component/card.json` is `{"name": "studio:card", "engine": "django", "mode":
+"view", "template": "..."}`. Every item's name starts with the layer's prefix
+(lowercase letters, digits and `-`, starting with a letter, ending with `:`;
+never `scrud:`). A layer stylesheet applies everywhere: its `applies_to`, if
+any, is `""`. Ship the files as package data. Layers are read once per process,
+and again after a setting changes.
+
+- **Where it sits.** Layer items are on the virtual branch `@layers`, at the
+  bottom of every chain, beneath every root branch (`main` and any parentless
+  published branch) and above the built-ins. A key (a name, and for a
+  stylesheet its `applies_to`) that no branch of the chain has shows the layer
+  item. Several layers stack in `INSTALLED_APPS` order; a later layer's
+  stylesheet outranks an earlier one's.
+- **Overriding.** A branch overrides a layer item as it does any inherited
+  item: write an item of the same kind with the same name (and, for a
+  stylesheet, `applies_to` `""`). On a child branch the override's `base` is
+  the layer item's ETag, the sha256 hex of the file's content as canonical
+  JSON (sorted keys, no spaces), when no ancestor overrides it. Deleting the
+  override shows the packaged item again.
+- **Ranking.** A layer stylesheet's rules rank after the default stylesheet's
+  and before every stored stylesheet's (see [The cascade](#the-cascade)). An
+  override of a layer stylesheet is a stored row and ranks as one: a stored
+  stylesheet in context `""`. Between two stylesheets of one layer with the
+  same `order`, a tie goes to the file whose name sorts first.
+- **Names.** An item name may carry a prefix (`abc:name`). A write whose name
+  has a prefix that is not an installed layer's, or that names no item of that
+  layer of the same kind (and, for a stylesheet, `applies_to`), is refused with
+  a 400 `ui-layer-name-reserved`. So a new item cannot use a layer's prefix,
+  and `scrud:` stays reserved outright.
+- **Not in resource lists.** Layer items are not rows: they never appear in
+  `/ui-components/` and the other item lists or details, so lists, pagination
+  and RBAC filtering are unchanged. Presentation reads them with system rights,
+  as it reads stored items.
+- **Versions.** Branch versions do not record layer items. A pinned branch,
+  and a branch viewed `@pinned`, sees the installed package's layer.
+- **Checks.** A layer declaration that is not valid, or a layer file that is
+  unreadable or not a JSON object, whose name lacks the layer's prefix or is
+  not a valid name, that has a branch field or another file's name, a
+  stylesheet with a non-empty `applies_to`, or a CSS or JS item whose text has
+  `</style` or `</script`, is reported by the system check
+  `scrud_django_ui.E002` (`manage.py check`) and is left out at runtime.
 
 ## Modes, editing and the write path
 

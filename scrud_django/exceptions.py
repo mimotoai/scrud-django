@@ -181,6 +181,26 @@ class UIStylesheetNameTakenError(ScrudException):
         self.title = "UI stylesheet name taken"
 
 
+class UILayerNameReservedError(ScrudException):
+    """A UI item whose ``name`` has a prefix (``abc:``) that is not an
+    installed UI layer's, or that names no item of that layer of its kind
+    (and, for a stylesheet, ``applies_to``) for it to override. ``scrud:``,
+    the built-ins' prefix, is never a layer's."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_layer_name_reserved"
+
+    def __init__(self, name):
+        super().__init__(
+            f"The name {name!r} is reserved: a name with a prefix may only "
+            "override an item of that kind that an installed UI layer has, and "
+            "'scrud:' is reserved outright."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-layer-name-reserved"
+        self.title = "UI layer name reserved"
+
+
 class UICssNameTakenError(ScrudException):
     """A UI CSS item whose ``name`` another CSS item on the same branch
     already has."""

@@ -1,0 +1,5 @@
+{
+  "name": "layermore:sheet",
+  "prefixes": {"ex": "http://example.org/todo#"},
+  "rules": [{"select": "layertest ex:TodoList", "component": "layermore:list"}]
+}

@@ -30,6 +30,7 @@ from scrud_django.models import Resource
 from scrud_django.rows import by_pk, unsorted
 from scrud_django.ui.branches.model import branch_of
 from scrud_django.ui.engines import ENGINE_NAMES, CompiledTemplate, cached_template
+from scrud_django.ui.layers import LAYER_BRANCH_NAME, layer_index
 from scrud_django.ui.selectors import (
     Selector,
     SelectorError,
@@ -91,9 +92,10 @@ class Component:
 @dataclass(frozen=True)
 class RuleSource:
     """The stylesheet a rule comes from: its `pk` (``None`` for a pinned
-    snapshot's and the default one), `name`, `branch` (``""`` for the
-    default one, which every branch has), the context `applies_to` that the
-    cascade applied it in, and its `content` as stored, for read checks
+    snapshot's, a packaged layer's and the default one), `name`, `branch`
+    (``""`` for the default one, which every branch has;
+    `layers.LAYER_BRANCH_NAME` for a layer's), the context `applies_to` that
+    the cascade applied it in, and its `content` as stored, for read checks
     (``None`` for the default stylesheet, which everyone may read)."""
 
     pk: int | None
@@ -337,8 +339,10 @@ def effective_rules(
     contexts: list[str], linked: tuple[str, ...] = ()
 ) -> tuple[Rule, ...]:
     """Every rule that applies in `contexts`, with its cascade rank (higher
-    wins): the default stylesheet, then stylesheets in ``""``, in each context
-    in list order, then the `linked` stylesheets in order."""
+    wins): the default stylesheet, then the packaged layers' stylesheets
+    (`_layer_rank`), then stylesheets in ``""``, in each context in list
+    order, then the `linked` stylesheets in order. A branch's override of a
+    layer stylesheet is a stored row, and ranks as one."""
     contexts = [c for c in dict.fromkeys(contexts) if c != DEFAULT_CONTEXT]
     linked = tuple(linked)
     memo = _memo.get()
@@ -355,9 +359,14 @@ def effective_rules(
     )
     for pk, _etag, content in by_context.get(DEFAULT_CONTEXT, {}).values():
         order = _order_of(content)
+        layer = _layer_rank(pk, content)
         rules += _sheet_rules(
             content,
-            lambda i, o=order, p=pk or 0: (1, o, p, i),
+            (
+                (lambda i, o=order, p=pk or 0: (1, o, p, i))
+                if layer is None
+                else (lambda i, o=order, n=layer: (0, 1, n, o, i))
+            ),
             pk,
             _source(pk, content, DEFAULT_CONTEXT),
         )
@@ -385,6 +394,17 @@ def effective_rules(
     if memo is not None:
         memo[key] = result
     return result
+
+
+def _layer_rank(pk, content) -> int | None:
+    """The position of the packaged layer stylesheet `content` is from
+    (`layers.layer_index`), whose rules rank ``(0, 1, layer, order, rule
+    index)``: after the default stylesheet's and before every stored
+    stylesheet's. ``None`` for a stored stylesheet."""
+    if pk is not None or branch_of(content) != LAYER_BRANCH_NAME:
+        return None
+    index = layer_index(_name_of(content) or "")
+    return 0 if index is None else index
 
 
 def _source(pk, content, context) -> RuleSource:

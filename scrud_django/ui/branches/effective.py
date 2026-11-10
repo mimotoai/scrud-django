@@ -3,7 +3,12 @@ state, recursively, and the selection of the branch a render shows (chosen
 for a request by `scrud_django.ui.branches.selection.choose`).
 
 With no selection (or ``main`` selected) the state is main's, computed from
-the stored items alone: no branch row is read (ruling R1)."""
+the stored items alone: no branch row is read (ruling R1).
+
+The packaged layers' items (`scrud_django.ui.layers`) are the bottom of every
+chain, beneath every root: `effective_rows` and `parent_state` end each chain
+with `LAYER_BRANCH`, and `_rows_for` adds their rows (a pinned branch sees the
+installed layers too)."""
 
 import contextlib
 import contextvars
@@ -23,6 +28,7 @@ from scrud_django.ui.branches.model import (
 from scrud_django.ui.branches.store import BranchChainError, ancestors, branches
 from scrud_django.ui.branches.versions import snapshot
 from scrud_django.ui.cascade import _memo, _skipped, _stored, item_rows
+from scrud_django.ui.layers import LAYER_BRANCH, layer_rows
 
 BRANCH_HEADER = "Scrud-UI-Branch"
 BRANCH_PARAMETER = "ui-branch"
@@ -119,7 +125,10 @@ def effective_rows(
     its `authorizing_context` on its branch is skipped, as if absent, and
     logged (ruling R41, minor 3): no write through the API stores one, so
     it was stored around the checks that decide who controls a branch's
-    presentation. A JSON list shows the rows as stored (``False``)."""
+    presentation. A JSON list shows the rows as stored (``False``).
+
+    The packaged layers' items (pk ``None``) are beneath every branch's: an
+    item key no branch of the chain has shows the layer's item."""
     selection = selection or active_selection()
     if selection.branch == MAIN:
         chain = [MAIN_BRANCH]
@@ -129,7 +138,8 @@ def effective_rows(
     rows = _rows_for(kind, type_uri, chain, selection.pinned)
     if rows is None:  # defensive: `selection.choose` already refused it
         chain = [MAIN_BRANCH]
-        rows = _stored(type_uri, {MAIN})
+        rows = [*_stored(type_uri, {MAIN}), *layer_rows(type_uri)]
+    chain = [*chain, LAYER_BRANCH]
     if authorized_only:
         rows = _authorized(kind, rows, chain)
 
@@ -207,19 +217,21 @@ def _rows_for(kind, type_uri, chain, view_pinned, using=None):
     snapshots at its branching point (one query each, memoised for the
     response). ``None`` when a snapshot is missing (not logged). Read on
     `using`, without memoising the live rows; default: the router's read
-    database (`cascade._stored`)."""
+    database (`cascade._stored`). The packaged layers' rows
+    (`layers.layer_rows`, never pinned: versions do not record them) come
+    last; only a chain that ends with `LAYER_BRANCH` shows them."""
     pinned_at = _pinned_at(chain, view_pinned)
     live = chain if pinned_at is None else chain[: pinned_at + 1]
     rows = list(_live_rows(type_uri, {branch.name for branch in live}, using))
-    if pinned_at is None:
-        return rows
-    pinned = chain[pinned_at]
-    for ancestor in chain[pinned_at + 1 :]:
-        number = pinned.branching_point.get(ancestor.name)
-        snapped = _snapshot_rows(kind, ancestor, number, using)
-        if snapped is None:
-            return None
-        rows.extend(snapped)
+    if pinned_at is not None:
+        pinned = chain[pinned_at]
+        for ancestor in chain[pinned_at + 1 :]:
+            number = pinned.branching_point.get(ancestor.name)
+            snapped = _snapshot_rows(kind, ancestor, number, using)
+            if snapped is None:
+                return None
+            rows.extend(snapped)
+    rows.extend(layer_rows(type_uri))
     return rows
 
 
@@ -302,8 +314,9 @@ def parent_state(kind: str, type_uri: str, branch: Branch, all_branches, using):
     `branch`'s parent as `branch` shows them (`all_branches` say where its
     chain is), read on `using`: the parent's current state on a live
     branch; on one pinned (or with a pinned ancestor), the ancestors' items
-    as of the branching point, with the ETags their versions recorded. This
-    is what an override on `branch` replaces, so its ``base`` (ruling R38).
+    as of the branching point, with the ETags their versions recorded; and
+    beneath them the packaged layers' items. This is what an override on
+    `branch` replaces, so its ``base`` (ruling R38).
     `BranchChainError` for a broken chain, and for a pinned snapshot that
     is missing."""
     chain = chain_of(branch.name, all_branches)
@@ -313,4 +326,4 @@ def parent_state(kind: str, type_uri: str, branch: Branch, all_branches, using):
             f"Branch {branch.name!r} is pinned to an ancestor version that is "
             "missing: pull it first."
         )
-    return effective_items(kind, rows, chain[1:])
+    return effective_items(kind, rows, [*chain[1:], LAYER_BRANCH])

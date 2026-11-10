@@ -23,8 +23,8 @@
     },
     "name": {
       "type": "string",
-      "pattern": "^(?!scrud:)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-      "description": "The component's name, unique on its branch. The scrud: prefix is reserved for built-ins."
+      "pattern": "^(?!scrud:)(?:[a-z][a-z0-9-]*:)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "The component's name, unique on its branch. A name with a prefix (abc:name) may only override an installed UI layer's item of this kind; the scrud: prefix is reserved."
     },
     "engine": {
       "type": "string",
