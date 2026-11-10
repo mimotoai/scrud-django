@@ -1,0 +1,130 @@
+"""The studio's sample instance: a deterministic value built from a JSON Schema."""
+
+import pytest
+from django.urls import reverse
+from safetydance_django.test import *  # noqa: F403, F401
+
+from scrud_django.registration import get_resource_type_for
+from scrud_django.ui.studio.sample import sample_for
+from scrud_django.validators import compile_json_schema
+
+from .fixtures import *  # noqa
+from .steps import *  # noqa: F403, F401
+
+
+def test_sample_prefers_default_then_examples_then_enum():
+    assert sample_for({"type": "string", "default": "d", "examples": ["e"]}) == "d"
+    assert sample_for({"type": "string", "examples": ["e", "f"], "enum": ["x"]}) == "e"
+    assert sample_for({"type": "integer", "enum": [7, 8]}) == 7
+    assert sample_for({"default": None, "type": "string"}) is None
+
+
+def test_sample_by_type_and_format():
+    assert sample_for({"type": "string"}) == "Lorem ipsum"
+    for fmt, value in {
+        "date": "2026-01-01",
+        "date-time": "2026-01-01T00:00:00Z",
+        "uri": "https://example.com/",
+        "email": "name@example.com",
+    }.items():
+        assert sample_for({"type": "string", "format": fmt}) == value
+    assert sample_for({"type": "string", "format": "other"}) == "Lorem ipsum"
+    assert sample_for({"type": "integer"}) == 0
+    assert sample_for({"type": "number", "minimum": 2.5}) == 2.5
+    assert sample_for({"type": "integer", "minimum": 3}) == 3
+    assert sample_for({"type": "boolean"}) is False
+    assert sample_for({"type": "frobnicate"}) is None
+    assert sample_for({}) is None
+
+
+def test_sample_has_one_array_item_and_every_property():
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "done": {"type": "boolean"},
+        },
+    }
+    assert sample_for(schema) == {
+        "name": "Lorem ipsum",
+        "tags": ["Lorem ipsum"],
+        "done": False,
+    }
+
+
+def test_sample_resolves_refs_and_stops_at_cycles():
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {"$ref": "#/$defs/text"},
+            "child": {"$ref": "#/$defs/node"},
+            "bad": {"$ref": "http://example.com/x"},
+            "missing": {"$ref": "#/$defs/nope"},
+        },
+        "$defs": {
+            "text": {"type": "string"},
+            "node": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "next": {"$ref": "#/$defs/node"},
+                },
+            },
+        },
+    }
+    assert sample_for(schema) == {
+        "title": "Lorem ipsum",
+        "child": {"name": "Lorem ipsum", "next": None},
+        "bad": None,
+        "missing": None,
+    }
+    assert sample_for({"$ref": "#"}) is None
+    loop = {
+        "$defs": {"a": {"$ref": "#/$defs/b"}, "b": {"$ref": "#/$defs/a"}},
+        "$ref": "#/$defs/a",
+    }
+    assert sample_for(loop) is None
+    # a root passed separately resolves refs in a subschema
+    assert sample_for({"$ref": "#/$defs/text"}, schema) == "Lorem ipsum"
+
+
+def test_sample_limits_depth():
+    schema = {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}
+    assert sample_for(schema, max_depth=5) == [["Lorem ipsum"]]
+    assert sample_for(schema, max_depth=2) == [["Lorem ipsum"]]
+    assert sample_for(schema, max_depth=1) == [[None]]
+    assert sample_for(schema, max_depth=0) == [None]
+
+
+def test_sample_handles_type_lists_oneof_and_bare_objects():
+    assert sample_for({"type": ["null", "string"]}) == "Lorem ipsum"
+    assert sample_for({"type": ["integer", "null"]}) == 0
+    assert sample_for({"type": ["null"]}) is None
+    assert sample_for({"type": "object"}) == {}
+    assert sample_for({"type": "object", "properties": {}}) == {}
+    assert sample_for({"oneOf": [{"type": "boolean"}, {"type": "string"}]}) is False
+    assert sample_for({"anyOf": [{"foo": 1}, {"type": "string"}]}) == "Lorem ipsum"
+    assert sample_for({"oneOf": [{"$ref": "#/nope"}, {"type": "integer"}]}) == 0
+    assert sample_for({"oneOf": []}) is None
+
+
+def test_sample_is_deterministic():
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {"type": "array", "items": {"type": "number"}},
+            "b": {"enum": [1]},
+        },
+    }
+    assert sample_for(schema) == sample_for(schema)
+
+
+@pytest.mark.django_db
+@test_context
+def test_todo_list_sample_validates():
+    reverse("todo-lists-list")
+    schema = get_resource_type_for("todo-lists").schema.content
+    sample = sample_for(schema)
+    assert isinstance(sample, dict) and sample
+    compile_json_schema(schema)(sample)
