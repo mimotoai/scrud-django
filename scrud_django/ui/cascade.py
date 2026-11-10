@@ -122,12 +122,39 @@ def _default_stylesheet() -> dict:
 
 
 def _stored(type_uri):
-    """``(pk, etag, content)`` of every resource of the type, lowest pk first."""
-    return (
-        Resource.objects.filter(resource_type__type_uri=type_uri)
-        .order_by("pk")
-        .values_list("pk", "etag", "content")
-    )
+    """``(pk, etag, content)`` of every resource of the type, lowest pk first.
+    Inside `rules_memo` the rows of every UI item kind (`ITEM_KINDS`) are read
+    in one query, once per response, so that a page's components, stylesheets
+    and CSS cost one query between them."""
+    memo = _memo.get()
+    if memo is None:
+        return (
+            Resource.objects.filter(resource_type__type_uri=type_uri)
+            .order_by("pk")
+            .values_list("pk", "etag", "content")
+        )
+    from scrud_django.ui.branches import ITEM_KINDS
+
+    if _ITEM_ROWS not in memo:
+        grouped = {uri: [] for uri in ITEM_KINDS.values()}
+        for uri, pk, etag, content in (
+            Resource.objects.filter(resource_type__type_uri__in=list(grouped))
+            .order_by("pk")
+            .values_list("resource_type__type_uri", "pk", "etag", "content")
+        ):
+            grouped[uri].append((pk, etag, content))
+        memo[_ITEM_ROWS] = grouped
+    rows = memo[_ITEM_ROWS]
+    if type_uri not in rows:
+        return (
+            Resource.objects.filter(resource_type__type_uri=type_uri)
+            .order_by("pk")
+            .values_list("pk", "etag", "content")
+        )
+    return rows[type_uri]
+
+
+_ITEM_ROWS = "item-rows"
 
 
 def _name_of(content):

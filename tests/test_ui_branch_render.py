@@ -26,9 +26,10 @@ from .test_ui_http import (
 )
 
 # The queries of a render with no branch selected: the 10 measured on 48d2844
-# (before branches were read at all), and the page's CSS items (one more, task
-# 10); a render of main must not read branch rows.
-MAIN_RENDER_QUERIES = 11
+# (before branches were read at all) less the one saved by reading the stored
+# components, stylesheets and CSS items together (`cascade._stored`); a render
+# of main must not read branch rows.
+MAIN_RENDER_QUERIES = 9
 
 TITLE = "<{0}>{{{{ value.title }}}}{{{{ children.items }}}}</{0}>"
 BRANCH_HEADER = "HTTP_SCRUD_UI_BRANCH"

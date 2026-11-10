@@ -29,7 +29,6 @@ from .test_ui_branch_render import BRANCH_HEADER, may_select_branches
 from .test_ui_branch_types import make_branch, problem
 from .test_ui_http import make_component
 
-PUBLIC = "public, max-age=31536000, immutable"
 PRIVATE = "private, max-age=31536000, immutable"
 
 
@@ -73,7 +72,7 @@ def test_css_served_under_prefix_with_versioned_url(todo_list, todo_reader_login
     assert css_hrefs(page) == [file_url(site, ADMIN)]
     response = get_css(file_url(site, ADMIN))
     assert response["Content-Type"] == "text/css; charset=utf-8"
-    assert response["Cache-Control"] == PUBLIC
+    assert response["Cache-Control"] == PRIVATE
     assert response["X-Content-Type-Options"] == "nosniff"
     assert response.content == b"h2 { color: red }"
     # The API's URLs link and serve it too.
@@ -155,7 +154,7 @@ def test_css_on_working_branch_overrides_published(todo_list, todo_reader_login)
     # Not without the selection (main's item has another ETag)...
     get_css(file_url(wip), status=404)
     assert get_css(file_url(main)).content == b"p { color: red }"
-    assert get_css(file_url(main))["Cache-Control"] == PUBLIC
+    assert get_css(file_url(main))["Cache-Control"] == PRIVATE
     # main's item is not served as the working branch's either.
     get_css(file_url(main), status=404, **{BRANCH_HEADER: "wip"})
 
@@ -172,8 +171,11 @@ def test_css_refused_without_get_on_branch(todo_list, todo_reader_login):
     # ...but not under a prefix whose branch they may not GET.
     get_css(url, status=403)
     Given.http.force_authenticate(None)
-    When.http.get(url)
-    assert Http.response.status_code in (401, 403)
+    # The anonymous get what any refused GET under the mount gets.
+    When.http.get(mounted(ADMIN), HTTP_ACCEPT="application/json")
+    refused = Http.response.status_code
+    assert refused in (401, 403)
+    get_css(url, status=refused)
     Given.http.force_authenticate(may_select_branches(todo_reader_login))
     assert get_css(url).content == site.content["css"].encode()
 

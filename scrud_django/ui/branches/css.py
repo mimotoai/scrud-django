@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from scrud_django.ui.branches import UI_CSS_TYPE_URI
 from scrud_django.ui.branches.effective import Selection, effective_rows
 from scrud_django.ui.branches.middleware import check_mount
-from scrud_django.ui.branches.selection import choose, in_mount, is_published
+from scrud_django.ui.branches.selection import choose, in_mount
 
 CSS_FILE_URL_NAME = "ui-css-file"
 MAX_AGE = 31536000  # a year: the URL holds the ETag
@@ -65,8 +65,9 @@ class UICssFileView(APIView):
         if text is None:
             raise Http404()
         response = HttpResponse(text, content_type="text/css; charset=utf-8")
-        scope = "public" if is_published(chosen, request) else "private"
-        response["Cache-Control"] = f"{scope}, max-age={MAX_AGE}, immutable"
+        # Never public: a mount's CSS is gated by GET on its branch, which a
+        # shared cache would not check.
+        response["Cache-Control"] = f"private, max-age={MAX_AGE}, immutable"
         response["X-Content-Type-Options"] = "nosniff"
         return response
 
