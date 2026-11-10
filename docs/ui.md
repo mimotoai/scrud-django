@@ -761,6 +761,18 @@ Each node is marked with its JSON Pointer. A component that fails to render
 shows the built-in fallback in the preview, but the inspector reports the
 stored rule as the winner: it ranks rules and does not run templates.
 
+A node whose parent template does not print its child HTML is not shown in the
+preview, so a rule on it can report `wins: true` and change nothing visible; in
+the demo, `/items/0/text` is such a node (the item template prints
+`value.text` itself).
+
+The `preview` endpoint is negotiated by DRF and answers 406 to a request that
+accepts only `text/html`; browsers send `*/*`, so iframes are fine.
+
+A branch-browsing confirmation token (`ui-branch-confirm`) needs the
+`csrftoken` cookie, including for HTTP Basic clients: keep the cookie from the
+first response.
+
 ### The studio API
 
 The studio page is built on a JSON API, and a later self-hosted studio would
@@ -792,7 +804,7 @@ for every cause.
 
 | Endpoint | Response |
 |---|---|
-| `GET types/` (the include's root) | the type browser (HTML); `?q=` filters by slug, title or type IRI; with `HX-Request` only the list |
+| `GET ` (the include's root, e.g. `/studio/`) | the type browser (HTML); `?q=` filters by slug, title or type IRI; with `HX-Request` only the list |
 | `GET types/<slug>/` | the studio page for the type, from the query above plus `pinned=1`; unknown slug gives 404 |
 | `GET types/<slug>/strip` | the branch strip alone (HTML): `?branch=` names the branch; `UIBranchUnavailableError` for one the user may not select |
 
@@ -1034,15 +1046,16 @@ uv run python manage.py seed_todo_demo
 uv run python manage.py runserver
 ```
 
-Sign in at `/api-auth/login/` and open `/api/todo-lists/` with a browser (or use HTTP Basic auth). The
-users are `owner`/`owner` (reads and edits the list), `reader`/`reader` (reads
-it) and `author`/`author` (writes the UI components and stylesheets); these
-passwords are for the demo only. `author` writes the UI in the four branches'
-contexts (`ui-admin`, `ui-customer`, `ui-testing`, `ui-alice`) and may open both prefixes;
-`reader` may open `/todo/` (it may GET the `customer` branch) and gets a 403 at
-`/manage/`; `owner` may open `/todo/` too. To try the flow: as `author`, write
-a component on `testing-admin` (a POST of a `ui-components` item with
-`"branch": "testing-admin"` and `"rbac_context": "ui-testing"`), browse
+Sign in at `/api-auth/login/` and open `/api/todo-lists/` with a browser (or
+use HTTP Basic auth). The users are `owner`/`owner` (reads and edits the list),
+`reader`/`reader` (reads it) and `author`/`author` (writes the UI components
+and stylesheets); these passwords are for the demo only. `author` writes the UI
+in the four branches' contexts (`ui-admin`, `ui-customer`, `ui-testing`,
+`ui-alice`) and may open both prefixes; `reader` may open `/todo/` (it may GET
+the `customer` branch) and gets a 403 at `/manage/`; `owner` may open `/todo/`
+too. To try the flow: as `author`, write a component on `testing-admin` (a POST
+of a `ui-components` item with `"branch": "testing-admin"` and
+`"rbac_context": "ui-testing"`), browse
 `/manage/todo-lists/<id>/?ui-branch=testing-admin` (confirm the switch), then
 POST a `ui-pushes` item with `source` `testing-admin`, `target` `admin`,
 `rbac_context` `ui-admin` and `state` `applied`.

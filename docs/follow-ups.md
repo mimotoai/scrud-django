@@ -1,83 +1,6 @@
 # Follow-ups
 
-Open follow-ups come first; the entries under `<a id="studio-editor-jumps-to-winner"></a>
-## studio-editor-jumps-to-winner: saving an item that is not the node's winner switches the editor
-
-In the studio, after a save the page refreshes the inspector and re-opens the
-node's winning item in the editor. When the item just saved is not the node's
-winner (for instance a stylesheet or a component the rule list shows but that
-lost), the editor jumps to the winner, and the author may go on typing into a
-different item than the one they saved. Nothing is lost or overwritten, since
-each save names its item and carries its ETag.
-
-Fix: after a save, refresh the inspector but keep the editor on the item that
-was saved. Test: in `tests/test_studio_client.py`,
-open a node, edit a non-winning item, save, and assert that the editor still
-names the saved item; it fails today.
-
-<a id="studio-branch-query-cost"></a>
-## studio-branch-query-cost: the studio page and strip read the branch tables again for each part
-
-`type_page` and `strip` (`scrud_django.ui.studio.page`) are not run inside
-`request_memo()`, so the branch table, the effective rows and the per-branch
-selectability checks are read again by each helper: roughly the number of
-branches times the depth of their chains in queries per page view. The studio
-is an authoring tool for a few people and the counts are small, so it is
-slow only with many branches.
-
-Fix: wrap the two views in `request_memo()` (the rules memo is keyed without the
-selection, so never render two branches in one `rules_memo`). Test: in
-`tests/test_studio_page.py`, count queries of `GET studio/types/<slug>/` with
-three chained branches and assert that adding a branch adds no more than a
-constant number of queries; it grows with the branch count today.
-
-<a id="studio-own-item-existence"></a>
-## studio-own-item-existence: a studio write can reveal whether a branch has an override
-
-`writes.own_item` finds the branch's own row of an item with a system read
-(the write database, so that an item just written is seen) before the write is
-dispatched. A user who may `GET` the branch but may not read its items
-therefore learns from the answer (404 "no row of its own" from `revert-item`,
-or which of 428 and 403 comes first from `save-item`) whether an override
-exists, where the resource view alone would answer 403 or 404 alike. It
-reveals an item's existence and name only, never its content, and only to
-someone already allowed to select the branch.
-
-Fix: check that the user may read the branch's items in its context before
-`own_item`, and answer as the view does when not. Test: in
-`tests/test_studio_writes.py`, as a user with `GET` on the branch and none on its
-item types, `revert-item` of an item the branch overrides and of one it does
-not must answer the same status; today they differ (403 or 428 against 404).
-
-<a id="studio-replica-lag"></a>
-## studio-replica-lag: the answer of new-component reads `wins` and `explanation` from the read database
-
-After `new-component` commits on the write database, it renders the node again
-to say whether the new rule `wins` and to give the `explanation`. That read goes
-through the read database (`using_selection` and the cascade's own readers), so
-with a lagging replica the answer can say `wins: false`, or omit the new rule,
-for a rule that was just written. The write itself is right.
-
-Fix: run the post-commit read on the write database (`write_db()`), as
-`own_item` does. Test: in `tests/test_studio_new_component.py`, with the read
-alias routed to a database that does not see the write (the suite's replica
-setup), assert `wins` is true for a rule that wins; it fails today.
-
-<a id="studio-sample-infinite-minimum"></a>
-## studio-sample-infinite-minimum: a schema with an infinite `minimum` breaks the sample
-
-`sample_for` (`scrud_django.ui.studio.sample`) rounds an integer `minimum` up
-with `math.ceil`, which raises `OverflowError` on `Infinity` and `ValueError`
-on `NaN`, though the function is documented never to raise. A stored schema
-that compiles with such a `minimum` (JSON allows the Python parser to read
-`Infinity`) makes `sample` and `preview` answer 500 for the type.
-
-Fix: use the minimum only when `math.isfinite` holds, else `0`. Test: in
-`tests/test_studio_sample.py`, `sample_for({"type": "integer", "minimum":
-float("inf")})` and the same with `float("nan")` must return an integer; both
-raise today.
-
-# Decided` are limitations
+Open follow-ups come first; the entries under `# Decided` are limitations
 kept by a decision, each saying what was decided and why. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
@@ -652,6 +575,83 @@ reads), or treat a selection that differs from the cookie only by `@pinned` as
 one that asks to confirm. Test: with the cookie set to `W`, change a CSS item of
 `W`'s parent after `W`'s branching point, open `?ui-branch=W@pinned`, fetch
 each linked CSS URL with the cookie and assert 200; one is 404 today.
+
+<a id="studio-editor-jumps-to-winner"></a>
+## studio-editor-jumps-to-winner: saving an item that is not the node's winner switches the editor
+
+In the studio, after a save the page refreshes the inspector and re-opens the
+node's winning item in the editor. When the item just saved is not the node's
+winner (for instance a stylesheet or a component the rule list shows but that
+lost), the editor jumps to the winner, and the author may go on typing into a
+different item than the one they saved. Nothing is lost or overwritten, since
+each save names its item and carries its ETag.
+
+Fix: after a save, refresh the inspector but keep the editor on the item that
+was saved. Test: in `tests/test_studio_client.py`,
+open a node, edit a non-winning item, save, and assert that the editor still
+names the saved item; it fails today.
+
+<a id="studio-branch-query-cost"></a>
+## studio-branch-query-cost: the studio page and strip read the branch tables again for each part
+
+`type_page` and `strip` (`scrud_django.ui.studio.page`) are not run inside
+`request_memo()`, so the branch table, the effective rows and the per-branch
+selectability checks are read again by each helper: roughly the number of
+branches times the depth of their chains in queries per page view. The studio
+is an authoring tool for a few people and the counts are small, so it is
+slow only with many branches.
+
+Fix: wrap the two views in `request_memo()` (the rules memo is keyed without the
+selection, so never render two branches in one `rules_memo`). Test: in
+`tests/test_studio_page.py`, count queries of `GET studio/types/<slug>/` with
+three chained branches and assert that adding a branch adds no more than a
+constant number of queries; it grows with the branch count today.
+
+<a id="studio-own-item-existence"></a>
+## studio-own-item-existence: a studio write can reveal whether a branch has an override
+
+`writes.own_item` finds the branch's own row of an item with a system read
+(the write database, so that an item just written is seen) before the write is
+dispatched. A user who may `GET` the branch but may not read its items
+therefore learns from the answer (404 "no row of its own" from `revert-item`,
+or which of 428 and 403 comes first from `save-item`) whether an override
+exists, where the resource view alone would answer 403 or 404 alike. It
+reveals an item's existence and name only, never its content, and only to
+someone already allowed to select the branch.
+
+Fix: check that the user may read the branch's items in its context before
+`own_item`, and answer as the view does when not. Test: in
+`tests/test_studio_writes.py`, as a user with `GET` on the branch and none on its
+item types, `revert-item` of an item the branch overrides and of one it does
+not must answer the same status; today they differ (403 or 428 against 404).
+
+<a id="studio-replica-lag"></a>
+## studio-replica-lag: the answer of new-component reads `wins` and `explanation` from the read database
+
+After `new-component` commits on the write database, it renders the node again
+to say whether the new rule `wins` and to give the `explanation`. That read goes
+through the read database (`using_selection` and the cascade's own readers), so
+with a lagging replica the answer can say `wins: false`, or omit the new rule,
+for a rule that was just written. The write itself is right.
+
+Fix: run the post-commit read on the write database (`write_db()`), as
+`own_item` does. Test: in `tests/test_studio_new_component.py`, with the read
+alias routed to a database that does not see the write (the suite's replica
+setup), assert `wins` is true for a rule that wins; it fails today.
+
+<a id="studio-sample-infinite-minimum"></a>
+## studio-sample-infinite-minimum: a schema with an infinite `minimum` breaks the sample
+
+`sample_for` (`scrud_django.ui.studio.sample`) rounds an integer `minimum` up
+with `math.ceil`, which raises `OverflowError` on `Infinity` and `ValueError`
+on `NaN`, though the function is documented never to raise. A stored schema
+that compiles with such a `minimum` (JSON allows the Python parser to read
+`Infinity`) makes `sample` and `preview` answer 500 for the type.
+
+Fix: use the minimum only when `math.isfinite` holds, else `0`. Test: in
+`tests/test_studio_sample.py`, `sample_for({"type": "integer", "minimum":
+float("inf")})` and the same with `float("nan")` must return an integer; both
+raise today.
 
 # Decided
 
