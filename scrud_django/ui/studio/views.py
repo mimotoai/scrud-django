@@ -10,8 +10,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 
-from scrud_django.exceptions import UIBranchUnavailableError
+from scrud_django.exceptions import (
+    UIBranchUnavailableError,
+    UIStudioContextUnavailableError,
+)
 from scrud_django.models import ResourceType
+from scrud_django.permissions import may_read_in_context
 from scrud_django.registration import get_resource_type_for
 from scrud_django.rows import by_pk, unsorted
 from scrud_django.ui.branches import MAIN
@@ -24,6 +28,7 @@ from scrud_django.ui.studio.preview import (
     render_preview,
     sample_of,
 )
+from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
 
 
 def registered_types(q: str = "") -> list[dict]:
@@ -78,14 +83,27 @@ def _schema_title(resource_type) -> str:
     return title if isinstance(title, str) and title else resource_type.slug
 
 
+def _data_context(request) -> str:
+    """The data context ``?context=`` names (default ``""``). Any other than
+    ``""`` needs GET on UI stylesheets in it, as seeing a context's
+    presentation needs reading its styling (ruling S7): else
+    `UIStudioContextUnavailableError`, the same for every context."""
+    context = request.GET.get("context", "")
+    if context and not may_read_in_context(
+        request, UI_STYLESHEET_TYPE_URI, {"rbac_context": context}, [context]
+    ):
+        raise UIStudioContextUnavailableError()
+    return context
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 @renderer_classes([JSONRenderer])
 def sample(request, slug):
     """The sample instance of type `slug` as JSON, in the data context
-    ``?context=`` (its ``rbac_context``; default ``""``)."""
+    ``?context=`` (its ``rbac_context``; default ``""``; `_data_context`)."""
     resource_type = get_resource_type_for(slug)
-    return Response(sample_of(resource_type, request.GET.get("context", "")))
+    return Response(sample_of(resource_type, _data_context(request)))
 
 
 @xframe_options_sameorigin
@@ -100,12 +118,13 @@ def preview(request, slug):
     value; default ``main``), in ``?mode=`` (``view``, the default, or
     ``edit``) and the scope chain ``?scope=`` (space-separated), with the
     branch's CSS. The sample is in the data context ``?context=`` (default
-    ``""``), shown as editable and not deletable; an instance is in its
+    ``""``; `_data_context`, checked with or without an instance), shown as editable and not deletable; an instance is in its
     own contexts, with the user's decisions on it. A branch that is not
     `selectable` (unknown, unreadable, a broken chain, a missing pinned
     snapshot, not a selection value) is refused alike:
     `UIBranchUnavailableError` (400)."""
     resource_type = get_resource_type_for(slug)
+    context = _data_context(request)
     value = request.GET.get("branch") or MAIN
     selection = parse_value(value)
     if selection is None or not selectable(request, selection):
@@ -116,9 +135,8 @@ def preview(request, slug):
     if mode not in ("view", "edit"):
         raise ValidationError({"mode": ["Must be 'view' or 'edit'."]})
     scope_chain = tuple(request.GET.get("scope", "").split())
-    instance = request.GET.get("instance")
+    instance = request.GET.get("instance") or None
     if instance is None:
-        context = request.GET.get("context", "")
         content = sample_of(resource_type, context)
         href = reverse("scrud-studio:sample", args=[slug])
         contexts, decisions = [context], SAMPLE_DECISIONS

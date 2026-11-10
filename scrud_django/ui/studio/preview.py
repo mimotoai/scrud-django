@@ -48,7 +48,11 @@ def render_preview(
     `request` as on `selection`'s branch (which must be `selectable`), in
     preview mode: `render_resource` with ``preview=True``. `contexts` are
     those whose stylesheets apply; `decisions` default to the user's on
-    `content`."""
+    `content`.
+
+    The rules memo (`cascade.rules_memo`) is keyed without the selection:
+    never render two branches' previews inside one ``rules_memo()``, or the
+    second gets the first's rules."""
     with using_selection(selection):
         return render_resource(
             content,

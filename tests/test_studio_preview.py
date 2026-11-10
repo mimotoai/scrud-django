@@ -28,6 +28,7 @@ from .test_ui_http import html, make_component, make_stylesheet
 
 SLUG = "todo-lists"
 UNAVAILABLE = "https://api.openteams.com/http-problem/ui-branch-unavailable"
+NO_CONTEXT = "https://api.openteams.com/http-problem/ui-studio-context-unavailable"
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +101,7 @@ def test_preview_and_sample_need_login():
 
 @pytest.mark.django_db
 @test_context
-def test_sample_endpoint_returns_the_sample(login_no_roles):
+def test_sample_endpoint_returns_the_sample(login_no_roles, ui_acme_stylesheet_login):
     reverse("todo-lists-list")
     Given.http.force_authenticate(login_no_roles)
     url = reverse("scrud-studio:sample", args=[SLUG])
@@ -111,7 +112,13 @@ def test_sample_endpoint_returns_the_sample(login_no_roles):
         "rbac_context": "",
         "items": [{"text": "Lorem ipsum", "done": False}],
     }
+    # A data context needs read on its stylesheets (ruling S7).
     When.http.get(url, {"context": "acme"})
+    Then.http.status_code_is(400)
+    assert problem()["type"] == NO_CONTEXT
+    Given.http.force_authenticate(ui_acme_stylesheet_login)
+    When.http.get(url, {"context": "acme"})
+    Then.http.status_code_is(200)
     assert Http.response.json()["rbac_context"] == "acme"
     When.http.get(reverse("scrud-studio:sample", args=["no-such-type"]))
     Then.http.status_code_is(404)
@@ -120,10 +127,12 @@ def test_sample_endpoint_returns_the_sample(login_no_roles):
 
 @pytest.mark.django_db
 @test_context
-def test_sample_preview_is_never_stored(login_no_roles, todo_list, todo_reader_login):
+def test_sample_preview_is_never_stored(
+    ui_acme_stylesheet_login, todo_list, todo_reader_login
+):
     reverse("todo-lists-list")
     before = Resource.objects.count()
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_authenticate(ui_acme_stylesheet_login)
     for mode in ("view", "edit"):
         preview(mode=mode)
         preview(mode=mode, context="acme")
@@ -212,6 +221,12 @@ def test_preview_of_a_real_instance_needs_read(
     Given.http.force_authenticate(todo_reader_login)
     preview(404, instance=999999)
     preview(404, instance="not-a-pk")
+    # No detail URL has these pks: the API's 404 for such a URL.
+    for pk in ("a/b", "/"):
+        preview(404, instance=pk)
+        assert Http.response["Content-Type"] == "application/problem+json"
+    # An empty instance is none: the sample.
+    assert "Lorem ipsum" in preview(instance="")
     page = preview(instance=todo_list.pk)
     assert "Groceries" in page and "Buy eggs" in page
     assert '<scrud-node data-pointer="/items/1/text">' in page
@@ -222,13 +237,24 @@ def test_preview_of_a_real_instance_needs_read(
 
 @pytest.mark.django_db
 @test_context
-def test_preview_data_context_selects_context_stylesheets(login_no_roles):
+def test_preview_data_context_selects_context_stylesheets(
+    login_no_roles, ui_acme_stylesheet_login
+):
     make_component("acme-row", '<i class="acme">{{ value.text }}</i>')
     make_stylesheet("acme", [("ex:TodoItem", "acme-row")], context="acme")
+    # Previewing a context's styling needs read on its stylesheets (ruling
+    # S7): refused alike for every context.
     Given.http.force_authenticate(login_no_roles)
+    preview(400, context="acme")
+    acme = problem()
+    preview(400, context="nowhere")
+    assert acme == problem() and acme["type"] == NO_CONTEXT
+    preview(400, context="acme", instance=1)
+    assert 'class="acme"' not in preview()
+    Given.http.force_authenticate(ui_acme_stylesheet_login)
     assert '<i class="acme">Lorem ipsum</i>' in preview(context="acme")
     assert 'class="acme"' not in preview()
-    assert 'class="acme"' not in preview(context="other")
+    preview(400, context="other")
 
 
 @pytest.mark.django_db

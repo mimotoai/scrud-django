@@ -255,6 +255,25 @@ class UIBranchUnavailableError(ScrudException):
         self.title = "UI branch unavailable"
 
 
+class UIStudioContextUnavailableError(ScrudException):
+    """A studio sample or preview in a data context whose stylesheets the
+    requester may not read (GET on UI stylesheets there). One answer for
+    every refused context, so that it tells nothing of any."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_studio_context_unavailable"
+
+    def __init__(self):
+        super().__init__(
+            "This data context is not available: you may not read its UI stylesheets."
+        )
+        self.type = (
+            "https://api.openteams.com/http-problem/ui-studio-context-unavailable"
+        )
+        self.title = "Studio data context unavailable"
+
+
 class UIBranchInUseError(ScrudException):
     """A DELETE of a UI branch that other branches name as their parent:
     409 Conflict, naming them."""

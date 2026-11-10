@@ -4,6 +4,8 @@ with the studio user's own rights."""
 from unittest import mock
 
 import pytest
+from django.contrib.auth.models import AnonymousUser
+from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory
 from django.urls import reverse
 from rest_framework.request import ForcedAuthentication
@@ -133,3 +135,59 @@ def test_internal_request_is_forced_json_and_csrf_exempt(todo_list, todo_reader_
     assert seen == [
         (ForcedAuthentication, todo_reader_login, True, "application/json", "yes")
     ]
+
+
+@pytest.mark.django_db
+@test_context
+def test_unsafe_method_from_a_safe_request_is_refused(todo_owner_login):
+    reverse("todo-lists-list")
+    body = {"title": "New", "rbac_context": "project-a", "items": []}
+    before = Resource.objects.count()
+    for outer in ("get", "head", "options"):
+        for method in ("POST", "put", "DELETE", "PATCH"):
+            with pytest.raises(ImproperlyConfigured):
+                call_view(
+                    studio_request(todo_owner_login, outer),
+                    "todo-lists",
+                    method,
+                    pk=None if method == "POST" else 1,
+                    data=body,
+                )
+    assert Resource.objects.count() == before
+    # A safe method from a safe request is fine.
+    response = call_view(studio_request(todo_owner_login, "get"), "todo-lists", "GET")
+    assert response.status_code == 200
+
+
+@pytest.mark.django_db
+@test_context
+def test_anonymous_user_answers_as_the_api(todo_list):
+    for method, pk in (("GET", todo_list.pk), ("GET", None)):
+        url = (
+            reverse("todo-lists-detail", args=[pk])
+            if pk
+            else reverse("todo-lists-list")
+        )
+        api = api_get(url)
+        assert api.status_code in (401, 403)
+        response = call_view(
+            studio_request(AnonymousUser(), "get"), "todo-lists", method, pk=pk
+        )
+        assert response.status_code == api.status_code
+        assert response.data == api.json()
+
+
+@pytest.mark.django_db
+@test_context
+def test_pk_without_a_detail_url_is_the_apis_404(todo_reader_login):
+    reverse("todo-lists-list")
+    Given.http.force_authenticate(todo_reader_login)
+    api = api_get("/api/todo-lists/a/b/")
+    assert api.status_code == 404
+    for pk in ("", "a/b"):
+        response = call_view(
+            studio_request(todo_reader_login, "get"), "todo-lists", "GET", pk=pk
+        )
+        assert response.status_code == 404
+        assert response["Content-Type"] == "application/problem+json"
+        assert response.data["status"] == 404
