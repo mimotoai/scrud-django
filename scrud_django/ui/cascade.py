@@ -279,12 +279,12 @@ def effective_rules(
     rules = _sheet_rules(_default_stylesheet(), lambda i: (0, 0, i))
     for pk, _etag, content in by_context.get(DEFAULT_CONTEXT, {}).values():
         order = _order_of(content)
-        rules += _sheet_rules(content, lambda i, o=order, p=pk: (1, o, p, i), pk)
+        rules += _sheet_rules(content, lambda i, o=order, p=pk or 0: (1, o, p, i), pk)
     for k, context in enumerate(contexts):
         for pk, _etag, content in by_context.get(context, {}).values():
             order = _order_of(content)
             rules += _sheet_rules(
-                content, lambda i, o=order, p=pk, k=k: (2, k, o, p, i), pk
+                content, lambda i, o=order, p=pk or 0, k=k: (2, k, o, p, i), pk
             )
     for j, name in enumerate(linked):
         for context in (DEFAULT_CONTEXT, *contexts):
