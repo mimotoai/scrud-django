@@ -505,6 +505,27 @@ omit it when items were filtered. Test: read a version as a user who lacks one
 item's read grant, grant it, then GET with `If-Modified-Since` of the earlier
 response and assert 200; it is 304 today.
 
+<a id="mysql-sort-buffer"></a>
+## mysql-sort-buffer: a resource larger than MySQL's sort buffer breaks sorted reads of it
+
+`Resource` orders by `id` by default (`Meta.ordering`), and the UI's reads
+order by pk explicitly, so most reads of resources sort. MySQL 8.4 sorts them
+with a filesort that carries the selected columns, the JSON `content`
+included, and a row larger than `sort_buffer_size` (256 KB by default) fails
+with error 1038, "Out of sort memory". A CSS item may hold 262,144 characters
+(its schema's limit), so storing the largest one on `main` fails when its
+version is recorded (`versions._own_items`), and a page that reads it would
+fail too. `tests/test_ui_branch_css.py::test_css_validation` stores such an
+item and fails on `mysql:8.4` with the default configuration, as CI's
+`test-mysql` job runs it; it failed so before the final fixes of UI branches
+(at 397d3dc). PostgreSQL and SQLite are not affected; MariaDB is not checked.
+
+Fix: read such rows without a sort the server must buffer (`order_by()` to
+drop the default ordering, then sort the rows in Python; or select the pks in
+order first and the contents by pk), or document a minimum `sort_buffer_size`
+for MySQL. Test: `test_css_validation` on `mysql:8.4` with the default
+configuration; it fails today.
+
 <a id="ui-version-storage-growth"></a>
 ## ui-version-storage-growth: every item write stores a full copy of its branch's items
 
