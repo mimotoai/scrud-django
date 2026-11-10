@@ -263,6 +263,34 @@
     return body;
   }
 
+  /**
+   * Apply an array operation to `body` (mutating it): `op.op` is "remove" (the
+   * element at `op.pointer`) or "move" (the element at `op.pointer` to index
+   * `op.to`, the others keeping their order). A pointer that is not an element
+   * of an array, an index out of range or another operation leaves `body` as it
+   * is. Returns `body`.
+   */
+  function applyArrayOp(body, op) {
+    var segs;
+    try {
+      segs = parsePointer(op.pointer);
+    } catch (err) {
+      return body;
+    }
+    if (!segs.length || !isIndex(segs[segs.length - 1])) return body;
+    var array = valueAt(body, joinPointer(segs.slice(0, -1)));
+    var from = Number(segs[segs.length - 1]);
+    if (!Array.isArray(array) || from >= array.length) return body;
+    if (op.op === 'remove') {
+      array.splice(from, 1);
+    } else if (op.op === 'move') {
+      var to = String(op.to);
+      if (!isIndex(to) || Number(to) >= array.length) return body;
+      array.splice(Number(to), 0, array.splice(from, 1)[0]);
+    }
+    return body;
+  }
+
   function frameOf(el) {
     return el && el.closest ? el.closest(FRAME) : null;
   }
@@ -355,6 +383,7 @@
   }
 
   window.ScrudUI = {
+    applyArrayOp: applyArrayOp,
     applyPointer: applyPointer,
     buildBody: buildBody,
     fieldsOf: fieldsOf,
@@ -418,6 +447,27 @@
     return null;
   }
 
+  // The array operation (Remove, Move up, Move down) waiting for its frame's
+  // PUT: it is applied to the body that PUT builds (`encodeParameters`), so it
+  // goes the way of every change: the frame's headers, If-Match among them.
+  var pendingOps = new WeakMap();
+
+  document.addEventListener('click', function (evt) {
+    var button =
+      evt.target && evt.target.closest
+        ? evt.target.closest('[data-scrud-array-op]')
+        : null;
+    var frame = frameOf(button);
+    if (!frame || !isPut(frame)) return;
+    evt.preventDefault();
+    pendingOps.set(frame, {
+      op: button.getAttribute('data-scrud-array-op'),
+      pointer: button.getAttribute('data-scrud-pointer'),
+      to: button.getAttribute('data-scrud-to')
+    });
+    htmx.trigger(frame, 'change');
+  });
+
   // Innermost frame only: an event inside nested frames is acted on by the
   // frame that encloses its target; outer frames' requests are cancelled.
   document.addEventListener('htmx:confirm', function (evt) {
@@ -467,6 +517,7 @@
       var invalid = [];
       if (content) buildBody(content, fieldsOf(frame), invalid);
       if (invalid.length) {
+        pendingOps.delete(frame);
         evt.preventDefault();
         showNotice(frame, invalidFieldsText(invalid));
         return;
@@ -490,7 +541,11 @@
   document.addEventListener('htmx:afterRequest', function (evt) {
     var detail = evt.detail || {};
     var config = detail.requestConfig || {};
-    if (!detail.successful || String(config.verb).toLowerCase() !== 'delete') {
+    var verb = String(config.verb).toLowerCase();
+    // an operation whose request never reached encodeParameters must not
+    // linger for the frame's next PUT
+    if (verb === 'put' && frameOf(detail.elt)) pendingOps.delete(frameOf(detail.elt));
+    if (!detail.successful || verb !== 'delete') {
       return;
     }
     var frame = frameOf(detail.elt);
@@ -548,7 +603,13 @@
       var frame = frameOf(elt);
       var content = frame && contentOf(frame);
       if (!content) return null;
-      return JSON.stringify(buildBody(content, fieldsOf(frame)));
+      var body = buildBody(content, fieldsOf(frame));
+      var op = pendingOps.get(frame);
+      if (op) {
+        pendingOps.delete(frame);
+        applyArrayOp(body, op);
+      }
+      return JSON.stringify(body);
     }
   });
 })();

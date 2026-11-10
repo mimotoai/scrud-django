@@ -274,3 +274,164 @@ def test_edit_form_round_trip_through_build_body(todo_list, todo_owner_login):
     todo_list.refresh_from_db()
     assert todo_list.content == body
     assert todo_list.content["notes"] == "line 1\nline 2\n\nline 4"
+
+
+APPLY_OP_SCRIPT = (
+    STUB_DOM
+    + r"""
+const rules = () => [{select: 'a'}, {select: 'b'}, {select: 'c'}];
+const rows = (body) => body.rules.map((r) => r.select).join('');
+const doc = () => ({rules: rules(), keep: 1});
+out.remove = rows(U.applyArrayOp(doc(), {op: 'remove', pointer: '/rules/1'}));
+out.removeKeeps = U.applyArrayOp(doc(), {op: 'remove', pointer: '/rules/1'}).keep;
+out.down = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/0', to: 1}));
+out.downEnd = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/0', to: 2}));
+out.up = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/2', to: '1'}));
+out.same = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/1', to: 1}));
+out.nested = U.applyArrayOp({a: {b: [1, 2, 3]}}, {op: 'remove', pointer: '/a/b/0'}).a.b;
+out.root = U.applyArrayOp([1, 2], {op: 'remove', pointer: '/1'});
+// never a throw or a change for what is not an array element
+out.badIndex = rows(U.applyArrayOp(doc(), {op: 'remove', pointer: '/rules/9'}));
+out.badTo = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/0', to: 7}));
+out.notArray = JSON.stringify(U.applyArrayOp({a: {b: 1}}, {op: 'remove', pointer: '/a/b'}));
+out.badOp = rows(U.applyArrayOp(doc(), {op: 'explode', pointer: '/rules/0'}));
+out.badPointer = rows(U.applyArrayOp(doc(), {op: 'remove', pointer: 'rules/0'}));
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_apply_array_op_remove_and_move():
+    require_node()
+    out = run_node(APPLY_OP_SCRIPT)
+    assert out["remove"] == "ac" and out["removeKeeps"] == 1
+    assert out["down"] == "bac" and out["downEnd"] == "bca"
+    assert out["up"] == "acb" and out["same"] == "abc"
+    assert out["nested"] == [2, 3] and out["root"] == [1]
+    for unchanged in ("badIndex", "badTo", "badOp", "badPointer"):
+        assert out[unchanged] == "abc", unchanged
+    assert out["notArray"] == '{"a":{"b":1}}'
+
+
+ARRAY_OP_SCRIPT = (
+    STUB_DOM.replace(
+        "const htmx = {config: {}, defineExtension() {}};",
+        "const exts = {}, triggered = [];"
+        "const htmx = {config: {}, defineExtension(n, e) { exts[n] = e; },"
+        " trigger(elt, name) { triggered.push({elt, name}); }};",
+    )
+    + r"""
+const root = frame('/l/1/');
+root.attrs['data-scrud-etag'] = '"e1"';
+root.attrs['hx-put'] = '/l/1/';
+el('SCRIPT', {class: 'scrud-content'}, root,
+   {textContent: '{"rules": [{"select": "a"}, {"select": "b"}, {"select": "c"}]}'});
+const li = el('LI', {}, root);
+el('INPUT', {name: '/rules/1/select'}, li, {type: 'text', value: 'B2'});
+const op = (name, pointer, to) => {
+  const attrs = {'data-scrud-array-op': name, 'data-scrud-pointer': pointer};
+  if (to !== undefined) attrs['data-scrud-to'] = to;
+  return el('BUTTON', attrs, li);
+};
+let prevented = 0;
+const click = (target) =>
+  handlers.click({target, preventDefault() { prevented++; }});
+const put = () => {
+  const detail = {elt: root, verb: 'put', headers: {}};
+  handlers['htmx:configRequest']({detail, preventDefault() { detail.prevented = true; }});
+  return detail;
+};
+const encode = () => JSON.parse(exts['scrud-json'].encodeParameters({}, {}, root));
+// something that is no array button does nothing
+click(el('SPAN', {}, li));
+out.idle = triggered.length;
+click(op('remove', '/rules/0'));
+out.triggers = triggered.map((t) => [t.elt === root, t.name]);
+out.prevented = prevented;
+const sent = put();
+out.headers = sent.headers;
+out.sentPrevented = !!sent.prevented;
+out.body = encode().rules.map((r) => r.select);
+// the operation is spent: the next PUT is an ordinary one
+out.next = encode().rules.map((r) => r.select);
+click(op('move', '/rules/0', '2'));
+put();
+out.moved = encode().rules.map((r) => r.select);
+// a PUT that is refused (an invalid input) leaves no operation behind
+click(op('remove', '/rules/2'));
+el('INPUT', {name: '/rules/__proto__/x'}, li, {type: 'text', value: 'z'});
+out.refused = put().prevented === true;
+li.children = li.children.filter((c) => c.name !== '/rules/__proto__/x');
+out.afterRefused = encode().rules.map((r) => r.select);
+out.responseHandling = htmx.config.responseHandling.find((h) => new RegExp('^' + h.code + '$').test('412'));
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_array_op_sends_put_with_if_match():
+    require_node()
+    out = run_node(ARRAY_OP_SCRIPT)
+    assert out["idle"] == 0
+    # the click triggers the frame's own PUT, through htmx
+    assert out["triggers"] == [[True, "change"]] and out["prevented"] == 1
+    assert out["headers"]["If-Match"] == '"e1"'
+    assert out["headers"]["Content-Type"] == "application/json"
+    assert not out["sentPrevented"]
+    # the input is applied at its pre-operation pointer, then rule 0 removed
+    assert out["body"] == ["B2", "c"]
+    assert out["next"] == ["a", "B2", "c"]
+    assert out["moved"] == ["B2", "c", "a"]
+    assert out["refused"] is True
+    assert out["afterRefused"] == ["a", "B2", "c"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_array_op_after_stale_etag_gets_reload(todo_list, todo_owner_login):
+    """Review Focus 4: a removal built from a stale page sends If-Match, gets
+    the 412 and the reload frame, and is never saved."""
+    require_node()
+    out = run_node(ARRAY_OP_SCRIPT)
+    # the client swaps the 412 (the reload notice) in
+    assert out["responseHandling"]["swap"] is True
+    url = reverse("todo-lists-detail", args=[todo_list.pk])
+    Given.http.force_authenticate(todo_owner_login)
+    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    form = parse_form(Http.response.content.decode())
+    stale = form.frame["data-scrud-etag"]
+    body = run_node(
+        APPLY_ITEMS_SCRIPT,
+        stdin=json.dumps({"content": form.content, "pointer": "/items/0"}),
+    )
+    # another tab saves the same list first
+    When.http.put(
+        url,
+        data=json.dumps({**form.content, "title": "Other tab"}),
+        content_type="application/json",
+        HTTP_IF_MATCH=stale,
+    )
+    Then.http.status_code_is(200)
+    When.http.put(
+        url,
+        data=json.dumps(body),
+        content_type="application/json",
+        HTTP_IF_MATCH=stale,
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+    )
+    Then.http.status_code_is(412)
+    output = Http.response.content.decode()
+    assert 'class="scrud-reload"' in output and 'hx-trigger="load"' in output
+    todo_list.refresh_from_db()
+    assert todo_list.content["title"] == "Other tab"
+    assert len(todo_list.content["items"]) == len(form.content["items"])
+
+
+APPLY_ITEMS_SCRIPT = (
+    STUB_DOM
+    + r"""
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+console.log(JSON.stringify(U.applyArrayOp(input.content, {op: 'remove', pointer: input.pointer})));
+"""
+)

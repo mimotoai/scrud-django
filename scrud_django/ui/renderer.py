@@ -757,10 +757,15 @@ def _dotted_pointer(path: str) -> str:
 
 def _schema_name_pointer(name) -> str | None:
     """fastjsonschema's name of a value (``data.items[0].text``) as a JSON
-    Pointer (``/items/0/text``), or ``None``."""
-    if not isinstance(name, str) or not name.startswith("data"):
+    Pointer (``/items/0/text``), or ``None``. A name without the leading
+    ``data`` (``rules[1].select``, a selector error's) is accepted too."""
+    if not isinstance(name, str) or not name:
         return None
-    rest, segments = name[len("data") :], []
+    segments = []
+    if re.match(r"data(?=[.\[]|$)", name):
+        rest = name[len("data") :]
+    else:
+        rest = "." + name
     while rest:
         match = _SCHEMA_NAME_TOKEN.match(rest)
         if match is None:

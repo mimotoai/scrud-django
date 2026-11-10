@@ -348,14 +348,14 @@ class UIStylesheetViewSet(UIContentValidationMixin, ResourceViewSet):
         if not isinstance(prefixes, dict):
             prefixes = {}
         rules = content.get("rules")
-        for rule in rules if isinstance(rules, list) else []:
+        for index, rule in enumerate(rules if isinstance(rules, list) else []):
             select = rule.get("select") if isinstance(rule, dict) else None
             if not isinstance(select, str):
                 continue
             try:
                 parse_selector(select, prefixes)
             except SelectorError as error:
-                raise UISelectorInvalidError(error) from error
+                raise UISelectorInvalidError(error, rule=index) from error
 
 
 class UIItemTextValidationMixin:

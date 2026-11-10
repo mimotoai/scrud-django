@@ -365,6 +365,18 @@ named by JSON Pointer (`name="/items/0/text"`):
   value is untouched: it stays `null` or missing instead of becoming `""`.
   An empty number input over a stored number is an invalid field (above).
 * A checkbox in an append row that is unchecked appends nothing.
+* In edit mode the built-in `array-edit` gives every item of every array a
+  **Remove** button, and **Move up** and **Move down** buttons (none for the
+  first item's Move up or the last item's Move down). They are
+  `<button type="button" data-scrud-array-op="remove|move"
+  data-scrud-pointer="/rules/1" data-scrud-to="0">`; `data-scrud-to` is the
+  index a move puts the item at. View mode renders no controls. A click builds the
+  frame's body as a change does (the inputs applied at their current pointers),
+  applies the operation (`ScrudUI.applyArrayOp(body, op)`), and sends the
+  frame's own `PUT` with `If-Match`: a stale page gets the 412 reload, and the
+  list is never silently overwritten. The page shows the saved array after the
+  response. A custom array component gets the same behaviour by rendering such
+  buttons inside the frame.
 
 Custom components that want to be editable need only render inputs named by
 their JSON Pointer inside the frame.
@@ -377,7 +389,9 @@ edit mode with the messages, provided the user may read the stored resource
 PUT but not GET, gets the notices only: no form, no ETag, no content. Its decisions, contexts and ETag come from
 the stored resource, never from the request. Policy condition messages are
 shown only to a user who may read the stored resource, and only in HTML; the
-JSON error bodies are unchanged. A 412 (PUT or DELETE) shows a notice and reloads
+JSON error bodies are unchanged. A stylesheet whose rule has a selector that does not parse is a 400 problem
+with `name: "rules[<i>].select"` (the field, as JSON Schema's errors name
+theirs), so the re-render shows the message beside rule `<i>`. A 412 (PUT or DELETE) shows a notice and reloads
 the frame with the current state, and so does a 409 DELETE.
 
 ## Fragment protocol

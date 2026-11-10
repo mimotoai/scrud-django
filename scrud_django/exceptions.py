@@ -137,10 +137,19 @@ class UISelectorInvalidError(ScrudException):
     default_detail = "Bad Request"
     default_code = "ui_selector_invalid"
 
-    def __init__(self, reason):
+    def __init__(self, reason, rule=None):
         super().__init__(f"The stylesheet selector is invalid: {reason}")
         self.type = "https://api.openteams.com/http-problem/ui-selector-invalid"
         self.title = "UI selector invalid"
+        # The field of the rule's selector, as JSON Schema's validation
+        # errors name theirs (the UI shows the error beside that rule).
+        self.name = f"rules[{rule}].select" if rule is not None else None
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        if self.name is not None:
+            data["name"] = self.name
+        return data
 
 
 class UITemplateInvalidError(ScrudException):
