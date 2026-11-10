@@ -240,22 +240,26 @@ class UIBranchVersionMissingError(ScrudException):
 
 class UIPushConflictError(ScrudException):
     """A UI push whose source overrides items the target changed since
-    (`scrud_django.ui.branches.sync.conflicts`): 409 Conflict, naming them in
-    ``detail`` and listing them as ``conflicts`` (``{"kind", "key", "base",
-    "current"}`` each). Nothing is written."""
+    (`scrud_django.ui.branches.sync.conflicts`): 409 Conflict, naming in
+    ``detail`` and listing as ``conflicts`` (``{"kind", "key", "base",
+    "current"}`` each) those on items the pusher may read in the target, and
+    only counting the `unreadable` others (``unreadable_conflicts``).
+    Nothing is written."""
 
     status_code = 409
     default_detail = "Conflict"
     default_code = "ui_push_conflict"
 
-    def __init__(self, conflicts):
+    def __init__(self, conflicts, unreadable=0):
         self.conflicts = list(conflicts)
-        names = ", ".join(
-            f"{entry['kind']} {tuple(entry['key'])!r}" for entry in self.conflicts
-        )
+        self.unreadable = unreadable
+        names = [f"{entry['kind']} {tuple(entry['key'])!r}" for entry in self.conflicts]
+        if unreadable:
+            names.append(f"and {unreadable} more you may not read")
         super().__init__(
             f"The target changed these items since the source overrode them: "
-            f"{names}. Pull the source and resolve them, then push again."
+            f"{', '.join(names)}. Pull the source and resolve them, then push "
+            "again."
         )
         self.type = "https://api.openteams.com/http-problem/ui-push-conflict"
         self.title = "UI push conflict"
@@ -263,6 +267,7 @@ class UIPushConflictError(ScrudException):
     def response_data(self, context):
         data = super().response_data(context)
         data["conflicts"] = self.conflicts
+        data["unreadable_conflicts"] = self.unreadable
         return data
 
 
@@ -284,6 +289,22 @@ class UIPushForbiddenError(ScrudException):
         )
         self.type = "https://api.openteams.com/http-problem/ui-push-forbidden"
         self.title = "UI push forbidden"
+
+
+class UIPushAppliedError(ScrudException):
+    """A DELETE of a UI push that is applied: an applied push is the record
+    of a change to its target, and is kept (409 Conflict)."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "ui_push_applied"
+
+    def __init__(self):
+        super().__init__(
+            "An applied UI push is a record of what it changed and cannot be deleted."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-push-applied"
+        self.title = "UI push applied"
 
 
 class UIHeaderInvalidError(ScrudException):

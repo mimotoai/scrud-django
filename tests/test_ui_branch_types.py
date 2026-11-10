@@ -86,6 +86,16 @@ def test_branch_create_needs_grant_in_its_context(ui_alice_login, ui_bob_login):
 
 @pytest.mark.django_db
 @test_context
+def test_a_branch_without_parent_is_created(ui_alice_login):
+    # It has no ancestors: its branching point is empty (it was a 500).
+    Given.http.force_authenticate(ui_alice_login)
+    create("ui-branches", {"name": "solo", "rbac_context": "alice", "parent": None})
+    Then.http.status_code_is(201)
+    assert Http.response.json()["branching_point"] == {}
+
+
+@pytest.mark.django_db
+@test_context
 def test_branch_refusals(ui_alice_login):
     a = make_branch("a", "alice")
     make_branch("b", "alice", parent="a")

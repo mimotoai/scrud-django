@@ -13,6 +13,7 @@ from scrud_django.exceptions import (
     UIBranchContextError,
     UIBranchInUseError,
     UIBranchInvalidError,
+    UIPushAppliedError,
 )
 from scrud_django.models import Resource
 from scrud_django.permissions import may_read_in_context, resource_contexts
@@ -97,7 +98,9 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
         pulling = content.pop("pull", False) is True and instance is not None
         content.pop("conflicts", None)
         if instance is None:
-            content["branching_point"] = self.branching_point(name, all_branches)
+            content["branching_point"] = (
+                {} if parent is None else self.branching_point(name, all_branches)
+            )
             return
         content["branching_point"] = instance.content.get("branching_point", {})
         if "conflicts" in instance.content:
@@ -303,6 +306,12 @@ class UIBranchVersionViewSet(ResourceViewSet):
         return super().list(request)
 
 
+def applied(push) -> bool:
+    """Whether the stored push `push` (a `Resource`) is applied."""
+    content = push.content
+    return isinstance(content, Mapping) and content.get("state") == "applied"
+
+
 @scrudful_viewset
 class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
     """A push writes its source branch's overrides into its target branch
@@ -326,11 +335,19 @@ class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
         neither of ``source`` and ``restore``, an unknown branch, a source
         that is the target or one of its ancestors (a push would write a
         branch's overrides into its own base), and (`UIBranchContextError`,
-        400) an ``rbac_context`` that is not the target's context. The
-        server-managed ``result`` is dropped on a create and kept on an
-        update. Note whether the write moves the push into ``applied``."""
+        400) an ``rbac_context`` that is not the target's context. A push
+        from a branch with no parent is refused: it would delete the items
+        of a root (``main``: the live site's). An applied push is a record:
+        any update of it is refused (400; pushing again takes a new push).
+        The server-managed ``result`` is dropped (only an applied push has
+        one). Note whether the write moves the push into ``applied``."""
         super().validate_content(content, instance=instance)
         self.applying = False
+        if instance is not None and applied(instance):
+            raise UIBranchInvalidError(
+                "This UI push is applied: it is the record of what it changed "
+                "and cannot be updated. Push again with a new UI push."
+            )
         if not isinstance(content, dict):
             return
         source = content.get("source")
@@ -352,6 +369,11 @@ class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
             if name is not None and name not in all_branches:
                 raise UIBranchInvalidError(f"There is no UI branch named {name!r}.")
         if source is not None:
+            if all_branches[source].parent is None:
+                raise UIBranchInvalidError(
+                    f"Branch {source!r} has no parent: pushing it would empty "
+                    "it of its items. Restore a version, or edit it directly."
+                )
             try:
                 chain = ancestors(target, all_branches)
             except BranchChainError as error:
@@ -365,12 +387,14 @@ class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
         if content.get("rbac_context") != expected:
             raise UIBranchContextError(expected)
         content.pop("result", None)
-        stored = instance.content if instance is not None else {}
-        if "result" in stored:
-            content["result"] = stored["result"]
-        self.applying = (
-            content.get("state") == "applied" and stored.get("state") != "applied"
-        )
+        self.applying = content.get("state") == "applied"
+
+    def destroy(self, request, slug: str):
+        """Delete a push that is not applied; an applied push is kept
+        (`UIPushAppliedError`, 409)."""
+        if applied(self.get_instance(request, slug)):
+            raise UIPushAppliedError()
+        return super().destroy(request, slug)
 
     def save_checked(self, save, instance=None):
         self.saved = super().save_checked(save, instance=instance)

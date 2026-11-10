@@ -28,7 +28,7 @@ from .fixtures import assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_types import component, problem, stylesheet
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import grant, make_component
+from .test_ui_http import grant, make_component, make_stylesheet
 
 WIP = {"branch": "wip", "rbac_context": "alice"}
 UI_TYPES = (
@@ -272,6 +272,145 @@ def test_push_needs_per_item_grant(admin_login):
 
 @pytest.mark.django_db
 @test_context
+def test_push_needs_the_grant_on_the_targets_stored_row(admin_login):
+    # main's row is stored in "secret" (not the "" a component on main is
+    # authorized in now): a direct PUT of it needs a grant in "secret", and
+    # so does a push that writes over it.
+    Given.http.force_authenticate(admin_login)
+    reverse("ui-components-list")
+    main_row = ResourceRegistration.register(
+        component(name="row", template="<b>main</b>", rbac_context="secret"),
+        "ui-components",
+    )
+    make_wip(admin_login)
+    create("ui-components", component(name="row", template="<i>wip</i>", **WIP))
+    user = pusher(**{"": {"http.PUT": [UI_COMPONENT_TYPE_URI]}})
+    grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "secret")
+    Given.http.force_authenticate(user)
+    When.http.put(
+        reverse("ui-components-detail", args=[main_row.pk]),
+        data=component(name="row", template="<i>wip</i>", rbac_context=""),
+        format="json",
+        HTTP_IF_MATCH=quoted(main_row.etag),
+    )
+    Then.http.status_code_is(403)
+    before = stored_state()
+    push()
+    Then.http.status_code_is(403)
+    assert problem()["type"].endswith("/ui-push-forbidden")
+    assert stored_state() == before
+    # Removing it (a deletion marker) needs DELETE in "secret" too.
+    wip_row = Resource.objects.get(
+        resource_type__type_uri=UI_COMPONENT_TYPE_URI, content__branch="wip"
+    )
+    ResourceRegistration.update(
+        {"name": "row", "deleted": True, **WIP, "base": main_row.etag},
+        "ui-components",
+        wip_row.pk,
+    )
+    grant(user, {"http.DELETE": [UI_COMPONENT_TYPE_URI]}, "")
+    before = stored_state()
+    push()
+    Then.http.status_code_is(403)
+    assert stored_state() == before
+    grant(user, {"http.DELETE": [UI_COMPONENT_TYPE_URI]}, "secret")
+    push()
+    Then.http.status_code_is(201)
+    assert not Resource.objects.filter(pk=main_row.pk).exists()
+
+
+@pytest.mark.django_db
+@test_context
+def test_conflicts_on_unreadable_items_are_only_counted(admin_login):
+    # Ruling R20: the 409 describes only conflicts on items the pusher may
+    # read in the target.
+    main_row, override = wip_overrides_row(admin_login)
+    theme = make_stylesheet("acme-theme", [("array", "row")], context="acme")
+    create("ui-stylesheets", stylesheet(name="acme-theme", applies_to="acme", **WIP))
+    for stored, field, value in (
+        (main_row, "template", "<b>changed</b>"),
+        (theme, "order", 1),
+    ):
+        ResourceRegistration.update(
+            {**stored.content, field: value}, stored.resource_type.slug, stored.pk
+        )
+    user = pusher(**{"": {"http.GET": [UI_COMPONENT_TYPE_URI]}})
+    Given.http.force_authenticate(user)
+    before = stored_state()
+    push()
+    Then.http.status_code_is(409)
+    body = problem()
+    assert [entry["key"] for entry in body["conflicts"]] == [["row"]]
+    assert body["unreadable_conflicts"] == 1
+    assert "1 more you may not read" in body["detail"]
+    assert "acme" not in str(body)
+    assert stored_state() == before
+    # A reader of acme's stylesheets is told about both.
+    grant(user, {"http.GET": [ITEM_KINDS["stylesheet"]]}, "acme")
+    push()
+    Then.http.status_code_is(409)
+    assert [entry["key"] for entry in problem()["conflicts"]] == [
+        ["row"],
+        ["acme-theme", "acme"],
+    ]
+    assert problem()["unreadable_conflicts"] == 0
+
+
+def conflicts_of(name):
+    return stored_branch(name).content.get("conflicts")
+
+
+@pytest.mark.django_db
+@test_context
+def test_deleting_a_targets_row_clears_its_conflict(admin_login):
+    # Ruling R21: as a direct DELETE of an override does.
+    Given.http.force_authenticate(admin_login)
+    main_row = make_component("row", "<b>main</b>")
+    make_wip(admin_login, "team")
+    on_team = {"branch": "team", "rbac_context": "alice"}
+    create("ui-components", component(name="row", template="<i/>", **on_team))
+    create("ui-components", component(name="title", template="<h1/>", **on_team))
+    team = stored_branch("team")
+    ResourceRegistration.update(
+        {
+            **team.content,
+            "conflicts": [
+                {"kind": "component", "key": ["row"], "base": "x", "current": "y"},
+                {"kind": "component", "key": ["title"], "base": None, "current": "z"},
+            ],
+        },
+        "ui-branches",
+        team.pk,
+    )
+    make_wip(admin_login, "mine", parent="team")
+    create(
+        "ui-components",
+        {"name": "row", "deleted": True, "branch": "mine", "rbac_context": "alice"},
+    )
+    push(target="team", source="mine", context="alice")
+    Then.http.status_code_is(201)
+    assert [entry["key"] for entry in conflicts_of("team")] == [["title"]]
+    (marker,) = [
+        r for r in own_rows(UI_COMPONENT_TYPE_URI, "team") if r["name"] == "row"
+    ]
+    assert marker["deleted"] is True
+    assert marker["base"] == main_row.etag
+    # A restore that removes "title" clears its conflict too.
+    team_versions = versions_of("team")
+    number = next(
+        n
+        for n in team_versions
+        if not any(
+            i["name"] == "title" for i in snapshot("team", n)["items"]["component"]
+        )
+    )
+    push(source=None, restore=number, target="team", context="alice")
+    Then.http.status_code_is(201)
+    assert conflicts_of("team") == []
+
+
+@pytest.mark.django_db
+@test_context
 def test_push_needs_put_on_source(admin_login):
     wip_overrides_row(admin_login)
     before = stored_state()
@@ -338,10 +477,12 @@ def test_deletion_marker_hides_the_parents_item_on_the_target(admin_login):
 @test_context
 def test_push_into_descendant_or_self_is_refused(admin_login):
     wip_overrides_row(admin_login)
+    make_wip(admin_login, "sub", parent="wip")
     before = stored_state()
-    push(target="wip", source="main", context="alice")
+    push(target="sub", source="wip", context="alice")
     Then.http.status_code_is(400)
     assert problem()["type"].endswith("/ui-branch-invalid")
+    assert "ancestors" in problem()["detail"]
     push(target="wip", source="wip", context="alice")
     Then.http.status_code_is(400)
     # The push is in the target's context.
@@ -376,12 +517,57 @@ def test_proposed_then_applied(admin_login):
     main_row.refresh_from_db()
     assert main_row.content["template"] == "<i>wip</i>"
     assert not Resource.objects.filter(pk=override.pk).exists()
-    # Applied again (applied -> applied) is no new push.
-    applied = Resource.objects.get(pk=proposed.pk)
-    put_push(applied, result={"version": 1})
-    Then.http.status_code_is(200)
-    assert Http.response.json()["result"] == {"version": version}
     assert versions_of("main")[-1] == version
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_applied_push_is_immutable(admin_login):
+    # Ruling R18: an applied push is the record of what it changed. Moving it
+    # back to proposed (then applied again) would push again past an
+    # approval step: pushing again takes a new push.
+    wip_overrides_row(admin_login)
+    push()
+    Then.http.status_code_is(201)
+    applied = created()
+    before = stored_state()
+    for fields in ({"state": "proposed"}, {"label": "renamed"}, {}):
+        put_push(applied, **fields)
+        Then.http.status_code_is(400)
+        assert problem()["type"].endswith("/ui-branch-invalid")
+    When.http.delete(
+        reverse("ui-pushes-detail", args=[applied.pk]),
+        HTTP_IF_MATCH=quoted(applied.etag),
+    )
+    Then.http.status_code_is(409)
+    assert problem()["type"].endswith("/ui-push-applied")
+    assert stored_state() == before
+    # A push that is not applied may be deleted.
+    push(state="proposed")
+    Then.http.status_code_is(201)
+    proposed = created()
+    When.http.delete(
+        reverse("ui-pushes-detail", args=[proposed.pk]),
+        HTTP_IF_MATCH=quoted(proposed.etag),
+    )
+    Then.http.status_code_is(204)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_branch_without_parent_cannot_be_pushed(admin_login):
+    # Ruling R19: pushing a root (main) would delete its items: the live
+    # site's.
+    wip_overrides_row(admin_login)
+    make_wip(admin_login, "solo", parent=None, context="alice")
+    before = stored_state()
+    push(target="solo", source="main", context="alice")
+    Then.http.status_code_is(400)
+    assert problem()["type"].endswith("/ui-branch-invalid")
+    assert "no parent" in problem()["detail"]
+    push(target="wip", source="solo", context="alice")
+    Then.http.status_code_is(400)
+    assert stored_state() == before
 
 
 @pytest.mark.django_db

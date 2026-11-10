@@ -11,7 +11,11 @@ from scoped_rbac.policy import Permission
 
 from scrud_django.exceptions import UIPushConflictError, UIPushForbiddenError
 from scrud_django.models import Resource, ResourceType
-from scrud_django.permissions import may_act_in_context
+from scrud_django.permissions import (
+    may_act_in_context,
+    may_read_in_context,
+    resource_contexts,
+)
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
@@ -145,11 +149,19 @@ class _Write:
     def check(self, request):
         """Refuse (`UIPushForbiddenError`, 403) unless `request` may make
         this write directly: `method` on the item's type in its authorizing
-        context on the target."""
+        context on the target, for what is written, and, for a PUT or DELETE,
+        on the target's stored row in its stored contexts, as a direct write's
+        object check (``get_object()``) reads it."""
         item = self.content if self.content is not None else self.row.content
         context = authorizing_context(self.kind, item, self.target)
         permission = Permission(self.method, self.type_uri)
-        if not may_act_in_context(request, permission, item, [context]):
+        allowed = may_act_in_context(request, permission, item, [context])
+        if allowed and self.row is not None:
+            stored = self.row.content
+            allowed = may_act_in_context(
+                request, permission, stored, resource_contexts(stored)
+            )
+        if not allowed:
             raise UIPushForbiddenError(self.kind, self.key)
 
     def apply(self, resource_type, using):
@@ -305,16 +317,58 @@ def _apply(writes, using):
         write.apply(types[write.type_uri], using)
 
 
+def _resolve_deleted(writes, target: Branch, using):
+    """Remove from `target`'s ``conflicts`` the key of each of its own rows
+    `writes` deleted: as a direct DELETE of an override does."""
+    for write in writes:
+        if write.method == "http.DELETE":
+            resolve_conflict(target.name, write.kind, write.key, using)
+
+
+def _readable_conflicts(request, found, source, target, all_branches, using):
+    """The entries of `found` (`conflicts` of `source` against `target`) on
+    items `request` may GET in the target: the target's item for the key, or,
+    where it has none, the source's as the push would write it there."""
+    chain = chain_of(target.name, all_branches)
+    shown = []
+    for kind, type_uri in ITEM_KINDS.items():
+        entries = [entry for entry in found if entry["kind"] == kind]
+        if not entries:
+            continue
+        theirs = {
+            item_key(kind, content, target): content
+            for _pk, _etag, content in effective_items(
+                kind, _rows(type_uri, using), chain, include_deleted=True
+            )
+        }
+        mine = {}
+        for _pk, _etag, content in _rows(type_uri, using):
+            if branch_of(content) == source.name and isinstance(content, Mapping):
+                mine.setdefault(item_key(kind, content, source), content)
+        for entry in entries:
+            key = tuple(entry["key"])
+            item = theirs.get(key)
+            if item is None and key in mine:
+                item = _onto(kind, mine[key], key, target, None)
+            if item is not None and may_read_in_context(
+                request, type_uri, item, resource_contexts(item)
+            ):
+                shown.append(entry)
+    return shown
+
+
 def apply_push(request, content, using) -> int:
     """Write the overrides of branch ``content["source"]`` into branch
     ``content["target"]`` for `request`, in its transaction on `using`, and
     return the target's new version. Everything is checked before anything
     is written: GET and PUT on the source (``PermissionDenied``, 403), no
     `conflicts` of the source against the target (`UIPushConflictError`,
-    409), and, for each item, the grant a direct write of it into the target
-    needs (`UIPushForbiddenError`, 403). Then, in one `batched_versions`, each
-    override is written into the target (`_push_writes`), the source's own
-    rows are deleted and its ``conflicts`` cleared, and the target's version
+    409, describing only those on items the pusher may read there), and, for
+    each item, the grant a direct write of it into the target needs
+    (`UIPushForbiddenError`, 403). Then, in one `batched_versions`, each
+    override is written into the target (`_push_writes`; a target row it
+    deletes leaves the target's ``conflicts``), the source's own rows are
+    deleted and its ``conflicts`` cleared, and the target's version
     is recorded, then the source's: when the target is the source's parent,
     the source's branching point first moves to its ancestors' current
     versions, as a pull would."""
@@ -334,7 +388,8 @@ def apply_push(request, content, using) -> int:
     }
     found = conflicts(source.name, target.name, using)
     if found:
-        raise UIPushConflictError(found)
+        shown = _readable_conflicts(request, found, source, target, all_branches, using)
+        raise UIPushConflictError(shown, len(found) - len(shown))
     writes = []
     for kind, type_uri in ITEM_KINDS.items():
         theirs = _keyed(kind, target_rows[kind], target)
@@ -352,6 +407,7 @@ def apply_push(request, content, using) -> int:
     ]
     with batched_versions():
         _apply([*writes, *emptied], using)
+        _resolve_deleted(writes, target, using)
         number = record_now(target.name, using)
         moved = _empty_source(source, target, locked.get(source.name), using)
         if emptied or moved:
@@ -424,4 +480,5 @@ def apply_restore(request, content, using) -> int:
         write.check(request)
     with batched_versions():
         _apply(writes, using)
+        _resolve_deleted(writes, target, using)
         return record_now(target.name, using)
