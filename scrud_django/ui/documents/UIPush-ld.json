@@ -1,0 +1,28 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UIPush",
+  "rbac_context": {
+    "@id": "openteams:AccessControlContext"
+  },
+  "source": {
+    "@id": "openteams:UIPushSource"
+  },
+  "target": {
+    "@id": "openteams:UIPushTarget"
+  },
+  "restore": {
+    "@id": "openteams:UIPushRestore"
+  },
+  "state": {
+    "@id": "openteams:UIPushState"
+  },
+  "result": {
+    "@id": "openteams:UIPushResult"
+  },
+  "label": {
+    "@id": "openteams:UILabel"
+  },
+  "description": {
+    "@id": "openteams:UIDescription"
+  }
+}

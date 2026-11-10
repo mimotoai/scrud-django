@@ -48,12 +48,14 @@ class UIContentValidationMixin:
     def filter_queryset(self, queryset):
         """A list shows the effective items of the selected branch (main's
         without a selection), deletion markers included; the RBAC list
-        filter then applies to each row."""
+        filter then applies to each row. A type that is no item kind (a
+        branch, a push) lists every resource."""
         queryset = super().filter_queryset(queryset)
-        if getattr(self, "action", None) != "list":
+        type_uri = self.get_resource_type().type_uri
+        if getattr(self, "action", None) != "list" or kind_of(type_uri) is None:
             return queryset
         rows = effective_rows(
-            self.get_resource_type().type_uri,
+            type_uri,
             selection_for_request(self.request),
             include_deleted=True,
         )

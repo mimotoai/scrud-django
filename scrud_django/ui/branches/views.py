@@ -1,16 +1,22 @@
 """The viewsets of the UI branch resource type, with its write-time checks,
-and of the read-only UI branch versions."""
+of the read-only UI branch versions, and of UI pushes."""
 
 import dataclasses
 import hashlib
 import re
 from collections.abc import Mapping
 
+from django.db import transaction
 from scrudful.rest_framework import scrudful_viewset
 
-from scrud_django.exceptions import UIBranchInUseError, UIBranchInvalidError
+from scrud_django.exceptions import (
+    UIBranchContextError,
+    UIBranchInUseError,
+    UIBranchInvalidError,
+)
 from scrud_django.models import Resource
 from scrud_django.permissions import may_read_in_context, resource_contexts
+from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import ITEM_KINDS, MAIN
 from scrud_django.ui.branches.model import MAIN_BRANCH, Branch, applies_to
 from scrud_django.ui.branches.store import (
@@ -20,7 +26,7 @@ from scrud_django.ui.branches.store import (
     branch_from,
     branches,
 )
-from scrud_django.ui.branches.sync import pull
+from scrud_django.ui.branches.sync import apply_push, apply_restore, pull
 from scrud_django.ui.branches.versions import (
     current_version,
     discard_branch,
@@ -295,3 +301,116 @@ class UIBranchVersionViewSet(ResourceViewSet):
     def list(self, request):
         self.listed()
         return super().list(request)
+
+
+@scrudful_viewset
+class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
+    """A push writes its source branch's overrides into its target branch
+    (`apply_push`), or restores version ``restore`` of its target
+    (`apply_restore`), in the transaction of the write that moves it into
+    ``applied`` (a create in ``applied`` included); its ``result`` is then
+    the target's new version. A refused push writes nothing, the push
+    included. Workflow policies on the type gate the move as on any
+    resource."""
+
+    # Whether the write being served moves the push into ``applied``.
+    applying = False
+    # The push as saved by the write being served (`save_checked`), and, for
+    # a create, the instance the serializer created (`perform_create`), which
+    # the response describes.
+    saved = None
+    created = None
+
+    def validate_content(self, content, instance=None):
+        """Refuse (`UIBranchInvalidError`, 400) a push that names both or
+        neither of ``source`` and ``restore``, an unknown branch, a source
+        that is the target or one of its ancestors (a push would write a
+        branch's overrides into its own base), and (`UIBranchContextError`,
+        400) an ``rbac_context`` that is not the target's context. The
+        server-managed ``result`` is dropped on a create and kept on an
+        update. Note whether the write moves the push into ``applied``."""
+        super().validate_content(content, instance=instance)
+        self.applying = False
+        if not isinstance(content, dict):
+            return
+        source = content.get("source")
+        target = content.get("target")
+        restore = content.get("restore")
+        if not (
+            isinstance(source, (str, type(None)))
+            and isinstance(target, str)
+            and (restore is None or type(restore) is int)
+        ):
+            return  # the schema refuses it
+        if (source is None) == (restore is None):
+            raise UIBranchInvalidError(
+                "A push names exactly one of a source branch (source) and a "
+                "version of the target to restore (restore)."
+            )
+        all_branches = branches(self.write_database())
+        for name in (target, source):
+            if name is not None and name not in all_branches:
+                raise UIBranchInvalidError(f"There is no UI branch named {name!r}.")
+        if source is not None:
+            try:
+                chain = ancestors(target, all_branches)
+            except BranchChainError as error:
+                raise UIBranchInvalidError(str(error)) from error
+            if source == target or source in {branch.name for branch in chain}:
+                raise UIBranchInvalidError(
+                    f"Branch {source!r} cannot be pushed into {target!r}: it is "
+                    "the target or one of its ancestors."
+                )
+        expected = all_branches[target].context
+        if content.get("rbac_context") != expected:
+            raise UIBranchContextError(expected)
+        content.pop("result", None)
+        stored = instance.content if instance is not None else {}
+        if "result" in stored:
+            content["result"] = stored["result"]
+        self.applying = (
+            content.get("state") == "applied" and stored.get("state") != "applied"
+        )
+
+    def save_checked(self, save, instance=None):
+        self.saved = super().save_checked(save, instance=instance)
+        return self.saved
+
+    def perform_create(self, serializer):
+        result = super().perform_create(serializer)
+        self.created = serializer.instance
+        return result
+
+    def create_resource(self, request):
+        """Create the push and, created in ``applied``, apply it, in one
+        transaction (a POST runs in none of its own)."""
+        with transaction.atomic(using=self.write_database()):
+            return self.applied(request, super().create_resource(request))
+
+    def update(self, request, slug: str):
+        """Update the push and, moved into ``applied``, apply it, in the
+        request's transaction."""
+        with transaction.atomic(using=self.write_database()):
+            return self.applied(request, super().update(request, slug))
+
+    def applied(self, request, response):
+        """`response` to the write that saved the push; when the write moved
+        it into ``applied``, the push is applied first and its ``result``
+        stored and answered."""
+        if not self.applying:
+            return response
+        using = self.write_database()
+        pushed = self.created if self.created is not None else self.saved
+        content = pushed.content
+        if content.get("source") is not None:
+            number = apply_push(request, content, using)
+        else:
+            number = apply_restore(request, content, using)
+        ResourceRegistration.update_locked(
+            pushed,
+            {**content, "result": {"version": number}},
+            resource_type=self.get_resource_type(),
+            using=using,
+        )
+        response.data = self.get_serializer(instance=pushed, many=False).data
+        return response

@@ -1,0 +1,40 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIPush",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Push",
+  "description": "Writes a source branch's overrides into a target branch, or restores a version of the target, when it is moved into the state applied.",
+  "type": "object",
+  "properties": {
+    "rbac_context": {
+      "type": "string",
+      "description": "The target branch's context: grants there decide who may propose or apply the push."
+    },
+    "source": {
+      "type": ["string", "null"],
+      "description": "The name of the branch whose overrides are pushed, or null for a restore."
+    },
+    "target": {
+      "type": "string",
+      "description": "The name of the branch the push writes into."
+    },
+    "restore": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "The version of the target to restore, or null for a push from source."
+    },
+    "state": {
+      "type": "string",
+      "description": "proposed or applied; a workflow policy may add states in between. A write that moves the push into applied applies it."
+    },
+    "result": {
+      "type": "object",
+      "description": "Server-managed: once applied, the target's new version.",
+      "properties": {
+        "version": { "type": "integer" }
+      }
+    },
+    "label": { "type": "string" },
+    "description": { "type": "string" }
+  },
+  "required": ["target", "state", "rbac_context"]
+}

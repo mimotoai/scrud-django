@@ -1,5 +1,5 @@
-"""The built-in UI resource types: UI components, UI stylesheets, UI branches
-and UI branch versions."""
+"""The built-in UI resource types: UI components, UI stylesheets, UI branches,
+UI branch versions and UI pushes."""
 
 import importlib.resources
 
@@ -18,6 +18,8 @@ UI_BRANCH_RESOURCE_TYPE_ = None
 UI_BRANCH_REGISTRATION_ = None
 UI_BRANCH_VERSION_RESOURCE_TYPE_ = None
 UI_BRANCH_VERSION_REGISTRATION_ = None
+UI_PUSH_RESOURCE_TYPE_ = None
+UI_PUSH_REGISTRATION_ = None
 
 # The module-level caches above, for tests to forget.
 REGISTRATION_CACHES = [
@@ -29,6 +31,8 @@ REGISTRATION_CACHES = [
     "UI_BRANCH_REGISTRATION_",
     "UI_BRANCH_VERSION_RESOURCE_TYPE_",
     "UI_BRANCH_VERSION_REGISTRATION_",
+    "UI_PUSH_RESOURCE_TYPE_",
+    "UI_PUSH_REGISTRATION_",
 ]
 
 
@@ -120,6 +124,26 @@ def ui_branch_version_resource_type(force=False):
     return UI_BRANCH_VERSION_RESOURCE_TYPE_
 
 
+def ui_push_resource_type(force=False):
+    from scrud_django.ui.branches import UI_PUSH_SLUG, UI_PUSH_TYPE_URI
+
+    global UI_PUSH_RESOURCE_TYPE_
+    global UI_PUSH_REGISTRATION_
+    if UI_PUSH_RESOURCE_TYPE_ is None or force:
+        from scrud_django.ui.branches.views import UIPushViewSet
+
+        UI_PUSH_REGISTRATION_ = ResourceTypeRegistration(
+            resource_type_uri=UI_PUSH_TYPE_URI,
+            revision="1",
+            slug=UI_PUSH_SLUG,
+            schema_func=lambda: _document("UIPush-schema.json").read_text(),
+            context_func=lambda: _document("UIPush-ld.json").read_text(),
+            viewset_class=UIPushViewSet,
+        )
+        UI_PUSH_RESOURCE_TYPE_ = UI_PUSH_REGISTRATION_.resource_type
+    return UI_PUSH_RESOURCE_TYPE_
+
+
 def ui_resource_type_urls():
     """The routes of the UI resource types, each registered first, or its
     registration left pending on a database error (`register_or_defer`).
@@ -129,8 +153,14 @@ def ui_resource_type_urls():
         UI_BRANCH_TYPE_URI,
         UI_BRANCH_VERSION_SLUG,
         UI_BRANCH_VERSION_TYPE_URI,
+        UI_PUSH_SLUG,
+        UI_PUSH_TYPE_URI,
     )
-    from scrud_django.ui.branches.views import UIBranchVersionViewSet, UIBranchViewSet
+    from scrud_django.ui.branches.views import (
+        UIBranchVersionViewSet,
+        UIBranchViewSet,
+        UIPushViewSet,
+    )
     from scrud_django.ui.views import UIComponentViewSet, UIStylesheetViewSet
 
     def registered(register_type, registration_name):
@@ -168,6 +198,13 @@ def ui_resource_type_urls():
             UI_BRANCH_VERSION_TYPE_URI,
             UI_BRANCH_VERSION_SLUG,
             UIBranchVersionViewSet,
+        ),
+        (
+            ui_push_resource_type,
+            "UI_PUSH_REGISTRATION_",
+            UI_PUSH_TYPE_URI,
+            UI_PUSH_SLUG,
+            UIPushViewSet,
         ),
     )
     urls = []

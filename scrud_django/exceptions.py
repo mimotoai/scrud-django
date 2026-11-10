@@ -238,6 +238,54 @@ class UIBranchVersionMissingError(ScrudException):
         self.title = "UI branch version missing"
 
 
+class UIPushConflictError(ScrudException):
+    """A UI push whose source overrides items the target changed since
+    (`scrud_django.ui.branches.sync.conflicts`): 409 Conflict, naming them in
+    ``detail`` and listing them as ``conflicts`` (``{"kind", "key", "base",
+    "current"}`` each). Nothing is written."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "ui_push_conflict"
+
+    def __init__(self, conflicts):
+        self.conflicts = list(conflicts)
+        names = ", ".join(
+            f"{entry['kind']} {tuple(entry['key'])!r}" for entry in self.conflicts
+        )
+        super().__init__(
+            f"The target changed these items since the source overrode them: "
+            f"{names}. Pull the source and resolve them, then push again."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-push-conflict"
+        self.title = "UI push conflict"
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        data["conflicts"] = self.conflicts
+        return data
+
+
+class UIPushForbiddenError(ScrudException):
+    """A UI push or restore that would write an item into the target that
+    the pusher may not write there directly (the grant on the item's type in
+    its authorizing context on the target): 403 Forbidden. Nothing is
+    written."""
+
+    status_code = 403
+    default_detail = "Forbidden"
+    default_code = "ui_push_forbidden"
+
+    def __init__(self, kind, key):
+        super().__init__(
+            f"You may not write the {kind} {tuple(key)!r} into the target "
+            "branch: a push needs, for each item, the grant a direct write of "
+            "it there needs."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-push-forbidden"
+        self.title = "UI push forbidden"
+
+
 class UIHeaderInvalidError(ScrudException):
     """An HTML request whose fragment header (``Scrud-UI-Pointer``) is
     invalid."""

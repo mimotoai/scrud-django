@@ -198,6 +198,17 @@ def batched_versions():
         _record_item_write(name, using, "a batch of item writes")
 
 
+def record_now(branch_name: str, using: str) -> int:
+    """`record_version` of branch `branch_name` now, and, inside
+    `batched_versions`, no other version for it when the block ends (unless
+    its items are written again after this): a push records the target's
+    version before the source's branching point is moved to it."""
+    marked = _batch.get()
+    if marked is not None:
+        marked.pop((branch_name, using), None)
+    return record_version(branch_name, using)
+
+
 def item_written(sender, instance=None, resource_type_uri=None, **kwargs):
     """A ``scrud_post_save`` / ``scrud_post_delete`` receiver: a write of an
     item (a type in ``ITEM_KINDS``, read now, so that every kind added to it
