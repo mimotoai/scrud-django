@@ -96,6 +96,7 @@ login, at `/api-auth/login/` or with Basic auth):
 ```bash
 cd demo
 uv run python manage.py migrate
+uv run python manage.py seed_todo_demo
 uv run python manage.py createsuperuser
 uv run python manage.py runserver
 ```

@@ -1684,3 +1684,11 @@ preview, write a "New component for this node" (choose the `row` scope under
 
 Known limitations of phase 1 are recorded in the [follow-ups](follow-ups.md),
 under the `ui-` names.
+
+## Self-hosted studio (coming)
+
+The bootstrap studio above will be joined by a studio hosted by the UI itself,
+styled with the packaged layers and the runtime features described in this
+chapter (embeds, computed resource types, safe mode, drafts in the live
+preview). The design is in
+`docs/superpowers/specs/2026-11-10-ui-self-hosted-studio-design.md`.

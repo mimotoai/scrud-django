@@ -29,9 +29,60 @@
   problem types: `ui-studio-branch-read-only`, `ui-studio-context-unavailable`,
   `ui-pointer-not-found`. See the Studio chapter of the UI page. The demo
   mounts it at `/studio/` and seeds a working branch `alice-wip`.
+* `ui-js` items in `scrud_django.ui`: a new item type shaped like `ui-css`
+  (`name`, `js`, `order`, the branch fields), served at versioned, immutable
+  same-origin URLs (`ui-js-files/<name>/<etag>.js`, also under a published
+  branch's prefix) and linked by the page component from its `scripts` list.
+  Write access is granted on `ui-js` separately from `ui-components`, and the
+  branch machinery (effective items, versions, push, pull, restore, conflicts,
+  revert) covers it as it covers CSS.
+* A scope chain in the URL (`?ui-scope=a,b`, the header `Scrud-UI-Scope` wins)
+  and a requested view mode (`?ui-mode=view`, which can only downgrade edit
+  mode to view mode, never grant it).
+* List chrome through the cascade: the collection wrapper is chosen by a
+  stylesheet rule like any node, so a rule can restyle a type's lists. With no
+  matching rule `scrud:collection` is used as before.
+* Remove and reorder array items in edit mode, with validation errors shown
+  next to the item and field they belong to.
+* Packaged, overridable UI layers: an installed app can ship components,
+  stylesheets, CSS and JS items as package files, below every root branch and
+  above the `scrud:*` built-ins. A branch overrides a layer item by name;
+  deleting the override reverts to the packaged item. An override whose `base`
+  differs from the installed layer item's ETag is a layer conflict, shown in
+  the branch's effective items and reported by the new check
+  `scrud_django_ui.W002` (a database check, a Warning); an invalid layer
+  declaration is the check Error `scrud_django_ui.E002` and is left out. Layer items are not rows and are not in
+  the item lists.
+* Safe mode: `?ui-safe=1` renders from packaged layers, built-ins and the
+  default stylesheet only, ignoring every branch's stored items, and says so
+  in a notice on the page. It reveals nothing new and changes no
+  authorization.
+* Computed, read-only resource types (GET only, other methods 405): an app can
+  register a type whose content Python computes per request, with a schema,
+  JSON-LD, an ETag and rendering through the cascade. Authorization stays with
+  scoped RBAC.
+* Server-side embeds: a component can embed another resource URL rendered on
+  the server as the same user (RBAC, workflow and masking apply), in a given
+  scope chain and view mode, with depth and per-response count limits, and
+  cycles refused.
+* JSON bodies from the browser for any method: `scrud-ui.js` can POST a
+  collection (`data-scrud-json="form"`), send a fixed body
+  (`data-scrud-json="fixed"`) and DELETE with JSON, keeping `If-Match`, the
+  CSRF token and the UI headers.
+* Studio additions in `scrud_django.ui.studio`: a live preview that renders
+  unsaved drafts of items layered over a branch, marks the nodes a rule
+  wins or loses, and runs in an opaque-origin sandbox; and computed studio
+  data, `ui-branch-items/<branch>/`, `ui-branch-status/<branch>/`,
+  `ui-type-catalog/all/`, `ui-selectable-branches/mine/` and
+  `ui-push-previews/<source>/?target=<name>` (what a push would change,
+  without writing), each listing only what the user may GET.
 
 ### Changed
 
+* A UI item whose name starts with `scrud:` is refused with 400
+  `ui-layer-name-reserved`.
+* The built-in `array-edit` now shows Remove and Move controls in edit mode.
+* Computed resource types are not listed in the service catalog.
 * In `scrud_django.ui`, writing a component or stylesheet is authorized by RBAC
   in the item's branch context instead of a global trusted role; on `main`
   (context `""`) the rules are the same as before. Viewing a branch means

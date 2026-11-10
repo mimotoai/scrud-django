@@ -1,6 +1,44 @@
 # Follow-ups
 
-Open follow-ups come first; the entries under `# Decided` are limitations
+Open follow-ups come first; the entries under `<a id="embed-literal-path-save-check"></a>
+## embed-literal-path-save-check: a literal non-resource embed path is refused only at render
+
+The spec (R9) asked that an embed whose path is a literal that is not a
+resource URL be refused when the component is saved. Only the render-time
+refusal is implemented, so such a component saves and then renders the
+refusal notice. Test: in `tests/test_ui_embeds.py`, PUT a component whose
+template embeds a literal non-resource path; it should be a 400 and is a 200
+today.
+
+<a id="embed-preview-mode"></a>
+## embed-preview-mode: embeds in a view-mode live preview use the viewer's own mode
+
+An embed inside a live preview requested in view mode renders in the viewer's
+own mode (write attributes are still stripped), not in view mode. Test: in
+`tests/test_studio_live_preview.py`, preview a component that embeds an
+editable resource with view mode requested as a user who may PUT it; the
+embedded markup should have no edit controls and has them today.
+
+<a id="live-preview-draft-recursion"></a>
+## live-preview-draft-recursion: deeply nested draft content can give a sandboxed 500
+
+Deep but parseable nesting inside a draft's content can recurse during
+validation, and the preview answers a sandboxed 500 instead of a 400
+(`ui-studio-preview-invalid`). Test: in `tests/test_studio_live_preview.py`,
+post a draft whose content nests a few hundred levels (under the parser's
+limit); it should be a 400 and is a 500 today.
+
+<a id="push-preview-write-grants"></a>
+## push-preview-write-grants: the push preview does not check write grants
+
+`ui-push-previews` lists what a push would write but does not check the user's
+per-item write grants, so it cannot say whether the user may apply the push
+(the push itself still checks them). Test: in `tests/test_studio_push_preview.py`,
+preview a push as a user with GET on both branches but no write on one changed
+item type; the response should flag that item as not applicable and has no such
+field today.
+
+# Decided` are limitations
 kept by a decision, each saying what was decided and why. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
