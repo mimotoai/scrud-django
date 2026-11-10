@@ -505,6 +505,57 @@ omit it when items were filtered. Test: read a version as a user who lacks one
 item's read grant, grant it, then GET with `If-Modified-Since` of the earlier
 response and assert 200; it is 304 today.
 
+<a id="ui-version-storage-growth"></a>
+## ui-version-storage-growth: every item write stores a full copy of its branch's items
+
+A version holds all of its branch's own items, not the change, and every write
+of an item records one. `main` owns every item written before branches and
+every live item, so each edit of any of them stores a full copy of main's
+items (and their ETags), and nothing is ever removed: storage grows with the
+number of writes times the number of items. Versions are what pinned bases,
+branching points, conflict checks and restores read, so they cannot simply be
+dropped.
+
+Fix: a retention policy that keeps the versions some branch's branching point,
+a push's `result` or a recent window names and deletes the rest (or prunes
+their `items`), or versions stored as changes from the previous one. Test:
+with 50 items on main, edit one of them 100 times, and assert the stored size
+of main's versions stays under a bound; it grows to 100 full copies today.
+
+<a id="ui-stale-proposed-push"></a>
+## ui-stale-proposed-push: a proposed push applies to a later branch of the same name
+
+A push names its source and target by name. A push left `proposed` (for
+example waiting for approval under a workflow policy) whose source branch is
+then deleted, and another branch created under the same name, applies the new
+branch's overrides when it is moved to `applied`: whoever approved it approved
+other changes. Applying still checks the applier's grants on every item, so it
+writes nothing they could not write directly.
+
+Fix: record the source's identity (its pk, or its version when proposed) in
+the push and refuse to apply when it changed, or refuse (or cancel) the
+proposed pushes naming a branch when it is deleted. Test: propose a push from
+`wip`, delete `wip`, create `wip` again with other overrides, move the push to
+`applied`, and assert it is refused; it applies the new overrides today.
+
+<a id="ui-css-unconfirmed-pinned"></a>
+## ui-css-unconfirmed-pinned: a pinned view by parameter links CSS its files do not serve
+
+A page opened with `?ui-branch=W@pinned` while the prefix's cookie already
+holds `W` is not asked to confirm (it is the same branch), and renders `W`
+pinned at its branching point, linking the pinned CSS items' URLs. The browser
+fetches those CSS files with the cookie but not the parameter, so the CSS view
+chooses `W` live, and a CSS item changed since the branching point is not
+found there: the page shows without it (a 404 for the file). The banner's own
+pinned toggle confirms the switch and sets the cookie to `W@pinned`, so it is
+not affected.
+
+Fix: have the CSS links carry the page's selection (a parameter the CSS view
+reads), or treat a selection that differs from the cookie only by `@pinned` as
+one that asks to confirm. Test: with the cookie set to `W`, change a CSS item of
+`W`'s parent after `W`'s branching point, open `?ui-branch=W@pinned`, fetch
+each linked CSS URL with the cookie and assert 200; one is 404 today.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

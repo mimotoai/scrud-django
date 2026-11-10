@@ -700,6 +700,12 @@ year as private.
   components; a link that would switch the viewer to a working branch asks first
   (confirmation, with a token only the server can issue for that viewer, which
   needs `CsrfViewMiddleware`); and the CSP below blocks inline scripts. The
+  confirmation is a click on a page the server renders, so it holds only while
+  other sites cannot frame that page and steer the click (clickjacking): keep
+  the CSP's `frame-ancestors` (below), or Django's `XFrameOptionsMiddleware`
+  (`X-Frame-Options: DENY` by default). `frame-ancestors 'self'` still lets
+  the site's own pages, a branch's components among them, frame it; `'none'`
+  (or `DENY`) does not. The
   banner is not a guarantee: a branch's CSS, or a page component that wraps
   its body in a hidden element, can hide it (see the follow-up
   [ui-banner-hideable](follow-ups.md#ui-banner-hideable)). Trust the writers
