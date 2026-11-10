@@ -104,11 +104,14 @@ CI is `.gitlab-ci.yml`: lint, migrations check, docs build, tests with
 coverage on 3.11-3.13 (then again with `--reverse`), the suite on PostgreSQL
 14 via `SCRUD_TEST_PG_*` (`test-postgres`) and on MySQL 8.4 and MariaDB 11.4
 via `SCRUD_TEST_MYSQL_*` (`test-mysql`), a package build/README/installed-
-wheel check, and a version check on merge requests. Run the lint and test
-commands above before committing. Publishing to PyPI runs in CI when a merge
-to `develop` carries a version not yet on PyPI (`scripts/release.py`), and
-fails for one lower than PyPI's latest; never run `uv publish` locally or
-create release tags by hand.
+wheel check, and a version check on release merge requests into `main`. Run the lint and test
+commands above before committing. Work merges into `develop` (the default
+branch) with no version bump. Releasing is a merge request from `develop` into
+`main` (protected): `version-check` runs only on those, and publishing to PyPI
+runs in CI when a merge to `main` carries a version not yet on PyPI
+(`scripts/release.py`), and fails for one lower than PyPI's latest; never run
+`uv publish` locally or create release tags by hand. The old `master` history
+(to 2021) is kept in the `legacy-master` tag.
 
 ## Test conventions
 

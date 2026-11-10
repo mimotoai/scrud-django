@@ -1,7 +1,8 @@
 """Release checks used by the CI pipeline (.gitlab-ci.yml).
 
-The version to release is set in the merge request (``uv version 0.2.0`` or
-``uv version --bump minor``); merging it to the default branch publishes it.
+The version to release is set on ``develop`` (``uv version 0.2.0`` or
+``uv version --bump minor``); merging ``develop`` into the release branch
+``main`` publishes it.
 
 ``check-bump BASE TARGET``
     Merge requests: if the MR changes the package (``scrud_django/``, or
