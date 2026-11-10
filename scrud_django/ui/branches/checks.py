@@ -1,10 +1,12 @@
-"""The system check of published branches' prefixes, and the same rules as
-the branch views apply them when a prefix is set (`prefix_problems`)."""
+"""The system checks of published branches' prefixes, and the same rules as
+the branch views apply them when a prefix is set (`prefix_problems`), and
+of overrides of packaged UI layer items (`check_layer_conflicts`)."""
 
 from django.core import checks
 from django.urls import NoReverseMatch, Resolver404, get_script_prefix, resolve
 
 CHECK_ID = "scrud_django_ui.W001"
+LAYER_CONFLICTS_ID = "scrud_django_ui.W002"
 
 
 def check_prefixes(app_configs, databases=None, **kwargs):
@@ -196,4 +198,72 @@ def _overlap(outer, inner):
         hint="Give one of the branches a prefix that the other's types' URLs "
         "do not start.",
         id=CHECK_ID,
+    )
+
+
+def check_layer_conflicts(app_configs, databases=None, **kwargs):
+    """A database check (``manage.py check --database default``, and
+    ``migrate``): a Warning (``scrud_django_ui.W002``) for each branch, on
+    each migrated database of `databases`, with overrides of packaged UI
+    layer items in conflict with the installed layer (`layers.layer_conflicts`):
+    one whose layer item changed since the override was based on it (an
+    upgrade changed it), and one whose layer item is gone (an orphan, which
+    keeps rendering as an ordinary item). A Warning, as ``W001``: it
+    reports stored data. A branch whose chain is broken, or whose pinned
+    snapshot is missing, is skipped (it renders its published branch). A
+    database error reading a migrated database is reported
+    (``scrud_django.W007``)."""
+    from django.db.utils import OperationalError, ProgrammingError
+
+    from scrud_django.checks import could_not_run, error_text, not_checked
+    from scrud_django.ui.branches.store import BranchChainError, _read_branches
+    from scrud_django.ui.layers import layer_conflicts
+
+    found = []
+    for alias in databases or ():
+        if not_checked(alias):
+            continue
+        try:
+            listed = []
+            for name, branch in sorted(_read_branches(alias).items()):
+                try:
+                    conflicted = layer_conflicts(branch, using=alias)
+                except BranchChainError:
+                    continue
+                if conflicted:
+                    listed.append((name, conflicted))
+        except (OperationalError, ProgrammingError) as error:
+            found.append(could_not_run(LAYER_CONFLICTS_ID, alias, error_text(error)))
+            continue
+        found.extend(_layer_conflicts(name, conflicted) for name, conflicted in listed)
+    return found
+
+
+def _layer_conflicts(name, conflicted):
+    def described(entry):
+        key = entry["key"]
+        text = f"{entry['kind']} {key[0]!r}"
+        if len(key) > 1 and key[1]:
+            text += f" (applies to {key[1]!r})"
+        return text
+
+    changed = [described(e) for e in conflicted if e["current"] is not None]
+    orphaned = [described(e) for e in conflicted if e["current"] is None]
+    parts = []
+    if changed:
+        parts.append(
+            "overrides packaged UI layer items that changed since they were "
+            f"based on them: {', '.join(changed)}"
+        )
+    if orphaned:
+        parts.append(
+            "has orphaned overrides of packaged UI layer items that are no "
+            f"longer installed (they render as ordinary items): {', '.join(orphaned)}"
+        )
+    return checks.Warning(
+        f"Branch {name!r} {'; and '.join(parts)}.",
+        hint="Re-save each changed override with rebase: true to keep it (its "
+        "base moves to the layer item's ETag), or delete it to show the "
+        "layer's; delete or rename an orphaned override.",
+        id=LAYER_CONFLICTS_ID,
     )

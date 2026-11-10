@@ -6,9 +6,9 @@ With no selection (or ``main`` selected) the state is main's, computed from
 the stored items alone: no branch row is read (ruling R1).
 
 The packaged layers' items (`scrud_django.ui.layers`) are the bottom of every
-chain, beneath every root: `effective_rows` and `parent_state` end each chain
-with `LAYER_BRANCH`, and `_rows_for` adds their rows (a pinned branch sees the
-installed layers too)."""
+chain, beneath every root: `effective_rows`, `branch_state` and
+`parent_state` end each chain with `LAYER_BRANCH`, and `_rows_for` adds their
+rows (a pinned branch sees the installed layers too)."""
 
 import contextlib
 import contextvars
@@ -295,10 +295,11 @@ def branch_state(
 ):
     """``(pk, etag, content)`` of the items of `type_uri` effective on
     branch `name` as it shows itself (with its own pins and its ancestors',
-    `_rows_for`), read on `using`: what a push into it overwrites, and what
-    a pull of a child is compared with (ruling R38). Deletion markers are
-    kept with `include_deleted`. `BranchChainError` for a broken chain, and
-    for a pinned snapshot that is missing."""
+    `_rows_for`, and the packaged layers' items beneath them), read on
+    `using`: what a push into it overwrites, and what a pull of a child is
+    compared with (ruling R38). Deletion markers are kept with
+    `include_deleted`. `BranchChainError` for a broken chain, and for a
+    pinned snapshot that is missing."""
     chain = chain_of(name, all_branches)
     rows = _rows_for(kind, type_uri, chain, False, using)
     if rows is None:
@@ -306,17 +307,27 @@ def branch_state(
             f"Branch {name!r} is pinned to an ancestor version that is "
             "missing: pull it first."
         )
-    return effective_items(kind, rows, chain, include_deleted=include_deleted)
+    return effective_items(
+        kind, rows, [*chain, LAYER_BRANCH], include_deleted=include_deleted
+    )
 
 
-def parent_state(kind: str, type_uri: str, branch: Branch, all_branches, using):
+def parent_state(
+    kind: str,
+    type_uri: str,
+    branch: Branch,
+    all_branches,
+    using,
+    include_deleted: bool = False,
+):
     """``(pk, etag, content)`` of the items of `type_uri` effective on
     `branch`'s parent as `branch` shows them (`all_branches` say where its
     chain is), read on `using`: the parent's current state on a live
     branch; on one pinned (or with a pinned ancestor), the ancestors' items
     as of the branching point, with the ETags their versions recorded; and
-    beneath them the packaged layers' items. This is what an override on
-    `branch` replaces, so its ``base`` (ruling R38).
+    beneath them the packaged layers' items (alone, for a root). This is
+    what an override on `branch` replaces, so its ``base`` (ruling R38).
+    Deletion markers are kept with `include_deleted`.
     `BranchChainError` for a broken chain, and for a pinned snapshot that
     is missing."""
     chain = chain_of(branch.name, all_branches)
@@ -326,4 +337,6 @@ def parent_state(kind: str, type_uri: str, branch: Branch, all_branches, using):
             f"Branch {branch.name!r} is pinned to an ancestor version that is "
             "missing: pull it first."
         )
-    return effective_items(kind, rows, [*chain[1:], LAYER_BRANCH])
+    return effective_items(
+        kind, rows, [*chain[1:], LAYER_BRANCH], include_deleted=include_deleted
+    )

@@ -34,7 +34,7 @@ from django.core import checks
 from django.core.signals import setting_changed
 
 from scrud_django.ui.branches import ITEM_KINDS
-from scrud_django.ui.branches.model import Branch, item_key, kind_of
+from scrud_django.ui.branches.model import Branch, branch_of, item_key, kind_of
 
 CHECK_ID = "scrud_django_ui.E002"
 
@@ -134,6 +134,59 @@ def may_use_name(kind: str, content: Mapping) -> bool:
     else:
         key = (name,)
     return _loaded()[0].get(kind, {}).get(key) is not None
+
+
+def layer_conflicts(branch: Branch, using=None) -> list[dict]:
+    """``{"kind", "key", "base", "current"}`` for each own row of `branch`
+    (a deletion marker too) that overrides a layer item: the nearest item
+    beneath it with its key, as `branch` shows its ancestors
+    (`effective.parent_state`), is the layer's, and its ``base`` differs
+    from that item's current ETag (``current``), as after an upgrade
+    changed it. An own row whose name has a layer prefix (``abc:``) and
+    which nothing beneath it has (the layer item is gone, or its layer is
+    no longer installed) is an orphaned override, listed with ``current``
+    ``None`` whatever its ``base``. Read on `using` (default: the router's
+    read database). Computed live (spec R1, "Layer conflicts"): a pull
+    lists the conflicts against the parent, which roots do not have.
+    `BranchChainError` for a broken chain, and for a pinned snapshot that
+    is missing."""
+    from scrud_django.ui.branches.effective import _live_rows, parent_state
+    from scrud_django.ui.branches.store import branches
+
+    all_branches = {**branches(using), LAYER_BRANCH_NAME: LAYER_BRANCH}
+    found = []
+    for kind, type_uri in ITEM_KINDS.items():
+        beneath = {
+            item_key(kind, content, all_branches[branch_of(content)]): (etag, content)
+            for _pk, etag, content in parent_state(
+                kind, type_uri, branch, all_branches, using, include_deleted=True
+            )
+        }
+        for _pk, _etag, content in _live_rows(type_uri, {branch.name}, using):
+            name = content.get("name") if isinstance(content, Mapping) else None
+            if not isinstance(name, str):
+                continue
+            key = item_key(kind, content, branch)
+            provider = beneath.get(key)
+            if provider is None:
+                if name_prefix(name) is None:
+                    continue  # a new item, not an override
+                current = None  # an orphan
+            elif branch_of(provider[1]) != LAYER_BRANCH_NAME:
+                continue  # an ancestor's item: a pull compares it
+            else:
+                current = provider[0]
+                if content.get("base") == current:
+                    continue
+            found.append(
+                {
+                    "kind": kind,
+                    "key": list(key),
+                    "base": content.get("base"),
+                    "current": current,
+                }
+            )
+    return found
 
 
 def check_layers(app_configs=None, **kwargs) -> list[checks.CheckMessage]:

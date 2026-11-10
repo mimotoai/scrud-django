@@ -47,6 +47,7 @@ from scrud_django.ui.branches.versions import (
     record_now,
     snapshot,
 )
+from scrud_django.ui.layers import LAYER_BRANCH
 
 # Flags an item's write accepts but never stores.
 WRITE_ONLY = ("rebase",)
@@ -68,7 +69,9 @@ def conflicts(source: str, against: str, using=None) -> list[dict]:
     branch `against`'s effective item for the same key (``None`` for none, so
     a ``base`` of ``None`` conflicts once `against` has the key), as
     `against` shows it (`branch_state`: as of its branching point where it
-    is pinned; ruling R38). Read on `using` (default: the router's read
+    is pinned; ruling R38), the packaged layers' items beneath it: an
+    override of a layer item that `against` does not override is compared
+    with the layer's. Read on `using` (default: the router's read
     database)."""
     all_branches = branches(using)
     against_branch = chain_of(against, all_branches)[0]
@@ -252,11 +255,10 @@ def _keyed(kind: str, rows, branch: Branch) -> dict[tuple, Resource]:
 
 def _parent_etags(kind, type_uri, target: Branch, all_branches, using) -> dict:
     """The ETag of each item key visible on `target`'s parent as `target`
-    shows it (`parent_state`; none without a parent): the ``base`` of a
-    deletion marker a push adds to `target` over a row of its own."""
-    if target.parent is None:
-        return {}
-    parent = all_branches[target.parent]
+    shows it (`parent_state`, with the packaged layers' items beneath it;
+    a root's are the layers' alone): the ``base`` of a deletion marker a
+    push adds to `target` over a row of its own."""
+    parent = LAYER_BRANCH if target.parent is None else all_branches[target.parent]
     return {
         item_key(kind, content, parent): etag
         for _pk, etag, content in parent_state(

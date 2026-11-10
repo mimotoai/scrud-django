@@ -55,6 +55,7 @@ from scrud_django.ui.cascade import (
     resolve_component,
     rules_memo,
 )
+from scrud_django.ui.layers import LAYER_BRANCH, LAYER_BRANCH_NAME
 from scrud_django.ui.render import NodeInfo, node_at
 from scrud_django.ui.selectors import SCOPE_NAME, TypeTerm
 from scrud_django.ui.studio.dispatch import call_view
@@ -623,13 +624,18 @@ def _extend(request, kind, branch: Branch, name, target, change, fresh=None):
 
 def _inherited(kind, branch: Branch, key):
     """``(pk, etag, content)`` of the item with `key` that `branch` shows
-    from an ancestor (pk ``None``: a pinned snapshot's), or ``None``."""
-    all_branches = branches(write_db())
+    from an ancestor or a packaged layer (pk ``None``: a pinned snapshot's
+    or a layer's), or ``None``."""
+    all_branches = {
+        MAIN: MAIN_BRANCH,
+        **branches(write_db()),
+        LAYER_BRANCH_NAME: LAYER_BRANCH,
+    }
     for row in effective_rows(ITEM_KINDS[kind], Selection(branch=branch.name)):
         on = branch_of(row[2])
         if on == branch.name:
             continue
-        row_branch = all_branches.get(on) or (MAIN_BRANCH if on == MAIN else None)
+        row_branch = all_branches.get(on)
         if row_branch is not None and item_key(kind, row[2], row_branch) == key:
             return row
     return None

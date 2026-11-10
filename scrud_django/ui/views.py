@@ -41,7 +41,7 @@ from scrud_django.ui.branches.selection import (
 from scrud_django.ui.branches.store import BranchChainError, branches, ensure_main
 from scrud_django.ui.branches.sync import resolve_conflict
 from scrud_django.ui.engines import TemplateCompileError, compile_template
-from scrud_django.ui.layers import may_use_name
+from scrud_django.ui.layers import layer_item, may_use_name
 from scrud_django.ui.renderer import negotiated_html
 from scrud_django.ui.selectors import SelectorError, parse_selector
 from scrud_django.views import ResourceViewSet
@@ -102,12 +102,17 @@ class UIContentValidationMixin:
         A name with a prefix (``abc:``) must be that of an installed layer's
         item of the kind (and ``applies_to``) that the item overrides
         (`layers.may_use_name`); else the write is refused
-        (`UILayerNameReservedError`, 400). So ``scrud:`` always is."""
+        (`UILayerNameReservedError`, 400). So ``scrud:`` always is. An
+        update that keeps the item's name (and ``applies_to``) is not
+        refused: an override whose layer item an upgrade removed (an
+        orphan) stays editable."""
         kind = kind_of(self.get_resource_type().type_uri)
         self.rebased = False
         if kind is not None and isinstance(content, dict):
             self.item_branch = self.validate_branch(kind, content, instance)
-            if not may_use_name(kind, content):
+            if not may_use_name(kind, content) and not keeps_key(
+                kind, content, instance, self.item_branch
+            ):
                 raise UILayerNameReservedError(content["name"])
             self.rebased = self.validate_rebase(content, instance)
             if self.rebased:
@@ -176,7 +181,9 @@ class UIContentValidationMixin:
         """Remove the write-only ``rebase`` from `content` and say whether
         the write keeps the override as it is (``rebase: true``), which
         resolves its conflict. Refuse (400) it anywhere but on an update of
-        an own item of a branch with a parent."""
+        an own item of a branch with a parent, or of a root branch's item
+        that overrides an installed layer item (`layers.layer_item`): there
+        it resolves its layer conflict."""
         rebase = content.pop("rebase", False)
         if rebase is False:
             return False
@@ -185,21 +192,37 @@ class UIContentValidationMixin:
             rebase is not True
             or instance is None
             or branch is None
-            or (branch.parent is None)
+            or (branch.parent is None and not self.overrides_layer_item(content))
         ):
             raise UIBranchInvalidError(
-                "rebase: true keeps an override of the parent's item: it is "
-                "valid only on an update of an item of a branch with a parent."
+                "rebase: true keeps an override of the parent's item (or, on a "
+                "branch without a parent, of a packaged UI layer's item): it is "
+                "valid only on an update of an item of a branch with a parent, "
+                "or of one that overrides an installed layer item."
             )
         return True
+
+    def overrides_layer_item(self, content) -> bool:
+        """Whether the item `content` on `item_branch` has the key of an
+        installed layer's item."""
+        kind = kind_of(self.get_resource_type().type_uri)
+        if not isinstance(content.get("name"), str):
+            return False
+        key = item_key(kind, content, self.item_branch)
+        return layer_item(kind, key) is not None
 
     def base_of(self, kind, content, branch):
         """The ETag of the parent's item for the key of `content` on
         `branch`, as `branch` shows it (`parent_state`): the current one on
         a live branch, the one its pinned version recorded on a pinned branch
-        (ruling R38); else ``None`` (no parent, or no item there)."""
+        (ruling R38), the installed layer item's where no ancestor has one;
+        else ``None``. On a root branch (no parent), the layer item's ETag
+        (`layers.layer_item`), else ``None``."""
         if branch.parent is None:
-            return None
+            if not isinstance(content.get("name"), str):
+                return None
+            found = layer_item(kind, item_key(kind, content, branch))
+            return None if found is None else found[0]
         write_db = self.write_database()
         type_uri = self.get_resource_type().type_uri
         all_branches = branches(write_db)
@@ -274,6 +297,17 @@ class UIContentValidationMixin:
         if instance is not None:
             resources = resources.exclude(pk=instance.pk)
         return resources
+
+
+def keeps_key(kind, content, instance, branch) -> bool:
+    """Whether `content`, the body of an update of `instance` on `branch`
+    (``None``: a body the schema refuses), keeps the stored item's
+    `item_key`: its name and, for a stylesheet, its ``applies_to``."""
+    if instance is None or branch is None or not isinstance(instance.content, dict):
+        return False
+    if not isinstance(content.get("name"), str):
+        return False
+    return item_key(kind, content, branch) == item_key(kind, instance.content, branch)
 
 
 def require_unless_deleted(content, fields):

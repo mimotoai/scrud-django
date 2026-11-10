@@ -341,10 +341,19 @@ and again after a setting changes.
   stylesheet outranks an earlier one's.
 - **Overriding.** A branch overrides a layer item as it does any inherited
   item: write an item of the same kind with the same name (and, for a
-  stylesheet, `applies_to` `""`). On a child branch the override's `base` is
-  the layer item's ETag, the sha256 hex of the file's content as canonical
-  JSON (sorted keys, no spaces), when no ancestor overrides it. Deleting the
-  override shows the packaged item again.
+  stylesheet, `applies_to` `""`). The override's `base` is the layer item's
+  ETag, the sha256 hex of the file's content as canonical JSON (sorted keys,
+  no spaces), on a root branch (`main` too) and on a child branch where no
+  ancestor overrides the item. Deleting the override shows the packaged item
+  again. A deletion marker hides the layer item on its branch (and the
+  branches beneath it) only.
+- **Pulls and pushes.** The layer is beneath the parent there too: an
+  override of a layer item that the parent does not override is compared
+  with the layer item, so it is no conflict while the layer is unchanged,
+  and pushes cleanly. A push of such an override into a root branch stores it
+  with the layer item's ETag as its `base`; a pushed deletion marker that
+  replaces the root's own override of a layer item hides the layer item, based
+  on its ETag.
 - **Ranking.** A layer stylesheet's rules rank after the default stylesheet's
   and before every stored stylesheet's (see [The cascade](#the-cascade)). An
   override of a layer stylesheet is a stored row and ranks as one: a stored
@@ -361,12 +370,34 @@ and again after a setting changes.
   as it reads stored items.
 - **Versions.** Branch versions do not record layer items. A pinned branch,
   and a branch viewed `@pinned`, sees the installed package's layer.
+- **Upgrades and layer conflicts.** A library upgrade can change a layer
+  item that a branch overrides. Root branches have no parent to pull from, so
+  conflicts with the layer are computed live, not recorded by a pull: an own
+  item of a branch is in conflict with the layer when the nearest item beneath
+  it with its key is the layer's and its `base` is not that item's current
+  ETag (`scrud_django.ui.layers.layer_conflicts(branch)`, which lists
+  `{"kind", "key", "base", "current"}` like a branch's `conflicts`). Resolve
+  one by keeping the override, re-saved with `rebase: true` (now valid on a
+  root branch for an item that overrides an installed layer item; the server
+  moves its `base` to the layer item's current ETag), or by deleting it, which
+  shows the upgraded layer item. On a child branch a pull also lists the
+  conflict against the parent, as for any parent item, and `rebase: true`
+  resolves both. The `conflicts` field and pull keep their meaning.
+- **Orphaned overrides.** When an upgrade removes a layer item (or its layer
+  is uninstalled), an override of it is orphaned: it keeps rendering as an
+  ordinary item, is listed by `layer_conflicts` with `current` `null`, and
+  stays editable under its name (an update that keeps the name and
+  `applies_to` is accepted). A new item, or a rename, with the name is still
+  refused. Delete it, or rename it to a name without a prefix, to resolve it.
 - **Checks.** A layer declaration that is not valid, or a layer file that is
   unreadable or not a JSON object, whose name lacks the layer's prefix or is
   not a valid name, that has a branch field or another file's name, a
   stylesheet with a non-empty `applies_to`, or a CSS or JS item whose text has
   `</style` or `</script`, is reported by the system check
-  `scrud_django_ui.E002` (`manage.py check`) and is left out at runtime.
+  `scrud_django_ui.E002` (`manage.py check`) and is left out at runtime. The
+  database check `scrud_django_ui.W002` (`manage.py check --database
+  default`, and `migrate`) lists, per branch, its layer conflicts and its
+  orphaned overrides, as `scrud_django_ui.W001` lists prefixes.
 
 ## Modes, editing and the write path
 
@@ -582,7 +613,9 @@ resource.
   its `rbac_context` if that is not the branch's context. An item cannot move
   to another branch.
 * **`base`** on an item is server-managed: on create, the ETag of the parent's
-  item it replaces (`null` for an addition), as the branch shows it: on a
+  item it replaces (`null` for an addition; a packaged layer's item counts,
+  on a root branch too: see [Packaged UI layers](#packaged-ui-layers)), as the
+  branch shows it: on a
   pinned branch, the item as of the branching point, with the ETag its version
   recorded (a version recorded before versions kept ETags gives its items one
   of its own, which conflicts with the parent's until the branch is pulled and
@@ -601,7 +634,9 @@ each) until they are resolved:
 * keep the override: PUT the item with `"rebase": true`, which moves its `base`
   to the parent's current item and clears the conflict. The flag is
   write-only, and valid only on an update of an item of a branch that has a
-  parent;
+  parent, or of a root branch's item that overrides an installed layer item
+  (it resolves the layer conflict: see
+  [Packaged UI layers](#packaged-ui-layers));
 * take the parent's: DELETE the override (its own row; deleting a deletion
   marker does not clear a conflict);
 * an ordinary edit does not clear it.
