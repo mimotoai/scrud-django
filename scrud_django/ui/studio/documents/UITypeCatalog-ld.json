@@ -1,0 +1,16 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UITypeCatalog",
+  "types": {
+    "@id": "openteams:UICatalogType"
+  },
+  "slug": {
+    "@id": "openteams:ResourceTypeSlug"
+  },
+  "title": {
+    "@id": "openteams:ResourceTypeTitle"
+  },
+  "type_uri": {
+    "@id": "openteams:ResourceTypeURI"
+  }
+}

@@ -11,10 +11,8 @@ from urllib.parse import urlencode
 
 from django.urls import NoReverseMatch, get_script_prefix, reverse
 
-from scrud_django.models import Resource
 from scrud_django.permissions import may_read_in_context, resource_contexts
-from scrud_django.rows import by_pk, unsorted
-from scrud_django.ui.branches import ITEM_KINDS, MAIN, UI_CSS_TYPE_URI
+from scrud_django.ui.branches import ITEM_KINDS, MAIN
 from scrud_django.ui.branches.effective import Selection, effective_rows
 from scrud_django.ui.branches.model import Branch, branch_of, item_key
 from scrud_django.ui.branches.selection import (
@@ -26,6 +24,8 @@ from scrud_django.ui.branches.selection import (
     selection_value,
 )
 from scrud_django.ui.branches.store import BranchChainError, branches, published_root
+from scrud_django.ui.cascade import item_rows
+from scrud_django.ui.layers import LAYER_BRANCH_NAME
 from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
 
 MODES = ("view", "edit")
@@ -132,9 +132,26 @@ def strip_context(request, slug, branch: Branch, selection, all_branches) -> dic
 
 
 def _may_read(request, kind, content) -> bool:
+    """Whether the user of `request` may GET the item of `kind` stored with
+    `content`, as the per-row read check of its JSON list decides."""
     return may_read_in_context(
         request, ITEM_KINDS[kind], content, resource_contexts(content)
     )
+
+
+def own_rows(branch: Branch) -> dict[str, list[tuple[int, str, dict]]]:
+    """``{kind: [(pk, etag, content), ...]}``: every row of `branch`'s own
+    (overrides, additions, deletion markers), whoever may read it, by kind,
+    lowest pk first; on ``main``, every main item. One query."""
+    rows = item_rows(ITEM_KINDS.values(), {branch.name})
+    return {
+        kind: [
+            row
+            for row in rows[type_uri]
+            if isinstance(row[2], Mapping) and branch_of(row[2]) == branch.name
+        ]
+        for kind, type_uri in ITEM_KINDS.items()
+    }
 
 
 def own_items(request, branch: Branch) -> list[dict]:
@@ -144,20 +161,12 @@ def own_items(request, branch: Branch) -> list[dict]:
     none."""
     if branch.name == MAIN:
         return []
-    found = []
-    for kind, type_uri in ITEM_KINDS.items():
-        rows = unsorted(
-            Resource.objects.filter(
-                resource_type__type_uri=type_uri, content__branch=branch.name
-            ).values_list("pk", "content")
-        )
-        for _pk, content in by_pk(rows):
-            if not isinstance(content, Mapping) or branch_of(content) != branch.name:
-                continue
-            if not _may_read(request, kind, content):
-                continue
-            found.append(_described(kind, content, branch))
-    return found
+    return [
+        _described(kind, content, branch)
+        for kind, rows in own_rows(branch).items()
+        for _pk, _etag, content in rows
+        if _may_read(request, kind, content)
+    ]
 
 
 def _described(kind, content, branch) -> dict:
@@ -168,6 +177,13 @@ def _described(kind, content, branch) -> dict:
         "applies_to": key[1] if kind == "stylesheet" else "",
         "deleted": content.get("deleted") is True,
     }
+
+
+def conflict_key(conflict: Mapping) -> tuple:
+    """The `item_key` of the item a `branch_conflicts` entry names."""
+    if conflict["kind"] == "stylesheet":
+        return (conflict["name"], conflict["applies_to"])
+    return (conflict["name"],)
 
 
 def branch_conflicts(branch: Branch) -> list[dict]:
@@ -187,21 +203,40 @@ def branch_conflicts(branch: Branch) -> list[dict]:
     return found
 
 
+def readable_rows(
+    request, kind: str, selection: Selection, packaged_public: bool = False
+) -> list[tuple[int | None, str, dict]]:
+    """``(pk, etag, content)`` of the items of `kind` effective on
+    `selection` (`effective_rows`) that the user of `request` may read, in
+    the cascade's order. With `packaged_public`, a packaged layer's item
+    (spec R1: public) is kept without asking."""
+    return [
+        (pk, etag, content)
+        for pk, etag, content in effective_rows(ITEM_KINDS[kind], selection)
+        if (packaged_public and branch_of(content) == LAYER_BRANCH_NAME)
+        or _may_read(request, kind, content)
+    ]
+
+
 def css_items(request, branch: Branch) -> list[dict]:
     """``{name, own}`` of the CSS items effective on `branch` (live) that
     the user may read, in the order the page links them."""
+    return linked_items(request, branch, "css")
+
+
+def linked_items(request, branch: Branch, kind: str) -> list[dict]:
+    """``{name, own}`` of the items of `kind` (``css`` or ``js``) effective
+    on `branch` (live) that the user may read, in the order the page links
+    them (by ``order``, then name)."""
     found = []
-    for _pk, _etag, content in effective_rows(
-        UI_CSS_TYPE_URI, Selection(branch=branch.name)
+    for _pk, _etag, content in readable_rows(
+        request, kind, Selection(branch=branch.name)
     ):
-        name = content.get("name")
-        if not isinstance(name, str) or not _may_read(request, "css", content):
-            continue
         order = content.get("order")
         found.append(
             (
                 order if isinstance(order, int) else 0,
-                name,
+                content["name"],
                 branch_of(content) == branch.name,
             )
         )

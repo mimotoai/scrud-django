@@ -1,0 +1,37 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UIBranchItems",
+  "branch": {
+    "@id": "openteams:UIBranchName"
+  },
+  "items": {
+    "@id": "openteams:UIBranchItem"
+  },
+  "kind": {
+    "@id": "openteams:UIItemKind"
+  },
+  "name": {
+    "@id": "openteams:UIItemName"
+  },
+  "applies_to": {
+    "@id": "openteams:UIStylesheetAppliesTo"
+  },
+  "origin": {
+    "@id": "openteams:UIItemOrigin"
+  },
+  "from": {
+    "@id": "openteams:UIItemBranch"
+  },
+  "href": {
+    "@id": "openteams:UIItemResource"
+  },
+  "etag": {
+    "@id": "openteams:UIItemETag"
+  },
+  "content": {
+    "@id": "openteams:UIItemContent"
+  },
+  "conflict": {
+    "@id": "openteams:UIItemConflict"
+  }
+}

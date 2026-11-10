@@ -1,0 +1,16 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UISelectableBranches",
+  "branches": {
+    "@id": "openteams:UISelectableBranch"
+  },
+  "name": {
+    "@id": "openteams:UIBranchName"
+  },
+  "published": {
+    "@id": "openteams:UIBranchPublished"
+  },
+  "href": {
+    "@id": "openteams:UIBranchResource"
+  }
+}

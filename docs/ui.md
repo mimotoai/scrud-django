@@ -1451,6 +1451,97 @@ as the push API does. Errors: as `save-item`.
 
 The problem `type` is `https://api.openteams.com/http-problem/<name>`.
 
+### Studio data as computed resources
+
+The studio's data that is not a stored resource is also served as four
+[computed resource types](#computed-resource-types), so a studio built as a UI
+layer renders it through the cascade, and a branch can restyle it, like any
+resource. They are part of the API (under `scrud_django.urls`, not the
+studio's include), registered when `scrud_django.ui.studio` is installed, and
+left out of the service catalog as every computed type is. Each is read-only
+(`GET` and `HEAD`; any other method is a 405), needs an authenticated user, has
+an ETag for `If-None-Match`, links its JSON Schema and JSON-LD context, and
+answers only what its user may `GET` as JSON: a branch the user may select
+(else 404, the same for every cause), and an item or conflict on a row the
+item's own read check allows. Packaged [layer](#packaged-ui-layers) items are
+public. The bootstrap studio's strip and picker read the same functions
+(`scrud_django.ui.studio.page`), so the two agree.
+
+| Path | Type IRI | Content |
+|---|---|---|
+| `ui-branch-items/<branch>/` | `http://api.openteams.com/json-ld/UIBranchItems` | every item the branch shows |
+| `ui-branch-status/<branch>/` | `http://api.openteams.com/json-ld/UIBranchStatus` | the branch's chain, changes, conflicts and browse URL |
+| `ui-type-catalog/all/` | `http://api.openteams.com/json-ld/UITypeCatalog` | the registered types |
+| `ui-selectable-branches/mine/` | `http://api.openteams.com/json-ld/UISelectableBranches` | the branches the user may select |
+
+`<branch>` is a selection value: a branch name, or `<name>@pinned` for the
+branch at its branching point. The catalog's only key is `all` and the picker's
+only key is `mine`; any other key is a 404.
+
+**Branch items** lists the components, stylesheets, CSS and JS items the
+branch shows (live, or pinned), by kind, each kind in the cascade's order:
+
+```json
+{"branch": "wip", "items": [
+  {"kind": "component", "name": "row", "origin": "own", "from": "wip",
+   "href": "/api/ui-components/12/", "etag": "\"3f…\"",
+   "content": {"name": "row", "engine": "jinja2", "…": "…"},
+   "conflict": "parent"},
+  {"kind": "component", "name": "head", "origin": "inherited", "from": "main",
+   "href": "/api/ui-components/7/", "etag": "\"9a…\"", "content": {"…": "…"},
+   "conflict": null},
+  {"kind": "stylesheet", "name": "studio:workbench", "applies_to": "",
+   "origin": "packaged", "from": null, "href": null, "etag": "\"c0…\"",
+   "content": {"…": "…"}, "conflict": null}
+]}
+```
+
+- `origin` is `own` (the branch's row), `inherited` (an ancestor's, named by
+  `from`) or `packaged` (an installed layer's; `from` is `null`).
+- `href` is the item's resource, `null` for a packaged item and for an
+  ancestor's item a pinned branch reads from a version.
+- `etag` is quoted, as an `If-Match` header carries it.
+- `applies_to` is given for stylesheets only.
+- `conflict` is set on own items only: `parent` for a conflict a pull listed on
+  the branch (the branch's `conflicts` field), `layer` for an override of a
+  packaged item that changed since the override was based on it, or whose
+  layer item is gone ([layer conflicts](#packaged-ui-layers)). Where both
+  apply, it is `parent`.
+- A row the user may not `GET` is left out entirely, as its JSON list leaves
+  it out. So is a row that rendering skips (stored with another context than
+  its branch authorizes).
+
+**Branch status**:
+
+```json
+{"branch": "feat", "published": false,
+ "chain": [{"name": "feat", "published": false, "prefix": null},
+           {"name": "shop", "published": true, "prefix": "/shop/"},
+           {"name": "main", "published": true, "prefix": ""}],
+ "changed": [{"kind": "component", "name": "row", "applies_to": "", "deleted": false}],
+ "conflicts": [{"kind": "component", "name": "row", "applies_to": "", "with": "parent"},
+               {"kind": "stylesheet", "name": "studio:workbench", "applies_to": "", "with": "layer"}],
+ "browse_url": "/shop/todo-lists/?ui-branch=feat"}
+```
+
+- `chain` is the branch and its ancestors, nearest first.
+- `changed` are the branch's own rows the user may read (overrides, additions
+  and deletion markers), as the strip lists them; none on `main`.
+- `conflicts` are those a pull listed (`with: "parent"`), then the layer
+  conflicts (`with: "layer"`), each only on an own row the user may read.
+- `browse_url` needs `?type=<slug>`: that type's list on the branch, under its
+  published root's prefix, as the strip's link. Without `type`, or for a slug
+  with no list, it is `null`.
+
+**Type catalog**: `{"types": [{"slug", "title", "type_uri"}]}`, every
+registered type with a slug, by slug, as the type browser lists them
+(unfiltered: reading a type's items is checked where they are read).
+
+**Selectable branches**: `{"branches": [{"name", "published", "href"}]}`, the
+branches the branch picker lists (`main` first, then by name). `href` is the
+branch's resource, or `null` when the user may not `GET` it (as for `main`,
+which everyone may select) or it is not stored yet.
+
 ## Security
 
 * **Viewing a branch means trusting everyone who can write to it.** There is no

@@ -49,6 +49,7 @@ def django_db_setup(django_db_setup, django_db_blocker):
     """
     from scrud_django import registration
     from scrud_django.ui import types as ui_types
+    from scrud_django.ui.studio.computed import studio_computed_type_urls
     from tests import resource_types
 
     with django_db_blocker.unblock():
@@ -61,6 +62,8 @@ def django_db_setup(django_db_setup, django_db_blocker):
         ui_types.ui_push_resource_type()
         ui_types.ui_css_resource_type()
         ui_types.ui_js_resource_type()
+        # The studio's computed types (registered with their routes).
+        studio_computed_type_urls()
 
 
 # The built-in resource types `scrud_django.registration` caches at module
@@ -91,6 +94,7 @@ def committed_types():
     (with ``--reverse`` too), so those never see the flushed database."""
     from scrud_django import registration
     from scrud_django.ui import types as ui_types
+    from scrud_django.ui.studio.computed import studio_computed_type_urls
     from tests import resource_types
 
     def forget():
@@ -109,5 +113,6 @@ def committed_types():
     ui_types.ui_push_resource_type()
     ui_types.ui_css_resource_type()
     ui_types.ui_js_resource_type()
+    studio_computed_type_urls()
     yield
     forget()
