@@ -15,8 +15,16 @@ header: safe mode (`branches.effective.using_safe_mode`, which the
 renderer keeps), preview (`render.using_preview`, which `render_resource`
 keeps), the embed stack and the response's embed count (`_state`).
 
+`path` is split once (`urllib.parse.urlsplit`; its fragment is dropped),
+and its path and query are what is checked and dispatched. An ``http`` or
+``https`` URL of the request's own host (``request.get_host()``) is taken
+as its path, so that a list item's absolute ``href`` embeds. Under a
+published branch's prefix, an API path is embedded under the prefix
+(`Mount.href`, as `selection.in_mount` maps links), so that it renders on
+the prefix's branch, with `check_mount`.
+
 Refused, with the notice `REFUSED_MESSAGE` (and a warning logged): a path
-that is not a string, not absolute or has a scheme or host; one that does
+that is not a string, not absolute, or has another scheme or host; one that does
 not resolve to a resource view (`ResourceViewMixin`: stored and computed
 types), or whose response is not the UI's HTML (``?format=json``); a path and scope chain already on the embed stack (a cycle; the
 top-level request is its bottom); an embed deeper than `MAX_EMBED_DEPTH`;
@@ -28,10 +36,11 @@ import logging
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from django.core.exceptions import DisallowedHost
 from markupsafe import Markup
 
 from scrud_django.ui.branches.effective import BRANCH_HEADER, active_selection
-from scrud_django.ui.branches.selection import selection_value
+from scrud_django.ui.branches.selection import mount_of, selection_value
 from scrud_django.ui.cascade import builtin_component, rules_memo
 from scrud_django.ui.dispatch import dispatch_path, resolve_path
 
@@ -94,14 +103,24 @@ def _embed(request, path, scope, mode) -> str:
     if not isinstance(path, str):
         return _refused(path, "not a URL path")
     try:
+        # Split once: what is checked below is what is dispatched.
         parts = urlsplit(path)
     except ValueError:
         return _refused(path, "not a URL path")
-    if parts.scheme or parts.netloc or not parts.path.startswith("/"):
+    if (parts.scheme or parts.netloc) and not _same_site(request, parts):
+        return _refused(path, "not an absolute path on this site")
+    if not parts.path.startswith("/"):
         return _refused(path, "not an absolute path on this site")
     if len(state.stack) > MAX_EMBED_DEPTH:
         return _refused(path, f"over the depth limit ({MAX_EMBED_DEPTH})")
-    resolved = resolve_path(parts.path)
+    target = parts.path
+    mount = mount_of(request)
+    if mount is not None:
+        # An API URL embedded under a published branch's prefix is served
+        # there, as its links are (`selection.in_mount`): on the prefix's
+        # branch, which the API's URLs would refuse to select.
+        target = mount.href(target)
+    resolved = resolve_path(target)
     if resolved is None or not _is_resource_view(resolved.match.func):
         return _refused(path, "not a resource view")
     chain = renderer.parse_scope_chain(_scope_value(scope))
@@ -120,7 +139,13 @@ def _embed(request, path, scope, mode) -> str:
         # A memo of its own: the embedded request chooses its branch again
         # (it may be refused), and the memo is keyed without the branch.
         with rules_memo():
-            response = dispatch_path(request, path, headers=headers, resolved=resolved)
+            response = dispatch_path(
+                request,
+                target,
+                query=parts.query,
+                headers=headers,
+                resolved=resolved,
+            )
     except Exception:
         logger.warning("scrud-ui: embed of %r failed", path, exc_info=True)
         return _notice(FAILED_MESSAGE)
@@ -146,6 +171,19 @@ def _top_state(request) -> _EmbedState:
         state = _EmbedState(stack=(top,))
         setattr(http, _REQUEST_ATTR, state)
     return state
+
+
+def _same_site(request, parts) -> bool:
+    """Whether `parts` (a split URL with a scheme or a host) is an ``http``
+    or ``https`` URL of `request`'s own host (``get_host()``), so that its
+    path may be embedded: a list item's ``href`` is absolute."""
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return False
+    try:
+        host = request.get_host()
+    except DisallowedHost:
+        return False
+    return parts.netloc.lower() == host.lower()
 
 
 def _scope_value(scope) -> str:

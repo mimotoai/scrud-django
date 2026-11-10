@@ -187,10 +187,21 @@ returns that resource's HTML, the fragment its own URL answers.
 ```
 
 - `path` is an absolute URL path on this site, with an optional query (a list's
-  `?page=2`), such as a link's `href` from the node's data. A path under a
-  published branch's prefix is served as that prefix serves it: at the API's
-  URL, with the prefix's checks, and the embedded frame's links stay in the
-  prefix.
+  `?page=2`), such as a link's `href` from the node's data. An `http` or
+  `https` URL whose host is the request's own (`request.get_host()`) is taken
+  as its path, so `embed(resource.href)` works in a list item's component,
+  whose `href` is absolute. The path is split once (`urllib.parse.urlsplit`):
+  its fragment is dropped (`/x#a?b` has no query), surrounding whitespace is
+  stripped, and the path and query it checks are the ones it requests. The
+  path is decoded as the server decodes a request's (`%2F` is `/`) and is not
+  normalized (a `..` segment matches no route).
+- A path under a published branch's prefix is served as that prefix serves it:
+  at the API's URL, with the prefix's checks (`check_mount`), and the embedded
+  frame's links stay in the prefix. On a page under a prefix, an API path
+  (`/api/...`) is embedded under that prefix, as the page's links are
+  (`selection.in_mount`), so it renders on the prefix's branch with the
+  prefix's checks; an API path the prefix doesn't serve (the API root) is
+  refused.
 - `scope` is the scope chain to render it in: a string of space- or
   comma-separated names, or a list of names (an invalid one is no scope).
 - `mode="view"` renders it read-only (as `Scrud-UI-Mode: view`); any other
@@ -213,8 +224,11 @@ These are refused, and render
 in the embed's place (each refusal is logged as a warning by
 `scrud_django.ui.embed`):
 
-- a `path` that isn't a string, isn't absolute, or has a scheme or a host
-  (`https://other.example/...`, `//other.example/...`);
+- a `path` that isn't a string or isn't absolute, or that has a scheme or a
+  host other than an `http` or `https` URL of the request's own host
+  (`https://other.example/...`, `//other.example/...`, `ftp://...`,
+  `http:/api/...`, or a backslash such as `/\other.example/...`, which is
+  a path that resolves to nothing);
 - a path that doesn't resolve to a resource view: a stored or computed resource
   type's list or detail route. A project's page, the studio, the API root and
   the CSS and JavaScript file routes are refused, and so is a response that

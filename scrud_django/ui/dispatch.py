@@ -6,7 +6,7 @@ applies (RBAC, branch visibility, ``check_mount``, ``base``, versions)."""
 
 import json
 from dataclasses import dataclass
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 from django.test.client import RequestFactory
@@ -120,20 +120,28 @@ def resolve_path(path: str) -> Resolved | None:
     return Resolved(match=match, path_info=path_info, mount=mount)
 
 
-def dispatch_path(request, path: str, *, headers: dict, resolved=None) -> Response:
+def dispatch_path(
+    request, path: str, *, headers: dict, query: str | None = None, resolved=None
+) -> Response:
     """The rendered response of the view at `path` (an absolute URL path,
     with an optional query) to a GET made in process for the user of
     `request`, as `call_view` makes one, with ``Accept: text/html`` and
     `headers` (by name). A path under a published branch's prefix is served
     as `PublishedBranchMiddleware` serves it: at the API's URL, with the
     prefix's `Mount` (so the view's `check_mount` applies, and links stay
-    in the prefix). `resolved` is `resolve_path`'s answer for the path, when
-    the caller has it already. A path nothing serves is the API's 404."""
+    in the prefix). A path nothing serves is the API's 404.
+
+    `path` is split once, with `urllib.parse.urlsplit` (its fragment
+    dropped), unless `query` is given: `path` is then the path alone, as
+    the caller split it, so that what is dispatched is what the caller
+    checked. `resolved` is `resolve_path`'s answer for the path, when the
+    caller has it already."""
     from scrud_django.ui.branches.selection import MOUNT_ATTR
 
-    path_only, _, query = path.partition("?")
-    path_only = path_only.partition("#")[0]
-    query = query.partition("#")[0]
+    path_only = path
+    if query is None:
+        parts = urlsplit(path)
+        path_only, query = parts.path, parts.query
     if resolved is None:
         resolved = resolve_path(path_only)
     script = get_script_prefix()
