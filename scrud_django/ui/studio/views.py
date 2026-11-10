@@ -1,6 +1,7 @@
 """The studio's views. Every one requires an authenticated user."""
 
 from dataclasses import dataclass
+from functools import wraps
 
 from django.http import Http404, HttpResponse
 from django.shortcuts import render
@@ -186,6 +187,26 @@ def sample(request, slug):
     return Response(sample_of(resource_type, _data_context(request)))
 
 
+# The CSP of every preview response (ruling S15): opened outside the
+# studio's iframe, a preview is still sandboxed without scripts. Its
+# document stays same-origin, so the studio page can listen in it.
+PREVIEW_CSP = "sandbox allow-same-origin"
+
+
+def _sandboxed(view):
+    """`view` with `PREVIEW_CSP` on every response it gives, errors
+    included."""
+
+    @wraps(view)
+    def sandboxed(*args, **kwargs):
+        response = view(*args, **kwargs)
+        response["Content-Security-Policy"] = PREVIEW_CSP
+        return response
+
+    return sandboxed
+
+
+@_sandboxed
 @xframe_options_sameorigin
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -198,11 +219,13 @@ def preview(request, slug):
     value; default ``main``), in ``?mode=`` (``view``, the default, or
     ``edit``) and the scope chain ``?scope=`` (space-separated), with the
     branch's CSS. The sample is in the data context ``?context=`` (default
-    ``""``; `_data_context`, checked with or without an instance), shown as editable and not deletable; an instance is in its
-    own contexts, with the user's decisions on it. A branch that is not
-    `selectable` (unknown, unreadable, a broken chain, a missing pinned
-    snapshot, not a selection value) is refused alike:
-    `UIBranchUnavailableError` (400)."""
+    ``""``; `_data_context`, checked with or without an instance), shown as
+    editable and not deletable; an instance is in its own contexts, with
+    the user's decisions on it. A branch that is not `selectable` (unknown,
+    unreadable, a broken chain, a missing pinned snapshot, not a selection
+    value) is refused alike: `UIBranchUnavailableError` (400). Every
+    response, a refusal too, is framable by the same origin only and
+    carries `PREVIEW_CSP`."""
     resource_type = get_resource_type_for(slug)
     shown = _shown(request, slug, resource_type)
     if isinstance(shown, HttpResponse):

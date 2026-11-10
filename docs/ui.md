@@ -755,7 +755,10 @@ deliberate: the studio page's own script handles clicks inside the frame (it
 reaches into it because of `allow-same-origin`), and branch code, which anyone
 who may write to the branch controls, cannot reach the studio's controls or the
 user's session. The preview shows the markup and CSS of the branch, not its
-behaviour (no htmx, no editing).
+behaviour (no htmx, no editing). Every `preview` response, an error too,
+also carries `Content-Security-Policy: sandbox allow-same-origin` (and
+`X-Frame-Options: SAMEORIGIN`), so a preview URL opened on its own, outside
+the iframe, is just as sandboxed: no script runs in it.
 
 Each node is marked with its JSON Pointer. A component that fails to render
 shows the built-in fallback in the preview, but the inspector reports the
@@ -827,7 +830,9 @@ in preview mode, linking that branch's CSS. A sample is shown as editable and
 not deletable; an instance has the user's own decisions. Parameters: `branch`,
 `mode`, `scope`, `context`, `instance`. Errors: 400 `ui-branch-unavailable`,
 400 `ui-studio-context-unavailable`, 400 for a bad `mode`, and the resource
-view's own refusal for an `instance`.
+view's own refusal for an `instance`. Every response, errors included, carries
+`Content-Security-Policy: sandbox allow-same-origin` and `X-Frame-Options:
+SAMEORIGIN`.
 
 #### `GET types/<slug>/explain`
 

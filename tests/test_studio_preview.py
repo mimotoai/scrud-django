@@ -291,3 +291,40 @@ def test_selectable_matches_choose_for_api_urls(todo_reader_login, login_no_role
     request = RequestFactory().get("/")
     request.user = login_no_roles
     assert selectable(request, Selection())
+
+
+SANDBOX = "sandbox allow-same-origin"
+
+
+@pytest.mark.django_db
+@test_context
+def test_every_preview_response_is_sandboxed(todo_list, todo_reader_login):
+    """Opened outside the iframe, a preview is still sandboxed without
+    scripts (ruling S15): its answers all carry the CSP sandbox, errors
+    included."""
+
+    def sandboxed():
+        assert Http.response["Content-Security-Policy"] == SANDBOX
+        assert Http.response["X-Frame-Options"] == "SAMEORIGIN"
+
+    Given.http.force_authenticate(todo_reader_login)
+    for mode in ("view", "edit"):
+        preview(mode=mode)
+        sandboxed()
+        preview(mode=mode, instance=todo_list.pk)
+        sandboxed()
+    # Refusals: an unknown branch, a context, the mode, an instance the
+    # resource view refuses, an unknown type.
+    for status, params in (
+        (400, {"branch": "nope"}),
+        (400, {"context": "elsewhere"}),
+        (400, {"mode": "other"}),
+        (404, {"instance": 999999}),
+        (404, {"instance": "a/b"}),
+        (404, {"slug": "no-such-type"}),
+    ):
+        preview(status, **params)
+        sandboxed()
+    Given.http.force_authenticate(None)
+    preview(401)
+    sandboxed()
