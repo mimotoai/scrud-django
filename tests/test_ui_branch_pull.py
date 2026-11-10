@@ -175,14 +175,15 @@ def test_clients_cannot_set_conflicts(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_rebase_resolves_conflict(admin_login):
-    _first, current, override = conflicted(admin_login)
+    first, current, override = conflicted(admin_login)
     mine = component(name="row", template="<i>still mine</i>", **WIP)
     # An ordinary edit does not resolve the conflict.
     put_item(override, mine)
     Then.http.status_code_is(200)
     assert [c["key"] for c in stored_branch("wip").content["conflicts"]] == [["row"]]
     override.refresh_from_db()
-    put_item(override, {**mine, "rebase": True})
+    assert override.content["base"] == first
+    put_item(override, {**mine, "base": "forged", "rebase": True})
     Then.http.status_code_is(200)
     assert "rebase" not in Http.response.json()
     assert Http.response.json()["base"] == current
@@ -249,3 +250,17 @@ def test_pull_of_live_branch_changes_no_rendering(
     Given.http.force_authenticate(todo_reader_login)
     assert rendered(todo_list, "wip") == before
     assert rendered(todo_list) == main_before
+
+
+@pytest.mark.django_db
+@test_context
+def test_plain_edit_keeps_the_conflict_for_the_next_pull(admin_login):
+    first, current, override = conflicted(admin_login)
+    put_item(override, component(name="row", template="<i>edit</i>", **WIP))
+    Then.http.status_code_is(200)
+    assert Http.response.json()["base"] == first
+    put_branch(pull_body())
+    Then.http.status_code_is(200)
+    assert Http.response.json()["conflicts"] == [
+        {"kind": "component", "key": ["row"], "base": first, "current": current}
+    ]

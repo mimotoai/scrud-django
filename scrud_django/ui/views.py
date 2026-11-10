@@ -76,6 +76,8 @@ class UIContentValidationMixin:
         if kind is not None and isinstance(content, dict):
             self.item_branch = self.validate_branch(kind, content, instance)
             self.rebased = self.validate_rebase(content, instance)
+            if self.rebased:
+                content["base"] = self.base_of(kind, content, self.item_branch)
 
     def validate_branch(self, kind, content, instance=None):
         """The `Branch` the item `content` is written to, its ``branch`` (on
@@ -83,7 +85,8 @@ class UIContentValidationMixin:
         ``main``). Refuse (400) an unknown branch, a move to another branch,
         and an ``rbac_context`` other than the item's `authorizing_context`
         there. Set ``branch``, a stylesheet's ``applies_to`` (`applies_to`)
-        and ``base`` (`base_of`) in `content`. ``None`` for a body the schema
+        and ``base`` in `content`: on a create, `base_of`; on an update, the
+        stored one (a client's is ignored). ``None`` for a body the schema
         refuses (a ``branch``, ``rbac_context`` or ``applies_to`` that is not
         a string)."""
         stored = None if instance is None else branch_of(instance.content)
@@ -107,7 +110,10 @@ class UIContentValidationMixin:
         if context != expected:
             raise UIBranchContextError(expected)
         content["branch"] = branch.name
-        content["base"] = self.base_of(kind, content, branch)
+        if instance is None:
+            content["base"] = self.base_of(kind, content, branch)
+        else:  # server-managed: only `rebase` moves it (`validate_rebase`)
+            content["base"] = instance.content.get("base")
         return branch
 
     def validate_rebase(self, content, instance):
