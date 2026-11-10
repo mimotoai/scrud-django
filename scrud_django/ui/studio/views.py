@@ -34,6 +34,8 @@ from scrud_django.ui.render import node_at
 from scrud_django.ui.studio import writes
 from scrud_django.ui.studio.dispatch import call_view
 from scrud_django.ui.studio.explain import explain as explain_node
+from scrud_django.ui.studio.new_component import create as create_component
+from scrud_django.ui.studio.new_component import options as component_options
 from scrud_django.ui.studio.preview import (
     SAMPLE_DECISIONS,
     preview_css_urls,
@@ -95,12 +97,14 @@ def _schema_title(resource_type) -> str:
     return title if isinstance(title, str) and title else resource_type.slug
 
 
-def _data_context(request) -> str:
-    """The data context ``?context=`` names (default ``""``). Any other than
-    ``""`` needs GET on UI stylesheets in it, as seeing a context's
-    presentation needs reading its styling (ruling S7): else
-    `UIStudioContextUnavailableError`, the same for every context."""
-    context = request.GET.get("context", "")
+def _data_context(request, params=None) -> str:
+    """The data context ``?context=`` names (default ``""``; `params`
+    instead of the query when given). Any other than ``""`` needs GET on UI
+    stylesheets in it, as seeing a context's presentation needs reading its
+    styling (ruling S7): else `UIStudioContextUnavailableError`, the same
+    for every context."""
+    params = request.GET if params is None else params
+    context = params.get("context", "")
     if context and not may_read_in_context(
         request, UI_STYLESHEET_TYPE_URI, {"rbac_context": context}, [context]
     ):
@@ -176,6 +180,23 @@ def explain(request, slug):
     shown = _shown(request, slug, resource_type)
     if isinstance(shown, HttpResponse):
         return shown
+    with using_selection(shown.selection), request_memo():
+        info = node_at(
+            shown.content,
+            resource_type=resource_type,
+            request=request,
+            pointer=request.GET.get("pointer", ""),
+            scope_chain=shown.scope_chain,
+            mode=shown.mode,
+            contexts=shown.contexts,
+        )
+        return Response(explain_node(info, shown.mode, readable=_readable(request)))
+
+
+def _readable(request):
+    """Whether the user of `request` may read a rule's `RuleSource` (a
+    stylesheet), as the list filter checks a stored one; the default
+    stylesheet's are readable."""
 
     def readable(source):
         if source is None or source.content is None:
@@ -187,24 +208,15 @@ def explain(request, slug):
             resource_contexts(source.content),
         )
 
-    with using_selection(shown.selection), request_memo():
-        info = node_at(
-            shown.content,
-            resource_type=resource_type,
-            request=request,
-            pointer=request.GET.get("pointer", ""),
-            scope_chain=shown.scope_chain,
-            mode=shown.mode,
-            contexts=shown.contexts,
-        )
-        return Response(explain_node(info, shown.mode, readable=readable))
+    return readable
 
 
 @dataclass(frozen=True)
 class _Shown:
     """What a preview (or its explanation) shows: `content` at `href` on
     `selection`'s branch in `mode` and `scope_chain`, with the stylesheets
-    of `contexts` and the user's `decisions` (``None``: the content's own)."""
+    of `contexts` and the user's `decisions` (``None``: the content's own);
+    `data_context` is the ``?context=`` it was asked for."""
 
     content: object
     href: str
@@ -213,23 +225,26 @@ class _Shown:
     scope_chain: tuple[str, ...]
     contexts: list[str] | None
     decisions: dict | None
+    data_context: str = ""
 
 
-def _shown(request, slug, resource_type) -> "_Shown | HttpResponse":
-    """The `_Shown` of a preview's parameters (see `preview`), or the
-    resource view's response refusing to read ``?instance=``."""
-    context = _data_context(request)
-    value = request.GET.get("branch") or MAIN
+def _shown(request, slug, resource_type, params=None) -> "_Shown | HttpResponse":
+    """The `_Shown` of a preview's parameters (see `preview`; `params`
+    instead of the query when given), or the resource view's response
+    refusing to read ``?instance=``."""
+    params = request.GET if params is None else params
+    context = _data_context(request, params)
+    value = params.get("branch") or MAIN
     selection = parse_value(value)
     if selection is None or not selectable(request, selection):
         raise UIBranchUnavailableError(value)
     if selection.branch == MAIN:
         selection = Selection()
-    mode = request.GET.get("mode") or "view"
+    mode = params.get("mode") or "view"
     if mode not in ("view", "edit"):
         raise ValidationError({"mode": ["Must be 'view' or 'edit'."]})
-    scope_chain = tuple(request.GET.get("scope", "").split())
-    instance = request.GET.get("instance") or None
+    scope_chain = tuple(params.get("scope", "").split())
+    instance = params.get("instance") or None
     if instance is None:
         return _Shown(
             content=sample_of(resource_type, context),
@@ -239,6 +254,7 @@ def _shown(request, slug, resource_type) -> "_Shown | HttpResponse":
             scope_chain=scope_chain,
             contexts=[context],
             decisions=SAMPLE_DECISIONS,
+            data_context=context,
         )
     read = call_view(request, slug, "GET", pk=instance)
     if read.status_code != 200:
@@ -255,6 +271,7 @@ def _shown(request, slug, resource_type) -> "_Shown | HttpResponse":
         scope_chain=scope_chain,
         contexts=None,
         decisions=None,
+        data_context=context,
     )
 
 
@@ -299,3 +316,55 @@ def pull(request):
 def push(request):
     """Push a working branch, to its parent by default (`writes.push`)."""
     return writes.push(request, _body(request))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@renderer_classes([JSONRenderer])
+def new_component_options(request, slug):
+    """The options of "new component for this node"
+    (`studio.new_component.options`) for the node at ``?pointer=`` (default
+    ``""``) of what `preview` shows with the same parameters, as JSON."""
+    resource_type = get_resource_type_for(slug)
+    shown = _shown(request, slug, resource_type)
+    if isinstance(shown, HttpResponse):
+        return shown
+    return Response(
+        component_options(
+            request, slug, resource_type, shown, request.GET.get("pointer", "")
+        )
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
+@renderer_classes([JSONRenderer])
+def new_component(request):
+    """ "New component for this node" (`studio.new_component.create`): the
+    body names the working ``branch`` (refused before anything is
+    dispatched when it is unknown, not selectable or published), the type
+    ``slug``, and what the preview shows (``mode``, ``scope``, ``context``,
+    ``instance``, as `preview`'s parameters, on that branch, live)."""
+    body = _body(request)
+    branch = writes._working_branch(request, body.get("branch"))
+    slug = body.get("slug")
+    if not isinstance(slug, str) or not slug:
+        raise ValidationError({"slug": ["A resource type slug is required."]})
+    params = {"branch": branch.name}
+    for key in ("mode", "scope", "context", "instance"):
+        value = body.get(key)
+        if value is None:
+            continue
+        if key == "instance" and type(value) is int:
+            value = str(value)
+        if not isinstance(value, str):
+            raise ValidationError({key: ["Must be a string."]})
+        params[key] = value
+    resource_type = get_resource_type_for(slug)
+    shown = _shown(request, slug, resource_type, params)
+    if isinstance(shown, HttpResponse):
+        return shown
+    return create_component(
+        request, slug, resource_type, branch, shown, body, _readable(request)
+    )
