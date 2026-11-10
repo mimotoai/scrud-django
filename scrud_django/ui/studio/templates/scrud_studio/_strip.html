@@ -1,0 +1,37 @@
+<section id="studio-strip" class="studio-strip" hx-get="{% url 'scrud-studio:strip' type.slug %}?branch={{ branch.name|urlencode }}" hx-trigger="scrud-studio-saved from:body" hx-swap="outerHTML">
+<div id="studio-strip-body">
+<h2>Branch {{ branch.name }}</h2>
+<p>{% if branch.published %}Published, read-only in the studio: changes reach it by a push.{% else %}Working branch{% if branch.base == "pinned" %}, pinned{% endif %}.{% endif %}
+{% if branch.parent %}Parent: <strong>{{ branch.parent }}</strong>.{% endif %}
+{% if root %}Published root: <strong>{{ root.name }}</strong>.{% endif %}</p>
+<div class="studio-strip-actions">
+{% if editable and branch.parent %}<button id="studio-pull" type="button">Pull from {{ branch.parent }}</button>
+<button id="studio-push" type="button">Push to {{ branch.parent }}</button>{% endif %}
+{% if browse_url %}<a id="studio-browse" href="{{ browse_url }}" target="_blank" rel="noopener">Browse app on this branch</a>{% endif %}
+</div>
+<div class="studio-strip-lists">
+<div>
+<h3>Changed items</h3>
+<ul id="studio-changes">{% for item in changes %}<li><button type="button" data-studio-open data-kind="{{ item.kind }}" data-name="{{ item.name }}" data-applies-to="{{ item.applies_to }}">{{ item.kind }} {{ item.name }}{% if item.applies_to %} ({{ item.applies_to }}){% endif %}</button>{% if item.deleted %} deleted{% endif %}</li>
+{% empty %}<li class="studio-empty">None</li>
+{% endfor %}</ul>
+</div>
+<div>
+<h3>Conflicts</h3>
+<ul id="studio-conflicts">{% for item in conflicts %}<li><button type="button" data-studio-open data-kind="{{ item.kind }}" data-name="{{ item.name }}" data-applies-to="{{ item.applies_to }}">{{ item.kind }} {{ item.name }}{% if item.applies_to %} ({{ item.applies_to }}){% endif %}</button></li>
+{% empty %}<li class="studio-empty">None</li>
+{% endfor %}</ul>
+</div>
+<div>
+<h3>CSS items</h3>
+<ul id="studio-css">{% for item in css_items %}<li><button type="button" data-studio-open data-kind="css" data-name="{{ item.name }}" data-applies-to="">{{ item.name }}</button>{% if item.own %} (changed){% endif %}</li>
+{% empty %}<li class="studio-empty">None</li>
+{% endfor %}</ul>
+{% if editable %}<form id="studio-new-css" class="studio-inline">
+<label>New CSS item <input type="text" name="name" required placeholder="name"></label>
+<button type="submit">Open</button>
+</form>{% endif %}
+</div>
+</div>
+</div>
+</section>

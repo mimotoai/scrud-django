@@ -1,0 +1,768 @@
+"""studio.js as the browser runs it, under node: the real studio page and a
+real preview, rendered by Django and parsed into a small stub DOM (the
+preview as the iframe's ``contentDocument``), with ``fetch`` answering from
+a table of routes. Each test records what the script fetched and what the
+page then shows. Elements the script makes are recorded too, and setting
+``innerHTML`` (or ``outerHTML``, or calling ``insertAdjacentHTML``) throws:
+the panel is filled with text and DOM nodes only."""
+
+import json
+import re
+import subprocess
+from html.parser import HTMLParser
+from pathlib import Path
+
+import pytest
+from django.urls import reverse
+from safetydance_django.test import *  # noqa: F403, F401
+
+import scrud_django.ui.studio
+from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
+
+from .fixtures import *  # noqa
+from .steps import *  # noqa: F403, F401
+from .test_ui_branch_types import make_branch
+from .test_ui_http import grant
+from .test_ui_static import require_node
+
+STUDIO_JS = (
+    Path(scrud_django.ui.studio.__file__).parent / "static/scrud_studio/studio.js"
+)
+SLUG = "todo-lists"
+POINTER = "/items/0/text"
+VOID = {"area", "br", "col", "hr", "img", "input", "link", "meta", "source", "wbr"}
+
+
+@pytest.fixture(autouse=True)
+def api_at_api_path(settings):
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+
+
+class Tree(HTMLParser):
+    """HTML as nested ``{tag, attrs, children}`` and ``{text}`` nodes."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = {"tag": "#document", "attrs": {}, "children": []}
+        self.stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        node = {"tag": tag, "attrs": {k: v or "" for k, v in attrs}, "children": []}
+        self.stack[-1]["children"].append(node)
+        if tag not in VOID:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        attrs = {k: v or "" for k, v in attrs}
+        self.stack[-1]["children"].append({"tag": tag, "attrs": attrs, "children": []})
+
+    def handle_endtag(self, tag):
+        for at in range(len(self.stack) - 1, 0, -1):
+            if self.stack[at]["tag"] == tag:
+                del self.stack[at:]
+                return
+
+    def handle_data(self, data):
+        self.stack[-1]["children"].append({"text": data})
+
+
+def tree(markup):
+    parser = Tree()
+    parser.feed(markup)
+    parser.close()
+    return parser.root
+
+
+HARNESS = r"""
+const vm = require('vm'), fs = require('fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const created = [], htmlWrites = [], calls = [], errors = [], srcSets = [];
+process.on('unhandledRejection', (e) => errors.push(String(e && e.stack || e)));
+
+function parse(sel) {
+  const m = /^([a-z][a-z0-9-]*)?((?:#[\w-]+|\.[\w-]+|\[[\w-]+(?:=(?:"[^"]*"|'[^']*'|[^\]]*))?\])*)$/.exec(sel);
+  if (!m) throw new Error('stub selector not supported: ' + sel);
+  const parts = [];
+  const re = /#([\w-]+)|\.([\w-]+)|\[([\w-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\]]*)))?\]/g;
+  let p;
+  while ((p = re.exec(m[2]))) parts.push(p);
+  return {tag: m[1], parts};
+}
+
+class Text_ {
+  constructor(data) { this.data = data; this.parentNode = null; this.nodeType = 3; this.tagName = '#text'; }
+  get textContent() { return this.data; }
+  matches() { return false; }
+}
+
+class Node_ {
+  constructor(tag) {
+    this.tagName = tag.toUpperCase(); this.nodeType = 1;
+    this.attrs = {}; this.children = []; this.parentNode = null; this.listeners = {};
+    this.hidden = false; this.disabled = false; this.readOnly = false; this.checked = false;
+    this.selected = false; this._value = undefined;
+  }
+  get id() { return this.getAttribute('id') || ''; }
+  getAttribute(n) { return n in this.attrs ? this.attrs[n] : null; }
+  hasAttribute(n) { return n in this.attrs; }
+  setAttribute(n, v) {
+    this.attrs[n] = String(v);
+    if (this.tagName === 'IFRAME' && n === 'src') srcSets.push(String(v));
+  }
+  removeAttribute(n) { delete this.attrs[n]; }
+  appendChild(c) {
+    if (c.parentNode) c.parentNode.removeChild(c);
+    c.parentNode = this; this.children.push(c); return c;
+  }
+  removeChild(c) { this.children = this.children.filter((x) => x !== c); c.parentNode = null; return c; }
+  get firstChild() { return this.children[0] || null; }
+  get textContent() { return this.children.map((c) => c.textContent).join(''); }
+  set textContent(v) {
+    this.children.forEach((c) => { c.parentNode = null; });
+    this.children = [];
+    if (v !== null && v !== undefined && String(v) !== '') this.appendChild(new Text_(String(v)));
+  }
+  set innerHTML(v) { htmlWrites.push(String(v)); throw new Error('innerHTML set'); }
+  set outerHTML(v) { htmlWrites.push(String(v)); throw new Error('outerHTML set'); }
+  insertAdjacentHTML(_, v) { htmlWrites.push(String(v)); throw new Error('insertAdjacentHTML'); }
+  get options() { return this.descendants().filter((n) => n.tagName === 'OPTION'); }
+  get value() {
+    if (this.tagName === 'SELECT') {
+      const opts = this.options;
+      const chosen = opts.find((o) => o.selected) || opts[0];
+      return chosen ? chosen.value : '';
+    }
+    if (this.tagName === 'OPTION' && this._value === undefined) {
+      return this.hasAttribute('value') ? this.getAttribute('value') : this.textContent;
+    }
+    return this._value === undefined ? '' : this._value;
+  }
+  set value(v) {
+    if (this.tagName === 'SELECT') {
+      this.options.forEach((o) => { o.selected = o.value === String(v); });
+      return;
+    }
+    this._value = String(v);
+  }
+  addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  removeEventListener(type, fn) {
+    this.listeners[type] = (this.listeners[type] || []).filter((f) => f !== fn);
+  }
+  dispatchEvent(ev) {
+    if (!ev.target) ev.target = this;
+    for (let n = this; n; n = n.parentNode) {
+      ev.currentTarget = n;
+      for (const fn of (n.listeners[ev.type] || []).slice()) fn.call(n, ev);
+      if (ev._stopped || !ev.bubbles) break;
+    }
+    return !ev.defaultPrevented;
+  }
+  descendants() {
+    const found = [];
+    const walk = (n) => n.children.forEach((c) => { if (c.nodeType === 1) { found.push(c); walk(c); } });
+    walk(this);
+    return found;
+  }
+  matches(sel) {
+    if (this.nodeType !== 1 || this.tagName === '#DOCUMENT') return false;
+    return sel.split(',').some((one) => {
+      const {tag, parts} = parse(one.trim());
+      if (tag && this.tagName.toLowerCase() !== tag) return false;
+      return parts.every((p) => {
+        if (p[1] !== undefined) return this.id === p[1];
+        if (p[2] !== undefined) return (this.getAttribute('class') || '').split(/\s+/).includes(p[2]);
+        const value = p[4] !== undefined ? p[4] : p[5] !== undefined ? p[5] : p[6];
+        if (!this.hasAttribute(p[3])) return false;
+        return value === undefined || this.getAttribute(p[3]) === value;
+      });
+    });
+  }
+  closest(sel) {
+    for (let n = this; n && n.nodeType === 1; n = n.parentNode) if (n.matches(sel)) return n;
+    return null;
+  }
+  querySelectorAll(sel) { return this.descendants().filter((n) => n.matches(sel)); }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+}
+
+class Doc extends Node_ {
+  constructor() { super('#document'); this.readyState = 'complete'; }
+  getElementById(id) { return this.descendants().find((n) => n.id === id) || null; }
+  createElement(tag) { const n = new Node_(tag); created.push(n.tagName); return n; }
+  createTextNode(data) { return new Text_(String(data)); }
+  get body() { return this.querySelector('body'); }
+  get documentElement() { return this.querySelector('html'); }
+}
+
+class Event_ {
+  constructor(type, init) {
+    this.type = type; this.bubbles = !!(init && init.bubbles);
+    this.detail = init ? init.detail : undefined; this.defaultPrevented = false;
+    this.target = null;
+  }
+  preventDefault() { this.defaultPrevented = true; }
+  stopPropagation() { this._stopped = true; }
+}
+
+function build(spec, doc, parent) {
+  if ('text' in spec) { parent.appendChild(new Text_(spec.text)); return; }
+  const node = spec.tag === '#document' ? doc : new Node_(spec.tag);
+  Object.assign(node.attrs, spec.attrs);
+  if (node !== doc) parent.appendChild(node);
+  spec.children.forEach((c) => build(c, doc, node));
+  const a = spec.attrs;
+  node.hidden = 'hidden' in a; node.disabled = 'disabled' in a; node.readOnly = 'readonly' in a;
+  node.checked = 'checked' in a; node.selected = 'selected' in a;
+  if (node.tagName === 'INPUT') node._value = a.value || '';
+  if (node.tagName === 'TEXTAREA') node._value = node.textContent.replace(/^\n/, '');
+  return node;
+}
+
+const document = new Doc();
+build(input.page, document);
+const iframe = document.getElementById('studio-preview');
+const preview = new Doc();
+build(input.preview, preview);
+iframe.contentDocument = preview;
+iframe.contentWindow = {document: preview};
+
+const routes = {};
+for (const r of input.routes) (routes[r.method + ' ' + r.url] = routes[r.method + ' ' + r.url] || []).push(r);
+function fetch(url, init) {
+  init = init || {};
+  const method = (init.method || 'GET').toUpperCase();
+  calls.push({url: String(url), method, headers: init.headers || {},
+              body: init.body === undefined ? null : JSON.parse(init.body)});
+  const queue = routes[method + ' ' + url];
+  const r = queue ? (queue.length > 1 ? queue.shift() : queue[0]) : {status: 599, body: {title: 'no route'}};
+  const headers = {};
+  Object.entries(r.headers || {}).forEach(([k, v]) => { headers[k.toLowerCase()] = v; });
+  return Promise.resolve({
+    ok: r.status >= 200 && r.status < 300, status: r.status,
+    headers: {get: (n) => (n.toLowerCase() in headers ? headers[n.toLowerCase()] : null)},
+    json: () => (r.body === undefined ? Promise.reject(new Error('no body')) : Promise.resolve(JSON.parse(JSON.stringify(r.body)))),
+  });
+}
+
+const window = {};
+const ctx = vm.createContext({
+  window, document, fetch, URLSearchParams, CustomEvent: Event_, Event: Event_,
+  console, setTimeout, WeakSet,
+});
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+iframe.dispatchEvent(new Event_('load'));
+
+const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setTimeout(r, 0)); };
+const byId = (id) => document.getElementById(id);
+const text = (id) => byId(id).textContent.replace(/\s+/g, ' ').trim();
+const node = (pointer) => preview.querySelectorAll('scrud-node').find((n) => n.getAttribute('data-pointer') === pointer);
+const innermost = (n) => { while (n.children.some((c) => c.nodeType === 1)) n = n.children.find((c) => c.nodeType === 1); return n; };
+const click = (target) => { const ev = new Event_('click', {bubbles: true}); target.dispatchEvent(ev); return ev; };
+const submit = (form) => { const ev = new Event_('submit', {bubbles: true}); form.dispatchEvent(ev); return ev; };
+const saved = () => document.body.dispatchEvent(new Event_('scrud-studio-saved', {bubbles: true}));
+const out = {};
+const finish = () => {
+  out.calls = calls; out.created = created; out.htmlWrites = htmlWrites;
+  out.errors = errors; out.srcSets = srcSets;
+  console.log(JSON.stringify(out));
+};
+(async () => {
+  await settle();
+SCENARIO
+  await settle();
+  finish();
+})().catch((e) => { errors.push(String(e && e.stack || e)); finish(); });
+"""
+
+
+def run_studio(page, preview, routes, scenario):
+    """Run `scenario` (JS, inside an async function) on the parsed `page`
+    and `preview` HTML with `routes` ``[{method, url, status, body,
+    headers}]`` answering ``fetch`` (several for one URL answer in turn, the
+    last again and again). Returns what the scenario put in ``out``, with
+    ``calls``, ``created``, ``htmlWrites``, ``errors`` and ``srcSets``."""
+    require_node()
+    script = HARNESS.replace("SCENARIO", scenario)
+    done = subprocess.run(
+        ["node", "-e", script, str(STUDIO_JS)],
+        capture_output=True,
+        text=True,
+        input=json.dumps(
+            {"page": tree(page), "preview": tree(preview), "routes": routes}
+        ),
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["errors"] == [], out["errors"]
+    assert out["htmlWrites"] == []
+    return out
+
+
+def route(method, url, status=200, body=None, headers=None):
+    return {
+        "method": method,
+        "url": url,
+        "status": status,
+        "body": body,
+        "headers": headers or {},
+    }
+
+
+def get(url, params=None):
+    When.http.get(url, params or {})
+    Then.http.status_code_is(200)
+    return Http.response
+
+
+def setup_wip(user):
+    """``wip`` (in "alice", over main), which `user` may select."""
+    reverse("todo-lists-list")  # the URLconf registers the types
+    make_branch("wip", "alice")
+    grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(user)
+
+
+def studio_page(**params):
+    return get(reverse("scrud-studio:type", args=[SLUG]), params).content.decode()
+
+
+def preview_page(**params):
+    url = reverse("scrud-studio:preview", args=[SLUG])
+    return get(url, params).content.decode()
+
+
+def explain_url(pointer, query="branch=wip&mode=view"):
+    pointer = pointer.replace("/", "%2F")
+    return f"{reverse('scrud-studio:explain', args=[SLUG])}?{query}&pointer={pointer}"
+
+
+def options_url(pointer, query="branch=wip&mode=view"):
+    pointer = pointer.replace("/", "%2F")
+    url = reverse("scrud-studio:new-component-options", args=[SLUG])
+    return f"{url}?{query}&pointer={pointer}"
+
+
+def item_url(name, kind="component", branch="wip"):
+    return f"{reverse('scrud-studio:item')}?branch={branch}&kind={kind}&name={name}"
+
+
+def explanation(component, readable=True, **rule):
+    """An explanation of `POINTER` whose winner is a rule naming
+    `component`."""
+    winner = {"readable": readable, "rank": [0, 0, 0, 1], "outcome": "wins"}
+    if readable:
+        winner.update(
+            {
+                "selector": "string",
+                "component": component,
+                "stylesheet": "studio",
+                "branch": "wip",
+                "applies_to": "",
+                **rule,
+            }
+        )
+    return {
+        "pointer": POINTER,
+        "terms": ["string"],
+        "scope": [],
+        "winner": 0,
+        "fallback": None,
+        "rules": [winner],
+    }
+
+
+NO_OPTIONS = {"matches": [], "inside_type": None, "where": [], "applies_to": [""]}
+
+
+def item(template, engine="jinja", own=True, etag='"e1"', name="row"):
+    return {
+        "kind": "component",
+        "name": name,
+        "applies_to": "",
+        "own": own,
+        "from": "wip" if own else "main",
+        "etag": etag,
+        "content": {
+            "name": name,
+            "engine": engine,
+            "mode": "view",
+            "template": template,
+            "branch": "wip" if own else "main",
+            "base": "server-managed",
+            "rbac_context": "alice",
+        },
+    }
+
+
+def csrf(page):
+    """The page's CSRF token, from its meta tag."""
+    return re.search(r'<meta name="csrf-token" content="([^"]*)"', page).group(1)
+
+
+@pytest.mark.django_db
+@test_context
+def test_click_in_preview_explains_nearest_node(ui_alice_login):
+    setup_wip(ui_alice_login)
+    page = studio_page(branch="wip")
+    preview = preview_page(branch="wip")
+    explained = get(explain_url(POINTER)).json()
+    offered = get(options_url(POINTER)).json()
+    assert explained["pointer"] == POINTER and offered["matches"]
+    out = run_studio(
+        page,
+        preview,
+        [
+            route("GET", explain_url(POINTER), body=explained),
+            route("GET", options_url(POINTER), body=offered),
+        ],
+        r"""
+        // Outside every scrud-node: nothing is asked.
+        out.outside = click(preview.body).defaultPrevented;
+        out.before = calls.length;
+        // The innermost element of the node: the nearest scrud-node is it.
+        const ev = click(innermost(node('/items/0/text')));
+        out.prevented = ev.defaultPrevented;
+        await settle();
+        out.selected = preview.querySelectorAll('scrud-node')
+          .filter((n) => n.hasAttribute('data-studio-selected'))
+          .map((n) => n.getAttribute('data-pointer'));
+        out.panel = text('studio-explain');
+        const match = byId('studio-new-component').querySelector('select[name="match"]');
+        out.matches = match.options.map((o) => [o.value, o.textContent]);
+        out.formHidden = byId('studio-new-component').hidden;
+        out.editor = text('studio-editor');
+        """,
+    )
+    assert out["outside"] is False and out["before"] == 0
+    assert out["prevented"] is True
+    assert [(c["method"], c["url"]) for c in out["calls"]] == [
+        ("GET", explain_url(POINTER)),
+        ("GET", options_url(POINTER)),
+    ]
+    assert out["selected"] == [POINTER]
+    assert POINTER in out["panel"]
+    for term in explained["terms"]:
+        assert term in out["panel"]
+    # The default stylesheet's rule gives it a built-in, which the panel
+    # names; there is nothing stored to edit.
+    winner = explained["rules"][explained["winner"]]
+    assert winner["component"].startswith("scrud:")
+    assert winner["component"] in out["panel"] and "wins" in out["panel"]
+    assert "built-in" in out["editor"]
+    assert out["matches"] == [[m["select"], m["label"]] for m in offered["matches"]]
+    assert out["formHidden"] is False
+
+
+@pytest.mark.django_db
+@test_context
+def test_panel_text_is_not_html(ui_alice_login):
+    setup_wip(ui_alice_login)
+    page = studio_page(branch="wip")
+    preview = preview_page(branch="wip")
+    shown = explanation("<img src=x>", selector="<b>bold</b> string")
+    shown["terms"] = ["<b>term</b>"]
+    shown["scope"] = ["<i>scope</i>"]
+    shown["rules"].append(
+        {"readable": False, "rank": [0, 0, 0, 0], "outcome": "outranked"}
+    )
+    out = run_studio(
+        page,
+        preview,
+        [
+            route("GET", explain_url(POINTER), body=shown),
+            route("GET", options_url(POINTER), body=NO_OPTIONS),
+            route(
+                "GET",
+                item_url("%3Cimg+src%3Dx%3E"),
+                body=item("</textarea><b>t</b>", name="<img src=x>"),
+            ),
+        ],
+        r"""
+        click(innermost(node('/items/0/text')));
+        await settle();
+        out.panel = text('studio-explain');
+        out.title = text('studio-editor-title');
+        out.template = byId('studio-editor-text').value;
+        """,
+    )
+    for literal in ("<b>bold</b> string", "<img src=x>", "<b>term</b>", "<i>scope</i>"):
+        assert literal in out["panel"], literal
+    assert "can't read" in out["panel"]
+    assert "<img src=x>" in out["title"]
+    assert out["template"] == "</textarea><b>t</b>"
+    # Only the elements the panel is built of; none parsed from server text.
+    assert not {"B", "I", "IMG", "SCRIPT"} & set(out["created"])
+
+
+@pytest.mark.django_db
+@test_context
+def test_saved_event_reloads_preview(ui_alice_login):
+    setup_wip(ui_alice_login)
+    page = studio_page(branch="wip")
+    preview = preview_page(branch="wip")
+    preview_url = reverse("scrud-studio:preview", args=[SLUG]) + "?branch=wip&mode=view"
+    out = run_studio(
+        page,
+        preview,
+        [
+            route("GET", explain_url(POINTER), body=explanation("scrud:string")),
+            route("GET", options_url(POINTER), body=NO_OPTIONS),
+            route(
+                "POST",
+                reverse("scrud-studio:pull"),
+                body={"name": "wip", "conflicts": [{"kind": "css"}]},
+                headers={"HX-Trigger": "scrud-studio-saved"},
+            ),
+        ],
+        r"""
+        click(innermost(node('/items/0/text')));
+        await settle();
+        out.afterClick = calls.length;
+        saved();
+        await settle();
+        out.afterSaved = calls.slice(out.afterClick).map((c) => c.url);
+        out.srcAfterSaved = srcSets.slice();
+        // A write whose answer triggers the event reloads too.
+        click(byId('studio-pull'));
+        await settle();
+        out.message = text('studio-message');
+        """,
+    )
+    assert out["srcAfterSaved"] == [preview_url]
+    assert out["afterSaved"] == [explain_url(POINTER), options_url(POINTER)]
+    assert out["srcSets"] == [preview_url, preview_url]
+    pull = [c for c in out["calls"] if c["method"] == "POST"]
+    assert len(pull) == 1
+    assert pull[0]["url"] == reverse("scrud-studio:pull")
+    assert pull[0]["body"] == {"branch": "wip"}
+    assert pull[0]["headers"]["Content-Type"] == "application/json"
+    assert pull[0]["headers"]["X-CSRFToken"] == csrf(page) != ""
+    assert "1 conflict" in out["message"]
+    # After the pull, the panel is explained again.
+    assert [c["url"] for c in out["calls"]].count(explain_url(POINTER)) == 3
+
+
+@pytest.mark.django_db
+@test_context
+def test_save_sends_if_match_and_a_412_reloads_the_editor(ui_alice_login):
+    setup_wip(ui_alice_login)
+    page = studio_page(branch="wip")
+    preview = preview_page(branch="wip")
+    save_url = reverse("scrud-studio:save-item")
+    out = run_studio(
+        page,
+        preview,
+        [
+            route("GET", explain_url(POINTER), body=explanation("row")),
+            route("GET", options_url(POINTER), body=NO_OPTIONS),
+            route("GET", item_url("row"), body=item("<i>{{ value }}</i>")),
+            route("GET", item_url("row"), body=item("<u>theirs</u>", etag='"e2"')),
+            route("POST", save_url, 412, {"title": "Precondition Failed"}),
+            route("POST", save_url, 403, {"title": "Forbidden"}),
+            route("POST", save_url, 400, {"template": ["Unexpected end of block"]}),
+            route(
+                "POST",
+                reverse("scrud-studio:revert-item"),
+                body=None,
+                headers={"HX-Trigger": "scrud-studio-saved"},
+            ),
+        ],
+        r"""
+        click(innermost(node('/items/0/text')));
+        await settle();
+        out.loaded = byId('studio-editor-text').value;
+        out.readOnly = byId('studio-editor-text').readOnly;
+        byId('studio-editor-text').value = '<i>mine</i>';
+        click(byId('studio-save'));
+        await settle();
+        out.after412 = {message: text('studio-message'), template: byId('studio-editor-text').value};
+        click(byId('studio-save'));
+        await settle();
+        out.after403 = text('studio-message');
+        click(byId('studio-save'));
+        await settle();
+        out.after400 = {message: text('studio-message'), errors: text('studio-editor-errors')};
+        out.revertHidden = byId('studio-revert').hidden;
+        click(byId('studio-revert'));
+        await settle();
+        """,
+    )
+    assert out["loaded"] == "<i>{{ value }}</i>" and out["readOnly"] is False
+    saves = [c for c in out["calls"] if c["url"] == save_url]
+    assert len(saves) == 3
+    first = saves[0]
+    assert first["headers"]["If-Match"] == '"e1"'
+    assert first["headers"]["X-CSRFToken"] == csrf(page)
+    assert first["headers"]["Content-Type"] == "application/json"
+    assert first["body"] == {
+        "kind": "component",
+        "branch": "wip",
+        "name": "row",
+        "content": {
+            "name": "row",
+            "engine": "jinja",
+            "mode": "view",
+            "template": "<i>mine</i>",
+            "branch": "wip",
+            "rbac_context": "alice",
+        },
+    }
+    # 412: a notice, and the editor shows the item as it is now.
+    assert "changed" in out["after412"]["message"]
+    assert out["after412"]["template"] == "<u>theirs</u>"
+    assert saves[1]["headers"]["If-Match"] == '"e2"'
+    assert "may not" in out["after403"]
+    assert "template: Unexpected end of block" in out["after400"]["errors"]
+    # Revert sends the ETag the editor read (ruling S10).
+    assert out["revertHidden"] is False
+    (revert,) = [c for c in out["calls"] if c["url"].endswith("revert-item")]
+    assert revert["headers"]["If-Match"] == '"e2"'
+    assert revert["body"] == {"kind": "component", "branch": "wip", "name": "row"}
+
+
+@pytest.mark.django_db
+@test_context
+def test_editor_is_read_only_for_django_components_and_published_branches(
+    ui_alice_login,
+):
+    setup_wip(ui_alice_login)
+    preview = preview_page(branch="wip")
+    script = r"""
+        click(innermost(node('/items/0/text')));
+        await settle();
+        out.readOnly = byId('studio-editor-text').readOnly;
+        out.saveHidden = byId('studio-save').hidden;
+        out.revertHidden = byId('studio-revert').hidden;
+        out.editor = text('studio-editor');
+        """
+    # A Django-engine component on a working branch.
+    out = run_studio(
+        studio_page(branch="wip"),
+        preview,
+        [
+            route("GET", explain_url(POINTER), body=explanation("row")),
+            route("GET", options_url(POINTER), body=NO_OPTIONS),
+            route("GET", item_url("row"), body=item("<b>x</b>", engine="django")),
+        ],
+        script,
+    )
+    assert out["readOnly"] is True and out["saveHidden"] is True
+    assert "django" in out["editor"].lower()
+    # A Jinja component on a published branch: no options are asked for.
+    query = "branch=main&mode=view"
+    out = run_studio(
+        studio_page(branch="main"),
+        preview,
+        [
+            route("GET", explain_url(POINTER, query), body=explanation("row")),
+            route(
+                "GET",
+                item_url("row", branch="main"),
+                body=item("<b>x</b>", own=False),
+            ),
+        ],
+        script,
+    )
+    assert out["readOnly"] is True
+    assert out["saveHidden"] is True and out["revertHidden"] is True
+    assert "read-only" in out["editor"]
+    assert all("options" not in c["url"] for c in out["calls"])
+
+
+@pytest.mark.django_db
+@test_context
+def test_new_component_form_posts_the_choice_and_says_whether_it_wins(
+    ui_alice_login,
+):
+    setup_wip(ui_alice_login)
+    page = studio_page(branch="wip", mode="edit", context="", scope="card")
+    preview = preview_page(branch="wip", mode="edit")
+    query = "branch=wip&mode=edit&scope=card"
+    offered = {
+        "matches": [
+            {"select": "ex:Text", "label": "ex:Text", "broad": False},
+            {"select": "string", "label": "every string on this branch", "broad": True},
+        ],
+        "inside_type": {
+            "scope": "todo-lists-items",
+            "root_component": "scrud:object-edit",
+            "property": "items",
+            "creates_root": True,
+        },
+        "where": ["card"],
+        "applies_to": [""],
+        "name": "todo-lists-items-text-edit",
+    }
+    created = {
+        "written": [
+            {"kind": "component", "name": "todo-lists-edit"},
+            {"kind": "component", "name": "todo-lists-items-text-edit"},
+            {"kind": "stylesheet", "name": "studio", "applies_to": ""},
+        ],
+        "wins": False,
+        "explanation": {
+            **explanation("other"),
+            "rules": [
+                {"readable": False, "rank": [2, 0, 0, 1], "outcome": "wins"},
+                {
+                    "readable": True,
+                    "rank": [1, -1, 0, 1],
+                    "outcome": "outranked",
+                    "selector": "todo-lists-items string",
+                    "component": "todo-lists-items-text-edit",
+                    "stylesheet": "studio",
+                    "branch": "wip",
+                    "applies_to": "",
+                },
+            ],
+        },
+    }
+    out = run_studio(
+        page,
+        preview,
+        [
+            route("GET", explain_url(POINTER, query), body=explanation("scrud:x")),
+            route("GET", options_url(POINTER, query), body=offered),
+            route(
+                "POST",
+                reverse("scrud-studio:new-component"),
+                201,
+                created,
+                {"HX-Trigger": "scrud-studio-saved"},
+            ),
+        ],
+        r"""
+        click(innermost(node('/items/0/text')));
+        await settle();
+        const form = byId('studio-new-component');
+        out.inside = text('studio-inside');
+        form.querySelector('select[name="match"]').value = 'string';
+        form.querySelector('input[name="inside_type"]').checked = true;
+        form.querySelector('select[name="where"]').value = 'card';
+        form.querySelector('textarea[name="template"]').value = '<em>{{ value }}</em>';
+        out.prevented = submit(form).defaultPrevented;
+        await settle();
+        out.result = text('studio-new-result');
+        """,
+    )
+    assert "items" in out["inside"] and "todo-lists-items" in out["inside"]
+    assert out["prevented"] is True
+    (post,) = [c for c in out["calls"] if c["method"] == "POST"]
+    assert post["headers"]["X-CSRFToken"] == csrf(page)
+    assert post["body"] == {
+        "branch": "wip",
+        "slug": SLUG,
+        "mode": "edit",
+        "scope": "card",
+        "context": "",
+        "pointer": POINTER,
+        "match": "string",
+        "inside_type": True,
+        "where": "card",
+        "applies_to": "",
+        "template": "<em>{{ value }}</em>",
+    }
+    assert "todo-lists-items-text-edit" in out["result"]
+    assert "does not win" in out["result"] and "can't read" in out["result"]
+    # The saved event reloaded the preview.
+    assert len(out["srcSets"]) == 1

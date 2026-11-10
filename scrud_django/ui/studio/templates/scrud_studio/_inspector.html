@@ -1,0 +1,19 @@
+<section id="studio-inspector" class="studio-inspector">
+<h2>Inspector</h2>
+<p id="studio-hint" class="studio-empty">Click a part of the preview to inspect it.</p>
+<div id="studio-explain" aria-live="polite"></div>
+<form id="studio-new-component" class="studio-new" hidden>
+<fieldset{% if not editable %} disabled{% endif %}>
+<legend>New component for this node</legend>
+{% if not editable %}<p class="studio-empty">This branch is published: read-only. Pick a working branch to make components.</p>{% endif %}
+<label>Match <select name="match"></select></label>
+<label id="studio-inside-label" hidden><input type="checkbox" name="inside_type"> <span id="studio-inside"></span></label>
+<label>Where <select name="where"><option value="">anywhere</option></select></label>
+<label>Applies to <select name="applies_to"></select></label>
+<p id="studio-new-name" class="studio-empty"></p>
+<label>Template (Jinja) <textarea name="template" rows="6" spellcheck="false">{% verbatim %}<span>{{ value }}</span>{% endverbatim %}</textarea></label>
+<button type="submit">Create</button>
+</fieldset>
+<p id="studio-new-result" class="studio-result" role="status"></p>
+</form>
+</section>

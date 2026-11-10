@@ -11,7 +11,7 @@
 </head>
 <body>
 <header class="studio-bar"><a href="{% url 'scrud-studio:types' %}">Studio</a></header>
-<main>
+<main class="{% block main_class %}studio-main{% endblock %}">
 {% block content %}{% endblock %}
 </main>
 </body>

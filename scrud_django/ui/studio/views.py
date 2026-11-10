@@ -12,7 +12,7 @@ from rest_framework.decorators import (
     permission_classes,
     renderer_classes,
 )
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.parsers import JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import JSONRenderer
@@ -28,7 +28,9 @@ from scrud_django.registration import get_resource_type_for
 from scrud_django.rows import by_pk, unsorted
 from scrud_django.ui.branches import MAIN
 from scrud_django.ui.branches.effective import Selection, using_selection
+from scrud_django.ui.branches.model import Branch
 from scrud_django.ui.branches.selection import parse_value, selectable
+from scrud_django.ui.branches.store import branches
 from scrud_django.ui.cascade import request_memo
 from scrud_django.ui.render import node_at
 from scrud_django.ui.studio import writes
@@ -36,6 +38,12 @@ from scrud_django.ui.studio.dispatch import call_view
 from scrud_django.ui.studio.explain import explain as explain_node
 from scrud_django.ui.studio.new_component import create as create_component
 from scrud_django.ui.studio.new_component import options as component_options
+from scrud_django.ui.studio.page import (
+    may_preview_context,
+    page_context,
+    read_item,
+    strip_context,
+)
 from scrud_django.ui.studio.preview import (
     SAMPLE_DECISIONS,
     preview_css_urls,
@@ -81,14 +89,72 @@ def types(request):
     return render(request._request, template, context)
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def type_page(request, slug):
-    """The studio page of one type (a placeholder shell until its editor)."""
+def _registered_type(slug) -> dict:
     found = [t for t in registered_types() if t["slug"] == slug]
     if not found:
         raise Http404(slug)
-    return render(request._request, "scrud_studio/type.html", {"type": found[0]})
+    return found[0]
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def type_page(request, slug):
+    """The studio page of type `slug`: the branch picker and preview
+    controls (`page.page_context`, from the query), the sandboxed preview,
+    the inspector and editor that ``studio.js`` fills, and the branch
+    strip."""
+    context = {"type": _registered_type(slug), **page_context(request, slug)}
+    return render(request._request, "scrud_studio/type.html", context)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def strip(request, slug):
+    """The branch strip of ``?branch=`` (a branch name; default ``main``)
+    on the page of type `slug`, alone: the page refreshes it after a save.
+    A branch the user may not select is refused as an unknown one
+    (`UIBranchUnavailableError`)."""
+    found = _registered_type(slug)
+    branch = _selected_branch(request)
+    all_branches = branches()
+    context = {
+        "type": found,
+        **strip_context(
+            request, slug, branch, Selection(branch=branch.name), all_branches
+        ),
+    }
+    return render(request._request, "scrud_studio/_strip.html", context)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@renderer_classes([JSONRenderer])
+def item(request):
+    """The item ``{kind, name, applies_to?}`` (query parameters) as the
+    branch ``?branch=`` (a branch name; default ``main``) shows it live, for
+    the editor (`page.read_item`), with its ETag. 404 when the branch shows
+    none or one the user may not read, alike; a branch they may not select
+    is refused as an unknown one (`UIBranchUnavailableError`)."""
+    kind, name, target = writes._item(request.GET)
+    branch = _selected_branch(request)
+    found = read_item(request, branch, kind, name, target)
+    if found is None:
+        raise NotFound(f"Branch {branch.name!r} shows no such item you may read.")
+    headers = {"ETag": found["etag"]} if found["etag"] else None
+    return Response(found, headers=headers)
+
+
+def _selected_branch(request) -> Branch:
+    """The branch ``?branch=`` names (default ``main``), which the user may
+    select; else `UIBranchUnavailableError`."""
+    name = request.GET.get("branch") or MAIN
+    all_branches = branches()
+    branch = all_branches.get(name)
+    if branch is None or not selectable(
+        request, Selection(branch=name), all_branches=all_branches
+    ):
+        raise UIBranchUnavailableError(name)
+    return branch
 
 
 def _schema_title(resource_type) -> str:
@@ -105,9 +171,7 @@ def _data_context(request, params=None) -> str:
     for every context."""
     params = request.GET if params is None else params
     context = params.get("context", "")
-    if context and not may_read_in_context(
-        request, UI_STYLESHEET_TYPE_URI, {"rbac_context": context}, [context]
-    ):
+    if not may_preview_context(request, context):
         raise UIStudioContextUnavailableError()
     return context
 

@@ -1,1 +1,3 @@
 scrud-node { display: contents; }
+/* The node selected in the studio (set by the parent page's studio.js). */
+scrud-node[data-studio-selected] > * { outline: 2px solid #0b57d0; outline-offset: 2px; }
