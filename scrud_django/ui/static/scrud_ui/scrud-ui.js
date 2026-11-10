@@ -438,6 +438,55 @@
     return elt.hasAttribute('hx-put') || elt.hasAttribute('data-hx-put');
   }
 
+  var MISCONFIGURED = 'This action is misconfigured.';
+
+  /** "form" or "fixed" for an element that sends JSON for any method; else null. */
+  function jsonMode(elt) {
+    var mode = elt && elt.getAttribute ? elt.getAttribute('data-scrud-json') : null;
+    return mode === null ? null : mode || 'form';
+  }
+
+  /**
+   * The inputs a `data-scrud-json="form"` element sends: the named-by-pointer
+   * inputs inside it (not disabled, radios only when checked), as the
+   * {name, type, value, checked} buildBody reads. `data-scrud-type` on an
+   * input overrides its type.
+   */
+  function jsonFormFields(elt) {
+    return Array.prototype.filter
+      .call(elt.querySelectorAll('[name^="/"]'), function (input) {
+        return !input.disabled && !(input.type === 'radio' && !input.checked);
+      })
+      .map(function (input) {
+        return {
+          name: input.name,
+          type: input.getAttribute('data-scrud-type') || input.type,
+          value: input.value,
+          checked: !!input.checked
+        };
+      });
+  }
+
+  /** The parsed body of a `fixed` element, or undefined when it does not parse. */
+  function fixedBody(elt) {
+    var text = elt.getAttribute('data-scrud-body');
+    if (text === null) return undefined;
+    try {
+      JSON.parse(text);
+      return text;
+    } catch (err) {
+      return undefined;
+    }
+  }
+
+  /** The notice goes to the element's frame; outside any, it is logged. */
+  function refuse(evt, elt, text) {
+    evt.preventDefault();
+    var frame = frameOf(elt);
+    if (frame) showNotice(frame, text);
+    else console.error('scrud-ui: ' + text);
+  }
+
   /** The frame's own scrud-content (not a nested frame's). */
   function contentOf(frame) {
     var scripts = frame.querySelectorAll('script.scrud-content');
@@ -507,6 +556,28 @@
     setDefault(headers, 'Scrud-UI-Branch', branchOf(detail.elt));
     if (verb === 'get') return;
     setDefault(headers, 'X-CSRFToken', csrfToken());
+    var mode = jsonMode(detail.elt);
+    if (mode) {
+      var own = frameOf(detail.elt);
+      if (own) clearNotice(own);
+      if (mode === 'fixed' ? fixedBody(detail.elt) === undefined : mode !== 'form') {
+        refuse(evt, detail.elt, MISCONFIGURED);
+        return;
+      }
+      if (mode === 'form') {
+        var bad = [];
+        buildBody({}, jsonFormFields(detail.elt), bad);
+        if (bad.length) {
+          refuse(evt, detail.elt, invalidFieldsText(bad));
+          return;
+        }
+      }
+      var tag = detail.elt.getAttribute('data-scrud-etag') ||
+        (own && own.getAttribute('data-scrud-etag'));
+      if (tag) setDefault(headers, 'If-Match', quoteEtag(tag));
+      headers['Content-Type'] = 'application/json';
+      return;
+    }
     var frame = frameOf(detail.elt);
     if (!frame) return;
     if (verb === 'put' && isPut(detail.elt)) {
@@ -599,6 +670,9 @@
 
   htmx.defineExtension('scrud-json', {
     encodeParameters: function (xhr, parameters, elt) {
+      var mode = jsonMode(elt);
+      if (mode === 'fixed') return fixedBody(elt) || null;
+      if (mode === 'form') return JSON.stringify(buildBody({}, jsonFormFields(elt)));
       if (!isPut(elt)) return null;
       var frame = frameOf(elt);
       var content = frame && contentOf(frame);

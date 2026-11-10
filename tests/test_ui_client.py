@@ -435,3 +435,137 @@ const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log(JSON.stringify(U.applyArrayOp(input.content, {op: 'remove', pointer: input.pointer})));
 """
 )
+
+
+JSON_SCRIPT = (
+    STUB_DOM
+    + r"""
+const page = el('MAIN', {});
+const marker = el('DIV', {class: 'scrud-branch-page', 'data-scrud-branch': 'wip'}, page);
+document.querySelector = (sel) =>
+  sel === 'meta[name=csrf-token]' ? el('META', {content: 'csrf-123'})
+  : sel === '.scrud-branch-page[data-scrud-branch]' ? marker : null;
+const exts = {};
+htmx.defineExtension = (name, ext) => { exts[name] = ext; };
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const fire = (elt, verb) => {
+  const detail = {elt, verb, headers: {}};
+  handlers['htmx:configRequest']({detail, preventDefault() { detail.prevented = true; }});
+  return {headers: detail.headers, prevented: !!detail.prevented};
+};
+const encode = (elt) => exts['scrud-json'].encodeParameters({}, {}, elt);
+const logged = [];
+console.error = (m) => logged.push(m);
+
+// a create form outside any frame
+const form = el('FORM', {'hx-ext': 'scrud-json', 'hx-post': '/l/', 'data-scrud-json': 'form'}, page);
+el('INPUT', {name: '/title'}, form, {type: 'text', value: 'Groceries'});
+el('INPUT', {name: '/items/-/text'}, form, {type: 'text', value: 'milk'});
+el('INPUT', {name: '/items/-/done'}, form, {type: 'checkbox', checked: true});
+el('INPUT', {name: '/count', 'data-scrud-type': 'number'}, form, {type: 'text', value: '3'});
+el('INPUT', {name: '/off'}, form, {type: 'text', value: 'x', disabled: true});
+out.form = {sent: fire(form, 'post'), body: JSON.parse(encode(form))};
+
+// a fixed body, unchanged byte for byte
+const fixedText = '{"source":"a",  "target":"b","state":"x"}';
+const push = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-post': '/push/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': fixedText}, page);
+out.fixed = {sent: fire(push, 'post'), body: encode(push), same: encode(push) === fixedText};
+
+// DELETE with If-Match from the element, and from its frame
+const revert = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/1/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}', 'data-scrud-etag': 'W/"abc"'}, page);
+out.deleteOwn = fire(revert, 'delete');
+const fr = frame('/o/2/', page);
+fr.attrs['data-scrud-etag'] = '"frame-tag"';
+const inFrame = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/2/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}'}, fr);
+out.deleteFrame = fire(inFrame, 'delete');
+out.deleteNoTag = fire(push, 'delete');
+
+// bad JSON: cancelled, notice in the frame, or logged outside one
+const badIn = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-post': '/x/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{nope'}, fr);
+out.badFrame = fire(badIn, 'post');
+out.notice = fr.children[0].textContent;
+const badOut = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-post': '/x/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{nope'}, page);
+out.badOutside = fire(badOut, 'post');
+out.logged = logged.slice();
+const noBody = el('BUTTON', {'hx-post': '/x/', 'data-scrud-json': 'fixed'}, page);
+out.noBody = fire(noBody, 'post').prevented;
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_form_json_post_builds_body_from_pointers():
+    require_node()
+    out = run_node(JSON_SCRIPT)["form"]
+    assert out["body"] == {
+        "title": "Groceries",
+        "items": [{"text": "milk", "done": True}],
+        "count": 3,
+    }
+    headers = out["sent"]["headers"]
+    assert not out["sent"]["prevented"]
+    assert headers["Content-Type"] == "application/json"
+    assert headers["X-CSRFToken"] == "csrf-123"
+    assert headers["Scrud-UI-Branch"] == "wip"
+    assert headers["Accept"] == "text/html"
+    assert "If-Match" not in headers
+
+
+def test_fixed_json_post_sends_body_unchanged():
+    require_node()
+    out = run_node(JSON_SCRIPT)["fixed"]
+    assert out["same"] is True
+    assert out["sent"]["headers"]["Content-Type"] == "application/json"
+    assert out["sent"]["headers"]["X-CSRFToken"] == "csrf-123"
+
+
+def test_json_delete_with_if_match():
+    require_node()
+    out = run_node(JSON_SCRIPT)
+    assert out["deleteOwn"]["headers"]["If-Match"] == 'W/"abc"'
+    assert out["deleteOwn"]["headers"]["Content-Type"] == "application/json"
+    assert out["deleteFrame"]["headers"]["If-Match"] == '"frame-tag"'
+    assert "If-Match" not in out["deleteNoTag"]["headers"]
+
+
+def test_bad_fixed_body_cancels_with_notice():
+    require_node()
+    out = run_node(JSON_SCRIPT)
+    assert out["badFrame"]["prevented"] is True
+    assert out["notice"] == "This action is misconfigured."
+    # outside any frame: logged, still cancelled
+    assert out["badOutside"]["prevented"] is True
+    assert out["logged"] == ["scrud-ui: This action is misconfigured."]
+    # a fixed element with no body at all is misconfigured too
+    assert out["noBody"] is True
+
+
+def test_existing_put_unchanged():
+    """A PUT from a frame without data-scrud-json takes the old path."""
+    require_node()
+    out = run_node(HEADERS_SCRIPT)
+    assert out["put"]["headers"]["Content-Type"] == "application/json"
+    assert out["put"]["headers"]["If-Match"] == '"inner-etag"'
+    assert out["put"]["headers"]["Scrud-UI-Pointer"] == "/items/0"
+    script = (
+        STUB_DOM
+        + r"""
+const exts = {};
+htmx.defineExtension = (n, e) => { exts[n] = e; };
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const root = frame('/l/1/');
+root.attrs['hx-put'] = '/l/1/';
+el('SCRIPT', {class: 'scrud-content'}, root, {textContent: '{"title": "a", "keep": 1}'});
+el('INPUT', {name: '/title'}, root, {type: 'text', value: 'b'});
+out.body = JSON.parse(exts['scrud-json'].encodeParameters({}, {}, root));
+out.notPut = exts['scrud-json'].encodeParameters({}, {}, el('DIV', {}, root));
+console.log(JSON.stringify(out));
+"""
+    )
+    got = run_node(script)
+    assert got["body"] == {"title": "b", "keep": 1} and got["notPut"] is None

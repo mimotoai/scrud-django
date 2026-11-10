@@ -547,6 +547,54 @@ named by JSON Pointer (`name="/items/0/text"`):
 Custom components that want to be editable need only render inputs named by
 their JSON Pointer inside the frame.
 
+### Writes from the browser
+
+Besides the frame's own `PUT`, any element can send a JSON body with any
+method (POST, PUT, PATCH or DELETE) to an existing resource route. It needs
+`hx-ext="scrud-json"` (inherited from an ancestor works), an `hx-<method>`
+attribute with the URL, and `data-scrud-json`. The element may sit outside any
+`.scrud-resource` frame, in a stored page component for example.
+
+* `data-scrud-json="form"` builds the body from the inputs inside the element
+  that are named by JSON Pointer, onto `{}`, with the rules of the frame's PUT:
+  `/items/-/text` appends to an array, a checkbox is a boolean, a number input
+  a number, and `data-scrud-type="number"` (or `checkbox`, `text`, ...) on an
+  input overrides the type taken from its `type`. Disabled inputs and unchecked
+  radios are left out. This is how a create is sent:
+
+  ```html
+  <form hx-ext="scrud-json" hx-post="/todo-lists/" data-scrud-json="form">
+    <input name="/title"> <input name="/items/-/text">
+    <button>Create</button>
+  </form>
+  ```
+
+* `data-scrud-json="fixed"` sends the JSON in `data-scrud-body` unchanged (the
+  attribute's text is the body, byte for byte):
+
+  ```html
+  <button hx-ext="scrud-json" hx-post="/ui/push/" data-scrud-json="fixed"
+          data-scrud-body='{"source": "wip", "target": ""}'>Push</button>
+  ```
+
+* A DELETE with `If-Match` is a fixed element with a `data-scrud-etag`
+  (its own, else its frame's):
+
+  ```html
+  <button hx-ext="scrud-json" hx-delete="/ui-branches/5/" data-scrud-json="fixed"
+          data-scrud-body="{}" data-scrud-etag="&quot;abc&quot;">Revert</button>
+  ```
+
+These requests send `Content-Type: application/json`, `X-CSRFToken`,
+`Scrud-UI-Branch` (the frame's, else the page's `.scrud-branch-page`) and
+`If-Match` when the element or its frame has `data-scrud-etag`. The frame's
+`PUT` is unchanged. An unparsable or missing `data-scrud-body`, a
+`data-scrud-json` other than `form` or `fixed`, or an input that cannot be
+applied cancels the request: the element's frame shows "This action is
+misconfigured." (or the invalid-field notice), and outside a frame the message
+is logged with `console.error`. Forms are never sent as form bodies: the server
+answers those with 415.
+
 ### Refused writes
 
 A 400 or 403 PUT re-renders the submitted body (never the stored content) in
