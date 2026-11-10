@@ -143,7 +143,7 @@ These would make the work a failure even if it technically ran:
 | `parent` | The branch it is based on, or none. Any chain is allowed **(call)**. Setting or changing it needs GET on the parent as stored; a parent the writer may not GET gets the same 400 as an unknown one (ruling R36, during implementation). |
 | `base` | `live` (default, **owner**) or `pinned`. Ignored without a parent. |
 | `branching_point` | The ancestor versions the branch started from, or last pulled (see Branching point). Always recorded **(owner)**. When `base` is `pinned`, this is also the state it unions with. |
-| `prefix` | Present only on a published branch: its URL prefix, e.g. `/`, `/admin/resources/`, `/msp/resources/` **(owner: published branches at prefixes)**. Unique. Setting or changing it (null to a value or back included) needs PUT on `ui-branches` in the context `""`, a site-level grant: a prefix claims site URLs and gates them with GET on its branch (ruling R37, during implementation). |
+| `prefix` | Present only on a published branch: its URL prefix, e.g. `/`, `/admin/resources/`, `/msp/resources/` **(owner: published branches at prefixes)**. Unique. Setting or changing it (null to a value or back included), or deleting a published branch, needs PUT on `ui-branches` in the context `""`, a site-level grant: a prefix claims site URLs and gates them with GET on its branch (ruling R37, during implementation; deletion: owner). |
 | `label`, `description` | Free text. |
 
 The upgrade creates one published branch, `main`, in context `""`, at the API
@@ -363,7 +363,10 @@ The conflict check doesn't depend on the parent link.
 `main` cannot be deleted (400), and neither can a branch that another names as
 its parent (409). Deleting a branch deletes its own items and its versions in
 the same transaction, so a branch created again under the name starts at
-version 1 (ruling R10, during implementation).
+version 1 (ruling R10, during implementation). Deleting a published branch
+takes its URLs away, as removing its prefix does, so it needs the same
+site-level grant, PUT on `ui-branches` in `""` **(owner, after the final
+review)**.
 
 ## Rollback
 
@@ -538,6 +541,23 @@ four databases). At least:
 - The switcher's and the banner's markup, and how they get into pages (outside
   stored components, per the call above).
 - Whether to create branches automatically for new authors (not required).
+
+## Decisions after the final review (owner)
+
+- **Branching from `main` needs GET on it.** `main` gets no exception from
+  the rule that a parent must be readable (ruling R36): authors who branch
+  from it need GET on `ui-branches` in `""`. Kept simple on purpose.
+- **Publishing stays site-level** (ruling R37), including deleting a published
+  branch (above).
+- **The demo's admin prefix is `/manage/`**: `/admin/resources/` is shadowed by
+  Django admin's catch-all route at `/admin/`.
+- **Inherited presentation of a published parent is deliberate.** Viewers of
+  a published child (MSP live over admin) see what it inherits from its
+  published parent without GET on that parent. To consider later: telling
+  apart the grants for editing a branch (create, update, delete) from those
+  for displaying it (GET/HEAD), so that display and authoring rights can be
+  given separately.
+- **CSS stays privately cached**; shared and CDN caching is for later.
 
 ## Open questions for the owner
 

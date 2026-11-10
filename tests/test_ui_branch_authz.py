@@ -239,6 +239,36 @@ def test_changing_a_prefix_is_site_level(ui_alice_login):
 
 @pytest.mark.django_db
 @test_context
+def test_deleting_a_published_branch_is_site_level(ui_alice_login):
+    """Deleting a published branch takes its URLs away, as unpublishing it
+    does, so it needs the site grant too (owner decision after the final
+    review); a working branch is deleted with grants in its own context."""
+    shop = make_branch("shop", "alice", parent=None, prefix="/shop-a/")
+    own = make_branch("own", "alice", parent=None)
+    Given.http.force_authenticate(ui_alice_login)
+    When.http.delete(
+        reverse("ui-branches-detail", args=[shop.pk]),
+        HTTP_IF_MATCH=f'"{shop.etag}"',
+    )
+    Then.http.status_code_is(403)
+    assert "prefix" in problem()["detail"]
+    shop.refresh_from_db()
+    When.http.delete(
+        reverse("ui-branches-detail", args=[own.pk]), HTTP_IF_MATCH=f'"{own.etag}"'
+    )
+    Then.http.status_code_is(204)
+    user = publisher()
+    grant(user, {"http.DELETE": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(user)
+    When.http.delete(
+        reverse("ui-branches-detail", args=[shop.pk]),
+        HTTP_IF_MATCH=f'"{shop.etag}"',
+    )
+    Then.http.status_code_is(204)
+
+
+@pytest.mark.django_db
+@test_context
 def test_a_prefix_that_overlaps_shadows_or_lies_under_the_api_is_refused():
     """What the system check warns of is refused at write time (ruling
     R37): ``/shop/`` would hide the project's ``/shop/todo-lists/``, ``/api/``

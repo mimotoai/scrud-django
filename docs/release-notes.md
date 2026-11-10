@@ -28,8 +28,9 @@
 * The UI's `Vary` header adds `Scrud-UI-Branch` and `Cookie`. `scrud:page`
   gets a `css` list of the CSS file URLs; a custom page component should link
   them.
-* Setting or changing a branch's prefix (publishing it at site URLs) needs
-  PUT on `ui-branches` in the context `""`, and refuses a prefix that overlaps
+* Setting, changing or removing a branch's prefix (publishing it at site
+  URLs), and deleting a published branch, need PUT on `ui-branches` in the
+  context `""`. Setting or changing one refuses a prefix that overlaps
   another, hides the project's URLs or lies under the API's. A system check,
   `scrud_django_ui.W001` (a Warning), reports stored prefixes with those
   problems.

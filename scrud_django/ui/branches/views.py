@@ -189,6 +189,10 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
                 f"The branch {MAIN!r} cannot be deleted: it is the published "
                 "branch at the API URLs."
             )
+        if content.get("prefix") is not None:
+            # Deleting a published branch takes its URLs away, as removing
+            # its prefix does: the same site-level grant.
+            self.check_publisher(content)
         using = self.write_database()
         if isinstance(name, str):
             children = sorted(
@@ -284,12 +288,15 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
     def check_publisher(self, content):
         """Refuse (``PermissionDenied``, 403) unless the writer may PUT
         branches in the context ``""``: a prefix claims URLs of the whole
-        site, which no grant in the branch's own context covers."""
+        site, which no grant in the branch's own context covers. Setting,
+        changing or removing a prefix needs it, and so does deleting a
+        published branch."""
         permission = Permission("http.PUT", UI_BRANCH_TYPE_URI)
         if not may_act_in_context(self.request, permission, content, [""]):
             raise PermissionDenied(
-                "Setting or changing a branch's prefix publishes it at the "
-                "site's URLs: it needs PUT on UI branches in the context \"\"."
+                "Setting, changing or removing a branch's prefix (or deleting "
+                "a published branch) changes the site's URLs: it needs PUT on "
+                "UI branches in the context \"\"."
             )
 
 

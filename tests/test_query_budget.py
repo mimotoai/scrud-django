@@ -96,8 +96,7 @@ def test_a_list_reads_its_resource_type_once(client_and_profiles):
     rows = [
         q["sql"]
         for q in queries
-        if q["sql"].startswith("SELECT")
-        and f"{resource_table}.`content`" in q["sql"]
+        if q["sql"].startswith("SELECT") and f"{resource_table}.`content`" in q["sql"]
     ]
     assert rows and all("ORDER BY" not in sql for sql in rows), rows
 

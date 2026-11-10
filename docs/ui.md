@@ -411,7 +411,7 @@ A branch is a resource of type `ui-branches`:
 |---|---|
 | `name` | Required. Unique site-wide, `^[a-z0-9][a-z0-9._-]{0,63}$`. A branch cannot be renamed. |
 | `rbac_context` | Required. The branch's context. It cannot change once the branch exists. |
-| `parent` | The name of the branch it is based on, or `null`. Any chain is allowed. Setting or changing it needs GET on the parent: a parent you may not GET is refused (400) exactly as one that does not exist. |
+| `parent` | The name of the branch it is based on, or `null`. Any chain is allowed. Setting or changing it needs GET on the parent: a parent you may not GET is refused (400) exactly as one that does not exist. `main` is no exception: it is in the context `""`, so an author branching from it needs GET on `ui-branches` there. |
 | `base` | `live` (default) or `pinned`. `pinned` needs a parent. |
 | `branching_point` | Server-managed, as above. |
 | `prefix` | Present only on a published branch: its URL prefix, `/segment/.../` (lower-case letters, digits, `_` and `-`), unique. Setting or changing it (or removing it) needs PUT on `ui-branches` in the context `""`; see [Prefixes](#prefixes). |
@@ -658,11 +658,12 @@ answer.
 
 **Who may publish.** A prefix claims URLs of the whole site: the viewers of
 those URLs then need GET on the branch, so a prefix can put a page of the
-project behind a branch's grants. Setting a branch's `prefix`, changing it, or
-removing it therefore needs **PUT on `ui-branches` in the context `""`** (the
-site's), besides the grants in the branch's own context; without it the write
-is refused (403). A grant in a branch's own context lets you write, push to
-and pull it, never publish it.
+project behind a branch's grants. Setting a branch's `prefix`, changing it,
+removing it, or deleting a published branch therefore needs **PUT on
+`ui-branches` in the context `""`** (the site's), besides the grants in the
+branch's own context; without it the request is refused (403). A grant in a
+branch's own context lets you write, push to, pull and delete a working
+branch, never publish or unpublish one.
 
 A prefix is refused (400) when it is set or changed if it lies under the API's
 URLs; overlaps another branch's (the URLs one claims, `<prefix><type
