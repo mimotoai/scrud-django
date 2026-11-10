@@ -389,6 +389,21 @@ class UIHeaderInvalidError(ScrudException):
         self.title = "UI header invalid"
 
 
+class UIPointerNotFoundError(ScrudException):
+    """A JSON Pointer (the studio's ``?pointer=``) that names no node a
+    render of the resource has: a key or index the content or its schema
+    lacks, or not a pointer."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_pointer_not_found"
+
+    def __init__(self, pointer):
+        super().__init__(f"No node of this resource is at {pointer!r}.")
+        self.type = "https://api.openteams.com/http-problem/ui-pointer-not-found"
+        self.title = "UI pointer not found"
+
+
 class RequestBodyMissingError(ScrudException):
     """A POST or PUT (or PATCH) with an empty body, or a body without a
     ``Content-Length`` (chunked), which DRF does not read. DRF reads either

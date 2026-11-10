@@ -1,5 +1,7 @@
 """The studio's views. Every one requires an authenticated user."""
 
+from dataclasses import dataclass
+
 from django.http import Http404, HttpResponse
 from django.shortcuts import render
 from django.urls import reverse
@@ -15,13 +17,16 @@ from scrud_django.exceptions import (
     UIStudioContextUnavailableError,
 )
 from scrud_django.models import ResourceType
-from scrud_django.permissions import may_read_in_context
+from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.registration import get_resource_type_for
 from scrud_django.rows import by_pk, unsorted
 from scrud_django.ui.branches import MAIN
-from scrud_django.ui.branches.effective import Selection
+from scrud_django.ui.branches.effective import Selection, using_selection
 from scrud_django.ui.branches.selection import parse_value, selectable
+from scrud_django.ui.cascade import request_memo
+from scrud_django.ui.render import node_at
 from scrud_django.ui.studio.dispatch import call_view
+from scrud_django.ui.studio.explain import explain as explain_node
 from scrud_django.ui.studio.preview import (
     SAMPLE_DECISIONS,
     preview_css_urls,
@@ -124,6 +129,88 @@ def preview(request, slug):
     snapshot, not a selection value) is refused alike:
     `UIBranchUnavailableError` (400)."""
     resource_type = get_resource_type_for(slug)
+    shown = _shown(request, slug, resource_type)
+    if isinstance(shown, HttpResponse):
+        return shown
+    frame = render_preview(
+        request,
+        resource_type,
+        shown.content,
+        selection=shown.selection,
+        mode=shown.mode,
+        scope_chain=shown.scope_chain,
+        contexts=shown.contexts,
+        decisions=shown.decisions,
+        href=shown.href,
+    )
+    return render(
+        request._request,
+        "scrud_studio/preview.html",
+        {
+            "title": _schema_title(resource_type),
+            "css": preview_css_urls(shown.selection),
+            "frame": frame,
+        },
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@renderer_classes([JSONRenderer])
+def explain(request, slug):
+    """The inspector's explanation (`studio.explain.explain`) of the node at
+    ``?pointer=`` (a JSON Pointer; default ``""``, the resource) of what
+    `preview` shows with the same parameters, as JSON. A pointer to no node
+    the preview renders is refused (`UIPointerNotFoundError`, 400). A rule
+    from a stylesheet the user may not GET (in its contexts, as the list
+    filter checks a stored one) shows its rank parts only; the default
+    stylesheet's are readable."""
+    resource_type = get_resource_type_for(slug)
+    shown = _shown(request, slug, resource_type)
+    if isinstance(shown, HttpResponse):
+        return shown
+
+    def readable(source):
+        if source is None or source.content is None:
+            return True
+        return may_read_in_context(
+            request,
+            UI_STYLESHEET_TYPE_URI,
+            source.content,
+            resource_contexts(source.content),
+        )
+
+    with using_selection(shown.selection), request_memo():
+        info = node_at(
+            shown.content,
+            resource_type=resource_type,
+            request=request,
+            pointer=request.GET.get("pointer", ""),
+            scope_chain=shown.scope_chain,
+            mode=shown.mode,
+            contexts=shown.contexts,
+        )
+        return Response(explain_node(info, shown.mode, readable=readable))
+
+
+@dataclass(frozen=True)
+class _Shown:
+    """What a preview (or its explanation) shows: `content` at `href` on
+    `selection`'s branch in `mode` and `scope_chain`, with the stylesheets
+    of `contexts` and the user's `decisions` (``None``: the content's own)."""
+
+    content: object
+    href: str
+    selection: Selection
+    mode: str
+    scope_chain: tuple[str, ...]
+    contexts: list[str] | None
+    decisions: dict | None
+
+
+def _shown(request, slug, resource_type) -> "_Shown | HttpResponse":
+    """The `_Shown` of a preview's parameters (see `preview`), or the
+    resource view's response refusing to read ``?instance=``."""
     context = _data_context(request)
     value = request.GET.get("branch") or MAIN
     selection = parse_value(value)
@@ -137,37 +224,28 @@ def preview(request, slug):
     scope_chain = tuple(request.GET.get("scope", "").split())
     instance = request.GET.get("instance") or None
     if instance is None:
-        content = sample_of(resource_type, context)
-        href = reverse("scrud-studio:sample", args=[slug])
-        contexts, decisions = [context], SAMPLE_DECISIONS
-    else:
-        read = call_view(request, slug, "GET", pk=instance)
-        if read.status_code != 200:
-            return HttpResponse(
-                read.content,
-                status=read.status_code,
-                content_type=read["Content-Type"],
-            )
-        content = read.data
-        href = reverse(f"{slug}-detail", args=[instance])
-        contexts, decisions = None, None
-    frame = render_preview(
-        request,
-        resource_type,
-        content,
+        return _Shown(
+            content=sample_of(resource_type, context),
+            href=reverse("scrud-studio:sample", args=[slug]),
+            selection=selection,
+            mode=mode,
+            scope_chain=scope_chain,
+            contexts=[context],
+            decisions=SAMPLE_DECISIONS,
+        )
+    read = call_view(request, slug, "GET", pk=instance)
+    if read.status_code != 200:
+        return HttpResponse(
+            read.content,
+            status=read.status_code,
+            content_type=read["Content-Type"],
+        )
+    return _Shown(
+        content=read.data,
+        href=reverse(f"{slug}-detail", args=[instance]),
         selection=selection,
         mode=mode,
         scope_chain=scope_chain,
-        contexts=contexts,
-        decisions=decisions,
-        href=href,
-    )
-    return render(
-        request._request,
-        "scrud_studio/preview.html",
-        {
-            "title": _schema_title(resource_type),
-            "css": preview_css_urls(selection),
-            "frame": frame,
-        },
+        contexts=None,
+        decisions=None,
     )

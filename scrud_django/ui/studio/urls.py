@@ -9,4 +9,5 @@ urlpatterns = [
     path("types/<slug:slug>/", views.type_page, name="type"),
     path("types/<slug:slug>/sample", views.sample, name="sample"),
     path("types/<slug:slug>/preview", views.preview, name="preview"),
+    path("types/<slug:slug>/explain", views.explain, name="explain"),
 ]

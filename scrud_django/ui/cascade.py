@@ -28,6 +28,7 @@ from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
 from scrud_django.rows import by_pk, unsorted
+from scrud_django.ui.branches.model import branch_of
 from scrud_django.ui.engines import ENGINE_NAMES, CompiledTemplate, cached_template
 from scrud_django.ui.selectors import (
     Selector,
@@ -88,10 +89,26 @@ class Component:
 
 
 @dataclass(frozen=True)
+class RuleSource:
+    """The stylesheet a rule comes from: its `pk` (``None`` for a pinned
+    snapshot's and the default one), `name`, `branch` (``""`` for the
+    default one, which every branch has), the context `applies_to` that the
+    cascade applied it in, and its `content` as stored, for read checks
+    (``None`` for the default stylesheet, which everyone may read)."""
+
+    pk: int | None
+    name: str | None
+    branch: str
+    applies_to: str
+    content: Mapping | None
+
+
+@dataclass(frozen=True)
 class Rule:
     selector: Selector
     component: str
     rank: tuple[int, ...]
+    source: RuleSource | None = field(default=None, compare=False)
 
 
 @cache
@@ -238,10 +255,10 @@ def _stylesheets_by_context(contexts):
     return found
 
 
-def _sheet_rules(content, rank_of, pk=None):
+def _sheet_rules(content, rank_of, pk=None, source=None):
     """The rules of one stylesheet's `content` (stored stylesheet `pk`, or
-    ``None``: the default one), ranked by `rank_of(index)`; a rule that does
-    not parse is skipped (and logged)."""
+    ``None``: the default one), ranked by `rank_of(index)`, each from
+    `source`; a rule that does not parse is skipped (and logged)."""
     prefixes = content.get("prefixes")
     prefixes = prefixes if isinstance(prefixes, Mapping) else {}
     rules = content.get("rules")
@@ -265,7 +282,7 @@ def _sheet_rules(content, rank_of, pk=None):
         except SelectorError as error:
             _skipped("stylesheet", pk, name, f"rule {index} ({select!r}): {error}")
             continue
-        out.append(Rule(selector, component, rank_of(index)))
+        out.append(Rule(selector, component, rank_of(index), source))
     return out
 
 
@@ -330,26 +347,50 @@ def effective_rules(
         return memo[key]
 
     by_context = _stylesheets_by_context(contexts)
-    rules = _sheet_rules(_default_stylesheet(), lambda i: (0, 0, i))
+    default = _default_stylesheet()
+    rules = _sheet_rules(
+        default,
+        lambda i: (0, 0, i),
+        source=RuleSource(None, _name_of(default), "", DEFAULT_CONTEXT, None),
+    )
     for pk, _etag, content in by_context.get(DEFAULT_CONTEXT, {}).values():
         order = _order_of(content)
-        rules += _sheet_rules(content, lambda i, o=order, p=pk or 0: (1, o, p, i), pk)
+        rules += _sheet_rules(
+            content,
+            lambda i, o=order, p=pk or 0: (1, o, p, i),
+            pk,
+            _source(pk, content, DEFAULT_CONTEXT),
+        )
     for k, context in enumerate(contexts):
         for pk, _etag, content in by_context.get(context, {}).values():
             order = _order_of(content)
             rules += _sheet_rules(
-                content, lambda i, o=order, p=pk or 0, k=k: (2, k, o, p, i), pk
+                content,
+                lambda i, o=order, p=pk or 0, k=k: (2, k, o, p, i),
+                pk,
+                _source(pk, content, context),
             )
     for j, name in enumerate(linked):
         for context in (DEFAULT_CONTEXT, *contexts):
             sheet = by_context.get(context, {}).get(name)
             if sheet is not None:
-                rules += _sheet_rules(sheet[2], lambda i, j=j: (3, j, i), sheet[0])
+                rules += _sheet_rules(
+                    sheet[2],
+                    lambda i, j=j: (3, j, i),
+                    sheet[0],
+                    _source(sheet[0], sheet[2], context),
+                )
                 break
     result = tuple(rules)
     if memo is not None:
         memo[key] = result
     return result
+
+
+def _source(pk, content, context) -> RuleSource:
+    """The `RuleSource` of stored stylesheet `pk` (`content`), applied in
+    `context`."""
+    return RuleSource(pk, _name_of(content), branch_of(content), context, content)
 
 
 def load_components(names: set[str]) -> dict[str, Component]:
@@ -448,6 +489,45 @@ def _fallback(terms: list[TypeTerm], mode: str) -> Component:
     return builtin_component("scrud:json")
 
 
+@dataclass(frozen=True)
+class Ranking:
+    """The rules that match a node, as `resolve_component` tries them:
+    `ranked` holds ``(key, rule)`` best first, the key being ``(number of
+    selector scopes, -index of the node term matched, cascade rank)``;
+    `components` the components they name that exist; `winner` the index in
+    `ranked` of the first whose component exists and serves the mode, or
+    ``None`` (the node gets the built-in fallback)."""
+
+    ranked: list[tuple[tuple, Rule]]
+    components: dict[str, Component]
+    winner: int | None
+
+
+def rank_rules(
+    rules: tuple[Rule, ...],
+    scope_chain: tuple[str, ...],
+    terms: list[TypeTerm],
+    mode: str,
+) -> Ranking:
+    """The `Ranking` of `rules` for a node with `terms` in `scope_chain` in
+    `mode`: the one ordering `resolve_component` and the studio's
+    explanation share."""
+    ranked = []
+    for rule in rules:
+        term_index = selector_matches(rule.selector, scope_chain, terms)
+        if term_index is not None:
+            ranked.append(((len(rule.selector.scopes), -term_index, rule.rank), rule))
+    if not ranked:
+        return Ranking([], {}, None)
+    components = load_components({rule.component for _, rule in ranked})
+    ranked.sort(key=itemgetter(0), reverse=True)
+    for index, (_, rule) in enumerate(ranked):
+        component = components.get(rule.component)
+        if component is not None and component.serves(mode):
+            return Ranking(ranked, components, index)
+    return Ranking(ranked, components, None)
+
+
 def resolve_component(
     rules: tuple[Rule, ...],
     scope_chain: tuple[str, ...],
@@ -458,18 +538,7 @@ def resolve_component(
     matching rule (most scopes, then earliest node term, then highest rank)
     whose component exists and serves `mode`, else the built-in for the node's
     schema type."""
-    candidates = []
-    for rule in rules:
-        term_index = selector_matches(rule.selector, scope_chain, terms)
-        if term_index is not None:
-            candidates.append(
-                ((len(rule.selector.scopes), -term_index, rule.rank), rule.component)
-            )
-    if candidates:
-        components = load_components({name for _, name in candidates})
-        candidates.sort(key=lambda c: c[0], reverse=True)
-        for _, name in candidates:
-            component = components.get(name)
-            if component is not None and component.serves(mode):
-                return component
-    return _fallback(terms, mode)
+    ranking = rank_rules(rules, scope_chain, terms, mode)
+    if ranking.winner is None:
+        return _fallback(terms, mode)
+    return ranking.components[ranking.ranked[ranking.winner][1].component]
