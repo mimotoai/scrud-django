@@ -855,8 +855,11 @@ parameters:
 ```
 
 `terms` run from most to least specific and `rules` from best, as the cascade
-tries them. `outcome` is `wins`, `outranked` (below the winner), or `missing
-component` / `wrong mode` (above the winner, or with no winner). `winner` is an
+tries them. `outcome` is `wins`; for a rule below the winner, the first part
+of its rank that is lower than the winner's: `fewer scopes`, `less specific
+term` (a later term of the node) or `lower cascade rank`; for a rule above the
+winner, or when there is none, `missing component` or `wrong mode`. A rule the
+user may not read says why it lost too. `winner` is an
 index into `rules`, or `null` with `fallback` naming the built-in component
 (`scrud:json` for a node that renders as JSON whatever the rules). A rule the
 user may not read has only `readable: false`, `rank` and `outcome`. Errors:

@@ -464,7 +464,7 @@ def test_panel_text_is_not_html(ui_alice_login):
     shown["terms"] = ["<b>term</b>"]
     shown["scope"] = ["<i>scope</i>"]
     shown["rules"].append(
-        {"readable": False, "rank": [0, 0, 0, 0], "outcome": "outranked"}
+        {"readable": False, "rank": [0, 0, 0, 0], "outcome": "lower cascade rank"}
     )
     out = run_studio(
         page,
@@ -741,7 +741,7 @@ def test_new_component_form_posts_the_choice_and_says_whether_it_wins(
                 {
                     "readable": True,
                     "rank": [1, -1, 0, 1],
-                    "outcome": "outranked",
+                    "outcome": "fewer scopes",
                     "selector": "todo-lists-items string",
                     "component": "todo-lists-items-text-edit",
                     "stylesheet": "studio",
@@ -798,5 +798,7 @@ def test_new_component_form_posts_the_choice_and_says_whether_it_wins(
     }
     assert "todo-lists-items-text-edit" in out["result"]
     assert "does not win" in out["result"] and "can't read" in out["result"]
+    # It says why it loses, as the explanation does (ruling S16).
+    assert "(fewer scopes)" in out["result"]
     # The saved event reloaded the preview.
     assert len(out["srcSets"]) == 1

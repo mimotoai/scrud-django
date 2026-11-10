@@ -81,7 +81,18 @@ AGREEMENT = {
         ("page", "compact"),
         STRING,
         "view",
-        ["wins", "outranked"],
+        ["wins", "fewer scopes"],
+        "scrud:json",
+    ),
+    "fewer scopes lose, whatever their term": (
+        [
+            rule("ex:Day", "scrud:string", (3, 0, 0)),
+            rule("compact string", "scrud:json", (0, 0, 0)),
+        ],
+        ("compact",),
+        DATE,
+        "view",
+        ["wins", "fewer scopes"],
         "scrud:json",
     ),
     "a scope not in the chain does not match": (
@@ -103,7 +114,7 @@ AGREEMENT = {
         (),
         DATE,
         "view",
-        ["wins", "outranked"],
+        ["wins", "less specific term"],
         "scrud:json",
     ),
     # A bare type matches the format term too: the cascade rank decides.
@@ -115,7 +126,7 @@ AGREEMENT = {
         (),
         DATE,
         "view",
-        ["wins", "outranked"],
+        ["wins", "lower cascade rank"],
         "scrud:string",
     ),
     "higher cascade rank wins": (
@@ -127,7 +138,7 @@ AGREEMENT = {
         (),
         STRING,
         "view",
-        ["wins", "outranked", "outranked"],
+        ["wins", "lower cascade rank", "lower cascade rank"],
         "scrud:string",
     ),
     "a missing component loses": (
@@ -161,7 +172,7 @@ AGREEMENT = {
         (),
         DATE,
         "edit",
-        ["wins", "outranked"],
+        ["wins", "less specific term"],
         "scrud:string-edit",
     ),
     "a stored component in the wrong mode": (
@@ -332,18 +343,19 @@ def test_losers_say_why(todo_list, login_no_roles):
         "rank": [0, 0, 1, 0, sheet.pk, 1],
         "outcome": "wins",
     }
-    # A less specific term: outranked, whatever their cascade rank.
+    # A less specific term loses, whatever its cascade rank.
     assert rest[0] == {
         **stored,
         "selector": "object",
         "component": "scrud:json",
         "rank": [0, -1, 1, 0, sheet.pk, 0],
-        "outcome": "outranked",
+        "outcome": "less specific term",
     }
     defaults = rest[1:]
     assert {r["component"] for r in defaults} == {"scrud:object", "scrud:object-edit"}
     for r in defaults:
-        assert r["stylesheet"] == "scrud:default" and r["outcome"] == "outranked"
+        assert r["stylesheet"] == "scrud:default"
+        assert r["outcome"] == "less specific term"
         assert r["rank"][:3] == [0, -1, 0] and r["readable"] is True
     # Nothing matched: the fallback, and no rule.
     info = node_at(
@@ -443,7 +455,7 @@ def test_ancestors_scopes_and_linked_stylesheets(todo_list, login_no_roles):
     assert first["stylesheet"] == second["stylesheet"] == "inner"
     assert first["rank"] == [1, -1, 3, 0, 0] and first["outcome"] == "wins"
     assert second["rank"] == [1, -1, 1, 0, inner.pk, 0]
-    assert second["outcome"] == "outranked"
+    assert second["outcome"] == "lower cascade rank"
 
 
 def explain_url(slug=SLUG):
@@ -584,7 +596,9 @@ def test_unreadable_rules_show_rank_only(login_no_roles, ui_acme_stylesheet_logi
     unreadable = [r for r in explained["rules"] if not r["readable"]]
     assert len(unreadable) == 1
     assert set(unreadable[0]) == {"readable", "rank", "outcome"}
-    assert unreadable[0]["outcome"] == "outranked"
+    # An unreadable loser says why too (ruling S16): the context's stylesheet
+    # ranks higher in the cascade.
+    assert unreadable[0]["outcome"] == "lower cascade rank"
     assert "secret-row" not in body and "hidden-sheet" not in body
 
 

@@ -20,8 +20,10 @@ def explain(
     - ``rules``: every rule that matched, best first as
       `resolve_component` tries them, each with its ``rank`` parts
       (``[scopes, -term index, *cascade rank]``) and its ``outcome``:
-      ``"wins"``; ``"outranked"`` (below the winner); ``"missing
-      component"`` or ``"wrong mode"`` (above the winner, or with none);
+      ``"wins"``; below the winner, the first rank part lower than the
+      winner's: ``"fewer scopes"``, ``"less specific term"`` or ``"lower
+      cascade rank"``; above the winner, or with none, ``"missing
+      component"`` or ``"wrong mode"``;
     - ``winner``: the index in ``rules`` of the rule whose component the
       node gets, or ``None`` with ``fallback`` the built-in it gets.
 
@@ -69,11 +71,21 @@ def explain(
     }
 
 
+# Why a rule below the winner loses: the first part of its rank key
+# (``(scopes, -term index, cascade rank)``) lower than the winner's.
+_BELOW_WINNER = ("fewer scopes", "less specific term", "lower cascade rank")
+
+
 def _outcome(index, rule, ranking) -> str:
     if index == ranking.winner:
         return "wins"
     if ranking.winner is not None and index > ranking.winner:
-        return "outranked"
+        key = ranking.ranked[index][0]
+        best = ranking.ranked[ranking.winner][0]
+        for reason, mine, theirs in zip(_BELOW_WINNER, key, best, strict=True):
+            if mine != theirs:
+                return reason
+        return _BELOW_WINNER[-1]  # an equal key: the sort's order decided
     if rule.component not in ranking.components:
         return "missing component"
     return "wrong mode"

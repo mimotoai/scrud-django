@@ -476,7 +476,7 @@ def test_reports_not_winning_and_why(admin_login, ui_alice_login):
     got = new_component(scope="page compact")
     assert got["wins"] is False
     explained = got["explanation"]
-    assert ours(explained, "todo-lists-items-view")["outcome"] == "outranked"
+    assert ours(explained, "todo-lists-items-view")["outcome"] == "fewer scopes"
     # The two-scope rule outranks it; alice may not read its stylesheet.
     winner = explained["rules"][explained["winner"]]
     assert winner == {"readable": False, "rank": winner["rank"], "outcome": "wins"}
