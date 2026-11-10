@@ -13,7 +13,6 @@ push."""
 from collections.abc import Mapping
 
 from django.http import HttpResponse
-from django.utils.http import quote_etag
 from rest_framework.exceptions import NotFound, ValidationError
 
 from scrud_django.exceptions import (
@@ -119,17 +118,24 @@ def save_item(request, body) -> HttpResponse:
 
 def revert_item(request, body) -> HttpResponse:
     """Delete the working ``branch``'s own row of the item ``{kind, name,
-    applies_to?}`` (with the request's ``If-Match``, else the row's
-    current ETag), so that the branch shows its parent's again: the undo,
-    and "take theirs" for a conflict. 404 when the branch has none."""
+    applies_to?}``, so that the branch shows its parent's again: the undo,
+    and "take theirs" for a conflict. 404 when the branch has none. The
+    request's ``If-Match`` is sent as it is, with no fallback (ruling S10):
+    without one the view answers 428, and a stale one 412, so a revert
+    never deletes an edit its author has not seen."""
     kind, name, target = _item(body)
     branch = _working_branch(request, body.get("branch"))
     own = own_item(kind, branch, name, target)
     if own is None:
         raise NotFound(f"Branch {branch.name!r} has no row of its own for this item.")
-    if_match = request.headers.get("If-Match") or quote_etag(own.etag)
     return _passed(
-        call_view(request, KIND_SLUGS[kind], "DELETE", pk=own.pk, if_match=if_match)
+        call_view(
+            request,
+            KIND_SLUGS[kind],
+            "DELETE",
+            pk=own.pk,
+            if_match=request.headers.get("If-Match"),
+        )
     )
 
 

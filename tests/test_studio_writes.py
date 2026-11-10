@@ -276,18 +276,32 @@ def test_studio_adds_no_rights(admin_login):
 def test_revert_deletes_own_row_and_resolves_conflict(admin_login, ui_alice_login):
     main_row = main_and_wip(admin_login)
     Given.http.force_authenticate(ui_alice_login)
-    save()
+    first = save()["ETag"]
     Then.http.status_code_is(201)
+    # A newer edit (another author's, on the shared branch).
+    current = save(template="<i>newer</i>", HTTP_IF_MATCH=first)["ETag"]
+    Then.http.status_code_is(200)
     ResourceRegistration.update(
         {**main_row.content, "template": "<b>changed</b>"}, "ui-components", main_row.pk
     )
     studio("pull", {"branch": "wip"})
     Then.http.status_code_is(200)
     assert [c["key"] for c in Http.response.json()["conflicts"]] == [["row"]]
-    # Take theirs: drop the override.
-    response = studio(
-        "revert-item", {"kind": "component", "branch": "wip", "name": "row"}
-    )
+    revert = {"kind": "component", "branch": "wip", "name": "row"}
+    before = stored_state()
+    # A revert is conditional, as the API's DELETE (ruling S10): without
+    # If-Match the view's 428, and with an ETag older than the newer edit
+    # its 412, each passed through; nothing is deleted.
+    for headers, status in (({}, 428), ({"HTTP_IF_MATCH": first}, 412)):
+        response = studio("revert-item", revert, **headers)
+        Then.http.status_code_is(status)
+        assert response["Content-Type"] == "application/problem+json"
+        assert response.json()["status"] == status
+        assert "HX-Trigger" not in response
+        assert stored_state() == before
+    assert own_rows(UI_COMPONENT_TYPE_URI, "wip")[0]["template"] == "<i>newer</i>"
+    # Take theirs, having seen the newer edit: drop the override.
+    response = studio("revert-item", revert, HTTP_IF_MATCH=current)
     Then.http.status_code_is(204)
     assert response["HX-Trigger"] == SAVED
     assert own_rows(UI_COMPONENT_TYPE_URI, "wip") == []
@@ -297,12 +311,13 @@ def test_revert_deletes_own_row_and_resolves_conflict(admin_login, ui_alice_logi
     assert wip.content["conflicts"] == []
     assert stored(main_row.pk).content["template"] == "<b>changed</b>"
     # Nothing left to revert.
-    studio("revert-item", {"kind": "component", "branch": "wip", "name": "row"})
+    studio("revert-item", revert, HTTP_IF_MATCH=current)
     Then.http.status_code_is(404)
     # A stylesheet is identified by its name and the context it applies to:
     # only the override that applies to "acme" is reverted.
+    etags = {}
     for target in ("", "acme"):
-        studio(
+        etags[target] = studio(
             "save-item",
             {
                 "kind": "stylesheet",
@@ -311,13 +326,14 @@ def test_revert_deletes_own_row_and_resolves_conflict(admin_login, ui_alice_logi
                 "applies_to": target,
                 "content": {"rules": []},
             },
-        )
+        )["ETag"]
         Then.http.status_code_is(201)
         assert Http.response.json()["applies_to"] == target
         assert Http.response.json()["rbac_context"] == "alice"
     studio(
         "revert-item",
         {"kind": "stylesheet", "branch": "wip", "name": "studio", "applies_to": "acme"},
+        HTTP_IF_MATCH=etags["acme"],
     )
     Then.http.status_code_is(204)
     assert [row["applies_to"] for row in own_rows(UI_STYLESHEET_TYPE_URI, "wip")] == [
