@@ -57,6 +57,8 @@ urlpatterns = [
     # Log in to the browsable API (its "Log in" link) and to the admin.
     path("api-auth/", include("rest_framework.urls")),
     path("admin/", admin.site.urls),
+    # The bootstrap studio; needs a signed-in user.
+    path("studio/", include("scrud_django.ui.studio.urls")),
     # Serves each scrudful view's HTTP Schema Resource (OPTIONS links to it);
     # once, in the root URLconf.
     path("", include(hsr_urls())),

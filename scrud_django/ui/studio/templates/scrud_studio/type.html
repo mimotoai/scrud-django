@@ -1,0 +1,49 @@
+{% extends "scrud_studio/base.html" %}
+{% block title %}Studio: {{ type.slug }}{% endblock %}
+{% block main_class %}studio-main studio-wide{% endblock %}
+{% block content %}
+<div id="studio" class="studio"
+ data-slug="{{ type.slug }}"
+ data-branch="{{ branch.name }}"
+ data-query="{{ query }}"
+ data-editable="{{ editable|yesno:'true,false' }}"
+ data-pinned="{{ pinned|yesno:'true,false' }}"
+ data-preview-url="{% url 'scrud-studio:preview' type.slug %}?{{ query }}"
+ data-explain-url="{% url 'scrud-studio:explain' type.slug %}"
+ data-options-url="{% url 'scrud-studio:new-component-options' type.slug %}"
+ data-new-component-url="{% url 'scrud-studio:new-component' %}"
+ data-save-url="{% url 'scrud-studio:save-item' %}"
+ data-revert-url="{% url 'scrud-studio:revert-item' %}"
+ data-pull-url="{% url 'scrud-studio:pull' %}"
+ data-push-url="{% url 'scrud-studio:push' %}"
+ data-item-url="{% url 'scrud-studio:item' %}">
+<div class="studio-head">
+<h1>{{ type.title }} <code>{{ type.type_uri }}</code></h1>
+<a href="{% url 'scrud-studio:types' %}">All types</a>
+</div>
+<form class="studio-controls" method="get" action="{% url 'scrud-studio:type' type.slug %}">
+<label>Branch <select name="branch">
+{% for choice in branches %}<option value="{{ choice.name }}"{% if choice.published %} data-read-only{% endif %}{% if choice.name == branch.name %} selected{% endif %}>{{ choice.name }}{% if choice.published %} (published, read-only){% endif %}</option>
+{% endfor %}</select></label>
+<label><input type="checkbox" name="pinned" value="1"{% if pinned %} checked{% endif %}> Pinned at the branching point</label>
+<label>Mode <select name="mode">
+<option value="view"{% if controls.mode == "view" %} selected{% endif %}>view</option>
+<option value="edit"{% if controls.mode == "edit" %} selected{% endif %}>edit</option>
+</select></label>
+<label>Scope <input type="text" name="scope" value="{{ controls.scope }}" placeholder="sidebar card"></label>
+<label>Data context <input type="text" name="context" value="{{ controls.context }}" placeholder="(none)"></label>
+<label>Instance <input type="text" name="instance" value="{{ controls.instance }}" placeholder="sample" inputmode="numeric"></label>
+<button type="submit">Show</button>
+</form>
+<div id="studio-notices" class="studio-notices" role="status">{% for notice in notices %}<p class="studio-notice">{{ notice }}</p>{% endfor %}</div>
+<p id="studio-message" class="studio-notice" role="status" hidden></p>
+<div class="studio-layout">
+<iframe id="studio-preview" class="studio-preview" title="Preview of {{ type.title }}" sandbox="allow-same-origin" src="{% url 'scrud-studio:preview' type.slug %}?{{ query }}"></iframe>
+<aside class="studio-panel">
+{% include "scrud_studio/_inspector.html" %}
+{% include "scrud_studio/_editor.html" %}
+</aside>
+</div>
+{% include "scrud_studio/_strip.html" %}
+</div>
+{% endblock %}

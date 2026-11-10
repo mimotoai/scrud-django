@@ -24,6 +24,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.utils.html import format_html
 from django.utils.safestring import SafeString, mark_safe
 
+from scrud_django.exceptions import UIPointerNotFoundError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.mixins.view_mixins import max_body_depth
 from scrud_django.ui import ld
@@ -32,6 +33,7 @@ from scrud_django.ui.branches.selection import frame_branch, in_mount
 from scrud_django.ui.cascade import (
     BUILTIN_PREFIX,
     Component,
+    Rule,
     builtin_component,
     effective_rules,
     request_memo,
@@ -67,6 +69,7 @@ def render_resource(
     mode: str | None = None,
     decisions: dict[str, str] | None = None,
     contexts: list[str] | None = None,
+    preview: bool = False,
 ) -> SafeString:
     """`content` (a resource of `resource_type` at `href`) rendered for the
     user of `request`, in a resource frame: the node at `pointer` (the
@@ -79,7 +82,11 @@ def render_resource(
     `decisions` (as `decisions_for` gives them) and `contexts` (whose
     stylesheets apply) are those of `content` unless given: for content that
     is not the stored resource (a refused PUT's body), pass the stored
-    resource's, so that nothing the request sent decides them."""
+    resource's, so that nothing the request sent decides them.
+
+    A `preview` (the studio's) has no write attributes: no ``hx-*`` and no
+    Delete button, and its root is a ``div``, never a form. Each node's HTML
+    is wrapped in ``<scrud-node data-pointer="<its JSON Pointer>">``."""
     with request_memo():
         return _render_resource(
             content,
@@ -94,6 +101,7 @@ def render_resource(
             rules_cache={},
             decisions=decisions,
             contexts=contexts,
+            preview=preview,
         )
 
 
@@ -169,7 +177,58 @@ def _render_resource(
     rules_cache,
     decisions=None,
     contexts=None,
+    preview=False,
 ):
+    walk, root = _walk_of(
+        content,
+        resource_type=resource_type,
+        href=href,
+        etag=etag,
+        request=request,
+        scope_chain=scope_chain,
+        errors=errors,
+        mode=mode,
+        rules_cache=rules_cache,
+        decisions=decisions,
+        contexts=contexts,
+        preview=preview,
+    )
+    node = walk.find(root, pointer)
+    body = walk.render(node)
+    return _frame(
+        content=content,
+        body=body,
+        notices=walk.top_errors(),
+        href=href,
+        etag=etag,
+        scope_chain=scope_chain,
+        pointer=node.pointer,
+        mode=walk.mode,
+        deletable=not preview
+        and node.pointer == ""
+        and walk.resource["decisions"]["DELETE"] == ALLOWED,
+        branch=None if preview else frame_branch(request),
+        preview=preview,
+    )
+
+
+def _walk_of(
+    content,
+    *,
+    resource_type,
+    href,
+    etag,
+    request,
+    scope_chain,
+    errors,
+    mode,
+    rules_cache,
+    decisions=None,
+    contexts=None,
+    preview=False,
+):
+    """``(walk, root node)`` of `content`, as `render_resource` takes its
+    arguments: the one way a render, and `node_at`, start the walk."""
     type_uri = resource_type.type_uri
     if decisions is None:
         decisions = decisions_for(request, type_uri, content)
@@ -192,6 +251,7 @@ def _render_resource(
         max_depth=max_body_depth(),
         id_prefix="scrud-" + hashlib.sha256(href.encode()).hexdigest()[:8],
         rules_cache=rules_cache,
+        preview=preview,
     )
     root_classes = [
         _keyword_free(ld.expand(t, ld_context)) if isinstance(t, str) else None
@@ -213,20 +273,67 @@ def _render_resource(
         linked=(),
         name=None,
     )
-    node = walk.find(root, pointer)
-    body = walk.render(node)
-    return _frame(
-        content=content,
-        body=body,
-        notices=walk.top_errors(),
-        href=href,
-        etag=etag,
-        scope_chain=scope_chain,
-        pointer=node.pointer,
-        mode=mode,
-        deletable=node.pointer == "" and decisions["DELETE"] == ALLOWED,
-        branch=frame_branch(request),
-    )
+    return walk, root
+
+
+@dataclass(frozen=True)
+class NodeInfo:
+    """What decides a node's component: its JSON `pointer`, its `terms`
+    (most specific first), its `scope_chain`, the stylesheets its ancestors'
+    components link (`linked`), and the `rules` that apply to it (the
+    cascade's `effective_rules` in its contexts with `linked`). `as_json`:
+    the node renders as JSON (``scrud:json``) whatever the rules say (its
+    value is not of its schema's type, its ``$ref`` does not resolve, or it
+    is nested too deep), so `rules` is empty."""
+
+    pointer: str
+    terms: list[TypeTerm]
+    scope_chain: tuple[str, ...]
+    linked: tuple[str, ...]
+    rules: tuple[Rule, ...]
+    as_json: bool = False
+
+
+def node_at(
+    content,
+    *,
+    resource_type,
+    request,
+    pointer: str,
+    scope_chain: tuple[str, ...] = (),
+    mode: str | None = None,
+    contexts: list[str] | None = None,
+) -> NodeInfo:
+    """The `NodeInfo` of the node at `pointer` (``""``: the resource) when
+    `content` (of `resource_type`) is rendered for the user of `request`
+    (`render_resource`, whose `scope_chain`, `mode` and `contexts` these
+    are), reached as the render reaches it. `UIPointerNotFoundError` when
+    the render has no node there."""
+    with request_memo():
+        walk, root = _walk_of(
+            content,
+            resource_type=resource_type,
+            href="",
+            etag=None,
+            request=request,
+            scope_chain=tuple(scope_chain),
+            errors=None,
+            mode=mode,
+            rules_cache={},
+            # Nothing but the mode reads them here.
+            decisions=None if mode is None else {},
+            contexts=contexts,
+        )
+        node = walk.find(root, pointer, rendered_only=True)
+        as_json = not node.ruled
+        return NodeInfo(
+            pointer=node.pointer,
+            terms=list(node.terms),
+            scope_chain=node.scope_chain,
+            linked=node.linked,
+            rules=() if as_json else walk.rules(node.linked),
+            as_json=as_json,
+        )
 
 
 @dataclass
@@ -243,6 +350,7 @@ class _Node:
     terms: list[TypeTerm] = field(default_factory=list)
     component: Component | None = None
     kind: str | None = None  # "object" or "array" when it has children to walk
+    ruled: bool = False  # its component was resolved from the rules
 
 
 @dataclass
@@ -255,6 +363,7 @@ class _Walk:
     max_depth: int
     id_prefix: str
     rules_cache: dict
+    preview: bool = False  # wrap each node in a `scrud-node` marker
     rendered: set = field(default_factory=set)
 
     def rules(self, linked):
@@ -310,6 +419,7 @@ class _Walk:
             return node
         node.kind = _walkable(schema, schema_type)
         node.terms = iri_terms + _schema_terms(schema, schema_type, node.kind)
+        node.ruled = True
         node.component = resolve_component(
             self.rules(linked), scope_chain, node.terms, self.mode
         )
@@ -354,16 +464,30 @@ class _Walk:
             reachable=reachable,
         )
 
-    def find(self, root: _Node, pointer: str) -> _Node:
+    def find(self, root: _Node, pointer: str, rendered_only=False) -> _Node:
         """The node at `pointer` below `root`, reached as the full render
         reaches it (scopes and linked stylesheets included). A node the
-        schema does not describe there renders as JSON."""
+        schema does not describe there renders as JSON; but with
+        `rendered_only`, a pointer to a node the full render does not render
+        (`children_of`), or that is not a JSON Pointer, raises
+        `UIPointerNotFoundError`."""
         node = root
         if not pointer:
             return node
+        if rendered_only and not pointer.startswith("/"):
+            raise UIPointerNotFoundError(pointer)
         tokens = pointer[1:].split("/") if pointer.startswith("/") else [pointer]
         for token in tokens:
             key = token.replace("~1", "/").replace("~0", "~")
+            if rendered_only and not (
+                (
+                    node.kind == "object"
+                    and key in node.schema["properties"]
+                    and key in node.value
+                )
+                or (node.kind == "array" and _is_index(token, len(node.value)))
+            ):
+                raise UIPointerNotFoundError(pointer)
             if node.kind == "object" and key in node.schema["properties"]:
                 node = self.child(
                     node, key, node.value.get(key), node.schema["properties"][key]
@@ -379,6 +503,14 @@ class _Walk:
         return node
 
     def render(self, node: _Node) -> SafeString:
+        html = self._render(node)
+        if not self.preview:
+            return html
+        return format_html(
+            '<scrud-node data-pointer="{}">{}</scrud-node>', node.pointer, html
+        )
+
+    def _render(self, node: _Node) -> SafeString:
         self.rendered.add(node.pointer)
         child_items = [
             [key, self.render(child)] for key, child in self.children_of(node)
@@ -499,10 +631,12 @@ def _frame(
     mode,
     deletable,
     branch=None,
+    preview=False,
 ):
     """The frame of a resource (or of a node of it). `branch`, unless
     ``None``, is its ``data-scrud-branch`` (`selection.frame_branch`): the
-    branch its requests send (``Scrud-UI-Branch``)."""
+    branch its requests send (``Scrud-UI-Branch``). A `preview`'s frame has
+    no write attributes and is a ``div``."""
     attributes = [
         ("class", "scrud-resource"),
         ("data-scrud-href", href),
@@ -511,7 +645,8 @@ def _frame(
         ("data-scrud-pointer", pointer),
         *([("data-scrud-branch", branch)] if branch is not None else []),
     ]
-    if mode == "edit":
+    writes = mode == "edit" and not preview
+    if writes:
         attributes += [
             ("hx-put", href),
             ("hx-ext", "scrud-json"),
@@ -521,7 +656,7 @@ def _frame(
         ]
     # Only a root frame is a form: a node frame (a fragment of the resource)
     # may be swapped into its root's form, and forms do not nest.
-    tag = "form" if mode == "edit" and pointer == "" else "div"
+    tag = "form" if writes and pointer == "" else "div"
     if tag == "form":
         # Server-side JSON Schema validation is the authority: the browser's
         # constraint validation (a stored non-absolute URI in an

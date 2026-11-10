@@ -255,6 +255,44 @@ class UIBranchUnavailableError(ScrudException):
         self.title = "UI branch unavailable"
 
 
+class UIStudioContextUnavailableError(ScrudException):
+    """A studio sample or preview in a data context whose stylesheets the
+    requester may not read (GET on UI stylesheets there). One answer for
+    every refused context, so that it tells nothing of any."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_studio_context_unavailable"
+
+    def __init__(self):
+        super().__init__(
+            "This data context is not available: you may not read its UI stylesheets."
+        )
+        self.type = (
+            "https://api.openteams.com/http-problem/ui-studio-context-unavailable"
+        )
+        self.title = "Studio data context unavailable"
+
+
+class UIStudioBranchReadOnlyError(ScrudException):
+    """A studio write naming a published branch (``main``, or one with a
+    ``prefix``): the studio edits working branches only, so that changes
+    reach a published branch by a push. Refused before anything is
+    written or dispatched."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_studio_branch_read_only"
+
+    def __init__(self, branch):
+        super().__init__(
+            f"UI branch {branch!r} is published: the studio does not edit it. "
+            "Edit a working branch, then push it."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-studio-branch-read-only"
+        self.title = "Studio branch read-only"
+
+
 class UIBranchInUseError(ScrudException):
     """A DELETE of a UI branch that other branches name as their parent:
     409 Conflict, naming them."""
@@ -368,6 +406,21 @@ class UIHeaderInvalidError(ScrudException):
         super().__init__(f"The {header} header is invalid: {reason}")
         self.type = "https://api.openteams.com/http-problem/ui-header-invalid"
         self.title = "UI header invalid"
+
+
+class UIPointerNotFoundError(ScrudException):
+    """A JSON Pointer (the studio's ``?pointer=``) that names no node a
+    render of the resource has: a key or index the content or its schema
+    lacks, or not a pointer."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_pointer_not_found"
+
+    def __init__(self, pointer):
+        super().__init__(f"No node of this resource is at {pointer!r}.")
+        self.type = "https://api.openteams.com/http-problem/ui-pointer-not-found"
+        self.title = "UI pointer not found"
 
 
 class RequestBodyMissingError(ScrudException):

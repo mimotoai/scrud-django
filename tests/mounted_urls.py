@@ -16,5 +16,6 @@ def shop_todo_lists(request):
 
 urlpatterns = [
     path("api/", include(urls.urlpatterns)),
+    path("studio/", include("scrud_django.ui.studio.urls")),
     path("shop/todo-lists/", shop_todo_lists, name="shop-todo-lists"),
 ]

@@ -102,6 +102,7 @@ SETTINGS: dict[str, Any] = dict(
         "scoped_rbac",
         "scrud_django",
         "scrud_django.ui",
+        "scrud_django.ui.studio",
         "tests",
         "reversion",
     ),

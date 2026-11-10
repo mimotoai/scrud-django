@@ -302,17 +302,41 @@ def _confirmed(request, value) -> bool:
 
 
 def _selectable(request, selection, published) -> bool:
+    """`selectable`, and in the tree of the `published` branch."""
     all_branches = branches()
     name = selection.branch
     if name not in all_branches:
         return False
     try:
-        chain = chain_of(name, all_branches)
         root = published_root(name, all_branches)
     except BranchChainError as error:
         logger.warning("scrud-ui: not rendering branch %r: %s", name, error)
         return False
-    if root.name != published or not may_get_chain(request, chain):
+    return root.name == published and selectable(
+        request, selection, all_branches=all_branches
+    )
+
+
+def selectable(request, selection: Selection, *, all_branches=None) -> bool:
+    """Whether the user of `request` may render `selection`, wherever its
+    published root is: ``main`` (shown to everyone at the API's URLs, where
+    `choose` never refuses it); else a known branch whose chain is intact,
+    that the user may GET with its working ancestors (`may_get_chain`), and
+    whose pinned snapshots are stored. There is no prefix-tree check:
+    `choose` adds it. `all_branches` are `branches()` unless given."""
+    if selection.branch == MAIN:
+        return True
+    if all_branches is None:
+        all_branches = branches()
+    name = selection.branch
+    if name not in all_branches:
+        return False
+    try:
+        chain = chain_of(name, all_branches)
+    except BranchChainError as error:
+        logger.warning("scrud-ui: not rendering branch %r: %s", name, error)
+        return False
+    if not may_get_chain(request, chain):
         return False
     missing = _missing_snapshot(chain, selection.pinned)
     if missing is not None:
