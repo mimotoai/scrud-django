@@ -19,9 +19,9 @@ _FORMATS = {
 def sample_for(schema, root=None, *, max_depth=None):
     """The sample value for `schema`, whose local ``$ref`` s resolve in `root`
     (default `schema`). ``default``, then the first of ``examples``, then the
-    first of ``enum`` (each a copy); otherwise a value by type. A ``$ref`` cycle, a node
-    deeper than `max_depth` (default `max_body_depth()`) and any construct not
-    understood give ``None``. It never raises."""
+    first of ``enum`` (each a copy); otherwise a value by type. A ``$ref``
+    cycle, a node deeper than `max_depth` (default `max_body_depth()`) and
+    any construct not understood give ``None``. It never raises."""
     if root is None:
         root = schema
     if max_depth is None:

@@ -760,7 +760,14 @@ also carries `Content-Security-Policy: sandbox allow-same-origin` (and
 `X-Frame-Options: SAMEORIGIN`), so a preview URL opened on its own, outside
 the iframe, is just as sandboxed: no script runs in it.
 
-Each node is marked with its JSON Pointer. A component that fails to render
+Each node is marked with its JSON Pointer: it is wrapped in a
+`<scrud-node data-pointer="...">` element with `display: contents`. The
+wrapper has two caveats. A branch's CSS that uses a child combinator (`ul > li`)
+does not match across it, so the preview can look different from the app
+there. And the HTML parser moves an unknown element out of a table, so a node a
+component renders as a table row or cell (`<tr>`, `<td>`) has no wrapper around
+it and cannot be selected in the preview; select its table, or a node inside a
+cell. A component that fails to render
 shows the built-in fallback in the preview, but the inspector reports the
 stored rule as the winner: it ranks rules and does not run templates.
 
@@ -793,6 +800,12 @@ branch").
 
 The studio page is built on a JSON API, and a later self-hosted studio would
 use the same endpoints. Paths are relative to where you include the URLs.
+A studio write calls the resource viewsets in-process (`call_view`), not
+through a new HTTP request, so the site's middleware does not run for that
+inner call: a middleware-only check on the API's URLs (an IP allowlist on
+`/api/`, say) does not cover the studio's writes. The studio's own URL passes
+through the middleware as any request does; put such a check on it too, or
+leave the studio out of the deployment that needs it.
 Every endpoint needs an authenticated user (401 otherwise). The writes are
 `POST` with a JSON object body (a body that is not an object is a 400) and are
 protected by CSRF when a session is used. A success from a write also carries
@@ -820,7 +833,7 @@ for every cause.
 
 | Endpoint | Response |
 |---|---|
-| `GET ` (the include's root, e.g. `/studio/`) | the type browser (HTML); `?q=` filters by slug, title or type IRI; with `HX-Request` only the list |
+| `GET` on the include's root (e.g. `/studio/`) | the type browser (HTML); `?q=` filters by slug, title or type IRI; with `HX-Request` only the list |
 | `GET types/<slug>/` | the studio page for the type, from the query above plus `pinned=1`; unknown slug gives 404 |
 | `GET types/<slug>/strip` | the branch strip alone (HTML): `?branch=` names the branch; `UIBranchUnavailableError` for one the user may not select |
 

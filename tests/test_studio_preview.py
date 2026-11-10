@@ -268,6 +268,7 @@ def test_preview_scope_chain(login_no_roles):
 
 
 @pytest.mark.django_db
+@test_context
 def test_selectable_matches_choose_for_api_urls(todo_reader_login, login_no_roles):
     make_branch("wip", "project-a")
     make_branch("orphan", "project-a", parent="gone")

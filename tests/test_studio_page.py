@@ -63,7 +63,7 @@ def setup_branches(user):
         "wip",
         "alice",
         name="row",
-        engine="jinja",
+        engine="jinja2",
         mode="view",
         template="<i>{{ value }}</i>",
     )
@@ -244,6 +244,35 @@ def test_strip_shows_changes_conflicts_css_and_browse_link(ui_alice_login):
     When.http.get(reverse("scrud-studio:strip", args=[SLUG]), {"branch": "bobs"})
     Then.http.status_code_is(400)
     assert problem()["type"] == UNAVAILABLE
+
+
+@pytest.mark.django_db
+@test_context
+def test_strip_hides_own_rows_the_user_may_not_read(ui_alice_login):
+    """wip's own rows that alice may not read (a component stored in "bob",
+    CSS in "") are not listed as changes; readable, they are."""
+    setup_branches(ui_alice_login)
+    store_item(
+        "ui-components",
+        "wip",
+        "bob",
+        name="secret",
+        engine="jinja2",
+        mode="view",
+        template="<s>{{ value }}</s>",
+    )
+    store_item("ui-css", "wip", "", name="hidden", css="p { color: blue }")
+    Given.http.force_authenticate(ui_alice_login)
+    changes = section(page(branch="wip"), "studio-changes")
+    assert re.search(r'data-kind="component"[^>]*data-name="row"', changes)
+    assert 'data-name="secret"' not in changes and "secret" not in changes
+    assert 'data-name="hidden"' not in changes and "hidden" not in changes
+    # Readable, they are listed.
+    grant(ui_alice_login, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "bob")
+    grant(ui_alice_login, {"http.GET": [UI_CSS_TYPE_URI]}, "")
+    changes = section(page(branch="wip"), "studio-changes")
+    assert re.search(r'data-kind="component"[^>]*data-name="secret"', changes)
+    assert re.search(r'data-kind="css"[^>]*data-name="hidden"', changes)
 
 
 @pytest.mark.django_db
