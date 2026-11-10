@@ -1,5 +1,5 @@
 """The built-in UI resource types: UI components, UI stylesheets, UI branches,
-UI branch versions and UI pushes."""
+UI branch versions, UI pushes and UI CSS."""
 
 import importlib.resources
 
@@ -20,6 +20,8 @@ UI_BRANCH_VERSION_RESOURCE_TYPE_ = None
 UI_BRANCH_VERSION_REGISTRATION_ = None
 UI_PUSH_RESOURCE_TYPE_ = None
 UI_PUSH_REGISTRATION_ = None
+UI_CSS_RESOURCE_TYPE_ = None
+UI_CSS_REGISTRATION_ = None
 
 # The module-level caches above, for tests to forget.
 REGISTRATION_CACHES = [
@@ -33,6 +35,8 @@ REGISTRATION_CACHES = [
     "UI_BRANCH_VERSION_REGISTRATION_",
     "UI_PUSH_RESOURCE_TYPE_",
     "UI_PUSH_REGISTRATION_",
+    "UI_CSS_RESOURCE_TYPE_",
+    "UI_CSS_REGISTRATION_",
 ]
 
 
@@ -144,6 +148,26 @@ def ui_push_resource_type(force=False):
     return UI_PUSH_RESOURCE_TYPE_
 
 
+def ui_css_resource_type(force=False):
+    from scrud_django.ui.branches import UI_CSS_SLUG, UI_CSS_TYPE_URI
+
+    global UI_CSS_RESOURCE_TYPE_
+    global UI_CSS_REGISTRATION_
+    if UI_CSS_RESOURCE_TYPE_ is None or force:
+        from scrud_django.ui.views import UICssViewSet
+
+        UI_CSS_REGISTRATION_ = ResourceTypeRegistration(
+            resource_type_uri=UI_CSS_TYPE_URI,
+            revision="1",
+            slug=UI_CSS_SLUG,
+            schema_func=lambda: _document("UICss-schema.json").read_text(),
+            context_func=lambda: _document("UICss-ld.json").read_text(),
+            viewset_class=UICssViewSet,
+        )
+        UI_CSS_RESOURCE_TYPE_ = UI_CSS_REGISTRATION_.resource_type
+    return UI_CSS_RESOURCE_TYPE_
+
+
 def ui_resource_type_urls():
     """The routes of the UI resource types, each registered first, or its
     registration left pending on a database error (`register_or_defer`).
@@ -153,6 +177,8 @@ def ui_resource_type_urls():
         UI_BRANCH_TYPE_URI,
         UI_BRANCH_VERSION_SLUG,
         UI_BRANCH_VERSION_TYPE_URI,
+        UI_CSS_SLUG,
+        UI_CSS_TYPE_URI,
         UI_PUSH_SLUG,
         UI_PUSH_TYPE_URI,
     )
@@ -161,7 +187,11 @@ def ui_resource_type_urls():
         UIBranchViewSet,
         UIPushViewSet,
     )
-    from scrud_django.ui.views import UIComponentViewSet, UIStylesheetViewSet
+    from scrud_django.ui.views import (
+        UIComponentViewSet,
+        UICssViewSet,
+        UIStylesheetViewSet,
+    )
 
     def registered(register_type, registration_name):
         def register(force=False):
@@ -205,6 +235,13 @@ def ui_resource_type_urls():
             UI_PUSH_TYPE_URI,
             UI_PUSH_SLUG,
             UIPushViewSet,
+        ),
+        (
+            ui_css_resource_type,
+            "UI_CSS_REGISTRATION_",
+            UI_CSS_TYPE_URI,
+            UI_CSS_SLUG,
+            UICssViewSet,
         ),
     )
     urls = []

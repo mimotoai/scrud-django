@@ -59,6 +59,7 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.permissions import content_of
 from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messages
 from scrud_django.ui.branches.chrome import banner, confirm_page
+from scrud_django.ui.branches.css import css_urls
 from scrud_django.ui.branches.effective import BRANCH_HEADER, using_selection
 from scrud_django.ui.branches.selection import (
     CONFIRM_PARAMETER,
@@ -529,7 +530,10 @@ def _page(
     is put at the top of the body. So is the page's branch (`frame_branch`)
     when it has one, on a hidden ``.scrud-branch-page`` element, for the
     requests of elements outside any frame. A page component that leaves
-    them out is replaced by the built-in, so no branch can hide them."""
+    them out is replaced by the built-in, so no branch can hide them.
+
+    The page component's context also has ``css``: the URLs of the CSS files
+    effective on the page's branch, in order."""
     chrome = []
     branch = frame_branch(request) if chosen is not None else None
     if branch is not None:
@@ -545,9 +549,12 @@ def _page(
     if chrome is not None:
         body = mark_safe(chrome + body)
 
+    css = css_urls(request)
+
     def page_context():
         return {
             "title": _title(resource_type),
+            "css": css,
             "csrf_token": get_token(getattr(request, "_request", request)),
             "static": {
                 "htmx": static(STATIC_HTMX),

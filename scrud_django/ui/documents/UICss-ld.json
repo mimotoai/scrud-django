@@ -1,0 +1,25 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UICss",
+  "rbac_context": {
+    "@id": "openteams:AccessControlContext"
+  },
+  "name": {
+    "@id": "openteams:UICssName"
+  },
+  "css": {
+    "@id": "openteams:UICssText"
+  },
+  "order": {
+    "@id": "openteams:UICssOrder"
+  },
+  "branch": {
+    "@id": "openteams:UIBranchReference"
+  },
+  "deleted": {
+    "@id": "openteams:UIDeleted"
+  },
+  "base": {
+    "@id": "openteams:UIBaseVersion"
+  }
+}

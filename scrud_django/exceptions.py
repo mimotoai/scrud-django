@@ -172,6 +172,34 @@ class UIStylesheetNameTakenError(ScrudException):
         self.title = "UI stylesheet name taken"
 
 
+class UICssNameTakenError(ScrudException):
+    """A UI CSS item whose ``name`` another CSS item on the same branch
+    already has."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_css_name_taken"
+
+    def __init__(self, name):
+        super().__init__(f"A UI CSS item named {name!r} already exists.")
+        self.type = "https://api.openteams.com/http-problem/ui-css-name-taken"
+        self.title = "UI CSS name taken"
+
+
+class UICssInvalidError(ScrudException):
+    """A UI CSS item whose text could end the page's ``<style>`` (it contains
+    ``</style``)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_css_invalid"
+
+    def __init__(self):
+        super().__init__("The CSS may not contain '</style'.")
+        self.type = "https://api.openteams.com/http-problem/ui-css-invalid"
+        self.title = "UI CSS invalid"
+
+
 class UIBranchInvalidError(ScrudException):
     """A UI branch write that is refused (a bad or taken name or prefix, a
     missing parent, a cycle of parents, a reserved ``main`` that is not as

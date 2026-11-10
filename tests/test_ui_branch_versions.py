@@ -89,7 +89,11 @@ def test_every_item_write_creates_a_version(ui_alice_login):
         assert version["number"] == number
         assert version["rbac_context"] == "alice"
         assert version["ancestors"] == {}
-        assert version["items"] == {"component": components, "stylesheet": []}
+        assert version["items"] == {
+            "component": components,
+            "stylesheet": [],
+            "css": [],
+        }
     assert current_version("wip", write_db()) == 3
     # The items of main are not the branch's: main has no version.
     assert versions_of("main") == []
@@ -112,7 +116,11 @@ def test_main_versions_hold_items_stored_before_branches(ui_author_login):
     assert versions_of("main") == [1, 2]
     version = snapshot("main", 2)
     assert version["rbac_context"] == ""
-    assert version["items"] == {"component": [old.content], "stylesheet": [sheet]}
+    assert version["items"] == {
+        "component": [old.content],
+        "stylesheet": [sheet],
+        "css": [],
+    }
 
 
 @pytest.mark.django_db
@@ -138,7 +146,11 @@ def test_branching_point_records_every_ancestor(admin_login):
     make_component("footer", "<p/>")
     alice = create_branch("alice", "testing")
     assert alice["branching_point"] == {"testing": 1, "main": 3}
-    assert snapshot("testing", 1)["items"] == {"component": [], "stylesheet": []}
+    assert snapshot("testing", 1)["items"] == {
+        "component": [],
+        "stylesheet": [],
+        "css": [],
+    }
     # A PUT keeps it, whatever the body says.
     stored = Resource.objects.get(
         resource_type__type_uri=UI_BRANCH_TYPE_URI, content__name="alice"
@@ -361,11 +373,15 @@ def test_version_reads_hide_items_the_reader_may_not_read(admin_login):
     acme_reader = assign_ui_role((UI_BRANCH_VERSION_TYPE_URI, *UI_TYPE_URIS), "")
     grant(acme_reader, {"http.GET": [UI_STYLESHEET_TYPE_URI]}, "acme")
 
-    everything = {"component": ["row"], "stylesheet": ["theme", "acme-theme"]}
+    everything = {
+        "component": ["row"],
+        "stylesheet": ["theme", "acme-theme"],
+        "css": [],
+    }
     assert version_as(admin_login, version) == (everything, stored_etag)
     assert version_as(acme_reader, version) == (everything, stored_etag)
     hidden, hidden_etag = version_as(reader, version)
-    assert hidden == {"component": ["row"], "stylesheet": ["theme"]}
+    assert hidden == {"component": ["row"], "stylesheet": ["theme"], "css": []}
     assert hidden_etag != stored_etag
     # Its ETag is the reader's: another's does not match it.
     When.http.get(

@@ -148,7 +148,11 @@ objects it renders one input named `<pointer>/-` of the item type, from the
 a number or a boolean, not a string.
 
 `scrud:page` wraps a page (not a fragment). Its context is
-`{title, csrf_token, static{htmx, scrud_ui}, body}`. A custom page component,
+`{title, csrf_token, static{htmx, scrud_ui}, css, body}`. `css` is the list of
+the URLs of the page's CSS files (see "CSS items" below), in order: a custom
+page component should link each one
+(`{% for href in css %}<link rel="stylesheet" href="{{ href }}">{% endfor %}`).
+A custom page component,
 chosen by a rule on `scrud:page`, must be `mode: view` (one in edit mode is
 ignored, and the built-in is used). It must include the CSRF meta tag
 (`<meta name="csrf-token" content="{{ csrf_token }}">`) and both scripts
@@ -163,6 +167,21 @@ with its own contexts' stylesheets.
 
 `scrud:notice` renders one message. Its context is `{message, level}`, where
 `level` is `"error"` for every notice the server renders.
+
+## CSS items
+
+A CSS item (type `ui-css`) holds the text of a page's CSS: `name`, `css` (at
+most 262144 characters, and never containing `</style`, which is refused with a
+400), `order` (default 0), and the branch fields (`branch`, `deleted`, `base`,
+`rbac_context`) every UI item has. A name is unique on its branch. The page
+links the CSS items effective on the branch it shows, by `order` and then by
+name, at `<api or prefix>ui-css-files/<name>/<etag>.css`. The ETag in the URL
+makes a file immutable (`Cache-Control: public, max-age=31536000, immutable`;
+`private` on a working branch): after an edit the old URL is a 404 and the page
+links the new one. Anyone who can see a page can fetch its files; under a
+published branch's prefix a viewer who may not GET the branch is refused as
+for any other GET there, and a working branch's CSS is served only to a viewer
+who may select it.
 
 ## UI stylesheets
 

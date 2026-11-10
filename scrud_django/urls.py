@@ -32,9 +32,17 @@ urlpatterns = [
 urlpatterns.extend(registration.built_in_resource_type_urls())
 
 if ui.is_enabled():
+    from scrud_django.ui.branches.css import CSS_FILE_URL_NAME, UICssFileView
     from scrud_django.ui.types import ui_resource_type_urls
 
     urlpatterns.extend(ui_resource_type_urls())
+    urlpatterns.append(
+        path(
+            "ui-css-files/<str:name>/<str:etag>.css",
+            UICssFileView.as_view(),
+            name=CSS_FILE_URL_NAME,
+        )
+    )
 
 services.add_service(collection_type_uri_for(Role.resource_type.iri), "role")
 services.add_service(

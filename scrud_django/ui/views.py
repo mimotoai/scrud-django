@@ -8,6 +8,8 @@ from scrud_django.exceptions import (
     UIBranchContextError,
     UIBranchInvalidError,
     UIComponentNameTakenError,
+    UICssInvalidError,
+    UICssNameTakenError,
     UISelectorInvalidError,
     UIStylesheetNameTakenError,
     UITemplateInvalidError,
@@ -315,3 +317,28 @@ class UIStylesheetViewSet(UIContentValidationMixin, ResourceViewSet):
                 parse_selector(select, prefixes)
             except SelectorError as error:
                 raise UISelectorInvalidError(error) from error
+
+
+@scrudful_viewset
+class UICssViewSet(UIContentValidationMixin, ResourceViewSet):
+    def validate_content(self, content, instance=None):
+        super().validate_content(content, instance=instance)
+        if not isinstance(content, dict):
+            return
+        require_unless_deleted(content, ("css",))
+        text = content.get("css")
+        if isinstance(text, str) and "</style" in text.lower():
+            raise UICssInvalidError()
+        name = content.get("name")
+        branch = self.item_branch
+        if (
+            name is not None
+            and branch is not None
+            and same_item(
+                self.other_resources(instance).filter(content__name=name),
+                "css",
+                content,
+                branch,
+            )
+        ):
+            raise UICssNameTakenError(name)

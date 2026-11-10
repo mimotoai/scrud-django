@@ -25,9 +25,10 @@ from .test_ui_http import (
     make_stylesheet,
 )
 
-# The queries of a render with no branch selected, measured on 48d2844 (before
-# branches were read at all); a render of main must not read branch rows.
-MAIN_RENDER_QUERIES = 10
+# The queries of a render with no branch selected: the 10 measured on 48d2844
+# (before branches were read at all), and the page's CSS items (one more, task
+# 10); a render of main must not read branch rows.
+MAIN_RENDER_QUERIES = 11
 
 TITLE = "<{0}>{{{{ value.title }}}}{{{{ children.items }}}}</{0}>"
 BRANCH_HEADER = "HTTP_SCRUD_UI_BRANCH"

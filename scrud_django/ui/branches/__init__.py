@@ -22,4 +22,8 @@ MAIN = "main"
 PREFIX = re.compile(r"^/(?:[a-z0-9][a-z0-9_-]*/)*$")
 
 # The kinds of item a branch holds, by their resource type.
-ITEM_KINDS = {"component": UI_COMPONENT_TYPE_URI, "stylesheet": UI_STYLESHEET_TYPE_URI}
+ITEM_KINDS = {
+    "component": UI_COMPONENT_TYPE_URI,
+    "stylesheet": UI_STYLESHEET_TYPE_URI,
+    "css": UI_CSS_TYPE_URI,
+}
