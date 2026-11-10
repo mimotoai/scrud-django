@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import cache, lru_cache
 
+from django.db.models import Q
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
@@ -121,37 +122,61 @@ def _default_stylesheet() -> dict:
     return json.loads(text)
 
 
-def _stored(type_uri):
-    """``(pk, etag, content)`` of every resource of the type, lowest pk first.
-    Inside `rules_memo` the rows of every UI item kind (`ITEM_KINDS`) are read
-    in one query, once per response, so that a page's components, stylesheets
-    and CSS cost one query between them."""
-    memo = _memo.get()
-    if memo is None:
-        return (
-            Resource.objects.filter(resource_type__type_uri=type_uri)
-            .order_by("pk")
-            .values_list("pk", "etag", "content")
-        )
-    from scrud_django.ui.branches import ITEM_KINDS
+def _stored(type_uri, branches=None):
+    """``(pk, etag, content)`` of every resource of the type on one of the
+    branches named `branches` (`on_branches`; default: ``main``), lowest pk
+    first. Inside `rules_memo` the rows of every UI item kind
+    (`ITEM_KINDS`) on those branches are read in one query, once per
+    response, so that a page's components, stylesheets and CSS cost one
+    query between them (ruling R31), and that query reads no other branch's
+    rows (ruling R39)."""
+    from scrud_django.ui.branches import ITEM_KINDS, MAIN
 
-    if _ITEM_ROWS not in memo:
-        grouped = {uri: [] for uri in ITEM_KINDS.values()}
-        for uri, pk, etag, content in (
-            Resource.objects.filter(resource_type__type_uri__in=list(grouped))
-            .order_by("pk")
-            .values_list("resource_type__type_uri", "pk", "etag", "content")
-        ):
-            grouped[uri].append((pk, etag, content))
-        memo[_ITEM_ROWS] = grouped
-    rows = memo[_ITEM_ROWS]
-    if type_uri not in rows:
-        return (
-            Resource.objects.filter(resource_type__type_uri=type_uri)
-            .order_by("pk")
-            .values_list("pk", "etag", "content")
-        )
-    return rows[type_uri]
+    names = frozenset(branches or (MAIN,))
+    memo = _memo.get()
+    if memo is None or type_uri not in ITEM_KINDS.values():
+        return item_rows([type_uri], names)[type_uri]
+    key = (_ITEM_ROWS, names)
+    if key not in memo:
+        memo[key] = item_rows(ITEM_KINDS.values(), names)
+    return memo[key][type_uri]
+
+
+def item_rows(type_uris, branches, using=None) -> dict[str, list]:
+    """``{type URI: [(pk, etag, content), ...]}`` of the resources of
+    `type_uris` on the branches named `branches` (`on_branches`), lowest pk
+    first, read in one query on `using` (default: the router's read
+    database)."""
+    grouped = {uri: [] for uri in type_uris}
+    rows = Resource.objects.using(using) if using else Resource.objects
+    for uri, pk, etag, content in (
+        rows.filter(on_branches(branches), resource_type__type_uri__in=list(grouped))
+        .order_by("pk")
+        .values_list("resource_type__type_uri", "pk", "etag", "content")
+    ):
+        grouped[uri].append((pk, etag, content))
+    return grouped
+
+
+def on_branches(branches) -> Q:
+    """The rows on one of the branches named `branches` (not empty), as
+    `branches.model.branch_of` reads an item: its ``branch``, and for
+    ``main`` also an item with no ``branch`` (or a JSON ``null`` one), as
+    every item stored before branches is. An item whose ``branch`` is
+    neither a string nor ``null`` (only a write around the API stores one)
+    is on no branch. Only the ``content__<key>=`` lookup and ``has_key``,
+    which every supported database has."""
+    from scrud_django.ui.branches import MAIN
+
+    names = sorted(branches)
+    if not names:
+        raise ValueError("on_branches needs at least one branch name")
+    condition = Q(content__branch=names[0])
+    for name in names[1:]:
+        condition |= Q(content__branch=name)
+    if MAIN in names:
+        condition |= ~Q(content__has_key="branch") | Q(content__branch=None)
+    return condition
 
 
 _ITEM_ROWS = "item-rows"

@@ -343,20 +343,23 @@ What remains:
   blur; the stored `count` is gone (or `null`), and no later edit is cancelled.
 
 <a id="ui-branches-row-scan"></a>
-## ui-branches-row-scan: each render reads every branch's rows of a type
+## ui-branches-row-scan: finding a branch chain's rows scans every branch's
 
-Rendering a branch other than `main` reads the stored rows of all UI item kinds
-for every branch in one query (`resource_type__type_uri__in`), then picks the
-branch's effective items in Python (`effective_rows`). The cost grows with the
-number of items on all branches, not the number on the branch rendered, so a
-site with many branches (one per author, say) pays for all of them on every
-page. Off-branch requests (`main` only) are not affected.
+A render reads the stored rows of all UI item kinds in one query, filtered in
+SQL to the branches of the rendered chain (`cascade.on_branches`: `branch`
+equal to one of them, and for `main` also no `branch` key), so it transfers
+and resolves only the chain's rows. But `content` has no index on its `branch`
+key, and `main`'s condition (`NOT has_key`) cannot use one, so the database
+still evaluates the condition on every row of the item types: the cost of the
+query grows with the items on all branches, though far more slowly than when
+they were all read.
 
-Fix: filter the rows to the branch's chain in SQL (`content__branch__in`, an
-equality lookup that works on all four databases, plus main's rows with no
-`branch`). Test: with 1,000 branches of a few items each, render a page on one
-of them and assert a query count and a time budget (and that the rows read are
-those of its chain); it fails today.
+Fix: an expression index on `content->'branch'` (per database: PostgreSQL and
+MySQL 8 support functional indexes, SQLite expression indexes; MariaDB needs a
+generated column), or a real `branch` column on resources of the item types,
+filled on save. Test: with 1,000 branches of a few items each, `EXPLAIN` the
+item query of a render on one of them and assert it uses the index; it does
+not today.
 
 <a id="ui-banner-hideable"></a>
 ## ui-banner-hideable: branch CSS and page components can hide the banner
@@ -410,21 +413,25 @@ threads against a barrier, many times, and assert neither request is a 500; it
 fails intermittently today.
 
 <a id="ui-version-read-committed"></a>
-## ui-version-read-committed: version numbers rely on READ COMMITTED on MySQL and MariaDB
+## ui-version-read-committed: version numbers need READ COMMITTED on MySQL and MariaDB
 
 A branch's next version number is the highest recorded plus one, read under a
-lock on the branch's row. On PostgreSQL (READ COMMITTED) and SQLite that reads
-the latest committed version. On MySQL and MariaDB, whose default is REPEATABLE
-READ, the read may use a snapshot taken earlier in the transaction and miss a
-version another transaction committed after it, giving two versions the same
-number (the second `UPDATE` of the row is blocked, but the plain `SELECT` is
-not). Run them at READ COMMITTED, or read with `select_for_update`.
+lock on the branch's row. That read sees the latest committed version at READ
+COMMITTED, which PostgreSQL uses by default, and on SQLite. Django's MySQL
+backend (MySQL and MariaDB) also sets READ COMMITTED on its connections, unless
+the project sets another `isolation_level` in the database's `OPTIONS`. A
+project that sets `"repeatable read"` (the servers' own default) gets a plain
+`SELECT` that may read a snapshot taken earlier in the transaction and miss a
+version another transaction committed after it, so two versions can get the
+same number (the second `UPDATE` of the branch's row is blocked, but the read
+is not).
 
 Fix: read the latest number with `select_for_update()` (a locking read sees
-the latest committed rows on every database). Test: on MySQL and MariaDB, two
-transactions each write an item to the same branch with a barrier between the
-branch lock and the version read, and assert the version numbers are distinct;
-it can fail today on those databases.
+the latest committed rows at any isolation level). Test: on MySQL and MariaDB
+with `OPTIONS = {"isolation_level": "repeatable read"}`, two transactions each
+write an item to the same branch with a barrier between the branch lock and
+the version read, and assert the version numbers are distinct; they can be
+equal today.
 
 <a id="ui-bulk-delete-versions"></a>
 ## ui-bulk-delete-versions: a bulk delete records one version per item

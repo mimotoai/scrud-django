@@ -11,7 +11,9 @@ from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
-from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
+from scrud_django.ui import cascade
+from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, effective
+from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
@@ -30,6 +32,9 @@ from .test_ui_http import (
 # components, stylesheets and CSS items together (`cascade._stored`); a render
 # of main must not read branch rows.
 MAIN_RENDER_QUERIES = 9
+
+# The items on another branch the main-render test adds.
+WIP_ITEMS = 5
 
 TITLE = "<{0}>{{{{ value.title }}}}{{{{ children.items }}}}</{0}>"
 BRANCH_HEADER = "HTTP_SCRUD_UI_BRANCH"
@@ -169,17 +174,37 @@ def test_base_is_server_managed(ui_alice_login):
 
 @pytest.mark.django_db
 @test_context
-def test_main_without_branches_makes_no_extra_queries(todo_list, todo_reader_login):
+def test_main_without_branches_makes_no_extra_queries(
+    todo_list, todo_reader_login, monkeypatch
+):
     make_component("row", "<b>{{ value.text }}</b>")
     make_stylesheet("s", [("ex:TodoItem", "row")])
     make_branch("wip", "project-a")
     put_item("ui-components", "row", "<i>{{ value.text }}</i>", "wip")
+    for n in range(WIP_ITEMS):
+        put_item("ui-components", f"extra-{n}", "<i/>", "wip")
     Given.http.force_authenticate(todo_reader_login)
     render_with(todo_list)
     with CaptureQueriesContext(connection) as queries:
         assert "<b>Buy milk</b>" in render_with(todo_list)
     assert len(queries) == MAIN_RENDER_QUERIES, [q["sql"] for q in queries]
     assert not [q for q in queries if "UIBranch" in q["sql"]]
+    # The one query of the stored items reads main's only, however many
+    # other branches hold (ruling R39).
+    read = []
+    stored = cascade._stored
+
+    def spy(*args, **kwargs):
+        rows = stored(*args, **kwargs)
+        read.extend(rows)
+        return rows
+
+    monkeypatch.setattr(cascade, "_stored", spy)
+    monkeypatch.setattr(effective, "_stored", spy)
+    assert "<b>Buy milk</b>" in render_with(todo_list)
+    assert read, "no stored row was read"
+    assert {content.get("branch", "main") for _pk, _etag, content in read} == {"main"}
+    assert len(read) == 2  # main's row and stylesheet
 
 
 @pytest.mark.django_db
@@ -246,3 +271,33 @@ def test_an_unauthorized_override_lets_the_parent_item_show(
         page = render_with(todo_list, "wip")
     assert "<b>Buy milk</b>" in page and "<u>Buy milk</u>" not in page
     assert any("'bob'" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.django_db
+def test_item_rows_are_filtered_by_branch_in_sql():
+    """`cascade.on_branches`: main's rows are those with branch "main", none
+    or a JSON null one (as `branch_of` reads them); another branch's, those
+    naming it (ruling R39). Portable lookups only: run on every database."""
+    rows = {
+        "absent": put_item("ui-components", "absent", "", "main"),
+        "main": put_item("ui-components", "on-main", "", "main"),
+        "null": put_item("ui-components", "null", "", "main"),
+        "wip": put_item("ui-components", "on-wip", "", "wip"),
+        "other": put_item("ui-components", "on-other", "", "other"),
+    }
+    absent = {**rows["absent"].content}
+    del absent["branch"]
+    Resource.objects.filter(pk=rows["absent"].pk).update(content=absent)
+    Resource.objects.filter(pk=rows["null"].pk).update(
+        content={**rows["null"].content, "branch": None}
+    )
+
+    def read(*names):
+        found = cascade.item_rows([UI_COMPONENT_TYPE_URI], set(names))
+        return [pk for pk, _etag, _content in found[UI_COMPONENT_TYPE_URI]]
+
+    pks = {key: row.pk for key, row in rows.items()}
+    assert read("main") == [pks["absent"], pks["main"], pks["null"]]
+    assert read("wip") == [pks["wip"]]
+    assert read("main", "wip") == [pks[k] for k in ("absent", "main", "null", "wip")]
+    assert read("other", "wip") == [pks["wip"], pks["other"]]

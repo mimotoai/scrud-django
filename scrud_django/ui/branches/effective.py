@@ -11,7 +11,6 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from scrud_django.exceptions import UIBranchVersionMissingError
-from scrud_django.models import Resource
 from scrud_django.ui.branches import MAIN
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
@@ -23,7 +22,7 @@ from scrud_django.ui.branches.model import (
 )
 from scrud_django.ui.branches.store import BranchChainError, ancestors, branches
 from scrud_django.ui.branches.versions import snapshot
-from scrud_django.ui.cascade import _memo, _skipped, _stored
+from scrud_django.ui.cascade import _memo, _skipped, _stored, item_rows
 
 BRANCH_HEADER = "Scrud-UI-Branch"
 BRANCH_PARAMETER = "ui-branch"
@@ -113,7 +112,8 @@ def effective_rows(
     """``(pk, etag, content)`` of the items of `type_uri` visible on the
     selected branch (default: `active_selection`), lowest pk first, deletion
     markers removed (kept with `include_deleted`). The rows are
-    `cascade._stored`'s: one query per response. The selection must be
+    `cascade._stored`'s: one query per response, of the selected chain's
+    branches only. The selection must be
     selectable (`selection.choose`).
 
     With `authorized_only` (rendering), a row whose ``rbac_context`` is not
@@ -130,7 +130,7 @@ def effective_rows(
     rows = _rows_for(kind, type_uri, chain, selection.pinned)
     if rows is None:  # defensive: `selection.choose` already refused it
         chain = [MAIN_BRANCH]
-        rows = _stored(type_uri)
+        rows = _stored(type_uri, {MAIN})
     if authorized_only:
         rows = _authorized(kind, rows, chain)
 
@@ -201,18 +201,19 @@ def _missing_snapshot(chain, view_pinned):
 
 
 def _rows_for(kind, type_uri, chain, view_pinned, using=None):
-    """The rows `effective_items` takes for `chain`: every stored row when
-    nothing is pinned. Else the rows of the branches down to the first pinned
-    one (the selected branch when `view_pinned`) are live, and its ancestors'
-    come from the snapshots at its branching point (one query each, memoised
-    for the response). ``None`` when a snapshot is missing (not logged).
-    Read on `using`, without memoising the live rows; default: the router's
-    read database (`cascade._stored`)."""
+    """The rows `effective_items` takes for `chain`: the stored rows of the
+    chain's branches (no other's: ruling R39) when nothing is pinned. Else
+    the rows of the branches down to the first pinned one (the selected
+    branch when `view_pinned`) are live, and its ancestors' come from the
+    snapshots at its branching point (one query each, memoised for the
+    response). ``None`` when a snapshot is missing (not logged). Read on
+    `using`, without memoising the live rows; default: the router's read
+    database (`cascade._stored`)."""
     pinned_at = _pinned_at(chain, view_pinned)
+    live = chain if pinned_at is None else chain[: pinned_at + 1]
+    rows = list(_live_rows(type_uri, {branch.name for branch in live}, using))
     if pinned_at is None:
-        return _live_rows(type_uri, using)
-    live = {branch.name for branch in chain[: pinned_at + 1]}
-    rows = [row for row in _live_rows(type_uri, using) if branch_of(row[2]) in live]
+        return rows
     pinned = chain[pinned_at]
     for ancestor in chain[pinned_at + 1 :]:
         number = pinned.branching_point.get(ancestor.name)
@@ -223,15 +224,15 @@ def _rows_for(kind, type_uri, chain, view_pinned, using=None):
     return rows
 
 
-def _live_rows(type_uri, using):
+def _live_rows(type_uri, names, using):
+    """The stored rows of `type_uri` on the branches `names`: filtered in
+    SQL (`cascade.on_branches`, ruling R39), and in Python as `branch_of`
+    reads them."""
     if using is None:
-        return _stored(type_uri)
-    return (
-        Resource.objects.using(using)
-        .filter(resource_type__type_uri=type_uri)
-        .order_by("pk")
-        .values_list("pk", "etag", "content")
-    )
+        rows = _stored(type_uri, names)
+    else:
+        rows = item_rows([type_uri], names, using)[type_uri]
+    return [row for row in rows if branch_of(row[2]) in names]
 
 
 def _snapshot_rows(kind, ancestor: Branch, number, using=None):
