@@ -33,6 +33,16 @@ Every save goes to the author's personal branch **(owner, from the
 branches design)**. From the studio the author pulls, pushes to testing, and
 opens the real app on their branch.
 
+### Bootstrap studio now, self-hosted studio later (owner)
+
+"There is great power in self hosting" **(owner)**. There will always be a basic
+**bootstrap studio**, built from package templates, which works on any site
+whatever its branches hold. Later there will also be a **self-hosted studio**,
+built from stored components and stylesheets on a branch and edited in the
+studio itself. This document builds the bootstrap studio. The self-hosted
+studio is a later project, but this one must leave it room (see "Built for
+self-hosting").
+
 ### Layout (owner)
 
 **Preview-first inspector (owner, option B of the layout mockups).**
@@ -130,6 +140,8 @@ These are out for now **(owner approved the first cut)**:
   writing to a published branch from the studio would bypass that flow.
 - creating branches. The author picks one of the working branches; creating one stays
   in the API, or a small form may be added if trivial (builder's choice).
+- the self-hosted studio itself **(owner: later)**. This project only exposes
+  the capabilities it will need ("Built for self-hosting").
 - the "edit vs display grants" rework. The current grant model already separates
   them (goal 10); nothing new is built.
 - publishing, prefixes, approvals and the workflow, which stay in the API.
@@ -148,8 +160,12 @@ These are out for now **(owner approved the first cut)**:
   renders inputs but never submits. A real instance is only read.
 - **The studio is a second authorization path.** It has no permission logic of
   its own beyond asking the existing checks what the user may do.
-- **The studio renders itself from stored components.** Its own pages are
-  package templates, so a branch can't break or impersonate the editor.
+- **The bootstrap studio renders itself from stored components.** Its own pages
+  are package templates, so a branch can't break or impersonate it, and it
+  stays available to repair a branch that breaks a self-hosted studio
+  **(owner: always having a basic bootstrap studio is necessary)**.
+- **Studio logic that only the bootstrap studio's templates can reach.** The
+  capabilities must be reachable over HTTP, as below.
 
 ## Concepts
 
@@ -223,6 +239,28 @@ or a selector, are shown next to the editor.
 - **Writes:** the studio calls the resource views' logic, or makes internal
   requests to the API with the user's credentials (builder's choice). It never
   writes models directly.
+
+## Built for self-hosting (call, from the owner's amendment)
+
+The self-hosted studio will be a set of stored components that call the same
+server capabilities the bootstrap studio uses. So the bootstrap studio's
+behaviour lives behind stable HTTP endpoints, authorized like everything else.
+Its views are thin pages over them:
+
+- **sample:** the sample instance of a type, as JSON (`?data-context=`);
+- **preview:** a type's sample, or an instance, rendered as a fragment with a
+  branch, mode, scope chain and data context, using the preview flag (no write
+  attributes);
+- **explain:** the inspector explanation of a node, as JSON;
+- **new component for a node:** creates the component, the rule and any scope
+  override in one transaction, and returns what it wrote and whether the rule
+  wins.
+
+Edits, reverts, pull and push already have resource endpoints, so the studio
+adds none for them. The endpoints' paths and formats are the builder's choice,
+but they are documented in `docs/ui.md` as the studio's API. Building the
+self-hosted studio itself (its components, how a site selects it, and how to
+fall back to the bootstrap studio) is a non-goal here.
 
 ## Security
 
