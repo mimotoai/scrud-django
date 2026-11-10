@@ -9,9 +9,12 @@ The rule matches one of the node's terms (most specific first), optionally
 narrowed to a scope of the node's chain (*where*) and, for a node with no
 IRI term, to the scope of its top-level property in the resource's root
 component (*inside this type*, ruling S2): the root's component gets the
-scope ``<slug>-<property>`` (an override when it is inherited), or, when it
-is a built-in, a Jinja copy of ``scrud:object`` / ``scrud:object-edit`` with
-that scope is created, selected by the type URI in the same stylesheet.
+scope ``<slug>-<property>`` (suffixed when the root gives it to another
+property; a scope it already gives the property is kept: S11, S14), as an
+override when it is inherited; or, when it is a built-in, a Jinja copy of
+that built-in with the scope is created, selected by the root's most
+specific class term (S12) in the same stylesheet. It is not offered when the
+user may not read the root's component (S13).
 
 Every write is a request to a resource view (`call_view`) with the user's
 own rights, so the studio adds no rights; any refusal (status 400 or more)
@@ -21,7 +24,7 @@ copies an item they may not read."""
 
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from django.db import transaction
 from django.http import HttpResponse
@@ -48,8 +51,6 @@ from scrud_django.ui.branches.store import branches
 from scrud_django.ui.branches.versions import batched_versions
 from scrud_django.ui.cascade import (
     BUILTIN_PREFIX,
-    Component,
-    builtin_component,
     rank_rules,
     resolve_component,
     rules_memo,
@@ -65,9 +66,6 @@ from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 # and for each ``applies_to``.
 STUDIO_STYLESHEET = "studio"
 
-# The built-in whose markup a created root component copies, by mode.
-_ROOT_BUILTINS = {"view": "scrud:object", "edit": "scrud:object-edit"}
-
 _NOT_IN_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 _NOT_IN_SCOPE = re.compile(r"[^A-Za-z0-9_-]+")
 # A generated name's length before its ``-<n>`` suffix (names have 128 at
@@ -80,22 +78,34 @@ _PREFIX_ENDS = tuple(":/?#[]@")
 @dataclass(frozen=True)
 class _Inside:
     """ "Inside this type" for a node: the scope of its top-level `property`
-    in the root's component `root` (the one now chosen), carried by the
-    component called `root_name` (`root`'s, or a new one when
-    `creates_root`). `current` is the scope `root` already gives the
-    property, if any (then it is `scope`, and the root needs no write)."""
+    in the root's component, the one now chosen, called `root_component`.
+    `current` is the scope that component already gives the property, if
+    any (then it is `scope`, and the root needs no write). When the root's
+    component is a built-in, a Jinja copy of it (`root_template`) called
+    `new_root` is created, selected by `root_term`, the root's most
+    specific class term (ruling S12)."""
 
     scope: str
     property: str
-    root: Component
-    root_name: str
-    creates_root: bool
+    root_component: str
     current: str | None
+    new_root: str | None = None
+    root_template: str | None = None
+    root_term: TypeTerm | None = None
+
+    @property
+    def creates_root(self) -> bool:
+        return self.new_root is not None
+
+    @property
+    def carrier(self) -> str:
+        """The name of the component that gives the scope."""
+        return self.new_root or self.root_component
 
     def as_json(self) -> dict:
         return {
             "scope": self.scope,
-            "root_component": self.root_name,
+            "root_component": self.root_component,
             "property": self.property,
             "creates_root": self.creates_root,
         }
@@ -123,8 +133,10 @@ def options(request, slug, resource_type, shown, pointer: str) -> dict:
       most specific first (the first is the default); a schema-type term is
       ``broad``, labelled ``every <type>[ format=…| enum] on this branch``,
       an IRI term is labelled shortened with the type's context prefixes;
-    - ``inside_type``: ``{scope, root_component, property, creates_root}``,
-      or ``None`` (a node with an IRI term, or the root);
+    - ``inside_type``: ``{scope, root_component, property, creates_root}``
+      (rulings S2, S13: ``root_component`` is the root's component now, a
+      built-in when ``creates_root``), or ``None``: for a node with an IRI
+      term, the root, or a root component the user may not read;
     - ``where``: the scopes of the node's chain (one may narrow the rule);
     - ``applies_to``: ``""``, and the preview's data context if it has one;
     - ``name``: the new component's, unique on the branch."""
@@ -193,24 +205,22 @@ def create(
                     _create_component(
                         request,
                         branch,
-                        inside.root_name,
+                        inside.new_root,
                         mode,
-                        builtin_component(_ROOT_BUILTINS[mode]).template,
+                        inside.root_template,
                         scopes={inside.property: inside.scope},
                     )
-                    rules.append(
-                        ((), TypeTerm(iri=resource_type.type_uri), inside.root_name)
-                    )
+                    rules.append(((), inside.root_term, inside.new_root))
                 else:
                     _extend(
                         request,
                         "component",
                         branch,
-                        inside.root_name,
+                        inside.root_component,
                         "",
                         _with_scope(inside.property, inside.scope),
                     )
-                written.append({"kind": "component", "name": inside.root_name})
+                written.append({"kind": "component", "name": inside.carrier})
             _create_component(request, branch, plan.name, mode, template)
             written.append({"kind": "component", "name": plan.name})
             scopes = _selector_scopes(plan, shown, where, inside)
@@ -266,7 +276,7 @@ def _plan(request, slug, resource_type, shown, pointer) -> _Plan:
         raise ValidationError({"pointer": ["A JSON Pointer is required."]})
     with using_selection(shown.selection), rules_memo():
         info = _node(request, resource_type, shown, pointer)
-        root = None
+        root = root_term = None
         if (
             info.pointer
             and not info.as_json
@@ -277,6 +287,12 @@ def _plan(request, slug, resource_type, shown, pointer) -> _Plan:
             root = resolve_component(
                 root_info.rules, root_info.scope_chain, root_info.terms, shown.mode
             )
+            root_term = next((t for t in root_info.terms if t.iri), None)
+            builtin = root.name.startswith(BUILTIN_PREFIX)
+            if (builtin and root_term is None) or (
+                not builtin and not _may_read_component(request, root.name)
+            ):
+                root = None  # not offered (ruling S13)
         taken = _taken_names(shown.selection.branch)
     prefixes = context_prefixes(resource_type)
     name = _unique_name(
@@ -285,20 +301,21 @@ def _plan(request, slug, resource_type, shown, pointer) -> _Plan:
     inside = None
     if root is not None:
         top = _unescape(info.pointer[1:].split("/")[0])
-        creates = root.name.startswith(BUILTIN_PREFIX)
-        current = None if creates else root.scopes.get(top)
+        current = root.scopes.get(top)
+        others = {scope for prop, scope in root.scopes.items() if prop != top}
         inside = _Inside(
-            scope=current or _scope_name(slug, top),
+            scope=current or _scope_name(slug, top, others),
             property=top,
-            root=root,
-            root_name=(
-                _unique_name([slug, shown.mode], taken | {name})
-                if creates
-                else root.name
-            ),
-            creates_root=creates,
+            root_component=root.name,
             current=current,
         )
+        if root.name.startswith(BUILTIN_PREFIX):
+            inside = replace(
+                inside,
+                new_root=_unique_name([slug, shown.mode], taken | {name}),
+                root_template=_jinja_copy(root.template),
+                root_term=root_term,
+            )
     return _Plan(
         info=info,
         matches=[] if info.as_json else [_match(t, prefixes) for t in info.terms],
@@ -422,10 +439,37 @@ def _unique_name(parts, taken) -> str:
     return name
 
 
-def _scope_name(slug, prop) -> str:
-    """The scope "inside this type" gives property `prop` of type `slug`."""
-    scope = _NOT_IN_SCOPE.sub("-", f"{slug}-{prop}")
-    return scope if SCOPE_NAME.match(scope) else f"s-{scope}"
+def _scope_name(slug, prop, taken) -> str:
+    """The scope "inside this type" gives property `prop` of type `slug`:
+    ``<slug>-<prop>`` (characters a scope may not have become ``-``), with
+    ``-2``, ``-3``, … when the root gives another property that scope
+    (`taken`; ruling S14)."""
+    base = _NOT_IN_SCOPE.sub("-", f"{slug}-{prop}")
+    base = base if SCOPE_NAME.match(base) else f"s-{base}"
+    scope, number = base, 1
+    while scope in taken:
+        number += 1
+        scope = f"{base}-{number}"
+    return scope
+
+
+def _jinja_copy(template: str) -> str:
+    """Built-in `template` as a Jinja template rendering the same bytes:
+    Jinja drops a template's last newline (``keep_trailing_newline`` is
+    off), which the built-in (a Django template) keeps, so the copy has one
+    more."""
+    return template + "\n" if template.endswith("\n") else template
+
+
+def _may_read_component(request, name) -> bool:
+    """Whether the user of `request` may read the component `name` the
+    selected branch shows, as the list filter checks it."""
+    for _, _, content in effective_rows(UI_COMPONENT_TYPE_URI):
+        if content.get("name") == name:
+            return may_read_in_context(
+                request, UI_COMPONENT_TYPE_URI, content, resource_contexts(content)
+            )
+    return False
 
 
 def _property_path(content, pointer) -> list[str]:
@@ -482,14 +526,7 @@ def _with_rules(rules):
         existing = content.get("rules")
         added = [
             {
-                "select": " ".join(
-                    (
-                        *scopes,
-                        compact(term.iri, prefixes)
-                        if term.iri is not None
-                        else term_text(term),
-                    )
-                ),
+                "select": " ".join((*scopes, _term_token(term, prefixes))),
                 "component": component,
             }
             for scopes, term, component in rules
@@ -500,6 +537,25 @@ def _with_rules(rules):
         }
 
     return change
+
+
+def _term_token(term: TypeTerm, prefixes) -> str:
+    """`term` as a selector's last token with `prefixes` (an IRI shortened
+    by `compact`). An IRI that no token expands back to with them (one
+    whose scheme is one of the prefixes) is refused (ruling S14)."""
+    if term.iri is None:
+        return term_text(term)
+    token = compact(term.iri, prefixes)
+    if ld.expand(token, dict(prefixes)) != term.iri:
+        raise ValidationError(
+            {
+                "match": [
+                    f"{term.iri!r} can't be written in a selector of the "
+                    "stylesheet: one of its prefixes is the IRI's scheme."
+                ]
+            }
+        )
+    return token
 
 
 def _item(kind, branch: Branch, name, target, content) -> dict:

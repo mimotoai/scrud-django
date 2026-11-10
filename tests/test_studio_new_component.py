@@ -6,6 +6,7 @@ scope: ruling S2) on a working branch in one transaction, through the
 resource views, and reports whether the rule wins. These tests serve the API
 at ``/api/`` and the studio at ``/studio/`` (``tests.mounted_urls``)."""
 
+import json
 import re
 from unittest import mock
 
@@ -15,6 +16,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
 from scrud_django.models import Resource
+from scrud_django.registration import ResourceTypeRegistration
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 from scrud_django.ui.cascade import builtin_component
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
@@ -95,8 +97,46 @@ def explain(slug=SLUG, **params):
     return Http.response.json()
 
 
+def jinja_copy(builtin):
+    """The template of a root copied from `builtin`: Jinja drops a last
+    newline, so the copy has one more to render the same bytes."""
+    template = builtin_component(builtin).template
+    assert template.endswith("\n")
+    return template + "\n"
+
+
 def leaves(page):
     return dict(LEAF.findall(page))
+
+
+def outside(page, prefix="/blockers"):
+    """`page` with the markup of each leaf node under `prefix` blanked."""
+    return LEAF.sub(
+        lambda m: (
+            f'<scrud-node data-pointer="{m[1]}">…</scrud-node>'
+            if m[1].startswith(prefix)
+            else m[0]
+        ),
+        page,
+    )
+
+
+def odd_type():
+    """Type ``studio-odd``: its root's class is ``urn:x:Item`` (its
+    context's ``@type``), and its properties ``a.b`` and ``a-b`` have no
+    IRI."""
+    ResourceTypeRegistration(
+        "tests://StudioOdd",
+        slug="studio-odd",
+        schema_func=lambda: json.dumps(
+            {
+                "type": "object",
+                "properties": {"a.b": {"type": "string"}, "a-b": {"type": "string"}},
+            }
+        ),
+        context_func=lambda: json.dumps({"@type": "urn:x:Item"}),
+        register_service=False,
+    )
 
 
 def ours(explained, name):
@@ -127,7 +167,7 @@ def test_options_most_specific_first_and_broad_labelled(admin_login, ui_alice_lo
         "matches": [STRING],
         "inside_type": {
             "scope": "todos-blockers",
-            "root_component": "todos-view",
+            "root_component": "scrud:object",
             "property": "blockers",
             "creates_root": True,
         },
@@ -287,7 +327,7 @@ def test_inside_type_adds_parent_scope_and_wins(admin_login, ui_alice_login):
         "name": "todos-view",
         "engine": "jinja2",
         "mode": "view",
-        "template": builtin_component("scrud:object").template,
+        "template": jinja_copy("scrud:object"),
         "scopes": {"blockers": "todos-blockers"},
         "branch": "wip",
         "rbac_context": "alice",
@@ -303,18 +343,15 @@ def test_inside_type_adds_parent_scope_and_wins(admin_login, ui_alice_login):
         {"select": "tests://ToDo", "component": "todos-view"},
         {"select": "todos-blockers string", "component": name},
     ]
-    # The node renders it; no string outside the property changes, and the
-    # root keeps its markup.
+    # The node renders it, and the page is byte-identical outside the
+    # property's leaves: the root's markup and every other node.
     after = preview(slug="todos", branch="wip")
     assert leaves(after)[EXPLANATION] == "<mark>Lorem ipsum</mark>"
-    outside = {p: m for p, m in leaves(before).items() if not p.startswith("/blockers")}
-    assert outside and "/title" in outside
-    assert {p: leaves(after)[p] for p in outside} == outside
-    assert after.count('<dl class="scrud-object">') == before.count(
-        '<dl class="scrud-object">'
-    )
+    assert "/title" in leaves(after)
+    assert outside(after) == outside(before)
     # Per mode: the view-mode root does not scope edit mode.
-    assert "<mark>" not in preview(slug="todos", branch="wip", mode="edit")
+    before_edit = preview(slug="todos", branch="wip", mode="edit")
+    assert "<mark>" not in before_edit
     assert options(slug="todos", pointer=EXPLANATION)["inside_type"] == {
         "scope": "todos-blockers",
         "root_component": "todos-view",
@@ -323,7 +360,7 @@ def test_inside_type_adds_parent_scope_and_wins(admin_login, ui_alice_login):
     }
     assert options(slug="todos", pointer=EXPLANATION, mode="edit")["inside_type"] == {
         "scope": "todos-blockers",
-        "root_component": "todos-edit",
+        "root_component": "scrud:object-edit",
         "property": "blockers",
         "creates_root": True,
     }
@@ -345,6 +382,21 @@ def test_inside_type_adds_parent_scope_and_wins(admin_login, ui_alice_login):
         "select": "todos-blockers string[format=uri]",
         "component": "todos-blockers-blocked_by-view",
     }
+    # Edit mode: a root copied from scrud:object-edit, byte-identical
+    # outside the property's leaves.
+    got = new_component(
+        slug="todos", pointer=EXPLANATION, mode="edit", inside_type=True, template=MARK
+    )
+    assert got["written"][0] == {"kind": "component", "name": "todos-edit"}
+    assert got["wins"] is True
+    (root,) = [
+        c for c in own_rows(UI_COMPONENT_TYPE_URI, "wip") if c["name"] == "todos-edit"
+    ]
+    assert root["mode"] == "edit"
+    assert root["template"] == jinja_copy("scrud:object-edit")
+    after_edit = preview(slug="todos", branch="wip", mode="edit")
+    assert leaves(after_edit)[EXPLANATION] == "<mark>Lorem ipsum</mark>"
+    assert outside(after_edit) == outside(before_edit)
 
 
 @pytest.mark.django_db
@@ -500,7 +552,8 @@ def test_inside_type_keeps_a_scope_the_root_gives(admin_login, ui_alice_login):
         scopes={"blockers": "notes"},
     )
     make_stylesheet("s", [("tests://ToDo", "todo-root")])
-    alice_on_wip(admin_login, ui_alice_login)
+    user = alice_on_wip(admin_login, ui_alice_login)
+    grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
     assert options(slug="todos", pointer=EXPLANATION)["inside_type"] == {
         "scope": "notes",
         "root_component": "todo-root",
@@ -522,6 +575,151 @@ def test_inside_type_keeps_a_scope_the_root_gives(admin_login, ui_alice_login):
 
 @pytest.mark.django_db
 @test_context
+def test_new_root_is_selected_by_the_most_specific_class_term(
+    admin_login, ui_alice_login
+):
+    # A partner profile's root has its context's @type (schema:Organization)
+    # before its type URI; a rule on that class gives it a built-in.
+    make_stylesheet("s", [("http://schema.org/Organization", "scrud:object")])
+    alice_on_wip(admin_login, ui_alice_login)
+    slug, pointer = "partner-profiles", "/rbac_context"
+    assert options(slug=slug, pointer=pointer)["inside_type"] == {
+        "scope": "partner-profiles-rbac_context",
+        "root_component": "scrud:object",
+        "property": "rbac_context",
+        "creates_root": True,
+    }
+    got = new_component(
+        slug=slug, pointer=pointer, inside_type=True, template="<mark>ctx</mark>"
+    )
+    assert got["written"][0] == {"kind": "component", "name": "partner-profiles-view"}
+    assert got["wins"] is True
+    # The created root is selected by the class, so it outranks the rule on
+    # it (a later stylesheet), and its scope applies (ruling S12).
+    assert own_rows(UI_STYLESHEET_TYPE_URI, "wip")[0]["rules"] == [
+        {"select": "schema:Organization", "component": "partner-profiles-view"},
+        {
+            "select": "partner-profiles-rbac_context string",
+            "component": "partner-profiles-rbac_context-view",
+        },
+    ]
+    root = explain(slug=slug, pointer="", branch="wip")
+    assert root["rules"][root["winner"]]["component"] == "partner-profiles-view"
+    assert leaves(preview(slug=slug, branch="wip"))[pointer] == "<mark>ctx</mark>"
+
+
+@pytest.mark.django_db
+@test_context
+def test_generated_scope_names_do_not_collide(admin_login, ui_alice_login):
+    odd_type()
+    alice_on_wip(admin_login, ui_alice_login)
+    got = new_component(
+        slug="studio-odd", pointer="/a.b", inside_type=True, template="<i>one</i>"
+    )
+    assert got["wins"] is True
+    # "a-b" would get the scope "a.b" has: it gets a suffix (ruling S14).
+    assert options(slug="studio-odd", pointer="/a-b")["inside_type"] == {
+        "scope": "studio-odd-a-b-2",
+        "root_component": "studio-odd-view",
+        "property": "a-b",
+        "creates_root": False,
+    }
+    got = new_component(
+        slug="studio-odd", pointer="/a-b", inside_type=True, template="<i>two</i>"
+    )
+    assert got["wins"] is True
+    (root,) = [
+        c
+        for c in own_rows(UI_COMPONENT_TYPE_URI, "wip")
+        if c["name"] == "studio-odd-view"
+    ]
+    assert root["scopes"] == {"a.b": "studio-odd-a-b", "a-b": "studio-odd-a-b-2"}
+    page = leaves(preview(slug="studio-odd", branch="wip"))
+    assert (page["/a.b"], page["/a-b"]) == ("<i>one</i>", "<i>two</i>")
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_iri_selector_must_round_trip(admin_login, ui_alice_login):
+    odd_type()
+    make_wip(admin_login)
+    # wip's studio stylesheet has a prefix named like the root class's
+    # scheme: "urn:x:Item" would expand to another IRI.
+    create(
+        "ui-stylesheets",
+        {
+            "name": "studio",
+            "applies_to": "",
+            "prefixes": {"urn": "http://elsewhere.example/"},
+            "rules": [],
+            "branch": "wip",
+            "rbac_context": "alice",
+        },
+    )
+    Given.http.force_authenticate(ui_alice_login)
+    assert options(slug="studio-odd", pointer="")["matches"][0]["select"] == (
+        "urn:x:Item"
+    )
+    before = stored_state()
+    new_component(400, slug="studio-odd", pointer="", template="<i/>")
+    assert "match" in problem()["errors"]
+    # The component was written first: rolled back.
+    assert stored_state() == before
+
+
+@pytest.mark.django_db
+@test_context
+def test_refused_last_step_rolls_everything_back(admin_login, ui_alice_login):
+    alice_on_wip(admin_login, ui_alice_login)
+    # A built-in root: the new root is written first, then the node's
+    # component, whose template does not compile; nothing is stored.
+    before = stored_state()
+    new_component(
+        400, slug="todos", pointer=EXPLANATION, inside_type=True, template="{% for %}"
+    )
+    assert problem()["type"] == TEMPLATE_INVALID
+    assert stored_state() == before
+    # May select wip and write components there, not stylesheets: the
+    # stylesheet's write (the last step) is refused as the API refuses it,
+    # after the components were created; nothing is stored.
+    user = assign_role(
+        {
+            f"http.{m}": [
+                UI_COMPONENT_TYPE_URI,
+                collection_type_uri_for(UI_COMPONENT_TYPE_URI),
+            ]
+            for m in ("GET", "POST", "PUT")
+        },
+        "alice",
+    )
+    grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(user)
+    When.http.post(
+        reverse("ui-stylesheets-list"),
+        data={
+            "name": "studio",
+            "applies_to": "",
+            "rules": [],
+            "branch": "wip",
+            "rbac_context": "alice",
+        },
+        format="json",
+    )
+    Then.http.status_code_is(403)
+    api = Http.response.json()
+    assert new_component(403) == api
+    assert stored_state() == before
+    assert (
+        new_component(
+            403, slug="todos", pointer=EXPLANATION, inside_type=True, template=MARK
+        )
+        == api
+    )
+    assert stored_state() == before
+
+
+@pytest.mark.django_db
+@test_context
 def test_new_component_adds_no_rights(admin_login, ui_alice_login):
     main_root = make_component(
         "todo-root",
@@ -529,16 +727,20 @@ def test_new_component_adds_no_rights(admin_login, ui_alice_login):
     )
     make_stylesheet("s", [("tests://ToDo", "todo-root")])
     alice_on_wip(admin_login, ui_alice_login)
-    # alice may not read main's root component: overriding it (a copy she
-    # could read) is refused as the API refuses her its GET.
+    # alice may not read main's root component (the API refuses her its
+    # GET): "inside this type" is not offered, and its name is not shown
+    # (rulings S9, S13); overriding it (a copy she could read) is refused.
     When.http.get(reverse("ui-components-detail", args=[main_root.pk]))
-    api = (Http.response.status_code, Http.response.json())
-    assert api[0] >= 400
+    assert Http.response.status_code >= 400
+    got = options(slug="todos", pointer=EXPLANATION)
+    assert got["inside_type"] is None
+    assert "todo-root" not in Http.response.content.decode()
     before = stored_state()
     new_component(
-        api[0], slug="todos", pointer=EXPLANATION, inside_type=True, template=MARK
+        400, slug="todos", pointer=EXPLANATION, inside_type=True, template=MARK
     )
-    assert Http.response.json() == api[1]
+    assert "inside_type" in problem()["errors"]
+    assert "todo-root" not in Http.response.content.decode()
     assert stored_state() == before
     # May select wip and write stylesheets there, but not components: the
     # API's 403, and the stylesheet is not written either.
