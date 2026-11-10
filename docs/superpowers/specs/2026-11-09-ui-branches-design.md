@@ -161,9 +161,7 @@ A branch holds three kinds of items (call):
 |---|---|---|
 | UI component | `name` | as phase 1 |
 | UI stylesheet (component rules) | (`name`, `rbac_context`) | as phase 1; `rbac_context` means *where it applies* |
-| CSS (new type, `ui-css`) | `name` | plain CSS text plus an `order`. A published branch's effective CSS is served under its prefix at a URL that includes the content's version, so browsers can cache it forever (call). The files are cached
-  `private, max-age=31536000, immutable`, never `public`, because a mount's
-  CSS is gated by GET on its branch, which a shared cache would not check (ruling R33, during implementation). `scrud:page` gets the list of CSS URLs in its context and links them. |
+| CSS (new type, `ui-css`) | `name` | plain CSS text plus an `order`. A published branch's effective CSS is served under its prefix at a URL that includes the content's version, so browsers can cache it forever (call). The files are cached `private, max-age=31536000, immutable`, never `public`, because a mount's CSS is gated by GET on its branch, which a shared cache would not check (ruling R33, during implementation). `scrud:page` gets the list of CSS URLs in its context and links them. |
 
 ### Version
 
@@ -242,7 +240,8 @@ testing's changes, then its own.
   3. a cookie set by the switcher (scoped to the prefix, call). Its name is
      `scrud_ui_branch` at the API URLs and
      `scrud_ui_branch_<first 12 hex digits of sha256(prefix)>` under a prefix,
-     so that a cookie for `/` cannot shadow another prefix's (ruling R28, during implementation);
+     so that a cookie for `/` cannot shadow another prefix's
+     (ruling R28, during implementation);
   4. none: the published branch itself.
 - **Authorization:** the viewer must be allowed to GET the working branch, and
   it must be in the prefix's tree. If not, the request renders on the published
@@ -251,8 +250,10 @@ testing's changes, then its own.
 - **Banner:** every HTML page on a working branch shows a banner naming the
   branch and its mode (live, or pinned at version N), with the switcher and a
   link back to the published branch **(owner: switcher and banner)**. It is
-  rendered outside stored components, so a branch's components cannot hide it
-  (call).
+  rendered by the server outside stored components, so that a branch's
+  components cannot replace it (call). It is not a guarantee: a branch's CSS,
+  or a page component that wraps the body in a hidden element, can still hide
+  it (follow-up `ui-banner-hideable`).
 - **Links carry the branch (owner).** Links and htmx requests made while on a
   branch keep it. A shareable link includes the query parameter.
 - **Shared-link confirmation (call; the owner can drop it).** Opening a link
@@ -324,8 +325,8 @@ Applying a push:
    current version of that item. If any differ, the write is **refused with
    409 and the list of conflicts**; the list names only conflicts on items the
    pusher may GET in the target, and the rest are counted
-   (`unreadable_conflicts`) (ruling R20, during implementation). Nothing is written and the push stays as
-   it was (there is no `refused` state, so a future policy needn't define
+   (`unreadable_conflicts`) (ruling R20, during implementation). Nothing is
+   written and the push stays as it was (there is no `refused` state, so a future policy needn't define
    one) (call). Resolve on the source (pull, then keep or take), then push
    again.
 2. Otherwise, write every override into the target as one atomic step and
@@ -341,16 +342,20 @@ Pushing into a branch other than the source's parent is allowed (call).
 
 An applied push is a record: any update of it is refused (400) and a delete
 is a 409; pushing again takes a new push, which a workflow policy gates
-afresh (ruling R18, during implementation). A push whose source has no parent (`main`, or any root) is
-refused (400), because it would delete the live site's items (ruling R19, during implementation). The
-conflict check doesn't depend on the parent link.
+afresh (ruling R18, during implementation).
+
+A push whose source has no parent (`main`, or any root) is refused (400),
+because it would delete the live site's items (ruling R19, during
+implementation).
+
+The conflict check doesn't depend on the parent link.
 
 ## Deleting a branch
 
 `main` cannot be deleted (400), and neither can a branch that another names as
 its parent (409). Deleting a branch deletes its own items and its versions in
 the same transaction, so a branch created again under the name starts at
-version 1 (ruling R10, during implementation)
+version 1 (ruling R10, during implementation).
 
 ## Rollback
 

@@ -468,6 +468,24 @@ Fix: check, for each such item, the grant a direct delete would need
 none in `acme`; a stylesheet on `p` that applies to `acme`; assert the branch
 DELETE is refused and the stylesheet remains; it is deleted today.
 
+<a id="ui-conflict-key-mismatch"></a>
+## ui-conflict-key-mismatch: pull and push key a stylesheet differently when it has no `applies_to`
+
+`conflicts()` (the pull's conflict list) keys each source row on the target's
+chain (`item_key(kind, content, chain[0])`), while `apply_push` keys it on the
+source branch. A stylesheet stored without `applies_to` (a raw save or
+`ResourceRegistration`, which skip validation) gets its `applies_to` from the
+branch it is read on: on a published branch from its `rbac_context`, on a
+working branch `""`. So a pull may list a conflict that the push does not find,
+or the reverse.
+
+Fix: key the source rows on the source branch in both, or store `applies_to`
+on every stylesheet. Test: store a stylesheet override with no `applies_to`
+and an `rbac_context` other than its working branch's, on a working branch
+over a published one whose parent has changed that stylesheet; assert that the
+conflict list of a pull and the 409 of a push name the same items. They
+differ today.
+
 <a id="ui-confirm-token-in-urls"></a>
 ## ui-confirm-token-in-urls: the confirmation token travels in URLs
 

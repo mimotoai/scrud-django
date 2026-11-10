@@ -530,7 +530,9 @@ def _page(
     is put at the top of the body. So is the page's branch (`frame_branch`)
     when it has one, on a hidden ``.scrud-branch-page`` element, for the
     requests of elements outside any frame. A page component that leaves
-    them out is replaced by the built-in, so no branch can hide them.
+    them out is replaced by the built-in. (Branch CSS, or a component that
+    wraps the body in a hidden element, can still hide the banner: follow-up
+    ``ui-banner-hideable``.)
 
     The page component's context also has ``css``: the URLs of the CSS files
     effective on the page's branch, in order."""

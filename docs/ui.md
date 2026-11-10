@@ -75,8 +75,8 @@ mode. Its content:
 | `branch`, `deleted`, `base` | no | The [branch fields](#branches) every UI item has. |
 
 Whoever may write a component on a branch is trusted with the rendering of
-every page that shows that branch (see [Security](#security)). Stored Jinja templates run in `jinja2.sandbox.SandboxedEnvironment`.
-Stored Django templates run on a standalone engine with no loaders and no tag
+every page that shows that branch (see [Security](#security)). Stored Jinja
+templates run in `jinja2.sandbox.SandboxedEnvironment`. Stored Django templates run on a standalone engine with no loaders and no tag
 libraries, so `{% load %}` of app tags is unavailable and `{% include %}` and
 `{% extends %}` are refused at save. Both engines autoescape, and child HTML
 passes through unescaped. Letting untrusted authors write components is phase
@@ -182,9 +182,10 @@ most 262144 characters, and never containing `</style`, which is refused with a
 `rbac_context`) every UI item has. A name is unique on its branch. The page
 links the CSS items effective on the branch it shows, by `order` and then by
 name, at `<api or prefix>ui-css-files/<name>/<etag>.css`. The ETag in the URL
-makes a file immutable (`Cache-Control: private, max-age=31536000, immutable`: a
-shared cache would not check the GET on the branch, so it must not keep it): after an edit the old URL is a 404 and the page
-links the new one. Anyone who can see a page can fetch its files; under a
+makes a file immutable (`Cache-Control: private, max-age=31536000,
+immutable`: a shared cache would not check the GET on the branch, so it must
+not keep it): after an edit the old URL is a 404 and the page links the new
+one. Anyone who can see a page can fetch its files; under a
 published branch's prefix a viewer who may not GET the branch is refused as
 for any other GET there, and a working branch's CSS is served only to a viewer
 who may select it.
