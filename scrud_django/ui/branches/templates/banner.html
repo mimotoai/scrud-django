@@ -1,0 +1,15 @@
+<aside class="scrud-branch-banner" aria-label="UI branch">
+{% if refused %}<p class="scrud-branch-refused">The branch <code>{{ refused }}</code> isn't available: this is {{ published }}.</p>
+{% endif %}{% if branch %}<p class="scrud-branch-current">You are browsing branch <strong>{{ branch }}</strong> ({{ mode }}).</p>
+{% endif %}{% if options %}<form class="scrud-branch-switcher" method="get" action="{{ action }}">
+{% for name, value in hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">
+{% endfor %}<input type="hidden" name="ui-branch-confirm" value="1">
+<label>Branch <select name="ui-branch">{% for name in options %}<option value="{{ name }}"{% if name == branch %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+<button type="submit">Switch</button>
+</form>
+{% endif %}<nav class="scrud-branch-links">
+{% if toggle_href %}<a class="scrud-branch-toggle" href="{{ toggle_href }}">{{ toggle_label }}</a>
+{% endif %}{% if copy_href %}<a class="scrud-branch-copy" href="{{ copy_href }}">Copy link</a>
+{% endif %}<a class="scrud-branch-back" href="{{ back_href }}">Back to {{ published }}</a>
+</nav>
+</aside>

@@ -321,7 +321,8 @@ the frame with the current state, and so does a 409 DELETE.
 | `Scrud-UI-Pointer` | The JSON Pointer of the node to render (default `""`). An invalid pointer (or one over 1024 characters) is a 400, before a PUT writes anything. |
 
 These select presentation only, never what is authorized. HTML responses carry
-`Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer` and
+`Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer, Scrud-UI-Branch,
+Cookie` (the branch a page browses comes from a header or a cookie) and
 `Cache-Control: private, no-cache, no-store` (a page and its fragments share
 one ETag, so a cache must not keep either; the ETag stays, and the client sends
 it as `If-Match`). An error is the same status as JSON (401, 403, 404, ...) with

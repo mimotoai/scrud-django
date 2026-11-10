@@ -82,9 +82,15 @@ def test_pinned_view_by_query_parameter(todo_list, todo_reader_login):
     make_branch("wip", "project-a", branching_point={"main": versions_of("main")[-1]})
     edit_main_title("h2")
     Given.http.force_authenticate(may_select_branches(todo_reader_login))
-    When.http.get(detail_url(todo_list) + "?ui-branch=wip@pinned", HTTP_ACCEPT=HTML)
+    # A link (the parameter) asks before it switches branch; confirmed, it
+    # shows the pinned view.
+    url = detail_url(todo_list) + "?ui-branch=wip@pinned"
+    When.http.get(url, HTTP_ACCEPT=HTML)
     Then.http.status_code_is(200)
-    assert "<h1>Groceries" in html()
+    assert "You're about to browse branch wip" in html()
+    When.http.get(url + "&ui-branch-confirm=1", HTTP_ACCEPT=HTML)
+    Then.http.status_code_is(200)
+    assert "<h1>Groceries" in html() and "<h2>Groceries" not in html()
 
 
 @pytest.mark.django_db

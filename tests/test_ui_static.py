@@ -310,6 +310,8 @@ function el(tag, attrs, parent, props) {
       return c;
     },
     matches(sel) {
+      const attr = /^\[([a-z-]+)\]$/.exec(sel);
+      if (attr) return attr[1] in this.attrs;
       return sel === '.scrud-resource' && this.attrs.class === 'scrud-resource';
     },
     closest(sel) {

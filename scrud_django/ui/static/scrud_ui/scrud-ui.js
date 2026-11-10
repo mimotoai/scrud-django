@@ -442,6 +442,14 @@
     var headers = detail.headers;
     var verb = String(detail.verb).toLowerCase();
     setDefault(headers, 'Accept', 'text/html');
+    // The branch the page was rendered on (its frames' data-scrud-branch;
+    // "" names the published branch), so a page never changes branch halfway.
+    var branch = detail.elt && detail.elt.closest
+      ? detail.elt.closest('[data-scrud-branch]')
+      : null;
+    if (branch) {
+      setDefault(headers, 'Scrud-UI-Branch', branch.getAttribute('data-scrud-branch'));
+    }
     if (verb === 'get') return;
     setDefault(headers, 'X-CSRFToken', csrfToken());
     var frame = frameOf(detail.elt);

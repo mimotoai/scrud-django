@@ -1,18 +1,17 @@
 """The effective state of a branch: its own items over its parent's current
-state, recursively, and the selection of the branch a request renders.
+state, recursively, and the selection of the branch a render shows (chosen
+for a request by `scrud_django.ui.branches.selection.choose`).
 
 With no selection (or ``main`` selected) the state is main's, computed from
 the stored items alone: no branch row is read (ruling R1)."""
 
 import contextlib
 import contextvars
-import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from scrud_django.exceptions import UIBranchVersionMissingError
-from scrud_django.permissions import may_read_in_context
-from scrud_django.ui.branches import MAIN, UI_BRANCH_TYPE_URI
+from scrud_django.ui.branches import MAIN
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
     Branch,
@@ -20,16 +19,9 @@ from scrud_django.ui.branches.model import (
     item_key,
     kind_of,
 )
-from scrud_django.ui.branches.store import (
-    BranchChainError,
-    ancestors,
-    branches,
-    published_root,
-)
+from scrud_django.ui.branches.store import ancestors, branches
 from scrud_django.ui.branches.versions import snapshot
 from scrud_django.ui.cascade import _memo, _skipped, _stored
-
-logger = logging.getLogger(__name__)
 
 BRANCH_HEADER = "Scrud-UI-Branch"
 BRANCH_PARAMETER = "ui-branch"
@@ -118,7 +110,7 @@ def effective_rows(
     """``(pk, etag, content)`` of the items of `type_uri` visible on the
     selected branch (default: `active_selection`), lowest pk first, deletion
     markers removed (kept with `include_deleted`). The rows are `cascade._stored`'s: one query per type per
-    response. The selection must be selectable (`selection_for_request`)."""
+    response. The selection must be selectable (`selection.choose`)."""
     selection = selection or active_selection()
     if selection.branch == MAIN:
         chain = [MAIN_BRANCH]
@@ -126,7 +118,7 @@ def effective_rows(
         chain = chain_of(selection.branch, branches())
     kind = kind_of(type_uri)
     rows = _rows_for(kind, type_uri, chain, selection.pinned)
-    if rows is None:  # defensive: `selection_for_request` already refused it
+    if rows is None:  # defensive: `selection.choose` already refused it
         chain = [MAIN_BRANCH]
         rows = _stored(type_uri)
 
@@ -211,49 +203,3 @@ def _snapshot_items(name, number):
     if memo is not None:
         memo[key] = items
     return items
-
-
-def selection_for_request(request) -> Selection:
-    """The selection `request` makes: its `BRANCH_HEADER`, else its
-    `BRANCH_PARAMETER` query parameter, unless that names
-    a branch that does not exist, whose chain is broken (logged), or that the
-    user may not GET: then main."""
-    headers = getattr(request, "headers", None)
-    name = headers.get(BRANCH_HEADER) if headers is not None else None
-    if not name:
-        params = getattr(request, "GET", None)
-        name = params.get(BRANCH_PARAMETER) if params is not None else None
-    pinned = bool(name) and name.endswith(PINNED_SUFFIX)
-    if pinned:
-        name = name[: -len(PINNED_SUFFIX)]
-    if not name or name == MAIN:
-        return Selection()
-    all_branches = branches()
-    branch = all_branches.get(name)
-    if branch is None:
-        return Selection()
-    try:
-        ancestors(name, all_branches)
-        published_root(name, all_branches)
-    except BranchChainError as error:
-        logger.warning("scrud-ui: not rendering branch %r: %s", name, error)
-        return Selection()
-    content = {
-        "name": branch.name,
-        "rbac_context": branch.context,
-        "parent": branch.parent,
-        "prefix": branch.prefix,
-    }
-    if not may_read_in_context(request, UI_BRANCH_TYPE_URI, content, [branch.context]):
-        return Selection()
-    missing = _missing_snapshot(chain_of(name, all_branches), pinned)
-    if missing is not None:
-        logger.warning(
-            "scrud-ui: not rendering branch %r: version %r of %r, which it is "
-            "pinned to, is missing",
-            name,
-            missing[1],
-            missing[0],
-        )
-        return Selection()
-    return Selection(branch=name, pinned=pinned)

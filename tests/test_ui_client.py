@@ -96,6 +96,47 @@ def test_get_requests_get_no_write_headers():
     assert "If-Match" not in out["putOwnAccept"]["headers"]
 
 
+BRANCH_SCRIPT = (
+    STUB_DOM
+    + r"""
+const page = el('MAIN', {});
+const wip = frame('/l/1/', page);
+wip.attrs['data-scrud-branch'] = 'wip';
+const node = el('DIV', {class: 'scrud-resource', 'data-scrud-href': '/l/1/',
+  'data-scrud-pointer': '/items/0'}, wip);
+const button = el('BUTTON', {'hx-delete': '/l/1/'}, node);
+const published = frame('/l/2/', page);
+published.attrs['data-scrud-branch'] = '';
+const plain = frame('/l/3/', page);
+const fire = (elt, verb, headers) => {
+  const detail = {elt, verb, headers: headers || {}};
+  handlers['htmx:configRequest']({detail, preventDefault() {}});
+  return detail.headers;
+};
+out.get = fire(node, 'get');
+out.delete = fire(button, 'delete');
+out.published = fire(published, 'get');
+out.plain = fire(plain, 'get');
+out.own = fire(node, 'get', {'scrud-ui-branch': 'mine'});
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_config_request_sends_the_frames_branch():
+    require_node()
+    out = run_node(BRANCH_SCRIPT)
+    # from the closest element carrying data-scrud-branch, GET and writes alike
+    assert out["get"]["Scrud-UI-Branch"] == "wip"
+    assert out["delete"]["Scrud-UI-Branch"] == "wip"
+    # "" names the published branch explicitly
+    assert out["published"]["Scrud-UI-Branch"] == ""
+    # none without the attribute (a page on the published branch)
+    assert out["plain"] == {"Accept": "text/html"}
+    # a header the page set itself is kept, in any case
+    assert out["own"] == {"Accept": "text/html", "scrud-ui-branch": "mine"}
+
+
 BUILD_SCRIPT = r"""
 const vm = require('vm'), fs = require('fs');
 const window = {};

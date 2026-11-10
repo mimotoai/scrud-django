@@ -34,6 +34,16 @@ def rendered(todo_list, branch=None):
     return re.sub(r'(name="csrf-token"\s+content=")[^"]*', r"\1", page)
 
 
+BANNER_TOGGLE = 'class="scrud-branch-toggle"'
+
+
+def without_banner(page):
+    """`page` without its branch banner."""
+    return re.sub(
+        r'<aside class="scrud-branch-banner".*?</aside>', "", page, flags=re.S
+    )
+
+
 def quoted(etag):
     return f'"{etag}"'
 
@@ -248,7 +258,11 @@ def test_pull_of_live_branch_changes_no_rendering(
         "main": current_version("main", write_db())
     }
     Given.http.force_authenticate(todo_reader_login)
-    assert rendered(todo_list, "wip") == before
+    after = rendered(todo_list, "wip")
+    # The banner (outside the rendering) now offers the view at the new
+    # branching point; the page around it is unchanged.
+    assert BANNER_TOGGLE not in before and BANNER_TOGGLE in after
+    assert without_banner(after) == without_banner(before)
     assert rendered(todo_list) == main_before
 
 

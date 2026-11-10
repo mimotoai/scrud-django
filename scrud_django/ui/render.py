@@ -28,6 +28,7 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.mixins.view_mixins import max_body_depth
 from scrud_django.ui import ld
 from scrud_django.ui.authz import ALLOWED, POSSIBLY, decisions_for
+from scrud_django.ui.branches.selection import frame_branch
 from scrud_django.ui.cascade import (
     BUILTIN_PREFIX,
     Component,
@@ -219,6 +220,7 @@ def _render_resource(
         pointer=node.pointer,
         mode=mode,
         deletable=node.pointer == "" and decisions["DELETE"] == ALLOWED,
+        branch=frame_branch(request),
     )
 
 
@@ -481,14 +483,28 @@ class _Walk:
 
 
 def _frame(
-    *, content, body, notices, href, etag, scope_chain, pointer, mode, deletable
+    *,
+    content,
+    body,
+    notices,
+    href,
+    etag,
+    scope_chain,
+    pointer,
+    mode,
+    deletable,
+    branch=None,
 ):
+    """The frame of a resource (or of a node of it). `branch`, unless
+    ``None``, is its ``data-scrud-branch`` (`selection.frame_branch`): the
+    branch its requests send (``Scrud-UI-Branch``)."""
     attributes = [
         ("class", "scrud-resource"),
         ("data-scrud-href", href),
         *([("data-scrud-etag", etag)] if etag is not None else []),
         ("data-scrud-scope", " ".join(scope_chain)),
         ("data-scrud-pointer", pointer),
+        *([("data-scrud-branch", branch)] if branch is not None else []),
     ]
     if mode == "edit":
         attributes += [
