@@ -280,12 +280,16 @@ def _onto(kind: str, item, key: tuple, target: Branch, base) -> dict:
 
 def _push_writes(kind, type_uri, item, key, target, theirs, parent) -> list[_Write]:
     """The writes that put the source's own `item` (item key `key`) into
-    `target`, whose own rows are `theirs` (by key) and whose parent's items
-    have the ETags `parent` (by key). A row the target has is updated and
-    keeps its ``base``; a new one's ``base`` is the parent's ETag. A deletion
-    marker deletes the target's row, and hides the parent's item, if any,
-    with a marker of its own."""
+    `target`, whose own rows are `theirs` (by key); `parent()` gives the
+    ETags of the items of `target`'s parent (by key). A row the target has
+    is updated and keeps its ``base``. Where the target has none, the
+    conflict check accepted `item`'s ``base`` as the target's item, its
+    parent's: the new row takes it (ruling R41, minor 1: not a second read,
+    which a concurrent write may have moved). A deletion marker deletes the
+    target's row, and hides the parent's item, if any, with a marker of its
+    own."""
     mine = theirs.get(key)
+    checked = item.get("base")
 
     def write(method, row=None, base=None):
         content = (
@@ -294,13 +298,30 @@ def _push_writes(kind, type_uri, item, key, target, theirs, parent) -> list[_Wri
         return _Write(kind, type_uri, key, method, target, row, content)
 
     if item.get("deleted") is True:
-        writes = [] if mine is None else [write("http.DELETE", row=mine)]
-        if key in parent:
-            writes.append(write("http.POST", base=parent[key]))
+        if mine is None:
+            # Nothing of the target's own: a marker hides the parent's item,
+            # if the check found one.
+            return [] if checked is None else [write("http.POST", base=checked)]
+        writes = [write("http.DELETE", row=mine)]
+        etags = parent()
+        if key in etags:
+            writes.append(write("http.POST", base=etags[key]))
         return writes
     if mine is not None:
         return [write("http.PUT", row=mine, base=mine.content.get("base"))]
-    return [write("http.POST", base=parent.get(key))]
+    return [write("http.POST", base=checked)]
+
+
+def _once(compute):
+    """`compute()`, computed on the first call only."""
+    found = []
+
+    def get():
+        if not found:
+            found.append(compute())
+        return found[0]
+
+    return get
 
 
 def _may_on_branch(request, method, branch: Branch, stored: Resource | None):
@@ -404,7 +425,11 @@ def apply_push(request, content, using) -> int:
     writes = []
     for kind, type_uri in ITEM_KINDS.items():
         theirs = _keyed(kind, target_rows[kind], target)
-        parent = _parent_etags(kind, type_uri, target, all_branches, using)
+        parent = _once(
+            lambda kind=kind, type_uri=type_uri: _parent_etags(
+                kind, type_uri, target, all_branches, using
+            )
+        )
         for key, row in _keyed(kind, source_rows[kind], source).items():
             writes.extend(
                 _push_writes(kind, type_uri, row.content, key, target, theirs, parent)

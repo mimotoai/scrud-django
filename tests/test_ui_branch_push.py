@@ -696,3 +696,33 @@ def test_pushes_are_listed(admin_login):
     Then.http.status_code_is(200)
     (listed,) = Http.response.json()["content"]
     assert listed["content"]["state"] == "proposed"
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_new_target_row_is_based_on_the_checked_base(admin_login, monkeypatch):
+    """A row a push adds to a target with none of its own takes the base the
+    conflict check accepted, the source row's, not a second (unlocked) read
+    of the target's parent, which a concurrent write may have moved
+    (ruling R41, minor 1). Here that read is made to answer otherwise."""
+    from scrud_django.ui.branches import sync
+
+    Given.http.force_authenticate(admin_login)
+    main_row = make_component("row", "<b>main</b>")
+    make_wip(admin_login, "testing")
+    make_wip(admin_login, "wip", parent="testing")
+    override = create(
+        "ui-components", component(name="row", template="<i>wip</i>", **WIP)
+    )
+    assert override.content["base"] == main_row.etag
+    monkeypatch.setattr(
+        sync,
+        "_parent_etags",
+        lambda kind, *args: {("row",): "moved"} if kind == "component" else {},
+    )
+    push(target="testing", context="alice")
+    Then.http.status_code_is(201)
+    (pushed,) = [
+        r for r in own_rows(UI_COMPONENT_TYPE_URI, "testing") if r["name"] == "row"
+    ]
+    assert pushed["base"] == main_row.etag
