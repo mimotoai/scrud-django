@@ -265,8 +265,6 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
             None if instance is None else branch_from(instance.pk, instance.content)
         )
         changed = prefix != (None if stored is None else stored.prefix)
-        if prefix is None and not changed:
-            return
         if changed:
             self.check_publisher(content)
         if prefix is None:

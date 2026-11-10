@@ -113,8 +113,7 @@ def effective_rows(
     selected branch (default: `active_selection`), lowest pk first, deletion
     markers removed (kept with `include_deleted`). The rows are
     `cascade._stored`'s: one query per response, of the selected chain's
-    branches only. The selection must be
-    selectable (`selection.choose`).
+    branches only. The selection must be selectable (`selection.choose`).
 
     With `authorized_only` (rendering), a row whose ``rbac_context`` is not
     its `authorizing_context` on its branch is skipped, as if absent, and
