@@ -15,5 +15,17 @@
   },
   "rules": {
     "@id": "openteams:UIStylesheetRules"
+  },
+  "applies_to": {
+    "@id": "openteams:UIAppliesTo"
+  },
+  "branch": {
+    "@id": "openteams:UIBranchReference"
+  },
+  "deleted": {
+    "@id": "openteams:UIDeleted"
+  },
+  "base": {
+    "@id": "openteams:UIBaseVersion"
   }
 }

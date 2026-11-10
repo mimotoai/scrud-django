@@ -7,13 +7,24 @@
   "properties": {
     "rbac_context": {
       "type": "string",
-      "enum": [""],
-      "description": "UI components are stored only in the default context."
+      "description": "The context the component's write is authorized in on its branch: the branch's context."
+    },
+    "branch": {
+      "type": "string",
+      "description": "The name of the branch the component is on; main when absent."
+    },
+    "deleted": {
+      "type": "boolean",
+      "description": "true: a deletion marker, hiding the base's component of this name on this branch. It needs only a name."
+    },
+    "base": {
+      "type": ["string", "null"],
+      "description": "Server-managed: the ETag of the parent branch's component this one overrides, or null."
     },
     "name": {
       "type": "string",
       "pattern": "^(?!scrud:)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-      "description": "The component's site-wide unique name. The scrud: prefix is reserved for built-ins."
+      "description": "The component's name, unique on its branch. The scrud: prefix is reserved for built-ins."
     },
     "engine": {
       "type": "string",
@@ -40,5 +51,5 @@
     "label": { "type": "string" },
     "description": { "type": "string" }
   },
-  "required": ["name", "engine", "mode", "template"]
+  "required": ["name"]
 }

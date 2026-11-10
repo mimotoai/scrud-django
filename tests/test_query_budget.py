@@ -85,7 +85,20 @@ def test_a_list_reads_its_resource_type_once(client_and_profiles):
     client, profiles = client_and_profiles
     queries = measured(lambda: client.get(reverse("partner-profiles-list")))
     assert own_type_queries(queries, profiles[0].resource_type) == ["SELECT"]
-    assert len(queries) <= 11, len(queries)
+    if connection.vendor != "mysql":
+        assert len(queries) <= 11, len(queries)
+        return
+    # MySQL pages among the keys, then reads the page's rows by key, unsorted:
+    # one more query, so that no row's JSON content is ever sorted
+    # (StandardResultsSetPagination; tests/test_ui_branch_large_rows.py).
+    assert len(queries) <= 12, len(queries)
+    resource_table = connection.ops.quote_name(Resource._meta.db_table)
+    rows = [
+        q["sql"]
+        for q in queries
+        if q["sql"].startswith("SELECT") and f"{resource_table}.`content`" in q["sql"]
+    ]
+    assert rows and all("ORDER BY" not in sql for sql in rows), rows
 
 
 @pytest.mark.django_db

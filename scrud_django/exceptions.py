@@ -172,6 +172,190 @@ class UIStylesheetNameTakenError(ScrudException):
         self.title = "UI stylesheet name taken"
 
 
+class UICssNameTakenError(ScrudException):
+    """A UI CSS item whose ``name`` another CSS item on the same branch
+    already has."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_css_name_taken"
+
+    def __init__(self, name):
+        super().__init__(f"A UI CSS item named {name!r} already exists.")
+        self.type = "https://api.openteams.com/http-problem/ui-css-name-taken"
+        self.title = "UI CSS name taken"
+
+
+class UICssInvalidError(ScrudException):
+    """A UI CSS item whose text could end the page's ``<style>`` (it contains
+    ``</style``)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_css_invalid"
+
+    def __init__(self):
+        super().__init__("The CSS may not contain '</style'.")
+        self.type = "https://api.openteams.com/http-problem/ui-css-invalid"
+        self.title = "UI CSS invalid"
+
+
+class UIBranchInvalidError(ScrudException):
+    """A UI branch write that is refused (a bad or taken name or prefix, a
+    missing parent, a cycle of parents, a reserved ``main`` that is not as
+    reserved), or a UI item naming a branch that does not exist, with the
+    reason as ``detail``."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_branch_invalid"
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.type = "https://api.openteams.com/http-problem/ui-branch-invalid"
+        self.title = "UI branch invalid"
+
+
+class UIBranchContextError(ScrudException):
+    """A UI item whose ``rbac_context`` is not its authorizing context on its
+    branch (`scrud_django.ui.branches.model.authorizing_context`): the one
+    context its write is authorized in."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_branch_context"
+
+    def __init__(self, expected):
+        super().__init__(
+            f"This item's rbac_context must be {expected!r}: on its branch, "
+            "its write is authorized in that context."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-branch-context"
+        self.title = "UI item in the wrong context for its branch"
+
+
+class UIBranchUnavailableError(ScrudException):
+    """A JSON list of UI items whose request selects a branch (the
+    ``Scrud-UI-Branch`` header or the ``ui-branch`` parameter) that is
+    refused: unknown, not readable by the requester, out of the tree of the
+    URL's published branch, or pinned to a missing version. One answer for
+    all, so that it tells nothing about a branch the requester may not
+    see."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_branch_unavailable"
+
+    def __init__(self, branch):
+        super().__init__(
+            f"The UI branch {branch!r} is not available here: it does not "
+            "exist, you may not read it, or it is not in this URL's tree."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-branch-unavailable"
+        self.title = "UI branch unavailable"
+
+
+class UIBranchInUseError(ScrudException):
+    """A DELETE of a UI branch that other branches name as their parent:
+    409 Conflict, naming them."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "ui_branch_in_use"
+
+    def __init__(self, branch, children):
+        names = ", ".join(map(repr, children))
+        super().__init__(
+            f"UI branch {branch!r} is the parent of {names}: delete or re-parent "
+            "them first."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-branch-in-use"
+        self.title = "UI branch in use"
+
+
+class UIBranchVersionMissingError(ScrudException):
+    """A version of a UI branch that is not stored
+    (`scrud_django.ui.branches.versions.snapshot`)."""
+
+    status_code = 404
+    default_detail = "Not Found"
+    default_code = "ui_branch_version_missing"
+
+    def __init__(self, branch, number):
+        super().__init__(f"UI branch {branch!r} has no version {number!r}.")
+        self.type = "https://api.openteams.com/http-problem/ui-branch-version-missing"
+        self.title = "UI branch version missing"
+
+
+class UIPushConflictError(ScrudException):
+    """A UI push whose source overrides items the target changed since
+    (`scrud_django.ui.branches.sync.conflicts`): 409 Conflict, naming in
+    ``detail`` and listing as ``conflicts`` (``{"kind", "key", "base",
+    "current"}`` each) those on items the pusher may read in the target, and
+    only counting the `unreadable` others (``unreadable_conflicts``).
+    Nothing is written."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "ui_push_conflict"
+
+    def __init__(self, conflicts, unreadable=0):
+        self.conflicts = list(conflicts)
+        self.unreadable = unreadable
+        names = [f"{entry['kind']} {tuple(entry['key'])!r}" for entry in self.conflicts]
+        if unreadable:
+            names.append(f"and {unreadable} more you may not read")
+        super().__init__(
+            f"The target changed these items since the source overrode them: "
+            f"{', '.join(names)}. Pull the source and resolve them, then push "
+            "again."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-push-conflict"
+        self.title = "UI push conflict"
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        data["conflicts"] = self.conflicts
+        data["unreadable_conflicts"] = self.unreadable
+        return data
+
+
+class UIPushForbiddenError(ScrudException):
+    """A UI push or restore that would write an item into the target that
+    the pusher may not write there directly (the grant on the item's type in
+    its authorizing context on the target): 403 Forbidden. Nothing is
+    written."""
+
+    status_code = 403
+    default_detail = "Forbidden"
+    default_code = "ui_push_forbidden"
+
+    def __init__(self, kind, key):
+        super().__init__(
+            f"You may not write the {kind} {tuple(key)!r} into the target "
+            "branch: a push needs, for each item, the grant a direct write of "
+            "it there needs."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-push-forbidden"
+        self.title = "UI push forbidden"
+
+
+class UIPushAppliedError(ScrudException):
+    """A DELETE of a UI push that is applied: an applied push is the record
+    of a change to its target, and is kept (409 Conflict)."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "ui_push_applied"
+
+    def __init__(self):
+        super().__init__(
+            "An applied UI push is a record of what it changed and cannot be deleted."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-push-applied"
+        self.title = "UI push applied"
+
+
 class UIHeaderInvalidError(ScrudException):
     """An HTML request whose fragment header (``Scrud-UI-Pointer``) is
     invalid."""

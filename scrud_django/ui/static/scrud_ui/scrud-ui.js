@@ -437,11 +437,24 @@
     }
   });
 
+  /**
+   * The branch the page was rendered on, so that a page never changes branch
+   * halfway: the data-scrud-branch of the closest element carrying one (the
+   * frame), else the page's (.scrud-branch-page, for elements outside any
+   * frame), else null. "" names the published branch.
+   */
+  function branchOf(elt) {
+    var own = elt && elt.closest ? elt.closest('[data-scrud-branch]') : null;
+    if (!own) own = document.querySelector('.scrud-branch-page[data-scrud-branch]');
+    return own ? own.getAttribute('data-scrud-branch') : null;
+  }
+
   document.addEventListener('htmx:configRequest', function (evt) {
     var detail = evt.detail;
     var headers = detail.headers;
     var verb = String(detail.verb).toLowerCase();
     setDefault(headers, 'Accept', 'text/html');
+    setDefault(headers, 'Scrud-UI-Branch', branchOf(detail.elt));
     if (verb === 'get') return;
     setDefault(headers, 'X-CSRFToken', csrfToken());
     var frame = frameOf(detail.elt);

@@ -1,0 +1,41 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UICss",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI CSS",
+  "description": "CSS text a page links, served at a versioned URL.",
+  "type": "object",
+  "properties": {
+    "rbac_context": {
+      "type": "string",
+      "description": "The context the item's write is authorized in on its branch."
+    },
+    "branch": {
+      "type": "string",
+      "description": "The name of the branch the item is on; main when absent."
+    },
+    "deleted": {
+      "type": "boolean",
+      "description": "true: a deletion marker, hiding the base's CSS of this name on this branch. It needs only a name."
+    },
+    "base": {
+      "type": ["string", "null"],
+      "description": "Server-managed: the ETag of the parent branch's CSS this one overrides, or null."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "The CSS item's name, unique on its branch."
+    },
+    "css": {
+      "type": "string",
+      "maxLength": 262144,
+      "description": "The CSS text. It may not contain \"</style\"."
+    },
+    "order": {
+      "type": "integer",
+      "default": 0,
+      "description": "Items are linked in order, then by name."
+    }
+  },
+  "required": ["name"]
+}

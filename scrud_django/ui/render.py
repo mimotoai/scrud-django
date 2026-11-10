@@ -28,6 +28,7 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.mixins.view_mixins import max_body_depth
 from scrud_django.ui import ld
 from scrud_django.ui.authz import ALLOWED, POSSIBLY, decisions_for
+from scrud_django.ui.branches.selection import frame_branch, in_mount
 from scrud_django.ui.cascade import (
     BUILTIN_PREFIX,
     Component,
@@ -102,7 +103,8 @@ def render_collection(
     """A page of a list (`envelope`, as the list route returns it: ``count``,
     ``next``, ``previous`` and the ``content`` envelopes) rendered with
     ``scrud:collection``, each resource in its own frame and its own
-    contexts' stylesheets."""
+    contexts' stylesheets. Under a published branch's prefix, the items'
+    and the pager's links are its (`selection.in_mount`)."""
     scope_chain = tuple(scope_chain)
     envelope = envelope if isinstance(envelope, Mapping) else {}
     items = envelope.get("content")
@@ -118,7 +120,7 @@ def render_collection(
                 _render_resource(
                     item["content"],
                     resource_type=resource_type,
-                    href=str(item.get("href", "")),
+                    href=in_mount(request, str(item.get("href", ""))),
                     etag=item.get("etag"),
                     request=request,
                     scope_chain=scope_chain,
@@ -135,8 +137,8 @@ def render_collection(
         {
             "children": children,
             "count": envelope.get("count", len(children)),
-            "next": envelope.get("next"),
-            "previous": envelope.get("previous"),
+            "next": _pager_link(request, envelope.get("next")),
+            "previous": _pager_link(request, envelope.get("previous")),
             "label": title if isinstance(title, str) else "",
         },
     )
@@ -147,6 +149,10 @@ def render_collection(
         " ".join(scope_chain),
         body,
     )
+
+
+def _pager_link(request, href):
+    return in_mount(request, href) if isinstance(href, str) else href
 
 
 def _render_resource(
@@ -219,6 +225,7 @@ def _render_resource(
         pointer=node.pointer,
         mode=mode,
         deletable=node.pointer == "" and decisions["DELETE"] == ALLOWED,
+        branch=frame_branch(request),
     )
 
 
@@ -481,14 +488,28 @@ class _Walk:
 
 
 def _frame(
-    *, content, body, notices, href, etag, scope_chain, pointer, mode, deletable
+    *,
+    content,
+    body,
+    notices,
+    href,
+    etag,
+    scope_chain,
+    pointer,
+    mode,
+    deletable,
+    branch=None,
 ):
+    """The frame of a resource (or of a node of it). `branch`, unless
+    ``None``, is its ``data-scrud-branch`` (`selection.frame_branch`): the
+    branch its requests send (``Scrud-UI-Branch``)."""
     attributes = [
         ("class", "scrud-resource"),
         ("data-scrud-href", href),
         *([("data-scrud-etag", etag)] if etag is not None else []),
         ("data-scrud-scope", " ".join(scope_chain)),
         ("data-scrud-pointer", pointer),
+        *([("data-scrud-branch", branch)] if branch is not None else []),
     ]
     if mode == "edit":
         attributes += [

@@ -1,5 +1,53 @@
 # Change Log
 
+## Unreleased
+
+### Added
+
+* UI branches in `scrud_django.ui`. A branch is a named set of UI components,
+  stylesheets and (new) CSS items that overrides its parent branch, live or
+  pinned to a version. Branches are resources (`ui-branches`, with read-only
+  `ui-branch-versions` and `ui-pushes`), authorized by scoped RBAC in their own
+  context. A branch can be published at a URL prefix
+  (`scrud_django.ui.branches.middleware.PublishedBranchMiddleware`, after
+  `AuthenticationMiddleware`), where the resource views serve the same resources
+  with the branch's presentation; working branches are browsed with a header,
+  a parameter or a cookie, a banner and a confirmation step. Pushes (which a
+  `WorkflowPolicy` can gate), pulls with conflict detection, restores and
+  per-branch versions move changes between branches. See the Branches chapter
+  of the UI page and the `seed_todo_demo` command.
+
+### Changed
+
+* In `scrud_django.ui`, writing a component or stylesheet is authorized by RBAC
+  in the item's branch context instead of a global trusted role; on `main`
+  (context `""`) the rules are the same as before. Viewing a branch means
+  trusting everyone who can write to it: read the Security section.
+* A JSON list of UI items that names a branch (`Scrud-UI-Branch` header or
+  `ui-branch` parameter) it may not show answers 400 (`ui-branch-unavailable`).
+* The UI's `Vary` header adds `Scrud-UI-Branch` and `Cookie`. `scrud:page`
+  gets a `css` list of the CSS file URLs; a custom page component should link
+  them.
+* Setting, changing or removing a branch's prefix (publishing it at site
+  URLs), and deleting a published branch, need PUT on `ui-branches` in the
+  context `""`. Setting or changing one refuses a prefix that overlaps
+  another, hides the project's URLs or lies under the API's. A system check,
+  `scrud_django_ui.W001` (a Warning), reports stored prefixes with those
+  problems.
+
+Behaviour for a site that creates no branch, and without the middleware, is
+unchanged. The middleware costs one query per request outside the API's URLs.
+
+### Fixed
+
+* On MySQL, a resource whose JSON content is larger than the server's
+  `sort_buffer_size` (256 KB by default) no longer breaks the reads that
+  sorted it (error 1038, "Out of sort memory"): UI rendering, CSS files, item
+  lists, versions, pull, push, restore and branch deletion read such rows
+  unsorted and sort them in Python, and the resource list's page is found
+  among the keys alone, then read by key (one more query per list page, on
+  MySQL only). See `mysql-sort-buffer` in the follow-ups for what remains.
+
 ## 0.16.0
 
 ### Added

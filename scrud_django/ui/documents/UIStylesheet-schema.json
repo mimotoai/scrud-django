@@ -6,12 +6,29 @@
   "type": "object",
   "properties": {
     "rbac_context": {
-      "type": "string"
+      "type": "string",
+      "description": "The context the stylesheet's write is authorized in on its branch."
+    },
+    "applies_to": {
+      "type": "string",
+      "description": "The context the stylesheet applies to; \"\" for everywhere."
+    },
+    "branch": {
+      "type": "string",
+      "description": "The name of the branch the stylesheet is on; main when absent."
+    },
+    "deleted": {
+      "type": "boolean",
+      "description": "true: a deletion marker, hiding the base's stylesheet of this name (and applies_to) on this branch. It needs only a name."
+    },
+    "base": {
+      "type": ["string", "null"],
+      "description": "Server-managed: the ETag of the parent branch's stylesheet this one overrides, or null."
     },
     "name": {
       "type": "string",
       "pattern": "^(?!scrud:)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-      "description": "The stylesheet's name, unique within its context."
+      "description": "The stylesheet's name, unique on its branch for the context it applies to."
     },
     "prefixes": {
       "type": "object",
@@ -34,5 +51,5 @@
       }
     }
   },
-  "required": ["name", "rules"]
+  "required": ["name"]
 }

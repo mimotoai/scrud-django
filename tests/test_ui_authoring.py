@@ -6,7 +6,6 @@ from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
-from scrud_django.registration import ResourceRegistration
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
@@ -136,6 +135,9 @@ def test_put_moving_a_component_out_of_the_default_context(request, who):
     update(url, f'"{made.etag}"', body)
     # a superuser reaches the schema (400); the author is refused outright
     Then.http.status_code_is(400 if who == "admin_login" else 403)
+    if who == "admin_login":
+        # On main a component is authorized in main's context, "".
+        assert Http.response.json()["type"].endswith("/ui-branch-context")
     made.refresh_from_db()
     assert made.content["rbac_context"] == ""
 
@@ -165,27 +167,3 @@ def test_reader_without_ui_grants_sees_styled_pages_but_no_components(
     )
     Then.http.status_code_is(200)
     assert '<div class="styled">Groceries</div>' in Http.response.content.decode()
-
-
-@pytest.mark.django_db
-@test_context
-def test_component_stored_in_another_context_is_ignored(todo_list, todo_reader_login):
-    """A component in a non-default context (stored raw: the viewset and the
-    schema refuse it) takes no part in resolution."""
-    reverse("ui-components-list")
-    ResourceRegistration.register(
-        {**component(name="raw", template="<div class='raw'>{{ value.title }}</div>")}
-        | {"rbac_context": "project-a"},
-        "ui-components",
-    )
-    make_stylesheet("pages", [("ex:TodoList", "raw")], context="project-a")
-    Given.http.force_authenticate(todo_reader_login)
-    When.http.get(
-        reverse("todo-lists-detail", args=[todo_list.pk]),
-        HTTP_ACCEPT=HTML,
-        HTTP_HX_REQUEST="true",
-    )
-    Then.http.status_code_is(200)
-    output = Http.response.content.decode()
-    assert "class='raw'" not in output and 'class="raw"' not in output
-    assert "Groceries" in output and "scrud-object" in output

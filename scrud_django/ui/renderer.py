@@ -58,6 +58,22 @@ from scrud_django.exceptions import UIHeaderInvalidError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.permissions import content_of
 from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messages
+from scrud_django.ui.branches.chrome import banner, confirm_page
+from scrud_django.ui.branches.css import css_urls
+from scrud_django.ui.branches.effective import BRANCH_HEADER, using_selection
+from scrud_django.ui.branches.selection import (
+    CONFIRM_PARAMETER,
+    PARAM,
+    Chosen,
+    choose,
+    cookie_branch,
+    cookie_name,
+    cookie_path,
+    frame_branch,
+    in_mount,
+    is_published,
+    selection_value,
+)
 from scrud_django.ui.cascade import (
     BUILTIN_PREFIX,
     builtin_component,
@@ -76,7 +92,16 @@ CONTENT_TYPE = "text/html; charset=utf-8"
 HX_REQUEST_HEADER = "HX-Request"
 SCOPE_HEADER = "Scrud-UI-Scope"
 POINTER_HEADER = "Scrud-UI-Pointer"
-VARY = ("Accept", HX_REQUEST_HEADER, SCOPE_HEADER, POINTER_HEADER)
+# The branch a page browses comes from a header, else a parameter (in the
+# URL), else a cookie.
+VARY = (
+    "Accept",
+    HX_REQUEST_HEADER,
+    SCOPE_HEADER,
+    POINTER_HEADER,
+    BRANCH_HEADER,
+    "Cookie",
+)
 
 MAX_SCOPES = 16
 MAX_POINTER_LENGTH = 1024
@@ -128,15 +153,20 @@ class ScrudHTMLRenderer(BaseRenderer):
             return b""
         try:
             with request_memo():
-                body, contexts = _body(data, status, request, view, response)
-                if not _is_htmx(request):
-                    body = _page(
-                        body,
-                        request=request,
-                        resource_type=_resource_type(view),
-                        contexts=contexts,
-                        scope_chain=scope_chain_of(request),
-                    )
+                chosen = choose(request)
+                if _asks_confirmation(chosen, request):
+                    return str(confirm_page(chosen, request)).encode(self.charset)
+                with using_selection(chosen.selection):
+                    body, contexts = _body(data, status, request, view, response)
+                    if not _is_htmx(request):
+                        body = _page(
+                            body,
+                            request=request,
+                            resource_type=_resource_type(view),
+                            contexts=contexts,
+                            scope_chain=scope_chain_of(request),
+                            chosen=chosen,
+                        )
         except Exception:
             # The last resort: a notice, with no content (nor a traceback). A
             # success becomes a 500, so that htmx treats it as an error; an
@@ -189,11 +219,14 @@ def finalize_html(request, response) -> None:
     `ScrudHTMLRenderer`, as ``text/html; charset=utf-8``, whatever renderer
     and media type an exception handler set (``application/problem+json``),
     vary it on the fragment protocol's headers, and keep caches from storing
-    it (``Cache-Control: private, no-cache, no-store``)."""
+    it (``Cache-Control: private, no-cache, no-store``). A GET whose
+    branch parameter came confirmed keeps the selection in the prefix's
+    cookie (`remember_branch`)."""
     renderer = negotiated_html(request)
     if renderer is None:
         return
     patch_vary_headers(response, VARY)
+    remember_branch(request, response)
     # The HTML depends on the stylesheets, components and grants as well as
     # the resource, whose ETag it carries; and a page and its htmx fragments
     # share that ETag, so a stored copy revalidated with a 304 could show one
@@ -209,6 +242,38 @@ def finalize_html(request, response) -> None:
     response.accepted_renderer = renderer
     response.accepted_media_type = renderer.media_type
     response.content_type = CONTENT_TYPE
+
+
+def remember_branch(request, response) -> None:
+    """For a GET whose branch parameter came confirmed (with the viewer's
+    confirmation token: the banner's links and the confirmation's): set
+    the prefix's cookie (`selection.cookie_name`, scoped to the prefix by
+    `selection.cookie_path`; ``HttpOnly``, ``SameSite=Lax``) to the working
+    branch it selected, or delete it for the published branch.
+    A refused branch leaves the cookie as it was. The cookie is only a
+    preference: every request checks it again (`choose`)."""
+    params = getattr(request, "GET", None)
+    if (
+        getattr(request, "method", None) not in ("GET", "HEAD")
+        or params is None
+        or CONFIRM_PARAMETER not in params
+    ):
+        return
+    chosen = choose(request)
+    if chosen.source != PARAM or not chosen.confirmed or chosen.refused:
+        return
+    name, path = cookie_name(request), cookie_path(request)
+    if is_published(chosen, request):
+        response.delete_cookie(name, path=path, samesite="Lax")
+        return
+    response.set_cookie(
+        name,
+        selection_value(chosen.selection),
+        path=path,
+        secure=request.is_secure(),
+        httponly=True,
+        samesite="Lax",
+    )
 
 
 def check_ui_headers(request) -> None:
@@ -348,7 +413,7 @@ def _body(data, status, request, view, response):
         href = request.path
         if action == "create":
             location = response.get("Location") if response is not None else None
-            href = urlsplit(location).path if location else href
+            href = in_mount(request, urlsplit(location).path) if location else href
         elif action not in ("retrieve", "update"):
             return _json(data), []
         etag = response.get("ETag") if response is not None else None
@@ -405,14 +470,17 @@ def _reloading(request, scope_chain, pointer, messages):
     """The notices of a write that left the resource as it was (a 412, or a
     409 DELETE), and a frame that replaces itself with the current state of the
     node, fetched in its scope chain."""
-    headers = json.dumps({SCOPE_HEADER: " ".join(scope_chain), POINTER_HEADER: pointer})
+    headers = {SCOPE_HEADER: " ".join(scope_chain), POINTER_HEADER: pointer}
+    branch = frame_branch(request)
+    if branch is not None:
+        headers[BRANCH_HEADER] = branch
     return mark_safe(
         _notices(messages)
         + format_html(
             '<div class="scrud-reload" hx-get="{}" hx-trigger="load"'
             ' hx-swap="outerHTML" hx-headers="{}"></div>',
             request.path,
-            headers,
+            json.dumps(headers),
         )
     )
 
@@ -436,14 +504,59 @@ def _json(data) -> SafeString:
     return json_component.render({"value_json": value_json, "errors": []})
 
 
-def _page(body, *, request, resource_type, contexts, scope_chain) -> SafeString:
+def _asks_confirmation(chosen: Chosen, request) -> bool:
+    """Whether a full-page GET asks before showing `chosen`'s branch: its
+    parameter (a link) selected a working branch other than the cookie's,
+    without the viewer's confirmation token. A fragment request never
+    asks."""
+    return (
+        chosen.source == PARAM
+        and not chosen.confirmed
+        and getattr(request, "method", None) in ("GET", "HEAD")
+        and not _is_htmx(request)
+        and not is_published(chosen, request)
+        and chosen.selection.branch != cookie_branch(request)
+    )
+
+
+def _page(
+    body, *, request, resource_type, contexts, scope_chain, chosen=None
+) -> SafeString:
     """`body` wrapped in the page component: the one `PAGE_TERM` resolves to
     in `scope_chain` for `contexts`, else the built-in. A stored page
-    component that fails is replaced by the built-in."""
+    component that fails is replaced by the built-in.
+
+    Off the published branch, or when it refused a branch, `chosen`'s banner
+    is put at the top of the body. So is the page's branch (`frame_branch`)
+    when it has one, on a hidden ``.scrud-branch-page`` element, for the
+    requests of elements outside any frame. A page component that leaves
+    them out is replaced by the built-in. (Branch CSS, or a component that
+    wraps the body in a hidden element, can still hide the banner: follow-up
+    ``ui-banner-hideable``.)
+
+    The page component's context also has ``css``: the URLs of the CSS files
+    effective on the page's branch, in order."""
+    chrome = []
+    branch = frame_branch(request) if chosen is not None else None
+    if branch is not None:
+        chrome.append(
+            format_html(
+                '<div class="scrud-branch-page" data-scrud-branch="{}" hidden></div>',
+                branch,
+            )
+        )
+    if chosen is not None and (chosen.refused or not is_published(chosen, request)):
+        chrome.append(banner(chosen, request))
+    chrome = mark_safe("".join(chrome)) if chrome else None
+    if chrome is not None:
+        body = mark_safe(chrome + body)
+
+    css = css_urls(request)
 
     def page_context():
         return {
             "title": _title(resource_type),
+            "css": css,
             "csrf_token": get_token(getattr(request, "_request", request)),
             "static": {
                 "htmx": static(STATIC_HTMX),
@@ -460,12 +573,20 @@ def _page(body, *, request, resource_type, contexts, scope_chain) -> SafeString:
     if component.name == PAGE_BUILTIN:
         return component.compiled().render(page_context())
     try:
-        return component.compiled().render(page_context())
+        page = component.compiled().render(page_context())
     except Exception:
         logger.warning(
             "scrud-ui: page component %r failed to render",
             component.name,
             exc_info=True,
+        )
+    else:
+        if chrome is None or chrome in page:
+            return page
+        logger.warning(
+            "scrud-ui: page component %r leaves out the branch banner; the"
+            " built-in page is used",
+            component.name,
         )
     return format_html(
         '<!-- scrud-ui: component "{}" failed -->{}',

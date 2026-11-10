@@ -1,5 +1,8 @@
-"""Seed the to-do demo: users and roles, a to-do list, and the UI components
-and stylesheets that render it.
+"""Seed the to-do demo: users and roles, a to-do list, the UI components and
+stylesheets that render it, and three UI branches: ``admin`` published at
+``/manage/`` (not ``/admin/resources/``: Django's admin claims ``/admin/``),
+``customer`` published at ``/todo/``, and ``testing-admin``, a working branch
+over ``admin``.
 
 Idempotent: a second run creates nothing new. Users, role assignments,
 components and stylesheets are brought back to the definitions below; the
@@ -21,7 +24,22 @@ from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django import collection_type_uri_for
 from scrud_django.models import Resource
-from scrud_django.registration import ResourceRegistration, get_resource_type_for
+from scrud_django.registration import (
+    ResourceRegistration,
+    get_resource_type_for,
+    write_db,
+)
+from scrud_django.ui.branches import (
+    MAIN,
+    UI_BRANCH_SLUG,
+    UI_BRANCH_TYPE_URI,
+    UI_BRANCH_VERSION_TYPE_URI,
+    UI_CSS_SLUG,
+    UI_CSS_TYPE_URI,
+    UI_PUSH_TYPE_URI,
+)
+from scrud_django.ui.branches.store import branches, ensure_main
+from scrud_django.ui.branches.versions import current_version
 from scrud_django.ui.engines import compile_template
 from scrud_django.ui.types import (
     UI_COMPONENT_SLUG,
@@ -41,6 +59,26 @@ UI_TYPES = [
     for uri in (type_uri, collection_type_uri_for(type_uri))
 ]
 TODO_LISTS = collection_type_uri_for(TODO_LIST_TYPE_URI)
+# What a UI author writes on a branch: components, stylesheets, CSS, the
+# branches themselves, their versions (read) and pushes.
+BRANCH_TYPES = [
+    uri
+    for type_uri in (
+        UI_COMPONENT_TYPE_URI,
+        UI_STYLESHEET_TYPE_URI,
+        UI_CSS_TYPE_URI,
+        UI_BRANCH_TYPE_URI,
+        UI_BRANCH_VERSION_TYPE_URI,
+        UI_PUSH_TYPE_URI,
+    )
+    for uri in (type_uri, collection_type_uri_for(type_uri))
+]
+WRITES = ("GET", "POST", "PUT", "DELETE")
+
+# The branches' RBAC contexts.
+ADMIN_CONTEXT = "ui-admin"
+CUSTOMER_CONTEXT = "ui-customer"
+TESTING_CONTEXT = "ui-testing"
 
 # {username: {rbac_context: role definition}}; the password is the username.
 USERS = {
@@ -52,14 +90,22 @@ USERS = {
             "http.POST": [TODO_LIST_TYPE_URI, TODO_LISTS],
         },
         DEFAULT_CONTEXT: {"http.GET": UI_TYPES},
+        # May open the customer branch's prefix too.
+        CUSTOMER_CONTEXT: {"http.GET": [UI_BRANCH_TYPE_URI]},
     },
+    # May open /todo/ (GET on the customer branch) and not /manage/.
     "reader": {
         PROJECT: {"http.GET": [TODO_LIST_TYPE_URI, TODO_LISTS]},
+        CUSTOMER_CONTEXT: {"http.GET": [UI_BRANCH_TYPE_URI]},
     },
+    # Writes the UI on main and in all three branches' contexts, and reads
+    # the lists the pages show.
     "author": {
-        DEFAULT_CONTEXT: {
-            f"http.{method}": UI_TYPES for method in ("GET", "POST", "PUT", "DELETE")
-        },
+        DEFAULT_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
+        PROJECT: {"http.GET": [TODO_LIST_TYPE_URI, TODO_LISTS]},
+        ADMIN_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
+        CUSTOMER_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
+        TESTING_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
     },
 }
 
@@ -83,6 +129,7 @@ PAGE = """<!doctype html>
 <title>{{ title }}</title>
 <script src="{{ static.htmx }}" defer></script>
 <script src="{{ static.scrud_ui }}" defer></script>
+{% for href in css %}<link rel="stylesheet" href="{{ href }}">{% endfor %}
 <style>
 body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
 .todo-layout { display: flex; gap: 2rem; padding: 1rem 2rem; }
@@ -216,6 +263,106 @@ STYLESHEETS = [
 ]
 
 
+# The branches, created in this order (a parent first). Published branches
+# are live over main: they hold only what they change.
+BRANCHES = [
+    {
+        "name": "admin",
+        "rbac_context": ADMIN_CONTEXT,
+        "parent": MAIN,
+        "prefix": "/manage/",
+        "label": "Admin",
+        "description": "The internal staff's presentation, at /manage/.",
+    },
+    {
+        "name": "customer",
+        "rbac_context": CUSTOMER_CONTEXT,
+        "parent": MAIN,
+        "prefix": "/todo/",
+        "label": "Customer",
+        "description": "The customers' presentation, at /todo/.",
+    },
+    {
+        "name": "testing-admin",
+        "rbac_context": TESTING_CONTEXT,
+        "parent": "admin",
+        "prefix": None,
+        "label": "Testing (admin)",
+        "description": "Testers browse changes to the admin branch here.",
+    },
+]
+
+ADMIN_LIST_VIEW = {
+    # Admin's list page: the read-only list, with its URL and ETag.
+    "name": "todo-list-admin",
+    "engine": "django",
+    "mode": "view",
+    "label": "To-do list (admin)",
+    "rbac_context": ADMIN_CONTEXT,
+    "branch": "admin",
+    "base": None,
+    "scopes": {"items": "row"},
+    "template": (
+        '<section class="todo-list todo-list-admin"><h1>{{ value.title }}</h1>'
+        '<p class="todo-readonly">Admin view of {{ resource.href }}'
+        " (ETag {{ resource.etag }})</p>"
+        "{% for prop, html in child_items %}"
+        "{% if prop == 'items' %}{{ html }}{% endif %}{% endfor %}"
+        "</section>"
+    ),
+}
+
+BRANCH_ITEMS = [
+    (
+        "ui-components",
+        ADMIN_LIST_VIEW,
+    ),
+    (
+        "ui-stylesheets",
+        {
+            # Order 10 wins over main's "todo" stylesheet (order 0).
+            "name": "admin-todo",
+            "rbac_context": ADMIN_CONTEXT,
+            "applies_to": DEFAULT_CONTEXT,
+            "branch": "admin",
+            "base": None,
+            "prefixes": PREFIXES,
+            "order": 10,
+            "rules": rules(("ex:TodoList", "todo-list-admin")),
+        },
+    ),
+    (
+        UI_CSS_SLUG,
+        {
+            "name": "admin-theme",
+            "rbac_context": ADMIN_CONTEXT,
+            "branch": "admin",
+            "base": None,
+            "order": 0,
+            "css": (
+                "body { background: #f3f0ff; }\n"
+                ".todo-list-admin h1 { color: #4b2e83; }\n"
+                ".todo-list-admin .todo-readonly { font-family: monospace; }\n"
+            ),
+        },
+    ),
+    (
+        UI_CSS_SLUG,
+        {
+            "name": "customer-theme",
+            "rbac_context": CUSTOMER_CONTEXT,
+            "branch": "customer",
+            "base": None,
+            "order": 0,
+            "css": (
+                "body { background: #fffaf0; }\n"
+                ".todo-list h1 { color: #b45309; font-family: Georgia, serif; }\n"
+            ),
+        },
+    ),
+]
+
+
 class Command(BaseCommand):
     help = "Seed the to-do demo (users, roles, a list, UI components and stylesheets)."
 
@@ -248,11 +395,28 @@ class Command(BaseCommand):
                     rbac_context=content["rbac_context"],
                 )
             groceries = self.seed_list(reset)
+            self.seed_branches()
+            for slug, content in BRANCH_ITEMS:
+                self.seed_resource(
+                    slug,
+                    content,
+                    name=content["name"],
+                    rbac_context=content["rbac_context"],
+                    branch=content["branch"],
+                )
         self.stdout.write(
             self.style.SUCCESS(
                 f"Seeded: log in as owner/owner, reader/reader or author/author;"
                 f" the list is /api/{TODO_LIST_SLUG}/{groceries.pk}/"
             )
+        )
+        for content in BRANCHES:
+            where = content["prefix"] or f"under {content['parent']}"
+            self.stdout.write(f"branch {content['name']}: {where}")
+        self.stdout.write(
+            f"admin: /manage/{TODO_LIST_SLUG}/{groceries.pk}/ (author)"
+            f"; customer: /todo/{TODO_LIST_SLUG}/{groceries.pk}/"
+            " (author, reader, owner)"
         )
 
     def seed_user(self, username, roles):
@@ -285,10 +449,36 @@ class Command(BaseCommand):
                 role.save()
                 self.stdout.write(f"user {username}: role in {rbac_context!r} updated")
 
-    def seed_resource(self, slug, content, *, name, rbac_context=DEFAULT_CONTEXT):
+    def seed_branches(self):
+        """Create the branches that are missing (main is stored first); a
+        branch that exists is left as it is, branching point included."""
+        using = write_db()
+        ensure_main(using)
+        for definition in BRANCHES:
+            if definition["name"] in branches(using):
+                continue
+            all_branches = branches(using)
+            chain = []
+            parent = definition["parent"]
+            while parent is not None:
+                chain.append(parent)
+                parent = all_branches[parent].parent
+            content = {
+                **definition,
+                "base": "live",
+                "branching_point": {
+                    name: current_version(name, using) for name in chain
+                },
+            }
+            ResourceRegistration.register(content, UI_BRANCH_SLUG)
+            self.stdout.write(f"{UI_BRANCH_SLUG} {definition['name']!r}: created")
+
+    def seed_resource(
+        self, slug, content, *, name, rbac_context=DEFAULT_CONTEXT, **fields
+    ):
         """Create the resource of type `slug` called `name` (in
-        `rbac_context`), or bring it back to `content`."""
-        existing = self.find(slug, name=name, rbac_context=rbac_context)
+        `rbac_context`, and with `fields`), or bring it back to `content`."""
+        existing = self.find(slug, rbac_context=rbac_context, name=name, **fields)
         if existing is None:
             ResourceRegistration.register(content, slug)
             self.stdout.write(f"{slug} {name!r}: created")

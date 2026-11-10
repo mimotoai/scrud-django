@@ -342,6 +342,240 @@ What remains:
   on the input). Test: a list item with `"count": 3`; clear the field and
   blur; the stored `count` is gone (or `null`), and no later edit is cancelled.
 
+<a id="ui-branches-row-scan"></a>
+## ui-branches-row-scan: finding a branch chain's rows scans every branch's
+
+A render reads the stored rows of all UI item kinds in one query, filtered in
+SQL to the branches of the rendered chain (`cascade.on_branches`: `branch`
+equal to one of them, and for `main` also no `branch` key), so it transfers
+and resolves only the chain's rows. But `content` has no index on its `branch`
+key, and `main`'s condition (`NOT has_key`) cannot use one, so the database
+still evaluates the condition on every row of the item types: the cost of the
+query grows with the items on all branches, though far more slowly than when
+they were all read.
+
+Fix: an expression index on `content->'branch'` (per database: PostgreSQL and
+MySQL 8 support functional indexes, SQLite expression indexes; MariaDB needs a
+generated column), or a real `branch` column on resources of the item types,
+filled on save. Test: with 1,000 branches of a few items each, `EXPLAIN` the
+item query of a render on one of them and assert it uses the index; it does
+not today.
+
+<a id="ui-banner-hideable"></a>
+## ui-banner-hideable: branch CSS and page components can hide the banner
+
+The branch banner is rendered by the server outside stored components, but it
+is part of the page's markup. A CSS item (`.scrud-branch-banner {display:
+none}`) can hide it, and so can a custom page component that wraps its `body`
+in a hidden element, a `<template>` or an HTML comment (the page is checked for
+the banner's presence, not for its visibility). So "no branch can hide it" is
+not true: a branch's writers can show its viewers a page that does not say
+which branch it is. This is part of the trust in a branch's writers (see
+Security in `ui.md`), and the confirmation page, which is a separate page, still
+asks before a switch.
+
+Fix: serve the banner in a way CSS from branches cannot reach (a shadow root
+or an `!important` rule in an inline `<style>` after the branch CSS), and check
+the rendered page for the banner outside `<template>`, comments and hidden
+parents. Test: in `tests/test_ui_branch_browse.py`, a branch with a CSS item
+hiding `.scrud-branch-banner`, and another whose page component wraps
+`{{ body }}` in `<template>`; assert the banner is visible in the rendered
+page (a check on the rendered DOM); both fail today.
+
+<a id="ui-prefix-query"></a>
+## ui-prefix-query: one query per request outside the API, uncached
+
+`PublishedBranchMiddleware` reads the stored branches (one query) on every
+request outside the API's URLs, to learn whether the path is under a prefix.
+A mounted request then reads the branch again for some paths (JSON pinned
+selections, `choose` outside the render memo). The prefixes change rarely.
+
+Fix: cache the prefix table (name, prefix, context) with invalidation on a
+write of a `ui-branches` resource (a signal, and a short timeout for other
+processes). Test: a request to a non-API URL runs no query once the table is
+cached, and a changed prefix is routed on the next request in every process;
+it fails today because every request queries.
+
+<a id="ui-branch-lock-order"></a>
+## ui-branch-lock-order: pushes, branch deletes and item writes can lock in different orders
+
+A push locks its source's and target's branch rows and then the item rows it
+writes; an item write locks the item row and then records the branch's version
+(locking the branch row); a branch delete locks the branch row and then deletes
+its items. Two of these running together can take the same locks in opposite
+orders, and the database aborts one of them (a deadlock, 500 on PostgreSQL and
+MySQL; SQLite serializes writes). Nothing is corrupted: the aborted request
+rolls back whole.
+
+Fix: lock the branch rows first, in one order (sorted by name), in every path.
+Test: on PostgreSQL, run a push and an item write to its target from two
+threads against a barrier, many times, and assert neither request is a 500; it
+fails intermittently today.
+
+<a id="ui-version-read-committed"></a>
+## ui-version-read-committed: version numbers need READ COMMITTED on MySQL and MariaDB
+
+A branch's next version number is the highest recorded plus one, read under a
+lock on the branch's row. That read sees the latest committed version at READ
+COMMITTED, which PostgreSQL uses by default, and on SQLite. Django's MySQL
+backend (MySQL and MariaDB) also sets READ COMMITTED on its connections, unless
+the project sets another `isolation_level` in the database's `OPTIONS`. A
+project that sets `"repeatable read"` (the servers' own default) gets a plain
+`SELECT` that may read a snapshot taken earlier in the transaction and miss a
+version another transaction committed after it, so two versions can get the
+same number (the second `UPDATE` of the branch's row is blocked, but the read
+is not).
+
+Fix: read the latest number with `select_for_update()` (a locking read sees
+the latest committed rows at any isolation level). Test: on MySQL and MariaDB
+with `OPTIONS = {"isolation_level": "repeatable read"}`, two transactions each
+write an item to the same branch with a barrier between the branch lock and
+the version read, and assert the version numbers are distinct; they can be
+equal today.
+
+<a id="ui-bulk-delete-versions"></a>
+## ui-bulk-delete-versions: a bulk delete records one version per item
+
+`QuerySet.delete()` of many items (an admin action, `discard_branch` aside)
+sends one `post_delete` per item, and each records a branch version, so
+deleting N items of `main` records N versions and reads the items N times
+(quadratic work). The versions are all valid, but history is noisy.
+
+Fix: wrap bulk deletes in `batched_versions()` (one version per branch).
+Test: delete 50 items of `main` with `Resource.objects.filter(...).delete()`
+and assert one version and a bounded number of queries; it records 50 today.
+
+<a id="ui-discard-cross-context"></a>
+## ui-discard-cross-context: deleting a published branch deletes stylesheets in other contexts without a grant there
+
+On a published branch a stylesheet that applies to a context `X` is authorized
+in `X`, so writing or deleting it directly needs a grant in `X`. Deleting the
+branch (`discard_branch`) deletes its own items, those stylesheets included,
+needing only DELETE on the branch in its context. A user who may delete the
+branch can so remove a stylesheet they could not delete one by one.
+
+Fix: check, for each such item, the grant a direct delete would need
+(`may_act_in_context`), as a push does, before deleting the branch, and refuse
+(403) otherwise. Test: a user with DELETE on branch `p` (in context `""`) and
+none in `acme`; a stylesheet on `p` that applies to `acme`; assert the branch
+DELETE is refused and the stylesheet remains; it is deleted today.
+
+<a id="ui-conflict-key-mismatch"></a>
+## ui-conflict-key-mismatch: pull and push key a stylesheet differently when it has no `applies_to`
+
+`conflicts()` (the pull's conflict list) keys each source row on the target's
+chain (`item_key(kind, content, chain[0])`), while `apply_push` keys it on the
+source branch. A stylesheet stored without `applies_to` (a raw save or
+`ResourceRegistration`, which skip validation) gets its `applies_to` from the
+branch it is read on: on a published branch from its `rbac_context`, on a
+working branch `""`. So a pull may list a conflict that the push does not find,
+or the reverse.
+
+Fix: key the source rows on the source branch in both, or store `applies_to`
+on every stylesheet. Test: store a stylesheet override with no `applies_to`
+and an `rbac_context` other than its working branch's, on a working branch
+over a published one whose parent has changed that stylesheet; assert that the
+conflict list of a pull and the 409 of a push name the same items. They
+differ today.
+
+<a id="ui-confirm-token-in-urls"></a>
+## ui-confirm-token-in-urls: the confirmation token travels in URLs
+
+A confirmed branch link carries `ui-branch-confirm=<token>` in its query
+string, so it can appear in browser history, server logs and a same-origin
+`Referer`. The token is bound to the selection and the viewer's CSRF secret,
+not to the prefix, and lasts as long as the CSRF secret. It cannot be used by
+another viewer, but it can be replayed by the same viewer's browser, which is
+the point; a stolen log line is not enough without the viewer's cookie.
+
+Fix: make the token short-lived and bound to the prefix, or confirm with a
+POST. Test: a token for one prefix is refused at another, and an old one is
+refused after its lifetime; both are accepted today.
+
+<a id="ui-version-304-after-grant-change"></a>
+## ui-version-304-after-grant-change: a filtered version can answer 304 after a grant change
+
+A version is read per requester (items the reader may not read are left out)
+and its ETag follows what the reader gets. A client that revalidates with
+`If-Modified-Since` only, after its grants changed, can get a 304 for a
+representation that would now differ.
+
+Fix: derive `Last-Modified` for a filtered version from the grants too, or
+omit it when items were filtered. Test: read a version as a user who lacks one
+item's read grant, grant it, then GET with `If-Modified-Since` of the earlier
+response and assert 200; it is 304 today.
+
+<a id="mysql-sort-buffer"></a>
+## mysql-sort-buffer: reads outside the UI and the paginated list can still sort large content on MySQL
+
+MySQL sorts a result with every column it selects, and a row whose JSON
+`content` is larger than `sort_buffer_size` (256 KB by default) fails the sort
+with error 1038, "Out of sort memory". `Resource.Meta.ordering` is `["id"]`, so
+an unordered queryset sorts too. The UI's reads (rendering, CSS files, item
+lists, versions, pull, push, restore, branch deletion) and the resource list's
+page (`StandardResultsSetPagination`, which on MySQL pages among the keys and
+reads the page's rows by key) no longer sort content (`scrud_django.rows`;
+`tests/test_ui_branch_large_rows.py`). Other reads still use the default
+ordering: a list view without a paginator, the Django admin's resource
+changelist, and code of a project that reads `Resource` rows itself.
+
+Fix: drop the default ordering (`order_by()`) where those read content, or
+document a minimum `sort_buffer_size` for MySQL. Test: store a resource whose
+content is over 256 KB on `mysql:8.4` with the default configuration and open
+the admin's resource changelist; expect error 1038 if it sorts the content
+(not yet checked).
+
+<a id="ui-version-storage-growth"></a>
+## ui-version-storage-growth: every item write stores a full copy of its branch's items
+
+A version holds all of its branch's own items, not the change, and every write
+of an item records one. `main` owns every item written before branches and
+every live item, so each edit of any of them stores a full copy of main's
+items (and their ETags), and nothing is ever removed: storage grows with the
+number of writes times the number of items. Versions are what pinned bases,
+branching points, conflict checks and restores read, so they cannot simply be
+dropped.
+
+Fix: a retention policy that keeps the versions some branch's branching point,
+a push's `result` or a recent window names and deletes the rest (or prunes
+their `items`), or versions stored as changes from the previous one. Test:
+with 50 items on main, edit one of them 100 times, and assert the stored size
+of main's versions stays under a bound; it grows to 100 full copies today.
+
+<a id="ui-stale-proposed-push"></a>
+## ui-stale-proposed-push: a proposed push applies to a later branch of the same name
+
+A push names its source and target by name. A push left `proposed` (for
+example waiting for approval under a workflow policy) whose source branch is
+then deleted, and another branch created under the same name, applies the new
+branch's overrides when it is moved to `applied`: whoever approved it approved
+other changes. Applying still checks the applier's grants on every item, so it
+writes nothing they could not write directly.
+
+Fix: record the source's identity (its pk, or its version when proposed) in
+the push and refuse to apply when it changed, or refuse (or cancel) the
+proposed pushes naming a branch when it is deleted. Test: propose a push from
+`wip`, delete `wip`, create `wip` again with other overrides, move the push to
+`applied`, and assert it is refused; it applies the new overrides today.
+
+<a id="ui-css-unconfirmed-pinned"></a>
+## ui-css-unconfirmed-pinned: a pinned view by parameter links CSS its files do not serve
+
+A page opened with `?ui-branch=W@pinned` while the prefix's cookie already
+holds `W` is not asked to confirm (it is the same branch), and renders `W`
+pinned at its branching point, linking the pinned CSS items' URLs. The browser
+fetches those CSS files with the cookie but not the parameter, so the CSS view
+chooses `W` live, and a CSS item changed since the branching point is not
+found there: the page shows without it (a 404 for the file). The banner's own
+pinned toggle confirms the switch and sets the cookie to `W@pinned`, so it is
+not affected.
+
+Fix: have the CSS links carry the page's selection (a parameter the CSS view
+reads), or treat a selection that differs from the cookie only by `@pinned` as
+one that asks to confirm. Test: with the cookie set to `W`, change a CSS item of
+`W`'s parent after `W`'s branching point, open `?ui-branch=W@pinned`, fetch
+each linked CSS URL with the cookie and assert 200; one is 404 today.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

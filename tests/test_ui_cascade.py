@@ -345,27 +345,44 @@ def test_duplicate_stylesheet_loser_is_logged(caplog):
 
 @pytest.mark.django_db
 def test_skipped_components_are_logged(caplog):
-    """A stored component the cascade cannot use (a duplicate name, outside
-    the default context, an unknown engine or mode, no template) is logged
-    with its pk, name and the reason."""
+    """A stored component the cascade cannot use (a duplicate name, an unknown
+    engine or mode, no template) is logged with its pk, name and the reason."""
     winner = make_component("dup")
     loser = make_component("dup")
-    elsewhere = make_component("elsewhere")
-    Resource.objects.filter(pk=elsewhere.pk).update(
-        content={**elsewhere.content, "rbac_context": "p"}
-    )
     broken = make_component("broken")
     Resource.objects.filter(pk=broken.pk).update(
         content={**broken.content, "mode": "sideways"}
     )
     with caplog.at_level(logging.WARNING, logger="scrud_django.ui.cascade"):
         with rules_memo():
-            loaded = load_components({"dup", "elsewhere", "broken"})
+            loaded = load_components({"dup", "broken"})
             load_components({"dup", "other"})
     assert set(loaded) == {"dup"}
     found = skipped_warnings(caplog)
-    assert len(found) == 3, found
+    assert len(found) == 2, found
     duplicate = next(m for m in found if f"component {loser.pk}" in m)
     assert "'dup'" in duplicate and str(winner.pk) in duplicate
-    assert any(f"component {elsewhere.pk}" in m and "'elsewhere'" in m for m in found)
     assert any(f"component {broken.pk}" in m and "sideways" in m for m in found), found
+
+
+@pytest.mark.django_db
+def test_component_outside_the_default_context_is_usable():
+    """Components are no longer limited to the default context: a branch's
+    components carry the branch's context. On main, whose context is "", a
+    component stored in "p" (around the API's checks) is skipped instead
+    (ruling R41, minor 3): it was usable before."""
+    from scrud_django.ui.branches.effective import Selection, using_selection
+
+    reverse("ui-branches-list")
+    ResourceRegistration.register(
+        {"name": "wip", "rbac_context": "p", "parent": "main"}, "ui-branches"
+    )
+    make_component("elsewhere", branch="wip", rbac_context="p")
+    with rules_memo(), using_selection(Selection("wip")):
+        assert set(load_components({"elsewhere"})) == {"elsewhere"}
+    stored = make_component("on-main")
+    Resource.objects.filter(pk=stored.pk).update(
+        content={**stored.content, "rbac_context": "p"}
+    )
+    with rules_memo():
+        assert load_components({"on-main"}) == {}

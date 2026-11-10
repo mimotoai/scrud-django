@@ -11,11 +11,13 @@ The browser side is [htmx](https://htmx.org/) and a small script, `scrud-ui.js`.
 Without `scrud_django.ui` in `INSTALLED_APPS`, scrud-django behaves exactly as
 before.
 
-This is phase 1 of the UI. The later phases are planned, not built:
+This is phase 1 of the UI, with branches. The later phases are planned, not
+built:
 
 * **Phase 1** (this release): server-rendered HTML for every resource, stored
-  components and stylesheets written by a trusted role, and the browser writing
-  whole resources with plain JSON `PUT`s.
+  components and stylesheets, [branches](#branches) of them written by anyone
+  the policy lets write there, and the browser writing whole resources with
+  plain JSON `PUT`s.
 * **Phase 2**: per-field editability, and policy evaluation in the browser
   through js-scoped-rbac.
 * **Phase 3**: components written by untrusted authors, in a sandbox.
@@ -39,14 +41,18 @@ INSTALLED_APPS = [
 ]
 ```
 
-`scrud_django.urls` then serves two more resource types, each with its own
-schema, JSON-LD context and collection, written and read like any other
-resource under the same policy:
+`scrud_django.urls` then serves more resource types, each with its own schema,
+JSON-LD context and collection, written and read like any other resource under
+the same policy:
 
 | Resource type | IRI | Slug |
 |---|---|---|
 | UI component | `http://api.openteams.com/json-ld/UIComponent` | `ui-components` |
 | UI stylesheet | `http://api.openteams.com/json-ld/UIStylesheet` | `ui-stylesheets` |
+| UI CSS | `http://api.openteams.com/json-ld/UICss` | `ui-css` |
+| UI branch | `http://api.openteams.com/json-ld/UIBranch` | `ui-branches` |
+| UI branch version (read-only) | `http://api.openteams.com/json-ld/UIBranchVersion` | `ui-branch-versions` |
+| UI push | `http://api.openteams.com/json-ld/UIPush` | `ui-pushes` |
 
 HTML is chosen by content negotiation (`Accept: text/html`) at the resource's
 own URL. `?format=api` still reaches DRF's browsable API.
@@ -65,12 +71,12 @@ mode. Its content:
 | `scopes` | no | Maps a property name (`"*"` for array items) to the scope name its child is rendered in. |
 | `stylesheets` | no | Names of stylesheets that also apply to the component's descendants. |
 | `label`, `description` | no | Free text. |
-| `rbac_context` | no | Only `""`: components are stored only in the default context. |
+| `rbac_context` | no | The component's authorizing context on its branch: the branch's context (`""` on `main`). |
+| `branch`, `deleted`, `base` | no | The [branch fields](#branches) every UI item has. |
 
-Component authors are a trusted role, and components are global only (context
-`""`); whoever may write the `UIComponent` type is trusted with the rendering of
-every page. Stored Jinja templates run in `jinja2.sandbox.SandboxedEnvironment`.
-Stored Django templates run on a standalone engine with no loaders and no tag
+Whoever may write a component on a branch is trusted with the rendering of
+every page that shows that branch (see [Security](#security)). Stored Jinja
+templates run in `jinja2.sandbox.SandboxedEnvironment`. Stored Django templates run on a standalone engine with no loaders and no tag
 libraries, so `{% load %}` of app tags is unavailable and `{% include %}` and
 `{% extends %}` are refused at save. Both engines autoescape, and child HTML
 passes through unescaped. Letting untrusted authors write components is phase
@@ -148,7 +154,11 @@ objects it renders one input named `<pointer>/-` of the item type, from the
 a number or a boolean, not a string.
 
 `scrud:page` wraps a page (not a fragment). Its context is
-`{title, csrf_token, static{htmx, scrud_ui}, body}`. A custom page component,
+`{title, csrf_token, static{htmx, scrud_ui}, css, body}`. `css` is the list of
+the URLs of the page's CSS files (see "CSS items" below), in order: a custom
+page component should link each one
+(`{% for href in css %}<link rel="stylesheet" href="{{ href }}">{% endfor %}`).
+A custom page component,
 chosen by a rule on `scrud:page`, must be `mode: view` (one in edit mode is
 ignored, and the built-in is used). It must include the CSRF meta tag
 (`<meta name="csrf-token" content="{{ csrf_token }}">`) and both scripts
@@ -163,6 +173,22 @@ with its own contexts' stylesheets.
 
 `scrud:notice` renders one message. Its context is `{message, level}`, where
 `level` is `"error"` for every notice the server renders.
+
+## CSS items
+
+A CSS item (type `ui-css`) holds the text of a page's CSS: `name`, `css` (at
+most 262144 characters, and never containing `</style`, which is refused with a
+400), `order` (default 0), and the branch fields (`branch`, `deleted`, `base`,
+`rbac_context`) every UI item has. A name is unique on its branch. The page
+links the CSS items effective on the branch it shows, by `order` and then by
+name, at `<api or prefix>ui-css-files/<name>/<etag>.css`. The ETag in the URL
+makes a file immutable (`Cache-Control: private, max-age=31536000,
+immutable`: a shared cache would not check the GET on the branch, so it must
+not keep it): after an edit the old URL is a 404 and the page links the new
+one. Anyone who can see a page can fetch its files; under a
+published branch's prefix a viewer who may not GET the branch is refused as
+for any other GET there, and a working branch's CSS is served only to a viewer
+who may select it.
 
 ## UI stylesheets
 
@@ -182,7 +208,8 @@ A stylesheet maps selectors to components:
 }
 ```
 
-`name` is unique within its `rbac_context`; `order` (default 0) orders
+On a branch, a stylesheet's `name` is unique per context it applies to
+(`applies_to`, see [Branches](#branches)); `order` (default 0) orders
 stylesheets within a context; `prefixes` expand the IRIs in the selectors. The
 selectors of every rule are parsed at save, and a rule that does not parse is
 refused with a 400.
@@ -236,7 +263,11 @@ styled even if the policy gives them no access to the stylesheets. Stylesheets i
 the resource's contexts are applied, so a context's own presentation applies to
 the resources in it. Stylesheets and components are read once per rendered
 response, whatever the number of contexts on the page; an edit to one applies
-from the next response.
+from the next response. A stored component, stylesheet or CSS item whose
+`rbac_context` is not the context its write is authorized in on its branch
+(see [Authorizing contexts](#authorizing-contexts)), which only a write around
+the API can store, is not used, and is logged as a warning: on a branch, the
+parent's item shows instead.
 
 ## Modes, editing and the write path
 
@@ -321,7 +352,8 @@ the frame with the current state, and so does a 409 DELETE.
 | `Scrud-UI-Pointer` | The JSON Pointer of the node to render (default `""`). An invalid pointer (or one over 1024 characters) is a 400, before a PUT writes anything. |
 
 These select presentation only, never what is authorized. HTML responses carry
-`Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer` and
+`Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer, Scrud-UI-Branch,
+Cookie` (the branch a page browses comes from a header or a cookie) and
 `Cache-Control: private, no-cache, no-store` (a page and its fragments share
 one ETag, so a cache must not keep either; the ETag stays, and the client sends
 it as `If-Match`). An error is the same status as JSON (401, 403, 404, ...) with
@@ -331,12 +363,362 @@ a frame that reloads the current state with the viewer's rights (see Refused
 writes, above). A success whose HTML fails to render is answered with a 500 and
 a notice.
 
+## Branches
+
+A branch is a named set of UI items (components, stylesheets and CSS items)
+that changes the presentation of the site, not its data: a viewer on any branch
+sees the same resources, with the same authorization. Use branches to work on
+the presentation of a new resource type without changing what everyone sees,
+to let testers browse a change before it is published, and to publish several
+presentations of the same resources, each at its own URL prefix.
+
+A site that creates no branch behaves as it did without them: the same URLs,
+the same rendering, no banner and no extra queries.
+
+### Concepts
+
+* **`main`** is the published branch at the API's URLs (`/api/...`), in the
+  RBAC context `""`, holding every item written before branches. The name is
+  reserved: `main` has no parent and no prefix, cannot be deleted, and has no
+  stored row until something is written on it.
+* A **published** branch has a `prefix` and is served at it (see
+  [Prefixes](#prefixes)). A **working** branch has none; it belongs to the
+  tree of its nearest published ancestor and is browsed under that ancestor's
+  prefix.
+* A branch stores only its own changes, its **overrides**: a changed item, an
+  added one, or a **deletion marker** (`deleted: true`) that hides the
+  parent's item of that name. It shows its parent's state for everything it has
+  not changed: its **effective state**. A branch with no parent stores all its
+  items.
+* A **live** branch (`base: "live"`, the default) shows its parent's current
+  state: a fix published to the parent shows on the branch at once, for every
+  item the branch has not changed. A **pinned** branch (`base: "pinned"`)
+  shows its parent as it was at the branch's **branching point**. A viewer can
+  also flip a live branch to its branching point for a single view (see
+  [Browsing](#browsing)).
+* The **branching point** (`branching_point`, server-managed) is the version of
+  every ancestor of the branch when it was created or last pulled, for example
+  `{"testing": 12, "admin": 40}`.
+* Every change to a branch's own items, a push into it, a pull and a restore
+  record the branch's next **version**: a numbered, immutable snapshot of its
+  overrides (with each one's ETag then, in `etags`) and of the ancestor
+  versions it was resolved against. Versions are
+  read-only resources (`ui-branch-versions`).
+
+A branch is a resource of type `ui-branches`:
+
+| Property | Meaning |
+|---|---|
+| `name` | Required. Unique site-wide, `^[a-z0-9][a-z0-9._-]{0,63}$`. A branch cannot be renamed. |
+| `rbac_context` | Required. The branch's context. It cannot change once the branch exists. |
+| `parent` | The name of the branch it is based on, or `null`. Any chain is allowed. Setting or changing it needs GET on the parent: a parent you may not GET is refused (400) exactly as one that does not exist. `main` is no exception: it is in the context `""`, so an author branching from it needs GET on `ui-branches` there. |
+| `base` | `live` (default) or `pinned`. `pinned` needs a parent. |
+| `branching_point` | Server-managed, as above. |
+| `prefix` | Present only on a published branch: its URL prefix, `/segment/.../` (lower-case letters, digits, `_` and `-`), unique. Setting or changing it (or removing it) needs PUT on `ui-branches` in the context `""`; see [Prefixes](#prefixes). |
+| `conflicts` | Server-managed: the overrides a pull found changed in the parent (see [Pull and conflicts](#pull-and-conflicts)). |
+| `pull` | Write-only: `true` on an update pulls the parent's changes. |
+| `label`, `description` | Free text. |
+
+A published branch's `prefix` can change to another prefix, but a branch cannot
+be switched between published and working while it has its own stylesheets
+that apply to a context (they would be authorized in another context). A
+branch that another names as its `parent` cannot be deleted (409). Deleting a
+branch deletes its own items and its versions in the same transaction, so a
+branch created again under the name starts again at version 1.
+
+### Authorizing contexts
+
+There is no separate role for who may change the presentation: a branch is a
+resource with an RBAC context, and the scoped RBAC grants in that context
+decide who may see (GET), change (PUT), push from and pull it, like any other
+resource.
+
+* **Reading** a branch's items as JSON (the lists and details of
+  `ui-components`, `ui-stylesheets` and `ui-css`) shows its effective state.
+  An item that comes from an ancestor is read-checked as it is on the branch it
+  comes from, and a version shows only the items its reader may read. The
+  branch a JSON list shows is chosen with the `Scrud-UI-Branch` header or the
+  `ui-branch` parameter (the header first; the cookie is not read for JSON).
+  Without either it is `main`, or, under a prefix, the prefix's branch. A
+  JSON list whose header or parameter names a branch that is refused (one
+  that does not exist, that you may not GET with its working ancestors, that
+  is not in the tree of the URL's published branch, or that is pinned to a
+  missing version) is refused with 400, problem type `ui-branch-unavailable`,
+  with the same text whatever the reason; it never lists another branch's
+  items instead. (An HTML page renders the published branch and says so in
+  its banner.) A value that is not a branch name is ignored.
+* **Writing** an item names its branch in the body, `"branch": "<name>"`
+  (`main` when absent). A branch you may not GET is answered as one that does
+  not exist (400, naming nothing of it), but for `main` and for a stylesheet
+  on a published branch that applies to another context (below), which need
+  no grant in the branch's context. The item's `rbac_context` must be its **authorizing
+  context** on that branch, or the write is refused with a 400 that names it:
+  * on a working branch, the context is the branch's, whatever the item
+    applies to, so the grants needed are those on the item's type in the
+    branch's context;
+  * on a published branch, a component, a CSS item and a stylesheet that
+    applies everywhere (`applies_to: ""`) are authorized in the branch's
+    context, and a stylesheet that applies to a context `X` in `X`. Whoever
+    may style `acme` styles it on every published branch, and needs no grant
+    in the branch's context. On `main`, which is in context `""`, this is the
+    rule before branches.
+
+  A stylesheet's `applies_to` names the context it applies to (`""`:
+  everywhere). When it is absent, a stylesheet on a published branch applies to
+  its `rbac_context` if that is not the branch's context. An item cannot move
+  to another branch.
+* **`base`** on an item is server-managed: on create, the ETag of the parent's
+  item it replaces (`null` for an addition), as the branch shows it: on a
+  pinned branch, the item as of the branching point, with the ETag its version
+  recorded (a version recorded before versions kept ETags gives its items one
+  of its own, which conflicts with the parent's until the branch is pulled and
+  the override rebased). It stays while the override is edited, and only
+  `rebase: true` (below) moves it.
+
+### Pull and conflicts
+
+A pull is a PUT of the branch with `"pull": true`; it needs PUT on the branch.
+It moves the branching point to the ancestors' current versions, keeps the
+overrides, and records a version. An override whose parent item changed since
+the override's `base` is a **conflict**: the pull still happens, and the
+conflicts are listed in the branch's `conflicts` (`{kind, key, base, current}`
+each) until they are resolved:
+
+* keep the override: PUT the item with `"rebase": true`, which moves its `base`
+  to the parent's current item and clears the conflict. The flag is
+  write-only, and valid only on an update of an item of a branch that has a
+  parent;
+* take the parent's: DELETE the override (its own row; deleting a deletion
+  marker does not clear a conflict);
+* an ordinary edit does not clear it.
+
+### Pushing and restoring
+
+A push is a resource of type `ui-pushes`:
+
+| Property | Meaning |
+|---|---|
+| `source` | The branch whose overrides are pushed, or `null` for a restore. |
+| `target` | The branch they are written into. |
+| `restore` | The version of `target` to restore, or `null` for a push. Exactly one of `source` and `restore` is given. |
+| `state` | `proposed` or `applied`; a workflow policy may add states between them. |
+| `rbac_context` | Must be the target's context (400 otherwise): the grant to push into a branch is a grant in the target's context. |
+| `result` | Server-managed: `{"version": N}`, the target's new version, once applied. |
+
+**A write that moves a push into `applied` applies it, in the same
+transaction.** Create it directly in `applied`, or create it `proposed` and PUT
+it to `applied` later. The server never writes `applied` itself. Applying a
+push:
+
+1. needs the ordinary grants on `ui-pushes` in the target's context; GET and
+   PUT on the source (applying empties its overrides); and, for each item, the
+   grant a direct write of that item into the target would need: PUT where the
+   target has its own row, POST for a new one, DELETE for a deletion marker,
+   on the item's type in its authorizing context on the target. If any is
+   missing the push is refused (403) and nothing is written. A source the
+   pusher may not GET, or a target they may not GET named with the wrong
+   `rbac_context`, is answered as a branch that does not exist (400);
+2. is refused with 409 when any of the source's overrides was made against an
+   item that the target has changed since (its `base` is not the ETag of the
+   target's item as the target shows it: on a pinned target, as of its
+   branching point). The body lists the `conflicts`, but only those on items the
+   pusher may GET in the target; it counts the others in
+   `unreadable_conflicts`. Nothing is written. Pull the source, resolve the
+   conflicts, and push again;
+3. otherwise writes the overrides into the target through the ordinary write
+   path, records the target's next version, empties the source's overrides
+   (the branch stays), clears its conflicts, and, when the target is its
+   parent, moves its branching point as a pull does.
+
+A push whose source has no parent (`main`, or any root) is refused (400): it
+would delete the live site's items. A source cannot be the target or one of the
+target's ancestors. An **applied push is a record**: it cannot be updated
+(400) or deleted (409); to push again, create a new push, which a workflow
+policy gates afresh. Pushing into a branch other than the source's parent is
+allowed.
+
+A **restore** is a push with `"restore": N` and no `source`: it makes the
+target's own items those of its version `N` (404 if there is none), with the
+same grants and the same atomic write, and records a new version. History is
+never rewritten; a restore is how a bad publish is rolled back.
+
+#### Requiring approval
+
+A push is an ordinary resource, so a `WorkflowPolicy` gates it without any
+change to the branching code. To require that a push is proposed, approved,
+and only then applied, store a policy for the push type (a `workflow-policies`
+resource):
+
+```json
+{
+  "resource_type": "http://api.openteams.com/json-ld/UIPush",
+  "rbac_context": "",
+  "initial_states": {"proposed": "state == \"proposed\""},
+  "states": {
+    "approved": "state == \"approved\"",
+    "applied": "state == \"applied\""
+  },
+  "transitions": {
+    "approve": {"from": "proposed", "to": "approved"},
+    "apply": {"from": "approved", "to": "applied"}
+  }
+}
+```
+
+A push can then be created only `proposed`, and moved to `approved`, then to
+`applied`, which applies it as above; a move that skips a state is refused
+(400). Grant the `approve` and `apply` transitions to the roles that may
+approve and apply, with `scrud_workflow` conditions on their grants, as for any
+workflow. Superusers bypass workflow, as everywhere else.
+
+### Browsing
+
+The prefix selects the published branch. Within its tree, the working branch
+shown in a page comes from, in order:
+
+1. the `Scrud-UI-Branch` request header (htmx requests inside a page always
+   send it, so a page never changes branch halfway);
+2. the `ui-branch` query parameter of a link;
+3. the cookie of the prefix, set by confirming a switch;
+4. none: the published branch itself.
+
+A value is `<name>`, or `<name>@pinned` to view the branch at its branching
+point instead of live (this changes that viewer's rendering only, not the
+branch's `base`). A value that is not one of these is ignored. An empty header
+or parameter names the published branch. A branch that does not exist, is not
+in the prefix's tree, is pinned to a version that is missing, or that the
+viewer may not GET (the branch, or any working branch among its ancestors: a
+branch shows its ancestors' items) is **refused**: the page renders the published branch and
+the banner says the chosen one was not available. It never fails the page.
+Browsing changes HTML only: the cookie does not affect JSON.
+
+**The banner** is shown on every HTML page off the published branch (and when a
+branch was refused). It names the branch and its mode (`live`, or `pinned at
+<parent> v<N>`); lists the working branches in the prefix's tree that the
+viewer may select, as a switcher; offers a link to view live or at the branching
+point; a link to share; and the way back to the published branch. The server
+renders it outside stored components, from package templates, so a page
+component that leaves it out has it added anyway. A full page also carries the
+branch in a hidden element, so that htmx requests made from outside a frame
+stay on it. The published branch has no banner.
+
+**Confirmation.** Opening a link with `?ui-branch=<name>` that would switch you
+to a working branch other than the one you are on first shows a page asking
+"You're about to browse branch X", with Continue and Cancel: the components and
+CSS of a branch's writers run in your browser with your rights. Only the links
+the server renders for you (Continue, and the banner's) skip it. They carry
+`ui-branch-confirm=<token>`, an HMAC of the selection and your CSRF secret,
+which a link planted in content cannot have. So confirmation needs Django's
+`CsrfViewMiddleware`, and a confirmed link works only for the viewer whose CSRF
+secret signed it (any other is asked again). Confirming sets the cookie. The
+confirmation page is only for full-page HTML GETs, never for htmx requests, and
+a request from another site (`Sec-Fetch-Site`) is always asked.
+
+**The cookie** is `scrud_ui_branch` at the API URLs, and
+`scrud_ui_branch_<first 12 hex digits of sha256(prefix)>` under a prefix, with
+the path set to the prefix. (A cookie for `/` is sent to every prefix; its own
+name keeps it from being read, or shadowing another, there.) It is only a
+preference, checked again on every request.
+
+### Prefixes
+
+Add the middleware after `AuthenticationMiddleware`:
+
+```python
+MIDDLEWARE = [
+    ...,
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "scrud_django.ui.branches.middleware.PublishedBranchMiddleware",
+    ...,
+]
+```
+
+With it, a request for `<prefix><type slug>/...` (or for the CSS files), where
+`prefix` is a published branch's, reaches **the same resource views, with the
+same authorization, preconditions, workflow and write path** as
+`/api/<type slug>/...`. Only the presentation differs. A prefix claims nothing
+else: `/` does not swallow the rest of the site. The longest matching prefix
+wins. Under a prefix:
+
+* a viewer needs GET on the prefix's branch, in HTML and JSON alike, or gets
+  the refusal a refused GET gets (401 or 403), with no fallback presentation;
+* HTML links and htmx requests stay under the prefix; JSON keeps the canonical
+  `/api/` hrefs; JSON item lists default to the prefix's branch;
+* there is no trailing-slash redirect: `<prefix><slug>` without the slash is
+  not a mount URL (a 404 unless your URLconf serves it);
+* a project that serves its API at `/` gets no prefixes: the API's URLs are
+  never mounted.
+
+**Cost:** the middleware reads the stored branches, **one extra query**, on
+every request outside the API's URLs, to find out whether the path is under a
+prefix. Requests to the API's URLs read none. Without the middleware, or
+without `scrud_django.ui` installed, there is no cost. A database error reading
+the branches is logged and the request falls through, so that other pages still
+answer.
+
+**Who may publish.** A prefix claims URLs of the whole site: the viewers of
+those URLs then need GET on the branch, so a prefix can put a page of the
+project behind a branch's grants. Setting a branch's `prefix`, changing it,
+removing it, or deleting a published branch therefore needs **PUT on
+`ui-branches` in the context `""`** (the site's), besides the grants in the
+branch's own context; without it the request is refused (403). A grant in a
+branch's own context lets you write, push to, pull and delete a working
+branch, never publish or unpublish one.
+
+A prefix is refused (400) when it is set or changed if it lies under the API's
+URLs; overlaps another branch's (the URLs one claims, `<prefix><type
+slug>/...`, include the other's: `/shop/` and `/shop/todo-lists/` do; `/` and
+`/admin/resources/` do not); or claims URLs your URLconf serves with another
+view, which it would hide. A project that serves its API at `/` can set no
+prefix. Django's admin has a catch-all route, so a prefix under `/admin/` is
+refused; the demo uses `/manage/`.
+
+A system check reports the same problems in stored prefixes (stored before
+this check, by other means, or made wrong by a later change of the URLconf) as
+a **Warning**, `scrud_django_ui.W001` (not an error: it reports stored data,
+and an error would stop `migrate`; routing stays deterministic, the longest
+prefix wins).
+
+### CSS
+
+A branch's CSS items are effective like the other items, and `scrud:page` links
+them (see [CSS items](#css-items)). Under a prefix the files are served at the
+prefix's URL. Every file's URL includes its ETag, and the file is cached for a
+year as private.
+
 ## Security
 
-* Components are written by a trusted, global-only role: anyone who may write
-  `UIComponent` resources controls the markup of every page. A component can
-  carry client scripts, and they run in the page with the viewer's rights.
-  Untrusted authors are phase 3.
+* **Viewing a branch means trusting everyone who can write to it.** There is no
+  separate trusted role: writes are authorized by scoped RBAC in the context of
+  the branch (see [Authorizing contexts](#authorizing-contexts)), so trust is
+  per RBAC context. Whoever may write components or CSS on a branch controls
+  the markup of every page that shows it. A component can carry client
+  scripts, and they run in the page with the viewer's rights. A user with write
+  grants in a personal branch's context could send a link to a colleague with
+  broader rights. Untrusted authors are phase 3.
+* The mitigations: a viewer sees only the branches they may GET; the banner
+  always names a working branch, and the server renders it outside stored
+  components; a link that would switch the viewer to a working branch asks first
+  (confirmation, with a token only the server can issue for that viewer, which
+  needs `CsrfViewMiddleware`); and the CSP below blocks inline scripts. The
+  confirmation is a click on a page the server renders, so it holds only while
+  other sites cannot frame that page and steer the click (clickjacking): keep
+  the CSP's `frame-ancestors` (below), or Django's `XFrameOptionsMiddleware`
+  (`X-Frame-Options: DENY` by default). `frame-ancestors 'self'` still lets
+  the site's own pages, a branch's components among them, frame it; `'none'`
+  (or `DENY`) does not. The
+  banner is not a guarantee: a branch's CSS, or a page component that wraps
+  its body in a hidden element, can hide it (see the follow-up
+  [ui-banner-hideable](follow-ups.md#ui-banner-hideable)). Trust the writers
+  of the branches you let people browse.
+* A branch never changes what a viewer may read or write through the API's
+  views: under a prefix the same views answer with the same checks. A prefix
+  does add one: its URLs need GET on its branch. So publishing a prefix can
+  put URLs behind a branch's grants, and is site-level: it needs PUT on
+  `ui-branches` in the context `""` (see [Prefixes](#prefixes)), and a prefix
+  that would hide the project's own URLs, overlap another or lie under the
+  API's is refused. Grant it to the site's administrators only. A mount that
+  hides a field is presentation, not access control.
 * Stored Jinja templates run in Jinja's sandbox; stored Django templates run on
   a restricted engine (no loaders, no tag libraries), which is not a sandbox.
   Both escape everything they are given.
@@ -356,7 +738,13 @@ a notice.
 
 `demo/` includes a seed command that creates users, a to-do list, and the
 components and stylesheets that render it (a detail page with editable rows, a
-compact sidebar list, and a page with a layout):
+compact sidebar list, and a page with a layout), and three branches: the
+published `admin` branch at `/manage/` (with an extra component and its own CSS),
+the published `customer` branch at `/todo/` (with its own CSS), and a working
+branch `testing-admin` over `admin`. The demo adds
+`PublishedBranchMiddleware` to its settings. The admin prefix is `/manage/`, not
+`/admin/resources/`, because Django's admin has a catch-all route under
+`/admin/`, which a prefix there would hide.
 
 ```bash
 cd demo
@@ -365,10 +753,18 @@ uv run python manage.py seed_todo_demo
 uv run python manage.py runserver
 ```
 
-Sign in at `/api-auth/login/` and open `/api/todo-lists/` with a browser. The
+Sign in at `/api-auth/login/` and open `/api/todo-lists/` with a browser (or use HTTP Basic auth). The
 users are `owner`/`owner` (reads and edits the list), `reader`/`reader` (reads
 it) and `author`/`author` (writes the UI components and stylesheets); these
-passwords are for the demo only.
+passwords are for the demo only. `author` writes the UI in the three branches'
+contexts (`ui-admin`, `ui-customer`, `ui-testing`) and may open both prefixes;
+`reader` may open `/todo/` (it may GET the `customer` branch) and gets a 403 at
+`/manage/`; `owner` may open `/todo/` too. To try the flow: as `author`, write
+a component on `testing-admin` (a POST of a `ui-components` item with
+`"branch": "testing-admin"` and `"rbac_context": "ui-testing"`), browse
+`/manage/todo-lists/<id>/?ui-branch=testing-admin` (confirm the switch), then
+POST a `ui-pushes` item with `source` `testing-admin`, `target` `admin`,
+`rbac_context` `ui-admin` and `state` `applied`.
 
 Known limitations of phase 1 are recorded in the [follow-ups](follow-ups.md),
 under the `ui-` names.
