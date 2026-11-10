@@ -263,6 +263,17 @@ selector is `[enum]` and the node term is an enum of that type; or the selector
 is a bare type and the node term has that type, whatever its format or enum.
 `scrud:page` is the term the page component is resolved with.
 
+A list's wrapper is resolved the same way, with two terms, most specific first:
+the collection IRI of the list's type
+(`https://api.openteams.com/json-schema/ResourceCollection?contents_type=<type uri>`,
+which is an absolute IRI and is used as written, or through a prefix) and
+`scrud:collection`. Scopes work as for any rule, so `sidebar scrud:collection`
+restyles lists under `?ui-scope=sidebar` only. The component gets the
+`scrud:collection` context plus `href` (the list's URL) and `scope` (the scope
+chain as a list). With no matching rule, or if the stored component fails to
+render, the built-in `scrud:collection` is used (after the usual
+`<!-- scrud-ui: component "x" failed -->` comment on a failure).
+
 ### The cascade
 
 Rules are collected from the stylesheets that apply to the resource, each rule

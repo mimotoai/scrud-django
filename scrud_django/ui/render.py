@@ -24,6 +24,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.utils.html import format_html
 from django.utils.safestring import SafeString, mark_safe
 
+from scrud_django import collection_type_uri_for
 from scrud_django.exceptions import UIPointerNotFoundError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.mixins.view_mixins import max_body_depth
@@ -36,6 +37,7 @@ from scrud_django.ui.cascade import (
     Rule,
     builtin_component,
     effective_rules,
+    rank_rules,
     request_memo,
     resolve_component,
 )
@@ -147,16 +149,35 @@ def render_collection(
             )
     schema = _document(resource_type.schema)
     title = schema.get("title")
-    body = _render_builtin(
-        "scrud:collection",
-        {
-            "children": children,
-            "count": envelope.get("count", len(children)),
-            "next": _pager_link(request, envelope.get("next")),
-            "previous": _pager_link(request, envelope.get("previous")),
-            "label": title if isinstance(title, str) else "",
-        },
+    context = {
+        "children": children,
+        "count": envelope.get("count", len(children)),
+        "next": _pager_link(request, envelope.get("next")),
+        "previous": _pager_link(request, envelope.get("previous")),
+        "label": title if isinstance(title, str) else "",
+    }
+    ranking = rank_rules(
+        effective_rules([]),
+        scope_chain,
+        [
+            TypeTerm(iri=collection_type_uri_for(resource_type.type_uri)),
+            TypeTerm(iri="scrud:collection"),
+        ],
+        "view",
     )
+    if ranking.winner is None:
+        body = _render_builtin("scrud:collection", context)
+    else:
+        component = ranking.components[ranking.ranked[ranking.winner][1].component]
+        if component.name.startswith(BUILTIN_PREFIX):
+            body = component.compiled().render(context)
+        else:
+            body = _render_stored(
+                component,
+                {**context, "href": href, "scope": list(scope_chain)},
+                href,
+                lambda: builtin_component("scrud:collection"),
+            )
     return format_html(
         '<div class="scrud-collection-frame" data-scrud-href="{}"'
         ' data-scrud-scope="{}">{}</div>',
@@ -557,29 +578,20 @@ class _Walk:
             )
         if builtin:
             return component.compiled().render(context)
-        try:
-            return component.compiled().render(_isolated(context))
-        except Exception:
-            logger.warning(
-                "scrud-ui: component %r failed to render %s",
-                component.name,
-                node.pointer or "/",
-                exc_info=True,
-            )
-        fallback = resolve_component(
-            tuple(
-                rule
-                for rule in self.rules(node.linked)
-                if rule.component.startswith(BUILTIN_PREFIX)
+        return _render_stored(
+            component,
+            context,
+            node.pointer or "/",
+            lambda: resolve_component(
+                tuple(
+                    rule
+                    for rule in self.rules(node.linked)
+                    if rule.component.startswith(BUILTIN_PREFIX)
+                ),
+                node.scope_chain,
+                node.terms,
+                self.mode,
             ),
-            node.scope_chain,
-            node.terms,
-            self.mode,
-        )
-        return format_html(
-            '<!-- scrud-ui: component "{}" failed -->{}',
-            component.name,
-            fallback.compiled().render(context),
         )
 
     def append_fields(self, node):
@@ -699,6 +711,26 @@ def _frame(
 
 def _render_builtin(name, context):
     return builtin_component(name).compiled().render(context)
+
+
+def _render_stored(component, context, where, fallback):
+    """A stored `component` rendered with an isolated copy of `context`. If it
+    raises, the failure is logged (naming `where`) and the built-in that
+    ``fallback()`` returns renders `context` after a comment naming it."""
+    try:
+        return component.compiled().render(_isolated(context))
+    except Exception:
+        logger.warning(
+            "scrud-ui: component %r failed to render %s",
+            component.name,
+            where,
+            exc_info=True,
+        )
+    return format_html(
+        '<!-- scrud-ui: component "{}" failed -->{}',
+        component.name,
+        fallback().compiled().render(context),
+    )
 
 
 def _isolated(context):
