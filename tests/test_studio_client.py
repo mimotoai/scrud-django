@@ -21,6 +21,7 @@ from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
+from .test_ui_branch_render import put_item
 from .test_ui_branch_types import make_branch
 from .test_ui_http import grant
 from .test_ui_static import require_node
@@ -374,7 +375,7 @@ def explanation(component, readable=True, **rule):
 NO_OPTIONS = {"matches": [], "inside_type": None, "where": [], "applies_to": [""]}
 
 
-def item(template, engine="jinja", own=True, etag='"e1"', name="row"):
+def item(template, engine="jinja2", own=True, etag='"e1"', name="row"):
     return {
         "kind": "component",
         "name": name,
@@ -600,7 +601,7 @@ def test_save_sends_if_match_and_a_412_reloads_the_editor(ui_alice_login):
         "name": "row",
         "content": {
             "name": "row",
-            "engine": "jinja",
+            "engine": "jinja2",
             "mode": "view",
             "template": "<i>mine</i>",
             "branch": "wip",
@@ -618,6 +619,39 @@ def test_save_sends_if_match_and_a_412_reloads_the_editor(ui_alice_login):
     (revert,) = [c for c in out["calls"] if c["url"].endswith("revert-item")]
     assert revert["headers"]["If-Match"] == '"e2"'
     assert revert["body"] == {"kind": "component", "branch": "wip", "name": "row"}
+
+
+@pytest.mark.django_db
+@test_context
+def test_editor_edits_a_real_jinja2_component(ui_alice_login):
+    """The item endpoint's own JSON for a component stored with the engine
+    name the server uses (``jinja2``) opens editable."""
+    setup_wip(ui_alice_login)
+    put_item(
+        "ui-components", "row", "<i>{{ value }}</i>", "wip", "alice", engine="jinja2"
+    )
+    real = get(item_url("row")).json()
+    assert real["content"]["engine"] == "jinja2" and real["own"] is True
+    out = run_studio(
+        studio_page(branch="wip"),
+        preview_page(branch="wip"),
+        [
+            route("GET", explain_url(POINTER), body=explanation("row")),
+            route("GET", options_url(POINTER), body=NO_OPTIONS),
+            route("GET", item_url("row"), body=real),
+        ],
+        r"""
+        click(innermost(node('/items/0/text')));
+        await settle();
+        out.template = byId('studio-editor-text').value;
+        out.readOnly = byId('studio-editor-text').readOnly;
+        out.saveHidden = byId('studio-save').hidden;
+        out.reason = text('studio-editor-reason');
+        """,
+    )
+    assert out["template"] == "<i>{{ value }}</i>"
+    assert out["readOnly"] is False and out["saveHidden"] is False
+    assert out["reason"] == ""
 
 
 @pytest.mark.django_db

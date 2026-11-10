@@ -406,7 +406,7 @@
       reason = "This branch is published: read-only. Changes reach it by a push from a working branch.";
     } else if (content.deleted === true) {
       reason = "Deleted on this branch.";
-    } else if (item.kind === "component" && content.engine !== "jinja") {
+    } else if (item.kind === "component" && content.engine !== "jinja2") {
       reason = "A " + content.engine + "-engine component is shown read-only: the studio edits Jinja.";
     } else if (!field) {
       reason = "Shown read-only: the studio changes stylesheets through New component.";
