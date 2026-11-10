@@ -1561,16 +1561,19 @@ the author applies or proposes it. It computes the same plan the push writes
    {"kind": "component", "key": ["fresh"], "action": "create",
     "before": null, "after": {"name": "fresh", "…": "…"}},
    {"kind": "component", "key": ["gone"], "action": "delete",
-    "before": {"name": "gone", "…": "…"}, "after": null},
-   {"kind": "stylesheet", "key": ["acme-theme", "acme"], "action": "update"}],
+    "before": {"name": "gone", "…": "…"}, "after": null}],
+ "unreadable_changes": 1,
  "conflicts": [{"kind": "component", "key": ["row"],
                 "base": "3f…", "current": "9a…"}],
  "unreadable_conflicts": 1}
 ```
 
 - `changes` are the push's writes into the target, in the order it makes
-  them, one per row: `create` a new row, `update` the target's row with the
-  key, `delete` it. A deletion marker in the source deletes the target's row
+  them, one per row. They describe the target only: applying the push also
+  deletes the source's own rows (its overrides) and clears its conflicts, as
+  [Pushing and restoring](#pushing-and-restoring) describes. Each is a
+  `create` (a new row), an `update` (of the target's row with the key) or a
+  `delete` (of it). A deletion marker in the source deletes the target's row
   and, where the target's parent (or a packaged layer) has the item, also
   creates a marker (`"deleted": true`) that hides it: two entries.
 - `before` is the target's row a write updates or deletes; for a create, the
@@ -1578,15 +1581,17 @@ the author applies or proposes it. It computes the same plan the push writes
   (`null` for none). `after` is the row exactly as the push stores it (its
   `branch`, `rbac_context` and `base` on the target); `null` for a delete.
 - A write on an item the user may not `GET` (the target's row, the row as
-  written, or the source's row it comes from) is listed with its `kind`, `key`
-  and `action` only, without `before` and `after`.
+  written, or the source's row it comes from) is left out of `changes`;
+  `unreadable_changes` counts them. A packaged layer's item is public.
 - `conflicts` are those the push would be refused for (409), on items the
   user may read in the target, as the 409 lists them; `unreadable_conflicts`
   counts the others. A push with any conflict, readable or not, is refused.
-- It needs `GET` on both branches (`main` needs none, as for a push), else
-  403; an unknown branch (or `?target=`) is a 404; and a push the server would
-  refuse anyway (from a branch with no parent, into itself or a descendant) is
-  a 400 `ui-branch-invalid`, as the push is. It does not check the grants the
+- It needs `GET` on both branches (`main` needs none, as for a push): a
+  branch (or `?target=`) the user may not `GET` is a 404, the same as an
+  unknown one, before anything else is checked. A push the server would
+  refuse anyway (from a branch with no parent, into itself or a descendant,
+  into a branch pinned to a missing version) is a 400 `ui-branch-invalid`, as
+  the push is. It does not check the grants the
   push's writes need: applying it checks them (403 `ui-push-forbidden`).
 
 ## Security

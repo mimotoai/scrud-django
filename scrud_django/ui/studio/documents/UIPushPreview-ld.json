@@ -34,6 +34,9 @@
   "current": {
     "@id": "openteams:UIConflictCurrent"
   },
+  "unreadable_changes": {
+    "@id": "openteams:UIUnreadableChanges"
+  },
   "unreadable_conflicts": {
     "@id": "openteams:UIUnreadableConflicts"
   }

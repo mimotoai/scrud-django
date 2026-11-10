@@ -27,7 +27,7 @@ from .test_ui_branch_push import (
     stored_state,
     wip_overrides_row,
 )
-from .test_ui_branch_types import component, stylesheet
+from .test_ui_branch_types import component, make_branch, stylesheet
 from .test_ui_http import (
     HTML,
     assert_html,
@@ -89,6 +89,7 @@ def test_push_preview_matches_what_apply_push_writes(admin_login):
     body = preview()
     assert body["source"] == "wip" and body["target"] == "main"
     assert body["conflicts"] == [] and body["unreadable_conflicts"] == 0
+    assert body["unreadable_changes"] == 0
     # An override of main's row is an update of it; a new item a create;
     # a deletion marker deletes main's row (main has no parent: no marker).
     # main's row keeps its base (none: main has no parent).
@@ -187,17 +188,13 @@ def test_push_preview_lists_conflicts_readable_only(admin_login):
         }
     ]
     assert body["unreadable_conflicts"] == 1
-    # The stylesheet the user may not read in acme is listed without its
-    # before and after.
-    row_change, theme_change = body["changes"]
+    # The write over the stylesheet the user may not read in acme is only
+    # counted.
+    [row_change] = body["changes"]
     assert row_change["before"] == main_row.content
     assert row_change["after"]["template"] == "<i>wip</i>"
-    assert theme_change == {
-        "kind": "stylesheet",
-        "key": ["acme-theme", "acme"],
-        "action": "update",
-    }
-    assert "rules" not in str(theme_change)
+    assert body["unreadable_changes"] == 1
+    assert "acme" not in str(body["changes"])
     # A reader of acme's stylesheets sees both conflicts and the change.
     grant(user, {"http.GET": [ITEM_KINDS["stylesheet"]]}, "acme")
     body = preview()
@@ -206,7 +203,9 @@ def test_push_preview_lists_conflicts_readable_only(admin_login):
         ["acme-theme", "acme"],
     ]
     assert body["unreadable_conflicts"] == 0
+    assert body["unreadable_changes"] == 0
     theme.refresh_from_db()
+    assert body["changes"][1]["key"] == ["acme-theme", "acme"]
     assert body["changes"][1]["before"] == theme.content
     assert body["changes"][1]["after"]["applies_to"] == "acme"
     # The push itself is refused with the same conflicts.
@@ -220,8 +219,9 @@ def test_push_preview_lists_conflicts_readable_only(admin_login):
 def test_push_preview_hides_items_the_user_may_not_read_in_the_source(
     admin_login,
 ):
-    # A source row the user may not read is not shown, though the target's
-    # row is readable: its after is the source's content.
+    # A write whose source row the user may not read is only counted,
+    # though the target's row is readable: its after is the source's
+    # content.
     Given.http.force_authenticate(admin_login)
     reverse("ui-components-list")
     make_component("row", "<b>main</b>")
@@ -231,12 +231,13 @@ def test_push_preview_hides_items_the_user_may_not_read_in_the_source(
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
     grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
     Given.http.force_authenticate(user)
-    assert preview()["changes"] == [
-        {"kind": "component", "key": ["row"], "action": "update"}
-    ]
+    body = preview()
+    assert body["changes"] == [] and body["unreadable_changes"] == 1
     grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "alice")
-    [shown] = preview()["changes"]
+    body = preview()
+    [shown] = body["changes"]
     assert shown["after"]["template"] == "<i>wip</i>"
+    assert body["unreadable_changes"] == 0
 
 
 @pytest.mark.django_db
@@ -246,24 +247,31 @@ def test_push_preview_needs_get_on_both(admin_login):
     make_wip(admin_login)
     make_wip(admin_login, "other", context="bob")
     make_wip(admin_login, "sub", parent="wip")
+    make_wip(admin_login, "osub", parent="other", context="bob")
     user = assign_ui_role((), "")
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
     Given.http.force_authenticate(user)
     # main, which everyone may select, needs no grant.
     preview()
     preview("wip", target="main")
-    # Without GET on the target, or on the source: 403.
-    body = preview("wip", status=403, target="other")
-    assert "other" in body["detail"]
-    preview("other", status=403)
-    preview("other", status=403, target="wip")
+    # A branch the user may not GET is answered as an unknown one, the
+    # same 404, before a push it would refuse (other into its child osub)
+    # could be described by a 400.
+    unknown = preview("nope", status=404)
+    for source, params in (
+        ("wip", {"target": "other"}),
+        ("other", {}),
+        ("other", {"target": "wip"}),
+        ("other", {"target": "osub"}),
+        ("osub", {}),
+        ("wip", {"target": "nope"}),
+        ("wip@pinned", {}),
+    ):
+        assert preview(source, status=404, **params) == unknown, (source, params)
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "bob")
     preview("wip", target="other")
     preview("other")
-    # An unknown source or target is not found.
-    preview("nope", status=404)
-    preview("wip", status=404, target="nope")
-    preview("wip@pinned", status=404)
+    preview("other", status=400, target="osub")
     # A push the server would refuse is refused alike (400).
     for source, params in (
         ("wip", {"target": "sub"}),
@@ -391,3 +399,39 @@ def test_push_preview_renders_through_the_cascade(admin_login):
     assert_html()
     assert "<section>wip into main: 1</section>" in html()
     assert 'rel="describedby"' in Http.response["Link"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_push_preview_shows_a_packaged_item_as_before_to_any_reader(admin_login):
+    # A packaged layer item is public: a user who may not read context ""
+    # (the layer item's) sees it as the before of an override.
+    Given.http.force_authenticate(admin_login)
+    make_wip(admin_login, "team", context="project-a")
+    make_wip(admin_login, "wip", parent="team", context="project-a")
+    user = assign_ui_role((), "project-a")
+    grant(user, {"http.GET": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "project-a")
+    with installed(MORE_APP):
+        layer_etag, layer_component = layer_item("component", ("layermore:list",))
+        assert layer_component["rbac_context"] == ""
+        create("ui-components", wip_body())
+        Then.http.status_code_is(201)
+        Given.http.force_authenticate(user)
+        body = preview()
+        assert body["target"] == "team" and body["unreadable_changes"] == 0
+        [change_] = body["changes"]
+        assert change_["action"] == "create"
+        assert change_["before"] == layer_component
+        assert change_["after"]["base"] == layer_etag
+        assert change_["after"]["rbac_context"] == "project-a"
+
+
+@pytest.mark.django_db
+@test_context
+def test_push_preview_into_a_branch_pinned_to_a_missing_version(admin_login):
+    Given.http.force_authenticate(admin_login)
+    make_branch("gap", "alice", branching_point={"main": 999}, base="pinned")
+    make_wip(admin_login, "child", parent="gap")
+    body = preview("child", status=400)
+    assert body["type"].endswith("/ui-branch-invalid")
+    assert "missing" in body["detail"]

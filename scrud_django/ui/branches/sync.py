@@ -449,12 +449,13 @@ class PushPlan:
 
 
 def plan_push(
-    request, source: str, target: str, using=None, *, lock=False, all_branches=None
+    request, source: str, target: str, using=None, *, lock: bool, all_branches=None
 ) -> PushPlan:
     """The `PushPlan` of a push of branch `source` into branch `target` (by
     name, both in `all_branches`, default `branches(using)`) for `request`,
     read on `using` (default: the router's read database), its rows locked
-    until the transaction ends with `lock`. Nothing is written and nothing
+    until the transaction ends with `lock` (required: a write's plan locks
+    them, a read's does not). Nothing is written and nothing
     raised for a conflict, and no grant is checked: `apply_push` checks
     what a push needs, and a preview what it shows."""
     if all_branches is None:
@@ -509,15 +510,16 @@ def _may_read(request, kind, content) -> bool:
 
 def push_changes(
     request, plan: PushPlan, target: str, using=None, *, all_branches=None
-) -> list[dict]:
-    """``{"kind", "key", "action", "before", "after"}`` of each write of
-    `plan` (a push into branch `target`), in order: its ``action`` by its
+) -> tuple[list[dict], int]:
+    """``(changes, unreadable)``: ``{"kind", "key", "action", "before",
+    "after"}`` of each write of `plan` (a push into branch `target`) that
+    `request` may read, in order, and how many others there are. A write is
+    readable when `request` may read (`_may_read`) its ``before``, its
+    ``after`` and the source's row it comes from. Its ``action`` is by its
     method (`ACTIONS`); ``before``, the target's row it updates or deletes,
     or, for a new row, the item the target shows beneath it (its parent's,
     or a packaged layer's), ``None`` where there is none; ``after``, the row
-    as written, ``None`` for a deletion. ``before`` and ``after`` are left
-    out unless `request` may read each of them and the source's row the
-    write comes from (`_may_read`)."""
+    as written, ``None`` for a deletion."""
     if all_branches is None:
         all_branches = branches(using)
     target = all_branches[target]
@@ -538,11 +540,6 @@ def push_changes(
     }
     changes = []
     for write in plan.writes:
-        change = {
-            "kind": write.kind,
-            "key": list(write.key),
-            "action": ACTIONS[write.method],
-        }
         if write.row is not None:
             before = write.row.content
         else:
@@ -554,10 +551,16 @@ def push_changes(
             for content in seen
             if content is not None
         ):
-            change["before"] = before
-            change["after"] = write.content
-        changes.append(change)
-    return changes
+            changes.append(
+                {
+                    "kind": write.kind,
+                    "key": list(write.key),
+                    "action": ACTIONS[write.method],
+                    "before": before,
+                    "after": write.content,
+                }
+            )
+    return changes, len(plan.writes) - len(changes)
 
 
 def apply_push(request, content, using) -> int:

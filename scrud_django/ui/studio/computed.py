@@ -12,8 +12,8 @@ built as a UI layer renders it through the cascade like any resource:
   its target (spec E3).
 
 Each answers only what its user may GET as JSON: a branch it may select
-(`selection.selectable`, else 404; the push preview needs GET on both of its
-branches, else 403), an item the item's own read check allows (packaged
+(`selection.selectable`; the push preview: both of its branches the user may
+GET), else 404, the same for every cause; an item the item's own read check allows (packaged
 layer items are public). The bootstrap studio's strip reads the
 same functions (`scrud_django.ui.studio.page`)."""
 
@@ -22,7 +22,6 @@ import importlib.resources
 
 from django.http import Http404
 from django.urls import reverse
-from rest_framework.exceptions import PermissionDenied
 
 from scrud_django import registration
 from scrud_django.computed import ComputedResourceViewSet
@@ -246,38 +245,43 @@ class PushPreviewViewSet(ComputedResourceViewSet):
     `source` into branch ``target`` (default: `source`'s parent) would
     change there (`plan_push`, `push_changes`) and the conflicts it would
     hit, without writing. It needs GET on both branches (``main``, which
-    everyone may select, needs none, as for a push), else 403; an unknown
-    branch is a 404; a push the server would refuse, a 400
-    (`refuse_push_between`)."""
+    everyone may select, needs none, as for a push): an unknown branch and
+    one the user may not GET are the same 404, before any 400 for a push the
+    server would refuse (`refuse_push_between`) could describe it. Writes
+    on items the user may not read are only counted."""
 
     def compute(self, request, key):
         with _stored_state():
             all_branches = branches()
-            if key not in all_branches:
+
+            def known(name):
+                return name in all_branches and (
+                    name == MAIN or may_get(request, all_branches[name])
+                )
+
+            if not known(key):
                 raise Http404("No such branch.")
             source = all_branches[key]
             name = request.query_params.get(TARGET_PARAMETER, source.parent)
-            if name is not None and name not in all_branches:
+            if name is not None and not known(name):
                 raise Http404("No such branch.")
-            for branch in (source.name, name):
-                if branch is not None and not (
-                    branch == MAIN or may_get(request, all_branches[branch])
-                ):
-                    raise PermissionDenied(
-                        f"A push preview needs GET on branch {branch!r}."
-                    )
             # A source with no parent and no target is refused as a push
             # from a root is.
             refuse_push_between(source.name, name or source.name, all_branches)
             try:
-                plan = plan_push(request, source.name, name, all_branches=all_branches)
-                changes = push_changes(request, plan, name, all_branches=all_branches)
+                plan = plan_push(
+                    request, source.name, name, lock=False, all_branches=all_branches
+                )
+                changes, unreadable = push_changes(
+                    request, plan, name, all_branches=all_branches
+                )
             except BranchChainError as error:  # a pinned snapshot is gone
                 raise UIBranchInvalidError(str(error)) from error
             return {
                 "source": source.name,
                 "target": name,
                 "changes": changes,
+                "unreadable_changes": unreadable,
                 "conflicts": plan.conflicts,
                 "unreadable_conflicts": plan.hidden_conflicts,
             }
