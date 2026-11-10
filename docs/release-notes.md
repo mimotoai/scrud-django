@@ -16,6 +16,19 @@
   `WorkflowPolicy` can gate), pulls with conflict detection, restores and
   per-branch versions move changes between branches. See the Branches chapter
   of the UI page and the `seed_todo_demo` command.
+* The bootstrap studio, `scrud_django.ui.studio` (add the app after
+  `scrud_django.ui` and include `scrud_django.ui.studio.urls`). It is a page for
+  authoring a type's presentation on a working branch: a preview in a sandboxed
+  iframe (no scripts), an inspector that explains which rule chose a node's
+  component, "New component for this node" (a component and its rule in one
+  step, in the branch's `studio` stylesheet), an editor for the branch's items,
+  and pull and push. It is built on a JSON API (`sample`, `preview`, `explain`,
+  `new-component`, `item`, `save-item`, `revert-item`, `pull`, `push`) that a
+  self-hosted studio could use, adds no rights (every write is a request to a
+  resource view as the user), and needs a signed-in user (401 otherwise). New
+  problem types: `ui-studio-branch-read-only`, `ui-studio-context-unavailable`,
+  `ui-pointer-not-found`. See the Studio chapter of the UI page. The demo
+  mounts it at `/studio/` and seeds a working branch `alice-wip`.
 
 ### Changed
 

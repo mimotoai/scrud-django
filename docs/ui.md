@@ -686,6 +686,286 @@ them (see [CSS items](#css-items)). Under a prefix the files are served at the
 prefix's URL. Every file's URL includes its ETag, and the file is cached for a
 year as private.
 
+## Studio
+
+The studio (`scrud_django.ui.studio`) is a page for authoring a type's
+presentation on a working branch. Pick a type, pick a branch, and see the type
+rendered with a sample (or a real instance). Click a node in the preview and
+the inspector says which rule chose its component, which rules matched and
+lost, and why. Write a new component for the node and its rule in one action,
+edit an item on the branch, and pull or push the branch. The studio is a
+client of the resource API: every write goes through the resource viewsets
+in-process, as the signed-in user, so scoped RBAC, the `base` checks and
+versions apply as they do for a direct API call. It adds no rights.
+
+### Setup
+
+Add the app after `scrud_django.ui` (a system check fails without it) and
+include its URLs at a path you choose:
+
+```python
+INSTALLED_APPS = [
+    ...
+    "scrud_django.ui",
+    "scrud_django.ui.studio",
+]
+
+urlpatterns = [
+    ...
+    path("studio/", include("scrud_django.ui.studio.urls")),
+]
+```
+
+The studio's pages, scripts and styles are its own templates and static files
+(`scrud_studio/`), with no inline scripts, so a `script-src 'self'` policy
+works. The URL names are in the `scrud-studio` namespace.
+
+### Signing in
+
+Every studio view is a DRF view that needs an authenticated user. An anonymous
+request gets a 401, not a redirect to a login page. Sign in first at your API's
+login (the demo has `/api-auth/login/`), then open the studio; API clients
+send their usual credentials.
+
+### What the studio shows
+
+What a user can see or do comes from their grants, whatever the studio shows:
+
+- The **type browser** (`/studio/`) lists every registered type with a slug.
+  Reading a type's items is checked where they are read.
+- The **branch picker** lists the branches the user may select: `GET` on the
+  branch and on its working ancestors, an intact chain and its pinned
+  snapshots. `main` and published branches are listed too, read-only: the
+  studio edits working branches only, and changes reach a published branch by
+  a push. The page opens on the first working branch the user may select.
+- A rule from a stylesheet the user may not `GET` shows in the inspector as its
+  rank only (`{"readable": false, "rank": [...], "outcome": ...}`): no
+  selector, component or stylesheet name. A component the user may not read
+  has no "inside this type" option. The scope chain of a node is shown in full,
+  though, even when a scope came from a component the user cannot read: scope
+  names are presentation identifiers an author needs to target rules.
+- Previewing in a data context other than `""` needs `GET` on UI stylesheets in
+  that context, else a 400 (`ui-studio-context-unavailable`).
+
+### The preview
+
+The preview is an `<iframe>` with `sandbox="allow-same-origin"` and **no**
+`allow-scripts`, so scripts in a branch's components do not run there. This is
+deliberate: the studio page's own script handles clicks inside the frame (it
+reaches into it because of `allow-same-origin`), and branch code, which anyone
+who may write to the branch controls, cannot reach the studio's controls or the
+user's session. The preview shows the markup and CSS of the branch, not its
+behaviour (no htmx, no editing).
+
+Each node is marked with its JSON Pointer. A component that fails to render
+shows the built-in fallback in the preview, but the inspector reports the
+stored rule as the winner: it ranks rules and does not run templates.
+
+### The studio API
+
+The studio page is built on a JSON API, and a later self-hosted studio would
+use the same endpoints. Paths are relative to where you include the URLs.
+Every endpoint needs an authenticated user (401 otherwise). The writes are
+`POST` with a JSON object body (a body that is not an object is a 400) and are
+protected by CSRF when a session is used. A success from a write also carries
+`HX-Trigger: scrud-studio-saved`. Errors are problem documents (the API's
+`application/problem+json`) and a refusal by the resource view is passed
+through with its status.
+
+Shared query parameters (for `sample`, `preview`, `explain` and
+`new-component/options`):
+
+| Parameter | Meaning |
+|---|---|
+| `branch` | a selection value: a branch name (default `main`), optionally pinned at its branching point |
+| `mode` | `view` (default) or `edit`; anything else is a 400 |
+| `scope` | the scope chain, space separated |
+| `context` | the data context of the sample (default `""`) |
+| `instance` | the pk of a real instance, read through its resource view with the user's rights (a refused read answers as the view does) |
+| `pointer` | a JSON Pointer to a node (default `""`, the resource) |
+
+A `branch` that is unknown, unreadable, has a broken chain, a missing pinned
+snapshot or is not a selection value gives 400 `ui-branch-unavailable`, the same
+for every cause.
+
+#### Pages and fragments
+
+| Endpoint | Response |
+|---|---|
+| `GET types/` (the include's root) | the type browser (HTML); `?q=` filters by slug, title or type IRI; with `HX-Request` only the list |
+| `GET types/<slug>/` | the studio page for the type, from the query above plus `pinned=1`; unknown slug gives 404 |
+| `GET types/<slug>/strip` | the branch strip alone (HTML): `?branch=` names the branch; `UIBranchUnavailableError` for one the user may not select |
+
+#### `GET types/<slug>/sample`
+
+The sample instance of the type, generated from its JSON Schema: a `default`,
+else the first `examples` or `enum` value, else a value by type (a string by
+its `format`, an integer or number at its `minimum`, `false`, a one-item array,
+an object of its properties). A schema without a `type` infers it from
+`properties`, `items`, `allOf`, `oneOf` or `anyOf`; a `$ref` cycle, a node
+deeper than the API's body depth limit and any construct not understood give
+`null`. Parameters: `context` (it becomes the
+sample's `rbac_context`). Response: the JSON. Errors: 400
+`ui-studio-context-unavailable`.
+
+#### `GET types/<slug>/preview`
+
+The HTML page the iframe shows: the sample (or `instance`) rendered on `branch`
+in preview mode, linking that branch's CSS. A sample is shown as editable and
+not deletable; an instance has the user's own decisions. Parameters: `branch`,
+`mode`, `scope`, `context`, `instance`. Errors: 400 `ui-branch-unavailable`,
+400 `ui-studio-context-unavailable`, 400 for a bad `mode`, and the resource
+view's own refusal for an `instance`.
+
+#### `GET types/<slug>/explain`
+
+The inspector's explanation of the node at `pointer`, with the preview's other
+parameters:
+
+```text
+{
+  "pointer": "/items/0",
+  "terms": ["http://example.org/todo#TodoItem", "object"],
+  "scope": ["row"],
+  "winner": 1,
+  "fallback": null,
+  "rules": [
+    {"readable": true, "rank": [1, 0, ...], "outcome": "wins",
+     "selector": "row ex:TodoItem", "component": "todo-row",
+     "stylesheet": "todo", "branch": "", "applies_to": ""}
+  ]
+}
+```
+
+`terms` run from most to least specific and `rules` from best, as the cascade
+tries them. `outcome` is `wins`, `outranked` (below the winner), or `missing
+component` / `wrong mode` (above the winner, or with no winner). `winner` is an
+index into `rules`, or `null` with `fallback` naming the built-in component
+(`scrud:json` for a node that renders as JSON whatever the rules). A rule the
+user may not read has only `readable: false`, `rank` and `outcome`. Errors:
+those of `preview`, and 400 `ui-pointer-not-found` for a pointer to no node the
+preview renders.
+
+#### `GET types/<slug>/new-component/options`
+
+What "New component for this node" offers for the node at `pointer`:
+
+```json
+{
+  "matches": [
+    {"select": "http://example.org/todo#text", "label": "ex:text", "broad": false},
+    {"select": "string", "label": "every string on this branch", "broad": true}
+  ],
+  "inside_type": null,
+  "where": ["row"],
+  "applies_to": [""],
+  "name": "todo-lists-items-text-view"
+}
+```
+
+- `matches`: one per term of the node, most specific first; the first is the
+  default. A schema-type term is `broad` and labelled `every <type>[ format=…|
+  enum] on this branch`; an IRI is shortened with the type's context prefixes.
+- `inside_type`: `{scope, root_component, property, creates_root}` or `null`.
+  It is offered for a node with no IRI term below the root, so that a part of
+  a type can be styled without restyling every string. `scope` is
+  `<slug>-<top property>` (suffixed with a number if another property of the
+  root already maps that name; when the root component already maps the
+  property to a scope, that scope is reused, never overwritten).
+  `root_component` is the root's component now. `creates_root` is true when it
+  is a built-in: the action then writes a Jinja copy of the built-in as the
+  type's root component on the branch, selected by the root's most specific
+  class term. It is `null` when the user may not read the root component.
+- `where`: the scopes of the node's chain; one may narrow the rule.
+- `applies_to`: `""` and the preview's data context, if it has one.
+- `name`: a unique name on the branch for the new component.
+
+Errors: those of `explain`.
+
+#### `POST new-component`
+
+Body: `branch` (a working branch), `slug` (the type), the preview's `mode`,
+`scope`, `context` and `instance` (strings, all optional), and:
+
+| Field | Meaning |
+|---|---|
+| `pointer` | the node |
+| `template` | the Jinja template of the new component (required) |
+| `match` | one of the options' `select` (default: the first) |
+| `inside_type` | boolean; only when the options offered it |
+| `where` | one scope of the node's `where` |
+| `applies_to` | one of the options' `applies_to` (default `""`) |
+
+In one transaction it optionally gives the root component the scope (or writes
+a new root component), creates the Jinja component in the preview's mode, and
+adds the rule to the stylesheet named `studio` on the branch for the chosen
+`applies_to` (created on first use). Response, 201:
+`{"written": [{kind, name[, applies_to]}, ...], "wins": bool, "explanation":
+{...}}`, where `wins` says whether the new rule now wins for the node and
+`explanation` is the inspector's, re-read after the write. A rule that does
+not win is not an error: for instance a rule with no scope loses to an
+existing rule scoped to `row`, so pass `where`. Any write refused rolls
+everything back and its answer is passed through. Errors: 400
+`ui-studio-branch-read-only` and `ui-branch-unavailable` for the branch, 400
+for a bad field, and the resource views' (403, 400, 412) as they are.
+
+#### `GET item`
+
+The item `{kind, name, applies_to?}` (query parameters; `kind` is `component`,
+`stylesheet` or `css`) as `branch` (default `main`) shows it live, for the
+editor: `{kind, name, applies_to, own, from, etag, content}`, with the ETag
+header. `own` says that it is the branch's own row (a save is then a `PUT`);
+`from` is the branch the row comes from. Deletion markers are shown. 404 when
+the branch shows no such item or one the user may not read, alike. 400
+`ui-branch-unavailable`.
+
+#### `POST save-item`
+
+Body: `kind`, `name`, `applies_to` (a stylesheet's, default `""`), `branch`
+(a working branch) and `content` (an object). The studio sets the item's
+`name`, `branch` and authorizing `rbac_context`. If the branch has no row of
+its own it creates one (a `POST`, which sets its `base`); otherwise it updates
+the row, sending the request's `If-Match`. Response: the resource view's, with
+its `ETag`. Errors: 400 `ui-studio-branch-read-only`, 400
+`ui-branch-unavailable`, 400 for a bad field, and the view's (403, 412, 428,
+400) as they are.
+
+#### `POST revert-item`
+
+Body: `kind`, `name`, `applies_to`, `branch`. Deletes the branch's own row, so
+the branch shows its parent's item again (the undo, and "take theirs" for a
+conflict). **`If-Match` is required**: the studio sends it as given, so
+without one the answer is 428 and a stale one gets 412; a revert must not
+silently delete a newer edit on a shared working branch. 404 when the branch
+has no row of its own for the item. Errors besides: as `save-item`.
+
+#### `POST pull`
+
+Body: `branch`. Pulls the working branch (moves its branching point onto its
+parent's current versions), recomputing conflicts. It reads the branch and
+writes it back with `pull: true`, using its own fresh ETag. Response: the
+branch resource. Errors: as `save-item`.
+
+#### `POST push`
+
+Body: `branch`, and optionally `target`. It creates an applied UI push in the
+target's context. The target defaults to the branch's parent and may be the
+parent, `main`, or a branch the user may `GET`; any other, or an unknown one,
+gives 400 `ui-branch-unavailable`. A branch with no parent and no target gives
+400. Response: 201, the push resource. A push a `WorkflowPolicy` gates answers
+as the push API does. Errors: as `save-item`.
+
+#### Errors
+
+| Problem type | Status | When |
+|---|---|---|
+| `ui-branch-unavailable` | 400 | the branch (or a push target) is unknown or the user may not select it; one answer for both |
+| `ui-studio-branch-read-only` | 400 | a write names a published branch (`main` or one with a prefix); refused before anything is dispatched |
+| `ui-studio-context-unavailable` | 400 | a sample or preview in a data context whose UI stylesheets the user may not read |
+| `ui-pointer-not-found` | 400 | `explain` (or the options) for a pointer to no node the preview renders |
+
+The problem `type` is `https://api.openteams.com/http-problem/<name>`.
+
 ## Security
 
 * **Viewing a branch means trusting everyone who can write to it.** There is no
@@ -738,10 +1018,11 @@ year as private.
 
 `demo/` includes a seed command that creates users, a to-do list, and the
 components and stylesheets that render it (a detail page with editable rows, a
-compact sidebar list, and a page with a layout), and three branches: the
+compact sidebar list, and a page with a layout), and four branches: the
 published `admin` branch at `/manage/` (with an extra component and its own CSS),
 the published `customer` branch at `/todo/` (with its own CSS), and a working
-branch `testing-admin` over `admin`. The demo adds
+branch `testing-admin` over `admin`, and a working branch `alice-wip` over
+`testing-admin` for the studio. The demo adds
 `PublishedBranchMiddleware` to its settings. The admin prefix is `/manage/`, not
 `/admin/resources/`, because Django's admin has a catch-all route under
 `/admin/`, which a prefix there would hide.
@@ -756,8 +1037,8 @@ uv run python manage.py runserver
 Sign in at `/api-auth/login/` and open `/api/todo-lists/` with a browser (or use HTTP Basic auth). The
 users are `owner`/`owner` (reads and edits the list), `reader`/`reader` (reads
 it) and `author`/`author` (writes the UI components and stylesheets); these
-passwords are for the demo only. `author` writes the UI in the three branches'
-contexts (`ui-admin`, `ui-customer`, `ui-testing`) and may open both prefixes;
+passwords are for the demo only. `author` writes the UI in the four branches'
+contexts (`ui-admin`, `ui-customer`, `ui-testing`, `ui-alice`) and may open both prefixes;
 `reader` may open `/todo/` (it may GET the `customer` branch) and gets a 403 at
 `/manage/`; `owner` may open `/todo/` too. To try the flow: as `author`, write
 a component on `testing-admin` (a POST of a `ui-components` item with
@@ -765,6 +1046,12 @@ a component on `testing-admin` (a POST of a `ui-components` item with
 `/manage/todo-lists/<id>/?ui-branch=testing-admin` (confirm the switch), then
 POST a `ui-pushes` item with `source` `testing-admin`, `target` `admin`,
 `rbac_context` `ui-admin` and `state` `applied`.
+
+The demo also includes the studio at `/studio/`. Sign in at `/api-auth/login/` as
+`author`, open `/studio/types/todo-lists/`, pick `alice-wip`, click an item in the
+preview, write a "New component for this node" (choose the `row` scope under
+"where", so the rule is as specific as the existing `row` rules), then push to
+`testing-admin` and browse `/manage/todo-lists/<id>/?ui-branch=testing-admin`.
 
 Known limitations of phase 1 are recorded in the [follow-ups](follow-ups.md),
 under the `ui-` names.

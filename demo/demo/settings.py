@@ -74,6 +74,8 @@ INSTALLED_APPS = [
     'scrud_django',
     # Server-rendered UI components and stylesheets, stored as resources.
     'scrud_django.ui',
+    # The bootstrap studio: /studio/ (sign in first at /api-auth/login/).
+    'scrud_django.ui.studio',
     'reversion',
     # The demo itself: its seed_todo_demo management command.
     'demo',

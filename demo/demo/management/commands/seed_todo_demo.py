@@ -1,8 +1,9 @@
 """Seed the to-do demo: users and roles, a to-do list, the UI components and
-stylesheets that render it, and three UI branches: ``admin`` published at
+stylesheets that render it, and four UI branches: ``admin`` published at
 ``/manage/`` (not ``/admin/resources/``: Django's admin claims ``/admin/``),
-``customer`` published at ``/todo/``, and ``testing-admin``, a working branch
-over ``admin``.
+``customer`` published at ``/todo/``, ``testing-admin``, a working branch
+over ``admin``, and ``alice-wip``, a working branch over ``testing-admin`` that
+the studio edits.
 
 Idempotent: a second run creates nothing new. Users, role assignments,
 components and stylesheets are brought back to the definitions below; the
@@ -79,6 +80,7 @@ WRITES = ("GET", "POST", "PUT", "DELETE")
 ADMIN_CONTEXT = "ui-admin"
 CUSTOMER_CONTEXT = "ui-customer"
 TESTING_CONTEXT = "ui-testing"
+ALICE_CONTEXT = "ui-alice"
 
 # {username: {rbac_context: role definition}}; the password is the username.
 USERS = {
@@ -98,7 +100,7 @@ USERS = {
         PROJECT: {"http.GET": [TODO_LIST_TYPE_URI, TODO_LISTS]},
         CUSTOMER_CONTEXT: {"http.GET": [UI_BRANCH_TYPE_URI]},
     },
-    # Writes the UI on main and in all three branches' contexts, and reads
+    # Writes the UI on main and in all the branches' contexts, and reads
     # the lists the pages show.
     "author": {
         DEFAULT_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
@@ -106,6 +108,7 @@ USERS = {
         ADMIN_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
         CUSTOMER_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
         TESTING_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
+        ALICE_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
     },
 }
 
@@ -289,6 +292,14 @@ BRANCHES = [
         "prefix": None,
         "label": "Testing (admin)",
         "description": "Testers browse changes to the admin branch here.",
+    },
+    {
+        "name": "alice-wip",
+        "rbac_context": ALICE_CONTEXT,
+        "parent": "testing-admin",
+        "prefix": None,
+        "label": "Alice (work in progress)",
+        "description": "A working branch for the studio; push it to testing-admin.",
     },
 ]
 
