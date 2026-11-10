@@ -42,6 +42,7 @@ from scrud_django.ui.cascade import (
     rank_rules,
     request_memo,
     resolve_component,
+    rule_outcome,
 )
 from scrud_django.ui.embed import embed_for
 from scrud_django.ui.selectors import TypeTerm
@@ -72,6 +73,46 @@ def using_preview(on: bool = True):
 def in_preview() -> bool:
     """Whether a render in progress is a preview (`using_preview`)."""
     return _preview.get()
+
+
+@dataclass(frozen=True)
+class Mark:
+    """A rule a preview marks the matches of (`using_mark`): rule `index`
+    (the last part of its cascade rank) of the stylesheet `stylesheet` that
+    applies to `applies_to`, from branch `branch` (as the previewed branch
+    resolves it: ``""`` for the default stylesheet)."""
+
+    stylesheet: str
+    applies_to: str
+    index: int
+    branch: str
+
+    def matches(self, rule: Rule) -> bool:
+        source = rule.source
+        return (
+            source is not None
+            and source.name == self.stylesheet
+            and source.applies_to == self.applies_to
+            and source.branch == self.branch
+            and rule.rank[-1] == self.index
+        )
+
+
+_mark: contextvars.ContextVar[Mark | None] = contextvars.ContextVar(
+    "scrud_ui_mark", default=None
+)
+
+
+@contextlib.contextmanager
+def using_mark(mark: Mark | None):
+    """Inside the block, a preview's ``<scrud-node>`` markers say how `mark`
+    fares at their node (`_Walk.match_of`). A context variable, so that a
+    preview's embeds are marked too."""
+    token = _mark.set(mark)
+    try:
+        yield
+    finally:
+        _mark.reset(token)
 
 
 # What a ``<script>`` element must not contain raw (as Django's `json_script`).
@@ -572,9 +613,43 @@ class _Walk:
         html = self._render(node)
         if not self.preview:
             return html
+        match = self.match_of(node)
+        if match is None:
+            return format_html(
+                '<scrud-node data-pointer="{}">{}</scrud-node>', node.pointer, html
+            )
         return format_html(
-            '<scrud-node data-pointer="{}">{}</scrud-node>', node.pointer, html
+            '<scrud-node data-pointer="{}" data-scrud-match="{}"'
+            ' data-scrud-match-outcome="{}">{}</scrud-node>',
+            node.pointer,
+            *match,
+            html,
         )
+
+    def match_of(self, node: _Node) -> tuple[str, str] | None:
+        """How the rule a preview marks (`using_mark`) fares at `node`:
+        ``("wins", "wins")`` when it is the rule `resolve_component` picks;
+        ``("loses", <why>)`` when it matches the node but another wins (or
+        none does), `why` being the inspector's outcome of its best-ranked
+        match (`cascade.rule_outcome`); ``None`` when it does not match, or
+        there is no mark. Ranked with `rank_rules`, as `resolve_component`
+        ranks them."""
+        mark = _mark.get()
+        if mark is None or not node.ruled:
+            return None
+        ranking = rank_rules(
+            self.rules(node.linked), node.scope_chain, node.terms, self.mode
+        )
+        marked = [
+            index
+            for index, (_key, rule) in enumerate(ranking.ranked)
+            if mark.matches(rule)
+        ]
+        if not marked:
+            return None
+        if ranking.winner in marked:
+            return ("wins", "wins")
+        return ("loses", rule_outcome(ranking, marked[0]))
 
     def _render(self, node: _Node) -> SafeString:
         self.rendered.add(node.pointer)

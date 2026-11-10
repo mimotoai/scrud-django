@@ -1,3 +1,6 @@
 scrud-node { display: contents; }
 /* The node selected in the studio (set by the parent page's studio.js). */
 scrud-node[data-studio-selected] > * { outline: 2px solid #0b57d0; outline-offset: 2px; }
+/* The live preview's match markers: where the focused rule wins or loses. */
+scrud-node[data-scrud-match="wins"] > * { outline: 2px solid #188038; outline-offset: 2px; }
+scrud-node[data-scrud-match="loses"] > * { outline: 2px dashed #b06000; outline-offset: 2px; }

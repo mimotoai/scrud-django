@@ -83,6 +83,42 @@ def call_view(
     return _rendered(response)
 
 
+def view_for(request, slug: str, method: str, *, pk=None, data=None):
+    """``(view, request)``: the resource viewset of type `slug` (its list
+    route, or with `pk` its detail route) set up, as DRF's ``as_view`` sets
+    one up, for a `method` request made in process for the user of `request`
+    (as `call_view` makes one, `data` its JSON body), but not dispatched:
+    nothing runs (no check, no handler, no transaction) until the caller
+    asks the view itself, so that it can ask the view's own checks of a
+    write without making it. `pk` must name a detail URL (no ``/``)."""
+    method = method.upper()
+    url = (
+        reverse(f"{slug}-list") if pk is None else reverse(f"{slug}-detail", args=[pk])
+    )
+    extra = _extra(request, "application/json", None)
+    body = {}
+    if data is not None:
+        body = {"data": json.dumps(data), "content_type": "application/json"}
+    internal = RequestFactory().generic(
+        method, url, secure=request.is_secure(), **body, **extra
+    )
+    _as_user_of(request, internal)
+    script = get_script_prefix()
+    match = resolve("/" + url[len(script) :] if url.startswith(script) else url)
+    func = match.func
+    view = func.cls(**func.initkwargs)
+    view.action_map = dict(func.actions)
+    for name, action in view.action_map.items():
+        setattr(view, name, getattr(view, action))
+    view.args, view.kwargs = match.args, match.kwargs
+    view.request = internal
+    drf_request = view.initialize_request(internal, *match.args, **match.kwargs)
+    view.request = drf_request
+    view.headers = view.default_response_headers
+    view.format_kwarg = view.get_format_suffix(**match.kwargs)
+    return view, drf_request
+
+
 @dataclass(frozen=True)
 class Resolved:
     """What an absolute URL path resolves to: the view's `match`, the

@@ -1115,7 +1115,8 @@ leave the studio out of the deployment that needs it.
 Every endpoint needs an authenticated user (401 otherwise). The writes are
 `POST` with a JSON object body (a body that is not an object is a 400) and are
 protected by CSRF when a session is used. A success from a write also carries
-`HX-Trigger: scrud-studio-saved`. Errors are problem documents (the API's
+`HX-Trigger: scrud-studio-saved`. `live-preview` is a `POST` too, but
+form-encoded, and it writes nothing. Errors are problem documents (the API's
 `application/problem+json`) and a refusal by the resource view is passed
 through with its status.
 
@@ -1165,6 +1166,127 @@ not deletable; an instance has the user's own decisions. Parameters: `branch`,
 view's own refusal for an `instance`. Every response, errors included, carries
 `Content-Security-Policy: sandbox allow-same-origin` and `X-Frame-Options:
 SAMEORIGIN`.
+
+#### `POST live-preview`
+
+The live preview: what a branch would show with unsaved drafts of its items,
+or what a branch will show after a push, with the matches of one rule marked.
+It is the preview a self-hosted studio's workbench shows while its author
+types. It is a `POST` because it carries a body, and it never writes: drafts
+are layered over the branch for one render and never stored.
+
+The body is form-encoded (`application/x-www-form-urlencoded`) with one field,
+`request`, holding JSON, so that a `<form method="post" target="<iframe
+name>">` can submit it into the preview frame together with the CSRF token
+(`csrfmiddlewaretoken`; the session's CSRF check applies). It is not a
+resource view, so the API's JSON-only rule does not apply.
+
+```text
+{"type": "todo-lists",          // the type's slug (required)
+ "branch": "wip",               // a selection value (default "main")
+ "mode": "view",                // or "edit" (default "view")
+ "scope": ["row"],              // the scope chain (default [])
+ "context": "",                 // the sample's data context (default "")
+ "instance": 12,                // a pk, or null for the sample
+ "drafts": [{"kind": "component",
+             "content": {"name": "todo-row", "engine": "jinja2",
+                         "mode": "view", "template": "..."}}],
+ "mark": {"stylesheet": "studio", "applies_to": "", "index": 0},  // or null
+ "after_push": {"source": "wip"}}                                  // or null
+```
+
+`branch`, `mode`, `scope`, `context` and `instance` are the `preview`
+parameters, read and checked the same way.
+
+- **Drafts.** `kind` is `component`, `stylesheet`, `css` or `js`; `content`
+  is the item as `save-item` takes it, with its `name` (and a stylesheet's
+  `applies_to`). Each draft is shown as the branch's own row of the item, in
+  place of its stored one, and ranks in the cascade where its save would put
+  it (an own row's place, or after every stored stylesheet for a new one).
+  A draft is shown only if its save would be accepted: the item's resource
+  view is asked the checks of the write `save-item` would make (a create of
+  the branch's override, or an update of its own row: the permission checks
+  on the body and the row, the item's own checks, the type's JSON Schema),
+  without making it. A draft that fails is left out and listed with its
+  errors (below). Embedded resources render in process, so they show the
+  drafts too.
+- **Drafts on a published branch** (`main`, or one with a prefix) are refused
+  with 400 `ui-studio-branch-read-only`: the studio edits working branches.
+- **After a push.** With `after_push`, the branch is shown with the source
+  branch's stored overrides layered on as the push would write them (its
+  deletion markers hiding items): "the site after this push". It needs `GET`
+  on the source and on the branch, and no write: proposers and reviewers
+  often lack write on the target. A source the user may not `GET`, or that
+  does not exist, is 403, alike. It takes no drafts of its own: `after_push`
+  with drafts is 400 `ui-studio-preview-invalid`.
+- **Markers.** With `mark`, each `<scrud-node>` whose node the rule matches
+  gets `data-scrud-match="wins"` when it is the rule that node's component
+  comes from, else `data-scrud-match="loses"`, and
+  `data-scrud-match-outcome` with the inspector's outcome word (`wins`,
+  `fewer scopes`, `less specific term`, `lower cascade rank`, `missing
+  component`, `wrong mode`). The rule is the one at `index` (the last part of
+  its cascade rank) of the stylesheet `stylesheet` that applies to
+  `applies_to`, as the branch (drafts included) resolves it; the default
+  stylesheet's rules can be marked by its name. Markers are computed with the
+  cascade's own ranking, so they agree with the render and with `explain`. A
+  stylesheet the branch does not show marks nothing.
+
+The response is the preview document: the frame rendered as `preview`
+renders it (no write attributes, each node in a `<scrud-node
+data-pointer>`), the branch's CSS in `<style>` elements and its JS in
+`<script>` elements, inlined, `scrud_studio/preview.css`, htmx and
+`scrud-ui.js` as a page has them, and `scrud_studio/preview-bridge.js`. The
+drafts left out are listed in
+`<script type="application/json" id="scrud-preview-errors">` as
+`[{"kind", "name", "messages"}]`, where `messages` are what the save would
+answer.
+
+**Isolation.** Every response, errors included, carries
+
+```text
+Content-Security-Policy: sandbox allow-scripts; default-src 'none';
+  script-src 'self' 'nonce-<n>'; style-src 'self' 'nonce-<n>';
+  img-src 'self' data:; connect-src 'self'
+X-Frame-Options: SAMEORIGIN
+```
+
+(on one line), with a nonce `<n>` new with each response. The branch's
+scripts run (unlike in `preview`), but the document has an opaque origin
+(`allow-scripts` without `allow-same-origin`): they cannot reach the studio's
+page, the user's cookies or their session, whoever wrote them. A request made
+from an opaque origin is cross-site, so it carries no login: the branch's CSS
+and JS files, which need `GET` on the branch and are cached privately, would
+not load by URL. That is why they are inlined, and why the nonce exists: it
+lets exactly those inline elements (and the errors list) run or apply, and
+nothing else inline, such as a `<script>` a component template prints. The
+frame's JSON content blocks (`scrud-content`) carry no nonce; they are data,
+which a browser never runs. Embeds are composed on the server before the
+sandbox applies, so they show; only the requests the previewed page's own
+scripts make at run time go without the login.
+
+**The bridge.** The studio page cannot read an opaque-origin frame's DOM, so
+`preview-bridge.js` posts to `window.parent`, with target origin `"*"` (the
+frame's own origin is opaque; only a same-origin page may frame it):
+
+- `{"type": "scrud-preview:errors", "errors": [...]}` once, when loaded: the
+  drafts left out, as listed above;
+- `{"type": "scrud-preview:select", "pointer": "<JSON Pointer>"}` on a click
+  inside a node: the nearest `<scrud-node>`'s pointer. The click's default is
+  prevented, so a link in the preview does not navigate it. Inside an
+  embedded resource the nearest node is the embedded resource's, and its
+  pointer is relative to that resource (its frame is the nearest
+  `.scrud-resource`).
+
+The receiving page must check `event.source` is its preview frame and accept
+these shapes only. The branch's scripts share the document and can post
+messages too, so treat both as data, never as instructions.
+
+Errors: 400 `ui-studio-preview-invalid` (the `request` field missing, not
+JSON, or a field of the wrong shape; `after_push` with drafts), 400
+`ui-branch-unavailable`, 400 `ui-studio-context-unavailable`, 400
+`ui-studio-branch-read-only` (drafts on a published branch), 403 (an
+`after_push` source the user may not `GET`), 404 for an unknown type, and the
+resource view's own refusal for an `instance`.
 
 #### `GET types/<slug>/explain`
 
@@ -1312,7 +1434,8 @@ as the push API does. Errors: as `save-item`.
 | Problem type | Status | When |
 |---|---|---|
 | `ui-branch-unavailable` | 400 | the branch (or a push target) is unknown or the user may not select it; one answer for both |
-| `ui-studio-branch-read-only` | 400 | a write names a published branch (`main` or one with a prefix); refused before anything is dispatched |
+| `ui-studio-branch-read-only` | 400 | a write names a published branch (`main` or one with a prefix); refused before anything is dispatched; also drafts in a `live-preview` of one |
+| `ui-studio-preview-invalid` | 400 | a `live-preview` whose `request` field is missing, not JSON, has a field of the wrong shape, or sends `after_push` with drafts |
 | `ui-studio-context-unavailable` | 400 | a sample or preview in a data context whose UI stylesheets the user may not read |
 | `ui-pointer-not-found` | 400 | `explain` (or the options) for a pointer to no node the preview renders |
 

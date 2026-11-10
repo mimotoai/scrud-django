@@ -99,10 +99,7 @@ def save_item(request, body) -> HttpResponse:
     if not isinstance(content, dict):
         raise ValidationError({"content": ["An object is required."]})
     branch = _working_branch(request, body.get("branch"))
-    item = {**content, "name": name, "branch": branch.name}
-    if kind == "stylesheet":
-        item["applies_to"] = target
-    item["rbac_context"] = authorizing_context(kind, item, branch)
+    item = item_content(kind, name, target, content, branch)
     own = own_item(kind, branch, name, target)
     if own is None:
         return _passed(call_view(request, KIND_SLUGS[kind], "POST", data=item))
@@ -116,6 +113,18 @@ def save_item(request, body) -> HttpResponse:
             if_match=request.headers.get("If-Match"),
         )
     )
+
+
+def item_content(kind: str, name: str, target: str, content: dict, branch) -> dict:
+    """`content` as a studio write of the item of `kind` named `name` (a
+    stylesheet: that applies to `target`) on `branch` sends it: with its
+    ``name``, ``branch``, a stylesheet's ``applies_to``, and its authorizing
+    context as ``rbac_context``."""
+    item = {**content, "name": name, "branch": branch.name}
+    if kind == "stylesheet":
+        item["applies_to"] = target
+    item["rbac_context"] = authorizing_context(kind, item, branch)
+    return item
 
 
 def revert_item(request, body) -> HttpResponse:

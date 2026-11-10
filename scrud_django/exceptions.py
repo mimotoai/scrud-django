@@ -350,6 +350,21 @@ class UIStudioBranchReadOnlyError(ScrudException):
         self.title = "Studio branch read-only"
 
 
+class UIStudioPreviewInvalidError(ScrudException):
+    """A studio live preview whose ``request`` is not one: missing, not a
+    JSON object, a field of the wrong shape, or an ``after_push`` sent with
+    drafts of its own (it previews the source's stored overrides alone)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_studio_preview_invalid"
+
+    def __init__(self, reason):
+        super().__init__(f"The live preview request is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-studio-preview-invalid"
+        self.title = "Studio preview request invalid"
+
+
 class UIBranchInUseError(ScrudException):
     """A DELETE of a UI branch that other branches name as their parent:
     409 Conflict, naming them."""

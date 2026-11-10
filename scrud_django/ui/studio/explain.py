@@ -5,7 +5,7 @@ always agree."""
 
 from collections.abc import Callable
 
-from scrud_django.ui.cascade import RuleSource, _fallback, rank_rules
+from scrud_django.ui.cascade import RuleSource, _fallback, rank_rules, rule_outcome
 from scrud_django.ui.render import NodeInfo
 from scrud_django.ui.selectors import Selector, TypeTerm
 
@@ -46,7 +46,7 @@ def explain(
         explained = {
             "readable": False,
             "rank": [scopes, term_index, *cascade_rank],
-            "outcome": _outcome(index, rule, ranking),
+            "outcome": rule_outcome(ranking, index),
         }
         source = rule.source
         if id(source) not in allowed:
@@ -69,26 +69,6 @@ def explain(
         "fallback": fallback,
         "rules": rules,
     }
-
-
-# Why a rule below the winner loses: the first part of its rank key
-# (``(scopes, -term index, cascade rank)``) lower than the winner's.
-_BELOW_WINNER = ("fewer scopes", "less specific term", "lower cascade rank")
-
-
-def _outcome(index, rule, ranking) -> str:
-    if index == ranking.winner:
-        return "wins"
-    if ranking.winner is not None and index > ranking.winner:
-        key = ranking.ranked[index][0]
-        best = ranking.ranked[ranking.winner][0]
-        for reason, mine, theirs in zip(_BELOW_WINNER, key, best, strict=True):
-            if mine != theirs:
-                return reason
-        return _BELOW_WINNER[-1]  # an equal key: the sort's order decided
-    if rule.component not in ranking.components:
-        return "missing component"
-    return "wrong mode"
 
 
 def term_text(term: TypeTerm) -> str:

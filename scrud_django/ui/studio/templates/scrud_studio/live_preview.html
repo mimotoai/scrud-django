@@ -1,0 +1,18 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preview: {{ title }}</title>
+{% for css in styles %}<style nonce="{{ nonce }}">{{ css|safe }}</style>
+{% endfor %}<link rel="stylesheet" href="{% static 'scrud_studio/preview.css' %}">
+</head>
+<body>
+<main>{{ frame }}</main>
+<script type="application/json" id="scrud-preview-errors" nonce="{{ nonce }}">{{ errors }}</script>
+<script src="{% static 'scrud_studio/preview-bridge.js' %}"></script>
+<script src="{{ static.htmx }}"></script>
+<script src="{{ static.scrud_ui }}"></script>
+{% for js in scripts %}<script nonce="{{ nonce }}">{{ js|safe }}</script>
+{% endfor %}</body>
+</html>

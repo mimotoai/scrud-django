@@ -12,8 +12,10 @@ rows (a pinned branch sees the installed layers too)."""
 
 import contextlib
 import contextvars
+import hashlib
+import json
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from scrud_django.exceptions import UIBranchVersionMissingError
 from scrud_django.ui.branches import MAIN
@@ -83,6 +85,109 @@ def using_safe_mode(on: bool = True):
 def safe_mode() -> bool:
     """Whether the render in progress is in safe mode (`using_safe_mode`)."""
     return _safe_mode.get()
+
+
+@dataclass(frozen=True)
+class Draft:
+    """An unsaved version of an item of `kind` (an ``ITEM_KINDS`` key):
+    `content`, with its ``name`` (and a stylesheet's ``applies_to``)."""
+
+    kind: str
+    content: dict
+
+
+# The ETag prefix of a draft's row (`using_drafts`).
+DRAFT_ETAG_PREFIX = "draft:"
+
+
+@dataclass(frozen=True)
+class _Drafts:
+    """The drafts of branch `branch` a render shows: ``{kind: [row]}``, and
+    each draft row's position in the cascade (by ETag), as `effective_rows`
+    finds it."""
+
+    branch: str
+    rows: dict
+    positions: dict = field(default_factory=dict)
+
+
+_drafts: contextvars.ContextVar[_Drafts | None] = contextvars.ContextVar(
+    "scrud_ui_drafts", default=None
+)
+
+
+@contextlib.contextmanager
+def using_drafts(branch: str, drafts: Iterable[Draft]):
+    """Inside the block, `effective_rows` shows each of `drafts` as branch
+    `branch`'s own row of its item: ``(None, "draft:<sha256>", content |
+    {"branch": branch})``, in place of the branch's stored row of that item,
+    if any, for every chain `branch` is in. Nothing is stored. A context
+    variable, read when the rows are read (not memoised with them), so an
+    embed's render, which opens a rules memo of its own, shows the drafts too.
+    The caller has checked them (`studio.drafts.validate_draft`): at most one
+    per item, each with a string name. In safe mode they are ignored, as
+    every stored item is."""
+    rows: dict[str, list] = {}
+    for draft in drafts:
+        content = {**draft.content, "branch": branch}
+        digest = hashlib.sha256(
+            json.dumps([draft.kind, content], sort_keys=True, default=str).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        rows.setdefault(draft.kind, []).append(
+            (None, DRAFT_ETAG_PREFIX + digest, content)
+        )
+    token = _drafts.set(_Drafts(branch, rows))
+    try:
+        yield
+    finally:
+        _drafts.reset(token)
+
+
+def draft_position(etag) -> int | None:
+    """The cascade position of the draft row whose ETag is `etag`, where its
+    save would put it: the pk of the branch's own row it replaces (a save
+    updates that row), else after every stored row of its kind on the chain
+    (a save creates one), in the drafts' order; ``None`` for a row that is
+    no draft of the render in progress."""
+    state = _drafts.get()
+    if state is None or not isinstance(etag, str):
+        return None
+    return state.positions.get(etag)
+
+
+def _with_drafts(kind, rows, chain):
+    """`rows` (of the items of `kind` on `chain`) with the drafts of the
+    render in progress (`using_drafts`) as their branch's own rows, when that
+    branch is in `chain`: each in place of the branch's own row of its item
+    key; the rest as they are. Records each draft's `draft_position`."""
+    state = _drafts.get()
+    drafted = state.rows.get(kind) if state is not None else None
+    branch = (
+        next((b for b in chain if b.name == state.branch), None) if drafted else None
+    )
+    if branch is None:
+        return rows
+    keys = {item_key(kind, content, branch) for _pk, _etag, content in drafted}
+    replaced: dict[tuple, int | None] = {}
+    kept = []
+    for row in rows:
+        content = row[2]
+        if (
+            isinstance(content, Mapping)
+            and isinstance(content.get("name"), str)
+            and branch_of(content) == branch.name
+            and item_key(kind, content, branch) in keys
+        ):
+            replaced.setdefault(item_key(kind, content, branch), row[0])
+            continue
+        kept.append(row)
+    newest = max((row[0] for row in rows if row[0] is not None), default=0)
+    for index, (_pk, etag, content) in enumerate(drafted):
+        pk = replaced.get(item_key(kind, content, branch))
+        state.positions[etag] = pk if pk is not None else newest + 1 + index
+    return [*kept, *drafted]
 
 
 def query_param(request, name: str) -> str | None:
@@ -167,7 +272,11 @@ def effective_rows(
     The packaged layers' items (pk ``None``) are beneath every branch's: an
     item key no branch of the chain has shows the layer's item. In safe mode
     (`using_safe_mode`) they are all there is: the chain is ``[LAYER_BRANCH]``
-    and `selection` is not looked at."""
+    and `selection` is not looked at.
+
+    Inside `using_drafts`, when its branch is in the chain, each draft is
+    that branch's own row of its item, in place of the stored one, sorted
+    where its save would put it (`draft_position`)."""
     kind = kind_of(type_uri)
     if safe_mode():
         # Stored items are ignored, on every branch: no query is made.
@@ -185,6 +294,7 @@ def effective_rows(
     chain = [*chain, LAYER_BRANCH]
     if authorized_only:
         rows = _authorized(kind, rows, chain)
+    rows = _with_drafts(kind, rows, chain)
 
     def skipped(loser, winner, key):
         reason = f"{kind} {winner[0]} has its name"
@@ -195,7 +305,17 @@ def effective_rows(
     def unnamed(row):
         _skipped(kind, row[0], None, "it has no name")
 
-    return effective_items(kind, rows, chain, skipped, unnamed, include_deleted)
+    found = effective_items(kind, rows, chain, skipped, unnamed, include_deleted)
+    if _drafts.get() is None:
+        return found
+    # A draft sorts where its save would put it (`draft_position`).
+    return sorted(
+        found,
+        key=lambda row: (
+            row[0] is not None or draft_position(row[1]) is not None,
+            row[0] if row[0] is not None else draft_position(row[1]) or 0,
+        ),
+    )
 
 
 def _authorized(kind, rows, chain):

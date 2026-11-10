@@ -14,7 +14,7 @@ from rest_framework.decorators import (
     renderer_classes,
 )
 from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.parsers import JSONParser
+from rest_framework.parsers import FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
@@ -37,6 +37,12 @@ from scrud_django.ui.render import node_at
 from scrud_django.ui.studio import writes
 from scrud_django.ui.studio.dispatch import call_view
 from scrud_django.ui.studio.explain import explain as explain_node
+from scrud_django.ui.studio.live_preview import (
+    live_preview_csp,
+    new_nonce,
+    parse_request,
+    render_live_preview,
+)
 from scrud_django.ui.studio.new_component import create as create_component
 from scrud_django.ui.studio.new_component import options as component_options
 from scrud_django.ui.studio.page import (
@@ -250,6 +256,51 @@ def preview(request, slug):
             "frame": frame,
         },
     )
+
+
+# The request attribute holding a live preview response's CSP nonce.
+_NONCE_ATTR = "scrud_studio_preview_nonce"
+
+
+def _live_sandboxed(view):
+    """`view` with `live_preview_csp` on every response it gives, errors
+    included, its nonce new with each (on the request as `_NONCE_ATTR`)."""
+
+    @wraps(view)
+    def sandboxed(request, *args, **kwargs):
+        nonce = new_nonce()
+        setattr(request, _NONCE_ATTR, nonce)
+        response = view(request, *args, **kwargs)
+        response["Content-Security-Policy"] = live_preview_csp(nonce)
+        return response
+
+    return sandboxed
+
+
+@_live_sandboxed
+@xframe_options_sameorigin
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([FormParser])
+@renderer_classes([JSONRenderer])
+def live_preview(request):
+    """The live preview (`studio.live_preview`): a form-encoded POST, so
+    that a ``<form target=...>`` can submit it into a frame with the CSRF
+    token, whose one field ``request`` holds the preview's JSON
+    (`live_preview.parse_request`: a refused one is
+    `UIStudioPreviewInvalidError`). What it shows is read as `preview`
+    reads its parameters (`_shown`: the branch must be selectable, the data
+    context readable, an instance readable through its view), then
+    `render_live_preview` renders it. It writes nothing. Every response,
+    errors included, is framable by the same origin only and carries
+    `live_preview_csp` with its own nonce."""
+    live = parse_request(request.data.get("request"))
+    resource_type = get_resource_type_for(live.slug)
+    shown = _shown(request, live.slug, resource_type, live.params())
+    if isinstance(shown, HttpResponse):
+        return shown
+    nonce = getattr(request._request, _NONCE_ATTR)
+    return render_live_preview(request, resource_type, shown, live, nonce)
 
 
 @api_view(["GET"])
