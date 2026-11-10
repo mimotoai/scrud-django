@@ -161,7 +161,9 @@ A branch holds three kinds of items (call):
 |---|---|---|
 | UI component | `name` | as phase 1 |
 | UI stylesheet (component rules) | (`name`, `rbac_context`) | as phase 1; `rbac_context` means *where it applies* |
-| CSS (new type, `ui-css`) | `name` | plain CSS text plus an `order`. A published branch's effective CSS is served under its prefix at a URL that includes the content's version, so browsers can cache it forever (call). `scrud:page` gets the list of CSS URLs in its context and links them. |
+| CSS (new type, `ui-css`) | `name` | plain CSS text plus an `order`. A published branch's effective CSS is served under its prefix at a URL that includes the content's version, so browsers can cache it forever (call). The files are cached
+  `private, max-age=31536000, immutable`, never `public`, because a mount's
+  CSS is gated by GET on its branch, which a shared cache would not check (ruling R33, during implementation). `scrud:page` gets the list of CSS URLs in its context and links them. |
 
 ### Version
 
@@ -214,7 +216,10 @@ testing's changes, then its own.
 - **What a prefix claims.** A prefix claims only `<prefix><registered type
   slug>/...` (plus the CSS URLs). A prefix of `/` doesn't swallow the rest of
   the site. A system check reports a prefix that overlaps another prefix or a
-  URL in the project's URLconf (call).
+  URL in the project's URLconf (call). It reports a Warning,
+  `scrud_django_ui.W001`, not an Error: it is a database check that runs at
+  `migrate`, and stored data must not block migrations; routing stays
+  deterministic, the longest prefix wins (ruling R26, during implementation).
 - **Opening a prefix needs GET on its branch (owner: scoped RBAC).** Without
   it, the response is the same refusal (401 or 403, as an HTML notice) as any
   refused GET (call). It doesn't fall back to another presentation. A
@@ -234,7 +239,10 @@ testing's changes, then its own.
      changes branch halfway);
   2. a query parameter on a link (name left to the builder; e.g.
      `?ui-branch=testing-admin`);
-  3. a cookie set by the switcher (scoped to the prefix, call);
+  3. a cookie set by the switcher (scoped to the prefix, call). Its name is
+     `scrud_ui_branch` at the API URLs and
+     `scrud_ui_branch_<first 12 hex digits of sha256(prefix)>` under a prefix,
+     so that a cookie for `/` cannot shadow another prefix's (ruling R28, during implementation);
   4. none: the published branch itself.
 - **Authorization:** the viewer must be allowed to GET the working branch, and
   it must be in the prefix's tree. If not, the request renders on the published
@@ -250,7 +258,11 @@ testing's changes, then its own.
 - **Shared-link confirmation (call; the owner can drop it).** Opening a link
   that would switch you to a working branch other than the one you are on
   shows a one-click "You're about to browse branch X" page first. This exists
-  because of the security tradeoff below.
+  because of the security tradeoff below. The link that confirms carries an
+  unforgeable token, `ui-branch-confirm=<HMAC of the selection and the
+  viewer's CSRF secret>`, issued only by the server's own confirmation and
+  banner links, so a link planted in content cannot skip the page; it needs
+  Django's `CsrfViewMiddleware` (ruling R23, during implementation).
 - **Live or pinned per view (owner).** The banner can flip the view between
   the branch's live state and the branch pinned at its branching point. This
   changes only that viewer's rendering, not the branch's `base` setting. It is
@@ -310,7 +322,9 @@ Applying a push:
 
 1. Compare each source override's recorded base version with the target's
    current version of that item. If any differ, the write is **refused with
-   409 and the list of conflicts**. Nothing is written and the push stays as
+   409 and the list of conflicts**; the list names only conflicts on items the
+   pusher may GET in the target, and the rest are counted
+   (`unreadable_conflicts`) (ruling R20, during implementation). Nothing is written and the push stays as
    it was (there is no `refused` state, so a future policy needn't define
    one) (call). Resolve on the source (pull, then keep or take), then push
    again.
@@ -323,8 +337,20 @@ The push goes through the ordinary scrud write path (RBAC before and after the
 save, workflow, schema validation), so a policy written later applies without
 code changes. Superusers bypass workflow, as everywhere else.
 
-Pushing into a branch other than the source's parent is allowed (call). The
+Pushing into a branch other than the source's parent is allowed (call).
+
+An applied push is a record: any update of it is refused (400) and a delete
+is a 409; pushing again takes a new push, which a workflow policy gates
+afresh (ruling R18, during implementation). A push whose source has no parent (`main`, or any root) is
+refused (400), because it would delete the live site's items (ruling R19, during implementation). The
 conflict check doesn't depend on the parent link.
+
+## Deleting a branch
+
+`main` cannot be deleted (400), and neither can a branch that another names as
+its parent (409). Deleting a branch deletes its own items and its versions in
+the same transaction, so a branch created again under the name starts at
+version 1 (ruling R10, during implementation)
 
 ## Rollback
 
@@ -446,6 +472,9 @@ This builds on MR !8, which is not yet merged. It goes on a new branch,
 `feature/ui-branches`, off `feature/ui-components`, and its MR targets the
 release branch after MR !8 merges. It adds resource types and changes the
 security model of an optional app, so it is a **minor** bump (0.17.0) (call).
+Work now merges into `develop` with no version bump; the release notes entry is
+under an unreleased heading, and releasing is a separate `develop` to `main`
+merge request (ruling R5, during implementation).
 
 ## Testing expectations
 

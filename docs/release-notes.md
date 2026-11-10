@@ -1,5 +1,37 @@
 # Change Log
 
+## Unreleased
+
+### Added
+
+* UI branches in `scrud_django.ui`. A branch is a named set of UI components,
+  stylesheets and (new) CSS items that overrides its parent branch, live or
+  pinned to a version. Branches are resources (`ui-branches`, with read-only
+  `ui-branch-versions` and `ui-pushes`), authorized by scoped RBAC in their own
+  context. A branch can be published at a URL prefix
+  (`scrud_django.ui.branches.middleware.PublishedBranchMiddleware`, after
+  `AuthenticationMiddleware`), where the resource views serve the same resources
+  with the branch's presentation; working branches are browsed with a header,
+  a parameter or a cookie, a banner and a confirmation step. Pushes (which a
+  `WorkflowPolicy` can gate), pulls with conflict detection, restores and
+  per-branch versions move changes between branches. See the Branches chapter
+  of the UI page and the `seed_todo_demo` command.
+
+### Changed
+
+* In `scrud_django.ui`, writing a component or stylesheet is authorized by RBAC
+  in the item's branch context instead of a global trusted role; on `main`
+  (context `""`) the rules are the same as before. Viewing a branch means
+  trusting everyone who can write to it: read the Security section.
+* The UI's `Vary` header adds `Scrud-UI-Branch` and `Cookie`. `scrud:page`
+  gets a `css` list of the CSS file URLs; a custom page component should link
+  them.
+* A system check, `scrud_django_ui.W001` (a Warning), reports published
+  branches' prefixes that overlap or hide the project's URLs.
+
+Behaviour for a site that creates no branch, and without the middleware, is
+unchanged. The middleware costs one query per request outside the API's URLs.
+
 ## 0.16.0
 
 ### Added

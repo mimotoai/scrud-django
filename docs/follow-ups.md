@@ -342,6 +342,159 @@ What remains:
   on the input). Test: a list item with `"count": 3`; clear the field and
   blur; the stored `count` is gone (or `null`), and no later edit is cancelled.
 
+<a id="ui-branches-row-scan"></a>
+## ui-branches-row-scan: each render reads every branch's rows of a type
+
+Rendering a branch other than `main` reads the stored rows of all UI item kinds
+for every branch in one query (`resource_type__type_uri__in`), then picks the
+branch's effective items in Python (`effective_rows`). The cost grows with the
+number of items on all branches, not the number on the branch rendered, so a
+site with many branches (one per author, say) pays for all of them on every
+page. Off-branch requests (`main` only) are not affected.
+
+Fix: filter the rows to the branch's chain in SQL (`content__branch__in`, an
+equality lookup that works on all four databases, plus main's rows with no
+`branch`). Test: with 1,000 branches of a few items each, render a page on one
+of them and assert a query count and a time budget (and that the rows read are
+those of its chain); it fails today.
+
+<a id="ui-banner-hideable"></a>
+## ui-banner-hideable: branch CSS and page components can hide the banner
+
+The branch banner is rendered by the server outside stored components, but it
+is part of the page's markup. A CSS item (`.scrud-branch-banner {display:
+none}`) can hide it, and so can a custom page component that wraps its `body`
+in a hidden element, a `<template>` or an HTML comment (the page is checked for
+the banner's presence, not for its visibility). So "no branch can hide it" is
+not true: a branch's writers can show its viewers a page that does not say
+which branch it is. This is part of the trust in a branch's writers (see
+Security in `ui.md`), and the confirmation page, which is a separate page, still
+asks before a switch.
+
+Fix: serve the banner in a way CSS from branches cannot reach (a shadow root
+or an `!important` rule in an inline `<style>` after the branch CSS), and check
+the rendered page for the banner outside `<template>`, comments and hidden
+parents. Test: in `tests/test_ui_branch_browse.py`, a branch with a CSS item
+hiding `.scrud-branch-banner`, and another whose page component wraps
+`{{ body }}` in `<template>`; assert the banner is visible in the rendered
+page (a check on the rendered DOM); both fail today.
+
+<a id="ui-prefix-query"></a>
+## ui-prefix-query: one query per request outside the API, uncached
+
+`PublishedBranchMiddleware` reads the stored branches (one query) on every
+request outside the API's URLs, to learn whether the path is under a prefix.
+A mounted request then reads the branch again for some paths (JSON pinned
+selections, `choose` outside the render memo). The prefixes change rarely.
+
+Fix: cache the prefix table (name, prefix, context) with invalidation on a
+write of a `ui-branches` resource (a signal, and a short timeout for other
+processes). Test: a request to a non-API URL runs no query once the table is
+cached, and a changed prefix is routed on the next request in every process;
+it fails today because every request queries.
+
+<a id="ui-branch-lock-order"></a>
+## ui-branch-lock-order: pushes, branch deletes and item writes can lock in different orders
+
+A push locks its source's and target's branch rows and then the item rows it
+writes; an item write locks the item row and then records the branch's version
+(locking the branch row); a branch delete locks the branch row and then deletes
+its items. Two of these running together can take the same locks in opposite
+orders, and the database aborts one of them (a deadlock, 500 on PostgreSQL and
+MySQL; SQLite serializes writes). Nothing is corrupted: the aborted request
+rolls back whole.
+
+Fix: lock the branch rows first, in one order (sorted by name), in every path.
+Test: on PostgreSQL, run a push and an item write to its target from two
+threads against a barrier, many times, and assert neither request is a 500; it
+fails intermittently today.
+
+<a id="ui-version-read-committed"></a>
+## ui-version-read-committed: version numbers rely on READ COMMITTED on MySQL and MariaDB
+
+A branch's next version number is the highest recorded plus one, read under a
+lock on the branch's row. On PostgreSQL (READ COMMITTED) and SQLite that reads
+the latest committed version. On MySQL and MariaDB, whose default is REPEATABLE
+READ, the read may use a snapshot taken earlier in the transaction and miss a
+version another transaction committed after it, giving two versions the same
+number (the second `UPDATE` of the row is blocked, but the plain `SELECT` is
+not). Run them at READ COMMITTED, or read with `select_for_update`.
+
+Fix: read the latest number with `select_for_update()` (a locking read sees
+the latest committed rows on every database). Test: on MySQL and MariaDB, two
+transactions each write an item to the same branch with a barrier between the
+branch lock and the version read, and assert the version numbers are distinct;
+it can fail today on those databases.
+
+<a id="ui-branch-enumeration"></a>
+## ui-branch-enumeration: item-write errors reveal which branches exist
+
+The spec says a viewer sees only the branches they may GET. An item write
+naming a branch gets 400 `There is no UI branch named 'x'` when it does not
+exist, or the `rbac_context` error naming the branch's context when it does, so
+a user who may write items can find branch names and contexts they may not GET.
+A push's errors do the same (`UIBranchContextError` names the target's context).
+
+Fix: answer the same 400 for an unknown branch and for one the writer may not
+GET, without naming the context. Test: as a user with POST on `ui-components`
+but no GET on branch `secret`, POST an item naming `secret` and one naming a
+branch that does not exist, and assert the responses are identical; they
+differ today.
+
+<a id="ui-bulk-delete-versions"></a>
+## ui-bulk-delete-versions: a bulk delete records one version per item
+
+`QuerySet.delete()` of many items (an admin action, `discard_branch` aside)
+sends one `post_delete` per item, and each records a branch version, so
+deleting N items of `main` records N versions and reads the items N times
+(quadratic work). The versions are all valid, but history is noisy.
+
+Fix: wrap bulk deletes in `batched_versions()` (one version per branch).
+Test: delete 50 items of `main` with `Resource.objects.filter(...).delete()`
+and assert one version and a bounded number of queries; it records 50 today.
+
+<a id="ui-discard-cross-context"></a>
+## ui-discard-cross-context: deleting a published branch deletes stylesheets in other contexts without a grant there
+
+On a published branch a stylesheet that applies to a context `X` is authorized
+in `X`, so writing or deleting it directly needs a grant in `X`. Deleting the
+branch (`discard_branch`) deletes its own items, those stylesheets included,
+needing only DELETE on the branch in its context. A user who may delete the
+branch can so remove a stylesheet they could not delete one by one.
+
+Fix: check, for each such item, the grant a direct delete would need
+(`may_act_in_context`), as a push does, before deleting the branch, and refuse
+(403) otherwise. Test: a user with DELETE on branch `p` (in context `""`) and
+none in `acme`; a stylesheet on `p` that applies to `acme`; assert the branch
+DELETE is refused and the stylesheet remains; it is deleted today.
+
+<a id="ui-confirm-token-in-urls"></a>
+## ui-confirm-token-in-urls: the confirmation token travels in URLs
+
+A confirmed branch link carries `ui-branch-confirm=<token>` in its query
+string, so it can appear in browser history, server logs and a same-origin
+`Referer`. The token is bound to the selection and the viewer's CSRF secret,
+not to the prefix, and lasts as long as the CSRF secret. It cannot be used by
+another viewer, but it can be replayed by the same viewer's browser, which is
+the point; a stolen log line is not enough without the viewer's cookie.
+
+Fix: make the token short-lived and bound to the prefix, or confirm with a
+POST. Test: a token for one prefix is refused at another, and an old one is
+refused after its lifetime; both are accepted today.
+
+<a id="ui-version-304-after-grant-change"></a>
+## ui-version-304-after-grant-change: a filtered version can answer 304 after a grant change
+
+A version is read per requester (items the reader may not read are left out)
+and its ETag follows what the reader gets. A client that revalidates with
+`If-Modified-Since` only, after its grants changed, can get a 304 for a
+representation that would now differ.
+
+Fix: derive `Last-Modified` for a filtered version from the grants too, or
+omit it when items were filtered. Test: read a version as a user who lacks one
+item's read grant, grant it, then GET with `If-Modified-Since` of the earlier
+response and assert 200; it is 304 today.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>
