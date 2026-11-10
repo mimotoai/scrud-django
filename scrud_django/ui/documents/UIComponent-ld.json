@@ -27,5 +27,14 @@
   },
   "description": {
     "@id": "openteams:UIDescription"
+  },
+  "branch": {
+    "@id": "openteams:UIBranchReference"
+  },
+  "deleted": {
+    "@id": "openteams:UIDeleted"
+  },
+  "base": {
+    "@id": "openteams:UIBaseVersion"
   }
 }

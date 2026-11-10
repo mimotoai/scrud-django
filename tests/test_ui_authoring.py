@@ -136,6 +136,9 @@ def test_put_moving_a_component_out_of_the_default_context(request, who):
     update(url, f'"{made.etag}"', body)
     # a superuser reaches the schema (400); the author is refused outright
     Then.http.status_code_is(400 if who == "admin_login" else 403)
+    if who == "admin_login":
+        # On main a component is authorized in main's context, "".
+        assert Http.response.json()["type"].endswith("/ui-branch-context")
     made.refresh_from_db()
     assert made.content["rbac_context"] == ""
 

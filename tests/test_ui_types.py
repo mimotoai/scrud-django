@@ -67,6 +67,9 @@ def test_component_outside_default_context_is_400(admin_login):
         format="json",
     )
     Then.http.status_code_is(400)
+    # On main a component is authorized in main's context, "".
+    assert Http.response.json()["type"].endswith("/ui-branch-context")
+    assert "''" in Http.response.json()["detail"]
 
 
 @pytest.mark.django_db

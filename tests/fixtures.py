@@ -13,6 +13,7 @@ from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django import collection_type_uri_for
 from scrud_django.registration import ResourceRegistration
+from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 from scrud_django.utils import http_date_for
 
@@ -45,7 +46,10 @@ __all__ = [
     'todo_viewer_login',
     'todo_writer_login',
     'todo_reader_login',
+    'ui_acme_stylesheet_login',
+    'ui_alice_login',
     'ui_author_login',
+    'ui_bob_login',
     'ui_reader_login',
     'ui_stylesheet_author_login',
     'unapply_a_scrud_migration',
@@ -306,6 +310,36 @@ def ui_stylesheet_author_login(db):
     return assign_role(
         {f"http.{m}": types for m in ("GET", "POST", "PUT", "DELETE")}, "project-a"
     )
+
+
+def assign_ui_role(type_uris, rbac_context):
+    """A new user who may read and write resources of `type_uris` (and
+    their collections) in `rbac_context` only."""
+    types = [uri for t in type_uris for uri in (t, collection_type_uri_for(t))]
+    return assign_role(
+        {f"http.{m}": types for m in ("GET", "POST", "PUT", "DELETE")}, rbac_context
+    )
+
+
+@pytest.fixture
+def ui_alice_login(db):
+    """May read and write UI branches, components and stylesheets in "alice"
+    only."""
+    return assign_ui_role((UI_BRANCH_TYPE_URI, *UI_TYPE_URIS), "alice")
+
+
+@pytest.fixture
+def ui_bob_login(db):
+    """May read and write UI branches, components and stylesheets in "bob"
+    only."""
+    return assign_ui_role((UI_BRANCH_TYPE_URI, *UI_TYPE_URIS), "bob")
+
+
+@pytest.fixture
+def ui_acme_stylesheet_login(db):
+    """May write UI stylesheets (not components, not branches) in "acme"
+    only."""
+    return assign_ui_role((UI_STYLESHEET_TYPE_URI,), "acme")
 
 
 TYPE_URI_TODO = "tests://ToDo"

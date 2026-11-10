@@ -172,6 +172,40 @@ class UIStylesheetNameTakenError(ScrudException):
         self.title = "UI stylesheet name taken"
 
 
+class UIBranchInvalidError(ScrudException):
+    """A UI branch write that is refused (a bad or taken name or prefix, a
+    missing parent, a cycle of parents, a reserved ``main`` that is not as
+    reserved), or a UI item naming a branch that does not exist, with the
+    reason as ``detail``."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_branch_invalid"
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.type = "https://api.openteams.com/http-problem/ui-branch-invalid"
+        self.title = "UI branch invalid"
+
+
+class UIBranchContextError(ScrudException):
+    """A UI item whose ``rbac_context`` is not its authorizing context on its
+    branch (`scrud_django.ui.branches.model.authorizing_context`): the one
+    context its write is authorized in."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_branch_context"
+
+    def __init__(self, expected):
+        super().__init__(
+            f"This item's rbac_context must be {expected!r}: on its branch, "
+            "its write is authorized in that context."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-branch-context"
+        self.title = "UI item in the wrong context for its branch"
+
+
 class UIHeaderInvalidError(ScrudException):
     """An HTML request whose fragment header (``Scrud-UI-Pointer``) is
     invalid."""
