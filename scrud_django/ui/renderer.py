@@ -89,7 +89,8 @@ from scrud_django.ui.cascade import (
     request_memo,
     resolve_component,
 )
-from scrud_django.ui.render import render_collection, render_resource
+from scrud_django.ui.embed import embed_for
+from scrud_django.ui.render import JINJA_ENGINE, render_collection, render_resource
 from scrud_django.ui.selectors import TypeTerm
 
 logger = logging.getLogger(__name__)
@@ -171,9 +172,11 @@ class ScrudHTMLRenderer(BaseRenderer):
                 chosen = choose(request)
                 if _asks_confirmation(chosen, request):
                     return str(confirm_page(chosen, request)).encode(self.charset)
+                # An embedded request (`embed`) stays in its embedder's safe
+                # mode: it is only ever turned on here.
                 with (
                     using_selection(chosen.selection),
-                    using_safe_mode(safe_mode_requested(request)),
+                    using_safe_mode(safe_mode_requested(request) or safe_mode()),
                 ):
                     body, contexts = _body(data, status, request, view, response)
                     if not _is_htmx(request):
@@ -322,6 +325,12 @@ def scope_chain_of(request) -> tuple[str, ...]:
     value = _header(request, SCOPE_HEADER)
     if value is None:
         value = query_param(request, SCOPE_PARAMETER)
+    return parse_scope_chain(value)
+
+
+def parse_scope_chain(value: str | None) -> tuple[str, ...]:
+    """The scope chain `value` names, as `scope_chain_of` reads it; ``()``
+    when it is not one."""
     names = [n for n in _SCOPE_SEPARATORS.split(value or "") if n]
     if len(names) > MAX_SCOPES or not all(_SCOPE_NAME.fullmatch(n) for n in names):
         return ()
@@ -600,7 +609,8 @@ def _page(
 
     The page component's context also has ``css``: the URLs of the CSS files
     effective on the page's branch, in order, and ``scripts``: those of its
-    JS files (empty when it has none)."""
+    JS files (empty when it has none); a stored Jinja one's also has
+    ``embed`` (`embed.embed_for`)."""
     chrome = []
     branch = frame_branch(request) if chosen is not None else None
     if branch is not None:
@@ -621,8 +631,8 @@ def _page(
     css = css_urls(request)
     scripts = js_urls(request)
 
-    def page_context():
-        return {
+    def page_context(component=None):
+        context = {
             "title": _title(resource_type),
             "css": css,
             "scripts": scripts,
@@ -633,6 +643,9 @@ def _page(
             },
             "body": body,
         }
+        if getattr(component, "engine", None) == JINJA_ENGINE:
+            context["embed"] = embed_for(request)
+        return context
 
     component = resolve_component(
         effective_rules(list(contexts)), scope_chain, [PAGE_TERM], "view"
@@ -642,7 +655,7 @@ def _page(
     if component.name == PAGE_BUILTIN:
         return component.compiled().render(page_context())
     try:
-        page = component.compiled().render(page_context())
+        page = component.compiled().render(page_context(component))
     except Exception:
         logger.warning(
             "scrud-ui: page component %r failed to render",

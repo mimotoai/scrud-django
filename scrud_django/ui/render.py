@@ -13,6 +13,8 @@ contract of the built-ins); a stored component that fails while rendering is
 replaced by the built-in for its node and mode, after an HTML comment naming it.
 """
 
+import contextlib
+import contextvars
 import copy
 import hashlib
 import json
@@ -41,9 +43,36 @@ from scrud_django.ui.cascade import (
     request_memo,
     resolve_component,
 )
+from scrud_django.ui.embed import embed_for
 from scrud_django.ui.selectors import TypeTerm
 
 logger = logging.getLogger(__name__)
+
+# The engine whose stored components get ``embed`` in their context.
+JINJA_ENGINE = "jinja2"
+
+_preview: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "scrud_ui_preview", default=False
+)
+
+
+@contextlib.contextmanager
+def using_preview(on: bool = True):
+    """Render in preview mode inside the block (`on`): `render_resource`
+    and `render_collection` render as with ``preview=True``. A context
+    variable, so that an embed (`embed`), rendered in process, renders in
+    the preview it is in."""
+    token = _preview.set(on)
+    try:
+        yield
+    finally:
+        _preview.reset(token)
+
+
+def in_preview() -> bool:
+    """Whether a render in progress is a preview (`using_preview`)."""
+    return _preview.get()
+
 
 # What a ``<script>`` element must not contain raw (as Django's `json_script`).
 _JSON_SCRIPT_ESCAPES = {
@@ -88,8 +117,11 @@ def render_resource(
 
     A `preview` (the studio's) has no write attributes: no ``hx-*`` and no
     Delete button, and its root is a ``div``, never a form. Each node's HTML
-    is wrapped in ``<scrud-node data-pointer="<its JSON Pointer>">``."""
-    with request_memo():
+    is wrapped in ``<scrud-node data-pointer="<its JSON Pointer>">``. Inside
+    a preview (`using_preview`, which a preview enters for what it embeds)
+    every render is one."""
+    preview = preview or in_preview()
+    with request_memo(), using_preview(preview):
         return _render_resource(
             content,
             resource_type=resource_type,
@@ -121,8 +153,10 @@ def render_collection(
     ``scrud:collection``, each resource in its own frame and its own
     contexts' stylesheets. Under a published branch's prefix, the items'
     and the pager's links are its (`selection.in_mount`). `mode` is each
-    item's (see `render_resource`)."""
+    item's (see `render_resource`); inside a preview (`using_preview`) each
+    item renders as a preview."""
     scope_chain = tuple(scope_chain)
+    preview = in_preview()
     envelope = envelope if isinstance(envelope, Mapping) else {}
     items = envelope.get("content")
     children = []
@@ -145,6 +179,7 @@ def render_collection(
                     errors=None,
                     mode=mode,
                     rules_cache=rules_cache,
+                    preview=preview,
                 )
             )
     schema = _document(resource_type.schema)
@@ -177,6 +212,7 @@ def render_collection(
                 {**context, "href": href, "scope": list(scope_chain)},
                 href,
                 lambda: builtin_component("scrud:collection"),
+                request,
             )
     return format_html(
         '<div class="scrud-collection-frame" data-scrud-href="{}"'
@@ -280,6 +316,7 @@ def _walk_of(
         id_prefix="scrud-" + hashlib.sha256(href.encode()).hexdigest()[:8],
         rules_cache=rules_cache,
         preview=preview,
+        request=request,
     )
     root_classes = [
         _keyword_free(ld.expand(t, ld_context)) if isinstance(t, str) else None
@@ -393,6 +430,7 @@ class _Walk:
     rules_cache: dict
     preview: bool = False  # wrap each node in a `scrud-node` marker
     rendered: set = field(default_factory=set)
+    request: object = None  # whose user a stored Jinja component embeds as
 
     def rules(self, linked):
         key = (tuple(self.contexts), linked)
@@ -592,6 +630,7 @@ class _Walk:
                 node.terms,
                 self.mode,
             ),
+            self.request,
         )
 
     def append_fields(self, node):
@@ -713,12 +752,16 @@ def _render_builtin(name, context):
     return builtin_component(name).compiled().render(context)
 
 
-def _render_stored(component, context, where, fallback):
-    """A stored `component` rendered with an isolated copy of `context`. If it
-    raises, the failure is logged (naming `where`) and the built-in that
+def _render_stored(component, context, where, fallback, request=None):
+    """A stored `component` rendered with an isolated copy of `context`, to
+    which a Jinja one's ``embed`` (`embed.embed_for` `request`) is added. If
+    it raises, the failure is logged (naming `where`) and the built-in that
     ``fallback()`` returns renders `context` after a comment naming it."""
+    isolated = _isolated(context)
+    if getattr(component, "engine", None) == JINJA_ENGINE and request is not None:
+        isolated["embed"] = embed_for(request)
     try:
-        return component.compiled().render(_isolated(context))
+        return component.compiled().render(isolated)
     except Exception:
         logger.warning(
             "scrud-ui: component %r failed to render %s",

@@ -175,6 +175,65 @@ with its own contexts' stylesheets.
 `scrud:notice` renders one message. Its context is `{message, level}`, where
 `level` is `"error"` for every notice the server renders.
 
+### Embeds
+
+A stored Jinja component (a node's, a list's or the page's) can render another
+resource in its place on the server: `embed(path, scope=(), mode=None)`
+returns that resource's HTML, the fragment its own URL answers.
+
+```jinja
+<aside>{{ embed(value.sidebar, "sidebar") }}</aside>
+<section>{{ embed("/api/todo-lists/?page=2", ["card"], mode="view") }}</section>
+```
+
+- `path` is an absolute URL path on this site, with an optional query (a list's
+  `?page=2`), such as a link's `href` from the node's data. A path under a
+  published branch's prefix is served as that prefix serves it: at the API's
+  URL, with the prefix's checks, and the embedded frame's links stay in the
+  prefix.
+- `scope` is the scope chain to render it in: a string of space- or
+  comma-separated names, or a list of names (an invalid one is no scope).
+- `mode="view"` renders it read-only (as `Scrud-UI-Mode: view`); any other
+  value leaves the mode to the user's rights.
+
+The embed is a GET made in process as the same user
+(`scrud_django.ui.dispatch.dispatch_path`), so the resource's view, its RBAC,
+workflow, masking and `check_mount` apply unchanged. It sends `HX-Request:
+true`, `Scrud-UI-Scope`, `Scrud-UI-Mode: view` when asked, and
+`Scrud-UI-Branch` with the embedding render's branch (as `name` or
+`name@pinned`), so the embed renders on the same branch, and the embedded
+frame's own requests stay there. A response of 400 or more is embedded as the
+notice the resource's URL answers with (a 403 or a 404 for a resource the
+viewer can't read): never its content. Safe mode and the studio's preview carry
+over to what is embedded (as context variables, not headers): an embed in a
+preview has no write attributes. Django components have no `embed`.
+
+These are refused, and render
+`<div class="scrud-notice scrud-notice-error" role="alert">This embed was refused.</div>`
+in the embed's place (each refusal is logged as a warning by
+`scrud_django.ui.embed`):
+
+- a `path` that isn't a string, isn't absolute, or has a scheme or a host
+  (`https://other.example/...`, `//other.example/...`);
+- a path that doesn't resolve to a resource view: a stored or computed resource
+  type's list or detail route. A project's page, the studio, the API root and
+  the CSS and JavaScript file routes are refused, and so is a response that
+  isn't the UI's HTML (`?format=json`, `?format=api`);
+- a path and scope chain already being rendered, which would be a cycle: the
+  top-level request (its URL and `Scrud-UI-Scope`) and each embed it is inside.
+  A resource embedding itself in the scope it is rendered in, or two components
+  embedding each other, stop there. The same resource in another scope is not a
+  cycle;
+- an embed deeper than 3 (`MAX_EMBED_DEPTH`: an embed in an embed in an embed is
+  the deepest);
+- every embed after the first 20 (`MAX_EMBEDS`) of a top-level response, nested
+  ones included.
+
+A view that raises renders "This embed failed." the same way, logged with its
+traceback. Each embed reads the UI items of its branch again (it may be refused
+the branch the embedding render shows, and then renders on its prefix's
+published branch): up to 20 renders per response.
+
 ## CSS items
 
 A CSS item (type `ui-css`) holds the text of a page's CSS: `name`, `css` (at
