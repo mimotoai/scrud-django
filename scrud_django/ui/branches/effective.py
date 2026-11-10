@@ -33,6 +33,7 @@ from scrud_django.ui.layers import LAYER_BRANCH, layer_rows
 BRANCH_HEADER = "Scrud-UI-Branch"
 BRANCH_PARAMETER = "ui-branch"
 PINNED_SUFFIX = "@pinned"
+SAFE_PARAMETER = "ui-safe"
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,42 @@ def using_selection(selection: Selection):
 
 def active_selection() -> Selection:
     return _selection.get() or Selection()
+
+
+_safe_mode: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "scrud_ui_safe_mode", default=False
+)
+
+
+@contextlib.contextmanager
+def using_safe_mode(on: bool = True):
+    """Render from the packaged layers alone inside the block (`on`): see
+    `effective_rows`. A context variable, so it holds for any work the render
+    does in-process (an embed's, a thread that copies the context)."""
+    token = _safe_mode.set(on)
+    try:
+        yield
+    finally:
+        _safe_mode.reset(token)
+
+
+def safe_mode() -> bool:
+    """Whether the render in progress is in safe mode (`using_safe_mode`)."""
+    return _safe_mode.get()
+
+
+def query_param(request, name: str) -> str | None:
+    """The query parameter `name` of `request` (a DRF or a Django one)."""
+    params = getattr(request, "query_params", None)
+    if params is None:
+        params = getattr(request, "GET", {})
+    return params.get(name)
+
+
+def safe_mode_requested(request) -> bool:
+    """Whether `request` asks for safe mode: ``?ui-safe=1``. Any other
+    value is ignored."""
+    return query_param(request, SAFE_PARAMETER) == "1"
 
 
 def chain_of(name: str, all_branches: Mapping[str, Branch]) -> list[Branch]:
@@ -128,17 +165,23 @@ def effective_rows(
     presentation. A JSON list shows the rows as stored (``False``).
 
     The packaged layers' items (pk ``None``) are beneath every branch's: an
-    item key no branch of the chain has shows the layer's item."""
-    selection = selection or active_selection()
-    if selection.branch == MAIN:
-        chain = [MAIN_BRANCH]
-    else:
-        chain = chain_of(selection.branch, branches())
+    item key no branch of the chain has shows the layer's item. In safe mode
+    (`using_safe_mode`) they are all there is: the chain is ``[LAYER_BRANCH]``
+    and `selection` is not looked at."""
     kind = kind_of(type_uri)
-    rows = _rows_for(kind, type_uri, chain, selection.pinned)
-    if rows is None:  # defensive: `selection.choose` already refused it
-        chain = [MAIN_BRANCH]
-        rows = [*_stored(type_uri, {MAIN}), *layer_rows(type_uri)]
+    if safe_mode():
+        # Stored items are ignored, on every branch: no query is made.
+        chain, rows = [], layer_rows(type_uri)
+    else:
+        selection = selection or active_selection()
+        if selection.branch == MAIN:
+            chain = [MAIN_BRANCH]
+        else:
+            chain = chain_of(selection.branch, branches())
+        rows = _rows_for(kind, type_uri, chain, selection.pinned)
+        if rows is None:  # defensive: `selection.choose` already refused it
+            chain = [MAIN_BRANCH]
+            rows = [*_stored(type_uri, {MAIN}), *layer_rows(type_uri)]
     chain = [*chain, LAYER_BRANCH]
     if authorized_only:
         rows = _authorized(kind, rows, chain)

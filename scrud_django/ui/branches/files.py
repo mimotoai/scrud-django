@@ -14,7 +14,14 @@ from django.urls import reverse
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
-from scrud_django.ui.branches.effective import Selection, effective_rows
+from scrud_django.ui.branches.effective import (
+    SAFE_PARAMETER,
+    Selection,
+    effective_rows,
+    safe_mode,
+    safe_mode_requested,
+    using_safe_mode,
+)
 from scrud_django.ui.branches.middleware import check_mount
 from scrud_django.ui.branches.selection import choose, in_mount
 
@@ -40,9 +47,11 @@ def file_items(
 
 def file_urls(request, url_name: str, files: list[tuple[str, str, str]]) -> list[str]:
     """The URLs of `files` (route `url_name`), under the prefix of `request`'s
-    page when it has one."""
+    page when it has one. In safe mode they carry ``?ui-safe=1``, which the
+    file views honour (the layer's items only)."""
+    suffix = f"?{SAFE_PARAMETER}=1" if safe_mode() else ""
     return [
-        in_mount(request, reverse(url_name, args=[name, etag]))
+        in_mount(request, reverse(url_name, args=[name, etag])) + suffix
         for name, etag, _text in files
     ]
 
@@ -63,10 +72,12 @@ class ItemFileView(APIView):
     def get(self, request, name: str, etag: str):
         check_mount(request)
         chosen = choose(request)
+        with using_safe_mode(safe_mode_requested(request)):
+            files = self.files(chosen.selection)
         text = next(
             (
                 text
-                for found, found_etag, text in self.files(chosen.selection)
+                for found, found_etag, text in files
                 if found == name and found_etag == etag
             ),
             None,

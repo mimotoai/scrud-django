@@ -828,6 +828,28 @@ a **Warning**, `scrud_django_ui.W001` (not an error: it reports stored data,
 and an error would stop `migrate`; routing stays deterministic, the longest
 prefix wins).
 
+### Safe mode
+
+When a branch's stored UI breaks rendering (the studio's own pages included),
+add `?ui-safe=1` to the page's URL. The page is then rendered from the packaged
+layers, the built-ins and the default stylesheet alone: stored components,
+stylesheets, CSS and JavaScript items are ignored on every branch, including the
+selected one. Any other value of the parameter is ignored.
+
+Safe mode removes presentation only. Every gate stays: a prefix whose branch
+the viewer may not GET is still refused, a branch the viewer may not select is
+still refused (a JSON request for it still gets its 400), and authorization is
+unchanged. The page shows a notice,
+`<div class="scrud-safe-mode" role="status">Safe mode: this page ignores stored UI items.</div>`,
+that a page component can't leave out (as with the branch banner, a page
+component that does is replaced by the built-in). The page's CSS and JavaScript
+URLs carry `?ui-safe=1` and serve the packaged layers' items only. Links inside
+the page do not carry the parameter: add it again to follow them.
+
+In code, `scrud_django.ui.branches.effective.using_safe_mode()` turns it on for
+a block (a context variable, so in-process work during the render sees it too),
+and `safe_mode()` reads it.
+
 ### CSS
 
 A branch's CSS items are effective like the other items, and `scrud:page` links

@@ -58,9 +58,16 @@ from scrud_django.exceptions import UIHeaderInvalidError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.permissions import content_of
 from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messages
-from scrud_django.ui.branches.chrome import banner, confirm_page
+from scrud_django.ui.branches.chrome import SAFE_NOTICE, banner, confirm_page
 from scrud_django.ui.branches.css import css_urls
-from scrud_django.ui.branches.effective import BRANCH_HEADER, using_selection
+from scrud_django.ui.branches.effective import (
+    BRANCH_HEADER,
+    query_param,
+    safe_mode,
+    safe_mode_requested,
+    using_safe_mode,
+    using_selection,
+)
 from scrud_django.ui.branches.js import js_urls
 from scrud_django.ui.branches.selection import (
     CONFIRM_PARAMETER,
@@ -164,7 +171,10 @@ class ScrudHTMLRenderer(BaseRenderer):
                 chosen = choose(request)
                 if _asks_confirmation(chosen, request):
                     return str(confirm_page(chosen, request)).encode(self.charset)
-                with using_selection(chosen.selection):
+                with (
+                    using_selection(chosen.selection),
+                    using_safe_mode(safe_mode_requested(request)),
+                ):
                     body, contexts = _body(data, status, request, view, response)
                     if not _is_htmx(request):
                         body = _page(
@@ -311,10 +321,7 @@ def scope_chain_of(request) -> tuple[str, ...]:
     letters, digits, ``_`` or ``-``. Anything else is ignored: ``()``."""
     value = _header(request, SCOPE_HEADER)
     if value is None:
-        params = getattr(request, "query_params", None)
-        if params is None:
-            params = getattr(request, "GET", {})
-        value = params.get(SCOPE_PARAMETER)
+        value = query_param(request, SCOPE_PARAMETER)
     names = [n for n in _SCOPE_SEPARATORS.split(value or "") if n]
     if len(names) > MAX_SCOPES or not all(_SCOPE_NAME.fullmatch(n) for n in names):
         return ()
@@ -333,10 +340,7 @@ def requested_mode_of(request) -> str | None:
 def _requested_mode_value(request) -> str | None:
     value = _header(request, MODE_HEADER)
     if value is None:
-        params = getattr(request, "query_params", None)
-        if params is None:
-            params = getattr(request, "GET", {})
-        value = params.get(MODE_PARAMETER)
+        value = query_param(request, MODE_PARAMETER)
     return value
 
 
@@ -569,7 +573,8 @@ def _page(
     component that fails is replaced by the built-in.
 
     Off the published branch, or when it refused a branch, `chosen`'s banner
-    is put at the top of the body. So is the page's branch (`frame_branch`)
+    is put at the top of the body, and in safe mode its notice (`SAFE_NOTICE`).
+    So is the page's branch (`frame_branch`)
     when it has one, on a hidden ``.scrud-branch-page`` element, for the
     requests of elements outside any frame. A page component that leaves
     them out is replaced by the built-in. (Branch CSS, or a component that
@@ -590,6 +595,8 @@ def _page(
         )
     if chosen is not None and (chosen.refused or not is_published(chosen, request)):
         chrome.append(banner(chosen, request))
+    if safe_mode():
+        chrome.append(SAFE_NOTICE)
     chrome = mark_safe("".join(chrome)) if chrome else None
     if chrome is not None:
         body = mark_safe(chrome + body)
