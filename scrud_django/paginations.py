@@ -8,6 +8,12 @@ class StandardResultsSetPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 1000
 
+    def get_next_link(self):
+        return _canonical(self.request, super().get_next_link())
+
+    def get_previous_link(self):
+        return _canonical(self.request, super().get_previous_link())
+
     def get_paginated_response(self, data, *args, **kwargs):
 
         return {
@@ -21,3 +27,11 @@ class StandardResultsSetPagination(PageNumberPagination):
             'previous': self.get_previous_link(),
             'content': data,
         }
+
+
+def _canonical(request, url):
+    """`url`, built from the request's URL, as the API's URL: under a
+    published branch's prefix (``scrud_django.ui``'s ``Mount``), JSON keeps
+    the API's links."""
+    mount = getattr(request, "scrud_ui_mount", None)
+    return mount.canonical(url) if mount is not None and url else url

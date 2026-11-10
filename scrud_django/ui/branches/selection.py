@@ -1,6 +1,7 @@
 """The branch a request browses: chosen from its `BRANCH_HEADER`, its
 `BRANCH_PARAMETER` query parameter or its `BRANCH_COOKIE`, in that order, else
-the published branch of the request's prefix (``main`` at the API URLs).
+the published branch of the request's prefix (`Mount`; ``main`` at the API
+URLs).
 
 A value is ``<name>`` or ``<name>@pinned`` (`VALUE`, at most
 `MAX_VALUE_BYTES`); any other is ignored, as if absent. An empty header or
@@ -15,6 +16,7 @@ import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from django.middleware.csrf import get_token
 from django.urls import reverse
@@ -47,6 +49,8 @@ MAX_VALUE_BYTES = 80
 # Where a selection came from.
 HEADER, PARAM, COOKIE, NONE = "header", "param", "cookie", "none"
 
+# On the request: its `Mount` (`PublishedBranchMiddleware`).
+MOUNT_ATTR = "scrud_ui_mount"
 # On the request: {use the cookie: Chosen}.
 _CHOSEN_ATTR = "_scrud_ui_chosen"
 # The key the stored branch contents are memoised under in a `rules_memo`.
@@ -75,15 +79,67 @@ def api_base() -> str:
     return path[: -len(suffix)] if path.endswith(suffix) else path
 
 
+@dataclass(frozen=True)
+class Mount:
+    """A request under the `prefix` of the published branch `branch`, which
+    `PublishedBranchMiddleware` routed to the API's URL: `prefix` is a path
+    as the URLconf matches it (under the script prefix, `script`), and
+    `api_base` is `api_base()`, a URL path."""
+
+    prefix: str
+    branch: str
+    api_base: str
+    script: str = "/"
+
+    @property
+    def url_prefix(self) -> str:
+        """`prefix` as a URL path (with the script prefix)."""
+        return self.script + self.prefix[1:]
+
+    def href(self, canonical: str) -> str:
+        """The URL `canonical` (an API URL, absolute or a path) under the
+        prefix; any other URL as it is."""
+        return _moved(canonical, self.api_base, self.url_prefix)
+
+    def canonical(self, href: str) -> str:
+        """The API URL of `href`, a URL under the prefix; any other URL as
+        it is."""
+        return _moved(href, self.url_prefix, self.api_base)
+
+
+def _moved(url, old, new):
+    parts = urlsplit(url)
+    if not parts.path.startswith(old):
+        return url
+    return parts._replace(path=new + parts.path[len(old) :]).geturl()
+
+
+def mount_of(request) -> Mount | None:
+    """The `Mount` of `request` (a Django or DRF request), or ``None`` at
+    the API's URLs."""
+    mount = getattr(request, MOUNT_ATTR, None)
+    return mount if isinstance(mount, Mount) else None
+
+
+def in_mount(request, href: str) -> str:
+    """`href`, an API URL, as the request's prefix serves it (`Mount.href`):
+    HTML links stay in the mount; JSON keeps the API's."""
+    mount = mount_of(request)
+    return mount.href(href) if mount is not None else href
+
+
 def published_branch(request) -> str:
-    """The name of the published branch of `request`'s prefix: ``main``
-    (prefixes come later)."""
-    return MAIN
+    """The name of the published branch of `request`'s prefix (its
+    `Mount`), else ``main``, at the API's URLs."""
+    mount = mount_of(request)
+    return mount.branch if mount is not None else MAIN
 
 
 def cookie_path(request) -> str:
-    """The path `BRANCH_COOKIE` is scoped to: the prefix's."""
-    return api_base()
+    """The path `BRANCH_COOKIE` is scoped to: the prefix's, else the API's,
+    so that a branch chosen under one prefix is not chosen under another."""
+    mount = mount_of(request)
+    return mount.url_prefix if mount is not None else api_base()
 
 
 def selection_value(selection: Selection) -> str:

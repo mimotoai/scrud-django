@@ -85,6 +85,7 @@ SETTINGS: dict[str, Any] = dict(
         "django.contrib.sessions.middleware.SessionMiddleware",
         "django.middleware.csrf.CsrfViewMiddleware",
         "django.contrib.auth.middleware.AuthenticationMiddleware",
+        "scrud_django.ui.branches.middleware.PublishedBranchMiddleware",
         "django.contrib.messages.middleware.MessageMiddleware",
     ),
     INSTALLED_APPS=(

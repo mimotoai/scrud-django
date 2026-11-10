@@ -18,7 +18,7 @@ from scrud_django.exceptions import (
 from scrud_django.models import Resource
 from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.registration import ResourceRegistration
-from scrud_django.ui.branches import ITEM_KINDS, MAIN
+from scrud_django.ui.branches import ITEM_KINDS, MAIN, PREFIX
 from scrud_django.ui.branches.model import MAIN_BRANCH, Branch, applies_to
 from scrud_django.ui.branches.store import (
     BranchChainError,
@@ -37,7 +37,6 @@ from scrud_django.ui.views import UIContentValidationMixin
 from scrud_django.views import ResourceViewSet
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-PREFIX = re.compile(r"^/(?:[a-z0-9][a-z0-9_-]*/)*$")
 BASES = ("live", "pinned")
 
 

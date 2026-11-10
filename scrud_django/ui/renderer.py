@@ -69,6 +69,7 @@ from scrud_django.ui.branches.selection import (
     cookie_branch,
     cookie_path,
     frame_branch,
+    in_mount,
     is_published,
     selection_value,
 )
@@ -410,7 +411,7 @@ def _body(data, status, request, view, response):
         href = request.path
         if action == "create":
             location = response.get("Location") if response is not None else None
-            href = urlsplit(location).path if location else href
+            href = in_mount(request, urlsplit(location).path) if location else href
         elif action not in ("retrieve", "update"):
             return _json(data), []
         etag = response.get("ETag") if response is not None else None

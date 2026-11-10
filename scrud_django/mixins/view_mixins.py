@@ -1089,7 +1089,9 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
     def initial(self, request, *args, **kwargs):
         """Forget the resource types `get_resource_type` read (a view
         instance serves one request; this keeps a reused one from serving a
-        stale type), DRF's, then, with ``scrud_django.ui`` installed, the
+        stale type), DRF's, then, with ``scrud_django.ui`` installed, GET on
+        the branch of a request under a published branch's prefix
+        (``scrud_django.ui.branches.middleware.check_mount``) and the
         fragment protocol's headers of a request that negotiated HTML
         (``scrud_django.ui.renderer.check_ui_headers``: a 400 for an invalid
         ``Scrud-UI-Pointer``, after authentication and authorization, before
@@ -1100,9 +1102,11 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         self._scrud_resource_types = {}
         super().initial(request, *args, **kwargs)
         if ui.is_enabled():
+            from scrud_django.ui.branches.middleware import check_mount
             from scrud_django.ui.renderer import check_ui_headers
 
             # Authenticated and authorized first: a 401 or 403 stays one.
+            check_mount(request)
             check_ui_headers(request)
         if self.locked_write_db is not None:
             lock_if_workflow_policy(self.get_resource_type(), self.locked_write_db)
