@@ -48,11 +48,14 @@ def django_db_setup(django_db_setup, django_db_blocker):
     context document) for every later test.
     """
     from scrud_django import registration
+    from scrud_django.ui import types as ui_types
     from tests import resource_types
 
     with django_db_blocker.unblock():
         resource_types.json_resource_types()
         registration.workflow_policy_resource_type()
+        ui_types.ui_component_resource_type()
+        ui_types.ui_stylesheet_resource_type()
 
 
 # The built-in resource types `scrud_django.registration` caches at module
@@ -82,14 +85,19 @@ def committed_types():
     pytest-django runs transactional tests after the other database tests
     (with ``--reverse`` too), so those never see the flushed database."""
     from scrud_django import registration
+    from scrud_django.ui import types as ui_types
     from tests import resource_types
 
     def forget():
         for name in REGISTRATION_CACHES:
             setattr(registration, name, None)
+        for name in ui_types.REGISTRATION_CACHES:
+            setattr(ui_types, name, None)
 
     forget()
     resource_types.json_resource_types()
     registration.workflow_policy_resource_type()
+    ui_types.ui_component_resource_type()
+    ui_types.ui_stylesheet_resource_type()
     yield
     forget()

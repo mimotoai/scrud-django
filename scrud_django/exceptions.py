@@ -116,6 +116,76 @@ class WorkflowPolicyInvalidError(ScrudException):
         self.title = "Invalid workflow policy"
 
 
+class UIComponentNameTakenError(ScrudException):
+    """A UI component whose ``name`` another component already has: names are
+    unique site-wide."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_component_name_taken"
+
+    def __init__(self, name):
+        super().__init__(f"A UI component named {name!r} already exists.")
+        self.type = "https://api.openteams.com/http-problem/ui-component-name-taken"
+        self.title = "UI component name taken"
+
+
+class UISelectorInvalidError(ScrudException):
+    """A UI stylesheet rule whose selector does not parse."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_selector_invalid"
+
+    def __init__(self, reason):
+        super().__init__(f"The stylesheet selector is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-selector-invalid"
+        self.title = "UI selector invalid"
+
+
+class UITemplateInvalidError(ScrudException):
+    """A UI component whose template does not compile."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_template_invalid"
+
+    def __init__(self, reason):
+        super().__init__(f"The component template is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-template-invalid"
+        self.title = "UI template invalid"
+
+
+class UIStylesheetNameTakenError(ScrudException):
+    """A UI stylesheet whose ``name`` another stylesheet in the same context
+    already has."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_stylesheet_name_taken"
+
+    def __init__(self, name, context):
+        super().__init__(
+            f"A UI stylesheet named {name!r} already exists in context {context!r}."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-stylesheet-name-taken"
+        self.title = "UI stylesheet name taken"
+
+
+class UIHeaderInvalidError(ScrudException):
+    """An HTML request whose fragment header (``Scrud-UI-Pointer``) is
+    invalid."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_header_invalid"
+
+    def __init__(self, header, reason):
+        super().__init__(f"The {header} header is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-header-invalid"
+        self.title = "UI header invalid"
+
+
 class RequestBodyMissingError(ScrudException):
     """A POST or PUT (or PATCH) with an empty body, or a body without a
     ``Content-Length`` (chunked), which DRF does not read. DRF reads either

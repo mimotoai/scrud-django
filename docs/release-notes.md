@@ -1,5 +1,22 @@
 # Change Log
 
+## 0.16.0
+
+### Added
+
+* `scrud_django.ui`, an optional app (add it to `INSTALLED_APPS` and install
+  the new `ui` extra, `scrud-django[ui]`, which adds Jinja2) that serves every
+  resource URL as `text/html`, chosen by `Accept: text/html`, rendered on the
+  server exactly as the viewer is authorized. Templates (UI components, Django
+  or sandboxed Jinja2) and CSS-like stylesheets that select them, layered per
+  RBAC context, are stored as resources of two new types, `UIComponent` and
+  `UIStylesheet`. Resources are edited in the browser with htmx 2.0.4 and
+  `scrud-ui.js` through ordinary JSON PUTs. See the new UI page of the
+  documentation, and the `seed_todo_demo` command of the demo project.
+  The known limitations are in the follow-ups under the `ui-` names.
+
+Behaviour without `scrud_django.ui` in `INSTALLED_APPS` is unchanged.
+
 ## 0.15.0
 
 This release fixes the workflow authorization and post-write notification

@@ -11,7 +11,9 @@ from django.utils.timezone import now
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
+from scrud_django import collection_type_uri_for
 from scrud_django.registration import ResourceRegistration
+from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 from scrud_django.utils import http_date_for
 
 from .factories import UserFactory
@@ -32,11 +34,24 @@ __all__ = [
     'partner_profiles',
     'regular_login',
     'role_allow_all',
+    'role_todo_creator',
     'serialize_page',
     'serialize_resource_envelope',
     'serialize_resource',
+    'todo_creator_login',
+    'todo_item',
+    'todo_list',
+    'todo_owner_login',
+    'todo_viewer_login',
+    'todo_writer_login',
+    'todo_reader_login',
+    'ui_author_login',
+    'ui_reader_login',
+    'ui_stylesheet_author_login',
     'unapply_a_scrud_migration',
 ]
+
+UI_TYPE_URIS = (UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI)
 
 ROOT_PATH = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(ROOT_PATH, 'data')
@@ -182,6 +197,156 @@ def todo_creator_login(db, role_todo_creator):
         modified_at=now(),
     ).save()
     return user
+
+
+TYPE_URI_TODO_LIST = "tests://TodoList"
+
+
+def assign_role(definition, *rbac_contexts):
+    """A new user assigned a new role with `definition` in each of
+    `rbac_contexts`."""
+    role = Role(definition=definition, etag=uuid4().hex, modified_at=now())
+    role.save()
+    user = UserFactory()
+    for rbac_context in rbac_contexts:
+        RoleAssignment(
+            user=user,
+            role=role,
+            rbac_context=rbac_context,
+            etag=uuid4().hex,
+            modified_at=now(),
+        ).save()
+    return user
+
+
+@pytest.fixture
+def todo_owner_login(db):
+    """May read, update and delete to-do lists in "project-a", create them
+    there, and read the UI components and stylesheets."""
+    readable = [
+        TYPE_URI_TODO_LIST,
+        collection_type_uri_for(TYPE_URI_TODO_LIST),
+        *UI_TYPE_URIS,
+    ]
+    return assign_role(
+        {
+            "http.GET": readable,
+            "http.PUT": [TYPE_URI_TODO_LIST],
+            "http.DELETE": [TYPE_URI_TODO_LIST],
+            "http.POST": [
+                TYPE_URI_TODO_LIST,
+                collection_type_uri_for(TYPE_URI_TODO_LIST),
+            ],
+        },
+        "project-a",
+    )
+
+
+@pytest.fixture
+def todo_reader_login(db):
+    """May only read to-do lists in "project-a"."""
+    return assign_role(
+        {
+            "http.GET": [
+                TYPE_URI_TODO_LIST,
+                collection_type_uri_for(TYPE_URI_TODO_LIST),
+            ]
+        },
+        "project-a",
+    )
+
+
+@pytest.fixture
+def todo_list(db):
+    """A to-do list in "project-a" with two items, the second one done."""
+    reverse("todo-lists-list")  # the URLconf registers the types
+    return ResourceRegistration.register(
+        {
+            "title": "Groceries",
+            "rbac_context": "project-a",
+            "items": [
+                {"text": "Buy milk", "done": False},
+                {"text": "Buy eggs", "done": True},
+            ],
+        },
+        "todo-lists",
+    )
+
+
+@pytest.fixture
+def ui_author_login(db):
+    """May read and write UI components and stylesheets (in the default
+    context, where components are stored)."""
+    types = [uri for t in UI_TYPE_URIS for uri in (t, collection_type_uri_for(t))]
+    return assign_role(
+        {f"http.{m}": types for m in ("GET", "POST", "PUT", "DELETE")},
+        DEFAULT_CONTEXT,
+    )
+
+
+@pytest.fixture
+def ui_reader_login(db):
+    """May read to-do lists in "project-a", but holds no grant on the UI
+    components and stylesheets."""
+    return assign_role(
+        {
+            "http.GET": [
+                TYPE_URI_TODO_LIST,
+                collection_type_uri_for(TYPE_URI_TODO_LIST),
+            ]
+        },
+        "project-a",
+    )
+
+
+@pytest.fixture
+def ui_stylesheet_author_login(db):
+    """May write UI stylesheets (not components) in "project-a" only."""
+    types = [UI_STYLESHEET_TYPE_URI, collection_type_uri_for(UI_STYLESHEET_TYPE_URI)]
+    return assign_role(
+        {f"http.{m}": types for m in ("GET", "POST", "PUT", "DELETE")}, "project-a"
+    )
+
+
+TYPE_URI_TODO = "tests://ToDo"
+
+
+@pytest.fixture
+def todo_item(db):
+    """A workflow-governed to-do in the default context, "not started"."""
+    reverse("todos-list")  # the URLconf registers the types
+    return ResourceRegistration.register(
+        {
+            "title": "Buy milk",
+            "status": "not started",
+            "priority": "medium",
+            "assignee": "http://somewhere.example/someone",
+        },
+        "todos",
+    )
+
+
+@pytest.fixture
+def todo_viewer_login(db):
+    """May only read to-dos in the default context."""
+    return assign_role({"http.GET": [TYPE_URI_TODO]}, DEFAULT_CONTEXT)
+
+
+@pytest.fixture
+def todo_writer_login(db):
+    """May PUT to-dos whose status stays "not started" or becomes anything,
+    but not read them: the condition's message must stay hidden."""
+    return assign_role(
+        {
+            "http.PUT": {
+                TYPE_URI_TODO: {
+                    "condition": 'status != "done"',
+                    "message": "Done is not for you",
+                }
+            }
+        },
+        DEFAULT_CONTEXT,
+    )
 
 
 def http_process_server():

@@ -1,0 +1,19 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UIStylesheet",
+  "rbac_context": {
+    "@id": "openteams:AccessControlContext"
+  },
+  "name": {
+    "@id": "openteams:UIStylesheetName"
+  },
+  "prefixes": {
+    "@id": "openteams:UISelectorPrefixes"
+  },
+  "order": {
+    "@id": "openteams:UIStylesheetOrder"
+  },
+  "rules": {
+    "@id": "openteams:UIStylesheetRules"
+  }
+}

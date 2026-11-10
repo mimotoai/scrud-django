@@ -1,0 +1,44 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIComponent",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Component",
+  "description": "A server-rendered template that renders a node of a resource's JSON in a mode (view or edit).",
+  "type": "object",
+  "properties": {
+    "rbac_context": {
+      "type": "string",
+      "enum": [""],
+      "description": "UI components are stored only in the default context."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^(?!scrud:)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "The component's site-wide unique name. The scrud: prefix is reserved for built-ins."
+    },
+    "engine": {
+      "type": "string",
+      "enum": ["django", "jinja2"]
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["view", "edit"]
+    },
+    "template": {
+      "type": "string",
+      "description": "The template source."
+    },
+    "scopes": {
+      "type": "object",
+      "description": "Maps a property name (or \"*\" for array items) to the scope name its child is rendered in.",
+      "additionalProperties": { "type": "string" }
+    },
+    "stylesheets": {
+      "type": "array",
+      "description": "Names of stylesheets that also apply to the component's descendants (its subtree below it), not to the component's own node.",
+      "items": { "type": "string" }
+    },
+    "label": { "type": "string" },
+    "description": { "type": "string" }
+  },
+  "required": ["name", "engine", "mode", "template"]
+}

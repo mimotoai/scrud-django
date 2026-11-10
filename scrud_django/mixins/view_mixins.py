@@ -31,6 +31,7 @@ from scrudful.conditional import (
 )
 from scrudful.rest_framework import ScrudfulViewFunc
 
+from scrud_django import ui
 from scrud_django.exceptions import (
     RbacContextInvalidError,
     RequestBodyMissingError,
@@ -671,10 +672,30 @@ class LockedWriteMixin:
     def locked(self, queryset):
         """`queryset`, inside a locked write (`dispatch`) read on its
         database with its rows locked (``select_for_update``) until the
-        request's transaction ends."""
+        request's transaction ends; inside `unlocked_lookups`, read there
+        without the lock."""
         if self.locked_write_db is not None:
-            queryset = queryset.using(self.locked_write_db).select_for_update()
+            queryset = queryset.using(self.locked_write_db)
+            if not self.lookups_unlocked:
+                queryset = queryset.select_for_update()
         return queryset
+
+    # True inside `unlocked_lookups`.
+    lookups_unlocked = False
+
+    @contextmanager
+    def unlocked_lookups(self):
+        """Inside the block, a locked write's lookups (`locked`, and
+        ``get_object()``) read its database as they would, filtered and
+        checked the same, but lock no row: for a lookup made after the
+        request was refused (the HTML answer to a refused PUT,
+        `scrud_django.ui.renderer.load_stored`), which must neither wait for
+        the row lock nor hold it."""
+        previous, self.lookups_unlocked = self.lookups_unlocked, True
+        try:
+            yield
+        finally:
+            self.lookups_unlocked = previous
 
 
 class ListValidatorsMixin:
@@ -1068,14 +1089,60 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
     def initial(self, request, *args, **kwargs):
         """Forget the resource types `get_resource_type` read (a view
         instance serves one request; this keeps a reused one from serving a
-        stale type), DRF's, then, inside a locked write (`dispatch`), the
+        stale type), DRF's, then, with ``scrud_django.ui`` installed, the
+        fragment protocol's headers of a request that negotiated HTML
+        (``scrud_django.ui.renderer.check_ui_headers``: a 400 for an invalid
+        ``Scrud-UI-Pointer``, after authentication and authorization, before
+        a PUT writes), then, inside a locked write (`dispatch`), the
         ``WorkflowPolicy`` type lock (`lock_if_workflow_policy`) before the
         row is read: every ``WorkflowPolicy`` write locks the type row and then
         the policy's row, in that order, so two cannot deadlock."""
         self._scrud_resource_types = {}
         super().initial(request, *args, **kwargs)
+        if ui.is_enabled():
+            from scrud_django.ui.renderer import check_ui_headers
+
+            # Authenticated and authorized first: a 401 or 403 stays one.
+            check_ui_headers(request)
         if self.locked_write_db is not None:
             lock_if_workflow_policy(self.get_resource_type(), self.locked_write_db)
+
+    def get_renderers(self):
+        """DRF's, and with ``scrud_django.ui`` installed the HTML renderer,
+        ahead of the browsable API (which ``?format=api`` still reaches)."""
+        renderers = super().get_renderers()
+        if ui.is_enabled():
+            from scrud_django.ui.renderer import ui_renderers
+
+            renderers = ui_renderers(renderers)
+        return renderers
+
+    def perform_content_negotiation(self, request, force=False):
+        """DRF's, recording whether it chose HTML: an exception handler may
+        swap the accepted renderer for a JSON one (`finalize_response`)."""
+        negotiated = super().perform_content_negotiation(request, force)
+        if ui.is_enabled():
+            from scrud_django.ui.renderer import note_negotiation
+
+            note_negotiation(request, negotiated[0])
+        return negotiated
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        """DRF's; a request that negotiated HTML is answered as HTML, errors
+        included (`scrud_django.ui.renderer.finalize_html`). A refused PUT
+        looks the stored resource up first, through `get_object`'s checks
+        (`scrud_django.ui.renderer.load_stored`), inside the request's
+        transaction."""
+        if ui.is_enabled():
+            from scrud_django.ui.renderer import load_stored
+
+            load_stored(self, request, response)
+        response = super().finalize_response(request, response, *args, **kwargs)
+        if ui.is_enabled():
+            from scrud_django.ui.renderer import finalize_html
+
+            finalize_html(request, response)
+        return response
 
     def checks_workflow(self, request):
         """Whether `request` is a write the workflow check
@@ -1161,7 +1228,8 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         once normalised is a 404 first, as scoped-rbac's
         ``check_object_permissions`` answers it for an object of its own. The
         `Resource` is returned. Inside a locked write (`dispatch`) the lookup
-        reads the write database with the row locked (`locked`), whatever
+        reads the write database with the row locked (`locked`; not inside
+        `unlocked_lookups`), whatever
         database a ``get_queryset()`` of a subclass selects (``using()``). A
         ``get_queryset()`` or filter backend of a subclass that makes the
         queryset one PostgreSQL cannot lock ``FOR UPDATE`` (``DISTINCT``,
@@ -1199,8 +1267,15 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         """The resource named by the URL: DRF's ``get_object()``, filtered and
         permission-checked (an unreadable resource is a 404). scrudful already
         looked it up for the validators; the same instance is returned. For a
-        PUT or DELETE its row is locked (`dispatch`)."""
-        return self.get_object()
+        PUT or DELETE its row is locked (`dispatch`). With
+        ``scrud_django.ui`` installed, a PUT answered as HTML keeps a copy of
+        its content (`scrud_django.ui.renderer.remember_stored`)."""
+        instance = self.get_object()
+        if ui.is_enabled():
+            from scrud_django.ui.renderer import remember_stored
+
+            remember_stored(self, request, instance)
+        return instance
 
     def get_serializer(self, *args, **kwargs):
         kwargs["resource_type"] = self.get_resource_type()
@@ -1680,10 +1755,10 @@ class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
         preconditions, the object check and the write read the row as the
         last writer committed it. A lookup that finds a row the lock did not
         take (one that came to match the URL after the key was read) is a
-        404."""
+        404. Inside `unlocked_lookups` no row is locked."""
         previous, self._scrud_in_get_object = self._scrud_in_get_object, True
         try:
-            if self.locked_write_db is None:
+            if self.locked_write_db is None or self.lookups_unlocked:
                 return super().get_object()
             locked = self.lock_object_row()
             obj = super().get_object()

@@ -171,6 +171,177 @@ object), as `defers_to_object_checks` requires. Test: a reader granted `http.GET
 `rbac_context != "x"` (and the list type outright) GETs a resource stored
 in `"y"`: expect 200 (and 404 for one in `"x"`); get 403 today.
 
+<a id="ui-name-uniqueness-race"></a>
+## ui-name-uniqueness-race: concurrent creates can duplicate a UI component or stylesheet name
+
+UI component names are unique site-wide and stylesheet names unique per
+context, but `UIContentValidationMixin` checks that with a query, without a
+lock or a database constraint, so two concurrent creates of the same name can
+both succeed. Resolution is deterministic: the lowest pk wins
+(`scrud_django.ui.cascade`), so a duplicate is shadowed, not an error. Suggested
+fix: serialize the check as `serialized_policy_save` does for policies, or add a
+unique index on a generated name column. Test: two threads creating the same
+name; at most one is accepted.
+
+<a id="ui-one-mode-per-resource"></a>
+## ui-one-mode-per-resource: a resource renders wholly in view or edit mode
+
+Editors get edit mode for the whole resource, so a view-only component (a
+compact sidebar list, say) is still served in edit mode and must be written as an
+`edit` component (the demo's `todo-list-compact` is). Why: the mode is decided
+once from the PUT decision. A fix (with phase 2's per-field editability, see
+[Server-rendered UI](ui.md)) could let a rule request a mode.
+Test: a rule that asks for `view` in a scope renders its view component for an
+editor.
+
+<a id="ui-412-notice-persists"></a>
+## ui-412-notice-persists: the 412 notice stays after the next successful edit
+
+A 412 answers with a notice and a frame that reloads itself; the notice is
+outside the reloaded frame, so it stays on the page after the next successful
+edit. Suggested fix: give the notice an element that `scrud-ui.js` removes on the
+next successful swap. Test: a stale edit, then a good one; the notice is gone.
+
+<a id="ui-sidebar-staleness"></a>
+## ui-sidebar-staleness: other frames do not refresh after an edit
+
+An edit swaps only its own frame, so another frame showing the same resource
+(the demo sidebar's item count) stays as it was until reloaded. Suggested fix:
+have the write's response trigger a refresh of frames with the same
+`data-scrud-href` (`HX-Trigger`). Test: edit an item; the sidebar count changes
+without a reload.
+
+<a id="ui-absolute-hrefs-host"></a>
+## ui-absolute-hrefs-host: collection-envelope hrefs are absolute, so a host alias cannot write to them
+
+A list's envelope gives each resource an absolute `href`, which the collection
+frame uses as `hx-put`. With `selfRequestsOnly`, a page served at a different
+host alias than the one in the href (`localhost` against `127.0.0.1`) is not
+allowed to write to them. Suggested fix: render the path of the href (the
+renderer already does this for a created resource). Test: a list fetched at one
+host whose envelope names another; the edit form's `hx-put` is a path.
+
+<a id="ui-uri-relative-whitespace"></a>
+## ui-uri-relative-whitespace: `scrud:uri` treats `/\t/evil.example` as a relative link
+
+`scrud:uri` links a value that starts with one `/` (and not `//` or `/\`). A
+tab or LF after the slash (`/\t/evil.example`, `/\n/evil.example`) passes that
+test, but browsers strip tab and LF from URLs, which makes it protocol-relative:
+an off-site link. It is not script execution (the scheme is still http(s)).
+Suggested fix: refuse a value with ASCII control characters or whitespace in the
+first three characters. Test: those values render as text.
+
+<a id="ui-json-vary-accept"></a>
+## ui-json-vary-accept: JSON from UI-enabled resource views does not send `Vary: Accept`
+
+The same URL now has an HTML representation, but its JSON responses do not
+vary on `Accept`, so a cache could serve a stored JSON response to an HTML
+request. HTML responses are `private, no-cache, no-store`, so an HTML response
+is never stored and served for JSON; but that does nothing for the JSON
+responses, which a cache may still store and then serve to an HTML request. Suggested fix: add `Accept` to
+`Vary` on the JSON responses of the views when the UI app is installed. Test:
+a JSON GET carries `Vary: Accept`.
+
+<a id="ui-html-shared-etag"></a>
+## ui-html-shared-etag: HTML responses reuse the resource's strong ETag and Last-Modified
+
+The HTML depends on the stylesheets, components and the viewer's grants as well
+as the resource, but carries the resource's ETag and `Last-Modified`, so a
+conditional GET can answer 304 for HTML that would now differ. `Cache-Control:
+private, no-cache, no-store` keeps browser and proxy caches from storing the
+HTML, so they hold no stale copy to revalidate. It does not change the
+validators: a client that keeps an ETag itself and resends it (`If-None-Match`)
+after a component, stylesheet or grant changed still gets a 304, and keeps
+showing the old HTML. Suggested fix: a weak ETag for HTML derived from the
+resource's and the presentation's (and the viewer's decisions). Test: change a
+component; a conditional GET with the old validator gets a 200.
+
+<a id="ui-number-precision"></a>
+## ui-number-precision: a browser edit rewrites numbers JSON.parse cannot keep
+
+`scrud-ui.js` builds a PUT's body from the content embedded in the frame,
+parsed with `JSON.parse`. An integer beyond 2^53 is rounded
+(`9007199254740993` becomes `9007199254740992`) and `1.0` becomes `1`, and the
+body carries those values for every number in the resource, not only the
+edited ones, so any edit (a checkbox) writes them back. Untouched inputs are
+skipped, but the embedded content itself is already rounded. Suggested fix:
+send only the changed pointers (a JSON Patch or merge on the server), or parse
+and serialize the embedded content without going through JavaScript numbers.
+Test: a resource with `9007199254740993` and `1.0`; tick a checkbox in the
+browser; the stored content keeps both as they were.
+
+<a id="ui-inflight-edit-dropped"></a>
+## ui-inflight-edit-dropped: an edit made while a PUT is in flight is lost
+
+A frame PUTs on every `change`. With htmx's default synchronization, a change
+made while the frame's previous PUT is still in flight issues no request (it
+is dropped), and the first response then swaps the frame, which visually
+reverts the second change: the user sees it undone and it was never sent.
+Suggested fix: `hx-sync="this:queue last"` on the frame (the queued request
+must then use the ETag of the first response), or disable the frame's inputs
+while a request is in flight. Test: in a browser, tick two checkboxes in
+quick succession against a slow server; both are saved.
+
+<a id="ui-typeterm-invariants"></a>
+## ui-typeterm-invariants: UI types state their invariants in docstrings, not code
+
+`TypeTerm` (`scrud_django/ui/selectors.py`) documents that exactly one of `iri`
+and `schema_type` is set, and that `format` and `enum` go only with a
+`schema_type`, but nothing enforces it: `TypeTerm(iri="x", schema_type="string")`
+builds, and `_term_matches` then reads it as an IRI term. The engine names and
+the stored modes are spelled three times (`engines.ENGINE_NAMES`,
+`cascade.STORED_MODES`, the `enum`s in `UIComponent-schema.json`), so one can
+change without the others. The UI JSON Schemas have no top-level
+`additionalProperties: false` (a misspelt `stylesheet` or `scope` key is stored
+and silently ignored), and the scope names in a component's `scopes` have no
+`pattern`, so a scope the selector grammar cannot name
+(`[A-Za-z][A-Za-z0-9_-]*`) is accepted and never matches. Why: the checks
+were kept to what rendering needs. Suggested fix: validate in
+`TypeTerm.__post_init__` (raise `ValueError`); make the engine and mode names
+enums in one module and check the schema documents against them in a test;
+add `additionalProperties: false` to both schemas (after checking stored
+content for extra keys) and a scope-name `pattern` to `scopes`' values. Test:
+`TypeTerm(iri="x", schema_type="string")` and `TypeTerm(iri="x", enum=True)`
+raise; a component with `"scopes": {"items": "1bad"}` or an unknown top-level
+key is a 400; the schema's `engine` and `mode` enums equal the module's.
+
+<a id="ui-selector-iri-suffix"></a>
+## ui-selector-iri-suffix: `ex:Foo[enum]` and `string[format=a:b]` parse as plain IRIs
+
+`parse_selector` takes any last token containing `:` for an IRI before it
+looks for a `[format=...]` or `[enum]` suffix. So `ex:Foo[enum]` is the IRI
+`http://example.org/todo#Foo[enum]` and `string[format=a:b]` the IRI
+`string[format=a:b]`: both are saved without a 400 and never match a node, and
+the author is not told why their rule does nothing. Why: the IRI branch was
+checked first, and IRIs take no suffix. Suggested fix: check for a bracket
+suffix first, and refuse it on an IRI (`SelectorError`: a suffix needs a schema
+type), and let a format name contain `:` only if that is intended (else refuse
+it). Test: `parse_selector("ex:Foo[enum]", ...)` and
+`parse_selector("string[format=a:b]", ...)` raise `SelectorError` (or the
+second parses as `string` with format `a:b`), and a stylesheet with either is
+a 400.
+
+<a id="ui-number-input-partial"></a>
+## ui-number-input-partial: a number input cannot be cleared
+
+A cleared or half-typed number input (the browser reports `1e` as `""`) over a
+stored number no longer deletes it: `buildBody` reports it, the PUT is cancelled
+and the frame shows "This form could not be saved: invalid field <name>."
+What remains:
+
+- The user cannot clear an optional number on purpose, nor write `null` where
+  the schema allows it. While the field is empty every edit in that form is
+  cancelled with the same notice, because each `change` sends the whole form.
+- A half-typed number in the append row is dropped silently (`isEmpty`).
+- `buildBody` in the browser receives the real inputs, so
+  `field.validity.badInput` is readable there and tells a half-typed number
+  from a cleared one (the test stubs lack it). Suggested fix: keep
+  `badInput` as an error; for an empty input that is not `badInput`, delete the
+  key (the server answers a required one with a 400 and a re-rendered form),
+  or write `null` where the schema allows it (embed that as a data attribute
+  on the input). Test: a list item with `"count": 3`; clear the field and
+  blur; the stored `count` is gone (or `null`), and no later edit is cancelled.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

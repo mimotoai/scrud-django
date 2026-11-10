@@ -3,7 +3,7 @@
 from django.urls import include, path
 from scoped_rbac.models import Role, RoleAssignment
 
-from scrud_django import collection_type_uri_for, registration, services
+from scrud_django import collection_type_uri_for, registration, services, ui
 from scrud_django.views import (
     ResourceCollectionContextView,
     ResourceCollectionSchemaView,
@@ -30,6 +30,11 @@ urlpatterns = [
 # or while it is unreachable): each is registered when it is first read
 # (`registration.register_or_defer`).
 urlpatterns.extend(registration.built_in_resource_type_urls())
+
+if ui.is_enabled():
+    from scrud_django.ui.types import ui_resource_type_urls
+
+    urlpatterns.extend(ui_resource_type_urls())
 
 services.add_service(collection_type_uri_for(Role.resource_type.iri), "role")
 services.add_service(

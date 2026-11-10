@@ -1104,7 +1104,7 @@ wheels = [
 
 [[package]]
 name = "scrud-django"
-version = "0.15.0"
+version = "0.16.0"
 source = { editable = "." }
 dependencies = [
     { name = "django" },
@@ -1122,6 +1122,9 @@ search = [
     { name = "django-haystack" },
     { name = "whoosh-reloaded" },
 ]
+ui = [
+    { name = "jinja2" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1136,7 +1139,7 @@ dev = [
     { name = "ruff" },
     { name = "safetydance" },
     { name = "safetydance-django" },
-    { name = "scrud-django", extra = ["search"] },
+    { name = "scrud-django", extra = ["search", "ui"] },
 ]
 docs = [
     { name = "myst-parser" },
@@ -1155,11 +1158,12 @@ requires-dist = [
     { name = "django-scoped-rbac", extras = ["drf"], specifier = ">=0.12.1,<0.13" },
     { name = "djangorestframework", specifier = ">=3.15" },
     { name = "fastjsonschema", specifier = ">=2.19" },
+    { name = "jinja2", marker = "extra == 'ui'", specifier = ">=3.1,<4" },
     { name = "jsonpath-ng", specifier = ">=1.6" },
     { name = "scrudful", extras = ["drf"], specifier = ">=0.10.1,<0.11" },
     { name = "whoosh-reloaded", marker = "extra == 'search'", specifier = ">=2.7.5" },
 ]
-provides-extras = ["search"]
+provides-extras = ["search", "ui"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1174,7 +1178,7 @@ dev = [
     { name = "ruff" },
     { name = "safetydance", specifier = ">=0.5,<0.6" },
     { name = "safetydance-django", specifier = ">=0.1,<0.2" },
-    { name = "scrud-django", extras = ["search"] },
+    { name = "scrud-django", extras = ["search", "ui"] },
 ]
 docs = [
     { name = "myst-parser", specifier = ">=5.1,<6" },

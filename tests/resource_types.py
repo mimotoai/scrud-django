@@ -44,4 +44,19 @@ def json_resource_types():
                 .read_text()
             ),
         ),
+        registration.json_resource_type(
+            resource_type_uri="tests://TodoList",
+            revision="1",
+            slug="todo-lists",
+            schema_func=lambda: (
+                importlib.resources.files("tests.static.todo_list")
+                .joinpath("schema.json")
+                .read_text()
+            ),
+            context_func=lambda: (
+                importlib.resources.files("tests.static.todo_list")
+                .joinpath("ld.json")
+                .read_text()
+            ),
+        ),
     ]

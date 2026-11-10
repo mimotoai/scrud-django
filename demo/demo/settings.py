@@ -72,7 +72,11 @@ INSTALLED_APPS = [
     'rest_framework',
     'scoped_rbac',
     'scrud_django',
+    # Server-rendered UI components and stylesheets, stored as resources.
+    'scrud_django.ui',
     'reversion',
+    # The demo itself: its seed_todo_demo management command.
+    'demo',
 ]
 
 MIDDLEWARE = [
