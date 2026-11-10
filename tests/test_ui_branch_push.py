@@ -56,11 +56,16 @@ def stored_state():
 def own_rows(type_uri, branch):
     """The content of every stored item of `type_uri` on `branch`, lowest pk
     first (items without a ``branch`` are main's)."""
+    # Unordered, sorted here: MySQL can't sort rows with a large JSON
+    # content (tests/test_ui_branch_large_rows.py).
+    rows = (
+        Resource.objects.filter(resource_type__type_uri=type_uri)
+        .order_by()
+        .values_list("pk", "content")
+    )
     return [
         content
-        for content in Resource.objects.filter(resource_type__type_uri=type_uri)
-        .order_by("pk")
-        .values_list("content", flat=True)
+        for _, content in sorted(rows, key=lambda row: row[0])
         if content.get("branch", "main") == branch
     ]
 

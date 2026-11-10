@@ -20,12 +20,14 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import cache, lru_cache
+from operator import itemgetter
 
 from django.db.models import Q
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
+from scrud_django.rows import by_pk, unsorted
 from scrud_django.ui.engines import ENGINE_NAMES, CompiledTemplate, cached_template
 from scrud_django.ui.selectors import (
     Selector,
@@ -149,11 +151,11 @@ def item_rows(type_uris, branches, using=None) -> dict[str, list]:
     database)."""
     grouped = {uri: [] for uri in type_uris}
     rows = Resource.objects.using(using) if using else Resource.objects
-    for uri, pk, etag, content in (
+    rows = unsorted(
         rows.filter(on_branches(branches), resource_type__type_uri__in=list(grouped))
-        .order_by("pk")
-        .values_list("resource_type__type_uri", "pk", "etag", "content")
-    ):
+    ).values_list("resource_type__type_uri", "pk", "etag", "content")
+    # Sorted here, not by the database (`scrud_django.rows`).
+    for uri, pk, etag, content in by_pk(rows, pk=itemgetter(1)):
         grouped[uri].append((pk, etag, content))
     return grouped
 

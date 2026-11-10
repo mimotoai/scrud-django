@@ -10,6 +10,7 @@ from scrud_django.registration import (
     type_db,
     type_locked,
 )
+from scrud_django.rows import by_pk, unsorted
 from scrud_django.ui.branches import MAIN, UI_BRANCH_SLUG, UI_BRANCH_TYPE_URI
 from scrud_django.ui.branches.model import MAIN_BRANCH, Branch
 from scrud_django.ui.cascade import _memo
@@ -69,13 +70,9 @@ def stored_branches(using=None) -> dict[str, tuple[Branch, Mapping]]:
     router's read database), never memoised. The virtual main is not
     stored."""
     rows = Resource.objects.using(using) if using else Resource.objects
-    rows = (
-        rows.filter(resource_type__type_uri=UI_BRANCH_TYPE_URI)
-        .order_by("pk")
-        .values_list("pk", "content")
-    )
+    rows = unsorted(rows.filter(resource_type__type_uri=UI_BRANCH_TYPE_URI))
     found: dict[str, tuple[Branch, Mapping]] = {}
-    for pk, content in rows:
+    for pk, content in by_pk(rows.values_list("pk", "content")):
         name = content.get("name") if isinstance(content, Mapping) else None
         if isinstance(name, str) and name not in found:
             found[name] = (branch_from(pk, content), content)

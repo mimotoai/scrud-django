@@ -15,6 +15,7 @@ from django.db import transaction
 from scrud_django.exceptions import UIBranchVersionMissingError
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
+from scrud_django.rows import by_pk, first_by_pk, unsorted
 from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save, write_alias
 from scrud_django.ui.branches import (
     ITEM_KINDS,
@@ -66,8 +67,7 @@ def _latest_number(name: str, using: str | None) -> int:
     """The number of branch `name`'s latest version, 0 for none. Versions
     are stored in order (`record_version` holds the branch's lock), so the
     latest is the last stored."""
-    latest = _versions(name, using).order_by("-pk").values_list("content", flat=True)
-    content = latest.first()
+    content = first_by_pk(_versions(name, using), "content", last=True)
     number = content.get("number") if isinstance(content, Mapping) else None
     return number if isinstance(number, int) else 0
 
@@ -81,7 +81,9 @@ def _own_items(type_uri: str, name: str, using: str) -> list[tuple[str, dict]]:
         rows = rows.filter(content__branch=name)
     return [
         (etag, content)
-        for etag, content in rows.order_by("pk").values_list("etag", "content")
+        for _pk, etag, content in by_pk(
+            unsorted(rows).values_list("pk", "etag", "content")
+        )
         if branch_of(content) == name
     ]
 
@@ -106,10 +108,9 @@ def _record(branch: Branch, using: str) -> int | None:
     """`record_version` of the stored `branch`, inside a transaction on
     `using`; ``None`` when its row is gone."""
     locked = list(
-        Resource.objects.using(using)
-        .select_for_update()
-        .filter(pk=branch.pk)
-        .values_list("content", flat=True)
+        unsorted(
+            Resource.objects.using(using).select_for_update().filter(pk=branch.pk)
+        ).values_list("content", flat=True)
     )
     if not locked:
         return None
@@ -171,12 +172,8 @@ def snapshot(branch_name: str, number: int, using: str | None = None) -> dict:
     """The content of version `number` of branch `branch_name`, read on
     `using` (default: the router's read database).
     `UIBranchVersionMissingError` (404) when it is not stored."""
-    content = (
-        _versions(branch_name, using)
-        .filter(content__number=number)
-        .order_by("pk")
-        .values_list("content", flat=True)
-        .first()
+    content = first_by_pk(
+        _versions(branch_name, using).filter(content__number=number), "content"
     )
     if not isinstance(content, Mapping) or content.get("number") != number:
         raise UIBranchVersionMissingError(branch_name, number)
@@ -247,9 +244,11 @@ def discard_branch(name: str, using: str):
             for type_uri in ITEM_KINDS.values():
                 pks = [
                     pk
-                    for pk, content in Resource.objects.using(using)
-                    .filter(resource_type__type_uri=type_uri, content__branch=name)
-                    .values_list("pk", "content")
+                    for pk, content in unsorted(
+                        Resource.objects.using(using).filter(
+                            resource_type__type_uri=type_uri, content__branch=name
+                        )
+                    ).values_list("pk", "content")
                     if branch_of(content) == name
                 ]
                 Resource.objects.using(using).filter(pk__in=pks).delete()

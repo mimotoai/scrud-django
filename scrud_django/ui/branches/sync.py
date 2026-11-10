@@ -22,6 +22,7 @@ from scrud_django.registration import (
     latest_revision_first,
     type_db,
 )
+from scrud_django.rows import by_pk, locked_by_pk, unsorted
 from scrud_django.ui.branches import (
     ITEM_KINDS,
     MAIN,
@@ -51,12 +52,13 @@ from scrud_django.ui.branches.versions import (
 WRITE_ONLY = ("rebase",)
 
 
-def _rows(type_uri: str, using):
-    return (
-        Resource.objects.using(using)
-        .filter(resource_type__type_uri=type_uri)
-        .order_by("pk")
-        .values_list("pk", "etag", "content")
+def _rows(type_uri: str, using) -> list:
+    """``(pk, etag, content)`` of every item of `type_uri` on `using`, lowest
+    pk first (sorted here: `scrud_django.rows`)."""
+    return by_pk(
+        unsorted(
+            Resource.objects.using(using).filter(resource_type__type_uri=type_uri)
+        ).values_list("pk", "etag", "content")
     )
 
 
@@ -228,14 +230,12 @@ def _own_rows(type_uri: str, name: str, using) -> list[Resource]:
     """Branch `name`'s own items of `type_uri` on `using`, lowest pk first,
     each locked until the transaction ends (items stored before branches,
     with no ``branch``, are main's)."""
-    rows = (
-        Resource.objects.using(using)
-        .select_for_update()
-        .filter(resource_type_id__in=_type_ids(type_uri, using))
+    rows = Resource.objects.using(using).filter(
+        resource_type_id__in=_type_ids(type_uri, using)
     )
     if name != MAIN:
         rows = rows.filter(content__branch=name)
-    return [row for row in rows.order_by("pk") if branch_of(row.content) == name]
+    return [row for row in locked_by_pk(rows) if branch_of(row.content) == name]
 
 
 def _keyed(kind: str, rows, branch: Branch) -> dict[tuple, Resource]:

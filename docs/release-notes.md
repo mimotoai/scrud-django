@@ -37,6 +37,16 @@
 Behaviour for a site that creates no branch, and without the middleware, is
 unchanged. The middleware costs one query per request outside the API's URLs.
 
+### Fixed
+
+* On MySQL, a resource whose JSON content is larger than the server's
+  `sort_buffer_size` (256 KB by default) no longer breaks the reads that
+  sorted it (error 1038, "Out of sort memory"): UI rendering, CSS files, item
+  lists, versions, pull, push, restore and branch deletion read such rows
+  unsorted and sort them in Python, and the resource list's page is found
+  among the keys alone, then read by key (one more query per list page, on
+  MySQL only). See `mysql-sort-buffer` in the follow-ups for what remains.
+
 ## 0.16.0
 
 ### Added

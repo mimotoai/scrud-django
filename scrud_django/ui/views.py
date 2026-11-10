@@ -17,6 +17,7 @@ from scrud_django.exceptions import (
 )
 from scrud_django.models import Resource
 from scrud_django.registration import write_db
+from scrud_django.rows import unsorted
 from scrud_django.ui.branches import MAIN
 from scrud_django.ui.branches.effective import effective_rows, parent_state
 from scrud_django.ui.branches.model import (
@@ -249,8 +250,12 @@ class UIContentValidationMixin:
 
     def other_resources(self, instance=None):
         """The stored resources of this view's type, but `instance`."""
-        resources = Resource.objects.using(self.write_database()).filter(
-            resource_type=self.get_resource_type()
+        # Unsorted: callers test membership, and MySQL can't sort rows with
+        # a large content (`scrud_django.rows`).
+        resources = unsorted(
+            Resource.objects.using(self.write_database()).filter(
+                resource_type=self.get_resource_type()
+            )
         )
         if instance is not None:
             resources = resources.exclude(pk=instance.pk)

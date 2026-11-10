@@ -24,6 +24,7 @@ from scrud_django.permissions import (
     resource_contexts,
 )
 from scrud_django.registration import ResourceRegistration, type_db
+from scrud_django.rows import unsorted
 from scrud_django.ui.branches import ITEM_KINDS, MAIN, PREFIX, UI_BRANCH_TYPE_URI
 from scrud_django.ui.branches.checks import prefix_problems
 from scrud_django.ui.branches.model import MAIN_BRANCH, Branch, applies_to
@@ -157,7 +158,7 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
         targeted = sorted(
             {
                 item.get("name")
-                for item in Resource.objects.using(self.write_database())
+                for item in unsorted(Resource.objects.using(self.write_database()))
                 .filter(
                     resource_type__type_uri=ITEM_KINDS["stylesheet"],
                     content__branch=stored.name,

@@ -1,12 +1,38 @@
 import math
 
+from django.db import connections
+from django.db.models import QuerySet
 from rest_framework.pagination import PageNumberPagination
+
+from scrud_django.rows import unsorted
 
 
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 100
     page_size_query_param = 'page_size'
     max_page_size = 1000
+
+    def paginate_queryset(self, queryset, request, view=None):
+        """DRF's page. On MySQL it is found among the keys alone, then its
+        rows are read by key: MySQL sorts a page with every column it
+        selects, so a page holding a row whose JSON content is over its
+        ``sort_buffer_size`` would fail (error 1038, `scrud_django.rows`);
+        sorting the keys alone does not. The page keeps the queryset's
+        order."""
+        if (
+            not isinstance(queryset, QuerySet)
+            or connections[queryset.db].vendor != "mysql"
+        ):
+            # Only MySQL needs it: PostgreSQL spills a large sort to disk,
+            # and SQLite has no sort buffer; one query is enough there.
+            return super().paginate_queryset(queryset, request, view)
+        pks = super().paginate_queryset(
+            queryset.values_list("pk", flat=True), request, view
+        )
+        if pks is None:
+            return None
+        rows = {row.pk: row for row in unsorted(queryset.filter(pk__in=pks))}
+        return [rows[pk] for pk in pks if pk in rows]
 
     def get_next_link(self):
         return _canonical(self.request, super().get_next_link())
