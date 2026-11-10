@@ -18,11 +18,7 @@ from scrud_django.exceptions import (
 from scrud_django.models import Resource
 from scrud_django.registration import write_db
 from scrud_django.ui.branches import MAIN
-from scrud_django.ui.branches.effective import (
-    chain_of,
-    effective_items,
-    effective_rows,
-)
+from scrud_django.ui.branches.effective import effective_rows, parent_state
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
     applies_to,
@@ -181,24 +177,23 @@ class UIContentValidationMixin:
         return True
 
     def base_of(self, kind, content, branch):
-        """The ETag of the parent's current effective item for the key of
-        `content` on `branch`, else ``None`` (no parent, or none there)."""
+        """The ETag of the parent's item for the key of `content` on
+        `branch`, as `branch` shows it (`parent_state`): the current one on
+        a live branch, the one its pinned version recorded on a pinned branch
+        (ruling R38); else ``None`` (no parent, or no item there)."""
         if branch.parent is None:
             return None
         write_db = self.write_database()
+        type_uri = self.get_resource_type().type_uri
+        all_branches = branches(write_db)
         try:
-            chain = chain_of(branch.parent, branches(write_db))
+            rows = parent_state(kind, type_uri, branch, all_branches, write_db)
         except BranchChainError as error:
             raise UIBranchInvalidError(str(error)) from error
-        rows = (
-            Resource.objects.using(write_db)
-            .filter(resource_type=self.get_resource_type())
-            .order_by("pk")
-            .values_list("pk", "etag", "content")
-        )
-        key = item_key(kind, content, chain[0])
-        for _pk, etag, stored in effective_items(kind, rows, chain):
-            if item_key(kind, stored, chain[0]) == key:
+        parent = all_branches[branch.parent]
+        key = item_key(kind, content, parent)
+        for _pk, etag, stored in rows:
+            if item_key(kind, stored, parent) == key:
                 return etag
         return None
 

@@ -26,6 +26,14 @@
         "items": { "type": "object" }
       }
     },
+    "etags": {
+      "type": "object",
+      "description": "The ETag each item in items had when the version was recorded, by kind, in the same order. Absent from versions recorded before it was added.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
     "ancestors": {
       "type": "object",
       "description": "The branching point: the version of every ancestor the branch was resolved against.",

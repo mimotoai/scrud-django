@@ -72,16 +72,16 @@ def _latest_number(name: str, using: str | None) -> int:
     return number if isinstance(number, int) else 0
 
 
-def _own_items(type_uri: str, name: str, using: str) -> list:
-    """The content of every stored item of `type_uri` on branch `name`,
-    lowest pk first. An item stored before branches names none and is
-    main's (`branch_of`), so main's are found by reading them all."""
+def _own_items(type_uri: str, name: str, using: str) -> list[tuple[str, dict]]:
+    """``(etag, content)`` of every stored item of `type_uri` on branch
+    `name`, lowest pk first. An item stored before branches names none and
+    is main's (`branch_of`), so main's are found by reading them all."""
     rows = Resource.objects.using(using).filter(resource_type__type_uri=type_uri)
     if name != MAIN:
         rows = rows.filter(content__branch=name)
     return [
-        content
-        for content in rows.order_by("pk").values_list("content", flat=True)
+        (etag, content)
+        for etag, content in rows.order_by("pk").values_list("etag", "content")
         if branch_of(content) == name
     ]
 
@@ -125,16 +125,22 @@ def _record(branch: Branch, using: str) -> int | None:
 
 def _store_version(branch: Branch, number: int, using: str):
     """Store version `number` of `branch`: its own items as they are on
-    `using` now."""
+    `using` now, and, in ``etags``, the ETag each had then, by kind, in the
+    same order (ruling R38): a branch pinned to the version bases its
+    overrides on those (`effective.parent_state`), as a live one does on the
+    live items' ETags."""
+    items, etags = {}, {}
+    for kind, type_uri in ITEM_KINDS.items():
+        own = _own_items(type_uri, branch.name, using)
+        items[kind] = [content for _etag, content in own]
+        etags[kind] = [etag for etag, _content in own]
     ResourceRegistration.register(
         {
             "branch": branch.name,
             "number": number,
             "rbac_context": branch.context,
-            "items": {
-                kind: _own_items(type_uri, branch.name, using)
-                for kind, type_uri in ITEM_KINDS.items()
-            },
+            "items": items,
+            "etags": etags,
             "ancestors": dict(branch.branching_point),
         },
         UI_BRANCH_VERSION_SLUG,

@@ -295,10 +295,11 @@ def readable_version(request, version):
     """`version` (a version `Resource`, read for `request`) as `request` may
     see it, in memory only: its ``items`` without those the requester may
     not GET live (``http.GET`` on the item's type in the item's contexts,
-    as the list filter checks a stored item; ruling R9). When any is left
-    out, its ``etag`` becomes one for what is left (the stored ETag and the
-    positions left out), so that two requesters seeing different items get
-    different ETags. Done once per instance."""
+    as the list filter checks a stored item; ruling R9), and ``etags``
+    without theirs. When any is left out, its ``etag`` becomes one for what
+    is left (the stored ETag and the positions left out), so that two
+    requesters seeing different items get different ETags. Done once per
+    instance."""
     if getattr(version, "_scrud_readable", False):
         return version
     version._scrud_readable = True
@@ -306,10 +307,14 @@ def readable_version(request, version):
     items = content.get("items") if isinstance(content, Mapping) else None
     if not isinstance(items, Mapping):
         return version
-    shown, hidden = {}, []
+    etags = content.get("etags")
+    etags = etags if isinstance(etags, Mapping) else None
+    shown, shown_etags, hidden = {}, {}, []
     for kind, listed in items.items():
         type_uri = ITEM_KINDS.get(kind)
-        shown[kind] = []
+        tags = etags.get(kind) if etags is not None else None
+        tags = tags if isinstance(tags, list) else []
+        shown[kind], shown_etags[kind] = [], []
         for index, item in enumerate(listed if isinstance(listed, list) else []):
             if (
                 type_uri is not None
@@ -319,11 +324,14 @@ def readable_version(request, version):
                 )
             ):
                 shown[kind].append(item)
+                shown_etags[kind].append(tags[index] if index < len(tags) else None)
             else:
                 hidden.append(f"{kind}:{index}")
     if hidden:
         digest = hashlib.sha256("\n".join(hidden).encode("utf-8")).hexdigest()
         version.content = {**content, "items": shown}
+        if etags is not None:
+            version.content["etags"] = shown_etags
         version.etag = f"{version.etag}-{digest[:16]}"
     return version
 

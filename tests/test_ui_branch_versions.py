@@ -389,6 +389,14 @@ def test_version_reads_hide_items_the_reader_may_not_read(admin_login):
     hidden, hidden_etag = version_as(reader, version)
     assert hidden == {"component": ["row"], "stylesheet": ["theme"], "css": []}
     assert hidden_etag != stored_etag
+    # The ETags the version recorded (ruling R38) are hidden alike.
+    etags = version.content["etags"]
+    assert Http.response.json()["etags"] == {
+        "component": etags["component"],
+        "stylesheet": etags["stylesheet"][:1],
+        "css": [],
+    }
+    assert len(etags["stylesheet"]) == 2
     # Its ETag is the reader's: another's does not match it.
     When.http.get(
         reverse(f"{VERSIONS}-detail", args=[version.pk]),

@@ -11,6 +11,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from scrud_django.exceptions import UIBranchVersionMissingError
+from scrud_django.models import Resource
 from scrud_django.ui.branches import MAIN
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
@@ -19,7 +20,7 @@ from scrud_django.ui.branches.model import (
     item_key,
     kind_of,
 )
-from scrud_django.ui.branches.store import ancestors, branches
+from scrud_django.ui.branches.store import BranchChainError, ancestors, branches
 from scrud_django.ui.branches.versions import snapshot
 from scrud_django.ui.cascade import _memo, _skipped, _stored
 
@@ -156,50 +157,103 @@ def _missing_snapshot(chain, view_pinned):
         return None
     for ancestor in chain[pinned_at + 1 :]:
         number = chain[pinned_at].branching_point.get(ancestor.name)
-        if _snapshot_items(ancestor.name, number) is None:
+        if _snapshot(ancestor.name, number) is None:
             return ancestor.name, number
     return None
 
 
-def _rows_for(kind, type_uri, chain, view_pinned):
+def _rows_for(kind, type_uri, chain, view_pinned, using=None):
     """The rows `effective_items` takes for `chain`: every stored row when
     nothing is pinned. Else the rows of the branches down to the first pinned
     one (the selected branch when `view_pinned`) are live, and its ancestors'
     come from the snapshots at its branching point (one query each, memoised
-    for the response). ``None`` when a snapshot is missing (not logged)."""
+    for the response). ``None`` when a snapshot is missing (not logged).
+    Read on `using`, without memoising the live rows; default: the router's
+    read database (`cascade._stored`)."""
     pinned_at = _pinned_at(chain, view_pinned)
     if pinned_at is None:
-        return _stored(type_uri)
+        return _live_rows(type_uri, using)
     live = {branch.name for branch in chain[: pinned_at + 1]}
-    rows = [row for row in _stored(type_uri) if branch_of(row[2]) in live]
+    rows = [row for row in _live_rows(type_uri, using) if branch_of(row[2]) in live]
     pinned = chain[pinned_at]
     for ancestor in chain[pinned_at + 1 :]:
         number = pinned.branching_point.get(ancestor.name)
-        items = _snapshot_items(ancestor.name, number)
-        if items is None:
+        snapped = _snapshot_rows(kind, ancestor, number, using)
+        if snapped is None:
             return None
-        for content in items.get(kind) or []:
-            if not isinstance(content, Mapping):
-                continue
-            key = item_key(kind, content, ancestor) if content.get("name") else ()
-            etag = f"v{number}:{ancestor.name}:{':'.join(map(str, key))}"
-            rows.append((None, etag, content))
+        rows.extend(snapped)
     return rows
 
 
-def _snapshot_items(name, number):
-    """``{kind: [content, ...]}`` of version `number` of branch `name`, or
-    ``None`` when it is not stored. Read once per `rules_memo`."""
+def _live_rows(type_uri, using):
+    if using is None:
+        return _stored(type_uri)
+    return (
+        Resource.objects.using(using)
+        .filter(resource_type__type_uri=type_uri)
+        .order_by("pk")
+        .values_list("pk", "etag", "content")
+    )
+
+
+def _snapshot_rows(kind, ancestor: Branch, number, using=None):
+    """``(None, etag, content)`` of the items of `kind` in version `number`
+    of `ancestor`, or ``None`` when it is not stored. The ETag is the one the
+    version recorded for the item (ruling R38); a version recorded before
+    ETags were has none, and the item gets one of its own,
+    ``v<number>:<branch>:<key>``, which no live item has: an override based
+    on it conflicts with the live item until it is rebased."""
+    found = _snapshot(ancestor.name, number, using)
+    if found is None:
+        return None
+    etags = found.get("etags")
+    tags = etags.get(kind) if isinstance(etags, Mapping) else None
+    tags = tags if isinstance(tags, list) else []
+    rows = []
+    for index, content in enumerate(found["items"].get(kind) or []):
+        if not isinstance(content, Mapping):
+            continue
+        etag = tags[index] if index < len(tags) else None
+        if not isinstance(etag, str):
+            key = item_key(kind, content, ancestor) if content.get("name") else ()
+            etag = f"v{number}:{ancestor.name}:{':'.join(map(str, key))}"
+        rows.append((None, etag, content))
+    return rows
+
+
+def _snapshot(name, number, using=None):
+    """The content of version `number` of branch `name` (its ``items`` a
+    mapping), read on `using`, or ``None`` when it is not stored. Read once
+    per `rules_memo`."""
     memo = _memo.get()
-    key = ("snapshot", name, number)
+    key = ("snapshot", name, number, using)
     if memo is not None and key in memo:
         return memo[key]
     try:
-        items = snapshot(name, number)["items"] if isinstance(number, int) else None
+        found = snapshot(name, number, using) if isinstance(number, int) else None
     except UIBranchVersionMissingError:
-        items = None
-    if not isinstance(items, Mapping):
-        items = None
+        found = None
+    if not isinstance(found, Mapping) or not isinstance(found.get("items"), Mapping):
+        found = None
     if memo is not None:
-        memo[key] = items
-    return items
+        memo[key] = found
+    return found
+
+
+def parent_state(kind: str, type_uri: str, branch: Branch, all_branches, using):
+    """``(pk, etag, content)`` of the items of `type_uri` effective on
+    `branch`'s parent as `branch` shows them (`all_branches` say where its
+    chain is), read on `using`: the parent's current state on a live
+    branch; on one pinned (or with a pinned ancestor), the ancestors' items
+    as of the branching point, with the ETags their versions recorded. This
+    is what an override on `branch` replaces, so its ``base`` (ruling R38).
+    `BranchChainError` for a broken chain, and for a pinned snapshot that
+    is missing."""
+    chain = chain_of(branch.name, all_branches)
+    rows = _rows_for(kind, type_uri, chain, False, using)
+    if rows is None:
+        raise BranchChainError(
+            f"Branch {branch.name!r} is pinned to an ancestor version that is "
+            "missing: pull it first."
+        )
+    return effective_items(kind, rows, chain[1:])

@@ -397,7 +397,8 @@ the same rendering, no banner and no extra queries.
   `{"testing": 12, "admin": 40}`.
 * Every change to a branch's own items, a push into it, a pull and a restore
   record the branch's next **version**: a numbered, immutable snapshot of its
-  overrides and of the ancestor versions it was resolved against. Versions are
+  overrides (with each one's ETag then, in `etags`) and of the ancestor
+  versions it was resolved against. Versions are
   read-only resources (`ui-branch-versions`).
 
 A branch is a resource of type `ui-branches`:
@@ -463,8 +464,12 @@ resource.
   its `rbac_context` if that is not the branch's context. An item cannot move
   to another branch.
 * **`base`** on an item is server-managed: on create, the ETag of the parent's
-  item it replaces (`null` for an addition); it stays while the override is
-  edited, and only `rebase: true` (below) moves it.
+  item it replaces (`null` for an addition), as the branch shows it: on a
+  pinned branch, the item as of the branching point, with the ETag its version
+  recorded (a version recorded before versions kept ETags gives its items one
+  of its own, which conflicts with the parent's until the branch is pulled and
+  the override rebased). It stays while the override is edited, and only
+  `rebase: true` (below) moves it.
 
 ### Pull and conflicts
 
