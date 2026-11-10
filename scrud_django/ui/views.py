@@ -30,6 +30,7 @@ from scrud_django.ui.branches.model import (
     kind_of,
 )
 from scrud_django.ui.branches.store import BranchChainError, branches, ensure_main
+from scrud_django.ui.branches.sync import resolve_conflict
 from scrud_django.ui.engines import TemplateCompileError, compile_template
 from scrud_django.ui.selectors import SelectorError, parse_selector
 from scrud_django.views import ResourceViewSet
@@ -41,6 +42,8 @@ class UIContentValidationMixin:
 
     # The branch of the item being written (`validate_branch`), or None.
     item_branch = None
+    # Whether the item being written keeps its override (`rebase`).
+    rebased = False
 
     def filter_queryset(self, queryset):
         """A list shows the effective items of the selected branch (main's
@@ -69,8 +72,10 @@ class UIContentValidationMixin:
         made), which `create_resource` and `update` then save: what this
         sets in it is stored."""
         kind = kind_of(self.get_resource_type().type_uri)
+        self.rebased = False
         if kind is not None and isinstance(content, dict):
             self.item_branch = self.validate_branch(kind, content, instance)
+            self.rebased = self.validate_rebase(content, instance)
 
     def validate_branch(self, kind, content, instance=None):
         """The `Branch` the item `content` is written to, its ``branch`` (on
@@ -104,6 +109,27 @@ class UIContentValidationMixin:
         content["branch"] = branch.name
         content["base"] = self.base_of(kind, content, branch)
         return branch
+
+    def validate_rebase(self, content, instance):
+        """Remove the write-only ``rebase`` from `content` and say whether
+        the write keeps the override as it is (``rebase: true``), which
+        resolves its conflict. Refuse (400) it anywhere but on an update of
+        an own item of a branch with a parent."""
+        rebase = content.pop("rebase", False)
+        if rebase is False:
+            return False
+        branch = self.item_branch
+        if (
+            rebase is not True
+            or instance is None
+            or branch is None
+            or (branch.parent is None)
+        ):
+            raise UIBranchInvalidError(
+                "rebase: true keeps an override of the parent's item: it is "
+                "valid only on an update of an item of a branch with a parent."
+            )
+        return True
 
     def base_of(self, kind, content, branch):
         """The ETag of the parent's current effective item for the key of
@@ -152,7 +178,28 @@ class UIContentValidationMixin:
     def update(self, request, slug: str):
         instance = self.get_instance(request, slug)
         self.validate_content(request.data, instance=instance)
-        return super().update(request, slug)
+        response = super().update(request, slug)
+        if self.rebased:
+            self.resolve(request.data)
+        return response
+
+    def resolve(self, content):
+        """Remove the conflict of the item `content` from its branch."""
+        kind = kind_of(self.get_resource_type().type_uri)
+        branch = branches(self.write_database()).get(branch_of(content))
+        if kind is not None and branch is not None and branch.pk is not None:
+            key = item_key(kind, content, branch)
+            resolve_conflict(branch.name, kind, key, self.write_database())
+
+    def destroy(self, request, slug: str):
+        """Delete the item; dropping an override (its own row, not a deletion
+        marker) of a branch with a parent resolves its conflict, in the same
+        transaction."""
+        content = self.get_instance(request, slug).content
+        response = super().destroy(request, slug)
+        if isinstance(content, dict) and content.get("deleted") is not True:
+            self.resolve(content)
+        return response
 
     def other_resources(self, instance=None):
         """The stored resources of this view's type, but `instance`."""

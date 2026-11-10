@@ -20,7 +20,12 @@ from scrud_django.ui.branches.store import (
     branch_from,
     branches,
 )
-from scrud_django.ui.branches.versions import current_version, discard_branch
+from scrud_django.ui.branches.sync import pull
+from scrud_django.ui.branches.versions import (
+    current_version,
+    discard_branch,
+    record_version,
+)
 from scrud_django.ui.views import UIContentValidationMixin
 from scrud_django.views import ResourceViewSet
 
@@ -40,7 +45,12 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
         context of its items (`check_unchanged_authorization`). Set ``base``
         (default ``live``) and the server-managed ``branching_point`` (on
         create, the current version of every ancestor, `current_version`;
-        kept on update) in `content`, the request body that is saved."""
+        kept on update) in `content`, the request body that is saved. The
+        write-only ``pull`` is removed; ``true`` on an update pulls
+        (`pull`): the branching point moves to the ancestors' current
+        versions and ``conflicts`` is recomputed. ``conflicts`` is
+        server-managed: the stored one is kept, whatever the body says."""
+        self.pulled = False
         super().validate_content(content, instance=instance)
         if not isinstance(content, dict):
             return
@@ -78,10 +88,25 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
         if instance is not None:
             self.check_unchanged_authorization(instance, content, prefix)
         content["base"] = base
+        pulling = content.pop("pull", False) is True and instance is not None
+        content.pop("conflicts", None)
         if instance is None:
             content["branching_point"] = self.branching_point(name, all_branches)
-        else:
-            content["branching_point"] = instance.content.get("branching_point", {})
+            return
+        content["branching_point"] = instance.content.get("branching_point", {})
+        if "conflicts" in instance.content:
+            content["conflicts"] = instance.content["conflicts"]
+        if pulling:
+            content.update(pull(content, self.write_database(), all_branches))
+            self.pulled = True
+
+    def update(self, request, slug: str):
+        """Update the branch; a pull also records the branch's next version,
+        in the request's transaction, once the branch is saved."""
+        response = super().update(request, slug)
+        if self.pulled:
+            record_version(request.data["name"], self.write_database())
+        return response
 
     def branching_point(self, name, all_branches):
         """The current version of every ancestor of the new branch `name`
