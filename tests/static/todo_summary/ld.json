@@ -1,0 +1,10 @@
+{
+  "ex": "http://example.org/todo#",
+  "@type": "http://example.org/todo#TodoSummary",
+  "context": {
+    "@id": "ex:context"
+  },
+  "titles": {
+    "@id": "ex:titles"
+  }
+}

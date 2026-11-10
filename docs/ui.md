@@ -487,6 +487,19 @@ with `name: "rules[<i>].select"` (the field, as JSON Schema's errors name
 theirs), so the re-render shows the message beside rule `<i>`. A 412 (PUT or DELETE) shows a notice and reloads
 the frame with the current state, and so does a 409 DELETE.
 
+## Computed resource types
+
+A computed type (`scrud_django.computed.ComputedResourceViewSet`, registered
+with `registration.computed_resource_type`; see the README) renders through
+the same cascade as a stored resource: a stylesheet rule on its type's IRI
+selects a component, and negotiating HTML at its URL, under a published
+branch's prefix too, renders it. Its content is view-only: components get the
+decisions `{"GET": "allowed", "PUT": "denied", "DELETE": "denied"}`, whatever
+the user's grants, so edit controls never show. Its contexts, whose
+stylesheets apply, are those of the content's `rbac_context` when it has one,
+else none (only stylesheets in the default context). It has no ETag-based
+writes: PUT, POST and DELETE are a 405.
+
 ## Fragment protocol
 
 | Header | Meaning |

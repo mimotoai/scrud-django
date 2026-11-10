@@ -422,6 +422,10 @@ def load_stored(view, request, response) -> None:
     remember_stored(view, request, obj)
 
 
+# What a computed view's content offers: reading only.
+COMPUTED_DECISIONS = {"GET": ALLOWED, "PUT": DENIED, "DELETE": DENIED}
+
+
 def _body(data, status, request, view, response):
     """``(html, contexts)``: the fragment answering the request, and the
     contexts whose stylesheets style its page."""
@@ -462,6 +466,14 @@ def _body(data, status, request, view, response):
         elif action not in ("retrieve", "update"):
             return _json(data), []
         etag = response.get("ETag") if response is not None else None
+        # A computed view's content is view-only, its contexts the content's
+        # own when it names them (never the stored resource's decisions).
+        computed = getattr(view, "computed", False)
+        contexts = (
+            (rbac_contexts_of(data) if "rbac_context" in data else [])
+            if computed
+            else rbac_contexts_of(data)
+        )
         return render_resource(
             data,
             resource_type=resource_type,
@@ -471,7 +483,12 @@ def _body(data, status, request, view, response):
             scope_chain=scope_chain,
             pointer=pointer or "",
             mode=mode,
-        ), rbac_contexts_of(data)
+            **(
+                {"decisions": COMPUTED_DECISIONS, "contexts": contexts}
+                if computed
+                else {}
+            ),
+        ), contexts
     return _json(data), []
 
 
