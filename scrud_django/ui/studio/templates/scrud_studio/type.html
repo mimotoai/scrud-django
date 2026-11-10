@@ -1,0 +1,8 @@
+{% extends "scrud_studio/base.html" %}
+{% block title %}Studio: {{ type.slug }}{% endblock %}
+{% block content %}
+<h1>{{ type.title }}</h1>
+<p><code>{{ type.type_uri }}</code></p>
+<p class="studio-empty">The editor for this type is not built yet.</p>
+<p><a href="{% url 'scrud-studio:types' %}">All types</a></p>
+{% endblock %}

@@ -1,0 +1,18 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{ csrf_token }}">
+<title>{% block title %}Studio{% endblock %}</title>
+<link rel="stylesheet" href="{% static 'scrud_studio/studio.css' %}">
+<script src="{% static 'scrud_ui/htmx.min.js' %}" defer></script>
+<script src="{% static 'scrud_studio/studio.js' %}" defer></script>
+</head>
+<body>
+<header class="studio-bar"><a href="{% url 'scrud-studio:types' %}">Studio</a></header>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>
