@@ -6,8 +6,14 @@ from django.http import Http404, HttpResponse
 from django.shortcuts import render
 from django.urls import reverse
 from django.views.decorators.clickjacking import xframe_options_sameorigin
-from rest_framework.decorators import api_view, permission_classes, renderer_classes
+from rest_framework.decorators import (
+    api_view,
+    parser_classes,
+    permission_classes,
+    renderer_classes,
+)
 from rest_framework.exceptions import ValidationError
+from rest_framework.parsers import JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
@@ -25,6 +31,7 @@ from scrud_django.ui.branches.effective import Selection, using_selection
 from scrud_django.ui.branches.selection import parse_value, selectable
 from scrud_django.ui.cascade import request_memo
 from scrud_django.ui.render import node_at
+from scrud_django.ui.studio import writes
 from scrud_django.ui.studio.dispatch import call_view
 from scrud_django.ui.studio.explain import explain as explain_node
 from scrud_django.ui.studio.preview import (
@@ -249,3 +256,46 @@ def _shown(request, slug, resource_type) -> "_Shown | HttpResponse":
         contexts=None,
         decisions=None,
     )
+
+
+def _body(request) -> dict:
+    """The JSON object a studio write is sent with."""
+    if not isinstance(request.data, dict):
+        raise ValidationError({"body": ["A JSON object is required."]})
+    return request.data
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
+@renderer_classes([JSONRenderer])
+def save_item(request):
+    """Save an item on a working branch (`writes.save_item`)."""
+    return writes.save_item(request, _body(request))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
+@renderer_classes([JSONRenderer])
+def revert_item(request):
+    """Drop a working branch's own row of an item (`writes.revert_item`)."""
+    return writes.revert_item(request, _body(request))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
+@renderer_classes([JSONRenderer])
+def pull(request):
+    """Pull a working branch (`writes.pull`)."""
+    return writes.pull(request, _body(request))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
+@renderer_classes([JSONRenderer])
+def push(request):
+    """Push a working branch, to its parent by default (`writes.push`)."""
+    return writes.push(request, _body(request))

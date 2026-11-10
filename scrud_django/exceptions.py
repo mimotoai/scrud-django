@@ -274,6 +274,25 @@ class UIStudioContextUnavailableError(ScrudException):
         self.title = "Studio data context unavailable"
 
 
+class UIStudioBranchReadOnlyError(ScrudException):
+    """A studio write naming a published branch (``main``, or one with a
+    ``prefix``): the studio edits working branches only, so that changes
+    reach a published branch by a push. Refused before anything is
+    written or dispatched."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_studio_branch_read_only"
+
+    def __init__(self, branch):
+        super().__init__(
+            f"UI branch {branch!r} is published: the studio does not edit it. "
+            "Edit a working branch, then push it."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-studio-branch-read-only"
+        self.title = "Studio branch read-only"
+
+
 class UIBranchInUseError(ScrudException):
     """A DELETE of a UI branch that other branches name as their parent:
     409 Conflict, naming them."""
