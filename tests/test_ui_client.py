@@ -118,6 +118,15 @@ out.delete = fire(button, 'delete');
 out.published = fire(published, 'get');
 out.plain = fire(plain, 'get');
 out.own = fire(node, 'get', {'scrud-ui-branch': 'mine'});
+// An element outside any frame (a pager link, a stored page component's nav)
+// uses the page's branch, which a frame's own attribute overrides.
+const nav = el('A', {'hx-get': '/l/?page=2'}, el('NAV', {}));
+out.outsideBare = fire(nav, 'get');
+const marker = el('DIV', {class: 'scrud-branch-page', 'data-scrud-branch': 'wip@pinned'});
+document.querySelector = (sel) =>
+  sel === '.scrud-branch-page[data-scrud-branch]' ? marker : null;
+out.outside = fire(nav, 'get');
+out.insideFrame = fire(node, 'get');
 console.log(JSON.stringify(out));
 """
 )
@@ -135,6 +144,10 @@ def test_config_request_sends_the_frames_branch():
     assert out["plain"] == {"Accept": "text/html"}
     # a header the page set itself is kept, in any case
     assert out["own"] == {"Accept": "text/html", "scrud-ui-branch": "mine"}
+    # outside any frame: the page's branch (.scrud-branch-page), else none
+    assert out["outsideBare"] == {"Accept": "text/html"}
+    assert out["outside"]["Scrud-UI-Branch"] == "wip@pinned"
+    assert out["insideFrame"]["Scrud-UI-Branch"] == "wip"
 
 
 BUILD_SCRIPT = r"""

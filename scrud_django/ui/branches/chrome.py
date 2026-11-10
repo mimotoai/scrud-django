@@ -4,7 +4,9 @@ page that asks before a shared link switches branch.
 Both are package templates (``templates/``) rendered on the built-in engine,
 never resolved through stylesheets, so that no branch's components can
 change or hide them. Every value is escaped, and every URL is the request's
-path (URI-escaped) with a query string encoded here."""
+path (URI-escaped) with a query string encoded here. The links that switch
+branch carry the viewer's confirmation token for their selection
+(`selection.confirm_token`), which no link planted in content can."""
 
 import importlib.resources
 from functools import cache
@@ -16,6 +18,7 @@ from scrud_django.ui.branches.effective import BRANCH_PARAMETER, Selection
 from scrud_django.ui.branches.selection import (
     CONFIRM_PARAMETER,
     Chosen,
+    confirm_token,
     is_published,
     published_branch,
     selectable_branches,
@@ -28,7 +31,8 @@ from scrud_django.ui.engines import cached_template
 def banner(chosen: Chosen, request) -> SafeString:
     """The banner of a page that `chosen` did not render on the published
     branch, or that names a branch it refused: the branch and its mode, a
-    switcher, a live/pinned toggle, a link to share and the way back."""
+    switcher (a link to each branch the viewer may GET in the tree), a
+    live/pinned toggle, a link to share and the way back."""
     published = published_branch(request)
     selection = chosen.selection
     working = not is_published(chosen, request)
@@ -38,13 +42,10 @@ def banner(chosen: Chosen, request) -> SafeString:
         "published": published,
         "branch": selection.branch if working else None,
         "mode": _mode(selection, branch),
-        "action": escape_uri_path(request.path),
-        "hidden": [
-            (name, value)
-            for name, values in _base_query(request).lists()
-            for value in values
+        "switch": [
+            (name, _href(request, name, confirm=True))
+            for name in selectable_branches(request)
         ],
-        "options": selectable_branches(request),
         "back_href": _href(request, "", confirm=True),
         "copy_href": _href(request, selection_value(selection)) if working else None,
         "toggle_href": None,
@@ -68,7 +69,7 @@ def confirm_page(chosen: Chosen, request) -> SafeString:
     selection)."""
     selection = chosen.selection
     query = request.GET.copy()
-    query[CONFIRM_PARAMETER] = "1"
+    query[CONFIRM_PARAMETER] = confirm_token(request, query.get(BRANCH_PARAMETER, ""))
     return _template("confirm.html").render(
         {
             "branch": selection.branch,
@@ -107,7 +108,7 @@ def _href(request, value, confirm=False) -> str:
     query = _base_query(request)
     query[BRANCH_PARAMETER] = value
     if confirm:
-        query[CONFIRM_PARAMETER] = "1"
+        query[CONFIRM_PARAMETER] = confirm_token(request, value)
     return _with_query(request, query)
 
 

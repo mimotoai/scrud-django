@@ -2,6 +2,8 @@
 `<name>@pinned`) shows its ancestors as of its branching point."""
 
 import logging
+import re
+from html import unescape
 from unittest import mock
 
 import pytest
@@ -88,7 +90,8 @@ def test_pinned_view_by_query_parameter(todo_list, todo_reader_login):
     When.http.get(url, HTTP_ACCEPT=HTML)
     Then.http.status_code_is(200)
     assert "You're about to browse branch wip" in html()
-    When.http.get(url + "&ui-branch-confirm=1", HTTP_ACCEPT=HTML)
+    found = re.search(r'class="scrud-branch-continue" href="([^"]*)"', html())
+    When.http.get(unescape(found.group(1)), HTTP_ACCEPT=HTML)
     Then.http.status_code_is(200)
     assert "<h1>Groceries" in html() and "<h2>Groceries" not in html()
 

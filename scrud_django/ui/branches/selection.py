@@ -16,7 +16,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from django.middleware.csrf import get_token
 from django.urls import reverse
+from django.utils.crypto import constant_time_compare, salted_hmac
 
 from scrud_django.models import Resource
 from scrud_django.permissions import may_read_in_context, resource_contexts
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 BRANCH_COOKIE = "scrud_ui_branch"
 CONFIRM_PARAMETER = "ui-branch-confirm"
+CONFIRM_SALT = "scrud_django.ui.branch-confirm"
 VALUE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}(?:@pinned)?")
 MAX_VALUE_BYTES = 80
 
@@ -55,7 +58,8 @@ class Chosen:
     """The `selection` a request renders, the `source` of the value that
     chose it (``"header"``, ``"param"``, ``"cookie"`` or ``"none"``), the
     branch name it `refused` (``None`` when it was used), and whether the
-    parameter came `confirmed` (``ui-branch-confirm=1``, not cross-site)."""
+    parameter came `confirmed` (with this viewer's `confirm_token` for it,
+    not cross-site)."""
 
     selection: Selection
     source: str
@@ -155,7 +159,7 @@ def _choose(request, cookie):
             selection = parse_value(value)
             if selection is None:
                 continue  # ignored
-        confirmed = source == PARAM and _confirmed(request)
+        confirmed = source == PARAM and _confirmed(request, value)
         if selection.branch == published:
             return Chosen(_published_selection(published), source, None, confirmed)
         if _selectable(request, selection, published):
@@ -180,12 +184,41 @@ def _published_selection(published):
     return Selection(branch=published)
 
 
-def _confirmed(request) -> bool:
-    """Whether the request carries ``ui-branch-confirm=1`` from the site's own
-    pages: a cross-site link (or one pasted in the address bar) that carries
-    it is asked to confirm all the same."""
+def confirm_token(request, value: str) -> str:
+    """The `CONFIRM_PARAMETER` value that confirms selecting `value` (a
+    `BRANCH_PARAMETER` value) for the viewer of `request`: an HMAC of the
+    value and the viewer's CSRF secret, so that only links the server
+    rendered for this viewer carry it, never one a writer planted in
+    content. Makes sure the viewer has a CSRF secret (``get_token``, which
+    has the response keep it), so that the link works on the next request."""
+    http = getattr(request, "_request", request)
+    get_token(http)
+    return _token(value, http.META.get("CSRF_COOKIE"))
+
+
+def _token(value, secret) -> str | None:
+    if not secret:
+        return None
+    return salted_hmac(CONFIRM_SALT, f"{value}|{secret}").hexdigest()
+
+
+def _csrf_secret(request):
+    """The viewer's CSRF secret, as ``CsrfViewMiddleware`` read it from the
+    cookie or, with ``CSRF_USE_SESSIONS``, the session (unmasked, in
+    ``META["CSRF_COOKIE"]`` either way); ``None`` without one."""
+    meta = getattr(request, "META", None)
+    return meta.get("CSRF_COOKIE") if meta is not None else None
+
+
+def _confirmed(request, value) -> bool:
+    """Whether the request carries this viewer's `confirm_token` for `value`
+    (the server's own links: the confirmation's Continue, the banner's), and
+    does not come from another site or the address bar (``Sec-Fetch-Site``,
+    as a second defence): any other is asked to confirm."""
     params = getattr(request, "GET", None)
-    if params is None or params.get(CONFIRM_PARAMETER) != "1":
+    given = params.get(CONFIRM_PARAMETER) if params is not None else None
+    expected = _token(value, _csrf_secret(request))
+    if not given or expected is None or not constant_time_compare(given, expected):
         return False
     headers = getattr(request, "headers", None)
     site = headers.get("Sec-Fetch-Site") if headers is not None else None

@@ -4,6 +4,7 @@ branch attribute."""
 
 import json
 import re
+from html import unescape
 
 import pytest
 from django.db import connection
@@ -30,6 +31,7 @@ from .test_ui_http import HTML, detail_url, html, make_stylesheet
 
 COOKIE = "scrud_ui_branch"
 BANNER = 'class="scrud-branch-banner"'
+PAGE_BRANCH = '<div class="scrud-branch-page" data-scrud-branch="{}" hidden></div>'
 CONFIRM = "You're about to browse branch"
 MAIN_ROW = "<b>Buy milk</b>"
 WIP_ROW = "<i>Buy milk</i>"
@@ -68,6 +70,31 @@ def set_cookie(value):
 
 def response_cookie():
     return Http.response.cookies.get(COOKIE)
+
+
+def get_href(href, **headers):
+    """GET `href` as found (HTML-escaped) in a page, as a same-origin link
+    unless `headers` say otherwise."""
+    headers = {"HTTP_SEC_FETCH_SITE": "same-origin", **headers}
+    When.http.get(unescape(href), HTTP_ACCEPT=HTML, **headers)
+    Then.http.status_code_is(200)
+    return html()
+
+
+def href_of(page, css_class):
+    found = re.search(rf'class="{css_class}" href="([^"]*)"', page)
+    assert found, (css_class, page)
+    return found.group(1)
+
+
+def switch_hrefs(banner):
+    """``{branch: href}`` of the switcher's links (the current branch has
+    none: ``None``)."""
+    links = re.findall(
+        r'<li>(?:<a href="([^"]*)">([^<]*)</a>|<strong aria-current="page">([^<]*)<)',
+        banner,
+    )
+    return {name or current: href or None for href, name, current in links}
 
 
 def banner_of(page):
@@ -131,28 +158,45 @@ def test_param_from_shared_link_asks_first_then_sets_cookie(
     todo_list, todo_reader_login
 ):
     setup_branches(todo_reader_login)
+    url = detail_url(todo_list)
     # A shared link: the confirmation page, with nothing of the branch.
     page = get(todo_list, "ui-branch=wip")
     assert CONFIRM in page and "wip" in page
     assert WIP_ROW not in page and MAIN_ROW not in page
     assert response_cookie() is None
-    continue_href = f"{detail_url(todo_list)}?ui-branch=wip&amp;ui-branch-confirm=1"
-    assert f'href="{continue_href}"' in page
-    assert f'href="{detail_url(todo_list)}"' in page  # Cancel
+    continue_href = href_of(page, "scrud-branch-continue")
+    assert re.fullmatch(
+        rf"{url}\?ui-branch=wip&amp;ui-branch-confirm=[0-9a-f]+", continue_href
+    )
+    assert href_of(page, "scrud-branch-cancel") == url
     # A fragment request is never asked: it renders the branch, no cookie.
     assert WIP_ROW in get(todo_list, "ui-branch=wip", HTTP_HX_REQUEST="true")
     assert response_cookie() is None
-    # A cross-site link carrying the confirmation is still asked.
-    page = get(
-        todo_list, "ui-branch=wip&ui-branch-confirm=1", HTTP_SEC_FETCH_SITE="cross-site"
-    )
+    # A link planted in content (same-origin) with a made-up confirmation is
+    # still asked, and sets no cookie.
+    for planted in ("1", "", "0" * 40):
+        page = get(
+            todo_list,
+            f"ui-branch=wip&ui-branch-confirm={planted}",
+            HTTP_SEC_FETCH_SITE="same-origin",
+        )
+        assert CONFIRM in page and response_cookie() is None, planted
+    # A token minted for another value is refused.
+    other_href = href_of(get(todo_list, "ui-branch=other"), "scrud-branch-continue")
+    other_token = re.search(r"ui-branch-confirm=([0-9a-f]+)", other_href).group(1)
+    page = get_href(f"{url}?ui-branch=wip&amp;ui-branch-confirm={other_token}")
     assert CONFIRM in page and response_cookie() is None
+    # The real token from a cross-site link is still asked.
+    page = get_href(continue_href, HTTP_SEC_FETCH_SITE="cross-site")
+    assert CONFIRM in page and response_cookie() is None
+    # A token minted for another viewer (another CSRF secret) is refused.
+    secret = Http.api_client.cookies["csrftoken"].value
+    Http.api_client.cookies["csrftoken"] = "x" * len(secret)
+    page = get_href(continue_href)
+    assert CONFIRM in page and response_cookie() is None
+    Http.api_client.cookies["csrftoken"] = secret
     # Continue: the branch, and the cookie is set.
-    page = get(
-        todo_list,
-        "ui-branch=wip&ui-branch-confirm=1",
-        HTTP_SEC_FETCH_SITE="same-origin",
-    )
+    page = get_href(continue_href)
     assert WIP_ROW in page and CONFIRM not in page
     cookie = response_cookie()
     assert cookie is not None and cookie.value == "wip"
@@ -161,19 +205,22 @@ def test_param_from_shared_link_asks_first_then_sets_cookie(
     # A later plain GET stays on the branch (the cookie).
     page = get(todo_list)
     assert WIP_ROW in page and BANNER in page and response_cookie() is None
+    back_href = href_of(page, "scrud-branch-back")
     # A link to the branch you are on asks nothing.
     page = get(todo_list, "ui-branch=wip")
     assert WIP_ROW in page and CONFIRM not in page and response_cookie() is None
     # A link to another working branch asks again.
     assert CONFIRM in get(todo_list, "ui-branch=other")
     # A link to the published branch asks nothing, and keeps the cookie; its
-    # frames name the published branch, so its fragments stay there.
+    # frames and the page name the published branch, so its fragments stay
+    # there.
     page = get(todo_list, "ui-branch=")
     assert MAIN_ROW in page and CONFIRM not in page and BANNER not in page
     assert response_cookie() is None
-    assert 'data-scrud-branch=""' in page
-    # Back to main: the cookie is deleted.
-    page = get(todo_list, "ui-branch=&ui-branch-confirm=1")
+    assert 'class="scrud-resource"' in page and PAGE_BRANCH.format("") in page
+    assert re.search(r'class="scrud-resource"[^>]*data-scrud-branch=""', page)
+    # Back to main (the banner's link): the cookie is deleted.
+    page = get_href(back_href)
     assert MAIN_ROW in page and BANNER not in page
     cookie = response_cookie()
     assert cookie is not None and cookie.value == "" and cookie["max-age"] == 0
@@ -193,22 +240,22 @@ def test_banner_only_on_working_branch(todo_list, todo_reader_login):
     banner = banner_of(page)
     assert banner and page.index(BANNER) < page.index('class="scrud-resource"')
     assert "wip" in banner and "live" in banner
-    # the switcher: the branches the viewer may GET in this tree
-    options = re.findall(r'<option value="([^"]*)"', banner)
-    assert set(options) == {"wip", "other"}
-    assert '<option value="wip" selected>' in banner
-    assert 'name="ui-branch-confirm" value="1"' in banner
-    assert '<input type="hidden" name="page" value="2">' in banner
     url = detail_url(todo_list)
+    token = "&amp;ui-branch-confirm=[0-9a-f]+"
+    # the switcher: a link to each branch the viewer may GET in this tree
+    switch = switch_hrefs(banner)
+    assert set(switch) == {"wip", "other"} and switch["wip"] is None
+    assert re.fullmatch(rf"{url}\?page=2&amp;ui-branch=other{token}", switch["other"])
     # the live/pinned toggle, the copy link and the way back
-    assert (
-        f'href="{url}?page=2&amp;ui-branch=wip%40pinned&amp;ui-branch-confirm=1"'
-        in banner
-    )
-    assert f'href="{url}?page=2&amp;ui-branch=wip"' in banner
-    assert f'href="{url}?page=2&amp;ui-branch=&amp;ui-branch-confirm=1"' in banner
-    assert "main" in banner
-    # frames carry the selection; fragments get no banner
+    toggle = href_of(banner, "scrud-branch-toggle")
+    assert re.fullmatch(rf"{url}\?page=2&amp;ui-branch=wip%40pinned{token}", toggle)
+    assert href_of(banner, "scrud-branch-copy") == f"{url}?page=2&amp;ui-branch=wip"
+    back = href_of(banner, "scrud-branch-back")
+    assert re.fullmatch(rf"{url}\?page=2&amp;ui-branch={token}", back)
+    assert "Back to main" in banner
+    # the page and its frames carry the selection; fragments get no banner
+    assert PAGE_BRANCH.format("wip") in page
+    assert page.index(PAGE_BRANCH.format("wip")) < page.index(BANNER)
     assert 'data-scrud-branch="wip"' in page
     page = get(todo_list, HTTP_HX_REQUEST="true", **{BRANCH_HEADER: "wip"})
     assert BANNER not in page and 'data-scrud-branch="wip"' in page
@@ -216,7 +263,13 @@ def test_banner_only_on_working_branch(todo_list, todo_reader_login):
     page = get(todo_list, **{BRANCH_HEADER: "wip@pinned"})
     assert f"pinned at main v{versions_of('main')[-1]}" in banner_of(page)
     assert 'data-scrud-branch="wip@pinned"' in page
-    assert f'href="{url}?ui-branch=wip&amp;ui-branch-confirm=1"' in banner_of(page)
+    toggle = href_of(banner_of(page), "scrud-branch-toggle")
+    assert re.fullmatch(rf"{url}\?ui-branch=wip{token}", toggle)
+    # the switcher's and the toggle's links switch, with no confirmation
+    page = get_href(switch["other"])
+    assert OTHER_ROW in page and response_cookie().value == "other"
+    page = get_href(toggle)
+    assert WIP_ROW in page and response_cookie().value == "wip"
 
 
 @pytest.mark.django_db
@@ -255,9 +308,11 @@ def test_refused_branch_falls_back_with_note(todo_list, todo_reader_login):
         banner = banner_of(page)
         assert f"The branch <code>{refused}</code> isn't available" in banner
         # the switcher is still there, and the way back clears the cookie
-        assert '<option value="wip"' in banner
-        assert "ui-branch=&amp;ui-branch-confirm=1" in banner
-        assert "data-scrud-branch=" in page
+        assert set(switch_hrefs(banner)) == {"wip", "other"}
+        assert "ui-branch=&amp;ui-branch-confirm=" in href_of(
+            banner, "scrud-branch-back"
+        )
+        assert PAGE_BRANCH.format("") in page
         # the cookie is a preference: kept
         assert response_cookie() is None
     # A broken chain is refused with the note too.

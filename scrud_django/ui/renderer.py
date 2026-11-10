@@ -243,8 +243,8 @@ def finalize_html(request, response) -> None:
 
 
 def remember_branch(request, response) -> None:
-    """For a GET whose branch parameter came confirmed (``ui-branch-confirm=1``,
-    the switcher's, the banner's links' and the confirmation's): set
+    """For a GET whose branch parameter came confirmed (with the viewer's
+    confirmation token: the banner's links and the confirmation's): set
     `BRANCH_COOKIE` to the working branch it selected, scoped to the prefix
     (``HttpOnly``, ``SameSite=Lax``), or delete it for the published branch.
     A refused branch leaves the cookie as it was. The cookie is only a
@@ -504,7 +504,8 @@ def _json(data) -> SafeString:
 def _asks_confirmation(chosen: Chosen, request) -> bool:
     """Whether a full-page GET asks before showing `chosen`'s branch: its
     parameter (a link) selected a working branch other than the cookie's,
-    without the confirmation. A fragment request never asks."""
+    without the viewer's confirmation token. A fragment request never
+    asks."""
     return (
         chosen.source == PARAM
         and not chosen.confirmed
@@ -523,11 +524,23 @@ def _page(
     component that fails is replaced by the built-in.
 
     Off the published branch, or when it refused a branch, `chosen`'s banner
-    is put at the top of the body. A page component that leaves the banner
-    out is replaced by the built-in, so no branch can hide it."""
-    chrome = None
+    is put at the top of the body. So is the page's branch (`frame_branch`)
+    when it has one, on a hidden ``.scrud-branch-page`` element, for the
+    requests of elements outside any frame. A page component that leaves
+    them out is replaced by the built-in, so no branch can hide them."""
+    chrome = []
+    branch = frame_branch(request) if chosen is not None else None
+    if branch is not None:
+        chrome.append(
+            format_html(
+                '<div class="scrud-branch-page" data-scrud-branch="{}" hidden></div>',
+                branch,
+            )
+        )
     if chosen is not None and (chosen.refused or not is_published(chosen, request)):
-        chrome = banner(chosen, request)
+        chrome.append(banner(chosen, request))
+    chrome = mark_safe("".join(chrome)) if chrome else None
+    if chrome is not None:
         body = mark_safe(chrome + body)
 
     def page_context():
