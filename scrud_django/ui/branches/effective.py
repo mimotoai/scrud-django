@@ -126,7 +126,7 @@ def effective_rows(
         chain = chain_of(selection.branch, branches())
     kind = kind_of(type_uri)
     rows = _rows_for(kind, type_uri, chain, selection.pinned)
-    if rows is None:  # a pinned ancestor's snapshot is missing: main
+    if rows is None:  # defensive: `selection_for_request` already refused it
         chain = [MAIN_BRANCH]
         rows = _stored(type_uri)
 
@@ -142,13 +142,10 @@ def effective_rows(
     return effective_items(kind, rows, chain, skipped, unnamed, include_deleted)
 
 
-def _rows_for(kind, type_uri, chain, view_pinned):
-    """The rows `effective_items` takes for `chain`: every stored row when
-    nothing is pinned. Else the rows of the branches down to the first pinned
-    one (the selected branch when `view_pinned`) are live, and its ancestors'
-    come from the snapshots at its branching point (one query each, memoised
-    for the response). ``None`` when a snapshot is missing."""
-    pinned_at = next(
+def _pinned_at(chain, view_pinned):
+    """The index in `chain` of the first branch pinned to its branching point
+    (the selected branch when `view_pinned`), or ``None``."""
+    return next(
         (
             i
             for i, branch in enumerate(chain)
@@ -157,6 +154,28 @@ def _rows_for(kind, type_uri, chain, view_pinned):
         ),
         None,
     )
+
+
+def _missing_snapshot(chain, view_pinned):
+    """``(ancestor name, number)`` of the first pinned snapshot `chain` needs
+    that is not stored, or ``None``."""
+    pinned_at = _pinned_at(chain, view_pinned)
+    if pinned_at is None:
+        return None
+    for ancestor in chain[pinned_at + 1 :]:
+        number = chain[pinned_at].branching_point.get(ancestor.name)
+        if _snapshot_items(ancestor.name, number) is None:
+            return ancestor.name, number
+    return None
+
+
+def _rows_for(kind, type_uri, chain, view_pinned):
+    """The rows `effective_items` takes for `chain`: every stored row when
+    nothing is pinned. Else the rows of the branches down to the first pinned
+    one (the selected branch when `view_pinned`) are live, and its ancestors'
+    come from the snapshots at its branching point (one query each, memoised
+    for the response). ``None`` when a snapshot is missing (not logged)."""
+    pinned_at = _pinned_at(chain, view_pinned)
     if pinned_at is None:
         return _stored(type_uri)
     live = {branch.name for branch in chain[: pinned_at + 1]}
@@ -166,13 +185,6 @@ def _rows_for(kind, type_uri, chain, view_pinned):
         number = pinned.branching_point.get(ancestor.name)
         items = _snapshot_items(ancestor.name, number)
         if items is None:
-            logger.warning(
-                "scrud-ui: not rendering branch %r: the version %r of %r "
-                "it is pinned to is missing",
-                chain[0].name,
-                number,
-                ancestor.name,
-            )
             return None
         for content in items.get(kind) or []:
             if not isinstance(content, Mapping):
@@ -233,5 +245,15 @@ def selection_for_request(request) -> Selection:
         "prefix": branch.prefix,
     }
     if not may_read_in_context(request, UI_BRANCH_TYPE_URI, content, [branch.context]):
+        return Selection()
+    missing = _missing_snapshot(chain_of(name, all_branches), pinned)
+    if missing is not None:
+        logger.warning(
+            "scrud-ui: not rendering branch %r: version %r of %r, which it is "
+            "pinned to, is missing",
+            name,
+            missing[1],
+            missing[0],
+        )
         return Selection()
     return Selection(branch=name, pinned=pinned)

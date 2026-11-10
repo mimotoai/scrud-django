@@ -2,12 +2,15 @@
 `<name>@pinned`) shows its ancestors as of its branching point."""
 
 import logging
+from unittest import mock
 
 import pytest
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
+from scrud_django.ui.branches import effective
 from scrud_django.ui.branches.versions import record_version
+from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
@@ -116,7 +119,32 @@ def test_missing_snapshot_renders_main(todo_list, todo_reader_login, caplog):
     make_branch("wip", "project-a", base="pinned", branching_point={"main": 99})
     put_item("ui-components", "row", "<i>{{ value.text }}</i>", "wip")
     Given.http.force_authenticate(may_select_branches(todo_reader_login))
-    with caplog.at_level(logging.WARNING):
+    seen = []
+    real = effective.effective_rows
+
+    def spy(*args, **kwargs):
+        seen.append(effective.active_selection())
+        return real(*args, **kwargs)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        mock.patch.object(effective, "effective_rows", spy),
+    ):
         page = render_with(todo_list, "wip")
     assert "<b>Buy milk</b>" in page and "<i>Buy milk</i>" not in page
-    assert any("wip" in r.getMessage() for r in caplog.records)
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1 and "wip" in warnings[0].getMessage()
+    assert seen and all(selection == effective.Selection() for selection in seen)
+
+
+@pytest.mark.django_db
+@test_context
+def test_effective_rows_survive_a_missing_snapshot(caplog):
+    setup_main()
+    make_branch("wip", "project-a", base="pinned", branching_point={"main": 99})
+    with caplog.at_level(logging.WARNING):
+        rows = effective.effective_rows(
+            UI_COMPONENT_TYPE_URI, effective.Selection("wip")
+        )
+    assert {content["name"] for _pk, _etag, content in rows} == {"row", "title"}
+    assert not caplog.records
