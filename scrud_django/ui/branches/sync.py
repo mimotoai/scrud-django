@@ -28,7 +28,11 @@ from scrud_django.ui.branches import (
     UI_BRANCH_SLUG,
     UI_BRANCH_TYPE_URI,
 )
-from scrud_django.ui.branches.effective import chain_of, effective_items
+from scrud_django.ui.branches.effective import (
+    branch_state,
+    chain_of,
+    parent_state,
+)
 from scrud_django.ui.branches.model import (
     Branch,
     authorizing_context,
@@ -60,20 +64,25 @@ def conflicts(source: str, against: str, using=None) -> list[dict]:
     """``{"kind", "key", "base", "current"}`` for each own row of branch
     `source` (a deletion marker too) whose ``base`` differs from the ETag of
     branch `against`'s effective item for the same key (``None`` for none, so
-    a ``base`` of ``None`` conflicts once `against` has the key). Read on
-    `using` (default: the router's read database)."""
-    chain = chain_of(against, branches(using))
+    a ``base`` of ``None`` conflicts once `against` has the key), as
+    `against` shows it (`branch_state`: as of its branching point where it
+    is pinned; ruling R38). Read on `using` (default: the router's read
+    database)."""
+    all_branches = branches(using)
+    against_branch = chain_of(against, all_branches)[0]
     found = []
     for kind, type_uri in ITEM_KINDS.items():
         rows = list(_rows(type_uri, using))
         current = {
-            item_key(kind, content, chain[0]): etag
-            for _pk, etag, content in effective_items(kind, rows, chain)
+            item_key(kind, content, against_branch): etag
+            for _pk, etag, content in branch_state(
+                kind, type_uri, against, all_branches, using
+            )
         }
         for _pk, _etag, content in rows:
             if branch_of(content) != source or not isinstance(content, Mapping):
                 continue
-            key = item_key(kind, content, chain[0])
+            key = item_key(kind, content, against_branch)
             base, now = content.get("base"), current.get(key)
             if base != now:
                 found.append(
@@ -242,14 +251,17 @@ def _keyed(kind: str, rows, branch: Branch) -> dict[tuple, Resource]:
 
 
 def _parent_etags(kind, type_uri, target: Branch, all_branches, using) -> dict:
-    """The ETag of each item key visible on `target`'s parent (none without
-    one): the ``base`` of a row a push adds to `target`."""
+    """The ETag of each item key visible on `target`'s parent as `target`
+    shows it (`parent_state`; none without a parent): the ``base`` of a
+    deletion marker a push adds to `target` over a row of its own."""
     if target.parent is None:
         return {}
-    chain = chain_of(target.parent, all_branches)
+    parent = all_branches[target.parent]
     return {
-        item_key(kind, content, chain[0]): etag
-        for _pk, etag, content in effective_items(kind, _rows(type_uri, using), chain)
+        item_key(kind, content, parent): etag
+        for _pk, etag, content in parent_state(
+            kind, type_uri, target, all_branches, using
+        )
     }
 
 
@@ -329,7 +341,6 @@ def _readable_conflicts(request, found, source, target, all_branches, using):
     """The entries of `found` (`conflicts` of `source` against `target`) on
     items `request` may GET in the target: the target's item for the key, or,
     where it has none, the source's as the push would write it there."""
-    chain = chain_of(target.name, all_branches)
     shown = []
     for kind, type_uri in ITEM_KINDS.items():
         entries = [entry for entry in found if entry["kind"] == kind]
@@ -337,8 +348,8 @@ def _readable_conflicts(request, found, source, target, all_branches, using):
             continue
         theirs = {
             item_key(kind, content, target): content
-            for _pk, _etag, content in effective_items(
-                kind, _rows(type_uri, using), chain, include_deleted=True
+            for _pk, _etag, content in branch_state(
+                kind, type_uri, target.name, all_branches, using, include_deleted=True
             )
         }
         mine = {}

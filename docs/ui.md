@@ -515,8 +515,9 @@ push:
    pusher may not GET, or a target they may not GET named with the wrong
    `rbac_context`, is answered as a branch that does not exist (400);
 2. is refused with 409 when any of the source's overrides was made against an
-   item that the target has changed since (its `base` is not the target's
-   current ETag). The body lists the `conflicts`, but only those on items the
+   item that the target has changed since (its `base` is not the ETag of the
+   target's item as the target shows it: on a pinned target, as of its
+   branching point). The body lists the `conflicts`, but only those on items the
    pusher may GET in the target; it counts the others in
    `unreadable_conflicts`. Nothing is written. Pull the source, resolve the
    conflicts, and push again;

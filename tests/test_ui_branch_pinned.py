@@ -220,3 +220,51 @@ def test_a_version_without_etags_bases_overrides_on_its_own_key(admin_login):
     assert override.content["base"] == f"v{number}:main:row"
     push()
     Then.http.status_code_is(409)
+
+
+@pytest.mark.django_db
+@test_context
+def test_conflicts_are_found_against_the_target_as_it_shows_itself(admin_login):
+    """``testing`` is pinned to main v1 and ``wip`` is live over it: an
+    override on ``wip`` replaces main's v1 item, which ``testing`` shows
+    even after main moves to v2. Pushing it into ``testing`` is no conflict;
+    pulling ``testing`` then lists one against main's v2."""
+    Given.http.force_authenticate(admin_login)
+    v1 = push_create("ui-components", component(name="row", template="<b>1</b>"))
+    push_create(
+        "ui-branches",
+        {"name": "testing", "rbac_context": "alice", "parent": "main"}
+        | {"base": "pinned"},
+    )
+    push_create(
+        "ui-branches", {"name": "wip", "rbac_context": "alice", "parent": "testing"}
+    )
+    put_json(
+        reverse("ui-components-detail", args=[v1.pk]),
+        {**v1.content, "template": "<b>2</b>"},
+        HTTP_IF_MATCH=f'"{v1.etag}"',
+    )
+    Then.http.status_code_is(200)
+    override = push_create(
+        "ui-components", component(name="row", template="<i>wip</i>", **WIP)
+    )
+    assert override.content["base"] == v1.etag
+    push(target="testing", context="alice")
+    Then.http.status_code_is(201)
+    (pushed,) = [
+        r
+        for r in Resource.objects.filter(content__branch="testing")
+        if r.content.get("name") == "row"
+    ]
+    assert pushed.content["base"] == v1.etag
+    testing = Resource.objects.get(content__name="testing", content__parent="main")
+    put_json(
+        reverse("ui-branches-detail", args=[testing.pk]),
+        {**testing.content, "pull": True},
+        HTTP_IF_MATCH=f'"{testing.etag}"',
+    )
+    Then.http.status_code_is(200)
+    v2 = Resource.objects.get(pk=v1.pk)
+    assert Http.response.json()["conflicts"] == [
+        {"kind": "component", "key": ["row"], "base": v1.etag, "current": v2.etag}
+    ]

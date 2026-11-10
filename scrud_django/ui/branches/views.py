@@ -113,7 +113,10 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
         if "conflicts" in instance.content:
             content["conflicts"] = instance.content["conflicts"]
         if pulling:
-            content.update(pull(content, self.write_database(), all_branches))
+            try:
+                content.update(pull(content, self.write_database(), all_branches))
+            except BranchChainError as error:
+                raise UIBranchInvalidError(str(error)) from error
             self.pulled = True
 
     def update(self, request, slug: str):
@@ -498,10 +501,14 @@ class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
         using = self.write_database()
         pushed = self.created if self.created is not None else self.saved
         content = pushed.content
-        if content.get("source") is not None:
-            number = apply_push(request, content, using)
-        else:
-            number = apply_restore(request, content, using)
+        try:
+            if content.get("source") is not None:
+                number = apply_push(request, content, using)
+            else:
+                number = apply_restore(request, content, using)
+        except BranchChainError as error:
+            # A chain broken, or a pinned snapshot gone, since validation.
+            raise UIBranchInvalidError(str(error)) from error
         ResourceRegistration.update_locked(
             pushed,
             {**content, "result": {"version": number}},

@@ -240,6 +240,25 @@ def _snapshot(name, number, using=None):
     return found
 
 
+def branch_state(
+    kind: str, type_uri: str, name: str, all_branches, using, include_deleted=False
+):
+    """``(pk, etag, content)`` of the items of `type_uri` effective on
+    branch `name` as it shows itself (with its own pins and its ancestors',
+    `_rows_for`), read on `using`: what a push into it overwrites, and what
+    a pull of a child is compared with (ruling R38). Deletion markers are
+    kept with `include_deleted`. `BranchChainError` for a broken chain, and
+    for a pinned snapshot that is missing."""
+    chain = chain_of(name, all_branches)
+    rows = _rows_for(kind, type_uri, chain, False, using)
+    if rows is None:
+        raise BranchChainError(
+            f"Branch {name!r} is pinned to an ancestor version that is "
+            "missing: pull it first."
+        )
+    return effective_items(kind, rows, chain, include_deleted=include_deleted)
+
+
 def parent_state(kind: str, type_uri: str, branch: Branch, all_branches, using):
     """``(pk, etag, content)`` of the items of `type_uri` effective on
     `branch`'s parent as `branch` shows them (`all_branches` say where its
