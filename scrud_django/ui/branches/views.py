@@ -2,21 +2,25 @@
 and of the read-only UI branch versions."""
 
 import dataclasses
+import hashlib
 import re
+from collections.abc import Mapping
 
 from scrudful.rest_framework import scrudful_viewset
 
-from scrud_django.exceptions import UIBranchInvalidError
+from scrud_django.exceptions import UIBranchInUseError, UIBranchInvalidError
 from scrud_django.models import Resource
+from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.ui.branches import ITEM_KINDS, MAIN
 from scrud_django.ui.branches.model import MAIN_BRANCH, Branch, applies_to
 from scrud_django.ui.branches.store import (
     BranchChainError,
+    _read_branches,
     ancestors,
     branch_from,
     branches,
 )
-from scrud_django.ui.branches.versions import current_version
+from scrud_django.ui.branches.versions import current_version, discard_branch
 from scrud_django.ui.views import UIContentValidationMixin
 from scrud_django.views import ResourceViewSet
 
@@ -126,6 +130,32 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
                 f"context would change): {', '.join(map(repr, targeted))}."
             )
 
+    def destroy(self, request, slug: str):
+        """Delete a branch, its own items and its versions, in the request's
+        transaction (`discard_branch`): a branch created again under its
+        name starts afresh. ``main`` is refused (`UIBranchInvalidError`,
+        400), and so is a branch that other branches name as their parent
+        (`UIBranchInUseError`, 409)."""
+        instance = self.get_instance(request, slug)
+        content = instance.content if isinstance(instance.content, Mapping) else {}
+        name = content.get("name")
+        if name == MAIN:
+            raise UIBranchInvalidError(
+                f"The branch {MAIN!r} cannot be deleted: it is the published "
+                "branch at the API URLs."
+            )
+        using = self.write_database()
+        if isinstance(name, str):
+            children = sorted(
+                branch.name
+                for branch in _read_branches(using).values()
+                if branch.parent == name and branch.name != name
+            )
+            if children:
+                raise UIBranchInUseError(name, children)
+            discard_branch(name, using)
+        return super().destroy(request, slug)
+
     def check_main(self, content):
         """``main`` is the published branch at the API URLs (ruling R1)."""
         if (
@@ -177,10 +207,66 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
                 )
 
 
+def readable_version(request, version):
+    """`version` (a version `Resource`, read for `request`) as `request` may
+    see it, in memory only: its ``items`` without those the requester may
+    not GET live (``http.GET`` on the item's type in the item's contexts,
+    as the list filter checks a stored item; ruling R9). When any is left
+    out, its ``etag`` becomes one for what is left (the stored ETag and the
+    positions left out), so that two requesters seeing different items get
+    different ETags. Done once per instance."""
+    if getattr(version, "_scrud_readable", False):
+        return version
+    version._scrud_readable = True
+    content = version.content
+    items = content.get("items") if isinstance(content, Mapping) else None
+    if not isinstance(items, Mapping):
+        return version
+    shown, hidden = {}, []
+    for kind, listed in items.items():
+        type_uri = ITEM_KINDS.get(kind)
+        shown[kind] = []
+        for index, item in enumerate(listed if isinstance(listed, list) else []):
+            if (
+                type_uri is not None
+                and isinstance(item, Mapping)
+                and may_read_in_context(
+                    request, type_uri, item, resource_contexts(item)
+                )
+            ):
+                shown[kind].append(item)
+            else:
+                hidden.append(f"{kind}:{index}")
+    if hidden:
+        digest = hashlib.sha256("\n".join(hidden).encode("utf-8")).hexdigest()
+        version.content = {**content, "items": shown}
+        version.etag = f"{version.etag}-{digest[:16]}"
+    return version
+
+
 @scrudful_viewset
 class UIBranchVersionViewSet(ResourceViewSet):
     """Branch versions are recorded by the server
     (`scrud_django.ui.branches.versions`) and never changed: a POST, PUT or
-    DELETE is 405. A version is read in its branch's context."""
+    DELETE is 405. A version is read in its branch's context, and shows only
+    the items its reader may read (`readable_version`): its ETag, and the
+    list's, follow what the reader gets."""
 
     http_method_names = ["get", "head", "options"]
+
+    def get_object(self):
+        return readable_version(self.request, super().get_object())
+
+    def listed(self):
+        """Every version the list shows (its page, else all), readable."""
+        page = self.list_page()
+        for version in page if page is not None else self.list_queryset():
+            readable_version(self.request, version)
+
+    def list_etag(self, request):
+        self.listed()
+        return super().list_etag(request)
+
+    def list(self, request):
+        self.listed()
+        return super().list(request)

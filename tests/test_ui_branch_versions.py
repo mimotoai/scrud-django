@@ -21,13 +21,14 @@ from scrud_django.ui.branches.versions import (
     record_version,
     snapshot,
 )
+from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
 
 from .fixtures import *  # noqa
-from .fixtures import assign_ui_role
+from .fixtures import UI_TYPE_URIS, assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_delete_locking import TWO_WRITERS, run_together
 from .test_ui_branch_types import component, make_branch, problem, stylesheet
-from .test_ui_http import make_component
+from .test_ui_http import grant, make_component
 
 VERSIONS = "ui-branch-versions"
 
@@ -306,6 +307,190 @@ def test_publishing_is_fixed_while_stylesheets_apply_elsewhere(admin_login, publ
     Then.http.status_code_is(400)
     assert problem()["type"].endswith("/ui-branch-invalid")
     assert "'acme-only'" in problem()["detail"]
+
+
+# Ruling R9: a version shows only the items its reader may read live.
+
+
+def version_as(user, version):
+    """GET `version` as `user`: its body's items by kind, as names, and the
+    response's ETag."""
+    Given.http.force_authenticate(user)
+    When.http.get(reverse(f"{VERSIONS}-detail", args=[version.pk]))
+    Then.http.status_code_is(200)
+    items = Http.response.json()["items"]
+    return (
+        {kind: [i["name"] for i in listed] for kind, listed in items.items()},
+        Http.response["ETag"],
+    )
+
+
+def listed_as(user):
+    """GET the versions list as `user`: each entry's items as names, by
+    version number, and the list's ETag."""
+    Given.http.force_authenticate(user)
+    When.http.get(reverse(f"{VERSIONS}-list"))
+    Then.http.status_code_is(200)
+    entries = Http.response.json()["content"]
+    return (
+        {
+            entry["content"]["number"]: (
+                {
+                    k: [i["name"] for i in v]
+                    for k, v in entry["content"]["items"].items()
+                },
+                entry["etag"],
+            )
+            for entry in entries
+        },
+        Http.response["ETag"],
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_version_reads_hide_items_the_reader_may_not_read(admin_login):
+    make_component("row", "<b/>")
+    store("ui-stylesheets", stylesheet(rbac_context=""))
+    store("ui-stylesheets", stylesheet(name="acme-theme", rbac_context="acme"))
+    version = Resource.objects.get(
+        resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI, content__number=3
+    )
+    stored_etag = f'"{version.etag}"'
+    reader = assign_ui_role((UI_BRANCH_VERSION_TYPE_URI, *UI_TYPE_URIS), "")
+    acme_reader = assign_ui_role((UI_BRANCH_VERSION_TYPE_URI, *UI_TYPE_URIS), "")
+    grant(acme_reader, {"http.GET": [UI_STYLESHEET_TYPE_URI]}, "acme")
+
+    everything = {"component": ["row"], "stylesheet": ["theme", "acme-theme"]}
+    assert version_as(admin_login, version) == (everything, stored_etag)
+    assert version_as(acme_reader, version) == (everything, stored_etag)
+    hidden, hidden_etag = version_as(reader, version)
+    assert hidden == {"component": ["row"], "stylesheet": ["theme"]}
+    assert hidden_etag != stored_etag
+    # Its ETag is the reader's: another's does not match it.
+    When.http.get(
+        reverse(f"{VERSIONS}-detail", args=[version.pk]),
+        HTTP_IF_NONE_MATCH=stored_etag,
+    )
+    Then.http.status_code_is(200)
+    When.http.get(
+        reverse(f"{VERSIONS}-detail", args=[version.pk]),
+        HTTP_IF_NONE_MATCH=hidden_etag,
+    )
+    Then.http.status_code_is(304)
+    # The list hides the same items, with the same ETag per entry.
+    entries, list_etag = listed_as(reader)
+    assert entries[3] == (hidden, hidden_etag)
+    full_entries, full_list_etag = listed_as(acme_reader)
+    assert full_entries[3] == (everything, stored_etag)
+    assert list_etag != full_list_etag
+    # The stored version is unchanged.
+    assert Resource.objects.get(pk=version.pk).content == version.content
+
+
+@pytest.mark.django_db
+@test_context
+def test_versions_have_no_reversion_history(ui_author_login):
+    from reversion.models import Version
+
+    row = make_component("row", "<b/>")
+    Given.http.force_authenticate(ui_author_login)
+    When.http.post(
+        reverse("ui-components-list"), data=component(rbac_context=""), format="json"
+    )
+    Then.http.status_code_is(201)
+    api_row = Resource.objects.get(content__name="todo-row")
+    # The items keep theirs.
+    assert Version.objects.get_for_object(row).count() == 1
+    assert Version.objects.get_for_object(api_row).count() == 1
+    versions = Resource.objects.filter(
+        resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI
+    )
+    assert versions.count() == 2
+    for stored in versions:
+        assert Version.objects.get_for_object(stored).count() == 0
+
+
+@pytest.mark.django_db
+def test_a_batch_records_branches_in_sorted_order():
+    make_branch("zeta", "alice")
+    make_branch("alpha", "alice")
+    with transaction.atomic(), batched_versions():
+        on("zeta", "alice")
+        on("alpha", "alice")
+    recorded = Resource.objects.filter(
+        resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI
+    ).order_by("pk")
+    assert [v.content["branch"] for v in recorded] == ["alpha", "zeta"]
+
+
+# Ruling R10: deleting a branch.
+
+
+def delete_branch(stored):
+    When.http.delete(branch_url(stored), HTTP_IF_MATCH=f'"{stored.etag}"')
+
+
+@pytest.mark.django_db
+@test_context
+def test_main_cannot_be_deleted(admin_login):
+    make_component("row", "<b/>")
+    main = Resource.objects.get(
+        resource_type__type_uri=UI_BRANCH_TYPE_URI, content__name="main"
+    )
+    Given.http.force_authenticate(admin_login)
+    delete_branch(main)
+    Then.http.status_code_is(400)
+    assert problem()["type"].endswith("/ui-branch-invalid")
+    assert Resource.objects.filter(pk=main.pk).exists()
+    assert versions_of("main") == [1]
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_parent_branch_cannot_be_deleted(admin_login):
+    testing = make_branch("testing", "alice")
+    make_branch("alice", "alice", parent="testing")
+    on("testing", "alice")
+    Given.http.force_authenticate(admin_login)
+    delete_branch(testing)
+    Then.http.status_code_is(409)
+    assert problem()["type"].endswith("/ui-branch-in-use")
+    assert "'alice'" in problem()["detail"]
+    assert Resource.objects.filter(pk=testing.pk).exists()
+    assert versions_of("testing") == [1]
+
+
+@pytest.mark.django_db
+@test_context
+def test_deleting_a_branch_discards_its_items_and_versions(admin_login):
+    wip = make_branch("wip", "alice")
+    make_branch("other", "alice")
+    make_component("row", "<b/>")
+    on("wip", "alice")
+    on("wip", "alice", name="title")
+    on("other", "alice")
+    assert versions_of("wip") == [1, 2]
+    Given.http.force_authenticate(admin_login)
+    delete_branch(wip)
+    Then.http.status_code_is(204)
+    assert not Resource.objects.filter(pk=wip.pk).exists()
+    assert not Resource.objects.filter(content__branch="wip").exists()
+    assert versions_of("wip") == []
+    # Other branches keep their items and versions.
+    assert versions_of("other") == [1]
+    assert versions_of("main") == [1]
+    assert Resource.objects.filter(content__branch="other").count() == 2
+    # A branch created again under the name starts afresh.
+    When.http.post(
+        reverse("ui-branches-list"),
+        data={"name": "wip", "rbac_context": "alice", "parent": "main"},
+        format="json",
+    )
+    Then.http.status_code_is(201)
+    on("wip", "alice")
+    assert versions_of("wip") == [1]
+    assert snapshot("wip", 1)["items"]["component"][0]["name"] == "todo-row"
 
 
 # Review Focus 2: two writes to one branch at once.

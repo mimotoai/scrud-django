@@ -9,6 +9,7 @@ import contextvars
 import logging
 from collections.abc import Mapping
 
+import reversion
 from django.db import transaction
 
 from scrud_django.exceptions import UIBranchVersionMissingError
@@ -36,6 +37,12 @@ logger = logging.getLogger(__name__)
 # ``(name, using)`` in the order they were first marked; None outside it.
 _batch: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "scrud_ui_branch_versions_batch", default=None
+)
+
+# The branch whose items `discard_branch` is deleting (no version recorded
+# for it), or None.
+_discarding: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "scrud_ui_branch_discarding", default=None
 )
 
 
@@ -109,6 +116,16 @@ def _record(branch: Branch, using: str) -> int | None:
     # Read under the lock: the branch as it is now.
     branch = branch_from(branch.pk, locked[0])
     number = _latest_number(branch.name, using) + 1
+    # Never in a reversion revision, not even the item write's around this
+    # one (the type's uses_reversion only keeps its own writes out of one).
+    with reversion.create_revision(manage_manually=True, atomic=False):
+        _store_version(branch, number, using)
+    return number
+
+
+def _store_version(branch: Branch, number: int, using: str):
+    """Store version `number` of `branch`: its own items as they are on
+    `using` now."""
     ResourceRegistration.register(
         {
             "branch": branch.name,
@@ -122,7 +139,6 @@ def _record(branch: Branch, using: str) -> int | None:
         },
         UI_BRANCH_VERSION_SLUG,
     )
-    return number
 
 
 def _record_item_write(name: str, using: str, written: str):
@@ -177,7 +193,8 @@ def batched_versions():
         yield
     finally:
         _batch.reset(token)
-    for name, using in marked:
+    # Sorted: concurrent batches then lock their branches' rows in one order.
+    for name, using in sorted(marked):
         _record_item_write(name, using, "a batch of item writes")
 
 
@@ -190,6 +207,8 @@ def item_written(sender, instance=None, resource_type_uri=None, **kwargs):
     if resource_type_uri not in ITEM_KINDS.values():
         return
     name = branch_of(getattr(instance, "content", None))
+    if name == _discarding.get():
+        return
     using = write_alias(sender, {**kwargs, "instance": instance})
     marked = _batch.get()
     if marked is not None:
@@ -198,6 +217,29 @@ def item_written(sender, instance=None, resource_type_uri=None, **kwargs):
     pk = kwargs.get("pk", getattr(instance, "pk", None))
     written = f"a {kwargs.get('action')} of {resource_type_uri} pk {pk}"
     _record_item_write(name, using, written)
+
+
+def discard_branch(name: str, using: str):
+    """Delete the own items and the versions of branch `name` on `using`,
+    inside the caller's transaction (the branch's deletion), recording no
+    version for it: a branch created again under the name starts at
+    version 1."""
+    token = _discarding.set(name)
+    try:
+        with transaction.atomic(using=using, savepoint=False):
+            for type_uri in ITEM_KINDS.values():
+                pks = [
+                    pk
+                    for pk, content in Resource.objects.using(using)
+                    .filter(resource_type__type_uri=type_uri, content__branch=name)
+                    .values_list("pk", "content")
+                    if branch_of(content) == name
+                ]
+                Resource.objects.using(using).filter(pk__in=pks).delete()
+            pks = list(_versions(name, using).values_list("pk", flat=True))
+            Resource.objects.using(using).filter(pk__in=pks).delete()
+    finally:
+        _discarding.reset(token)
 
 
 # The receivers' dispatch_uids.

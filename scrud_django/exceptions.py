@@ -206,6 +206,24 @@ class UIBranchContextError(ScrudException):
         self.title = "UI item in the wrong context for its branch"
 
 
+class UIBranchInUseError(ScrudException):
+    """A DELETE of a UI branch that other branches name as their parent:
+    409 Conflict, naming them."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "ui_branch_in_use"
+
+    def __init__(self, branch, children):
+        names = ", ".join(map(repr, children))
+        super().__init__(
+            f"UI branch {branch!r} is the parent of {names}: delete or re-parent "
+            "them first."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-branch-in-use"
+        self.title = "UI branch in use"
+
+
 class UIBranchVersionMissingError(ScrudException):
     """A version of a UI branch that is not stored
     (`scrud_django.ui.branches.versions.snapshot`)."""
