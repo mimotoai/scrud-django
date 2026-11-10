@@ -67,15 +67,24 @@ def chain_of(name: str, all_branches: Mapping[str, Branch]) -> list[Branch]:
 
 
 def effective_items(
-    kind: str, rows: Iterable, chain: list[Branch], on_duplicate=None
+    kind: str, rows: Iterable, chain: list[Branch], on_duplicate=None, on_unnamed=None
 ) -> list[tuple]:
     """The ``(pk, etag, content)`` rows of `rows` (lowest pk first) visible on
     the branch whose chain (itself first, then its ancestors) is `chain`: for
     each item key, the row of the nearest branch that has one, but for
     deletion markers. Lowest pk first. A row that loses its key to another
     on the same branch (a race in the uniqueness check) is passed to
-    `on_duplicate(loser_row, winner_row, key)`."""
+    `on_duplicate(loser_row, winner_row, key)`. A row without a string name
+    is left out (and passed to `on_unnamed(row)`)."""
     rows = list(rows)
+    named = []
+    for row in rows:
+        name = row[2].get("name") if isinstance(row[2], Mapping) else None
+        if isinstance(name, str):
+            named.append(row)
+        elif on_unnamed is not None:
+            on_unnamed(row)
+    rows = named
     seen: dict[tuple, tuple] = {}
     for branch in chain:
         for row in rows:
@@ -111,7 +120,10 @@ def effective_rows(
             reason += f" in context {key[1]!r}"
         _skipped(kind, loser[0], key[0], reason)
 
-    return effective_items(kind, _stored(type_uri), chain, skipped)
+    def unnamed(row):
+        _skipped(kind, row[0], None, "it has no name")
+
+    return effective_items(kind, _stored(type_uri), chain, skipped, unnamed)
 
 
 def selection_for_request(request) -> Selection:

@@ -178,3 +178,35 @@ def test_main_without_branches_makes_no_extra_queries(todo_list, todo_reader_log
         assert "<b>Buy milk</b>" in render_with(todo_list)
     assert len(queries) == MAIN_RENDER_QUERIES, [q["sql"] for q in queries]
     assert not [q for q in queries if "UIBranch" in q["sql"]]
+
+
+@pytest.mark.django_db
+@test_context
+def test_rows_without_a_string_name_are_skipped_and_logged(
+    todo_list, todo_reader_login, caplog
+):
+    make_component("row", "<b>{{ value.text }}</b>")
+    make_stylesheet("s", [("ex:TodoItem", "row")])
+    reverse("ui-components-list")
+    raw = {"engine": "django", "mode": "view", "template": "", "rbac_context": ""}
+    unnamed = ResourceRegistration.register(raw, "ui-components")
+    listed = ResourceRegistration.register({**raw, "name": ["a"]}, "ui-components")
+    Given.http.force_authenticate(todo_reader_login)
+    with caplog.at_level(logging.WARNING):
+        assert "<b>Buy milk</b>" in render_with(todo_list)
+    found = [r.getMessage() for r in caplog.records if "no name" in r.getMessage()]
+    assert len(found) == 2, found
+    assert sum(f"component {unnamed.pk} " in m for m in found) == 1
+    assert sum(f"component {listed.pk} " in m for m in found) == 1
+
+
+@pytest.mark.django_db
+@test_context
+def test_component_in_another_context_on_main_is_rendered(todo_list, todo_reader_login):
+    stored = make_component("row", "<b>{{ value.text }}</b>")
+    Resource.objects.filter(pk=stored.pk).update(
+        content={**stored.content, "rbac_context": "project-a"}
+    )
+    make_stylesheet("s", [("ex:TodoItem", "row")])
+    Given.http.force_authenticate(todo_reader_login)
+    assert "<b>Buy milk</b>" in render_with(todo_list)
