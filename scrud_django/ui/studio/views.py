@@ -1,12 +1,29 @@
 """The studio's views. Every one requires an authenticated user."""
 
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.shortcuts import render
-from rest_framework.decorators import api_view, permission_classes
+from django.urls import reverse
+from django.views.decorators.clickjacking import xframe_options_sameorigin
+from rest_framework.decorators import api_view, permission_classes, renderer_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.renderers import JSONRenderer
+from rest_framework.response import Response
 
+from scrud_django.exceptions import UIBranchUnavailableError
 from scrud_django.models import ResourceType
+from scrud_django.registration import get_resource_type_for
 from scrud_django.rows import by_pk, unsorted
+from scrud_django.ui.branches import MAIN
+from scrud_django.ui.branches.effective import Selection
+from scrud_django.ui.branches.selection import parse_value, selectable
+from scrud_django.ui.studio.dispatch import call_view
+from scrud_django.ui.studio.preview import (
+    SAMPLE_DECISIONS,
+    preview_css_urls,
+    render_preview,
+    sample_of,
+)
 
 
 def registered_types(q: str = "") -> list[dict]:
@@ -53,3 +70,86 @@ def type_page(request, slug):
     if not found:
         raise Http404(slug)
     return render(request._request, "scrud_studio/type.html", {"type": found[0]})
+
+
+def _schema_title(resource_type) -> str:
+    schema = getattr(resource_type.schema, "content", None)
+    title = schema.get("title") if isinstance(schema, dict) else None
+    return title if isinstance(title, str) and title else resource_type.slug
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@renderer_classes([JSONRenderer])
+def sample(request, slug):
+    """The sample instance of type `slug` as JSON, in the data context
+    ``?context=`` (its ``rbac_context``; default ``""``)."""
+    resource_type = get_resource_type_for(slug)
+    return Response(sample_of(resource_type, request.GET.get("context", "")))
+
+
+@xframe_options_sameorigin
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@renderer_classes([JSONRenderer])
+def preview(request, slug):
+    """A page for the studio's preview iframe: type `slug`'s sample, or with
+    ``?instance=<pk>`` that instance (read through its resource view with
+    the user's rights: a refused read answers as the view does), rendered in
+    preview mode (`render_preview`) on the branch ``?branch=`` (a selection
+    value; default ``main``), in ``?mode=`` (``view``, the default, or
+    ``edit``) and the scope chain ``?scope=`` (space-separated), with the
+    branch's CSS. The sample is in the data context ``?context=`` (default
+    ``""``), shown as editable and not deletable; an instance is in its
+    own contexts, with the user's decisions on it. A branch that is not
+    `selectable` (unknown, unreadable, a broken chain, a missing pinned
+    snapshot, not a selection value) is refused alike:
+    `UIBranchUnavailableError` (400)."""
+    resource_type = get_resource_type_for(slug)
+    value = request.GET.get("branch") or MAIN
+    selection = parse_value(value)
+    if selection is None or not selectable(request, selection):
+        raise UIBranchUnavailableError(value)
+    if selection.branch == MAIN:
+        selection = Selection()
+    mode = request.GET.get("mode") or "view"
+    if mode not in ("view", "edit"):
+        raise ValidationError({"mode": ["Must be 'view' or 'edit'."]})
+    scope_chain = tuple(request.GET.get("scope", "").split())
+    instance = request.GET.get("instance")
+    if instance is None:
+        context = request.GET.get("context", "")
+        content = sample_of(resource_type, context)
+        href = reverse("scrud-studio:sample", args=[slug])
+        contexts, decisions = [context], SAMPLE_DECISIONS
+    else:
+        read = call_view(request, slug, "GET", pk=instance)
+        if read.status_code != 200:
+            return HttpResponse(
+                read.content,
+                status=read.status_code,
+                content_type=read["Content-Type"],
+            )
+        content = read.data
+        href = reverse(f"{slug}-detail", args=[instance])
+        contexts, decisions = None, None
+    frame = render_preview(
+        request,
+        resource_type,
+        content,
+        selection=selection,
+        mode=mode,
+        scope_chain=scope_chain,
+        contexts=contexts,
+        decisions=decisions,
+        href=href,
+    )
+    return render(
+        request._request,
+        "scrud_studio/preview.html",
+        {
+            "title": _schema_title(resource_type),
+            "css": preview_css_urls(selection),
+            "frame": frame,
+        },
+    )

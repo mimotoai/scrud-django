@@ -67,6 +67,7 @@ def render_resource(
     mode: str | None = None,
     decisions: dict[str, str] | None = None,
     contexts: list[str] | None = None,
+    preview: bool = False,
 ) -> SafeString:
     """`content` (a resource of `resource_type` at `href`) rendered for the
     user of `request`, in a resource frame: the node at `pointer` (the
@@ -79,7 +80,11 @@ def render_resource(
     `decisions` (as `decisions_for` gives them) and `contexts` (whose
     stylesheets apply) are those of `content` unless given: for content that
     is not the stored resource (a refused PUT's body), pass the stored
-    resource's, so that nothing the request sent decides them."""
+    resource's, so that nothing the request sent decides them.
+
+    A `preview` (the studio's) has no write attributes: no ``hx-*`` and no
+    Delete button, and its root is a ``div``, never a form. Each node's HTML
+    is wrapped in ``<scrud-node data-pointer="<its JSON Pointer>">``."""
     with request_memo():
         return _render_resource(
             content,
@@ -94,6 +99,7 @@ def render_resource(
             rules_cache={},
             decisions=decisions,
             contexts=contexts,
+            preview=preview,
         )
 
 
@@ -169,6 +175,7 @@ def _render_resource(
     rules_cache,
     decisions=None,
     contexts=None,
+    preview=False,
 ):
     type_uri = resource_type.type_uri
     if decisions is None:
@@ -192,6 +199,7 @@ def _render_resource(
         max_depth=max_body_depth(),
         id_prefix="scrud-" + hashlib.sha256(href.encode()).hexdigest()[:8],
         rules_cache=rules_cache,
+        preview=preview,
     )
     root_classes = [
         _keyword_free(ld.expand(t, ld_context)) if isinstance(t, str) else None
@@ -224,8 +232,9 @@ def _render_resource(
         scope_chain=scope_chain,
         pointer=node.pointer,
         mode=mode,
-        deletable=node.pointer == "" and decisions["DELETE"] == ALLOWED,
-        branch=frame_branch(request),
+        deletable=not preview and node.pointer == "" and decisions["DELETE"] == ALLOWED,
+        branch=None if preview else frame_branch(request),
+        preview=preview,
     )
 
 
@@ -255,6 +264,7 @@ class _Walk:
     max_depth: int
     id_prefix: str
     rules_cache: dict
+    preview: bool = False  # wrap each node in a `scrud-node` marker
     rendered: set = field(default_factory=set)
 
     def rules(self, linked):
@@ -379,6 +389,14 @@ class _Walk:
         return node
 
     def render(self, node: _Node) -> SafeString:
+        html = self._render(node)
+        if not self.preview:
+            return html
+        return format_html(
+            '<scrud-node data-pointer="{}">{}</scrud-node>', node.pointer, html
+        )
+
+    def _render(self, node: _Node) -> SafeString:
         self.rendered.add(node.pointer)
         child_items = [
             [key, self.render(child)] for key, child in self.children_of(node)
@@ -499,10 +517,12 @@ def _frame(
     mode,
     deletable,
     branch=None,
+    preview=False,
 ):
     """The frame of a resource (or of a node of it). `branch`, unless
     ``None``, is its ``data-scrud-branch`` (`selection.frame_branch`): the
-    branch its requests send (``Scrud-UI-Branch``)."""
+    branch its requests send (``Scrud-UI-Branch``). A `preview`'s frame has
+    no write attributes and is a ``div``."""
     attributes = [
         ("class", "scrud-resource"),
         ("data-scrud-href", href),
@@ -511,7 +531,8 @@ def _frame(
         ("data-scrud-pointer", pointer),
         *([("data-scrud-branch", branch)] if branch is not None else []),
     ]
-    if mode == "edit":
+    writes = mode == "edit" and not preview
+    if writes:
         attributes += [
             ("hx-put", href),
             ("hx-ext", "scrud-json"),
@@ -521,7 +542,7 @@ def _frame(
         ]
     # Only a root frame is a form: a node frame (a fragment of the resource)
     # may be swapped into its root's form, and forms do not nest.
-    tag = "form" if mode == "edit" and pointer == "" else "div"
+    tag = "form" if writes and pointer == "" else "div"
     if tag == "form":
         # Server-side JSON Schema validation is the authority: the browser's
         # constraint validation (a stored non-absolute URI in an
