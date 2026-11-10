@@ -27,6 +27,7 @@ from scrud_django.ui.branches import (
     MAIN,
     UI_BRANCH_SLUG,
     UI_CSS_SLUG,
+    UI_JS_SLUG,
     UI_PUSH_SLUG,
 )
 from scrud_django.ui.branches.effective import Selection
@@ -53,6 +54,7 @@ KIND_SLUGS = {
     "component": UI_COMPONENT_SLUG,
     "stylesheet": UI_STYLESHEET_SLUG,
     "css": UI_CSS_SLUG,
+    "js": UI_JS_SLUG,
 }
 
 # The headers of the resource view's answer the studio's answer keeps.

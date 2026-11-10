@@ -31,7 +31,7 @@ def check_prefixes(app_configs, databases=None, **kwargs):
 
     from scrud_django.checks import could_not_run, error_text, not_checked
     from scrud_django.ui.branches import PREFIX
-    from scrud_django.ui.branches.middleware import CSS_FILES_SEGMENT
+    from scrud_django.ui.branches.middleware import FILE_ROUTES
     from scrud_django.ui.branches.store import _read_branches
 
     try:
@@ -51,7 +51,7 @@ def check_prefixes(app_configs, databases=None, **kwargs):
         except (OperationalError, ProgrammingError) as error:
             found.append(could_not_run(CHECK_ID, alias, error_text(error)))
             continue
-        segments = {*slugs, CSS_FILES_SEGMENT}
+        segments = {*slugs, *FILE_ROUTES}
         published = [b for b in published if PREFIX.fullmatch(b.prefix)]
         for branch in published:
             if under_api(branch.prefix, base):
@@ -81,7 +81,7 @@ def api_base_info() -> str:
 def claimed_slugs(base: str, using) -> list[str]:
     """The slugs of the types stored on `using` that the API at `base`
     serves with their resource views, sorted: the first segments a prefix
-    claims (with the CSS files')."""
+    claims (with the CSS and JS files')."""
     from scrud_django.models import ResourceType
     from scrud_django.ui.branches.middleware import routes_to_api
 
@@ -134,7 +134,7 @@ def prefix_problems(prefix: str, others, using) -> list[str]:
     `using`. Empty when there is none, or when the project does not serve
     the UI's types."""
     from scrud_django.ui.branches import PREFIX
-    from scrud_django.ui.branches.middleware import CSS_FILES_SEGMENT
+    from scrud_django.ui.branches.middleware import FILE_ROUTES
 
     try:
         base = api_base_info()
@@ -154,7 +154,7 @@ def prefix_problems(prefix: str, others, using) -> list[str]:
             f"serves: {', '.join(shadowed)}. The branch's resource views would "
             "hide them."
         )
-    segments = {*slugs, CSS_FILES_SEGMENT}
+    segments = {*slugs, *FILE_ROUTES}
     for other in sorted(others, key=lambda b: (b.prefix or "", b.name)):
         if (
             other.prefix

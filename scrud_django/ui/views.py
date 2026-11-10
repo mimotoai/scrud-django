@@ -11,6 +11,8 @@ from scrud_django.exceptions import (
     UIComponentNameTakenError,
     UICssInvalidError,
     UICssNameTakenError,
+    UIJsInvalidError,
+    UIJsNameTakenError,
     UISelectorInvalidError,
     UIStylesheetNameTakenError,
     UITemplateInvalidError,
@@ -379,3 +381,28 @@ class UICssViewSet(UIContentValidationMixin, ResourceViewSet):
             )
         ):
             raise UICssNameTakenError(name)
+
+
+@scrudful_viewset
+class UIJsViewSet(UIContentValidationMixin, ResourceViewSet):
+    def validate_content(self, content, instance=None):
+        super().validate_content(content, instance=instance)
+        if not isinstance(content, dict):
+            return
+        require_unless_deleted(content, ("js",))
+        text = content.get("js")
+        if isinstance(text, str) and "</script" in text.lower():
+            raise UIJsInvalidError()
+        name = content.get("name")
+        branch = self.item_branch
+        if (
+            name is not None
+            and branch is not None
+            and same_item(
+                self.other_resources(instance).filter(content__name=name),
+                "js",
+                content,
+                branch,
+            )
+        ):
+            raise UIJsNameTakenError(name)

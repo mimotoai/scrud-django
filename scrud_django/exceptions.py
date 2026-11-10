@@ -200,6 +200,34 @@ class UICssInvalidError(ScrudException):
         self.title = "UI CSS invalid"
 
 
+class UIJsNameTakenError(ScrudException):
+    """A UI JS item whose ``name`` another JS item on the same branch already
+    has."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_js_name_taken"
+
+    def __init__(self, name):
+        super().__init__(f"A UI JS item named {name!r} already exists.")
+        self.type = "https://api.openteams.com/http-problem/ui-js-name-taken"
+        self.title = "UI JS name taken"
+
+
+class UIJsInvalidError(ScrudException):
+    """A UI JS item whose text could end the page's ``<script>`` (it contains
+    ``</script``)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_js_invalid"
+
+    def __init__(self):
+        super().__init__("The JavaScript may not contain '</script'.")
+        self.type = "https://api.openteams.com/http-problem/ui-js-invalid"
+        self.title = "UI JS invalid"
+
+
 class UIBranchInvalidError(ScrudException):
     """A UI branch write that is refused (a bad or taken name or prefix, a
     missing parent, a cycle of parents, a reserved ``main`` that is not as

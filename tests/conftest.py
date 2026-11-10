@@ -60,6 +60,7 @@ def django_db_setup(django_db_setup, django_db_blocker):
         ui_types.ui_branch_version_resource_type()
         ui_types.ui_push_resource_type()
         ui_types.ui_css_resource_type()
+        ui_types.ui_js_resource_type()
 
 
 # The built-in resource types `scrud_django.registration` caches at module
@@ -107,5 +108,6 @@ def committed_types():
     ui_types.ui_branch_version_resource_type()
     ui_types.ui_push_resource_type()
     ui_types.ui_css_resource_type()
+    ui_types.ui_js_resource_type()
     yield
     forget()

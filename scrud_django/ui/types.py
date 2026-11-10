@@ -1,5 +1,5 @@
 """The built-in UI resource types: UI components, UI stylesheets, UI branches,
-UI branch versions, UI pushes and UI CSS."""
+UI branch versions, UI pushes, UI CSS and UI JS."""
 
 import importlib.resources
 
@@ -22,6 +22,8 @@ UI_PUSH_RESOURCE_TYPE_ = None
 UI_PUSH_REGISTRATION_ = None
 UI_CSS_RESOURCE_TYPE_ = None
 UI_CSS_REGISTRATION_ = None
+UI_JS_RESOURCE_TYPE_ = None
+UI_JS_REGISTRATION_ = None
 
 # The module-level caches above, for tests to forget.
 REGISTRATION_CACHES = [
@@ -37,6 +39,8 @@ REGISTRATION_CACHES = [
     "UI_PUSH_REGISTRATION_",
     "UI_CSS_RESOURCE_TYPE_",
     "UI_CSS_REGISTRATION_",
+    "UI_JS_RESOURCE_TYPE_",
+    "UI_JS_REGISTRATION_",
 ]
 
 
@@ -168,6 +172,26 @@ def ui_css_resource_type(force=False):
     return UI_CSS_RESOURCE_TYPE_
 
 
+def ui_js_resource_type(force=False):
+    from scrud_django.ui.branches import UI_JS_SLUG, UI_JS_TYPE_URI
+
+    global UI_JS_RESOURCE_TYPE_
+    global UI_JS_REGISTRATION_
+    if UI_JS_RESOURCE_TYPE_ is None or force:
+        from scrud_django.ui.views import UIJsViewSet
+
+        UI_JS_REGISTRATION_ = ResourceTypeRegistration(
+            resource_type_uri=UI_JS_TYPE_URI,
+            revision="1",
+            slug=UI_JS_SLUG,
+            schema_func=lambda: _document("UIJs-schema.json").read_text(),
+            context_func=lambda: _document("UIJs-ld.json").read_text(),
+            viewset_class=UIJsViewSet,
+        )
+        UI_JS_RESOURCE_TYPE_ = UI_JS_REGISTRATION_.resource_type
+    return UI_JS_RESOURCE_TYPE_
+
+
 def ui_resource_type_urls():
     """The routes of the UI resource types, each registered first, or its
     registration left pending on a database error (`register_or_defer`).
@@ -179,6 +203,8 @@ def ui_resource_type_urls():
         UI_BRANCH_VERSION_TYPE_URI,
         UI_CSS_SLUG,
         UI_CSS_TYPE_URI,
+        UI_JS_SLUG,
+        UI_JS_TYPE_URI,
         UI_PUSH_SLUG,
         UI_PUSH_TYPE_URI,
     )
@@ -190,6 +216,7 @@ def ui_resource_type_urls():
     from scrud_django.ui.views import (
         UIComponentViewSet,
         UICssViewSet,
+        UIJsViewSet,
         UIStylesheetViewSet,
     )
 
@@ -242,6 +269,13 @@ def ui_resource_type_urls():
             UI_CSS_TYPE_URI,
             UI_CSS_SLUG,
             UICssViewSet,
+        ),
+        (
+            ui_js_resource_type,
+            "UI_JS_REGISTRATION_",
+            UI_JS_TYPE_URI,
+            UI_JS_SLUG,
+            UIJsViewSet,
         ),
     )
     urls = []

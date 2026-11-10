@@ -1,0 +1,41 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIJs",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI JS",
+  "description": "JavaScript a page links, served at a versioned URL.",
+  "type": "object",
+  "properties": {
+    "rbac_context": {
+      "type": "string",
+      "description": "The context the item's write is authorized in on its branch."
+    },
+    "branch": {
+      "type": "string",
+      "description": "The name of the branch the item is on; main when absent."
+    },
+    "deleted": {
+      "type": "boolean",
+      "description": "true: a deletion marker, hiding the base's JS of this name on this branch. It needs only a name."
+    },
+    "base": {
+      "type": ["string", "null"],
+      "description": "Server-managed: the ETag of the parent branch's JS this one overrides, or null."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "The JS item's name, unique on its branch."
+    },
+    "js": {
+      "type": "string",
+      "maxLength": 262144,
+      "description": "The JavaScript text. It may not contain \"</script\"."
+    },
+    "order": {
+      "type": "integer",
+      "default": 0,
+      "description": "Items are linked in order, then by name."
+    }
+  },
+  "required": ["name"]
+}

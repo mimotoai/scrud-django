@@ -35,16 +35,23 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["Mount", "PublishedBranchMiddleware", "check_mount", "mount_of"]
 
-# The first segment of the CSS files' URLs (``<api>ui-css-files/...``),
-# which a prefix claims too, and the name of their route.
+# The first segment of the CSS and JS files' URLs (``<api>ui-css-files/...``,
+# ``<api>ui-js-files/...``), which a prefix claims too, and the name of each
+# one's route.
 CSS_FILES_SEGMENT = "ui-css-files"
 CSS_FILE_URL_NAME = "ui-css-file"
+JS_FILES_SEGMENT = "ui-js-files"
+JS_FILE_URL_NAME = "ui-js-file"
+FILE_ROUTES = {
+    CSS_FILES_SEGMENT: CSS_FILE_URL_NAME,
+    JS_FILES_SEGMENT: JS_FILE_URL_NAME,
+}
 
 
 class PublishedBranchMiddleware:
     """Route a request for ``<prefix><slug>/...``, where `prefix` is a
     published branch's (not ``""``) and `slug` a type's that the API serves
-    with its resource views (or the CSS files' segment), to the API's URL:
+    with its resource views (or a CSS or JS files' segment), to the API's URL:
     `request.path_info` becomes ``<api_base><slug>/...``, and the request
     gets a `Mount` (``request.scrud_ui_mount``). `request.path` stays the
     URL requested, so that the HTML's links stay in the mount. The longest
@@ -115,8 +122,8 @@ def find_mount(path_info: str) -> tuple[Mount, str] | None:
 def routes_to_api(path_info: str, rest: str) -> bool:
     """Whether `path_info` (the API's base and then `rest`) resolves to a
     resource view of the type whose slug is `rest`'s first segment, by its
-    own route (``<slug>-list`` or ``<slug>-detail``), or to the CSS files'
-    route: never anything else the URLconf serves, whatever `rest` holds
+    own route (``<slug>-list`` or ``<slug>-detail``), or to the CSS or JS
+    files' route: never anything else the URLconf serves, whatever `rest` holds
     (``..`` segments, decoded ``%2F``)."""
     segment, slash, _ = rest.partition("/")
     if not segment or not slash:
@@ -125,8 +132,8 @@ def routes_to_api(path_info: str, rest: str) -> bool:
         match = resolve(path_info)
     except Resolver404:
         return False
-    if segment == CSS_FILES_SEGMENT:
-        return match.url_name == CSS_FILE_URL_NAME
+    if segment in FILE_ROUTES:
+        return match.url_name == FILE_ROUTES[segment]
     return match.url_name in (f"{segment}-list", f"{segment}-detail") and (
         is_resource_view(match.func, segment)
     )

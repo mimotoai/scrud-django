@@ -50,6 +50,7 @@ the same policy:
 | UI component | `http://api.openteams.com/json-ld/UIComponent` | `ui-components` |
 | UI stylesheet | `http://api.openteams.com/json-ld/UIStylesheet` | `ui-stylesheets` |
 | UI CSS | `http://api.openteams.com/json-ld/UICss` | `ui-css` |
+| UI JS | `http://api.openteams.com/json-ld/UIJs` | `ui-js` |
 | UI branch | `http://api.openteams.com/json-ld/UIBranch` | `ui-branches` |
 | UI branch version (read-only) | `http://api.openteams.com/json-ld/UIBranchVersion` | `ui-branch-versions` |
 | UI push | `http://api.openteams.com/json-ld/UIPush` | `ui-pushes` |
@@ -189,6 +190,31 @@ one. Anyone who can see a page can fetch its files; under a
 published branch's prefix a viewer who may not GET the branch is refused as
 for any other GET there, and a working branch's CSS is served only to a viewer
 who may select it.
+
+## JavaScript items
+
+A JavaScript item (type `ui-js`) holds the text of a script a page runs: `name`,
+`js` (at most 262144 characters, and never containing `</script`, in any case,
+which is refused with a 400 `ui-js-invalid`), `order` (default 0), and the
+branch fields every UI item has. A name is unique on its branch (400
+`ui-js-name-taken` otherwise). The built-in page links the JS items effective
+on the branch it shows, by `order` and then by name, after `scrud-ui.js`, as
+`<script src="..." defer></script>`, at `<api or prefix>ui-js-files/<name>/<etag>.js`
+(`Content-Type: text/javascript; charset=utf-8`). Caching and gating are those
+of [CSS items](#css-items): the ETag in the URL makes a file immutable
+(`private, max-age=31536000, immutable`), a stale URL is a 404, and a viewer who
+may not GET the branch is refused. The page component's context has `scripts`,
+the list of these URLs (empty when there are none, and then the page is
+unchanged). Writing a JS item needs the grant on `ui-js`, in the branch's
+context, not on `ui-components`. JS items are versioned, pushed, pulled and
+restored like the other kinds.
+
+**JavaScript items are code execution for the branch's viewers.** Whoever can
+write `ui-js` on a branch runs script with the rights of everyone who views
+pages on that branch, and on a published branch that is the public. Grant
+`ui-js` write narrowly. The files are served from same-origin versioned URLs,
+so the recommended `script-src 'self'` stays valid, and gives no protection
+against them.
 
 ## UI stylesheets
 
@@ -682,7 +708,8 @@ prefix wins).
 ### CSS
 
 A branch's CSS items are effective like the other items, and `scrud:page` links
-them (see [CSS items](#css-items)). Under a prefix the files are served at the
+them (see [CSS items](#css-items); JavaScript items are linked the same way,
+see [JavaScript items](#javascript-items)). Under a prefix the files are served at the
 prefix's URL. Every file's URL includes its ETag, and the file is cached for a
 year as private.
 
@@ -1017,7 +1044,7 @@ The problem `type` is `https://api.openteams.com/http-problem/<name>`.
 * **Viewing a branch means trusting everyone who can write to it.** There is no
   separate trusted role: writes are authorized by scoped RBAC in the context of
   the branch (see [Authorizing contexts](#authorizing-contexts)), so trust is
-  per RBAC context. Whoever may write components or CSS on a branch controls
+  per RBAC context. Whoever may write components, CSS or JavaScript on a branch controls
   the markup of every page that shows it. A component can carry client
   scripts, and they run in the page with the viewer's rights. A user with write
   grants in a personal branch's context could send a link to a colleague with

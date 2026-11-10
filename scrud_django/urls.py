@@ -33,6 +33,7 @@ urlpatterns.extend(registration.built_in_resource_type_urls())
 
 if ui.is_enabled():
     from scrud_django.ui.branches.css import CSS_FILE_URL_NAME, UICssFileView
+    from scrud_django.ui.branches.js import JS_FILE_URL_NAME, UIJsFileView
     from scrud_django.ui.types import ui_resource_type_urls
 
     urlpatterns.extend(ui_resource_type_urls())
@@ -41,6 +42,13 @@ if ui.is_enabled():
             "ui-css-files/<str:name>/<str:etag>.css",
             UICssFileView.as_view(),
             name=CSS_FILE_URL_NAME,
+        )
+    )
+    urlpatterns.append(
+        path(
+            "ui-js-files/<str:name>/<str:etag>.js",
+            UIJsFileView.as_view(),
+            name=JS_FILE_URL_NAME,
         )
     )
 

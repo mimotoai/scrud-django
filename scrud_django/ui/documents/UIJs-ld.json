@@ -1,0 +1,25 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UIJs",
+  "rbac_context": {
+    "@id": "openteams:AccessControlContext"
+  },
+  "name": {
+    "@id": "openteams:UIJsName"
+  },
+  "js": {
+    "@id": "openteams:UIJsText"
+  },
+  "order": {
+    "@id": "openteams:UIJsOrder"
+  },
+  "branch": {
+    "@id": "openteams:UIBranchReference"
+  },
+  "deleted": {
+    "@id": "openteams:UIDeleted"
+  },
+  "base": {
+    "@id": "openteams:UIBaseVersion"
+  }
+}

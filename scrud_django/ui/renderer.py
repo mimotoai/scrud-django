@@ -61,6 +61,7 @@ from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messag
 from scrud_django.ui.branches.chrome import banner, confirm_page
 from scrud_django.ui.branches.css import css_urls
 from scrud_django.ui.branches.effective import BRANCH_HEADER, using_selection
+from scrud_django.ui.branches.js import js_urls
 from scrud_django.ui.branches.selection import (
     CONFIRM_PARAMETER,
     PARAM,
@@ -535,7 +536,8 @@ def _page(
     ``ui-banner-hideable``.)
 
     The page component's context also has ``css``: the URLs of the CSS files
-    effective on the page's branch, in order."""
+    effective on the page's branch, in order, and ``scripts``: those of its
+    JS files (empty when it has none)."""
     chrome = []
     branch = frame_branch(request) if chosen is not None else None
     if branch is not None:
@@ -552,11 +554,13 @@ def _page(
         body = mark_safe(chrome + body)
 
     css = css_urls(request)
+    scripts = js_urls(request)
 
     def page_context():
         return {
             "title": _title(resource_type),
             "css": css,
+            "scripts": scripts,
             "csrf_token": get_token(getattr(request, "_request", request)),
             "static": {
                 "htmx": static(STATIC_HTMX),
