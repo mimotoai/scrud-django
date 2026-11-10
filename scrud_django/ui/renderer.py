@@ -93,6 +93,11 @@ CONTENT_TYPE = "text/html; charset=utf-8"
 HX_REQUEST_HEADER = "HX-Request"
 SCOPE_HEADER = "Scrud-UI-Scope"
 POINTER_HEADER = "Scrud-UI-Pointer"
+MODE_HEADER = "Scrud-UI-Mode"
+# The scope chain and the mode may also come in the URL (a header wins).
+SCOPE_PARAMETER = "ui-scope"
+MODE_PARAMETER = "ui-mode"
+VIEW_MODE = "view"
 # The branch a page browses comes from a header, else a parameter (in the
 # URL), else a cookie.
 VARY = (
@@ -100,12 +105,14 @@ VARY = (
     HX_REQUEST_HEADER,
     SCOPE_HEADER,
     POINTER_HEADER,
+    MODE_HEADER,
     BRANCH_HEADER,
     "Cookie",
 )
 
 MAX_SCOPES = 16
 MAX_POINTER_LENGTH = 1024
+_SCOPE_SEPARATORS = re.compile(r"[\s,]+")
 _SCOPE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 # RFC 6901: "" or "/"-prefixed reference tokens, "~" only as "~0" or "~1".
 _POINTER = re.compile(r"(?:/(?:[^~/]|~[01])*)*")
@@ -279,9 +286,10 @@ def remember_branch(request, response) -> None:
 
 def check_ui_headers(request) -> None:
     """Refuse (400) an HTML request whose `POINTER_HEADER` is not a JSON
-    Pointer of at most `MAX_POINTER_LENGTH` characters: before the view
-    acts, so a PUT carrying one writes nothing. An invalid `SCOPE_HEADER`
-    is ignored (`scope_chain_of`)."""
+    Pointer of at most `MAX_POINTER_LENGTH` characters, or whose requested
+    mode (`MODE_HEADER`, `MODE_PARAMETER`) is not ``"view"``: before the view
+    acts, so a PUT carrying one writes nothing. An invalid scope chain
+    (`SCOPE_HEADER`, `SCOPE_PARAMETER`) is ignored (`scope_chain_of`)."""
     if negotiated_html(request) is None:
         return
     if pointer_of(request) is None:
@@ -290,16 +298,46 @@ def check_ui_headers(request) -> None:
             f"a JSON Pointer (RFC 6901) of at most {MAX_POINTER_LENGTH} characters"
             " is expected.",
         )
+    mode = _requested_mode_value(request)
+    if mode is not None and mode != VIEW_MODE:
+        raise UIHeaderInvalidError(
+            MODE_HEADER, f'"{VIEW_MODE}" is the only mode that can be requested.'
+        )
 
 
 def scope_chain_of(request) -> tuple[str, ...]:
-    """The root scope chain `SCOPE_HEADER` names: up to `MAX_SCOPES`
-    space-separated names, each a letter then letters, digits, ``_`` or
-    ``-``. Anything else is ignored: ``()``."""
-    names = (_header(request, SCOPE_HEADER) or "").split()
+    """The root scope chain `SCOPE_HEADER` names, else `SCOPE_PARAMETER`:
+    up to `MAX_SCOPES` space- or comma-separated names, each a letter then
+    letters, digits, ``_`` or ``-``. Anything else is ignored: ``()``."""
+    value = _header(request, SCOPE_HEADER)
+    if value is None:
+        params = getattr(request, "query_params", None)
+        if params is None:
+            params = getattr(request, "GET", {})
+        value = params.get(SCOPE_PARAMETER)
+    names = [n for n in _SCOPE_SEPARATORS.split(value or "") if n]
     if len(names) > MAX_SCOPES or not all(_SCOPE_NAME.fullmatch(n) for n in names):
         return ()
     return tuple(names)
+
+
+def requested_mode_of(request) -> str | None:
+    """The mode the request asks for (`MODE_HEADER`, else `MODE_PARAMETER`):
+    ``"view"``, or ``None`` when absent. It can only lower what the user may
+    do. Any other value is refused by `check_ui_headers`, so it reads as
+    ``None`` here."""
+    value = _requested_mode_value(request)
+    return VIEW_MODE if value == VIEW_MODE else None
+
+
+def _requested_mode_value(request) -> str | None:
+    value = _header(request, MODE_HEADER)
+    if value is None:
+        params = getattr(request, "query_params", None)
+        if params is None:
+            params = getattr(request, "GET", {})
+        value = params.get(MODE_PARAMETER)
+    return value
 
 
 def pointer_of(request) -> str | None:
@@ -385,6 +423,7 @@ def _body(data, status, request, view, response):
     contexts whose stylesheets style its page."""
     scope_chain = scope_chain_of(request)
     pointer = pointer_of(request)
+    mode = requested_mode_of(request)
     resource_type = _resource_type(view)
     method = getattr(request, "method", None)
     if status >= 400:
@@ -409,6 +448,7 @@ def _body(data, status, request, view, response):
             href=request.path,
             request=request,
             scope_chain=scope_chain,
+            mode=mode,
         ), []
     if resource_type is not None and isinstance(data, Mapping):
         href = request.path
@@ -426,6 +466,7 @@ def _body(data, status, request, view, response):
             request=request,
             scope_chain=scope_chain,
             pointer=pointer or "",
+            mode=mode,
         ), rbac_contexts_of(data)
     return _json(data), []
 

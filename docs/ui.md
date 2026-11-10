@@ -374,12 +374,13 @@ the frame with the current state, and so does a 409 DELETE.
 | Header | Meaning |
 |---|---|
 | `HX-Request: true` | Set by htmx: answer with a fragment (the frame) instead of a page. |
-| `Scrud-UI-Scope` | The root scope chain, outermost first: up to 16 space-separated scope names. An invalid value is ignored. |
+| `Scrud-UI-Scope` | The root scope chain, outermost first: up to 16 space- or comma-separated scope names. An invalid value is ignored. The same chain may come in the URL as `?ui-scope=sidebar,main`; the header wins. |
+| `Scrud-UI-Mode` | `view` renders the resource (or each item of a list) read-only even for a user who may PUT it: no form, no `hx-put`. It only lowers what the user may do: `view` is the only valid value, any other (`edit`) is a 400, before a PUT writes anything. The same may come as `?ui-mode=view`; the header wins. |
 | `Scrud-UI-Pointer` | The JSON Pointer of the node to render (default `""`). An invalid pointer (or one over 1024 characters) is a 400, before a PUT writes anything. |
 
 These select presentation only, never what is authorized. HTML responses carry
-`Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer, Scrud-UI-Branch,
-Cookie` (the branch a page browses comes from a header or a cookie) and
+`Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer, Scrud-UI-Mode,
+Scrud-UI-Branch, Cookie` (the branch a page browses comes from a header or a cookie) and
 `Cache-Control: private, no-cache, no-store` (a page and its fragments share
 one ETag, so a cache must not keep either; the ETag stays, and the client sends
 it as `If-Match`). An error is the same status as JSON (401, 403, 404, ...) with

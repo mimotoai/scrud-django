@@ -106,13 +106,20 @@ def render_resource(
 
 
 def render_collection(
-    envelope: dict, *, resource_type, href: str, request, scope_chain=()
+    envelope: dict,
+    *,
+    resource_type,
+    href: str,
+    request,
+    scope_chain=(),
+    mode: str | None = None,
 ) -> SafeString:
     """A page of a list (`envelope`, as the list route returns it: ``count``,
     ``next``, ``previous`` and the ``content`` envelopes) rendered with
     ``scrud:collection``, each resource in its own frame and its own
     contexts' stylesheets. Under a published branch's prefix, the items'
-    and the pager's links are its (`selection.in_mount`)."""
+    and the pager's links are its (`selection.in_mount`). `mode` is each
+    item's (see `render_resource`)."""
     scope_chain = tuple(scope_chain)
     envelope = envelope if isinstance(envelope, Mapping) else {}
     items = envelope.get("content")
@@ -134,7 +141,7 @@ def render_collection(
                     scope_chain=scope_chain,
                     pointer="",
                     errors=None,
-                    mode=None,
+                    mode=mode,
                     rules_cache=rules_cache,
                 )
             )
