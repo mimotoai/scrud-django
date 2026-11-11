@@ -2526,7 +2526,7 @@ second time, in the scope `studio studio-push-after`, which the layer's
 stylesheet takes to `studio:push-after` (so a page computes the push's plan
 twice: once for the review, once for this). That component renders only when
 the push preview's `endpoints` are not `null` (the studio's URLs are
-included): `<section class="studio-push-after" data-studio-push-after
+included): `<section class="studio-after-push" data-studio-push-after
 data-studio-source="<source>" data-studio-target="<target>">` with the type
 picker (`studio:type-picker`, an embed of `api_url("ui-type-catalog",
 "all")` in the scope `studio studio-types`), a "Preview after push" button
@@ -2545,8 +2545,8 @@ then reuse it), fill its token from the page's `csrf-token` meta tag and its
 iframe: the target as it renders with the source's overrides pushed, as
 "Preview after push" in the source's workbench shows it. The live preview
 needs `GET` on both branches, and a refusal (a 403) shows in the frame as
-the endpoint answers it. The note then says "The preview shows <target>
-after this push."; without a type, nothing is sent and it asks for one.
+the endpoint answers it. The note then says "Previewing <target> after
+this push."; without a type, nothing is sent and it asks for one.
 
 In edit mode (a user who may `PUT` the push), a push not yet applied also has
 a state form in the frame's `<form>`: a text input named `/state`, with a

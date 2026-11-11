@@ -2750,7 +2750,7 @@ function render() {
   label = new Node('input', {type: 'text', name: '/label'}, push);
   const embedded = new Node('div', {'class': 'scrud-resource',
     'data-scrud-scope': 'studio studio-push-after'}, push);
-  section = new Node('section', {'class': 'studio-push-after',
+  section = new Node('section', {'class': 'studio-after-push',
     'data-studio-push-after': '', 'data-studio-source': 'alice-wip',
     'data-studio-target': 'shop & co'}, embedded);
   const types = new Node('div', {'class': 'scrud-resource',
@@ -2858,7 +2858,7 @@ out.templateForm = section.querySelector('template').content.children.length;
         0,
         "Choose a type to preview shop & co after this push.",
     ]
-    assert out["chosen"] == [True, "The preview shows shop & co after this push."]
+    assert out["chosen"] == [True, "Previewing shop & co after this push."]
     # Exactly the request: the target as the branch, the source pushed, view
     # mode, no drafts; the CSRF token from the meta tag.
     assert out["submits"] == [after_submit()]
@@ -2892,7 +2892,7 @@ fire(state, 'change');
     )
     assert out["clicks"] == [
         [True, 0, "Choose a type to preview shop & co after this push."],
-        [True, 1, "The preview shows shop & co after this push."],
+        [True, 1, "Previewing shop & co after this push."],
     ]
     notes = {**AFTER_REQUEST, "type": "notes"}
     assert out["submits"] == [

@@ -8,6 +8,7 @@ strip or the page renders. These tests serve the API at ``/api/``
 ``studio_layer`` fixture)."""
 
 import json
+import re
 from urllib.parse import quote, urlencode
 
 import pytest
@@ -140,7 +141,14 @@ def push_page_url(href):
 def after_push_parts(page):
     """The push page's "Preview after push" (``studio:push-after``): its
     section, the ``<template>`` holding the live-preview form, that form,
-    its inputs by name, and the preview's iframe."""
+    its inputs by name, and the preview's iframe.
+
+    `Page` is Python's ``html.parser``, which does not apply the HTML
+    spec's tree-building rules (a form start tag inside a form is dropped,
+    a template's content is a separate fragment): the nesting asserted
+    here is the markup as written, not proof of how a browser parses it.
+    That the template keeps its form inside the edit page's frame form was
+    checked in Chromium."""
     [section] = page.having("data-studio-push-after")
     [template] = [e for e in page.elements if e.tag == "template" and e.within(section)]
     [form] = [e for e in page.elements if e.tag == "form" and e.within(template)]
@@ -706,6 +714,25 @@ def test_push_after_rule_and_component(studio_layer):
     assert (f"{AFTER_SCOPE} {UIPUSH_PREVIEW}", "studio:push-after") in rules
     _etag, found = layer_item("component", ("studio:push-after",))
     assert found["engine"] == "jinja2" and found["mode"] == "view"
+    # The section's CSS selects its own classes, none of which the push
+    # preview uses: studio:push-preview (the review, and the Promote panel)
+    # renders a change's After side as studio-push-after, which must keep
+    # the Before side's layout.
+    _etag, css = layer_item("css", ("studio:studio",))
+    own = set(re.findall(r"\.(studio-after-push[\w-]*)", css["css"]))
+    assert own == {"studio-after-push", "studio-after-push-controls"}
+    _etag, review = layer_item("component", ("studio:push-preview",))
+
+    def classes(template):
+        return {
+            name
+            for found in re.findall(r'class="([^"]*)"', template)
+            for name in found.split()
+        }
+
+    assert own <= classes(found["template"])
+    assert not own & classes(review["template"])
+    assert not [name for name in own if name in review["template"]]
 
 
 @pytest.mark.django_db

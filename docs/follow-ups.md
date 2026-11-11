@@ -5,6 +5,21 @@ kept by a decision, each saying what was decided and why. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
 
+<a id="studio-push-page-embeds-twice"></a>
+## studio-push-page-embeds-twice: a push's page embeds the push preview twice
+
+A push's page (`studio:push`, `studio:push-view`) embeds
+`ui-push-previews/<source>/?target=<target>` twice: the review (scope
+`studio studio-push`) and "Preview after push" (scope `studio
+studio-push-after`, `studio:push-after`). Each embed computes the push's
+plan, so the second runs even when its `endpoints` are `null` and it
+renders nothing. A viewer who may open the push but not `GET` its source or
+target gets the push preview's 404 from both embeds: the same refusal shown
+twice. Test: in `tests/test_studio_promote.py`, give a user `GET` on
+`ui-pushes` (and `PUT`, for edit mode) but not on the source branch, render
+the push's page in the scope `studio`, and count the 404 renderings of the
+push preview; it should be one, and is two today.
+
 <a id="studio-rule-editor-duplicate-prefix"></a>
 ## studio-rule-editor-duplicate-prefix: a new prefix with a taken key overrides the stored one silently
 
