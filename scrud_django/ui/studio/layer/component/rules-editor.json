@@ -1,0 +1,9 @@
+{
+  "name": "studio:rules-editor",
+  "engine": "jinja2",
+  "mode": "edit",
+  "scopes": {
+    "*": "studio-rule"
+  },
+  "template": "<div class=\"studio-rules\">\n<h4 class=\"studio-rules-title\">Rules</h4>\n<ol class=\"studio-rule-list\">\n{%- for child in children %}\n{%- set i = loop.index0 %}\n<li class=\"studio-rule\" data-studio-rule-index=\"{{ i }}\">{{ child }}<span class=\"studio-rule-ops\"><button type=\"button\" data-scrud-array-op=\"remove\" data-scrud-pointer=\"{{ pointer }}/{{ i }}\">Remove</button>{% if not loop.first %}<button type=\"button\" data-scrud-array-op=\"move\" data-scrud-pointer=\"{{ pointer }}/{{ i }}\" data-scrud-to=\"{{ i - 1 }}\">Move up</button>{% endif %}{% if not loop.last %}<button type=\"button\" data-scrud-array-op=\"move\" data-scrud-pointer=\"{{ pointer }}/{{ i }}\" data-scrud-to=\"{{ i + 1 }}\">Move down</button>{% endif %}</span></li>\n{%- endfor %}\n</ol>\n<p class=\"studio-rule-counts\" data-studio-rule-counts role=\"status\" hidden></p>\n<div class=\"studio-rule-append\">{%- for field in append_fields %}<label for=\"{{ input_id }}-new-{{ loop.index }}\">New rule's {{ \"selector\" if field.name == \"select\" else field.name }}</label><input type=\"text\" id=\"{{ input_id }}-new-{{ loop.index }}\" class=\"studio-field-input\" name=\"{{ pointer }}/-/{{ field.pointer_name }}\" data-studio-field spellcheck=\"false\">{%- endfor %}<button type=\"submit\" class=\"studio-add-rule\">Add rule</button></div>\n{%- if errors %}<ul class=\"scrud-errors\" role=\"alert\">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}\n</div>\n"
+}

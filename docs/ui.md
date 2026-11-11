@@ -1388,6 +1388,11 @@ frame's own origin is opaque; only a same-origin page may frame it):
   branch's scripts, which could change the element). When the list cannot be
   read, it is `{"type": "scrud-preview:errors", "errors": null, "failed":
   true}`, never an empty list (which would say every draft was shown);
+- `{"type": "scrud-preview:marks", "wins": <M>, "loses": <L>}` once, when
+  loaded, after the errors message: the number of nodes marked
+  `data-scrud-match="wins"` and `"loses"` (see **Markers** above), counted
+  when the bridge runs, before the branch's scripts. It is posted for every
+  preview, with `0` and `0` when the request had no `mark`;
 - `{"type": "scrud-preview:select", "pointer": "<JSON Pointer>", "href":
   "<URL>" | null}` on a click inside a node: the nearest `<scrud-node>`'s
   pointer, and the `data-scrud-href` of the resource frame it is in (its
@@ -1399,7 +1404,7 @@ frame's own origin is opaque; only a same-origin page may frame it):
 
 The receiving page must check `event.source` is its preview frame and accept
 these shapes only. The branch's scripts share the document and can post
-messages too, so treat both as data, never as instructions.
+messages too, so treat them all as data, never as instructions.
 
 Errors: 400 `ui-studio-preview-invalid` (the `request` field missing, not
 JSON (nested too deep included), or a field of the wrong shape; more than 50
@@ -1924,10 +1929,11 @@ the component `studio:page`), so a page without `?ui-scope=studio` renders as
 before. `studio:page` keeps what every page needs (the CSRF meta tag, both
 static scripts, the CSS and JS items' links, and the chrome) and wraps the body
 in `<div class="studio" data-studio>`. The layer's CSS item `studio:studio`
-and JS item `studio:studio` are effective on every branch, so every page links
-them: every selector of the CSS is under a `.studio` class or a
-`[data-studio…]` attribute, and the script does nothing unless the page has a
-`[data-studio-workbench]` element. No layer component has an inline script or
+and JS items `studio:studio` (order 0) and `studio:rules` (order 1, the
+[rule editor](#the-rule-editor)'s, which uses the API the first sets up) are
+effective on every branch, so every page links them: every selector of the
+CSS is under a `.studio` class or a `[data-studio…]` attribute, and each
+script does nothing unless the page has a `[data-studio-workbench]` element. No layer component has an inline script or
 an event handler attribute, so a `script-src 'self'` policy works. A branch
 overrides any of these items by name, as it does any layer item.
 
@@ -2083,7 +2089,8 @@ The script never sets `Scrud-UI-Branch`: its requests go through htmx, and
 `scrud-ui.js` sends the page's branch (S) and, on a safe page,
 `Scrud-UI-Safe`. `window.ScrudStudio` also has `state()`, `setState(changes)`
 (`null` or `""` removes a key), `itemKey(open)`, `refresh(pane)`, `reopen()`
-(open the state's `item` from the tree as it is), `branch` and `published`.
+(open the state's `item` from the tree as it is), `contentOf(frame)` (a
+frame's own `scrud-content`, parsed, or `null`), `branch` and `published`.
 
 ### The editors
 
@@ -2158,3 +2165,74 @@ frame's own window (`event.source`), and only `{"type":
 preview left out is listed under the editor as `<kind> <name>: <messages>`,
 as text. `failed: true` shows "The preview could not report its errors: a
 draft may not be shown.", never an empty list; an empty list hides them.
+
+### The rule editor
+
+A stylesheet opens in the rule editor. The layer's stylesheet selects, in
+the scope `studio studio-editor`:
+
+| Selector | Edit mode | View mode |
+|---|---|---|
+| `UIStylesheet` (`http://api.openteams.com/json-ld/UIStylesheet`) | `studio:stylesheet-editor` | `studio:stylesheet-view` |
+| `studio-rules` + its `rules` (`…/UIStylesheetRules`) | `studio:rules-editor` | `studio:rules-view` |
+| `studio-rule object` (a rule) | `studio:rule-row` | `studio:rule-row-view` |
+| `studio-field string`, `studio-field integer` | `studio:field` | (the built-ins) |
+
+The stylesheet's components put `rules` in the scope `studio-rules`, each
+rule in `studio-rule`, and `applies_to`, `order` and a rule's `select` and
+`component` in `studio-field`. The editor is a `<div class="studio-editor
+studio-stylesheet" data-studio-editor-item data-studio-kind="stylesheet"
+data-studio-mode="edit|view" data-studio-stylesheet="<name>"
+data-studio-applies-to="<applies_to>">`:
+
+- **Edit mode.** The editor is the stylesheet's own frame, a `<form>`. The
+  `name` is shown, not an input. `applies_to` and `order` are inputs
+  (`studio:field`: a labelled `<input>` named by the node's pointer, with
+  its messages from a refused write beside it); each prefix is a row of its
+  key, as text, and its IRI, an input named `/prefixes/<key>` (the key
+  escaped as a JSON Pointer token). One more row adds a prefix: its key and
+  IRI inputs have no name until the author types a key, when the script
+  names the IRI input `/prefixes/<key>`. A prefix cannot be removed here.
+- **The rules** are an `<ol>` of `<li class="studio-rule"
+  data-studio-rule-index="<i>">` rows, each the rule's selector and
+  component inputs (`/rules/<i>/select`, `/rules/<i>/component`) and the
+  runtime's array operations: Remove, Move up (not on the first) and Move
+  down (not on the last), `data-scrud-array-op` buttons (see
+  [Modes, editing and the write path](#modes-editing-and-the-write-path)).
+  Under them are the counts (`<p data-studio-rule-counts role="status">`,
+  hidden) and the append row, `/rules/-/select` and `/rules/-/component`
+  with an "Add rule" submit. A selector the server refuses (a 400 with
+  `name: "rules[<i>].select"`) re-renders the editor with the message
+  beside rule `<i>`'s selector, which keeps the submitted text.
+- **Saving.** Every input carries `data-studio-field`, and its `change` is
+  stopped before the frame sees it, as the code editors' is: typing never
+  saves. Save (and Add rule, and Enter in a field) is the frame's `PUT` of
+  its `scrud-content` with every input applied, with `If-Match`. An array
+  operation is an explicit click and saves at once: the runtime triggers its
+  `change` on the frame itself, which the script lets through.
+- **View mode** shows the fields and prefixes as text and each rule as
+  `select → component` in a row that takes focus (`tabindex="0"`), with no
+  input, no array operation and no Save.
+
+**Marking a rule's matches** (`studio:rules`, the layer's second JS item).
+Focus on a row (an input or button in it, or a view-mode row) submits the
+live preview with `mark: {"stylesheet": <name>, "applies_to":
+<applies_to>, "index": <i>}` and, in edit mode, `drafts: [{"kind":
+"stylesheet", "content": <the form>}]`, the frame's content with its
+inputs applied as its save would apply them (`ScrudUI.buildBody`), so
+unsaved edits are marked too. On a published T, or in view mode, it sends
+the mark only, of the stored stylesheet. Focus moving within a row keeps the
+mark; to another row it marks that row's rule. Leaving the rows submits the
+preview again without the mark, with the form as a draft only if it differs
+from the stored stylesheet. Typing in a field sends the form again (300 ms
+after the last key) with the row's mark, unless nothing changed. The index
+is the rule's index in the stylesheet, which the server's markers use (see
+**Markers** under `POST live-preview` in [The studio API](#the-studio-api)).
+
+The preview's bridge answers each load with `scrud-preview:marks`. The
+script accepts it only from the preview frame's own window (`event.source`)
+and only with counts that are non-negative integers, and only while a row is
+marked; it writes "matches N nodes, wins on M" (N the winning and losing
+nodes together, M the winning ones) as text into the counts under the rows.
+A new mark hides the counts until its preview answers; leaving the rows
+hides them.

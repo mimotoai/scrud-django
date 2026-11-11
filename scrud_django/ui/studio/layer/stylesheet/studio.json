@@ -41,6 +41,38 @@
     {
       "select": "studio studio-editor http://api.openteams.com/json-ld/UIJs",
       "component": "studio:text-view"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIStylesheet",
+      "component": "studio:stylesheet-editor"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIStylesheet",
+      "component": "studio:stylesheet-view"
+    },
+    {
+      "select": "studio studio-editor studio-rules http://api.openteams.com/json-ld/UIStylesheetRules",
+      "component": "studio:rules-editor"
+    },
+    {
+      "select": "studio studio-editor studio-rules http://api.openteams.com/json-ld/UIStylesheetRules",
+      "component": "studio:rules-view"
+    },
+    {
+      "select": "studio studio-editor studio-rule object",
+      "component": "studio:rule-row"
+    },
+    {
+      "select": "studio studio-editor studio-rule object",
+      "component": "studio:rule-row-view"
+    },
+    {
+      "select": "studio studio-editor studio-field string",
+      "component": "studio:field"
+    },
+    {
+      "select": "studio studio-editor studio-field integer",
+      "component": "studio:field"
     }
   ]
 }

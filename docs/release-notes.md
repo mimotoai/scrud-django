@@ -164,6 +164,25 @@
   component is shown read-only. Typing sends the editor's content to the live
   preview as a draft (300 ms after the last key; none on a published branch),
   and the drafts the preview leaves out are listed under the editor, as text.
+* The workbench's rule editor, in the studio layer: a stylesheet opens as
+  its fields (`name` read-only, `applies_to`, `order`, `prefixes` as
+  key/value rows, with one new prefix at a time) and its rules as rows of
+  selector -> component inputs, each with Remove, Move up and Move down
+  (they save at once) and an append row (saved with Save); every field is an
+  input named by its JSON Pointer, saved only by Save, and a refused selector
+  is shown beside its row (`studio:stylesheet-editor`, `studio:rules-editor`,
+  `studio:rule-row`, `studio:field` and the view twins
+  `studio:stylesheet-view`, `studio:rules-view`, `studio:rule-row-view`).
+  Focus on a row marks its rule's matches in the live preview, with the
+  stylesheet as the form shows it as a draft (the mark only on a published
+  branch or in view mode), and shows "matches N nodes, wins on M" under the
+  rows; leaving the rows clears the mark. The new layer JS item
+  `studio:rules` (order 1, after `studio:studio`) does this; `ScrudStudio`
+  gains `contentOf(frame)`.
+* The live preview's bridge (`preview-bridge.js`) also posts
+  `{"type": "scrud-preview:marks", "wins": M, "loses": L}` on load, after the
+  errors message: the counts of the nodes marked as the marked rule winning
+  and losing, read before the branch's scripts run (0 and 0 without a mark).
 
 ### Changed
 

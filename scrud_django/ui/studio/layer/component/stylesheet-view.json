@@ -1,0 +1,9 @@
+{
+  "name": "studio:stylesheet-view",
+  "engine": "jinja2",
+  "mode": "view",
+  "scopes": {
+    "rules": "studio-rules"
+  },
+  "template": "{%- set prefixes = value.get(\"prefixes\") or {} -%}\n<div class=\"studio-editor studio-stylesheet\" data-studio-editor-item data-studio-kind=\"stylesheet\" data-studio-mode=\"view\" data-studio-stylesheet=\"{{ value.name }}\" data-studio-applies-to=\"{{ value.get(\"applies_to\") or \"\" }}\">\n<dl class=\"studio-sheet-fields\"><dt>Name</dt><dd class=\"studio-sheet-name\">{{ value.name }}</dd><dt>Applies to</dt><dd>{{ value.get(\"applies_to\") or \"(everywhere)\" }}</dd><dt>Order</dt><dd>{{ value.get(\"order\", 0) }}</dd></dl>\n{%- if prefixes %}\n<dl class=\"studio-prefixes\">{% for key, iri in prefixes|dictsort %}<dt class=\"studio-prefix-key\">{{ key }}</dt><dd>{{ iri }}</dd>{% endfor %}</dl>\n{%- endif %}\n{{ children.get(\"rules\") or \"\" }}\n</div>\n"
+}

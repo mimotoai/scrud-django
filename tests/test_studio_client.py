@@ -1042,6 +1042,10 @@ def test_broad_labels_name_the_data_context(ui_alice_login):
     assert out["back"] == out["everywhere"]
 
 
+# The marks message a preview without a mark posts after the errors.
+NO_MARKS = {"type": "scrud-preview:marks", "wins": 0, "loses": 0}
+
+
 BRIDGE_JS = (
     Path(scrud_django.ui.studio.__file__).parent
     / "static/scrud_studio/preview-bridge.js"
@@ -1111,9 +1115,11 @@ def test_bridge_posts_select_and_errors(ui_alice_login):
     out = run_bridge(Http.response.content.decode())
     # On load: the draft errors the page lists, to the parent, to any
     # origin (the frame's own is opaque).
-    (loaded,) = out["loaded"]
+    (loaded, marks) = out["loaded"]
     assert loaded["origin"] == "*"
     assert loaded["message"]["type"] == "scrud-preview:errors"
+    # Then the marks counts (none: no mark was asked for).
+    assert marks == {"message": NO_MARKS, "origin": "*"}
     (error,) = loaded["message"]["errors"]
     assert error["kind"] == "component" and error["name"] == "bad"
     assert "template is invalid" in error["messages"][0]
@@ -1176,10 +1182,10 @@ def test_bridge_tells_an_embeds_nodes_by_href(ui_alice_login):
     )
     Then.http.status_code_is(200)
     out = run_bridge(Http.response.content.decode())
-    assert out["loaded"][0]["message"] == {
-        "type": "scrud-preview:errors",
-        "errors": [],
-    }
+    assert out["loaded"] == [
+        {"message": {"type": "scrud-preview:errors", "errors": []}, "origin": "*"},
+        {"message": NO_MARKS, "origin": "*"},
+    ]
     # The host prints only the embed: these nodes are the embedded list's.
     assert out["clicks"] == [
         {"message": select(POINTER, url_of(other)), "origin": "*"},
@@ -1246,8 +1252,9 @@ def test_bridge_reads_the_errors_before_branch_scripts_run(ui_alice_login):
     assert done.returncode == 0, done.stderr
     out = json.loads(done.stdout)
     assert out["errors"] == []
-    (loaded,) = out["loaded"]
+    (loaded, marks) = out["loaded"]
     assert [e["name"] for e in loaded["message"]["errors"]] == ["bad"]
+    assert marks["message"] == NO_MARKS
 
 
 @pytest.mark.django_db
@@ -1264,7 +1271,8 @@ def test_bridge_says_when_the_errors_cannot_be_read(ui_alice_login):
         flags=re.S,
     )
     assert "{not json</script>" in page
-    (loaded,) = run_bridge(page)["loaded"]
+    (loaded, marks) = run_bridge(page)["loaded"]
+    assert marks["message"] == NO_MARKS
     assert loaded["message"] == {
         "type": "scrud-preview:errors",
         "errors": None,

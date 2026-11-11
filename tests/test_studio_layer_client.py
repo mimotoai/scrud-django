@@ -13,6 +13,17 @@ import importlib.resources
 import json
 import subprocess
 
+import pytest
+from safetydance_django.test import *  # noqa: F403, F401
+
+from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
+
+from .fixtures import *  # noqa
+from .steps import *  # noqa: F403, F401
+from .test_studio_client import BRIDGE_HARNESS, BRIDGE_JS, run_bridge, setup_wip, tree
+from .test_studio_live_preview import grant_items, live
+from .test_ui_http import make_stylesheet
+from .test_ui_static import SCRUD_UI as SCRUD_UI_JS
 from .test_ui_static import require_node
 
 LAYER_PACKAGE = "scrud_django.ui.studio.layer"
@@ -62,13 +73,13 @@ console.log(JSON.stringify(out));
 """
 
 
-def layer_source():
-    layer_js = importlib.resources.files(LAYER_PACKAGE).joinpath("js/studio.json")
+def layer_source(file="studio.json"):
+    layer_js = importlib.resources.files(LAYER_PACKAGE).joinpath(f"js/{file}")
     return json.loads(layer_js.read_text(encoding="utf-8"))["js"]
 
 
-def run(with_workbench):
-    source = layer_source()
+def run(with_workbench, file="studio.json"):
+    source = layer_source(file)
     done = subprocess.run(
         ["node", "-e", HARNESS, source, "1" if with_workbench else "0"],
         capture_output=True,
@@ -82,6 +93,15 @@ def test_layer_js_inert_without_workbench():
     require_node()
     out = run(with_workbench=False)
     # It looks for the workbench, and does nothing else.
+    assert out["queries"] == ["[data-studio-workbench]"]
+    assert out["touched"] == ["document.querySelector"]
+    assert out["listeners"] == [] and out["fetches"] == 0
+    assert out["attributes"] == {}
+
+
+def test_rules_js_inert_without_workbench():
+    require_node()
+    out = run(with_workbench=False, file="rules.json")
     assert out["queries"] == ["[data-studio-workbench]"]
     assert out["touched"] == ["document.querySelector"]
     assert out["listeners"] == [] and out["fetches"] == 0
@@ -110,14 +130,14 @@ const out = {ajax: [], replaced: [], submits: [], opened: [], innerHTML: 0,
 let processed = [];
 
 function parseSelector(sel) {
-  const m = /^([a-zA-Z]*)((?:\.[\w-]+|\[[\w-]+(?:="[^"]*")?\])*)$/.exec(sel);
+  const m = /^([a-zA-Z]*)((?:\.[\w-]+|\[[\w-]+(?:\^?="[^"]*")?\])*)$/.exec(sel);
   if (!m) throw new Error('stub: unsupported selector ' + sel);
   const parts = {tag: m[1].toUpperCase(), classes: [], attrs: []};
-  const re = /\.([\w-]+)|\[([\w-]+)(?:="([^"]*)")?\]/g;
+  const re = /\.([\w-]+)|\[([\w-]+)(?:(\^?)="([^"]*)")?\]/g;
   let p;
   while ((p = re.exec(m[2]))) {
     if (p[1]) parts.classes.push(p[1]);
-    else parts.attrs.push([p[2], p[3]]);
+    else parts.attrs.push([p[2], p[4], p[3] === '^']);
   }
   return parts;
 }
@@ -153,12 +173,19 @@ class Node {
   get textContent() { return this.text; }
   set textContent(v) { this.text = String(v); }
   set innerHTML(v) { out.innerHTML += 1; }
+  // As a form control reads them (ScrudUI.fieldsOf and buildBody do).
+  get name() { return this.attrs.name; }
+  get type() {
+    if (this.tagName === 'TEXTAREA') return 'textarea';
+    return this.tagName === 'INPUT' ? this.attrs.type || 'text' : undefined;
+  }
   matches(sel) {
     const s = parseSelector(sel);
     if (s.tag && s.tag !== this.tagName) return false;
     const classes = (this.attrs['class'] || '').split(/\s+/);
     if (!s.classes.every((c) => classes.includes(c))) return false;
-    return s.attrs.every(([n, v]) => n in this.attrs && (v === undefined || this.attrs[n] === v));
+    return s.attrs.every(([n, v, prefix]) => n in this.attrs && (v === undefined
+      || (prefix ? this.attrs[n].startsWith(v) : this.attrs[n] === v)));
   }
   closest(sel) {
     for (let n = this; n; n = n.parentNode) if (n.matches && n.matches(sel)) return n;
@@ -405,6 +432,15 @@ const context = vm.createContext({window, document, URLSearchParams, CustomEvent
   DOMParser, console, htmx, setTimeout: window.setTimeout,
   clearTimeout: window.clearTimeout});
 vm.runInContext(source, context);
+// With argv[3] (rules.js) and argv[4] (scrud-ui.js): the page's ScrudUI (its
+// pure helpers: scrud-ui.js stops before its htmx part without a document),
+// then rules.js, after studio.js as the page orders them.
+if (process.argv[3]) {
+  const uiContext = vm.createContext({window: {}, console});
+  vm.runInContext(process.argv[4], uiContext);
+  window.ScrudUI = uiContext.window.ScrudUI;
+  vm.runInContext(process.argv[3], context);
+}
 const S = window.ScrudStudio;
 const state = () => S.state();
 const collapsed = () => Object.fromEntries(Object.entries(panes).map(
@@ -419,17 +455,23 @@ const texts = (node) => node.children.map((c) => [c.tagName.toLowerCase(), c.tex
 """
 
 
-def scenario(script, **opts):
-    """Run studio.js on the stub workbench with `opts`, then `script`;
-    return what it printed (JSON)."""
+def scenario(script, rules=False, **opts):
+    """Run studio.js on the stub workbench with `opts` (and, with `rules`,
+    the page's ScrudUI and rules.js after it, with `RULES_STUB`), then
+    `script`; return what it printed (JSON)."""
     require_node()
+    extra = [layer_source("rules.json"), SCRUD_UI_JS.read_text()] if rules else []
     done = subprocess.run(
         [
             "node",
             "-e",
-            WORKBENCH + script + "\nconsole.log(JSON.stringify(out));",
+            WORKBENCH
+            + (RULES_STUB if rules else "")
+            + script
+            + "\nconsole.log(JSON.stringify(out));",
             layer_source(),
             json.dumps(opts),
+            *extra,
         ],
         capture_output=True,
         text=True,
@@ -1008,3 +1050,401 @@ out.none = [draftErrors.hasAttribute('hidden'), texts(draftErrors)];
     ]
     assert out["none"] == [True, []]
     assert out["innerHTML"] == 0
+
+
+# The rule editor as the layer renders it into the editor pane (the
+# stylesheet's frame: a form in edit mode, its scrud-content, the fields, the
+# rows with their array operations, the counts and the append row), for
+# rules.js. `swapSheet` swaps it in as htmx does.
+RULES_STUB = r"""
+const THEME = {name: 'theme', applies_to: '', order: 2,
+  prefixes: {ex: 'http://example.org/todo#'},
+  rules: [{select: 'ex:TodoItem', component: 'row'},
+          {select: 'compact ex:TodoItem', component: 'card'},
+          {select: 'string', component: 'scrud:string'}],
+  branch: 'alice-wip', rbac_context: 'alice'};
+const input = (attrs, parent, value) => {
+  const node = el('input', Object.assign({type: 'text'}, attrs), parent);
+  node.value = value === undefined || value === null ? '' : String(value);
+  return node;
+};
+function swapSheet({edit = true, content = THEME} = {}) {
+  while (editor.firstChild) editor.removeChild(editor.firstChild);
+  const href = '/workbench/ui-stylesheets/5/';
+  const frame = el(edit ? 'form' : 'div', {'class': 'scrud-resource',
+    'data-scrud-href': href, 'data-scrud-etag': '"e1"',
+    'data-scrud-scope': 'studio studio-editor',
+    ...(edit ? {'hx-put': href, 'hx-trigger': 'change, submit'} : {})}, editor);
+  frame.addEventListener('change', (evt) => {
+    out.changes += 1;
+    if (evt.detail && evt.detail.scrudArrayOp) out.arrayOps = (out.arrayOps || 0) + 1;
+  });
+  el('script', {type: 'application/json', 'class': 'scrud-content'}, frame).text =
+    JSON.stringify(content);
+  const sheet = el('div', {'class': 'studio-editor studio-stylesheet',
+    'data-studio-editor-item': '', 'data-studio-kind': 'stylesheet',
+    'data-studio-mode': edit ? 'edit' : 'view', 'data-studio-stylesheet': content.name,
+    'data-studio-applies-to': content.applies_to || ''}, frame);
+  const fields = {};
+  if (edit) {
+    fields.appliesTo = input({name: '/applies_to', 'data-studio-field': ''}, sheet,
+      content.applies_to);
+    fields.order = input({type: 'number', name: '/order', 'data-studio-field': ''}, sheet,
+      content.order);
+    const fresh = el('div', {'class': 'studio-prefix-new', 'data-studio-prefix-new': ''},
+      sheet);
+    fields.key = input({'data-studio-prefix-key': '', 'data-studio-field': ''}, fresh);
+    fields.iri = input({'data-studio-prefix-iri': '', 'data-studio-field': ''}, fresh);
+  }
+  const list = el('ol', {'class': 'studio-rule-list'}, sheet);
+  const rows = content.rules.map((rule, i) => {
+    const li = el('li', Object.assign({'class': 'studio-rule',
+      'data-studio-rule-index': String(i)}, edit ? {} : {tabindex: '0'}), list);
+    if (!edit) {
+      el('code', {'class': 'studio-rule-select'}, li).text = rule.select;
+      return {li};
+    }
+    const select = input({name: '/rules/' + i + '/select', 'data-studio-field': ''}, li,
+      rule.select);
+    const component = input({name: '/rules/' + i + '/component', 'data-studio-field': ''},
+      li, rule.component);
+    const remove = el('button', {type: 'button', 'data-scrud-array-op': 'remove',
+      'data-scrud-pointer': '/rules/' + i}, li);
+    return {li, select, component, remove};
+  });
+  const counts = el('p', {'class': 'studio-rule-counts', 'data-studio-rule-counts': '',
+    role: 'status', hidden: ''}, sheet);
+  if (edit) {
+    fields.newSelect = input({name: '/rules/-/select', 'data-studio-field': ''}, sheet);
+    fields.newComponent = input({name: '/rules/-/component', 'data-studio-field': ''},
+      sheet);
+  }
+  fire(frame, 'htmx:afterSwap', {target: editor});
+  return {frame, rows, counts, fields};
+}
+const focus = (node) => fire(node, 'focusin');
+const blur = (node) => fire(node, 'focusout');
+const shown = (counts) => [counts.hasAttribute('hidden'), counts.textContent];
+const requests = () => out.submits.map((s) => s.request);
+"""
+
+THEME = {
+    "name": "theme",
+    "applies_to": "",
+    "order": 2,
+    "prefixes": {"ex": "http://example.org/todo#"},
+    "rules": [
+        {"select": "ex:TodoItem", "component": "row"},
+        {"select": "compact ex:TodoItem", "component": "card"},
+        {"select": "string", "component": "scrud:string"},
+    ],
+    "branch": "alice-wip",
+    "rbac_context": "alice",
+}
+TYPED = BASE + "&type=todo-lists"
+
+
+def theme(**changes):
+    return json.loads(json.dumps({**THEME, **changes}))
+
+
+def with_rule(index, **changes):
+    content = theme()
+    content["rules"][index].update(changes)
+    return content
+
+
+def mark(index, stylesheet="theme", applies_to=""):
+    return {"stylesheet": stylesheet, "applies_to": applies_to, "index": index}
+
+
+def sheet_draft(content):
+    return [{"kind": "stylesheet", "content": content}]
+
+
+def test_focus_sends_mark_with_draft():
+    out = scenario(
+        r"""
+const {frame, rows, fields} = swapSheet();
+reset();
+// An unsaved edit of rule 1, then focus on its selector: the mark, and the
+// form (the content with its inputs applied) as a draft.
+rows[1].select.value = 'card ex:TodoItem';
+focus(rows[1].select);
+out.focused = requests();
+reset();
+// Within the row: the mark stays, nothing is sent.
+blur(rows[1].select);
+focus(rows[1].component);
+focus(rows[1].remove);
+tick(0);
+out.within = requests();
+// To another row: its mark, sent once.
+blur(rows[1].remove);
+focus(rows[0].component);
+tick(0);
+out.moved = requests();
+reset();
+// Typing in a field: once it pauses, the form again, with the mark.
+rows[0].component.value = 'row-b';
+fire(rows[0].component, 'keyup');
+tick(299);
+out.early = out.submits.length;
+tick(1);
+out.typed = requests();
+reset();
+fire(rows[0].component, 'keyup');
+tick(300);
+out.same = out.submits.length;
+// A change of a field never reaches the frame (no save on blur); an array
+// operation's change, triggered on the frame itself, does.
+fire(rows[0].select, 'change');
+fire(fields.order, 'change');
+fire(fields.newSelect, 'change');
+out.fieldChanges = out.changes;
+fire(frame, 'change', {scrudArrayOp: {op: 'remove', pointer: '/rules/0'}});
+out.arrayChanges = [out.changes, out.arrayOps];
+// A new prefix: the IRI input is named by its key, escaped.
+fields.iri.value = 'urn:y:';
+fields.key.value = 'a/b~c';
+fire(fields.key, 'input');
+out.named = fields.iri.getAttribute('name');
+reset();
+blur(rows[0].component);
+focus(rows[2].select);
+tick(0);
+out.prefixed = requests();
+fields.key.value = '';
+fire(fields.key, 'input');
+out.unnamed = fields.iri.hasAttribute('name');
+out.innerHTML = out.innerHTML;
+""",
+        rules=True,
+        search=TYPED,
+    )
+    edited = with_rule(1, select="card ex:TodoItem")
+    assert out["focused"] == [preview_request(drafts=sheet_draft(edited), mark=mark(1))]
+    assert out["within"] == []
+    assert out["moved"] == [preview_request(drafts=sheet_draft(edited), mark=mark(0))]
+    assert out["early"] == 0
+    typed = with_rule(1, select="card ex:TodoItem")
+    typed["rules"][0]["component"] = "row-b"
+    assert out["typed"] == [preview_request(drafts=sheet_draft(typed), mark=mark(0))]
+    assert out["same"] == 0
+    assert out["fieldChanges"] == 0
+    assert out["arrayChanges"] == [1, 1]
+    assert out["named"] == "/prefixes/a~1b~0c"
+    prefixed = json.loads(json.dumps(typed))
+    prefixed["prefixes"]["a/b~c"] = "urn:y:"
+    assert out["prefixed"] == [
+        preview_request(drafts=sheet_draft(prefixed), mark=mark(2))
+    ]
+    assert out["unnamed"] is False
+    assert out["innerHTML"] == 0
+
+
+def test_focus_marks_without_drafts_when_published_or_view():
+    script = r"""
+const {rows} = swapSheet(OPTS);
+reset();
+rows[0].select ? (rows[0].select.value = 'changed') : null;
+focus(rows[1].select || rows[1].li);
+out.focused = requests();
+reset();
+blur(rows[1].select || rows[1].li);
+tick(0);
+out.blurred = requests();
+reset();
+if (rows[0].select) { fire(rows[0].select, 'keyup'); tick(300); }
+out.typed = requests();
+"""
+    # A published T (even a crafted edit-mode editor): the mark only.
+    out = scenario(
+        script.replace("OPTS", "{}"), rules=True, search=TYPED, published=True
+    )
+    assert out["focused"] == [preview_request(mark=mark(1))]
+    assert out["blurred"] == [preview_request()]
+    assert out["typed"] == []
+    # View mode: a row takes focus itself; the mark of the stored stylesheet.
+    out = scenario(script.replace("OPTS", "{edit: false}"), rules=True, search=TYPED)
+    assert out["focused"] == [preview_request(mark=mark(1))]
+    assert out["blurred"] == [preview_request()]
+    # Another stylesheet's identity: its name and applies_to.
+    out = scenario(
+        r"""
+const {rows} = swapSheet({edit: false, content: Object.assign({}, THEME,
+  {name: 'acme-sheet', applies_to: 'acme'})});
+reset();
+focus(rows[2].li);
+out.focused = requests();
+""",
+        rules=True,
+        search=TYPED,
+    )
+    assert out["focused"] == [preview_request(mark=mark(2, "acme-sheet", "acme"))]
+    # No type to preview: nothing is sent.
+    out = scenario(
+        r"""
+const {rows} = swapSheet();
+reset();
+focus(rows[0].select);
+blur(rows[0].select);
+tick(0);
+""",
+        rules=True,
+        search=BASE,
+    )
+    assert out["submits"] == []
+
+
+def test_blur_clears_mark():
+    out = scenario(
+        r"""
+const {rows, counts} = swapSheet();
+focus(rows[1].select);
+post(iframe.contentWindow, {type: 'scrud-preview:marks', wins: 1, loses: 2});
+reset();
+blur(rows[1].select);
+out.pending = requests();
+tick(0);
+// The form is as stored: no draft.
+out.cleared = [requests(), shown(counts)];
+reset();
+// With an unsaved edit, the form is still the draft.
+focus(rows[0].select);
+rows[0].select.value = 'ex:TodoList';
+reset();
+blur(rows[0].select);
+tick(0);
+out.edited = requests();
+reset();
+// The editor swapped out (a save, another item) before focus settled:
+// nothing.
+focus(rows[2].select);
+reset();
+blur(rows[2].select);
+swapSheet();
+tick(0);
+out.swapped = requests();
+""",
+        rules=True,
+        search=TYPED,
+    )
+    assert out["pending"] == []
+    requests, counts = out["cleared"]
+    assert requests == [preview_request()]
+    assert counts == [True, ""]
+    assert out["edited"] == [
+        preview_request(drafts=sheet_draft(with_rule(0, select="ex:TodoList")))
+    ]
+    assert out["swapped"] == []
+
+
+def test_marks_message_updates_counts():
+    out = scenario(
+        r"""
+const {rows, counts} = swapSheet();
+// No row marked: the counts stay hidden.
+post(iframe.contentWindow, {type: 'scrud-preview:marks', wins: 0, loses: 0});
+out.unmarked = shown(counts);
+focus(rows[1].select);
+out.focused = shown(counts);
+post(iframe.contentWindow, {type: 'scrud-preview:marks', wins: 2, loses: 3});
+out.counted = shown(counts);
+// From another window, another type, or counts that are not non-negative
+// integers: ignored.
+post({}, {type: 'scrud-preview:marks', wins: 9, loses: 9});
+post(null, {type: 'scrud-preview:marks', wins: 9, loses: 9});
+post(iframe.contentWindow, {type: 'scrud-preview:select', wins: 9, loses: 9});
+post(iframe.contentWindow, 'scrud-preview:marks');
+for (const [wins, loses] of [[1.5, 0], [-1, 0], ['2', 0], [0, NaN], [0, Infinity],
+                             [0, null], [undefined, 0]]) {
+  post(iframe.contentWindow, {type: 'scrud-preview:marks', wins, loses});
+}
+out.kept = shown(counts);
+// A mark of another row clears the counts until its preview answers.
+blur(rows[1].select);
+focus(rows[0].select);
+tick(0);
+out.moved = shown(counts);
+post(iframe.contentWindow, {type: 'scrud-preview:marks', wins: 0, loses: 4});
+out.recounted = shown(counts);
+// The draft errors are studio.js's: untouched.
+out.draftErrors = draftErrors.hasAttribute('hidden');
+blur(rows[0].select);
+tick(0);
+post(iframe.contentWindow, {type: 'scrud-preview:marks', wins: 1, loses: 1});
+out.blurred = shown(counts);
+""",
+        rules=True,
+        search=TYPED,
+    )
+    assert out["unmarked"] == [True, ""]
+    assert out["focused"] == [True, ""]
+    assert out["counted"] == [False, "matches 5 nodes, wins on 2"]
+    assert out["kept"] == out["counted"]
+    assert out["moved"] == [True, ""]
+    assert out["recounted"] == [False, "matches 4 nodes, wins on 0"]
+    assert out["draftErrors"] is True
+    assert out["blurred"] == [True, ""]
+    assert out["innerHTML"] == 0
+
+
+# The preview's bridge is a static file, not a layer item: run as
+# test_studio_client runs it, on a live preview the server rendered. Here a
+# branch script (run after the bridge, before the page is loaded) removes
+# every marker: the bridge counted them when it ran.
+BRIDGE_MARKS_HARNESS = BRIDGE_HARNESS.replace(
+    "vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);",
+    "document.readyState = 'loading';"
+    "vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);"
+    "document.querySelectorAll('[data-scrud-match]').forEach("
+    "(n) => n.removeAttribute('data-scrud-match'));"
+    "document.readyState = 'complete';"
+    "(document.listeners.DOMContentLoaded || []).forEach("
+    "(fn) => fn({type: 'DOMContentLoaded'}));",
+)
+
+
+def marks_message(wins, loses):
+    return {
+        "message": {"type": "scrud-preview:marks", "wins": wins, "loses": loses},
+        "origin": "*",
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_bridge_posts_marks(ui_alice_login, settings):
+    """On load the bridge posts, after the errors, the counts of the nodes
+    the preview marks as winning and losing (0 and 0 without a mark), read
+    when it runs, before the branch's scripts."""
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+    setup_wip(ui_alice_login)
+    # The object rule wins on the list and loses on each item (a less
+    # specific term than the item's class).
+    make_stylesheet("s", [("ex:TodoItem", "scrud:object"), ("object", "scrud:object")])
+    grant_items(ui_alice_login, "", UI_STYLESHEET_TYPE_URI, methods=("GET",))
+    marked = live(mark={"stylesheet": "s", "applies_to": "", "index": 1})
+    wins = marked.count('data-scrud-match="wins"')
+    loses = marked.count('data-scrud-match="loses"')
+    assert wins == 1 and loses >= 1
+    out = run_bridge(marked)
+    assert out["loaded"] == [
+        {"message": {"type": "scrud-preview:errors", "errors": []}, "origin": "*"},
+        marks_message(wins, loses),
+    ]
+    # Without a mark: none.
+    out = run_bridge(live())
+    assert out["loaded"][1:] == [marks_message(0, 0)]
+    # Read when the bridge runs: a branch script's change comes too late.
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", BRIDGE_MARKS_HARNESS, str(BRIDGE_JS)],
+        capture_output=True,
+        text=True,
+        input=json.dumps({"preview": tree(marked)}),
+    )
+    assert done.returncode == 0, done.stderr
+    loaded = json.loads(done.stdout)["loaded"]
+    assert loaded[1:] == [marks_message(wins, loses)]

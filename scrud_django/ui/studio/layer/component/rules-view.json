@@ -1,0 +1,9 @@
+{
+  "name": "studio:rules-view",
+  "engine": "jinja2",
+  "mode": "view",
+  "scopes": {
+    "*": "studio-rule"
+  },
+  "template": "<div class=\"studio-rules\">\n<h4 class=\"studio-rules-title\">Rules</h4>\n<ol class=\"studio-rule-list\">\n{%- for child in children %}\n<li class=\"studio-rule\" data-studio-rule-index=\"{{ loop.index0 }}\" tabindex=\"0\">{{ child }}</li>\n{%- endfor %}\n</ol>\n<p class=\"studio-rule-counts\" data-studio-rule-counts role=\"status\" hidden></p>\n</div>\n"
+}
