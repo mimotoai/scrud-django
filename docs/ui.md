@@ -1938,9 +1938,10 @@ before. `studio:page` keeps what every page needs (the CSRF meta tag, both
 static scripts, the CSS and JS items' links, and the chrome) and wraps the body
 in `<div class="studio" data-studio>`. The layer's CSS item `studio:studio`
 and JS items `studio:studio` (order 0), `studio:rules` (order 1, the
-[rule editor](#the-rule-editor)'s) and `studio:inspector` (order 2, the
-[preview pane and the inspector](#the-preview-pane-and-the-inspector)), the
-last two using the API the first sets up, are effective on every branch, so
+[rule editor](#the-rule-editor)'s), `studio:inspector` (order 2, the
+[preview pane and the inspector](#the-preview-pane-and-the-inspector)) and
+`studio:promote` (order 3, [promote and push pages](#promote-and-push-pages)),
+the last three using the API the first sets up, are effective on every branch, so
 every page links them: every selector of the CSS is under a `.studio` class or a `[data-studio…]` attribute, and each
 script does nothing unless the page has a `[data-studio-workbench]` element. No layer component has an inline script or
 an event handler attribute, so a `script-src 'self'` policy works. A branch
@@ -2034,9 +2035,9 @@ holds:
 
 **The strip** (`studio:status`) shows T's chain, its changed and conflict
 counts (`data-studio-changed`, `data-studio-conflict-count`), Pull
-(`actions.pull`), Push to and Propose to the parent (`actions.promote[0]`'s
-`apply` and `propose`), each only when offered, and "Browse app on this
-branch" when `browse_url` is set. Its root carries the studio's `endpoints`
+(`actions.pull`, only when offered), "Browse app on this branch" when
+`browse_url` is set, a "Promote to <target>…" panel per `actions.promote`
+entry and T's pushes (see [Promote and push pages](#promote-and-push-pages)). Its root carries the studio's `endpoints`
 as JSON (`data-studio-endpoints`). `browse_url` is linked as it is: it
 already names the published root's prefix, which is not the studio's.
 
@@ -2092,7 +2093,9 @@ and the inspector under it (see
   T as `branch`, or `T@pinned` when `pinned` is `1`; `mode`, default `view`;
   `scope` as a list; `context`; `instance`, a number when it is one, else
   `null`) with `drafts`, `mark` and `after_push` from `extra`, and submits it
-  into the frame. On a published T it sends no drafts. Without a `type`, or
+  into the frame; `extra.branch`, when given, is sent as `branch` instead
+  (the target of "Preview after push"). On a published T it sends no
+  drafts, nor with `after_push` (the server refuses drafts with it). Without a `type`, or
   without `endpoints`, nothing is submitted (it returns `false`). The
   preview is submitted on load when the state has a type.
 
@@ -2326,3 +2329,95 @@ Under it, on a working branch T (none at all on a published T):
   and `template`. On 201 it says whether the new rule wins for the node, and
   the items, the strip, the preview and the explanation are fetched again; a
   refusal shows the server's text under the form.
+
+### Promote and push pages
+
+**Promote panels.** The strip has one "Promote to <target>…" control per
+entry of T's `actions.promote` (the parent first, then the ancestors in
+`chain`; none on a published T), each a `<div class="studio-promote"
+data-studio-promote="<target>" data-studio-promote-src="<path>">` holding the
+opener (`data-studio-promote-open`, `aria-expanded`) and its panel
+(`data-studio-promote-panel`, hidden). `data-studio-promote-src` is T's push
+preview, `in_mount(api_url("ui-push-previews", T))`. The panel holds:
+
+- the review (`data-studio-promote-review`), empty at render: the push
+  preview is not embedded (embeds are limited), but loaded when the panel
+  opens, each time it opens;
+- "Preview after push" (`data-studio-after-push`);
+- Apply and Propose: the entry's `apply` and `propose` actions, as the
+  strip's other [fixed-body](#writes-from-the-browser) buttons (`hx-post` of
+  `ui-pushes` with the body the server gave, `hx-swap="none"`), labelled
+  "Apply to <target>" and "Propose to <target>", each only when offered. Apply
+  is rendered `disabled`. A user who may read the branches but not push gets
+  the review alone;
+- a reason (`data-studio-promote-reason`) and a note
+  (`data-studio-promote-note`), hidden, for the script's text.
+
+The script `studio:promote` (the layer's fourth JS item) opens and closes a
+panel on its opener and loads the review: an htmx GET of
+`data-studio-promote-src` with `?target=<target>` (URL-encoded), with
+`Scrud-UI-Scope: studio studio-push`, into the review. The layer's stylesheet
+takes the root of `UIPushPreview`
+(`http://api.openteams.com/json-ld/UIPushPreview`) in the scope
+`studio studio-push` to `studio:push-preview`, which renders `<div
+class="studio-push-preview" data-studio-push-preview>` with the counts as
+attributes (`data-studio-source`, `data-studio-target`,
+`data-studio-changes`, `data-studio-conflicts`,
+`data-studio-unreadable-changes`, `data-studio-unreadable-conflicts`), a
+summary, "N changes / N conflicts on items you can't read" when either count
+is set, the conflicts (`<li class="studio-push-conflict">`, the item and
+that it changed on the target since the source's version was based on it),
+and the changes (`<li class="studio-push-change"
+data-studio-change-action="create|update|delete">`), each with the target's
+row before and after as its fields, as text (a field the push changes is
+`studio-push-field-changed`; "Nothing" before a create, "Deleted" after a
+delete). See [What a push will change](#what-a-push-will-change).
+
+Apply waits for the review ("Apply waits for the review to load."). Once it
+has loaded, Apply is turned on when the review has no conflict: when
+`data-studio-conflicts` or `data-studio-unreadable-conflicts` is more than
+0, it stays off and the reason says how many conflicts the push has (and how
+many are on items the user can't read): a push with any conflict is refused.
+A review that could not be loaded (a 404 for a branch the user may not
+`GET`, a 400 `ui-branch-invalid`) leaves Apply off, with the server's text.
+Propose is never turned off: a proposal is reviewed again when it is
+applied. An Apply or Propose that succeeds fetches the panes again (the
+strip, and with it the panels, closed); one that is refused, for example
+with 403 `ui-push-forbidden` for an item the user may not write in the
+target, shows the server's text in the workbench's notice.
+
+"Preview after push" submits the live preview with `after_push: {"source":
+T}` and the target as `branch`, and no drafts (`ScrudStudio.submitPreview`),
+and says "The preview shows <target> after this push." Without a type in the
+URL state there is nothing to preview, and the panel says so.
+
+**The pushes** are listed under the panels (`<details
+class="studio-pushes">`), newest first, as `ui-branch-status`'s `pushes`
+lists them: `<li class="studio-push-entry" data-studio-push-state="<state>">`
+with a link, `<source> → <target>` (`restore` for a restore), to the push's
+page, `in_mount(href)` with `?ui-scope=studio`, then its state and label.
+
+**The push page** is the push's `ui-pushes` detail in the scope `studio`,
+in the mode the user gets (no `ui-mode=view`: the state form needs edit
+mode). The layer's stylesheet takes the root of `UIPush`
+(`http://api.openteams.com/json-ld/UIPush`) in the scope `studio` to
+`studio:push` (edit mode) or `studio:push-view` (view mode). Each renders
+`<div class="studio-push" data-studio-push data-studio-mode="edit|view">`
+with the push's source (`data-studio-push-source`; for a restore, "None (a
+restore of version N)"), target, state, label and result ("Version N of
+<target>", or "Not applied yet"), and, for a push with a source that is not
+yet applied (it has no `result`), an embed of
+`api_url("ui-push-previews", source)` with `?target=<target>` in the scope
+`studio studio-push`: what it will change, as the panel shows it.
+
+In edit mode (a user who may `PUT` the push), a push not yet applied also has
+a state form in the frame's `<form>`: a text input named `/state`, with a
+`<datalist>` of `proposed` and `applied`, and a Save button. Saving is the
+frame's `PUT`, which applies the push when it moves it to `applied`; as in
+any edit-mode frame, a `change` of the input also saves it (the layer's
+scripts run only on a workbench). A move the server refuses, such as one a
+workflow policy forbids (Requiring approval, under
+[Pushing and restoring](#pushing-and-restoring)), is re-rendered with the
+server's message and the submitted state ([Refused writes](#refused-writes)).
+An applied push is a record: no form, no preview. A user who may only read
+the push gets the view: no form, no Save.

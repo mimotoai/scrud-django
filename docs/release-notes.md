@@ -145,7 +145,7 @@
   collapse to rails, remembered per viewer in `localStorage`), the branch's
   items as a tree (`studio:items`: own, inherited and packaged items,
   conflicts, "Override on this branch"), a strip (`studio:status`: chain,
-  counts, Pull, Push and Propose to the parent, the browse link) and a bare
+  counts, Pull, promote panels, the browse link) and a bare
   live preview in a sandboxed frame. The workbench state is in the URL's
   query. The studio link now points at the workbench in view mode
   (`&ui-mode=view`).
@@ -202,6 +202,24 @@
 * `ui-branch-status`'s `endpoints` also have `sample` (`GET
   types/<slug>/sample`, a template with `{slug}`), the `href` of a sample's
   frame in a preview.
+* Promote in the self-hosted studio: the workbench's strip has a "Promote to
+  <target>…" panel for each entry of `actions.promote` (the parent, then the
+  ancestors in the chain). Opening one loads the push preview into it
+  (`studio:push-preview`, in the scope `studio studio-push`): the changes,
+  each with its item before and after, the conflicts, and the changes and
+  conflicts on items the user can't read, counted. "Preview after push"
+  shows the target with the branch pushed in the live preview. Apply and
+  Propose are the entry's own actions; Apply stays off, with the reason,
+  until the review is loaded and shows no conflict, readable or not. The
+  strip lists the branch's pushes, each linked to its page in the scope
+  `studio` (`studio:push`, and `studio:push-view` for a user who may not
+  `PUT` it): source, target, state, label and result, the push preview of a
+  push not yet applied, and a state input (`proposed`, `applied`) saved by
+  the frame's `PUT`, whose refusal (a workflow policy's, for example) is
+  re-rendered with the server's message. The new layer JS item
+  `studio:promote` (order 3) does this, and `ScrudStudio.submitPreview`
+  takes a `branch` (the branch to preview instead of the workbench's) and
+  sends no drafts with `after_push`.
 
 ### Changed
 

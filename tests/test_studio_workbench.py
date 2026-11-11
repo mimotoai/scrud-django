@@ -34,7 +34,7 @@ WORKBENCH = "?ui-scope=studio&ui-mode=view"
 UIBRANCH = "http://api.openteams.com/json-ld/UIBranch"
 UIBRANCH_ITEMS = "http://api.openteams.com/json-ld/UIBranchItems"
 UIBRANCH_STATUS = "http://api.openteams.com/json-ld/UIBranchStatus"
-PROMOTE = ("Push to", "Propose to")
+PROMOTE = ("Push to", "Propose to", "Apply to", "Promote to")
 WRITE_ATTRIBUTES = ("hx-post", "hx-put", "hx-patch", "hx-delete", "data-scrud-json")
 
 
@@ -378,7 +378,12 @@ def test_reader_without_ui_grants_sees_no_write_controls(studio_layer, ui_alice_
     assert all(o["override"] is None for _c, o, _li in found.values())
     assert page.writes() == []
     assert "Override on this branch" not in page.buttons()
-    assert not [b for b in page.buttons() if b == "Pull" or b.startswith(PROMOTE)]
+    # The review of a push into main is a read (the push preview, loaded
+    # when its panel opens): its opener is offered, with no Pull, Apply or
+    # Propose.
+    assert [b for b in page.buttons() if b == "Pull" or b.startswith(PROMOTE)] == [
+        "Promote to main…"
+    ]
     assert page.one("data-studio-changed").attrs["data-studio-changed"] == "0"
     count = page.one("data-studio-conflict-count")
     assert count.attrs["data-studio-conflict-count"] == "0"
@@ -416,7 +421,7 @@ def test_workbench_hrefs_stay_in_mount(studio_layer, ui_alice_login):
     assert hrefs and all(h.startswith(STUDIO_ROOT) for h in hrefs), hrefs
     for embed in page.having("data-studio-embed"):
         assert embed.attrs["data-studio-src"].startswith(STUDIO_ROOT), embed.attrs
-    # Every write control: the overrides, Pull, and Push and Propose to main.
+    # Every write control: the overrides, Pull, and Apply and Propose to main.
     writes = page.writes()
     urls = [
         e.attrs[f"hx-{m}"]
@@ -431,8 +436,11 @@ def test_workbench_hrefs_stay_in_mount(studio_layer, ui_alice_login):
     assert pull.attrs["hx-put"] == STUDIO_ROOT + f"ui-branches/{alice_wip.pk}/"
     assert json.loads(pull.attrs["data-scrud-body"])["pull"] is True
     assert pull.attrs["data-scrud-etag"].startswith('"')
-    for label, state in (("Push to main", "applied"), ("Propose to main", "proposed")):
+    # Apply and Propose sit in the "Promote to main…" panel; Apply is off
+    # until the panel's review shows no conflict (studio:promote).
+    for label, state in (("Apply to main", "applied"), ("Propose to main", "proposed")):
         button = by_label[label]
+        assert ("disabled" in button.attrs) is (state == "applied")
         assert button.attrs["hx-post"] == STUDIO_ROOT + "ui-pushes/"
         assert button.attrs["hx-swap"] == "none"
         assert button.attrs["data-scrud-etag"] == ""

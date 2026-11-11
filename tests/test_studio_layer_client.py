@@ -2207,3 +2207,292 @@ out.url = fetched()[0];
     explained = Http.response.json()
     assert explained["pointer"] == pointer
     assert explained["terms"] == ["string"]
+
+
+# ---- promote (studio:promote) -----------------------------------------------
+
+
+def test_promote_js_inert_without_workbench():
+    require_node()
+    out = run(with_workbench=False, file="promote.json")
+    assert out["queries"] == ["[data-studio-workbench]"]
+    assert out["touched"] == ["document.querySelector"]
+    assert out["listeners"] == [] and out["fetches"] == 0
+    assert out["attributes"] == {}
+
+
+# The strip's promote panels as studio:status renders them, one per
+# ``actions.promote`` entry (main: Apply and Propose; "shop & co": Propose
+# only); an htmx.ajax that records the requests into a panel's review
+# (`out.reviews`); `answer(panel, ...)` swaps the push preview (or a
+# refusal) in as htmx does and fires the request's end; then promote.js
+# (argv[5]), after studio.js and rules.js.
+PROMOTE_STUB = r"""
+out.reviews = [];
+const promotes = el('div', {'class': 'studio-promotes'}, status);
+function promoteBox(target, index, {apply = true} = {}) {
+  const box = el('div', {'class': 'studio-promote', 'data-studio-promote': target,
+    'data-studio-promote-src': '/workbench/ui-push-previews/alice-wip/'}, promotes);
+  const opener = el('button', {type: 'button', 'class': 'studio-promote-open',
+    'data-studio-promote-open': '', 'aria-expanded': 'false',
+    'aria-controls': 'studio-promote-' + index}, box);
+  opener.text = 'Promote to ' + target + '…';
+  const panel = el('div', {'class': 'studio-promote-panel',
+    'data-studio-promote-panel': '', id: 'studio-promote-' + index, hidden: ''}, box);
+  const review = el('div', {'class': 'studio-promote-review',
+    'data-studio-promote-review': ''}, panel);
+  const reason = el('p', {'class': 'studio-promote-reason',
+    'data-studio-promote-reason': '', role: 'status', hidden: ''}, panel);
+  const note = el('p', {'class': 'studio-promote-note', 'data-studio-promote-note': '',
+    role: 'status', hidden: ''}, panel);
+  const actions = el('div', {'class': 'studio-promote-actions'}, panel);
+  const after = el('button', {type: 'button', 'class': 'studio-after-push',
+    'data-studio-after-push': ''}, actions);
+  const body = (state) => JSON.stringify({source: 'alice-wip', target, state,
+    rbac_context: ''});
+  const applyButton = apply ? el('button', {type: 'button', 'class': 'studio-apply',
+    'hx-post': '/workbench/ui-pushes/', 'hx-ext': 'scrud-json', 'hx-swap': 'none',
+    'data-scrud-json': 'fixed', 'data-scrud-body': body('applied'),
+    'data-scrud-etag': '', disabled: ''}, actions) : null;
+  const propose = el('button', {type: 'button', 'class': 'studio-propose',
+    'hx-post': '/workbench/ui-pushes/', 'hx-ext': 'scrud-json', 'hx-swap': 'none',
+    'data-scrud-json': 'fixed', 'data-scrud-body': body('proposed'),
+    'data-scrud-etag': ''}, actions);
+  return {box, opener, panel, review, reason, note, after, apply: applyButton, propose};
+}
+const toMain = promoteBox('main', 1);
+const toShop = promoteBox('shop & co', 2, {apply: false});
+const ajaxBefore = htmx.ajax;
+htmx.ajax = function (verb, path, context) {
+  const review = context.target;
+  if (!review.hasAttribute('data-studio-promote-review')) {
+    return ajaxBefore(verb, path, context);
+  }
+  out.reviews.push({verb, path,
+    panel: review.closest('[data-studio-promote]').getAttribute('data-studio-promote'),
+    source: context.source === review, swap: context.swap, headers: context.headers});
+};
+// The review's answer, as htmx gives it: a 2xx (or a 400, which scrud-ui.js
+// swaps) is swapped in; then the request ends.
+function answer(p, {status = 200, conflicts = '0', unreadable = '0', preview = true,
+                    text = ''} = {}) {
+  const swapped = status < 300 || status === 400;
+  if (swapped) {
+    while (p.review.firstChild) p.review.removeChild(p.review.firstChild);
+    const frame = el('div', {'class': 'scrud-resource'}, p.review);
+    if (preview) {
+      el('div', {'class': 'studio-push-preview', 'data-studio-push-preview': '',
+        'data-studio-conflicts': conflicts,
+        'data-studio-unreadable-conflicts': unreadable}, frame);
+    }
+    fire(p.review, 'htmx:afterSwap', {target: p.review});
+  }
+  fire(p.review, 'htmx:afterRequest', {elt: p.review, successful: status < 300,
+    requestConfig: {verb: 'get'}, xhr: {status, responseText: text,
+    getResponseHeader: () => 'application/problem+json'}});
+}
+const shown = (node) => [node.hasAttribute('hidden'), node.textContent];
+vm.runInContext(process.argv[5], context);
+"""
+
+
+def promote_scenario(script, **opts):
+    """Run studio.js, rules.js and promote.js on the stub workbench with the
+    strip's promote panels (`PROMOTE_STUB`), then `script`; return what it
+    printed (JSON)."""
+    require_node()
+    done = subprocess.run(
+        [
+            "node",
+            "-e",
+            WORKBENCH + PROMOTE_STUB + script + "\nconsole.log(JSON.stringify(out));",
+            layer_source(),
+            json.dumps(opts),
+            layer_source("rules.json"),
+            SCRUD_UI_JS.read_text(),
+            layer_source("promote.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+REVIEW_SRC = "/workbench/ui-push-previews/alice-wip/"
+APPLY_LOADING = "Apply waits for the review to load."
+
+
+def review_fetch(target, query):
+    return {
+        "verb": "GET",
+        "path": f"{REVIEW_SRC}?target={query}",
+        "panel": target,
+        "source": True,
+        "swap": "innerHTML",
+        "headers": {"Scrud-UI-Scope": "studio studio-push"},
+    }
+
+
+def test_promote_panel_loads_on_demand():
+    out = promote_scenario(
+        r"""
+out.load = [out.reviews.slice(), shown(toMain.panel)[0], shown(toShop.panel)[0]];
+click(toMain.opener);
+out.opened = [shown(toMain.panel)[0], toMain.opener.getAttribute('aria-expanded'),
+  out.reviews.slice(), toMain.apply.hasAttribute('disabled'), shown(toMain.reason),
+  shown(toShop.panel)[0]];
+answer(toMain);
+out.answered = [toMain.apply.hasAttribute('disabled'), shown(toMain.reason)];
+click(toMain.opener);
+out.closed = [shown(toMain.panel)[0], toMain.opener.getAttribute('aria-expanded'),
+  out.reviews.length];
+click(toMain.opener);
+out.again = [out.reviews.length, toMain.apply.hasAttribute('disabled'),
+  shown(toMain.reason)];
+click(toShop.opener);
+out.shop = [out.reviews[out.reviews.length - 1], shown(toShop.panel)[0]];
+answer(toShop);
+out.shopAnswered = shown(toShop.reason);
+""",
+        search=BASE,
+    )
+    # Nothing is loaded until a panel opens.
+    assert out["load"] == [[], True, True]
+    shown, expanded, reviews, disabled, reason, shop_hidden = out["opened"]
+    assert shown is False and expanded == "true" and shop_hidden is True
+    assert reviews == [review_fetch("main", "main")]
+    # Apply waits for the review.
+    assert disabled is True and reason == [False, APPLY_LOADING]
+    assert out["answered"] == [False, [True, ""]]
+    # Closing hides it and loads nothing; opening it again loads it again.
+    assert out["closed"] == [True, "false", 1]
+    assert out["again"] == [2, True, [False, APPLY_LOADING]]
+    # The target is URL-encoded.
+    assert out["shop"] == [review_fetch("shop & co", "shop%20%26%20co"), False]
+    # A panel without Apply has nothing to wait for.
+    assert out["shopAnswered"] == [True, ""]
+
+
+def test_apply_disabled_with_conflicts_in_client():
+    out = promote_scenario(
+        r"""
+const cases = [
+  {conflicts: '1'},
+  {unreadable: '2'},
+  {conflicts: '1', unreadable: '1'},
+  {conflicts: 'x'},
+  {preview: false},
+  {status: 404, text: '{"title": "Not Found", "detail": "No such branch."}'},
+  {status: 400, preview: false,
+   text: '{"title": "Invalid branch", "detail": "main has no parent."}'},
+  {},
+];
+click(toMain.opener);
+out.cases = cases.map((c) => {
+  click(toMain.opener);
+  click(toMain.opener);
+  answer(toMain, c);
+  return [toMain.apply.hasAttribute('disabled'), shown(toMain.reason),
+    toMain.propose.hasAttribute('disabled')];
+});
+// A refused apply: the server's text in the workbench's notice.
+fire(toMain.apply, 'htmx:afterRequest', {elt: toMain.apply, successful: false,
+  requestConfig: {verb: 'post'}, xhr: {status: 403,
+  responseText: '{"title": "Forbidden", "detail": "You may not write row in main."}',
+  getResponseHeader: () => 'application/problem+json'}});
+out.refused = [notice.textContent, notice.hasAttribute('hidden')];
+""",
+        search=BASE,
+    )
+    refused_for = (
+        "Apply is off: this push has {}, and a push with any conflict is"
+        " refused. Pull, resolve them, and push again."
+    )
+    unloaded = "Apply is off: the review could not be loaded."
+    assert out["cases"] == [
+        [True, [False, refused_for.format("1 conflict")], False],
+        [
+            True,
+            [False, refused_for.format("2 conflicts on items you can't read")],
+            False,
+        ],
+        [
+            True,
+            [False, refused_for.format("2 conflicts (1 on items you can't read)")],
+            False,
+        ],
+        [True, [False, unloaded], False],
+        [True, [False, unloaded], False],
+        [
+            True,
+            [False, unloaded + " Refused (HTTP 404): Not Found: No such branch."],
+            False,
+        ],
+        [
+            True,
+            [
+                False,
+                unloaded + " Refused (HTTP 400): Invalid branch: main has no parent.",
+            ],
+            False,
+        ],
+        [False, [True, ""], False],
+    ]
+    assert out["refused"] == [
+        "Refused (HTTP 403): Forbidden: You may not write row in main.",
+        False,
+    ]
+
+
+def test_after_push_preview_request_shape():
+    out = promote_scenario(
+        r"""
+reset();
+click(toMain.opener);
+click(toMain.after);
+out.after = [out.submits.map((s) => s.request), shown(toMain.note)];
+reset();
+out.direct = S.submitPreview({after_push: {source: 'alice-wip'}, branch: 'shop',
+  drafts: [{kind: 'css', content: {name: 'x'}}]});
+out.directSent = out.submits.map((s) => s.request);
+reset();
+S.submitPreview({drafts: [{kind: 'css', content: {name: 'x'}}]});
+out.plain = out.submits.map((s) => s.request);
+""",
+        search=BASE + "&type=todo-lists&mode=edit&pinned=1",
+    )
+    after, note = out["after"]
+    # The target as the branch, T as the source; never drafts (the server
+    # refuses after_push with drafts), whatever `pinned` says.
+    assert after == [
+        preview_request(
+            branch="main", mode="edit", after_push={"source": "alice-wip"}, drafts=[]
+        )
+    ]
+    assert note == [False, "The preview shows main after this push."]
+    assert out["direct"] is True
+    assert out["directSent"] == [
+        preview_request(branch="shop", mode="edit", after_push={"source": "alice-wip"})
+    ]
+    # Without `after_push`, the preview is T's as before.
+    assert out["plain"] == [
+        preview_request(
+            branch="alice-wip@pinned",
+            mode="edit",
+            drafts=[{"kind": "css", "content": {"name": "x"}}],
+        )
+    ]
+    # Without a type there is nothing to preview: the panel says so.
+    out = promote_scenario(
+        r"""
+click(toShop.opener);
+click(toShop.after);
+out.none = [out.submits.length, shown(toShop.note)];
+""",
+        search=BASE,
+    )
+    assert out["none"] == [
+        0,
+        [False, "Choose a type to preview shop & co after this push."],
+    ]

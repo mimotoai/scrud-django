@@ -77,6 +77,18 @@
     {
       "select": "studio studio-editor studio-field integer",
       "component": "studio:field"
+    },
+    {
+      "select": "studio studio-push http://api.openteams.com/json-ld/UIPushPreview",
+      "component": "studio:push-preview"
+    },
+    {
+      "select": "studio http://api.openteams.com/json-ld/UIPush",
+      "component": "studio:push"
+    },
+    {
+      "select": "studio http://api.openteams.com/json-ld/UIPush",
+      "component": "studio:push-view"
     }
   ]
 }
