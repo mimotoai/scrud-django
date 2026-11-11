@@ -462,3 +462,43 @@ def test_bootstrap_strip_unchanged(ui_alice_login):
     ]
     assert browse == status["browse_url"]
     assert css == [i["name"] for i in items()["items"] if i["kind"] == "css"]
+
+
+def test_branch_status_chain_names_are_branch_names():
+    """In the status's JSON-LD context, a chain entry's ``name`` is a branch
+    name (``UIBranchName``, as the picker's), a changed item's an item name
+    (``UIItemName``)."""
+    import importlib.resources
+    import json
+
+    from rdflib import Graph, URIRef
+
+    context = json.loads(
+        importlib.resources.files("scrud_django.ui.studio")
+        .joinpath("documents/UIBranchStatus-ld.json")
+        .read_text()
+    )
+    document = {
+        "@context": context,
+        "@id": "http://example.org/status",
+        "branch": "feat",
+        "chain": [{"name": "feat", "published": False}],
+        "changed": [{"kind": "component", "name": "row"}],
+        "conflicts": [{"kind": "component", "name": "clash", "with": "parent"}],
+    }
+    graph = Graph().parse(data=json.dumps(document), format="json-ld")
+
+    def names(term):
+        found = set()
+        for _s, _p, entry in graph.triples((None, URIRef(OT + term), None)):
+            for _e, predicate, value in graph.triples((entry, None, None)):
+                if predicate in (
+                    URIRef(OT + "UIBranchName"),
+                    URIRef(OT + "UIItemName"),
+                ):
+                    found.add((str(predicate)[len(OT) :], str(value)))
+        return found
+
+    assert names("UIBranchChain") == {("UIBranchName", "feat")}
+    assert names("UIBranchChanged") == {("UIItemName", "row")}
+    assert names("UIBranchConflicts") == {("UIItemName", "clash")}
