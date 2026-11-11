@@ -29,3 +29,12 @@ class UILayerBadConfig(AppConfig):
     name = "tests.ui_layer_bad"
     label = "tests_ui_layer_bad"
     scrud_ui_layer = {"prefix": "layerbad:", "package": "tests.ui_layer_bad"}
+
+
+class UILayerInvalidConfig(AppConfig):
+    """A UI layer whose files have content the viewsets refuse, installed
+    by the test of ``scrud_django_ui.E002``'s content checks."""
+
+    name = "tests.ui_layer_invalid"
+    label = "tests_ui_layer_invalid"
+    scrud_ui_layer = {"prefix": "layerinvalid:", "package": "tests.ui_layer_invalid"}

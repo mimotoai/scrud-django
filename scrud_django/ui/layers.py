@@ -17,12 +17,14 @@ Layer items are not rows: they show on the virtual branch `LAYER_BRANCH`,
 which `effective.effective_rows` and `effective.parent_state` put at the
 bottom of every chain, so a branch overrides one by name as it does any
 inherited item. A file that is not valid is a system check Error
-(`check_layers`, ``scrud_django_ui.E002``) and is left out."""
+(`check_layers`, ``scrud_django_ui.E002``), also logged at ERROR when the
+layers are read, and is left out."""
 
 import copy
 import hashlib
 import importlib.resources
 import json
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -35,6 +37,8 @@ from django.core.signals import setting_changed
 
 from scrud_django.ui.branches import ITEM_KINDS
 from scrud_django.ui.branches.model import Branch, branch_of, item_key, kind_of
+
+logger = logging.getLogger(__name__)
 
 CHECK_ID = "scrud_django_ui.E002"
 
@@ -195,8 +199,12 @@ def check_layers(app_configs=None, **kwargs) -> list[checks.CheckMessage]:
     is unreadable or not a JSON object, whose name is not a valid name with
     its layer's prefix, that has a branch field, that has another file's
     name, a stylesheet with a non-empty ``applies_to``, or a CSS or JS item
-    whose text has the closing tag a viewset refuses. Such a file is left
-    out."""
+    whose text has the closing tag a viewset refuses; and one its viewset
+    would refuse otherwise: its kind's JSON Schema, a field its kind needs,
+    a component's template that does not compile (`compile_template`), a
+    stylesheet rule's selector that does not parse. A folder that cannot be
+    listed (``OSError``) is one too. Such a file is left out. Each is also
+    logged at ERROR, once, when the layers are read."""
     return [*_declared()[1], *_loaded()[1]]
 
 
@@ -248,6 +256,7 @@ def _declared() -> tuple[tuple[UILayer, ...], tuple[checks.Error, ...]]:
             continue
         prefixes.add(prefix)
         layers.append(UILayer(label=config.label, prefix=prefix, package=package))
+    _log(errors)
     return tuple(layers), tuple(errors)
 
 
@@ -269,13 +278,26 @@ def _loaded() -> tuple[dict[str, dict[tuple, tuple[str, dict]]], tuple]:
             )
             continue
         for kind in ITEM_KINDS:
-            folder = root.joinpath(kind)
-            if not folder.is_dir():
+            try:
+                folder = root.joinpath(kind)
+                if not folder.is_dir():
+                    continue
+                files = sorted(
+                    (
+                        entry
+                        for entry in folder.iterdir()
+                        if entry.name.endswith(".json")
+                    ),
+                    key=lambda entry: entry.name,
+                )
+            except OSError as error:
+                errors.append(
+                    _error(
+                        f"UI layer folder {layer.package}/{kind} cannot be "
+                        f"listed: {error}"
+                    )
+                )
                 continue
-            files = sorted(
-                (entry for entry in folder.iterdir() if entry.name.endswith(".json")),
-                key=lambda entry: entry.name,
-            )
             for entry in files:
                 where = f"UI layer file {layer.package}/{kind}/{entry.name}"
                 found = _read(kind, layer, entry, where)
@@ -290,7 +312,16 @@ def _loaded() -> tuple[dict[str, dict[tuple, tuple[str, dict]]], tuple]:
                     )
                     continue
                 items[kind][key] = (etag, content)
+    _log(errors)
     return items, tuple(errors)
+
+
+def _log(errors) -> None:
+    """Log each of `errors` at ERROR: what the check reports is also said
+    where the layers are read (once, as they are), for a deployment that
+    runs no checks."""
+    for error in errors:
+        logger.error("scrud-ui: %s", error.msg)
 
 
 def _read(kind, layer: UILayer, entry, where) -> tuple[str, dict] | str:
@@ -326,4 +357,66 @@ def _read(kind, layer: UILayer, entry, where) -> tuple[str, dict] | str:
     content = {**packaged, "branch": LAYER_BRANCH_NAME, "rbac_context": ""}
     if kind == "stylesheet":
         content["applies_to"] = ""
+    refused = _refused(kind, content)
+    if refused is not None:
+        return refused
     return etag, content
+
+
+# The JSON Schema document of each kind, and the fields an item of that
+# kind needs (as its viewset requires them of an item that is not a
+# deletion marker, which a layer item never is).
+_SCHEMAS = {
+    "component": "UIComponent-schema.json",
+    "stylesheet": "UIStylesheet-schema.json",
+    "css": "UICss-schema.json",
+    "js": "UIJs-schema.json",
+}
+_REQUIRED = {
+    "component": ("engine", "mode", "template"),
+    "stylesheet": ("rules",),
+    "css": ("css",),
+    "js": ("js",),
+}
+
+
+@cache
+def _schema_validator(kind: str):
+    from scrud_django.validators import compile_json_schema
+
+    document = importlib.resources.files("scrud_django.ui.documents").joinpath(
+        _SCHEMAS[kind]
+    )
+    return compile_json_schema(json.loads(document.read_text(encoding="utf-8")))
+
+
+def _refused(kind: str, content: dict) -> str | None:
+    """Why the item of `kind` with `content` is one its viewset would refuse
+    (its kind's JSON Schema, a field it needs, a component's template that
+    does not compile, a stylesheet rule's selector that does not parse), or
+    ``None``."""
+    import fastjsonschema
+
+    from scrud_django.ui.engines import TemplateCompileError, compile_template
+    from scrud_django.ui.selectors import SelectorError, parse_selector
+
+    try:
+        _schema_validator(kind)(content)
+    except fastjsonschema.JsonSchemaValueException as error:
+        return f"its JSON Schema refuses it: {error.message}."
+    missing = [name for name in _REQUIRED[kind] if name not in content]
+    if missing:
+        return f"it has no {', '.join(repr(name) for name in missing)}."
+    if kind == "component":
+        try:
+            compile_template(content["engine"], content["template"])
+        except TemplateCompileError as error:
+            return f"its template does not compile: {error}"
+    if kind == "stylesheet":
+        prefixes = dict(content.get("prefixes", {}))
+        for index, rule in enumerate(content["rules"]):
+            try:
+                parse_selector(rule["select"], prefixes)
+            except SelectorError as error:
+                return f"rule {index}'s selector {rule['select']!r}: {error}"
+    return None

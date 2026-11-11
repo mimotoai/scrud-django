@@ -8,6 +8,7 @@ component, a stylesheet whose rule takes the same lists to it, CSS and JS) and
 import hashlib
 import importlib.resources
 import json
+import logging
 import re
 
 import pytest
@@ -43,6 +44,7 @@ from .test_ui_http import HTML, detail_url, html, make_component, make_styleshee
 LAYER_APP = "tests.apps.UILayerTestConfig"
 MORE_APP = "tests.apps.UILayerMoreConfig"
 BAD_APP = "tests.apps.UILayerBadConfig"
+INVALID_APP = "tests.apps.UILayerInvalidConfig"
 EX = "http://example.org/todo#"
 TERMS = [TypeTerm(iri=EX + "TodoList"), TypeTerm(schema_type="object")]
 # The suite layer's rule's output.
@@ -422,6 +424,108 @@ def test_layer_check_reports_bad_files():
         assert len(layer_rows(UI_STYLESHEET_TYPE_URI)) == 1
         assert layer_rows(UI_CSS_TYPE_URI) == []
     assert check_layers(None) == []
+
+
+@pytest.mark.django_db
+def test_layer_check_validates_content_as_the_viewsets_do():
+    """A layer file the viewsets would refuse is an E002 and left out: one
+    its kind's JSON Schema refuses, one without the fields its kind needs,
+    a component whose template does not compile, and a stylesheet whose
+    rule's selector does not parse. So the runtime's fallbacks (a skipped
+    rule, a component that fails to compile) never apply to a packaged
+    item."""
+    with installed(INVALID_APP):
+        errors = check_layers(None)
+        assert {error.id for error in errors} == {"scrud_django_ui.E002"}
+        text = "\n".join(error.msg for error in errors)
+        by_file = {
+            name: [error.msg for error in errors if f"/{name}" in error.msg]
+            for name in (
+                "component/engine.json",
+                "component/missing.json",
+                "component/django.json",
+                "component/jinja.json",
+                "stylesheet/selector.json",
+                "stylesheet/rule.json",
+                "css/number.json",
+            )
+        }
+        assert all(len(found) == 1 for found in by_file.values()), text
+        assert len(errors) == len(by_file), text
+        assert "JSON Schema" in by_file["component/engine.json"][0]
+        assert "'template'" in by_file["component/missing.json"][0]
+        assert "does not compile" in by_file["component/django.json"][0]
+        assert "does not compile" in by_file["component/jinja.json"][0]
+        assert "'1bad'" in by_file["stylesheet/selector.json"][0]
+        assert "JSON Schema" in by_file["stylesheet/rule.json"][0]
+        assert "JSON Schema" in by_file["css/number.json"][0]
+        rows = layer_rows(UI_COMPONENT_TYPE_URI)
+        assert [content["name"] for _pk, _etag, content in rows] == [
+            "layerinvalid:good"
+        ]
+        assert [c["name"] for _p, _e, c in layer_rows(UI_STYLESHEET_TYPE_URI)] == [
+            "layertest:sheet"
+        ]
+        assert layer_rows(UI_CSS_TYPE_URI) == []
+
+
+def test_layer_errors_are_logged_once_when_loaded(caplog):
+    """Each E002 is also logged at ERROR when the layers are read (once:
+    they are read once), so a deployment that runs no checks still says
+    why an item is missing."""
+    with installed(BAD_APP, INVALID_APP):
+        with caplog.at_level(logging.ERROR, logger="scrud_django.ui.layers"):
+            layer_rows(UI_COMPONENT_TYPE_URI)
+            layer_rows(UI_STYLESHEET_TYPE_URI)
+            installed_layers()
+        logged = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "scrud_django.ui.layers" and r.levelno == logging.ERROR
+        ]
+        assert sorted(logged) == sorted(
+            f"scrud-ui: {error.msg}" for error in check_layers(None)
+        )
+        assert len(logged) == 10
+
+
+def test_unreadable_layer_folder_is_an_error(monkeypatch):
+    """A layer folder that cannot be listed (an ``OSError``) is an E002 for
+    that folder, not an exception at first use: the layer's other folders
+    still load."""
+    real = importlib.resources.files
+
+    class Unlistable:
+        def __init__(self, path):
+            self.path = path
+
+        def joinpath(self, name):
+            inner = self.path.joinpath(name)
+            if name == "component":
+                return Unlistable(inner)
+            return inner
+
+        def is_dir(self):
+            return True
+
+        def iterdir(self):
+            raise PermissionError(13, "Permission denied", str(self.path))
+
+    def files(package):
+        root = real(package)
+        return Unlistable(root) if package == "tests.ui_layer_more" else root
+
+    monkeypatch.setattr(importlib.resources, "files", files)
+    with installed(MORE_APP):
+        errors = check_layers(None)
+        assert [error.id for error in errors] == ["scrud_django_ui.E002"]
+        assert "tests.ui_layer_more/component" in errors[0].msg
+        assert "Permission denied" in errors[0].msg
+        assert layer_rows(UI_COMPONENT_TYPE_URI) == []
+        assert [c["name"] for _p, _e, c in layer_rows(UI_STYLESHEET_TYPE_URI)] == [
+            "layertest:sheet",
+            "layermore:sheet",
+        ]
 
 
 @pytest.mark.parametrize(
