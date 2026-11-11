@@ -691,7 +691,11 @@ the stored resource, never from the request. Policy condition messages are
 shown only to a user who may read the stored resource, and only in HTML; the
 JSON error bodies are unchanged. A stylesheet whose rule has a selector that does not parse is a 400 problem
 with `name: "rules[<i>].select"` (the field, as JSON Schema's errors name
-theirs), so the re-render shows the message beside rule `<i>`. A 412 (PUT or DELETE) shows a notice and reloads
+theirs), so the re-render shows the message beside rule `<i>`. So is a
+`ui-branches` write refused for its `prefix` (a malformed one, one another
+branch has, or one that overlaps another branch's or the API's URLs: 400
+`ui-branch-invalid` with `name: "prefix"`).
+A 412 (PUT or DELETE) shows a notice and reloads
 the frame with the current state, and so does a 409 DELETE.
 
 ## Computed resource types
@@ -1940,8 +1944,10 @@ in `<div class="studio" data-studio>`. The layer's CSS item `studio:studio`
 and JS items `studio:studio` (order 0), `studio:rules` (order 1, the
 [rule editor](#the-rule-editor)'s), `studio:inspector` (order 2, the
 [preview pane and the inspector](#the-preview-pane-and-the-inspector)) and
-`studio:promote` (order 3, [promote and push pages](#promote-and-push-pages)),
-the last three using the API the first sets up, are effective on every branch, so
+`studio:promote` (order 3, [promote and push pages](#promote-and-push-pages))
+and `studio:branch` (order 4, the
+[branch settings](#history-restore-and-branch-settings)), the last four using
+the API the first sets up, are effective on every branch, so
 every page links them: every selector of the CSS is under a `.studio` class or a `[data-studio…]` attribute, and each
 script does nothing unless the page has a `[data-studio-workbench]` element,
 with one exception: on a push's page (a `[data-studio-push]` element, see
@@ -2004,6 +2010,8 @@ component `studio:workbench`, which renders:
   data-studio-branch="<T>" data-studio-published="true|false">`; T is
   published when it is `main` or its content has a `prefix`;
 - a top bar with T's name and the Items, Editor and Preview toggles;
+- "Branch settings" and "New branch" (see
+  [History, restore and branch settings](#history-restore-and-branch-settings));
 - a notice (`data-studio-notice`, `role="alert"`, hidden until a write is
   refused);
 - three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`;
@@ -2012,8 +2020,9 @@ component `studio:workbench`, which renders:
 The Items pane embeds `api_url("ui-branch-items", T)` in the scope
 `studio studio-items`, which the layer renders with `studio:items`; the strip
 embeds `api_url("ui-branch-status", T)` in `studio studio-status`
-(`studio:status`). Each embedding element carries `data-studio-embed`
-(`items`, `status`), `data-studio-src` (the path as the page's prefix serves
+(`studio:status`); the branch settings embed T itself. Each embedding
+element carries `data-studio-embed` (`items`, `status`, `branch`),
+`data-studio-src` (the path as the page's prefix serves
 it, `in_mount`) and `data-studio-scope` (its scope chain), from which the
 script fetches it again. The panes read T's studio data as the user's own
 JSON would, so items the user may not read are absent, and a write control
@@ -2040,8 +2049,12 @@ holds:
 counts (`data-studio-changed`, `data-studio-conflict-count`), Pull
 (`actions.pull`, only when offered), "Browse app on this branch" when
 `browse_url` is set, a "Promote to <target>…" panel per `actions.promote`
-entry and T's pushes (see [Promote and push pages](#promote-and-push-pages)). Its root carries the studio's `endpoints`
-as JSON (`data-studio-endpoints`). `browse_url` is linked as it is: it
+entry, T's pushes (see [Promote and push pages](#promote-and-push-pages))
+and T's history (see
+[History, restore and branch settings](#history-restore-and-branch-settings)).
+Its root carries the studio's `endpoints` as JSON (`data-studio-endpoints`),
+and `published` and `may_publish` as `data-studio-published` and
+`data-studio-may-publish` (`true` or `false`). `browse_url` is linked as it is: it
 already names the published root's prefix, which is not the studio's.
 
 Every action button is a [fixed-body element](#writes-from-the-browser):
@@ -2427,3 +2440,103 @@ workflow policy forbids (Requiring approval, under
 server's message and the submitted state ([Refused writes](#refused-writes)).
 An applied push is a record: no form, no preview. A user who may only read
 the push gets the view: no form, no Save.
+
+### History, restore and branch settings
+
+**History.** The strip lists T's `versions` (`ui-branch-status`'s latest 20
+the user may read, newest first) under `<details class="studio-versions">`:
+each `<li class="studio-version-entry" data-studio-version-number="<N>">`
+links "Version N" to the version's page, `in_mount(href)` with
+`?ui-scope=studio&ui-mode=view` (a version is read-only). When the strip's
+`may_write` is true (T is a working branch the user may `PUT`), the link's
+scope is `studio,studio-restore` instead: the strip tells the version's page
+that it may offer the restore, which the page cannot tell itself (a version
+does not say whether its branch is published now).
+
+**A version's page** is its `ui-branch-versions` detail; the layer's
+stylesheet takes the root of `UIBranchVersion`
+(`http://api.openteams.com/json-ld/UIBranchVersion`) in the scope `studio` to
+`studio:version`: `<div class="studio-version" data-studio-version
+data-studio-branch="<T>" data-studio-number="<N>">`, the ancestors' versions
+it was resolved against, and its items by kind (components, stylesheets, CSS,
+JavaScript), each `<li class="studio-version-item"
+data-studio-version-item="<name>">` with its template, CSS or JavaScript as
+text (a stylesheet's rules as `select → component`), and "deleted on this
+branch" for a deletion marker. Only the items the user may read are listed,
+as the version's JSON lists them.
+
+**Restore.** In the scope `studio studio-restore` (and never for `main`), the
+page has "Restore to this version", a
+[fixed-body](#writes-from-the-browser) button: a `POST` to
+`in_mount(api_url("ui-pushes"))` of `{"source": null, "target": T,
+"restore": N, "state": "applied", "rbac_context": <T's context>}`, T's name
+and context taken from the version's own content, with
+`data-scrud-etag=""`. It sends `Scrud-UI-Scope: studio` and `Scrud-UI-Mode:
+view` (`hx-headers`), and its answer goes into the result below it
+(`data-studio-restore-result`): the restore push as `studio:push-view` shows
+it, "Version M of T", T's next version, once applied (see
+[Pushing and restoring](#pushing-and-restoring): history is kept). The page
+can't tell whether the user may `POST` the restore, so it offers it to
+whoever the strip told it to, and a refused restore (for example 403, a user
+who may write T but not create pushes in its context) shows the server's
+notice there. The version's page is outside the workbench: no studio script
+runs there; go back to the workbench to see T's new state.
+
+**Branch settings.** The workbench has a "Branch settings" panel
+(`<details data-studio-branch-panel>`) that embeds T's own resource,
+`resource.href`, in the scope `studio studio-branch` (a different scope
+chain from the workbench's, so no cycle), in the user's own mode, or in view
+mode when T is published (`data-studio-embed="branch"`,
+`data-studio-mode="view"` then). The layer's stylesheet takes the root of
+`UIBranch` in that scope to `studio:branch-form` (edit mode, a user who may
+`PUT` T) or `studio:branch-view` (view mode). Both render `<div
+class="studio-branch-settings" data-studio-branch-settings
+data-studio-mode="edit|view">` with T's name, context and parent. The form
+has inputs for `label`, `description` and `base` (a select of `live` and
+`pinned`) on a working T, and shows them as text on a published one (a
+published T is read-only in the studio); the view shows them all as text.
+Save is the frame's submit (`PUT`). As in the editors, a change of a field
+saves nothing (the script `studio:studio` stops the `change` of anything in
+the pane): only Save, or Enter in a text field, writes. The frame also has
+the runtime's Delete button for a user who may `DELETE` T; after T is
+deleted from there, the workbench is loaded again (and is then not found).
+
+**The prefix** is an input only for a user who may publish: the form renders
+it only in the scope `studio studio-branch studio-publish`, and the script
+`studio:branch` asks for the pane in that scope (in the user's own mode, on a
+published T too) when the strip's `data-studio-may-publish` is `true`, and
+in `studio studio-branch` (view mode on a published T) when it is not, on load
+and each time the strip is fetched again. Otherwise the prefix is text
+(`data-studio-branch-prefix-text`), "None: a working branch" when there is
+none. A scope only presents: a crafted request in the publisher's scope gets
+the input, and its save is refused by the API (403, PUT on UI branches in the
+context `""` is needed; see [Prefixes](#prefixes)), shown in the refused
+re-render. A set prefix is rendered by `studio:branch-prefix` (the form puts
+`prefix` in the scope `studio-branch-prefix`), so the API's refusals of a
+prefix (`name: "prefix"`: malformed, taken, overlapping, under the API's URLs)
+show beside the field, with `aria-invalid` and the message, in the re-render
+of the submitted body. On a published T other than `main`, a publisher also
+gets "Remove the prefix": a fixed-body `PUT` of T's content with `"prefix":
+null` to T's own URL (so with the frame's `If-Match`), `hx-swap="none"`.
+
+`studio:branch` also fetches the pane again after a write from the strip
+succeeds (a pull, an Apply, a Propose: they change T's row and its ETag), and
+not after other writes, so what was typed in it stays. When the strip, once
+fetched again, says T is published and the workbench was not (or the
+reverse), as after a save of its prefix, the script reloads the page: what
+the workbench offers depends on it.
+
+**New branch.** For a user who may `PUT` T (a best guess at who may create a
+branch beside it; the server decides), the workbench has "New branch"
+(`<details>`), a `<form data-studio-new-branch data-scrud-json="form">`
+outside the settings' frame that `POST`s to `in_mount(api_url("ui-branches"))`
+the inputs `/name` (empty), `/parent` (T) and `/rbac_context` (T's context),
+with `data-scrud-etag=""` (no `If-Match`: it is not the frame's URL). It is
+offered on a published T too: a branch under a published one is how work on
+it starts. It sends `Scrud-UI-Scope: studio studio-new-branch` and
+`Scrud-UI-Mode: view`, and its answer goes into `data-studio-new-branch-result`:
+the new branch as `studio:branch-created` renders it (the layer's rule for
+`UIBranch` in that scope), "Created branch <name>." and a link to its
+workbench; a refusal (a taken name, a parent the user may not `GET`) shows
+the server's notice there. On success the panes are fetched again, as after
+any write from the workbench.

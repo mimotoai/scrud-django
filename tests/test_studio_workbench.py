@@ -236,11 +236,17 @@ def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login)
         )
         for e in page.having("data-studio-embed")
     }
+    # Task 8 adds the branch settings: T's own resource in the scope
+    # studio studio-branch (see test_studio_rollback_presentations).
+    branch_url = reverse("ui-branches-detail", args=[alice_wip.pk])
     assert embeds == {
+        "branch": ("div", branch_url, "studio studio-branch"),
         "items": ("div", items_url, "studio studio-items"),
         "status": ("footer", status_url, "studio studio-status"),
     }
-    [items_pane, strip] = page.having("data-studio-embed")
+    [settings, items_pane, strip] = page.having("data-studio-embed")
+    assert settings.within(page.one("data-studio-branch-panel"))
+    assert not any(settings.within(pane) for pane in panes)
     assert items_pane.within(panes[0]) and not strip.within(panes[2])
     frames = {e.attrs["data-scrud-href"]: e for e in page.having("data-scrud-href")}
     assert frames[items_url].within(items_pane)
@@ -267,11 +273,24 @@ def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login)
     assert "studio-preview" in iframe.classes()
     # The workbench is a view of T: alice may PUT and DELETE alice-wip, yet
     # the requested view mode gives no form and no Delete button.
-    branch_url = reverse("ui-branches-detail", args=[alice_wip.pk])
-    assert frames[branch_url].tag == "div"
-    assert workbench.within(frames[branch_url])
-    assert not [e for e in page.elements if e.attrs.get("hx-delete") == branch_url]
-    assert not [e for e in page.elements if e.tag == "form" and e is not form]
+    [frame, *_settings] = [
+        e
+        for e in page.having("data-scrud-href")
+        if e.attrs["data-scrud-href"] == branch_url
+    ]
+    assert frame.tag == "div"
+    assert workbench.within(frame)
+    # Task 8: T's settings are T's own resource embedded in the scope
+    # studio studio-branch with the user's own mode, so alice gets its edit
+    # form there, with the runtime's Delete; the workbench's own frame has
+    # neither. The other form is "New branch".
+    [settings] = _settings
+    assert settings.tag == "form" and settings.within(workbench)
+    assert settings.attrs["data-scrud-scope"] == "studio studio-branch"
+    deletes = [e for e in page.elements if e.attrs.get("hx-delete") == branch_url]
+    assert [d.within(settings) for d in deletes] == [True]
+    others = [e for e in page.elements if e.tag == "form" and e is not form]
+    assert others == [settings, page.one("data-studio-new-branch")]
     # A branch the user may not GET: as ui-branches answers it.
     When.http.get(
         reverse("ui-branches-detail", args=[bobs.pk]), HTTP_ACCEPT="application/json"
@@ -403,8 +422,15 @@ def test_published_T_strip_has_no_write_actions(studio_layer, admin_login):
         found = page.entries()
         assert found
         assert all(o["override"] is None for _c, o, _li in found.values())
-        # The superuser may do anything, yet no write control is offered.
-        assert page.writes() == [], branch
+        # The superuser may do anything, yet no write control is offered
+        # but "New branch" (Task 8: creating a branch under a published one
+        # is normal; it writes nothing of T). T's settings are embedded in
+        # view mode: no form.
+        [new_branch] = page.writes()
+        assert "data-studio-new-branch" in new_branch.attrs, branch
+        assert new_branch.attrs["hx-post"] == STUDIO_ROOT + "ui-branches/"
+        [settings] = page.having("data-studio-branch-settings")
+        assert settings.attrs["data-studio-mode"] == "view", branch
         assert "Override on this branch" not in page.buttons()
         assert not [b for b in page.buttons() if b == "Pull" or b.startswith(PROMOTE)]
 

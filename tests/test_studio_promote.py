@@ -646,4 +646,8 @@ def test_published_T_has_no_promote(studio_layer, admin_login):
     assert page.one("data-studio-workbench").attrs["data-studio-published"] == "true"
     assert not page.having("data-studio-promote")
     assert not [b for b in page.buttons() if b.startswith(PROMOTE)]
-    assert page.writes() == []
+    # The only write control is Task 8's "New branch" (a branch under a
+    # published one is normal); it pushes nothing.
+    [new_branch] = page.writes()
+    assert "data-studio-new-branch" in new_branch.attrs
+    assert new_branch.attrs["hx-post"] == reverse("ui-branches-list")

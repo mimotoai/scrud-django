@@ -89,6 +89,26 @@
     {
       "select": "studio http://api.openteams.com/json-ld/UIPush",
       "component": "studio:push-view"
+    },
+    {
+      "select": "studio http://api.openteams.com/json-ld/UIBranchVersion",
+      "component": "studio:version"
+    },
+    {
+      "select": "studio studio-branch http://api.openteams.com/json-ld/UIBranch",
+      "component": "studio:branch-form"
+    },
+    {
+      "select": "studio studio-branch http://api.openteams.com/json-ld/UIBranch",
+      "component": "studio:branch-view"
+    },
+    {
+      "select": "studio studio-branch studio-branch-prefix string",
+      "component": "studio:branch-prefix"
+    },
+    {
+      "select": "studio studio-new-branch http://api.openteams.com/json-ld/UIBranch",
+      "component": "studio:branch-created"
     }
   ]
 }

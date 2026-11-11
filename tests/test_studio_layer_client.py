@@ -2613,3 +2613,215 @@ out.none = [out.submits.length, shown(toShop.note)];
         0,
         [False, "Choose a type to preview shop & co after this push."],
     ]
+
+
+# ---- branch settings (studio:branch) -------------------------------------
+
+
+def test_branch_js_inert_without_workbench():
+    require_node()
+    for push in (False, True):
+        out = run(with_workbench=False, file="branch.json", push=push)
+        assert out["queries"] == ["[data-studio-workbench]"]
+        assert out["touched"] == ["document.querySelector"]
+        assert out["listeners"] == [] and out["fetches"] == 0
+        assert out["attributes"] == {}
+
+
+# The workbench's branch settings pane as studio:workbench embeds it (T's
+# own frame in the scope studio studio-branch, a form in edit mode, whose
+# htmx saves on change and on submit: recorded in `out.branchFrame`), the
+# strip's data-studio-published and data-studio-may-publish, a recorded
+# location.reload(); then branch.js (argv[3]) after studio.js.
+BRANCH_STUB = r"""
+status.setAttribute('data-studio-published', opts.published ? 'true' : 'false');
+status.setAttribute('data-studio-may-publish', opts.may_publish ? 'true' : 'false');
+const branchPane = el('div', {'class': 'studio-branch-body', 'data-studio-embed': 'branch',
+  'data-studio-src': '/workbench/ui-branches/9/',
+  'data-studio-scope': 'studio studio-branch',
+  ...(opts.published ? {'data-studio-mode': 'view'} : {})}, workbench);
+out.branchFrame = [];
+let branchFrame;
+let labelInput;
+let baseSelect;
+let prefixInput;
+let deleteButton;
+function renderSettings() {
+  while (branchPane.firstChild) branchPane.removeChild(branchPane.firstChild);
+  branchFrame = el('form', {'class': 'scrud-resource',
+    'data-scrud-href': '/workbench/ui-branches/9/',
+    'data-scrud-scope': 'studio studio-branch', 'hx-put': '/workbench/ui-branches/9/',
+    'hx-trigger': 'change, submit'}, branchPane);
+  branchFrame.addEventListener('change', (e) => out.branchFrame.push(
+    'change:' + e.target.getAttribute('name')));
+  branchFrame.addEventListener('submit', () => out.branchFrame.push('submit'));
+  const settings = el('div', {'class': 'studio-branch-settings',
+    'data-studio-branch-settings': '', 'data-studio-mode': 'edit'}, branchFrame);
+  labelInput = el('input', {type: 'text', name: '/label'}, settings);
+  baseSelect = el('select', {name: '/base'}, settings);
+  prefixInput = el('input', {type: 'text', name: '/prefix'}, settings);
+  deleteButton = el('button', {type: 'button', 'hx-delete': '/workbench/ui-branches/9/'},
+    branchFrame);
+}
+renderSettings();
+const newBranch = el('form', {'class': 'studio-new-branch', 'data-studio-new-branch': '',
+  'hx-post': '/workbench/ui-branches/', 'data-scrud-json': 'form'}, workbench);
+out.newBranch = [];
+newBranch.addEventListener('change', (e) => out.newBranch.push(e.target.getAttribute('name')));
+const newName = el('input', {type: 'text', name: '/name'}, newBranch);
+out.reloads = 0;
+location.reload = () => { out.reloads += 1; };
+vm.runInContext(process.argv[3], context);
+const branchLoads = () => out.ajax.filter((a) => a.target === 'branch');
+const ok = (elt, verb) => fire(elt, 'htmx:afterRequest', {
+  elt, successful: true, requestConfig: {verb}, xhr: {status: 200}});
+"""
+
+
+def branch_scenario(script, **opts):
+    """Run studio.js and branch.js on the stub workbench with the branch
+    settings pane (`BRANCH_STUB`), then `script`; return what it printed."""
+    require_node()
+    done = subprocess.run(
+        [
+            "node",
+            "-e",
+            WORKBENCH + BRANCH_STUB + script + "\nconsole.log(JSON.stringify(out));",
+            layer_source(),
+            json.dumps(opts),
+            layer_source("branch.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+BRANCH_SRC = "/workbench/ui-branches/9/"
+
+
+def branch_load(scope, view=False):
+    headers = {"Scrud-UI-Scope": scope}
+    if view:
+        headers["Scrud-UI-Mode"] = "view"
+    return {
+        "verb": "GET",
+        "path": BRANCH_SRC,
+        "target": "branch",
+        "source": True,
+        "swap": "innerHTML",
+        "headers": headers,
+    }
+
+
+def test_branch_settings_save_only_on_save():
+    """A change of a settings field is no save (a prefix publishes URLs):
+    Save, the frame's submit, is. It holds for the frame a refused PUT
+    re-renders, and leaves New branch's form alone."""
+    out = branch_scenario(
+        r"""
+fire(labelInput, 'change');
+fire(baseSelect, 'change');
+fire(prefixInput, 'change');
+fire(branchFrame, 'submit');
+renderSettings();
+fire(prefixInput, 'change');
+fire(branchFrame, 'submit');
+fire(newName, 'change');
+"""
+    )
+    assert out["branchFrame"] == ["submit", "submit"]
+    assert out["newBranch"] == ["/name"]
+
+
+def test_branch_pane_scope_follows_may_publish():
+    # Not a publisher, working T: the embedded settings stay as they are.
+    out = branch_scenario("out.start = branchLoads();")
+    assert out["start"] == []
+    # A publisher: the settings are fetched again in the publisher's scope,
+    # where they have the prefix input; the pane keeps that scope.
+    out = branch_scenario(
+        "out.start = branchLoads();"
+        "out.scope = branchPane.getAttribute('data-studio-scope');",
+        may_publish=True,
+    )
+    assert out["start"] == [branch_load("studio studio-branch studio-publish")]
+    assert out["scope"] == "studio studio-branch studio-publish"
+    # A published T is embedded in view mode: a non-publisher keeps it, a
+    # publisher gets it in their scope in their own mode.
+    out = branch_scenario("out.start = branchLoads();", published=True)
+    assert out["start"] == []
+    out = branch_scenario(
+        "out.start = branchLoads();"
+        "out.mode = branchPane.getAttribute('data-studio-mode');",
+        published=True,
+        may_publish=True,
+    )
+    assert out["start"] == [branch_load("studio studio-branch studio-publish")]
+    assert out["mode"] is None
+    # The strip, fetched again, says the grant is gone: back to the plain
+    # scope (and, on a published T, view mode).
+    out = branch_scenario(
+        r"""
+reset();
+status.setAttribute('data-studio-may-publish', 'false');
+fire(strip, 'htmx:afterSwap', {target: strip});
+out.after = branchLoads();
+out.mode = branchPane.getAttribute('data-studio-mode');
+""",
+        published=True,
+        may_publish=True,
+    )
+    assert out["after"] == [branch_load("studio studio-branch", view=True)]
+    assert out["mode"] == "view"
+
+
+def test_branch_pane_refreshed_after_strip_write():
+    """A write from the strip (a pull, a push) changes T's row: its settings
+    are fetched again, with the new ETag. Other writes leave them (and what
+    the user typed in them) alone."""
+    out = branch_scenario(
+        r"""
+reset();
+ok(pull, 'put');
+out.pull = branchLoads(); reset();
+ok(override, 'post');
+ok(branchFrame, 'put');
+fire(pull, 'htmx:afterRequest', {elt: pull, successful: false,
+  requestConfig: {verb: 'put'}, xhr: {status: 409, responseText: ''}});
+ok(pull, 'get');
+out.others = branchLoads();
+"""
+    )
+    assert out["pull"] == [branch_load("studio studio-branch")]
+    assert out["others"] == []
+
+
+def test_workbench_reloads_when_T_published_or_deleted():
+    """T published, or no longer, by its settings (the strip says so once
+    fetched again), or deleted from them: the workbench reloads, since
+    what it offers depends on it."""
+    out = branch_scenario(
+        r"""
+out.start = out.reloads;
+status.setAttribute('data-studio-published', 'true');
+fire(strip, 'htmx:afterSwap', {target: strip});
+out.published = out.reloads;
+"""
+    )
+    assert out["start"] == 0 and out["published"] == 1
+    # scrud-ui.js says a frame's resource was deleted with scrud:deleted
+    # (after it removed the frame): only T's own reloads.
+    out = branch_scenario(
+        r"""
+const deleted = (href) => (docListeners['scrud:deleted'] || []).forEach(
+  (fn) => fn({type: 'scrud:deleted', detail: {href}}));
+deleted('/workbench/ui-components/8/');
+deleted(null);
+out.other = out.reloads;
+deleted('/workbench/ui-branches/9/');
+out.deleted = out.reloads;
+"""
+    )
+    assert out["other"] == 0 and out["deleted"] == 1

@@ -1,0 +1,658 @@
+"""Roll back and presentations in the self-hosted studio: the strip's version
+history, a version's page (``studio:version``) with "Restore to this
+version", the workbench's "Branch settings" panel (T's own ``ui-branches``
+resource embedded in the scope ``studio studio-branch``: ``studio:branch-form``
+for a user who may PUT it, else ``studio:branch-view``) and its "New branch"
+form. Every write goes through the API with the exact body the page renders
+(a frame's PUT: its ``scrud-content`` with the inputs it names applied).
+These tests serve the API at ``/api/`` (``tests.mounted_urls``), with the
+studio layer installed (the ``studio_layer`` fixture)."""
+
+import json
+
+import pytest
+from django.urls import reverse
+from safetydance_django.test import *  # noqa: F403, F401
+
+from scrud_django.models import Resource
+from scrud_django.ui.branches import (
+    UI_BRANCH_TYPE_URI,
+    UI_BRANCH_VERSION_TYPE_URI,
+    UI_PUSH_TYPE_URI,
+)
+from scrud_django.ui.branches.versions import record_version
+from scrud_django.ui.layers import layer_item
+from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
+
+from .fixtures import *  # noqa
+from .fixtures import assign_ui_role
+from .steps import *  # noqa: F403, F401
+from .test_studio_editors import content_of
+from .test_studio_promote import get_page, text_of
+from .test_studio_workbench import Page, workbench_url
+from .test_ui_branch_push import (
+    created,
+    make_wip,
+    own_rows,
+    stored_branch,
+    wip_overrides_row,
+)
+from .test_ui_branch_types import make_branch
+from .test_ui_branch_versions import versions_of
+from .test_ui_http import HTML, grant
+
+JSON = "application/json"
+UIBRANCH = "http://api.openteams.com/json-ld/UIBranch"
+UIBRANCH_VERSION = "http://api.openteams.com/json-ld/UIBranchVersion"
+BRANCH_SCOPE = "studio studio-branch"
+PUBLISH_SCOPE = "studio studio-branch studio-publish"
+PUBLISHER_MESSAGE = (
+    "Setting, changing or removing a branch's prefix (or deleting a published "
+    "branch) changes the site's URLs: it needs PUT on UI branches in the "
+    'context "".'
+)
+
+
+@pytest.fixture(autouse=True)
+def api_at_api_path(settings):
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+
+
+def branch_href(branch):
+    return reverse("ui-branches-detail", args=[branch.pk])
+
+
+def load_settings(branch, scope=BRANCH_SCOPE, view=False, status=200):
+    """The branch settings pane as the workbench (re)loads it: an htmx GET
+    of T's own resource in `scope` (view mode with `view`)."""
+    headers = {"HTTP_HX_REQUEST": "true", "HTTP_SCRUD_UI_SCOPE": scope}
+    if view:
+        headers["HTTP_SCRUD_UI_MODE"] = "view"
+    return get_page(branch_href(branch), status=status, **headers)
+
+
+def settings_frame(page, href):
+    """The frame of the branch at `href` that its settings render: on a
+    workbench, the one embedded in the settings pane (the workbench is the
+    same resource's frame too); in the pane's own answer, the only one."""
+    frames = [
+        e
+        for e in page.having("data-scrud-href")
+        if e.attrs["data-scrud-href"] == href and "scrud-resource" in e.classes()
+    ]
+    panes = [
+        e
+        for e in page.having("data-studio-embed")
+        if e.attrs["data-studio-embed"] == "branch"
+    ]
+    if panes:
+        frames = [f for f in frames if f.within(panes[0])]
+    [frame] = frames
+    return frame
+
+
+def named(page, frame):
+    """``{name: element}`` of the inputs, selects and textareas named by a
+    JSON Pointer whose own frame is `frame` (what its PUT applies)."""
+    found = {}
+    for e in page.elements:
+        name = e.attrs.get("name", "")
+        if e.tag in ("input", "select", "textarea") and name.startswith("/"):
+            frames = [f for f in page.having("data-scrud-href") if e.within(f)]
+            if frames and frames[-1] is frame:
+                found[name] = e
+    return found
+
+
+def frame_put(page, href, values, status):
+    """The frame's PUT as scrud-ui.js sends it: its ``scrud-content`` with
+    `values` applied at the pointers of inputs the frame renders, with its
+    ``If-Match``, scope and pointer."""
+    frame = settings_frame(page, href)
+    inputs = named(page, frame)
+    body = content_of(page, frame)
+    for name, value in values.items():
+        assert name in inputs, (name, sorted(inputs))
+        body[name.lstrip("/")] = value
+    When.http.put(
+        href,
+        data=json.dumps(body),
+        content_type=JSON,
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+        HTTP_SCRUD_UI_SCOPE=frame.attrs["data-scrud-scope"],
+        HTTP_SCRUD_UI_POINTER="",
+        HTTP_IF_MATCH=frame.attrs["data-scrud-etag"],
+    )
+    Then.http.status_code_is(status)
+    return get_page_text()
+
+
+def get_page_text():
+    return Page(Http.response.content.decode())
+
+
+def no_inline_script(page):
+    """No inline handler, and no script but the page's files and the
+    frames' JSON content (a full page)."""
+    for e in page.elements:
+        assert not [a for a in e.attrs if a.startswith("on")], e.attrs
+        if e.tag == "script" and "src" not in e.attrs:
+            assert e.attrs.get("type") == JSON and "scrud-content" in e.classes()
+
+
+def version_links(page):
+    status = page.one("data-studio-status")
+    return [
+        e
+        for e in page.having("href", within=status)
+        if "studio-version-link" in e.classes()
+    ]
+
+
+def publisher(context="alice"):
+    """May read and write branches in `context` and publish them: PUT on
+    branches in "" (the site's grant)."""
+    user = assign_ui_role((UI_BRANCH_TYPE_URI,), context)
+    grant(user, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "")
+    return user
+
+
+@pytest.mark.django_db
+def test_rollback_rules_and_components(studio_layer):
+    _etag, sheet = layer_item("stylesheet", ("studio:studio", ""))
+    rules = [(r["select"], r["component"]) for r in sheet["rules"]]
+    assert (f"studio {UIBRANCH_VERSION}", "studio:version") in rules
+    # The settings: edit first, then the view twin (which wins in view mode).
+    edit = rules.index((f"studio studio-branch {UIBRANCH}", "studio:branch-form"))
+    view = rules.index((f"studio studio-branch {UIBRANCH}", "studio:branch-view"))
+    assert edit < view
+    assert (
+        "studio studio-branch studio-branch-prefix string",
+        "studio:branch-prefix",
+    ) in rules
+    assert (
+        f"studio studio-new-branch {UIBRANCH}",
+        "studio:branch-created",
+    ) in rules
+    for name, mode in (
+        ("studio:version", "view"),
+        ("studio:branch-form", "edit"),
+        ("studio:branch-view", "view"),
+        ("studio:branch-prefix", "edit"),
+        ("studio:branch-created", "view"),
+    ):
+        _etag, found = layer_item("component", (name,))
+        assert found["engine"] == "jinja2" and found["mode"] == mode, name
+    _etag, form = layer_item("component", ("studio:branch-form",))
+    assert form["scopes"] == {"prefix": "studio-branch-prefix"}
+
+
+@pytest.mark.django_db
+@test_context
+def test_restore_from_version_page_round_trip(studio_layer, admin_login):
+    _main_row, override = wip_overrides_row(admin_login)
+    wip = stored_branch("wip")
+    numbers = versions_of("wip")
+    kept = numbers[-1]  # wip's override of row is "<i>wip</i>"
+    url = reverse("ui-components-detail", args=[override.pk])
+    When.http.put(
+        url,
+        data={**override.content, "template": "<i>bad</i>"},
+        format="json",
+        HTTP_IF_MATCH=f'"{override.etag}"',
+    )
+    Then.http.status_code_is(200)
+    assert versions_of("wip")[-1] == kept + 1
+    # The strip's history: the latest versions, newest first, each linked to
+    # its page in the scope studio, in view mode, and (T is a working branch
+    # the user may write) told it may offer the restore.
+    page = get_page(workbench_url(wip))
+    links = version_links(page)
+    assert [text_of(link) for link in links][:2] == [
+        f"Version {kept + 1}",
+        f"Version {kept}",
+    ]
+    entries = [e for e in page.elements if "studio-version-entry" in e.classes()]
+    assert [e.attrs["data-studio-version-number"] for e in entries[:2]] == [
+        str(kept + 1),
+        str(kept),
+    ]
+    [kept_version] = [
+        r
+        for r in Resource.objects.filter(
+            resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI,
+            content__branch="wip",
+        )
+        if r.content["number"] == kept
+    ]
+    href = reverse("ui-branch-versions-detail", args=[kept_version.pk])
+    assert links[1].attrs["href"] == (
+        href + "?ui-scope=studio,studio-restore&ui-mode=view"
+    )
+    # The version's page: its items, as text.
+    version_page = get_page(links[1].attrs["href"])
+    root = version_page.one("data-studio-version")
+    assert root.attrs["data-studio-branch"] == "wip"
+    assert root.attrs["data-studio-number"] == str(kept)
+    assert text_of(version_page.one("data-studio-version-title")) == (
+        f"Version {kept} of wip"
+    )
+    [item] = [
+        e
+        for e in version_page.having("data-studio-version-item")
+        if e.attrs["data-studio-version-item"] == "row"
+    ]
+    assert "<i>wip</i>" in item.text and "<i>bad</i>" not in item.text
+    no_inline_script(version_page)
+    # "Restore to this version": the fixed-body POST of a restore push.
+    [button] = [w for w in version_page.writes() if w.tag == "button"]
+    assert text_of(button) == "Restore to this version"
+    assert button.attrs["hx-post"] == reverse("ui-pushes-list")
+    assert button.attrs["hx-ext"] == "scrud-json"
+    assert button.attrs["data-scrud-json"] == "fixed"
+    assert button.attrs["data-scrud-etag"] == ""
+    assert json.loads(button.attrs["data-scrud-body"]) == {
+        "source": None,
+        "target": "wip",
+        "restore": kept,
+        "state": "applied",
+        "rbac_context": "alice",
+    }
+    assert json.loads(button.attrs["hx-headers"]) == {
+        "Scrud-UI-Scope": "studio",
+        "Scrud-UI-Mode": "view",
+    }
+    [result] = version_page.having("data-studio-restore-result")
+    assert button.attrs["hx-target"] == "next [data-studio-restore-result]"
+    assert result.text.strip() == ""
+    # Sent as the page sends it, with its scope and mode: the server's answer
+    # is the restore push, applied, rendered by the studio.
+    press_with_headers(button, 201)
+    answer = get_page_text()
+    restore = created()
+    assert restore.content["source"] is None
+    assert restore.content["restore"] == kept
+    assert restore.content["result"] == {"version": kept + 2}
+    assert text_of(answer.one("data-studio-push-result")) == (
+        f"Version {kept + 2} of wip"
+    )
+    assert answer.one("data-studio-push").attrs["data-studio-mode"] == "view"
+    # wip's own items are those of the version again; history is kept.
+    [row] = own_rows(UI_COMPONENT_TYPE_URI, "wip")
+    assert row["template"] == "<i>wip</i>"
+    assert versions_of("wip")[-1] == kept + 2
+    # The strip lists the new version and the restore.
+    page = get_page(workbench_url(wip))
+    assert text_of(version_links(page)[0]) == f"Version {kept + 2}"
+    pushes = [e for e in page.elements if "studio-push-link" in e.classes()]
+    assert [text_of(p) for p in pushes] == ["restore → wip"]
+
+
+def press_with_headers(button, status):
+    """`press` with the element's ``hx-headers`` sent too, as htmx does."""
+    extra = json.loads(button.attrs.get("hx-headers", "{}"))
+    headers = {"HTTP_ACCEPT": HTML, "HTTP_HX_REQUEST": "true"}
+    for name, value in extra.items():
+        headers["HTTP_" + name.upper().replace("-", "_")] = value
+    if button.attrs.get("data-scrud-etag"):
+        headers["HTTP_IF_MATCH"] = button.attrs["data-scrud-etag"]
+    [method] = [
+        m for m in ("post", "put", "patch", "delete") if f"hx-{m}" in button.attrs
+    ]
+    getattr(When.http, method)(
+        button.attrs[f"hx-{method}"],
+        data=button.attrs["data-scrud-body"],
+        content_type=JSON,
+        **headers,
+    )
+    Then.http.status_code_is(status)
+    return Http.response
+
+
+@pytest.mark.django_db
+@test_context
+def test_restore_absent_when_T_published_or_not_writable(studio_layer, admin_login):
+    """The strip tells a version's page it may offer the restore only for a
+    working T the user may write (``may_write``): a published T is
+    read-only in the studio. A version's page reached otherwise shows the
+    version without it."""
+    wip_overrides_row(admin_login)
+    shop = make_branch("shop", "", parent=None, prefix="/shop/")
+    record_version("shop", "default")
+    page = get_page(workbench_url(shop))
+    [link] = version_links(page)[:1]
+    assert link.attrs["href"].endswith("?ui-scope=studio&ui-mode=view")
+    version_page = get_page(link.attrs["href"])
+    assert version_page.one("data-studio-version").attrs["data-studio-branch"] == (
+        "shop"
+    )
+    assert version_page.writes() == []
+    assert not version_page.having("data-studio-restore")
+    # A reader of wip (GET only): the link has no restore either.
+    reader = assign_ui_role((), "")
+    grant(
+        reader,
+        {"http.GET": [UI_BRANCH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI]},
+        "alice",
+    )
+    Given.http.force_authenticate(reader)
+    page = get_page(workbench_url(stored_branch("wip")))
+    links = version_links(page)
+    assert links
+    assert all(
+        link.attrs["href"].endswith("?ui-scope=studio&ui-mode=view") for link in links
+    )
+    version_page = get_page(links[0].attrs["href"])
+    assert version_page.writes() == []
+
+
+@pytest.mark.django_db
+@test_context
+def test_restore_refused_shows_server_answer(studio_layer, admin_login):
+    """The version's page can't know whether the user may POST the restore:
+    it offers it, and the API's refusal is the answer shown."""
+    wip_overrides_row(admin_login)
+    wip = stored_branch("wip")
+    # May write wip (in "alice") but not create pushes there.
+    writer = assign_ui_role((UI_BRANCH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI), "alice")
+    Given.http.force_authenticate(writer)
+    page = get_page(workbench_url(wip))
+    version_page = get_page(version_links(page)[0].attrs["href"])
+    [button] = [w for w in version_page.writes() if w.tag == "button"]
+    count = Resource.objects.filter(resource_type__type_uri=UI_PUSH_TYPE_URI).count()
+    press_with_headers(button, 403)
+    assert b"scrud-notice" in Http.response.content
+    assert (
+        Resource.objects.filter(resource_type__type_uri=UI_PUSH_TYPE_URI).count()
+        == count
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_branch_settings_panel_saves_fields(studio_layer, admin_login):
+    make_wip(admin_login)
+    wip = stored_branch("wip")
+    page = get_page(workbench_url(wip))
+    # The workbench embeds T itself in the scope studio studio-branch.
+    [pane] = [
+        e
+        for e in page.having("data-studio-embed")
+        if e.attrs["data-studio-embed"] == "branch"
+    ]
+    assert pane.attrs["data-studio-src"] == branch_href(wip)
+    assert pane.attrs["data-studio-scope"] == BRANCH_SCOPE
+    assert "data-studio-mode" not in pane.attrs
+    assert pane.within(page.one("data-studio-branch-panel"))
+    frame = settings_frame(page, branch_href(wip))
+    assert frame.within(pane) and frame.tag == "form"
+    assert frame.attrs["data-scrud-scope"] == BRANCH_SCOPE
+    [settings] = page.having("data-studio-branch-settings")
+    assert settings.attrs["data-studio-mode"] == "edit"
+    inputs = named(page, frame)
+    # Label, description and base; no prefix without the site grant's scope.
+    assert sorted(inputs) == ["/base", "/description", "/label"]
+    assert inputs["/base"].tag == "select"
+    assert inputs["/description"].tag == "textarea"
+    assert text_of(page.one("data-studio-branch-prefix-text")) == (
+        "None: a working branch"
+    )
+    saves = [
+        e
+        for e in page.elements
+        if e.tag == "button" and e.attrs.get("type") == "submit" and e.within(frame)
+    ]
+    assert [text_of(s) for s in saves] == ["Save"]
+    no_inline_script(page)
+    answer = frame_put(
+        page,
+        branch_href(wip),
+        {
+            "/label": "Work in progress",
+            "/description": "Try a theme",
+            "/base": "pinned",
+        },
+        200,
+    )
+    wip.refresh_from_db()
+    assert wip.content["label"] == "Work in progress"
+    assert wip.content["description"] == "Try a theme"
+    assert wip.content["base"] == "pinned"
+    assert "prefix" not in wip.content
+    # The answer is the settings again, in their scope.
+    assert answer.one("data-studio-branch-settings")
+    # A user who may only GET T gets the view twin: text, no form.
+    reader = assign_ui_role((), "")
+    grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(reader)
+    page = load_settings(wip)
+    assert page.one("data-studio-branch-settings").attrs["data-studio-mode"] == "view"
+    assert page.writes() == []
+    assert not [e for e in page.elements if "name" in e.attrs]
+    assert "Work in progress" in page.one("data-studio-branch-settings").text
+
+
+@pytest.mark.django_db
+@test_context
+def test_prefix_input_only_with_site_grant(studio_layer, ui_alice_login):
+    reverse("todo-lists-list")  # the URLconf registers the types
+    own = make_branch("own", "alice")
+    # alice may PUT her branch but not publish: the strip says so, and the
+    # settings (as embedded) have no prefix input.
+    Given.http.force_authenticate(ui_alice_login)
+    page = get_page(workbench_url(own))
+    status = page.one("data-studio-status")
+    assert status.attrs["data-studio-may-publish"] == "false"
+    assert status.attrs["data-studio-published"] == "false"
+    frame = settings_frame(page, branch_href(own))
+    assert "/prefix" not in named(page, frame)
+    assert page.having("data-studio-branch-prefix-text")
+    # A crafted request in the publisher's scope renders the input (a
+    # scope is presentation only), but the save is refused with the API's
+    # answer and nothing is written.
+    page = load_settings(own, PUBLISH_SCOPE)
+    frame = settings_frame(page, branch_href(own))
+    assert "/prefix" in named(page, frame)
+    refused = frame_put(page, branch_href(own), {"/prefix": "/own/"}, 403)
+    assert any(PUBLISHER_MESSAGE in e.text for e in refused.elements)
+    own.refresh_from_db()
+    assert "prefix" not in own.content
+    # The same PUT as JSON: the API's own answer.
+    When.http.put(
+        branch_href(own),
+        data={**own.content, "prefix": "/own/"},
+        format="json",
+        HTTP_IF_MATCH=f'"{own.etag}"',
+    )
+    Then.http.status_code_is(403)
+    assert Http.response.json()["detail"] == PUBLISHER_MESSAGE
+    # A publisher: the strip says so, the settings in the publisher's scope
+    # have the input, and the save publishes the branch.
+    Given.http.force_authenticate(publisher())
+    page = get_page(workbench_url(own))
+    assert page.one("data-studio-status").attrs["data-studio-may-publish"] == "true"
+    page = load_settings(own, PUBLISH_SCOPE)
+    frame = settings_frame(page, branch_href(own))
+    assert frame.attrs["data-scrud-scope"] == PUBLISH_SCOPE
+    prefix = named(page, frame)["/prefix"]
+    assert prefix.tag == "input" and prefix.attrs["value"] == ""
+    frame_put(page, branch_href(own), {"/prefix": "/own/"}, 200)
+    own.refresh_from_db()
+    assert own.content["prefix"] == "/own/"
+    # Published now: the workbench embeds its settings in view mode (the
+    # script asks again in the publisher's scope for a publisher), where
+    # the prefix is changed or removed; label, description and base are
+    # text (a published T is read-only in the studio).
+    page = get_page(workbench_url(own))
+    [pane] = [
+        e
+        for e in page.having("data-studio-embed")
+        if e.attrs["data-studio-embed"] == "branch"
+    ]
+    assert pane.attrs["data-studio-mode"] == "view"
+    assert settings_frame(page, branch_href(own)).tag == "div"
+    page = load_settings(own, PUBLISH_SCOPE)
+    frame = settings_frame(page, branch_href(own))
+    assert sorted(named(page, frame)) == ["/prefix"]
+    assert named(page, frame)["/prefix"].attrs["value"] == "/own/"
+    [remove] = [w for w in page.writes() if "studio-unpublish" in w.classes()]
+    assert text_of(remove) == "Remove the prefix"
+    assert remove.attrs["hx-put"] == branch_href(own)
+    assert remove.attrs["hx-swap"] == "none"
+    assert json.loads(remove.attrs["data-scrud-body"]) == {
+        **content_of(page, frame),
+        "prefix": None,
+    }
+    # Sent with the frame's ETag (the request goes to the frame's URL).
+    When.http.put(
+        remove.attrs["hx-put"],
+        data=remove.attrs["data-scrud-body"],
+        content_type=JSON,
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+        HTTP_IF_MATCH=frame.attrs["data-scrud-etag"],
+    )
+    Then.http.status_code_is(200)
+    own.refresh_from_db()
+    assert own.content.get("prefix") is None
+    # Without the grant, a published branch's prefix is text.
+    shop = make_branch("shop", "alice", parent=None, prefix="/shop/")
+    Given.http.force_authenticate(ui_alice_login)
+    page = load_settings(shop)
+    frame = settings_frame(page, branch_href(shop))
+    assert named(page, frame) == {}
+    assert text_of(page.one("data-studio-branch-prefix-text")) == "/shop/"
+    assert not [w for w in page.writes() if "studio-unpublish" in w.classes()]
+
+
+@pytest.mark.django_db
+@test_context
+def test_overlapping_prefix_error_beside_field(studio_layer, admin_login):
+    reverse("todo-lists-list")  # the URLconf registers the types
+    make_branch("shop", "", parent=None, prefix="/shop/")
+    own = make_branch("own", "alice")
+    Given.http.force_authenticate(admin_login)
+    page = load_settings(own, PUBLISH_SCOPE)
+    refused = frame_put(
+        page, branch_href(own), {"/prefix": "/shop/todo-lists/", "/label": "Mine"}, 400
+    )
+    own.refresh_from_db()
+    assert "prefix" not in own.content and "label" not in own.content
+    # The submitted body again, in the publisher's scope, with the message
+    # beside the prefix field.
+    frame = settings_frame(refused, branch_href(own))
+    assert frame.attrs["data-scrud-scope"] == PUBLISH_SCOPE
+    prefix = named(refused, frame)["/prefix"]
+    assert prefix.attrs["value"] == "/shop/todo-lists/"
+    assert prefix.attrs["aria-invalid"] == "true"
+    [errors] = [
+        e
+        for e in refused.elements
+        if e.attrs.get("id") == prefix.attrs["aria-describedby"]
+    ]
+    assert "studio-field-errors" in errors.classes()
+    assert "/shop/" in errors.text and "shop" in errors.text
+    # The API's answer names the field.
+    When.http.put(
+        branch_href(own),
+        data={**own.content, "prefix": "/shop/todo-lists/"},
+        format="json",
+        HTTP_IF_MATCH=f'"{own.etag}"',
+    )
+    Then.http.status_code_is(400)
+    problem = Http.response.json()
+    assert problem["name"] == "prefix"
+    assert problem["detail"] in errors.text
+    # A taken prefix too.
+    When.http.put(
+        branch_href(own),
+        data={**own.content, "prefix": "/shop/"},
+        format="json",
+        HTTP_IF_MATCH=f'"{own.etag}"',
+    )
+    Then.http.status_code_is(400)
+    assert Http.response.json()["name"] == "prefix"
+
+
+@pytest.mark.django_db
+@test_context
+def test_new_branch_form_creates_working_branch(studio_layer, admin_login):
+    make_wip(admin_login)
+    wip = stored_branch("wip")
+    page = get_page(workbench_url(wip))
+    [form] = page.having("data-studio-new-branch")
+    assert form.tag == "form"
+    assert form.attrs["hx-post"] == reverse("ui-branches-list")
+    assert form.attrs["hx-ext"] == "scrud-json"
+    assert form.attrs["data-scrud-json"] == "form"
+    assert form.attrs["data-scrud-etag"] == ""
+    assert form.attrs["hx-target"] == "next [data-studio-new-branch-result]"
+    headers = json.loads(form.attrs["hx-headers"])
+    assert headers == {
+        "Scrud-UI-Scope": "studio studio-new-branch",
+        "Scrud-UI-Mode": "view",
+    }
+    # Outside the settings' frame: its inputs are not the branch's.
+    assert not form.within(settings_frame(page, branch_href(wip)))
+    inputs = {
+        e.attrs["name"]: e
+        for e in page.elements
+        if e.tag == "input"
+        and e.within(form)
+        and e.attrs.get("name", "").startswith("/")
+    }
+    assert sorted(inputs) == ["/name", "/parent", "/rbac_context"]
+    assert inputs["/name"].attrs["value"] == ""
+    assert inputs["/parent"].attrs["value"] == "wip"
+    assert inputs["/rbac_context"].attrs["value"] == "alice"
+    # The body scrud-json builds from them, onto {}.
+    body = {name[1:]: e.attrs["value"] for name, e in inputs.items()}
+    body["name"] = "wip-2"
+    request_headers = {
+        "HTTP_" + k.upper().replace("-", "_"): v for k, v in headers.items()
+    }
+    When.http.post(
+        form.attrs["hx-post"],
+        data=json.dumps(body),
+        content_type=JSON,
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+        **request_headers,
+    )
+    Then.http.status_code_is(201)
+    answer = get_page_text()
+    made = stored_branch("wip-2")
+    assert made.content["parent"] == "wip"
+    assert made.content["rbac_context"] == "alice"
+    assert "prefix" not in made.content
+    # The answer links the new branch's workbench, which works.
+    [link] = [e for e in answer.elements if "studio-created-link" in e.classes()]
+    assert link.attrs["href"] == workbench_url(made)
+    page = get_page(link.attrs["href"])
+    workbench = page.one("data-studio-workbench")
+    assert workbench.attrs["data-studio-branch"] == "wip-2"
+    assert workbench.attrs["data-studio-published"] == "false"
+    # A taken name is refused with the API's answer.
+    When.http.post(
+        form.attrs["hx-post"],
+        data=json.dumps(body),
+        content_type=JSON,
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+        **request_headers,
+    )
+    Then.http.status_code_is(400)
+    assert "already exists" in Http.response.content.decode()
+
+
+@pytest.mark.django_db
+@test_context
+def test_new_branch_absent_for_reader(studio_layer, admin_login):
+    make_wip(admin_login)
+    reader = assign_ui_role((), "")
+    grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(reader)
+    page = get_page(workbench_url(stored_branch("wip")))
+    assert not page.having("data-studio-new-branch")
+    assert page.writes() == []

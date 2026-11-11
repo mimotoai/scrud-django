@@ -1,0 +1,6 @@
+{
+  "name": "studio:branch-created",
+  "engine": "jinja2",
+  "mode": "view",
+  "template": "<p class=\"studio-created\" data-studio-created-branch=\"{{ value.name }}\">Created branch {{ value.name }}. <a class=\"studio-created-link\" href=\"{{ resource.href }}?ui-scope=studio&amp;ui-mode=view\">Open its workbench</a></p>\n"
+}

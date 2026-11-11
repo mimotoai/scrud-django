@@ -159,14 +159,16 @@ def test_studio_page_only_in_studio_scope(studio_layer, admin_login):
         without = without_csrf(get_page(url))
     with_layer = without_csrf(get_page(url))
     [(_pk, css_etag, _css)] = effective_rows(UI_CSS_TYPE_URI, Selection())
-    # The layer's four JS items: studio:studio (order 0), then studio:rules
-    # (order 1), studio:inspector (order 2) and studio:promote (order 3),
-    # which use the API studio:studio sets up.
+    # The layer's five JS items: studio:studio (order 0), then studio:rules
+    # (order 1), studio:inspector (order 2), studio:promote (order 3) and
+    # studio:branch (order 4, Task 8), which use the API studio:studio sets
+    # up.
     js_items = {
         content["name"]: (content["order"], etag)
         for _pk, etag, content in effective_rows(UI_JS_TYPE_URI, Selection())
     }
     assert sorted(js_items) == [
+        "studio:branch",
         "studio:inspector",
         "studio:promote",
         "studio:rules",
@@ -177,6 +179,7 @@ def test_studio_page_only_in_studio_scope(studio_layer, admin_login):
         < js_items["studio:rules"][0]
         < js_items["studio:inspector"][0]
         < js_items["studio:promote"][0]
+        < js_items["studio:branch"][0]
     )
     css_tag = '<link rel="stylesheet" href="{}">\n'.format(
         reverse("ui-css-file", args=["studio:studio", css_etag])
@@ -190,6 +193,7 @@ def test_studio_page_only_in_studio_scope(studio_layer, admin_login):
             "studio:rules",
             "studio:inspector",
             "studio:promote",
+            "studio:branch",
         )
     )
     # The frame is byte-identical; the page differs by the layer's CSS link

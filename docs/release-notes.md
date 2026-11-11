@@ -222,8 +222,29 @@
   elsewhere it needs a workbench, as the other layer scripts do), and `ScrudStudio.submitPreview`
   takes a `branch` (the branch to preview instead of the workbench's) and
   sends no drafts with `after_push`.
+* Roll back and presentations in the self-hosted studio. The strip lists the
+  branch's versions, each linked to its page (`studio:version`, in the scope
+  `studio`): the ancestors' versions and the branch's own items then, as
+  text. For a working branch the user may write, the link tells the page
+  (the scope `studio studio-restore`) to offer "Restore to this version", a
+  restore push (`source: null`, `restore: N`, `state: applied`) whose answer,
+  or refusal, is shown there. The workbench's "Branch settings" panel embeds
+  the branch itself in the scope `studio studio-branch` (`studio:branch-form`,
+  or `studio:branch-view` for a user who may not `PUT` it): label,
+  description and base on a working branch, saved only on Save, and the
+  prefix, an input only for a user who may publish (the new layer JS item
+  `studio:branch`, order 4, asks for it in the scope `studio studio-branch
+  studio-publish` when the strip's new `data-studio-may-publish` says so),
+  with "Remove the prefix" on a published branch. "New branch" creates a
+  branch (`name`, `parent` and `rbac_context`, defaulting to the workbench's)
+  and links its workbench.
 
 ### Changed
+
+* A `ui-branches` write refused for its `prefix` (malformed, taken, or
+  overlapping another branch's or the API's URLs) now has `name: "prefix"` in
+  its 400 `ui-branch-invalid` problem, as a JSON Schema error names its field,
+  so a refused PUT's HTML re-render shows the message beside the prefix.
 
 * A requested view mode (`?ui-mode=view`, `Scrud-UI-Mode: view`, or an
   embed's `mode="view"`) also leaves out the frame's Delete button, even for
