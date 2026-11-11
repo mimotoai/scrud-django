@@ -11,6 +11,7 @@ The after-push preview (`after_push_drafts`) shows a target branch with a
 source branch's stored overrides layered on, as the push would write them; it
 needs GET on both branches only, since they are stored items, not drafts."""
 
+import logging
 from collections.abc import Mapping
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
@@ -24,6 +25,8 @@ from scrud_django.ui.branches.sync import _onto
 from scrud_django.ui.cascade import item_rows
 from scrud_django.ui.dispatch import view_for
 from scrud_django.ui.studio.writes import KIND_SLUGS, item_content, own_item
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Draft",
@@ -67,7 +70,8 @@ def validate_draft(request, branch: Branch, draft: Draft) -> list[str]:
     context, template, selectors, text) and the type's JSON Schema. The
     checks a write makes once saved (scoped RBAC's re-check of the stored
     row) and its preconditions (``If-Match``) are not run: nothing is
-    saved."""
+    saved. A check that fails as a server error (an ``APIException`` of
+    status 500 or more) is listed too, and logged at ERROR."""
     item, messages = draft_item(branch, draft)
     if item is None:
         return messages
@@ -85,6 +89,14 @@ def validate_draft(request, branch: Branch, draft: Draft) -> list[str]:
         view.validate_content(body, instance=instance)
         view.get_serializer(data=body, instance=instance).is_valid(raise_exception=True)
     except APIException as error:
+        if error.status_code >= 500:
+            # No answer about the draft: a check that broke.
+            logger.error(
+                "scrud-ui: checking the draft %s %r failed",
+                draft.kind,
+                item["name"],
+                exc_info=True,
+            )
         return _messages(error.detail)
     except Http404:
         return ["Not found."]

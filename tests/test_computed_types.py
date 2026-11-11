@@ -226,3 +226,20 @@ def test_computed_registration_has_no_service_flag():
         registration.computed_resource_type(
             "http://example.org/X", "xs", dict, dict, object, register_service=True
         )
+
+
+@pytest.mark.parametrize("computed", [["a list"], "text", None, 3])
+def test_compute_must_return_a_mapping(computed):
+    """``compute`` returns a mapping (the content): anything else is a
+    programming error, raised (``TypeError``), never served as content."""
+    from types import SimpleNamespace
+
+    from scrud_django.computed import ComputedResourceViewSet
+
+    class Wrong(ComputedResourceViewSet):
+        def compute(self, request, key):
+            return computed
+
+    request = SimpleNamespace(headers={}, query_params={})
+    with pytest.raises(TypeError, match="Wrong.compute"):
+        Wrong().retrieve(request, "key")

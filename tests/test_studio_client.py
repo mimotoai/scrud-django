@@ -1187,3 +1187,86 @@ def test_bridge_tells_an_embeds_nodes_by_href(ui_alice_login):
     ]
     sample = reverse("scrud-studio:sample", args=[SLUG])
     assert out["sectionClicks"] == [{"message": select("", sample), "origin": "*"}]
+
+
+# The bridge on a page still loading: it is run, then a branch script
+# replaces the errors element's text (as one may: it runs in the same
+# document), then the document is loaded.
+BRIDGE_LOADING_HARNESS = BRIDGE_HARNESS.replace(
+    "vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);",
+    "document.readyState = 'loading';"
+    "vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);"
+    "document.getElementById('scrud-preview-errors').textContent ="
+    " JSON.stringify([{kind: 'component', name: 'forged', messages: []}]);"
+    "document.readyState = 'complete';"
+    "(document.listeners.DOMContentLoaded || []).forEach("
+    "(fn) => fn({type: 'DOMContentLoaded'}));",
+)
+
+
+def bad_draft_preview():
+    body = {
+        "type": SLUG,
+        "branch": "wip",
+        "drafts": [
+            {
+                "kind": "component",
+                "content": {
+                    "name": "bad",
+                    "engine": "django",
+                    "mode": "view",
+                    "template": "{% if %}",
+                },
+            }
+        ],
+    }
+    When.http.post(
+        reverse("scrud-studio:live-preview"),
+        data=urlencode({"request": json.dumps(body)}),
+        content_type="application/x-www-form-urlencoded",
+    )
+    Then.http.status_code_is(200)
+    return Http.response.content.decode()
+
+
+@pytest.mark.django_db
+@test_context
+def test_bridge_reads_the_errors_before_branch_scripts_run(ui_alice_login):
+    """The bridge reads the errors the server listed when it runs, before
+    the branch's scripts (which come after it): what it posts on load is
+    the server's list, whatever a script did to the element since."""
+    setup_wip(ui_alice_login)
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", BRIDGE_LOADING_HARNESS, str(BRIDGE_JS)],
+        capture_output=True,
+        text=True,
+        input=json.dumps({"preview": tree(bad_draft_preview())}),
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["errors"] == []
+    (loaded,) = out["loaded"]
+    assert [e["name"] for e in loaded["message"]["errors"]] == ["bad"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_bridge_says_when_the_errors_cannot_be_read(ui_alice_login):
+    """Errors it cannot parse are posted as ``errors: null, failed: true``,
+    never as an empty list, which would say every draft was shown."""
+    setup_wip(ui_alice_login)
+    page = re.sub(
+        r'(<script type="application/json" id="scrud-preview-errors"'
+        r' nonce="[^"]+">).*?(</script>)',
+        r"\1{not json\2",
+        bad_draft_preview(),
+        flags=re.S,
+    )
+    assert "{not json</script>" in page
+    (loaded,) = run_bridge(page)["loaded"]
+    assert loaded["message"] == {
+        "type": "scrud-preview:errors",
+        "errors": None,
+        "failed": True,
+    }

@@ -7,6 +7,7 @@ branch's CSS and JS inlined under a per-response nonce. These tests serve the
 API at ``/api/`` and the studio at ``/studio/`` (``tests.mounted_urls``)."""
 
 import json
+import logging
 import re
 from html import unescape
 from unittest import mock
@@ -934,3 +935,37 @@ def test_layer_prefixed_drafts_follow_the_save_rules(ui_alice_login):
     # The preview renders without them: main's own presentation.
     assert "<b>main Lorem ipsum</b>" in page
     assert not Resource.objects.filter(content__branch="wip").exists()
+
+
+@pytest.mark.django_db
+@test_context
+def test_draft_check_failing_as_a_server_error_is_logged(ui_alice_login, caplog):
+    """A check that fails as a server error (an ``APIException`` of status
+    500 or more) is listed as the draft's error, as any refusal is, and is
+    also logged at ERROR with its traceback: it is no answer about the
+    draft."""
+    from rest_framework.exceptions import APIException
+
+    from scrud_django.ui.views import UIComponentViewSet
+
+    main_row()
+    wip_for(ui_alice_login)
+    with (
+        mock.patch.object(
+            UIComponentViewSet,
+            "validate_content",
+            side_effect=APIException("The check broke."),
+        ),
+        caplog.at_level(logging.ERROR, logger="scrud_django.ui.studio.drafts"),
+    ):
+        page = live(drafts=[django_component("row", "<i>{{ value.text }}</i>")])
+    assert errors_of(page) == [
+        {"kind": "component", "name": "row", "messages": ["The check broke."]}
+    ]
+    logged = [
+        r
+        for r in caplog.records
+        if r.name == "scrud_django.ui.studio.drafts" and r.levelno == logging.ERROR
+    ]
+    assert len(logged) == 1 and logged[0].exc_info is not None
+    assert "row" in logged[0].getMessage()

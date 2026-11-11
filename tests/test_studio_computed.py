@@ -5,8 +5,10 @@ are public), and renders through the cascade like any resource. These tests
 serve the API at ``/api/`` and the studio at ``/studio/``
 (``tests.mounted_urls``)."""
 
+import logging
 import re
 from html import unescape
+from unittest import mock
 
 import pytest
 from django.urls import reverse
@@ -502,3 +504,33 @@ def test_branch_status_chain_names_are_branch_names():
     assert names("UIBranchChain") == {("UIBranchName", "feat")}
     assert names("UIBranchChanged") == {("UIItemName", "row")}
     assert names("UIBranchConflicts") == {("UIItemName", "clash")}
+
+
+@pytest.mark.django_db
+@test_context
+def test_status_of_a_branch_with_no_published_root_is_logged(ui_alice_login, caplog):
+    """`selectable` refuses a branch whose chain is broken, so the status
+    always finds its published root; should it not, the status answers
+    without the root (a browse link to the API's own URL) and logs a
+    warning, never silently."""
+    from scrud_django.ui.branches.store import BranchChainError
+
+    setup_branches(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+    with (
+        mock.patch(
+            "scrud_django.ui.studio.computed.published_root",
+            side_effect=BranchChainError("Branch 'wip' has no published ancestor."),
+        ),
+        caplog.at_level(logging.WARNING, logger="scrud_django.ui.studio.computed"),
+    ):
+        status = get("ui-branch-status", "wip", type=SLUG)
+    assert status["branch"] == "wip"
+    assert status["browse_url"] == "/api/todo-lists/?ui-branch=wip"
+    logged = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "scrud_django.ui.studio.computed" and r.levelno == logging.WARNING
+    ]
+    assert len(logged) == 1
+    assert "'wip'" in logged[0] and "no published ancestor" in logged[0]

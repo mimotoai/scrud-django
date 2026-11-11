@@ -294,6 +294,12 @@ def test_banner_not_hideable_by_rules(todo_list, todo_reader_login):
     stored.save()
     page = get(todo_list, **{BRANCH_HEADER: "wip"})
     assert "gone" not in page and BANNER in page and WIP_ROW in page
+    # Said as what it is, not as a failure to render.
+    assert page.startswith(
+        '<!-- scrud-ui: page component "my-page" leaves out the branch banner'
+        " or the safe mode notice -->"
+    )
+    assert "failed" not in page
 
 
 @pytest.mark.django_db

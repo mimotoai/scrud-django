@@ -52,11 +52,17 @@ class ComputedResourceViewSet(ResourceViewMixin, viewsets.ViewSet):
     parser_classes = [RbacJSONParser]
 
     def compute(self, request, key: str) -> Mapping:
-        """The content for `key`, a mapping."""
+        """The content for `key`, a mapping (anything else is a
+        ``TypeError`` in `retrieve`)."""
         raise NotImplementedError
 
     def retrieve(self, request, slug: str) -> Response:
         content = self.compute(request, slug)
+        if not isinstance(content, Mapping):
+            raise TypeError(
+                f"{type(self).__name__}.compute returned a "
+                f"{type(content).__name__}, not a mapping."
+            )
         etag = computed_etag(content)
         headers = {"ETag": etag}
         if _matches(request.headers.get("If-None-Match", ""), etag):

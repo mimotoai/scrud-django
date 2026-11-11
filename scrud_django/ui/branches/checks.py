@@ -210,7 +210,8 @@ def check_layer_conflicts(app_configs, databases=None, **kwargs):
     upgrade changed it), and one whose layer item is gone (an orphan, which
     keeps rendering as an ordinary item). A Warning, as ``W001``: it
     reports stored data. A branch whose chain is broken, or whose pinned
-    snapshot is missing, is skipped (it renders its published branch). A
+    snapshot is missing, cannot be checked (it renders its published
+    branch): its Warning says so. A
     database error reading a migrated database is reported
     (``scrud_django.W007``).
 
@@ -236,15 +237,33 @@ def check_layer_conflicts(app_configs, databases=None, **kwargs):
             for name, branch in sorted(_read_branches(alias).items()):
                 try:
                     conflicted = layer_conflicts(branch, using=alias)
-                except BranchChainError:
+                except BranchChainError as error:
+                    listed.append((name, error))
                     continue
                 if conflicted:
                     listed.append((name, conflicted))
         except (OperationalError, ProgrammingError) as error:
             found.append(could_not_run(LAYER_CONFLICTS_ID, alias, error_text(error)))
             continue
-        found.extend(_layer_conflicts(name, conflicted) for name, conflicted in listed)
+        found.extend(
+            _not_checked(name, conflicted)
+            if isinstance(conflicted, Exception)
+            else _layer_conflicts(name, conflicted)
+            for name, conflicted in listed
+        )
     return found
+
+
+def _not_checked(name, error):
+    """The W002 of branch `name`, which could not be checked: its chain is
+    broken, or its pinned snapshot is missing (`error`)."""
+    return checks.Warning(
+        f"Branch {name!r} was not checked for conflicts with packaged UI "
+        f"layers: {error}",
+        hint="Its chain is broken or its pinned snapshot is missing, so it "
+        "renders its published branch: repair or delete it.",
+        id=LAYER_CONFLICTS_ID,
+    )
 
 
 def _prefixed_names(alias) -> bool:

@@ -586,3 +586,20 @@ def test_w002_costs_one_query_without_layers_or_prefixed_names(admin_login):
         [warning] = layer_warnings()
         assert "'main'" in warning.msg and "gone:list" in warning.msg
         assert "orphan" in warning.msg
+
+
+@pytest.mark.django_db
+@test_context
+def test_w002_reports_a_branch_it_could_not_check(admin_login):
+    """A branch whose chain is broken is not checked for layer conflicts
+    (it renders its published branch): W002 says so for that branch, not
+    nothing, and still checks the others."""
+    reverse("ui-components-list")
+    make_branch("orphan", "project-a", parent="gone")
+    make_branch("wip", "project-a")
+    with installed(MORE_APP):
+        warnings = layer_warnings()
+    assert [w.id for w in warnings] == [CHECK_ID]
+    [warning] = warnings
+    assert "'orphan'" in warning.msg and "not checked" in warning.msg
+    assert "'wip'" not in warning.msg and "'main'" not in warning.msg

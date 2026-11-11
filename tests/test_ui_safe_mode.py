@@ -161,7 +161,12 @@ def test_safe_mode_notice_present_and_required(
     )
     monkeypatch.setattr(renderer, "resolve_component", lambda *a, **k: leaves_out)
     page = get_html(url)
-    assert 'scrud-ui: component "layertest:page" failed' in page
+    # Said as what it is (it rendered), not as a failure.
+    assert page.startswith(
+        '<!-- scrud-ui: page component "layertest:page" leaves out the branch'
+        " banner or the safe mode notice -->"
+    )
+    assert "failed -->" not in page
     assert "<main>bare</main>" not in page and NOTICE in page
     # One that keeps the body (which holds the chrome) is used.
     keeps = SimpleNamespace(

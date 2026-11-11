@@ -668,6 +668,7 @@ def _page(
         component = builtin_component(PAGE_BUILTIN)
     if component.name == PAGE_BUILTIN:
         return component.compiled().render(page_context())
+    comment = '<!-- scrud-ui: component "{}" failed -->{}'
     try:
         page = component.compiled().render(page_context(component))
     except Exception:
@@ -680,12 +681,17 @@ def _page(
         if chrome is None or chrome in page:
             return page
         logger.warning(
-            "scrud-ui: page component %r leaves out the branch banner; the"
-            " built-in page is used",
+            "scrud-ui: page component %r leaves out the branch banner or the"
+            " safe mode notice; the built-in page is used",
             component.name,
         )
+        # It rendered: said as what it is, not as a failure.
+        comment = (
+            '<!-- scrud-ui: page component "{}" leaves out the branch banner'
+            " or the safe mode notice -->{}"
+        )
     return format_html(
-        '<!-- scrud-ui: component "{}" failed -->{}',
+        comment,
         component.name,
         builtin_component(PAGE_BUILTIN).compiled().render(page_context()),
     )

@@ -19,6 +19,7 @@ same functions (`scrud_django.ui.studio.page`)."""
 
 import contextlib
 import importlib.resources
+import logging
 
 from django.http import Http404
 from django.urls import reverse
@@ -73,6 +74,8 @@ SELECTABLE_KEY = "mine"
 TYPE_PARAMETER = "type"
 # The query parameter of the push preview that names the target branch.
 TARGET_PARAMETER = "target"
+
+logger = logging.getLogger(__name__)
 
 
 @contextlib.contextmanager
@@ -213,7 +216,13 @@ class BranchStatusViewSet(ComputedResourceViewSet):
             selection, branch, all_branches = _selected(request, key)
             try:
                 root = published_root(branch.name, all_branches)
-            except BranchChainError:  # defensive: `selectable` refused it
+            except BranchChainError as error:
+                # `selectable` refuses such a branch: not expected, so said.
+                logger.warning(
+                    "scrud-ui: the status of branch %r has no published root: %s",
+                    branch.name,
+                    error,
+                )
                 root = None
             slug = request.query_params.get(TYPE_PARAMETER)
             return {

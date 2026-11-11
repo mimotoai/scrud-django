@@ -7,7 +7,10 @@
 // shapes only:
 //
 //   {"type": "scrud-preview:errors", "errors": [{"kind", "name", "messages"}]}
-//     once, when loaded: the drafts the preview left out, and why;
+//     once, when loaded: the drafts the preview left out, and why, as the
+//     server listed them (#scrud-preview-errors, read when this script runs,
+//     before the branch's own scripts); when that list cannot be read,
+//     {"type": "scrud-preview:errors", "errors": null, "failed": true};
 //   {"type": "scrud-preview:select", "pointer": "<JSON Pointer>",
 //    "href": "<data-scrud-href>" | null}
 //     on a click inside a node: the nearest scrud-node's pointer, and the
@@ -30,18 +33,23 @@
     parent.postMessage(message, "*");
   }
 
-  function errors() {
+  // The errors message, read now: the element is before this script, and
+  // the branch's scripts, which could change it, run after it.
+  function errorsMessage() {
     var element = document.getElementById("scrud-preview-errors");
-    if (!element) {
-      return [];
-    }
+    var found;
     try {
-      var found = JSON.parse(element.textContent);
-      return Array.isArray(found) ? found : [];
+      found = element ? JSON.parse(element.textContent) : undefined;
     } catch (error) {
-      return [];
+      found = undefined;
     }
+    if (!Array.isArray(found)) {
+      // Not "no errors": the list could not be read.
+      return { type: "scrud-preview:errors", errors: null, failed: true };
+    }
+    return { type: "scrud-preview:errors", errors: found };
   }
+  var errors = errorsMessage();
 
   document.addEventListener(
     "click",
@@ -66,7 +74,7 @@
   );
 
   function loaded() {
-    post({ type: "scrud-preview:errors", errors: errors() });
+    post(errors);
   }
 
   if (document.readyState === "loading") {
