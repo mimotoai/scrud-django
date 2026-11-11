@@ -134,7 +134,7 @@ tasks to them. The task texts below are already updated; this list says why.
   - The test suite runs without the layer; studio-layer tests use the `studio_layer` fixture (Reconciliation 2).
 - **Studio pages are in scope `studio` (call made while planning).**
   - The layer's rules for the page and for every UI-type root are scoped: `studio scrud:page`, `studio <UIBranch IRI>`, and so on. Without the scope, UI-type pages render as before.
-  - Workbench URLs always carry `?ui-scope=studio` (R4).
+  - Workbench URLs always carry `?ui-scope=studio&ui-mode=view` (R4, R10). Ruling (Task 3): a user who may PUT T gets edit mode, in which the root frame is a `<form hx-put>` and a view-mode component is skipped; the workbench is a view of T, so it is requested in view mode. A requested view mode (`?ui-mode=view`, `Scrud-UI-Mode: view`, an embed's `mode="view"`) also omits the frame's Delete button (runtime, Task 3). Branch fields are edited in Task 8's embedded settings panel.
   - Panes use narrower scopes inside it: `studio studio-items`, `studio studio-status`, `studio studio-editor`, `studio studio-push`, `studio studio-types`, `studio studio-branch`.
 - **Links.** Item and push `href`s in studio data are API paths: a component links them with `in_mount(href)`; embeds map them already. Embed paths are built with `api_url(slug, key)` (Reconciliation 4).
 - **Layer CSS and JS load on every page (call made while planning; there is no runtime "scope" for CSS or JS items).** They are layer items, so they are effective on every branch, so:
@@ -191,7 +191,7 @@ tasks to them. The task texts below are already updated; this list says why.
     </nav>
     ```
 
-    - `{studio}` is the studio root's prefix plus `ui-branches/<pk>/?ui-scope=studio`, linking to the studio root's own workbench. It is omitted when the setting is unset or the branch has no prefix.
+    - `{studio}` is the studio root's prefix plus `ui-branches/<pk>/?ui-scope=studio&ui-mode=view`, linking to the studio root's own workbench. It is omitted when the setting is unset or the branch has no prefix.
     - `{safe}` is the current URL with `ui-safe=1`.
     - `{bootstrap}` is `reverse("scrud-studio:types")`.
 
@@ -287,7 +287,7 @@ tasks to them. The task texts below are already updated; this list says why.
     - "Browse app on this branch" (`browse_url`), only when non-null.
   - **`studio.js` workbench behaviour:**
     - pane toggles collapse a pane to a rail. The state is stored in `localStorage` under `studio:panes`, wrapped in try/catch, and the preview can't be hidden;
-    - workbench state lives in the URL query (`type`, `item`, `pointer`, `mode`, `context`, `scope`, `instance`, `pinned`), via `history.replaceState`; `ui-scope=studio` and any `ui-safe` stay;
+    - workbench state lives in the URL query (`type`, `item`, `pointer`, `mode`, `context`, `scope`, `instance`, `pinned`), via `history.replaceState`; `ui-scope=studio`, `ui-mode=view` and any `ui-safe` stay;
     - when the state has a `type` (on load, and when it changes), it re-fetches the strip with `?type=<type>` (Reconciliation 9);
     - clicking a `data-studio-open` entry sets `item` and loads the editor (Task 4);
     - after any successful write (`htmx:afterRequest` with a 2xx on a non-GET), it re-fetches the embedded items and strip with `hx-get` (same URL, with the pane's `Scrud-UI-Scope` header set explicitly) and refreshes the preview;
@@ -520,7 +520,7 @@ tasks to them. The task texts below are already updated; this list says why.
   - a working branch `studio-wip` under it, context `ui-studio-wip`;
   - grants for `author`: GET on `studio`; write on UI item types and `ui-pushes` in `ui-studio-wip`; push into `studio` (`ui-pushes` in `ui-studio`); GET on `alice-wip`'s tree, as today;
   - `owner` holds the site-level `ui-branches` grant in `""`.
-  - It prints the workbench URLs: `/workbench/ui-branches/<alice-wip pk>/?ui-scope=studio` and the `studio-wip` one.
+  - It prints the workbench URLs: `/workbench/ui-branches/<alice-wip pk>/?ui-scope=studio&ui-mode=view` and the `studio-wip` one.
 - The demo sidebar's move from `hx-get` to `embed` is the builder's choice; keep it if it's free.
 
 - [ ] **Step 1: Write the failing test: `test_seed_creates_studio_tree_and_grants`.**
