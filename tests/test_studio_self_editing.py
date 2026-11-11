@@ -391,24 +391,22 @@ def test_broken_studio_page_on_S_recoverable(studio_layer):
     type_page = reverse("scrud-studio:type", args=["ui-stylesheets"])
     assert f'href="{type_page}"' in types
     assert 'value="studio-wip"' in get_text(type_page + "?branch=studio-wip")
-    # It edits working branches only: its revert of S's override (with the
-    # ETag its item read gives) is refused as read-only, since changes reach
-    # a published branch by a push ...
-    When.http.get(
-        reverse("scrud-studio:item")
-        + "?"
-        + urlencode(
-            {"kind": "component", "name": "studio:workbench", "branch": "studio"}
-        ),
-        HTTP_ACCEPT=JSON,
-    )
-    Then.http.status_code_is(200)
-    etag = Http.response["ETag"]
+    # Its strip on S lists S's own items, the broken overrides among them,
+    # for its editor to open and revert.
+    strip = get_text(type_page + "?branch=studio")
+    for name in ("studio:page", "studio:workbench", "studio:items"):
+        assert f'data-kind="component" data-name="{name}"' in strip
+    # It saves nothing on S, a published branch (changes reach it by a
+    # push) ...
     When.http.post(
-        reverse("scrud-studio:revert-item"),
-        data={"kind": "component", "name": "studio:workbench", "branch": "studio"},
+        reverse("scrud-studio:save-item"),
+        data={
+            "kind": "component",
+            "name": "studio:workbench",
+            "branch": "studio",
+            "content": packaged("studio:workbench"),
+        },
         format="json",
-        HTTP_IF_MATCH=etag,
     )
     Then.http.status_code_is(400)
     assert Http.response.json()["type"] == READ_ONLY
@@ -433,6 +431,43 @@ def test_broken_studio_page_on_S_recoverable(studio_layer):
     assert page.startswith(PAGE_FAILED)  # studio:page is still broken
     assert FAILED.format("studio:workbench") not in page
     assert Page(page).having("data-studio-workbench")
+    # The bootstrap studio reverts S's broken page override: its revert
+    # (with the ETag its item read gives) drops S's own row, and the
+    # workbench renders on the layer's studio:page again.
+    page_item = {"kind": "component", "name": "studio:page", "branch": "studio"}
+    When.http.get(
+        reverse("scrud-studio:item") + "?" + urlencode(page_item), HTTP_ACCEPT=JSON
+    )
+    Then.http.status_code_is(200)
+    assert Http.response.json()["own"] is True
+    etag = Http.response["ETag"]
+    # Without If-Match it deletes nothing (the view's 428).
+    When.http.post(reverse("scrud-studio:revert-item"), data=page_item, format="json")
+    Then.http.status_code_is(428)
+    assert "studio:page" in [
+        c["name"] for c in own_rows(UI_COMPONENT_TYPE_URI, "studio")
+    ]
+    When.http.post(
+        reverse("scrud-studio:revert-item"),
+        data=page_item,
+        format="json",
+        HTTP_IF_MATCH=etag,
+    )
+    Then.http.status_code_is(204)
+    assert "studio:page" not in [
+        c["name"] for c in own_rows(UI_COMPONENT_TYPE_URI, "studio")
+    ]
+    page = get_text(url)
+    assert PAGE_FAILED not in page and "scrud-ui: page" not in page
+    assert '<div class="studio" data-studio><main>' in page
+    assert Page(page).having("data-studio-workbench")
+    assert list(studio_links(page)) == ["Studio", "Safe mode", "Bootstrap studio"]
+    # The item S shows now is the layer's.
+    When.http.get(
+        reverse("scrud-studio:item") + "?" + urlencode(page_item), HTTP_ACCEPT=JSON
+    )
+    Then.http.status_code_is(200)
+    assert Http.response.json()["own"] is False
     # From S's own workbench in safe mode, the history rolls S back: a
     # restore of the version before the break removes the overrides.
     safe = Page(get_text(studio_links(get_text(links["Studio"]))["Safe mode"]))

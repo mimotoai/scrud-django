@@ -155,6 +155,7 @@ def test_save_own_item_needs_if_match_and_412s_on_stale(admin_login, ui_alice_lo
 @pytest.mark.django_db
 @test_context
 def test_published_branch_is_read_only(admin_login):
+    """Every write but a revert (`test_revert_on_a_published_branch`)."""
     main_and_wip(admin_login)
     make_branch("shop", "", parent="main", prefix="/shop/")
     before = stored_state()
@@ -164,7 +165,6 @@ def test_published_branch_is_read_only(admin_login):
             "name": "row",
             "content": {"engine": "django", "mode": "view", "template": "<u/>"},
         },
-        "revert-item": {"kind": "component", "name": "row"},
         "pull": {},
         "push": {"target": "main"},
     }
@@ -181,7 +181,120 @@ def test_published_branch_is_read_only(admin_login):
                 assert problem()["type"] == READ_ONLY
                 assert branch in problem()["detail"]
                 assert "HX-Trigger" not in response
+        # A revert on a published branch is not refused as read-only: shop
+        # has no row of its own for the item, so a 404, and still nothing
+        # is dispatched.
+        response = studio(
+            "revert-item", {"kind": "component", "name": "row", "branch": "shop"}
+        )
+        Then.http.status_code_is(404)
+        assert "HX-Trigger" not in response
     assert stored_state() == before
+
+
+def shop_override(admin_login, template="<u>shop</u>"):
+    """``shop``'s override of main's ``row``, created through the API by the
+    superuser: ``(pk, ETag)``."""
+    Given.http.force_authenticate(admin_login)
+    When.http.post(
+        reverse("ui-components-list"),
+        data=component(
+            name="row", template=template, branch="shop", rbac_context="project-a"
+        ),
+        format="json",
+    )
+    Then.http.status_code_is(201)
+    pk = int(Http.response["Location"].rstrip("/").rsplit("/", 1)[1])
+    return pk, Http.response["ETag"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_revert_on_a_published_branch(admin_login):
+    """The bootstrap studio's way to repair a published branch: a revert
+    drops its own row of the item, through the resource view's DELETE with
+    the request's If-Match, with the API's checks and no others."""
+    main_row = main_and_wip(admin_login)
+    make_branch("shop", "project-a", parent="main", prefix="/shop/")
+    pk, first = shop_override(admin_login)
+    # A newer edit of the override, so that `first` is stale.
+    When.http.put(
+        reverse("ui-components-detail", args=[pk]),
+        data=component(
+            name="row", template="<u>newer</u>", branch="shop", rbac_context="project-a"
+        ),
+        format="json",
+        HTTP_IF_MATCH=first,
+    )
+    Then.http.status_code_is(200)
+    current = Http.response["ETag"]
+    revert = {"kind": "component", "branch": "shop", "name": "row"}
+    # May select shop (GET on branches in "project-a") and read components
+    # there, but may not DELETE them: refused as the API refuses it.
+    user = assign_ui_role((UI_BRANCH_TYPE_URI,), "project-a")
+    read = [UI_COMPONENT_TYPE_URI, collection_type_uri_for(UI_COMPONENT_TYPE_URI)]
+    grant(user, {"http.GET": read}, "project-a")
+    before = stored_state()
+    Given.http.force_authenticate(user)
+    When.http.delete(reverse("ui-components-detail", args=[pk]), HTTP_IF_MATCH=current)
+    Then.http.status_code_is(403)
+    api = (Http.response["Content-Type"], Http.response.json())
+    response = studio("revert-item", revert, HTTP_IF_MATCH=current)
+    Then.http.status_code_is(403)
+    assert (response["Content-Type"], response.json()) == api
+    assert "HX-Trigger" not in response
+    assert stored_state() == before
+    # A user who may not select shop is refused as for an unknown branch,
+    # before anything is dispatched.
+    Given.http.force_authenticate(assign_ui_role((UI_COMPONENT_TYPE_URI,), "alice"))
+    with mock.patch(
+        "scrud_django.ui.studio.writes.call_view",
+        side_effect=AssertionError("dispatched"),
+    ):
+        studio("revert-item", revert, HTTP_IF_MATCH=current)
+        Then.http.status_code_is(400)
+        assert problem()["type"] == UNAVAILABLE
+    # With the DELETE grant: conditional as the API's DELETE (ruling S10),
+    # 428 without If-Match and 412 with a stale one; nothing is deleted.
+    grant(user, {"http.DELETE": [UI_COMPONENT_TYPE_URI]}, "project-a")
+    Given.http.force_authenticate(user)
+    for headers, status in (({}, 428), ({"HTTP_IF_MATCH": first}, 412)):
+        response = studio("revert-item", revert, **headers)
+        Then.http.status_code_is(status)
+        assert response["Content-Type"] == "application/problem+json"
+        assert response.json()["status"] == status
+        assert "HX-Trigger" not in response
+        assert stored_state() == before
+    # The current ETag: shop's override is dropped, and shop shows main's
+    # row again; main's row is untouched.
+    response = studio("revert-item", revert, HTTP_IF_MATCH=current)
+    Then.http.status_code_is(204)
+    assert response["HX-Trigger"] == SAVED
+    assert own_rows(UI_COMPONENT_TYPE_URI, "shop") == []
+    assert not Resource.objects.filter(pk=pk).exists()
+    assert stored(main_row.pk).etag == main_row.etag
+    # Nothing left to revert.
+    studio("revert-item", revert, HTTP_IF_MATCH=current)
+    Then.http.status_code_is(404)
+    # main too: its own row of an item is the item itself, so a revert
+    # deletes it (as the API's DELETE of it would), If-Match required.
+    Given.http.force_authenticate(admin_login)
+    on_main = {"kind": "component", "branch": "main", "name": "row"}
+    studio("revert-item", on_main)
+    Then.http.status_code_is(428)
+    assert stored(main_row.pk).etag == main_row.etag
+    response = studio("revert-item", on_main, HTTP_IF_MATCH=quoted(main_row.etag))
+    Then.http.status_code_is(204)
+    assert response["HX-Trigger"] == SAVED
+    assert not Resource.objects.filter(pk=main_row.pk).exists()
+    # The other writes on a published branch stay refused as read-only.
+    for branch in ("main", "shop"):
+        studio(
+            "save-item",
+            {**revert, "branch": branch, "content": {"template": "<u/>"}},
+        )
+        Then.http.status_code_is(400)
+        assert problem()["type"] == READ_ONLY
 
 
 @pytest.mark.django_db

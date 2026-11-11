@@ -216,6 +216,16 @@
   are page chrome: a page component that leaves them out, or fails, is
   replaced by the built-in page. In safe mode the whole workbench renders
   from the layer, its panes included. The bootstrap studio is unchanged.
+* The bootstrap studio reverts on published branches, so that it can undo a
+  broken override on the studio root (the first of the ways out). `POST
+  revert-item` accepts a published branch, `main` included: it is the
+  `DELETE` of the branch's own row of the item through its resource view,
+  with `If-Match` required and the API's checks and grants, no others. The
+  strip lists a published branch's own items, and the editor shows them
+  read-only with Revert and no Save; an inherited item has none. Every other
+  studio write on a published branch (`save-item`, `new-component`, `pull`,
+  `push`, drafts in a live preview) is still refused with
+  `ui-studio-branch-read-only`.
 * For the studio's components and scripts, and usable by any: stored Jinja
   components get `in_mount(href)` (an API URL mapped into the page's
   published prefix) and `api_url(slug, key=None)` (the API path of a

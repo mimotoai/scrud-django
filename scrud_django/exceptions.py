@@ -341,9 +341,10 @@ class UIStudioContextUnavailableError(ScrudException):
 
 
 class UIStudioBranchReadOnlyError(ScrudException):
-    """A studio write naming a published branch (``main``, or one with a
-    ``prefix``): the studio edits working branches only, so that changes
-    reach a published branch by a push. Refused before anything is
+    """A studio write other than a revert naming a published branch
+    (``main``, or one with a ``prefix``): the studio edits working branches
+    only, so that changes reach a published branch by a push; it only
+    reverts a published branch's own items. Refused before anything is
     written or dispatched."""
 
     status_code = 400
@@ -352,8 +353,8 @@ class UIStudioBranchReadOnlyError(ScrudException):
 
     def __init__(self, branch):
         super().__init__(
-            f"UI branch {branch!r} is published: the studio does not edit it. "
-            "Edit a working branch, then push it."
+            f"UI branch {branch!r} is published: the studio does not edit it "
+            "(it only reverts its own items). Edit a working branch, then push it."
         )
         self.type = "https://api.openteams.com/http-problem/ui-studio-branch-read-only"
         self.title = "Studio branch read-only"

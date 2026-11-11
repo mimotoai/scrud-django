@@ -430,6 +430,7 @@
     var reason = "";
     if (!this.editable) {
       reason = "This branch is published: read-only. Changes reach it by a push from a working branch.";
+      if (item.own) reason += " Revert drops this branch's own row of the item.";
     } else if (content.deleted === true) {
       reason = "Deleted on this branch.";
     } else if (item.kind === "component" && content.engine !== "jinja2") {
@@ -455,7 +456,9 @@
     area.hidden = false;
     area.readOnly = !editable;
     byId("studio-save").hidden = !editable;
-    byId("studio-revert").hidden = !(this.editable && item.own);
+    // A published branch's own item can be reverted too: the one write the
+    // studio makes on a published branch, its way to repair one.
+    byId("studio-revert").hidden = !item.own;
     clear(byId("studio-editor-errors"));
     showDraft(draft);
   };

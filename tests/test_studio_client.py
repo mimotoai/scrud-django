@@ -727,6 +727,70 @@ def test_editor_is_read_only_for_django_components_and_published_branches(
 
 @pytest.mark.django_db
 @test_context
+def test_published_branch_offers_revert_for_its_own_items_only(ui_alice_login):
+    """On a published branch the editor stays read-only (no Save), but the
+    branch's own item, opened from the strip, offers Revert: it sends the
+    item's ETag as If-Match and reopens the item, now inherited, with no
+    Revert."""
+    setup_wip(ui_alice_login)
+    make_branch("shop", "alice", prefix="/shop/")
+    put_item("ui-components", "row", "<u>{{ value }}</u>", "shop", "alice")
+    query = "branch=shop&mode=view"
+    page = studio_page(branch="shop")
+    own = {**item("<u>{{ value }}</u>", etag='"s1"'), "from": "shop"}
+    own["content"]["branch"] = "shop"
+    inherited = item("<b>{{ value }}</b>", own=False, etag='"m1"')
+    out = run_studio(
+        page,
+        preview_page(branch="shop"),
+        [
+            route("GET", explain_url(POINTER, query), body=explanation("row")),
+            route("GET", item_url("row", branch="shop"), body=own),
+            route("GET", item_url("row", branch="shop"), body=inherited),
+            route(
+                "POST",
+                reverse("scrud-studio:revert-item"),
+                204,
+                headers={"HX-Trigger": "scrud-studio-saved"},
+            ),
+        ],
+        r"""
+        click(byId('studio-changes').querySelector('[data-studio-open]'));
+        await settle();
+        const state = () => ({
+          readOnly: byId('studio-editor-text').readOnly,
+          saveHidden: byId('studio-save').hidden,
+          revertHidden: byId('studio-revert').hidden,
+          source: text('studio-editor-source'),
+          reason: text('studio-editor-reason'),
+        });
+        out.own = state();
+        click(byId('studio-revert'));
+        await settle();
+        out.after = state();
+        out.message = text('studio-message');
+        """,
+    )
+    assert out["own"]["readOnly"] is True and out["own"]["saveHidden"] is True
+    assert out["own"]["revertHidden"] is False
+    assert "Changed on branch shop" in out["own"]["source"]
+    assert "read-only" in out["own"]["reason"]
+    (revert,) = [c for c in out["calls"] if c["url"].endswith("revert-item")]
+    assert revert["method"] == "POST"
+    assert revert["headers"]["If-Match"] == '"s1"'
+    assert revert["headers"]["X-CSRFToken"] == csrf(page)
+    assert revert["body"] == {"kind": "component", "branch": "shop", "name": "row"}
+    # Reopened, inherited from main: read-only, and nothing to revert.
+    items = [c["url"] for c in out["calls"] if "/item?" in c["url"]]
+    assert items == [item_url("row", branch="shop")] * 2
+    assert out["after"]["readOnly"] is True and out["after"]["saveHidden"] is True
+    assert out["after"]["revertHidden"] is True
+    assert "Inherited from main" in out["after"]["source"]
+    assert "Reverted row" in out["message"]
+
+
+@pytest.mark.django_db
+@test_context
 def test_new_component_form_posts_the_choice_and_says_whether_it_wins(
     ui_alice_login,
 ):

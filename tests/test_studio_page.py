@@ -293,6 +293,35 @@ def test_published_branch_is_read_only_and_browses_under_its_prefix(ui_alice_log
 
 @pytest.mark.django_db
 @test_context
+def test_published_branch_lists_its_own_items_to_revert(ui_alice_login):
+    """A published branch's own rows are listed in its strip, as a working
+    branch's are, so that the editor opens them and offers Revert; the
+    strip says so. Inherited items are not listed."""
+    setup_branches(ui_alice_login)
+    store_item(
+        "ui-components",
+        "shop",
+        "project-a",
+        name="row",
+        engine="jinja2",
+        mode="view",
+        template="<u>{{ value }}</u>",
+    )
+    grant(ui_alice_login, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "project-a")
+    Given.http.force_authenticate(ui_alice_login)
+    shown = page(branch="shop")
+    assert attr(shown, "data-editable") == "false"
+    changes = section(shown, "studio-changes")
+    assert re.search(r'data-kind="component"[^>]*data-name="row"', changes)
+    assert 'data-name="head"' not in changes  # main's, inherited
+    text = strip_text(section(shown, "studio-strip-body"))
+    assert "read-only" in text and "revert" in text.lower()
+    # The editor has its Revert control (studio.js shows it for an own item).
+    assert re.search(r'<button[^>]*id="studio-revert"', section(shown, "studio-editor"))
+
+
+@pytest.mark.django_db
+@test_context
 def test_item_reads_the_effective_item_the_user_may_read(ui_alice_login):
     row = setup_branches(ui_alice_login)
     Given.http.force_authenticate(ui_alice_login)

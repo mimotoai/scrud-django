@@ -1190,7 +1190,13 @@ What a user can see or do comes from their grants, whatever the studio shows:
   branch and on its working ancestors, an intact chain and its pinned
   snapshots. `main` and published branches are listed too, read-only: the
   studio edits working branches only, and changes reach a published branch by
-  a push. The page opens on the first working branch the user may select.
+  a push. The one write it makes on a published branch is a revert of one of
+  the branch's own items (an override on the self-hosted studio's root, say):
+  the branch strip lists a published branch's own items as it lists a working
+  branch's changes (on `main`, whose every item is its own, it lists none;
+  open one from the preview), and the editor shows them read-only, with
+  **Revert** and no Save. The page opens on the first working branch the user
+  may select.
 - A rule from a stylesheet the user may not `GET` shows in the inspector as its
   rank only (`{"readable": false, "rank": [...], "outcome": ...}`): no
   selector, component or stylesheet name. A packaged
@@ -1248,6 +1254,9 @@ first response.
 
 A click on a node opens its winning component in the editor, when it is a
 stored one you may read; the branch strip opens any item the branch changed.
+**Revert** shows for an item that is the branch's own row, on a working or a
+published branch alike, and sends the ETag the editor read as `If-Match`; an
+item the branch inherits has none.
 After a save or a revert the editor reopens the item it was showing, not the
 node's winner; after **New component** it opens the node's winner, the new
 component when its rule wins. A save refused with 412 (the item changed since
@@ -1583,10 +1592,20 @@ its `ETag`. Errors: 400 `ui-studio-branch-read-only`, 400
 
 Body: `kind`, `name`, `applies_to`, `branch`. Deletes the branch's own row, so
 the branch shows its parent's item again (the undo, and "take theirs" for a
-conflict). **`If-Match` is required**: the studio sends it as given, so
-without one the answer is 428 and a stale one gets 412; a revert must not
-silently delete a newer edit on a shared working branch. 404 when the branch
-has no row of its own for the item. Errors besides: as `save-item`.
+conflict). The branch may be a published one, `main` included: a revert is the
+one studio write a published branch accepts, so that the bootstrap studio can
+undo a broken override on one (see [Ways out](#ways-out)). On `main` an item's
+own row is the item itself, so a revert there deletes it, and the branch shows
+a packaged layer's item of that name, if any. The revert is the `DELETE` of
+the row through its resource view, with that view's checks and no others: it
+needs the grant the API's `DELETE` of that row needs, in the row's context
+(on `main`, usually the site's, `""`), and `GET` on the branch to select it.
+**`If-Match` is
+required**: the studio sends it as given, so without one the answer is 428 and
+a stale one gets 412; a revert must not silently delete a newer edit on a
+shared branch. 404 when the branch has no row of its own for the item.
+Errors besides: 400 `ui-branch-unavailable`, 400 for a bad field, and the
+view's (403, 412, 428) as they are.
 
 #### `POST pull`
 
@@ -1609,7 +1628,7 @@ as the push API does. Errors: as `save-item`.
 | Problem type | Status | When |
 |---|---|---|
 | `ui-branch-unavailable` | 400 | the branch (or a push target) is unknown or the user may not select it; one answer for both |
-| `ui-studio-branch-read-only` | 400 | a write names a published branch (`main` or one with a prefix); refused before anything is dispatched; also drafts in a `live-preview` of one |
+| `ui-studio-branch-read-only` | 400 | a write other than a revert (`save-item`, `new-component`, `pull`, `push`) names a published branch (`main` or one with a prefix); refused before anything is dispatched; also drafts in a `live-preview` of one |
 | `ui-studio-preview-invalid` | 400 | a `live-preview` whose `request` field is missing, not JSON, has a field of the wrong shape, sends more than 50 drafts, or sends `after_push` with drafts |
 | `ui-studio-context-unavailable` | 400 | a sample or preview in a data context whose UI stylesheets the user may not read |
 | `ui-pointer-not-found` | 400 | `explain` (or the options) for a pointer to no node the preview renders |
@@ -2720,13 +2739,21 @@ the same request as from a normal one, with the same checks.
 
 **The bootstrap studio** at its mount (`/studio/` in the demo) is package
 templates and static files, not UI items, so nothing stored changes it. It
-writes working branches only: on a published branch, the studio root
-included, its saves and reverts are refused with 400
-`ui-studio-branch-read-only` (changes reach a published branch by a push).
+saves on working branches only (on a published branch, the studio root
+included, a save is refused with 400 `ui-studio-branch-read-only`: changes
+reach a published branch by a push), but it reverts a published branch's own
+items: the studio root's broken override among them.
 
 **Undoing a break on S.** Each of these is a click in a page that the break
 cannot reach:
 
+- **Revert the override in the bootstrap studio**: open any type's page in
+  the bootstrap studio (its link above), pick the studio root as the branch,
+  open the broken item from the strip's list of the branch's own items, and
+  choose **Revert** (`POST revert-item` in [The studio API](#the-studio-api)). S's own
+  row is deleted and S shows the packaged item again (or the one it
+  inherits). It needs the grant the API's `DELETE` of that row needs, in its
+  context, and `GET` on S to select it.
 - **Restore S** from its own workbench in safe mode: open the *Studio* link's
   page (S's workbench), follow *Safe mode*, and in the strip's history choose
   "Restore to version N" for the version before the break (see

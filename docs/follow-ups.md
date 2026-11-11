@@ -722,13 +722,17 @@ therefore learns from the answer (404 "no row of its own" from `revert-item`,
 or which of 428 and 403 comes first from `save-item`) whether an override
 exists, where the resource view alone would answer 403 or 404 alike. It
 reveals an item's existence and name only, never its content, and only to
-someone already allowed to select the branch.
+someone already allowed to select the branch. Since `revert-item` accepts
+published branches, that includes them, `main` too, which every signed-in
+user may select: anyone signed in can tell whether `main` has an item of a
+given name.
 
 Fix: check that the user may read the branch's items in its context before
 `own_item`, and answer as the view does when not. Test: in
 `tests/test_studio_writes.py`, as a user with `GET` on the branch and none on its
 item types, `revert-item` of an item the branch overrides and of one it does
 not must answer the same status; today they differ (403 or 428 against 404).
+The same on `main`, for a user with no grant at all.
 
 <a id="studio-replica-lag"></a>
 ## studio-replica-lag: the answer of new-component reads `wins` and `explanation` from the read database
