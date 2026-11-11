@@ -350,7 +350,7 @@ def _readable(request):
     def readable(source):
         if source is None or source.content is None:
             return True
-        return may_read_item(request, "stylesheet", source.content)
+        return may_read_item(request, "stylesheet", source.pk, source.content)
 
     return readable
 

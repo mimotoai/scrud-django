@@ -615,6 +615,43 @@ def test_inside_type_overrides_a_packaged_root_component(admin_login, ui_alice_l
 
 @pytest.mark.django_db
 @test_context
+def test_inside_type_overrides_a_packaged_root_without_read_in_root_context(
+    admin_login, ui_alice_login
+):
+    """A packaged layer's component is public (spec R1, `may_read_item`):
+    a user who may not read components in ``""`` is offered "inside this
+    type" for a packaged root component, and the action copies it into an
+    override on their branch."""
+    make_stylesheet("s", [("tests://ToDo", "layermore:list")])
+    alice_on_wip(admin_login, ui_alice_login)
+    with installed(MORE_APP):
+        etag, packaged = layer_item("component", ("layermore:list",))
+        assert options(slug="todos", pointer=EXPLANATION)["inside_type"] == {
+            "scope": "todos-blockers",
+            "root_component": "layermore:list",
+            "property": "blockers",
+            "creates_root": False,
+        }
+        got = new_component(
+            slug="todos", pointer=EXPLANATION, inside_type=True, template=MARK
+        )
+        assert got["written"][0] == {"kind": "component", "name": "layermore:list"}
+        assert got["wins"] is True
+        root, _node = own_rows(UI_COMPONENT_TYPE_URI, "wip")
+        assert root == {
+            "name": "layermore:list",
+            "engine": "django",
+            "mode": "view",
+            "template": packaged["template"],
+            "scopes": {"blockers": "todos-blockers"},
+            "branch": "wip",
+            "rbac_context": "alice",
+            "base": etag,
+        }
+
+
+@pytest.mark.django_db
+@test_context
 def test_new_root_is_selected_by_the_most_specific_class_term(
     admin_login, ui_alice_login
 ):

@@ -134,12 +134,12 @@ def _conflicts(request, branch) -> list[dict]:
     (`layer_conflicts`, ``with: "layer"``)."""
     own = {}
     for kind, rows in own_rows(branch).items():
-        for _pk, _etag, content in rows:
-            own.setdefault((kind, item_key(kind, content, branch)), content)
+        for pk, _etag, content in rows:
+            own.setdefault((kind, item_key(kind, content, branch)), (pk, content))
 
     def readable(kind, key):
-        content = own.get((kind, key))
-        return content is not None and may_read_item(request, kind, content)
+        pk, content = own.get((kind, key), (None, None))
+        return content is not None and may_read_item(request, kind, pk, content)
 
     found = [
         {**conflict, "with": "parent"}

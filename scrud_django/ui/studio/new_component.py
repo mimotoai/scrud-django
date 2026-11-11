@@ -31,7 +31,6 @@ from django.http import HttpResponse
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
-from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.registration import write_db
 from scrud_django.ui import ld
 from scrud_django.ui.branches import ITEM_KINDS, MAIN
@@ -47,6 +46,7 @@ from scrud_django.ui.branches.model import (
     branch_of,
     item_key,
 )
+from scrud_django.ui.branches.reads import may_read_item
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.branches.versions import batched_versions
 from scrud_django.ui.cascade import (
@@ -464,12 +464,11 @@ def _jinja_copy(template: str) -> str:
 
 def _may_read_component(request, name) -> bool:
     """Whether the user of `request` may read the component `name` the
-    selected branch shows, as the list filter checks it."""
-    for _, _, content in effective_rows(UI_COMPONENT_TYPE_URI):
+    selected branch shows (`may_read_item`: as the list filter checks a
+    stored one; a packaged layer's is public)."""
+    for pk, _etag, content in effective_rows(UI_COMPONENT_TYPE_URI):
         if content.get("name") == name:
-            return may_read_in_context(
-                request, UI_COMPONENT_TYPE_URI, content, resource_contexts(content)
-            )
+            return may_read_item(request, "component", pk, content)
     return False
 
 
@@ -579,9 +578,10 @@ def _extend(request, kind, branch: Branch, name, target, change, fresh=None):
     `target`) on `branch`, `content` being the item as the branch shows it:
     its own row (updated, with its ETag; a deletion marker counts as
     `fresh`), else the inherited item (overridden), else `fresh` (created).
-    Each item is read through its view (or, from a pinned snapshot, checked
-    as the list filter checks it), so that nothing the user may not read is
-    copied."""
+    Each item is read through its view (or, from a pinned snapshot or a
+    packaged layer, which have no view, checked with `may_read_item`: as
+    the list filter checks a stored one; a layer's is public), so that
+    nothing the user may not read is copied."""
     slug = KIND_SLUGS[kind]
     own = own_item(kind, branch, name, target)
     if own is not None:
@@ -608,9 +608,7 @@ def _extend(request, kind, branch: Branch, name, target, change, fresh=None):
         content = _ok(call_view(request, slug, "GET", pk=inherited[0])).data
     else:
         content = inherited[2]
-        if not may_read_in_context(
-            request, ITEM_KINDS[kind], content, resource_contexts(content)
-        ):
+        if not may_read_item(request, kind, inherited[0], content):
             raise PermissionDenied()
     return _ok(
         call_view(

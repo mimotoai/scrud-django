@@ -259,13 +259,13 @@ def _keyed(kind: str, rows, branch: Branch) -> dict[tuple, Resource]:
 
 
 def _parent_items(kind, type_uri, target: Branch, all_branches, using) -> dict:
-    """``(etag, content)`` of each item key visible on `target`'s parent as
-    `target` shows it (`parent_state`, with the packaged layers' items
-    beneath it; a root's are the layers' alone)."""
+    """``(pk, etag, content)`` of each item key visible on `target`'s
+    parent as `target` shows it (`parent_state`, with the packaged layers'
+    items beneath it, pk ``None``; a root's are the layers' alone)."""
     parent = LAYER_BRANCH if target.parent is None else all_branches[target.parent]
     return {
-        item_key(kind, content, parent): (etag, content)
-        for _pk, etag, content in parent_state(
+        item_key(kind, content, parent): (pk, etag, content)
+        for pk, etag, content in parent_state(
             kind, type_uri, target, all_branches, using
         )
     }
@@ -277,7 +277,7 @@ def _parent_etags(kind, type_uri, target: Branch, all_branches, using) -> dict:
     adds to `target` over a row of its own."""
     return {
         key: etag
-        for key, (etag, _content) in _parent_items(
+        for key, (_pk, etag, _content) in _parent_items(
             kind, type_uri, target, all_branches, using
         ).items()
     }
@@ -386,8 +386,8 @@ def _readable_conflicts(request, found, source, target, all_branches, using):
         if not entries:
             continue
         theirs = {
-            item_key(kind, content, target): content
-            for _pk, _etag, content in branch_state(
+            item_key(kind, content, target): (pk, content)
+            for pk, _etag, content in branch_state(
                 kind, type_uri, target.name, all_branches, using, include_deleted=True
             )
         }
@@ -397,10 +397,11 @@ def _readable_conflicts(request, found, source, target, all_branches, using):
                 mine.setdefault(item_key(kind, content, source), content)
         for entry in entries:
             key = tuple(entry["key"])
-            item = theirs.get(key)
+            pk, item = theirs.get(key, (None, None))
             if item is None and key in mine:
-                item = _onto(kind, mine[key], key, target, None)
-            if item is not None and may_read_item(request, kind, item):
+                # As the push would write it: a new row on the target.
+                pk, item = None, _onto(kind, mine[key], key, target, None)
+            if item is not None and may_read_item(request, kind, pk, item):
                 shown.append(entry)
     return shown
 
@@ -530,14 +531,20 @@ def push_changes(
     changes = []
     for write in plan.writes:
         if write.row is not None:
-            before = write.row.content
+            before_pk, before = write.row.pk, write.row.content
         else:
-            before = beneath[write.kind]().get(write.key, (None, None))[1]
+            before_pk, _etag, before = beneath[write.kind]().get(
+                write.key, (None, None, None)
+            )
         source = sources.get(write.kind, {}).get(write.key)
-        seen = (source.content if source is not None else None, before, write.content)
+        seen = (
+            (source.pk, source.content) if source is not None else (None, None),
+            (before_pk, before),
+            (write.row.pk if write.row is not None else None, write.content),
+        )
         if all(
-            may_read_item(request, write.kind, content)
-            for content in seen
+            may_read_item(request, write.kind, pk, content)
+            for pk, content in seen
             if content is not None
         ):
             changes.append(

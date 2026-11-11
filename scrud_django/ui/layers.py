@@ -105,6 +105,14 @@ def layer_item(kind: str, key: tuple) -> tuple[str, dict] | None:
     return None if found is None else (found[0], copy.deepcopy(found[1]))
 
 
+def is_layer_row(pk, content) -> bool:
+    """Whether `(pk, content)` (a row `effective_rows` gives) is a packaged
+    layer's item: no stored row (`pk` ``None``) on `LAYER_BRANCH_NAME`. A
+    stored row whose content names that branch (a raw save; the viewsets
+    refuse it) is not, and is checked and ranked as any stored row."""
+    return pk is None and branch_of(content) == LAYER_BRANCH_NAME
+
+
 def layer_index(name: str) -> int | None:
     """The position in `installed_layers` of the layer whose prefix `name`
     has, or ``None``."""

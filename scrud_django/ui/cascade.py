@@ -30,7 +30,7 @@ from scrud_django.models import Resource
 from scrud_django.rows import by_pk, unsorted
 from scrud_django.ui.branches.model import branch_of
 from scrud_django.ui.engines import ENGINE_NAMES, CompiledTemplate, cached_template
-from scrud_django.ui.layers import LAYER_BRANCH_NAME, layer_index
+from scrud_django.ui.layers import is_layer_row, layer_index
 from scrud_django.ui.selectors import (
     Selector,
     SelectorError,
@@ -415,7 +415,7 @@ def _layer_rank(pk, content) -> int | None:
     (`layers.layer_index`), whose rules rank ``(0, 1, layer, order, rule
     index)``: after the default stylesheet's and before every stored
     stylesheet's. ``None`` for a stored stylesheet."""
-    if pk is not None or branch_of(content) != LAYER_BRANCH_NAME:
+    if not is_layer_row(pk, content):
         return None
     index = layer_index(_name_of(content) or "")
     return 0 if index is None else index

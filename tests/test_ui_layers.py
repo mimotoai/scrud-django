@@ -595,3 +595,36 @@ def test_no_layer_installed_changes_nothing(todo_list, todo_reader_login):
         rows = effective_rows(UI_COMPONENT_TYPE_URI, Selection())
         assert [content["name"] for _pk, _etag, content in rows] == ["row"]
         assert check_layers(None) == []
+
+
+@pytest.mark.django_db
+def test_only_a_layer_item_with_no_row_is_public(ui_alice_login):
+    """A packaged layer's item is no stored row (no pk): only such an item
+    on `LAYER_BRANCH_NAME` is public, and ranks as a layer's. A stored row
+    that names that branch (a raw save; the viewsets refuse it) is read
+    checked as any stored row, and ranks as one."""
+    from django.test import RequestFactory
+
+    from scrud_django.ui.branches.reads import may_read_item
+    from scrud_django.ui.cascade import _layer_rank
+    from scrud_django.ui.layers import is_layer_row
+
+    content = {
+        "name": "layertest:sheet",
+        "rules": [],
+        "branch": LAYER_BRANCH_NAME,
+        "rbac_context": "",
+        "applies_to": "",
+    }
+    request = RequestFactory().get("/")
+    request.user = ui_alice_login
+    assert is_layer_row(None, content) is True
+    assert is_layer_row(7, content) is False
+    assert is_layer_row(None, {**content, "branch": "main"}) is False
+    assert may_read_item(request, "stylesheet", None, content) is True
+    assert may_read_item(request, "stylesheet", 7, content) is False
+    assert _layer_rank(None, content) == 0
+    assert _layer_rank(7, content) is None
+    # alice reads her own context's items, whatever their pk.
+    own = {**content, "branch": "wip", "rbac_context": "alice"}
+    assert may_read_item(request, "stylesheet", 7, own) is True

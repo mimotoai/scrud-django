@@ -156,8 +156,8 @@ def own_items(request, branch: Branch) -> list[dict]:
     return [
         _described(kind, content, branch)
         for kind, rows in own_rows(branch).items()
-        for _pk, _etag, content in rows
-        if may_read_item(request, kind, content)
+        for pk, _etag, content in rows
+        if may_read_item(request, kind, pk, content)
     ]
 
 
@@ -205,7 +205,7 @@ def readable_rows(
     return [
         (pk, etag, content)
         for pk, etag, content in effective_rows(ITEM_KINDS[kind], selection)
-        if may_read_item(request, kind, content)
+        if may_read_item(request, kind, pk, content)
     ]
 
 
@@ -265,10 +265,10 @@ def read_item(request, branch: Branch, kind: str, name: str, target: str) -> dic
     rows = effective_rows(
         ITEM_KINDS[kind], Selection(branch=branch.name), include_deleted=True
     )
-    for _pk, etag, content in rows:
+    for pk, etag, content in rows:
         if item_key(kind, content, branch) != key:
             continue
-        if not may_read_item(request, kind, content):
+        if not may_read_item(request, kind, pk, content):
             return None
         return {
             "kind": kind,
