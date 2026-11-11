@@ -2896,7 +2896,8 @@ const ok = (elt, verb) => fire(elt, 'htmx:afterRequest', {
 
 def branch_scenario(script, **opts):
     """Run studio.js and branch.js on the stub workbench with the branch
-    settings pane (`BRANCH_STUB`), then `script`; return what it printed."""
+    settings pane (`BRANCH_STUB`) and the page's ScrudUI (its pure helpers),
+    then `script`; return what it printed."""
     require_node()
     done = subprocess.run(
         [
@@ -2906,6 +2907,7 @@ def branch_scenario(script, **opts):
             layer_source(),
             json.dumps(opts),
             layer_source("branch.json"),
+            SCRUD_UI_JS.read_text(),
         ],
         capture_output=True,
         text=True,
@@ -3041,6 +3043,127 @@ out.deleted = out.reloads;
 """
     )
     assert out["other"] == 0 and out["deleted"] == 1
+
+
+# T's settings as stored (the frame's scrud-content), and its inputs showing
+# them: nothing typed.
+SETTINGS = r"""
+const showSettings = () => {
+  el('script', {type: 'application/json', 'class': 'scrud-content'}, branchFrame)
+    .text = JSON.stringify({name: 'alice-wip', label: 'Mine', base: 'live',
+      prefix: null, parent: 'main', rbac_context: 'alice'});
+  labelInput.value = 'Mine';
+  baseSelect.value = 'live';
+  prefixInput.value = '';
+};
+showSettings();
+const noticeShown = () => [notice.hasAttribute('hidden'), notice.textContent,
+  notice.children.map((c) => [c.tagName.toLowerCase(), c.text, c.attrs.type || null])];
+"""
+RELOAD_NOTICE = (
+    "This branch was {}: reload the workbench for what it offers now."
+    " Save your unsaved changes first, or they are lost."
+)
+
+
+def test_published_change_waits_for_unsaved_work():
+    """T published (or no longer) while the editor, the settings or the new
+    rule form hold unsaved input: no reload under it, but the workbench's
+    notice says so, with a Reload button. Nothing typed: it reloads."""
+    published = r"""
+status.setAttribute('data-studio-published', PUBLISHED);
+fire(strip, 'htmx:afterSwap', {target: strip});
+"""
+    # The editor's code, typed and not saved.
+    out = branch_scenario(
+        SETTINGS
+        + r"""
+click(openRow);
+const {code} = swapEditor();
+code.value = '<b>typed</b>';
+CHANGE
+out.waiting = [out.reloads, noticeShown()];
+click(notice.children[0]);
+out.reloaded = out.reloads;
+""".replace("CHANGE", published.replace("PUBLISHED", "'true'"))
+    )
+    assert out["waiting"] == [
+        0,
+        [False, RELOAD_NOTICE.format("published"), [["button", "Reload", "button"]]],
+    ]
+    assert out["reloaded"] == 1
+    # The settings, typed and not saved; on a published T, unpublished.
+    out = branch_scenario(
+        SETTINGS
+        + r"""
+labelInput.value = 'Typed';
+CHANGE
+out.waiting = [out.reloads, noticeShown()];
+""".replace("CHANGE", published.replace("PUBLISHED", "'false'")),
+        published=True,
+    )
+    assert out["waiting"] == [
+        0,
+        [False, RELOAD_NOTICE.format("unpublished"), [["button", "Reload", "button"]]],
+    ]
+    # Another layer script's unsaved input (the inspector's new rule form).
+    out = branch_scenario(
+        SETTINGS
+        + r"""
+S.watchUnsaved(() => true);
+CHANGE
+out.waiting = out.reloads;
+""".replace("CHANGE", published.replace("PUBLISHED", "'true'"))
+    )
+    assert out["waiting"] == 0
+    # The editor and the settings show what is stored: it reloads.
+    out = branch_scenario(
+        SETTINGS
+        + r"""
+click(openRow);
+swapEditor();
+CHANGE
+out.reloaded = [out.reloads, notice.hasAttribute('hidden')];
+""".replace("CHANGE", published.replace("PUBLISHED", "'true'"))
+    )
+    assert out["reloaded"] == [1, True]
+
+
+def test_settings_not_refetched_over_typed_values():
+    """A write from the strip changes T's row, but the settings hold input
+    not saved: they are not fetched again under it. The notice says their
+    Save is now stale, with a button that fetches them again."""
+    out = branch_scenario(
+        SETTINGS
+        + r"""
+reset();
+prefixInput.value = '/typed/';
+ok(pull, 'put');
+out.kept = [branchLoads(), prefixInput.value, noticeShown()];
+click(notice.children[0]);
+out.reloaded = [branchLoads(), notice.hasAttribute('hidden')];
+""",
+        may_publish=False,
+    )
+    loads, prefix, shown = out["kept"]
+    assert loads == [] and prefix == "/typed/"
+    assert shown == [
+        False,
+        "This branch changed since its settings were loaded: they keep what"
+        " you typed, but their Save is refused until they are loaded again.",
+        [["button", "Reload settings", "button"]],
+    ]
+    assert out["reloaded"] == [[branch_load("studio studio-branch")], True]
+    # Nothing typed: fetched again at once, as before.
+    out = branch_scenario(
+        SETTINGS
+        + r"""
+reset();
+ok(pull, 'put');
+out.loads = [branchLoads(), notice.hasAttribute('hidden')];
+"""
+    )
+    assert out["loads"] == [[branch_load("studio studio-branch")], True]
 
 
 PUBLISHED_DELETE = (

@@ -2152,7 +2152,12 @@ as `scrud-ui.js` decides it), `fromPreview(event)` (whether a `message`
 event's `source` is the preview frame's window), `expand(pane)` (open a
 collapsed pane), `parseOpen(entry)`, `entryFor(item)` (the tree's entry for
 an `item` key, or `null`), `open(entry)` (open a tree entry, as a click on
-it does) and `errorText(xhr)` (a refused request's text).
+it does), `errorText(xhr)` (a refused request's text), `notify(text, label,
+act)` (the workbench's notice, as text, with a button `label` that calls
+`act`) and `clearNotice()`, `frameChanged(frame)` (whether a frame's inputs,
+applied as `ScrudUI.buildBody` applies them, change its content),
+`watchUnsaved(check)` (a function that says whether a script holds unsaved
+input) and `unsaved()` (the editor's frame changed, or any check says so).
 
 ### The editors
 
@@ -2560,10 +2565,17 @@ null` to T's own URL (so with the frame's `If-Match`), `hx-swap="none"`.
 
 `studio:branch` also fetches the pane again after a write from the strip
 succeeds (a pull, an Apply, a Propose: they change T's row and its ETag), and
-not after other writes, so what was typed in it stays. When the strip, once
-fetched again, says T is published and the workbench was not (or the
-reverse), as after a save of its prefix, the script reloads the page: what
-the workbench offers depends on it.
+not after other writes, so what was typed in it stays. Nor after a strip
+write when the settings hold input not saved (their inputs, applied as a
+save would apply them, differ from the frame's content): the workbench's
+notice then says their Save is refused until they are loaded again, with a
+"Reload settings" button that fetches them. When the strip, once fetched
+again, says T is published and the workbench was not (or the reverse), as
+after a save of its prefix, the script reloads the page: what the workbench
+offers depends on it. It never reloads under unsaved input (the editor's
+frame or the settings with changed inputs, a new rule's typed template;
+`window.ScrudStudio.unsaved()`): the notice then says the branch was
+published (or unpublished), with a "Reload" button.
 
 **New branch.** For a user who may `PUT` T (a best guess at who may create a
 branch beside it; the server decides), the workbench has "New branch"
