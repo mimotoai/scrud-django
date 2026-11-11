@@ -21,10 +21,16 @@ from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
+from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, UI_CSS_TYPE_URI
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.branches.sync import conflicts
-from scrud_django.ui.layers import clear_caches, layer_conflicts, layer_item
+from scrud_django.ui.layers import (
+    clear_caches,
+    installed_layers,
+    layer_conflicts,
+    layer_item,
+)
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from . import apps as test_apps
@@ -33,6 +39,7 @@ from .steps import *  # noqa: F403, F401
 from .test_ui_branch_push import own_rows, push
 from .test_ui_branch_render import may_select_branches
 from .test_ui_branch_types import make_branch, problem
+from .test_ui_http import make_component
 from .test_ui_layers import (
     LAYER_JSON,
     MORE_APP,
@@ -45,6 +52,7 @@ from .test_ui_layers import (
 )
 
 CHECK_ID = "scrud_django_ui.W002"
+SUITE_LAYER_APP = "tests.apps.UILayerTestConfig"
 CHANGED = '<p class="changed">{{ value.title }}</p>'
 CHANGED_LIST = '<p class="changed">Groceries</p>'
 
@@ -537,3 +545,44 @@ def test_deletion_marker_hides_layer_item_on_its_branch_only(
         on_wip = render(todo_list, branch="wip")
         assert MORE_LIST not in on_wip and LAYER_JSON in on_wip
         assert MORE_LIST in render(todo_list)
+
+
+@pytest.mark.django_db
+@test_context
+def test_w002_costs_one_query_without_layers_or_prefixed_names(admin_login):
+    """With no layer installed and no stored item named with a layer prefix,
+    nothing can conflict with a layer nor be orphaned: W002 reads one query
+    per database, whatever the branches. A stored prefixed name (the
+    override of a layer since uninstalled) is still reported."""
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    from scrud_django.checks import not_checked
+    from scrud_django.ui.branches.checks import check_layer_conflicts
+
+    with installed(without=(SUITE_LAYER_APP,)):
+        assert installed_layers() == ()
+        make_component("row", "<b>row</b>")
+        for name in ("a", "b", "c"):
+            make_branch(name, "project-a")
+        with CaptureQueriesContext(connection) as migrated:
+            assert not not_checked("default")
+        with CaptureQueriesContext(connection) as queries:
+            assert check_layer_conflicts(None, databases=["default"]) == []
+        # Whether the database is migrated, then the items' names.
+        assert len(queries) == len(migrated) + 1, [q["sql"] for q in queries]
+        # An orphan: a prefixed name whose layer is not installed.
+        reverse("ui-components-list")
+        ResourceRegistration.register(
+            {
+                "name": "gone:list",
+                "engine": "django",
+                "mode": "view",
+                "template": "<p/>",
+                "rbac_context": "",
+            },
+            "ui-components",
+        )
+        [warning] = layer_warnings()
+        assert "'main'" in warning.msg and "gone:list" in warning.msg
+        assert "orphan" in warning.msg

@@ -212,18 +212,26 @@ def check_layer_conflicts(app_configs, databases=None, **kwargs):
     reports stored data. A branch whose chain is broken, or whose pinned
     snapshot is missing, is skipped (it renders its published branch). A
     database error reading a migrated database is reported
-    (``scrud_django.W007``)."""
+    (``scrud_django.W007``).
+
+    With no layer installed, only an orphan can be reported, and only an
+    item named with a layer prefix (``abc:``) can be one: a database whose
+    items have no such name is not read further (`_prefixed_names`, one
+    query), so a site without layers pays one query per database, not
+    several per branch."""
     from django.db.utils import OperationalError, ProgrammingError
 
     from scrud_django.checks import could_not_run, error_text, not_checked
     from scrud_django.ui.branches.store import BranchChainError, _read_branches
-    from scrud_django.ui.layers import layer_conflicts
+    from scrud_django.ui.layers import installed_layers, layer_conflicts
 
     found = []
     for alias in databases or ():
         if not_checked(alias):
             continue
         try:
+            if not installed_layers() and not _prefixed_names(alias):
+                continue
             listed = []
             for name, branch in sorted(_read_branches(alias).items()):
                 try:
@@ -237,6 +245,25 @@ def check_layer_conflicts(app_configs, databases=None, **kwargs):
             continue
         found.extend(_layer_conflicts(name, conflicted) for name, conflicted in listed)
     return found
+
+
+def _prefixed_names(alias) -> bool:
+    """Whether any item stored on database `alias` (of any branch, a
+    deletion marker too) has a name with a layer prefix (`name_prefix`):
+    its names alone, unsorted, in one query."""
+    from django.db.models.fields.json import KeyTextTransform
+
+    from scrud_django.models import Resource
+    from scrud_django.rows import unsorted
+    from scrud_django.ui.branches import ITEM_KINDS
+    from scrud_django.ui.layers import name_prefix
+
+    names = unsorted(
+        Resource.objects.using(alias).filter(
+            resource_type__type_uri__in=list(ITEM_KINDS.values())
+        )
+    ).values_list(KeyTextTransform("name", "content"), flat=True)
+    return any(isinstance(name, str) and name_prefix(name) for name in names)
 
 
 def _layer_conflicts(name, conflicted):

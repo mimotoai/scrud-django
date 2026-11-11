@@ -477,7 +477,11 @@ and again after a setting changes.
   `scrud_django_ui.E002` (`manage.py check`) and is left out at runtime. The
   database check `scrud_django_ui.W002` (`manage.py check --database
   default`, and `migrate`) lists, per branch, its layer conflicts and its
-  orphaned overrides, as `scrud_django_ui.W001` lists prefixes.
+  orphaned overrides, as `scrud_django_ui.W001` lists prefixes. With no layer
+  installed it first reads the stored items' names (one query per database)
+  and stops there unless one has a layer prefix (`abc:`): only such an item can
+  be an orphan, so a site without layers pays one query, not several per
+  branch.
 
 ## Modes, editing and the write path
 
