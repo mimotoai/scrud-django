@@ -224,18 +224,19 @@
   sends no drafts with `after_push`.
 * Roll back and presentations in the self-hosted studio. The strip lists the
   branch's versions, each linked to its page (`studio:version`, in the scope
-  `studio`): the ancestors' versions and the branch's own items then, as
-  text. For a working branch the user may write, the link tells the page
-  (the scope `studio studio-restore`) to offer "Restore to this version", a
-  restore push (`source: null`, `restore: N`, `state: applied`) whose answer,
-  or refusal, is shown there. The workbench's "Branch settings" panel embeds
+  `studio`: the ancestors' versions and the branch's own items then, as
+  text), with "Restore to version N" when the user may `POST` that restore
+  push (`source: null`, `restore: N`, `state: applied`), on published
+  branches too: `ui-branch-status`'s `versions` entries gain that `restore`
+  action (or `null`). The workbench's "Branch settings" panel embeds
   the branch itself in the scope `studio studio-branch` (`studio:branch-form`,
   or `studio:branch-view` for a user who may not `PUT` it): label,
   description and base on a working branch, saved only on Save, and the
   prefix, an input only for a user who may publish (the new layer JS item
   `studio:branch`, order 4, asks for it in the scope `studio studio-branch
   studio-publish` when the strip's new `data-studio-may-publish` says so),
-  with "Remove the prefix" on a published branch. "New branch" creates a
+  with "Remove the prefix" on a published branch, and the frame's Delete for
+  a user who may delete the branch. "New branch" creates a
   branch (`name`, `parent` and `rbac_context`, defaulting to the workbench's)
   and links its workbench.
 

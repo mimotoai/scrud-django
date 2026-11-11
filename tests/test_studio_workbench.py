@@ -424,11 +424,19 @@ def test_published_T_strip_has_no_write_actions(studio_layer, admin_login):
         assert all(o["override"] is None for _c, o, _li in found.values())
         # The superuser may do anything, yet no write control is offered
         # but "New branch" (Task 8: creating a branch under a published one
-        # is normal; it writes nothing of T). T's settings are embedded in
-        # view mode: no form.
-        [new_branch] = page.writes()
+        # is normal; it writes nothing of T) and the history's restores
+        # (rolling back a publish: a push record, as a promote is). T's
+        # settings are embedded in view mode: no form.
+        new_branch, *restores = page.writes()
         assert "data-studio-new-branch" in new_branch.attrs, branch
         assert new_branch.attrs["hx-post"] == STUDIO_ROOT + "ui-branches/"
+        assert restores, branch
+        for restore in restores:
+            assert "studio-restore" in restore.classes()
+            assert restore.attrs["hx-post"] == STUDIO_ROOT + "ui-pushes/"
+            body = json.loads(restore.attrs["data-scrud-body"])
+            assert body["source"] is None
+            assert body["target"] == branch.content["name"]
         [settings] = page.having("data-studio-branch-settings")
         assert settings.attrs["data-studio-mode"] == "view", branch
         assert "Override on this branch" not in page.buttons()

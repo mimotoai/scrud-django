@@ -88,9 +88,13 @@
         "type": "object",
         "properties": {
           "number": { "type": "integer" },
-          "href": { "type": "string", "description": "The version's resource (an API path)." }
+          "href": { "type": "string", "description": "The version's resource (an API path)." },
+          "restore": {
+            "$ref": "#/definitions/action",
+            "description": "The POST of a restore push of the version into the branch (source null, state applied, in the branch's context), when the user may POST it; published branches included."
+          }
         },
-        "required": ["number", "href"]
+        "required": ["number", "href", "restore"]
       }
     },
     "actions": {

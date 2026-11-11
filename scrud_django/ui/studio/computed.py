@@ -406,20 +406,41 @@ def _pushes(request, branch) -> list[dict]:
 
 
 def _versions(request, branch) -> list[dict]:
-    """``{number, href}`` of `branch`'s latest versions the user may GET,
-    newest first (none when they may not GET its versions)."""
+    """``{number, href, restore}`` of `branch`'s latest versions the user
+    may GET, newest first (none when they may not GET its versions).
+    ``restore`` is the POST of a restore push of the version into `branch`
+    (applied, in the branch's context) when the user may POST it, published
+    branches included (rolling back a publish is what a restore is for);
+    else ``None``."""
     rows = Resource.objects.filter(
         resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI,
         content__branch=branch.name,
     )
-    return [
-        {
-            "number": content.get("number"),
-            "href": reverse(f"{UI_BRANCH_VERSION_SLUG}-detail", args=[pk]),
+    pushes = reverse(f"{UI_PUSH_SLUG}-list")
+    found = []
+    for pk, content in _latest_readable(request, UI_BRANCH_VERSION_TYPE_URI, rows):
+        if content.get("branch") != branch.name:
+            continue
+        number = content.get("number")
+        body = {
+            "source": None,
+            "target": branch.name,
+            "restore": number,
+            "state": "applied",
+            "rbac_context": branch.context,
         }
-        for pk, content in _latest_readable(request, UI_BRANCH_VERSION_TYPE_URI, rows)
-        if content.get("branch") == branch.name
-    ]
+        found.append(
+            {
+                "number": number,
+                "href": reverse(f"{UI_BRANCH_VERSION_SLUG}-detail", args=[pk]),
+                "restore": (
+                    _action("POST", pushes, body)
+                    if may_post(request, UI_PUSH_TYPE_URI, body)
+                    else None
+                ),
+            }
+        )
+    return found
 
 
 def _actions(request, branch, content, etag, chain, may_write) -> dict:

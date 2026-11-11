@@ -15,12 +15,12 @@ from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
+from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import (
     UI_BRANCH_TYPE_URI,
     UI_BRANCH_VERSION_TYPE_URI,
     UI_PUSH_TYPE_URI,
 )
-from scrud_django.ui.branches.versions import record_version
 from scrud_django.ui.layers import layer_item
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
@@ -28,7 +28,7 @@ from .fixtures import *  # noqa
 from .fixtures import assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_studio_editors import content_of
-from .test_studio_promote import get_page, text_of
+from .test_studio_promote import get_page, press, text_of
 from .test_studio_workbench import Page, workbench_url
 from .test_ui_branch_push import (
     created,
@@ -39,7 +39,7 @@ from .test_ui_branch_push import (
 )
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import HTML, grant
+from .test_ui_http import HTML, grant, make_component
 
 JSON = "application/json"
 UIBRANCH = "http://api.openteams.com/json-ld/UIBranch"
@@ -190,14 +190,12 @@ def test_rollback_rules_and_components(studio_layer):
 
 @pytest.mark.django_db
 @test_context
-def test_restore_from_version_page_round_trip(studio_layer, admin_login):
+def test_restore_from_strip_round_trip(studio_layer, admin_login):
     _main_row, override = wip_overrides_row(admin_login)
     wip = stored_branch("wip")
-    numbers = versions_of("wip")
-    kept = numbers[-1]  # wip's override of row is "<i>wip</i>"
-    url = reverse("ui-components-detail", args=[override.pk])
+    kept = versions_of("wip")[-1]  # wip's override of row is "<i>wip</i>"
     When.http.put(
-        url,
+        reverse("ui-components-detail", args=[override.pk]),
         data={**override.content, "template": "<i>bad</i>"},
         format="json",
         HTTP_IF_MATCH=f'"{override.etag}"',
@@ -205,18 +203,17 @@ def test_restore_from_version_page_round_trip(studio_layer, admin_login):
     Then.http.status_code_is(200)
     assert versions_of("wip")[-1] == kept + 1
     # The strip's history: the latest versions, newest first, each linked to
-    # its page in the scope studio, in view mode, and (T is a working branch
-    # the user may write) told it may offer the restore.
+    # its page in the scope studio, in view mode, with its restore.
     page = get_page(workbench_url(wip))
-    links = version_links(page)
-    assert [text_of(link) for link in links][:2] == [
-        f"Version {kept + 1}",
-        f"Version {kept}",
-    ]
     entries = [e for e in page.elements if "studio-version-entry" in e.classes()]
     assert [e.attrs["data-studio-version-number"] for e in entries[:2]] == [
         str(kept + 1),
         str(kept),
+    ]
+    links = version_links(page)
+    assert [text_of(link) for link in links][:2] == [
+        f"Version {kept + 1}",
+        f"Version {kept}",
     ]
     [kept_version] = [
         r
@@ -227,10 +224,23 @@ def test_restore_from_version_page_round_trip(studio_layer, admin_login):
         if r.content["number"] == kept
     ]
     href = reverse("ui-branch-versions-detail", args=[kept_version.pk])
-    assert links[1].attrs["href"] == (
-        href + "?ui-scope=studio,studio-restore&ui-mode=view"
-    )
-    # The version's page: its items, as text.
+    assert links[1].attrs["href"] == href + "?ui-scope=studio&ui-mode=view"
+    [button] = restore_buttons(page, entries[1])
+    assert text_of(button) == f"Restore to version {kept}"
+    assert button.attrs["hx-post"] == reverse("ui-pushes-list")
+    assert button.attrs["hx-ext"] == "scrud-json"
+    assert button.attrs["hx-swap"] == "none"
+    assert button.attrs["data-scrud-json"] == "fixed"
+    assert button.attrs["data-scrud-etag"] == ""
+    assert button.attrs["hx-confirm"].startswith(f"Restore wip to version {kept}?")
+    assert json.loads(button.attrs["data-scrud-body"]) == {
+        "source": None,
+        "target": "wip",
+        "restore": kept,
+        "state": "applied",
+        "rbac_context": "alice",
+    }
+    # The version's page: its items, as text, and no write control.
     version_page = get_page(links[1].attrs["href"])
     root = version_page.one("data-studio-version")
     assert root.attrs["data-studio-branch"] == "wip"
@@ -244,129 +254,109 @@ def test_restore_from_version_page_round_trip(studio_layer, admin_login):
         if e.attrs["data-studio-version-item"] == "row"
     ]
     assert "<i>wip</i>" in item.text and "<i>bad</i>" not in item.text
+    assert version_page.writes() == []
     no_inline_script(version_page)
-    # "Restore to this version": the fixed-body POST of a restore push.
-    [button] = [w for w in version_page.writes() if w.tag == "button"]
-    assert text_of(button) == "Restore to this version"
-    assert button.attrs["hx-post"] == reverse("ui-pushes-list")
-    assert button.attrs["hx-ext"] == "scrud-json"
-    assert button.attrs["data-scrud-json"] == "fixed"
-    assert button.attrs["data-scrud-etag"] == ""
-    assert json.loads(button.attrs["data-scrud-body"]) == {
-        "source": None,
-        "target": "wip",
-        "restore": kept,
-        "state": "applied",
-        "rbac_context": "alice",
-    }
-    assert json.loads(button.attrs["hx-headers"]) == {
-        "Scrud-UI-Scope": "studio",
-        "Scrud-UI-Mode": "view",
-    }
-    [result] = version_page.having("data-studio-restore-result")
-    assert button.attrs["hx-target"] == "next [data-studio-restore-result]"
-    assert result.text.strip() == ""
-    # Sent as the page sends it, with its scope and mode: the server's answer
-    # is the restore push, applied, rendered by the studio.
-    press_with_headers(button, 201)
-    answer = get_page_text()
+    # Sent as the strip sends it: a restore push, applied.
+    press(button, 201)
     restore = created()
     assert restore.content["source"] is None
     assert restore.content["restore"] == kept
     assert restore.content["result"] == {"version": kept + 2}
-    assert text_of(answer.one("data-studio-push-result")) == (
-        f"Version {kept + 2} of wip"
-    )
-    assert answer.one("data-studio-push").attrs["data-studio-mode"] == "view"
     # wip's own items are those of the version again; history is kept.
     [row] = own_rows(UI_COMPONENT_TYPE_URI, "wip")
     assert row["template"] == "<i>wip</i>"
     assert versions_of("wip")[-1] == kept + 2
-    # The strip lists the new version and the restore.
+    # The strip, fetched again, lists the new version and the restore.
     page = get_page(workbench_url(wip))
     assert text_of(version_links(page)[0]) == f"Version {kept + 2}"
     pushes = [e for e in page.elements if "studio-push-link" in e.classes()]
     assert [text_of(p) for p in pushes] == ["restore → wip"]
 
 
-def press_with_headers(button, status):
-    """`press` with the element's ``hx-headers`` sent too, as htmx does."""
-    extra = json.loads(button.attrs.get("hx-headers", "{}"))
-    headers = {"HTTP_ACCEPT": HTML, "HTTP_HX_REQUEST": "true"}
-    for name, value in extra.items():
-        headers["HTTP_" + name.upper().replace("-", "_")] = value
-    if button.attrs.get("data-scrud-etag"):
-        headers["HTTP_IF_MATCH"] = button.attrs["data-scrud-etag"]
-    [method] = [
-        m for m in ("post", "put", "patch", "delete") if f"hx-{m}" in button.attrs
+def restore_buttons(page, within=None):
+    return [
+        e
+        for e in page.writes()
+        if "studio-restore" in e.classes() and (within is None or e.within(within))
     ]
-    getattr(When.http, method)(
-        button.attrs[f"hx-{method}"],
-        data=button.attrs["data-scrud-body"],
-        content_type=JSON,
-        **headers,
-    )
-    Then.http.status_code_is(status)
-    return Http.response
 
 
 @pytest.mark.django_db
 @test_context
-def test_restore_absent_when_T_published_or_not_writable(studio_layer, admin_login):
-    """The strip tells a version's page it may offer the restore only for a
-    working T the user may write (``may_write``): a published T is
-    read-only in the studio. A version's page reached otherwise shows the
-    version without it."""
-    wip_overrides_row(admin_login)
-    shop = make_branch("shop", "", parent=None, prefix="/shop/")
-    record_version("shop", "default")
-    page = get_page(workbench_url(shop))
-    [link] = version_links(page)[:1]
-    assert link.attrs["href"].endswith("?ui-scope=studio&ui-mode=view")
-    version_page = get_page(link.attrs["href"])
-    assert version_page.one("data-studio-version").attrs["data-studio-branch"] == (
-        "shop"
+def test_restore_needs_the_post_grant(studio_layer, admin_login):
+    """A version's restore is offered only to a user who may POST it: one
+    who may write wip (in "alice") but not create pushes there sees the
+    history without it; with the grant, it is offered and works."""
+    _main_row, override = wip_overrides_row(admin_login)
+    wip = stored_branch("wip")
+    kept = versions_of("wip")[-1]
+    ResourceRegistration.update(
+        {**override.content, "template": "<i>bad</i>"}, "ui-components", override.pk
     )
-    assert version_page.writes() == []
-    assert not version_page.having("data-studio-restore")
-    # A reader of wip (GET only): the link has no restore either.
-    reader = assign_ui_role((), "")
-    grant(
-        reader,
-        {"http.GET": [UI_BRANCH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI]},
+    writer = assign_ui_role(
+        (UI_BRANCH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI, UI_COMPONENT_TYPE_URI),
         "alice",
     )
-    Given.http.force_authenticate(reader)
-    page = get_page(workbench_url(stored_branch("wip")))
-    links = version_links(page)
-    assert links
-    assert all(
-        link.attrs["href"].endswith("?ui-scope=studio&ui-mode=view") for link in links
-    )
-    version_page = get_page(links[0].attrs["href"])
-    assert version_page.writes() == []
+    Given.http.force_authenticate(writer)
+    page = get_page(workbench_url(wip))
+    assert version_links(page)
+    assert restore_buttons(page) == []
+    grant(writer, {"http.POST": [UI_PUSH_TYPE_URI]}, "alice")
+    page = get_page(workbench_url(wip))
+    [button] = [
+        b
+        for b in restore_buttons(page)
+        if json.loads(b.attrs["data-scrud-body"])["restore"] == kept
+    ]
+    press(button, 201)
+    [row] = own_rows(UI_COMPONENT_TYPE_URI, "wip")
+    assert row["template"] == "<i>wip</i>"
 
 
 @pytest.mark.django_db
 @test_context
-def test_restore_refused_shows_server_answer(studio_layer, admin_login):
-    """The version's page can't know whether the user may POST the restore:
-    it offers it, and the API's refusal is the answer shown."""
-    wip_overrides_row(admin_login)
-    wip = stored_branch("wip")
-    # May write wip (in "alice") but not create pushes there.
-    writer = assign_ui_role((UI_BRANCH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI), "alice")
-    Given.http.force_authenticate(writer)
-    page = get_page(workbench_url(wip))
-    version_page = get_page(version_links(page)[0].attrs["href"])
-    [button] = [w for w in version_page.writes() if w.tag == "button"]
-    count = Resource.objects.filter(resource_type__type_uri=UI_PUSH_TYPE_URI).count()
-    press_with_headers(button, 403)
-    assert b"scrud-notice" in Http.response.content
-    assert (
-        Resource.objects.filter(resource_type__type_uri=UI_PUSH_TYPE_URI).count()
-        == count
+def test_published_T_offers_restore_to_a_user_with_the_grant(studio_layer, admin_login):
+    """Rolling back a publish is what a restore is for: a published T's
+    history offers it (it writes a push record, as a promote does), only to
+    a user who may POST it in T's context."""
+    main_row = make_component("row", "<b>first</b>")
+    first = versions_of("main")[-1]
+    ResourceRegistration.update(
+        {**main_row.content, "template": "<b>broken</b>"}, "ui-components", main_row.pk
     )
+    assert versions_of("main")[-1] == first + 1
+    main = make_branch("main", "", parent=None)
+    # A reader of main's versions: the history, no restore.
+    reader = assign_ui_role((), "")
+    grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI]}, "")
+    Given.http.force_authenticate(reader)
+    page = get_page(workbench_url(main))
+    assert page.one("data-studio-workbench").attrs["data-studio-published"] == "true"
+    assert version_links(page) and restore_buttons(page) == []
+    # A user who may push into main (in ""), with the item grants a restore
+    # needs.
+    user = assign_ui_role(
+        (UI_PUSH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI, UI_COMPONENT_TYPE_URI), ""
+    )
+    grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "")
+    Given.http.force_authenticate(user)
+    page = get_page(workbench_url(main))
+    [button] = [
+        b
+        for b in restore_buttons(page)
+        if json.loads(b.attrs["data-scrud-body"])["restore"] == first
+    ]
+    assert json.loads(button.attrs["data-scrud-body"]) == {
+        "source": None,
+        "target": "main",
+        "restore": first,
+        "state": "applied",
+        "rbac_context": "",
+    }
+    press(button, 201)
+    main_row.refresh_from_db()
+    assert main_row.content["template"] == "<b>first</b>"
+    assert created().content["result"] == {"version": first + 2}
 
 
 @pytest.mark.django_db

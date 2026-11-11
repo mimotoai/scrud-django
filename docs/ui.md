@@ -1696,8 +1696,14 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
  "may_write": true, "may_publish": false,
  "pushes": [{"href": "/api/ui-pushes/31/", "source": "feat", "target": "shop",
              "state": "proposed", "label": null}],
- "versions": [{"number": 4, "href": "/api/ui-branch-versions/58/"},
-              {"number": 3, "href": "/api/ui-branch-versions/51/"}],
+ "versions": [{"number": 4, "href": "/api/ui-branch-versions/58/",
+               "restore": {"method": "POST", "href": "/api/ui-pushes/",
+                           "body": {"source": null, "target": "feat",
+                                    "restore": 4, "state": "applied",
+                                    "rbac_context": "project-a"},
+                           "etag": null}},
+              {"number": 3, "href": "/api/ui-branch-versions/51/",
+               "restore": {"…": "…"}}],
  "actions": {
    "pull": {"method": "PUT", "href": "/api/ui-branches/9/",
             "body": {"name": "feat", "parent": "shop", "…": "…", "pull": true},
@@ -1742,7 +1748,12 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
   may `GET` (the check its detail route makes; the others are left out, not
   counted). `label` is the push's, or `null`.
 - `versions` are the branch's latest 20 versions the user may `GET`, newest
-  first; none when they may not `GET` its versions.
+  first; none when they may not `GET` its versions. Each one's `restore` is
+  the `POST` to `ui-pushes` of `{"source": null, "target": <branch>,
+  "restore": <number>, "state": "applied", "rbac_context": <the branch's
+  context>}` (a [restore](#pushing-and-restoring)) when the user may `POST`
+  that body, on a published branch too (`main` included): rolling back a
+  publish is what a restore is for; else `null`.
 - `actions` are what the studio may send to change the branch:
   - `pull`: the `PUT` of the branch's stored content with `"pull": true` to
     the branch's resource, with its ETag, when it has a parent and
@@ -2447,11 +2458,17 @@ the push gets the view: no form, no Save.
 the user may read, newest first) under `<details class="studio-versions">`:
 each `<li class="studio-version-entry" data-studio-version-number="<N>">`
 links "Version N" to the version's page, `in_mount(href)` with
-`?ui-scope=studio&ui-mode=view` (a version is read-only). When the strip's
-`may_write` is true (T is a working branch the user may `PUT`), the link's
-scope is `studio,studio-restore` instead: the strip tells the version's page
-that it may offer the restore, which the page cannot tell itself (a version
-does not say whether its branch is published now).
+`?ui-scope=studio&ui-mode=view` (a version is read-only), and, when the entry
+has a `restore` action, "Restore to version N": a
+[fixed-body](#writes-from-the-browser) button like Pull and Apply (`hx-post`
+of `in_mount(href)`, `data-scrud-body` the action's body, `data-scrud-etag=""`,
+`hx-swap="none"`), with an `hx-confirm`. It is offered on a published T too,
+to a user who may `POST` the restore in T's context: a restore is a push
+record into T, as a promote is, and rolling back a publish is its point (see
+[Pushing and restoring](#pushing-and-restoring): the restore records T's next
+version, and no version is lost). After it succeeds the panes are fetched
+again, as after any write from the workbench; a refusal shows the server's
+text in the workbench's notice.
 
 **A version's page** is its `ui-branch-versions` detail; the layer's
 stylesheet takes the root of `UIBranchVersion`
@@ -2463,24 +2480,9 @@ JavaScript), each `<li class="studio-version-item"
 data-studio-version-item="<name>">` with its template, CSS or JavaScript as
 text (a stylesheet's rules as `select → component`), and "deleted on this
 branch" for a deletion marker. Only the items the user may read are listed,
-as the version's JSON lists them.
-
-**Restore.** In the scope `studio studio-restore` (and never for `main`), the
-page has "Restore to this version", a
-[fixed-body](#writes-from-the-browser) button: a `POST` to
-`in_mount(api_url("ui-pushes"))` of `{"source": null, "target": T,
-"restore": N, "state": "applied", "rbac_context": <T's context>}`, T's name
-and context taken from the version's own content, with
-`data-scrud-etag=""`. It sends `Scrud-UI-Scope: studio` and `Scrud-UI-Mode:
-view` (`hx-headers`), and its answer goes into the result below it
-(`data-studio-restore-result`): the restore push as `studio:push-view` shows
-it, "Version M of T", T's next version, once applied (see
-[Pushing and restoring](#pushing-and-restoring): history is kept). The page
-can't tell whether the user may `POST` the restore, so it offers it to
-whoever the strip told it to, and a refused restore (for example 403, a user
-who may write T but not create pushes in its context) shows the server's
-notice there. The version's page is outside the workbench: no studio script
-runs there; go back to the workbench to see T's new state.
+as the version's JSON lists them. It has no write control: a version names
+its branch but not the branch's resource, so the page can't link T's
+workbench either; restore from the workbench's history.
 
 **Branch settings.** The workbench has a "Branch settings" panel
 (`<details data-studio-branch-panel>`) that embeds T's own resource,
@@ -2498,8 +2500,10 @@ published T is read-only in the studio); the view shows them all as text.
 Save is the frame's submit (`PUT`). As in the editors, a change of a field
 saves nothing (the script `studio:studio` stops the `change` of anything in
 the pane): only Save, or Enter in a text field, writes. The frame also has
-the runtime's Delete button for a user who may `DELETE` T; after T is
-deleted from there, the workbench is loaded again (and is then not found).
+the runtime's Delete button (with its confirmation) for a user who may
+`DELETE` T: the API decides (a branch another names as its parent is a 409,
+a published one needs the site's grant); after T is deleted from there, the
+workbench is loaded again (and is then not found).
 
 **The prefix** is an input only for a user who may publish: the form renders
 it only in the scope `studio studio-branch studio-publish`, and the script

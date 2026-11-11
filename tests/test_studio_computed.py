@@ -801,8 +801,13 @@ def test_status_pushes_and_versions_readable_only(ui_alice_login):
         resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI, content__branch="wip"
     ).order_by("-pk")[:20]
     assert len(versions) == 20
+    # alice may not POST pushes in "alice": no restore is offered.
     assert found["versions"] == [
-        {"number": v.content["number"], "href": detail("ui-branch-versions", v)}
+        {
+            "number": v.content["number"],
+            "href": detail("ui-branch-versions", v),
+            "restore": None,
+        }
         for v in versions
     ]
     numbers = [v["number"] for v in found["versions"]]
@@ -811,6 +816,24 @@ def test_status_pushes_and_versions_readable_only(ui_alice_login):
         When.http.get(version["href"], HTTP_ACCEPT=JSON)
         Then.http.status_code_is(200)
         assert Http.response.json()["number"] == version["number"]
+    # With the grant, each version's restore: the POST of a restore push of
+    # it into wip, in wip's context, applied.
+    grant(ui_alice_login, {"http.POST": [UI_PUSH_TYPE_URI]}, "alice")
+    found = status()
+    assert [v["restore"] for v in found["versions"]] == [
+        action(
+            "POST",
+            reverse("ui-pushes-list"),
+            {
+                "source": None,
+                "target": "wip",
+                "restore": v.content["number"],
+                "state": "applied",
+                "rbac_context": "alice",
+            },
+        )
+        for v in versions
+    ]
     # main's versions are in "", which alice may not read.
     assert status("main")["versions"] == []
 
