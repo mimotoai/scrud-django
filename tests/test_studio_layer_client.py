@@ -748,6 +748,63 @@ out.cleared = [notice.textContent, notice.hasAttribute('hidden'), out.ajax.lengt
     assert out["cleared"] == ["", True, 2]
 
 
+def test_open_packaged_groups_stay_open_after_a_refresh():
+    """A "Packaged (N)" group the author opened closed again whenever the
+    items pane was fetched again (after any write): the kinds whose group
+    is open are noted before the refresh, and their groups in the new tree
+    get ``open`` again (an attribute, never markup). A group that was
+    closed stays closed."""
+    out = scenario(
+        r"""
+// The tree as studio:items renders it: a section per kind, its packaged
+// group collapsed.
+function renderTree(open) {
+  while (itemsFrame.firstChild) itemsFrame.removeChild(itemsFrame.firstChild);
+  const groups = {};
+  for (const kind of ['component', 'stylesheet', 'css', 'js']) {
+    const section = el('section', {'class': 'studio-kind', 'data-studio-kind': kind},
+      itemsFrame);
+    const attrs = {'class': 'studio-packaged-group', 'data-studio-packaged': ''};
+    if (open.includes(kind)) attrs.open = '';
+    groups[kind] = el('details', attrs, section);
+    el('summary', {}, groups[kind]).text = 'Packaged (1)';
+  }
+  return groups;
+}
+const opened = (groups) => Object.keys(groups).filter((k) => groups[k].hasAttribute('open'));
+const ok = (elt) => fire(elt, 'htmx:afterRequest', {
+  elt, successful: true, requestConfig: {verb: 'post'}, xhr: {status: 201}});
+let groups = renderTree([]);
+// The author opens two groups; a write (Pull) succeeds.
+groups.component.setAttribute('open', '');
+groups.js.setAttribute('open', '');
+reset();
+ok(pull);
+out.refreshed = out.ajax.map((a) => a.target);
+// The new tree swaps in, every group collapsed as the server renders it.
+groups = renderTree([]);
+fire(items, 'htmx:afterSwap', {target: items});
+out.after = opened(groups);
+// Closed again by the author: the next refresh leaves it closed.
+groups.component.removeAttribute('open');
+ok(pull);
+groups = renderTree([]);
+fire(items, 'htmx:afterSwap', {target: items});
+out.again = opened(groups);
+// A swap of the items pane with no refresh of ours keeps the server's.
+groups = renderTree(['css']);
+fire(items, 'htmx:afterSwap', {target: items});
+out.unasked = opened(groups);
+""",
+        search=BASE,
+    )
+    assert out["refreshed"] == ["items", "status"]
+    assert out["after"] == ["component", "js"]
+    assert out["again"] == ["js"]
+    assert out["unasked"] == ["css"]
+    assert out["innerHTML"] == 0
+
+
 def test_stale_write_refreshes_items_and_strip():
     """A write refused 412 (a stale ETag) or 409 shows the server's text and
     fetches the items and the strip again, so the next try sends their new

@@ -2115,7 +2115,9 @@ data-studio-kind="<kind>">` each headed "Components", "Stylesheets", "CSS" or
 kind lists the branch's own and inherited items first; its packaged items
 follow in a `<details class="studio-packaged-group" data-studio-packaged>`,
 collapsed, whose summary counts them ("Packaged (N)"), so that the layer's
-items do not bury the branch's own. Each entry is an `<li class="studio-item studio-own|studio-inherited|studio-packaged">`,
+items do not bury the branch's own. When the script fetches the tree again
+(after a write), a group the author had opened is opened again in the new
+tree (its `open` attribute); the others stay collapsed. Each entry is an `<li class="studio-item studio-own|studio-inherited|studio-packaged">`,
 with `studio-conflict-parent` or `studio-conflict-layer` for a conflict, and
 holds:
 
