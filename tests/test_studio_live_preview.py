@@ -31,11 +31,13 @@ from scrud_django.ui.studio.live_preview import MAX_DRAFTS
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
 from .fixtures import *  # noqa
+from .fixtures import TYPE_URI_TODO_LIST
 from .steps import *  # noqa: F403, F401
+from .test_studio_page import setup_branches
 from .test_ui_branch_push import stored_state
 from .test_ui_branch_render import put_item
 from .test_ui_branch_types import make_branch, problem
-from .test_ui_embeds import host, make_list, url_of
+from .test_ui_embeds import embedded_content, host, make_list, url_of
 from .test_ui_http import PREFIXES, grant, html, make_component, make_stylesheet
 
 SLUG = "todo-lists"
@@ -819,3 +821,43 @@ def test_embeds_in_live_preview_compose_server_side(todo_list, todo_owner_login)
         r'<scrud-node data-pointer="/items/0" data-scrud-match="wins"', embedded
     )
     assert not Resource.objects.filter(content__branch="wip").exists()
+
+
+@pytest.mark.django_db
+@test_context
+def test_studio_data_embedded_in_live_preview_shows_stored_items_not_drafts(
+    todo_list, ui_alice_login
+):
+    """A live preview's drafts are render-only: the studio's computed data
+    embedded in the preview (a branch's items) is what its URL answers as
+    JSON, the stored items, never the drafts the preview renders with."""
+    setup_branches(ui_alice_login)
+    items = reverse("ui-branch-items-detail", args=["wip"])
+    host('<section class="host">{{ embed("' + items + '", mode="view") }}</section>')
+    grant(
+        ui_alice_login,
+        {"http.GET": [TYPE_URI_TODO_LIST, collection_type_uri_for(TYPE_URI_TODO_LIST)]},
+        todo_list.content["rbac_context"],
+    )
+    Given.http.force_authenticate(ui_alice_login)
+    When.http.get(items, HTTP_ACCEPT="application/json")
+    Then.http.status_code_is(200)
+    plain = Http.response.json()
+    page = live(
+        instance=todo_list.pk,
+        scope=["host"],
+        drafts=[
+            draft(
+                "component",
+                name="row",
+                engine="jinja2",
+                mode="view",
+                template="<u>DRAFT</u>",
+            )
+        ],
+    )
+    assert errors_of(page) == []
+    section = re.search(r'<section class="host">(.*?)</section>', page, re.S)
+    assert section, page
+    assert embedded_content(section.group(1)) == plain
+    assert "DRAFT" not in section.group(1)

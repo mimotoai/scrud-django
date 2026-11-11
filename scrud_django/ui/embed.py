@@ -14,7 +14,10 @@ the notice the resource's own URL answers with.
 What the embed carries over in process, by context variable rather than by
 header: safe mode (`branches.effective.using_safe_mode`, which the
 renderer keeps), preview (`render.using_preview`, which `render_resource`
-keeps), the embed stack and the response's embed count (`_state`).
+keeps), the embed stack and the response's embed count (`_state`). Safe
+mode and a live preview's drafts are render-only: `dispatch_path` runs the
+embedded view in `effective.stored_state`, so that what it reads as data
+is the stored state, and renders its response outside that block.
 
 `path` is split once (`urllib.parse.urlsplit`; its fragment is dropped),
 and its path and query are what is checked and dispatched. An ``http`` or

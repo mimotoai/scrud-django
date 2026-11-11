@@ -153,9 +153,11 @@ def stored_state():
     """Inside the block, data reads see the stored items: neither the safe
     mode (`using_safe_mode`) nor the drafts (`using_drafts`) of a render in
     progress, which are render-only state. An embedded request runs inside
-    its embedder's context, so a view's data read (a list of UI items, a
-    computed type of the studio) opens this block; rendering (the cascade's
-    components, stylesheets, CSS and JS) does not, and keeps both."""
+    its embedder's context, so `dispatch.dispatch_path` runs the embedded
+    view in this block (and a view's data read, a list of UI items or a
+    computed type of the studio, opens it too, as defense in depth);
+    rendering (the cascade's components, stylesheets, CSS and JS) does not,
+    and keeps both."""
     safe_token = _safe_mode.set(False)
     drafts_token = _drafts.set(None)
     try:

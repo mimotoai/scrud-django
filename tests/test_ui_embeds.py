@@ -5,6 +5,7 @@ resource's own URL makes applies. A refused embed renders a notice, never the
 content and never a 500. These tests serve the API at ``/api/``
 (``tests.mounted_urls``)."""
 
+import json
 import logging
 import re
 
@@ -36,6 +37,7 @@ from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 from .fixtures import *  # noqa
 from .fixtures import TYPE_URI_TODO_LIST, assign_role, assign_ui_role
 from .steps import *  # noqa: F403, F401
+from .test_studio_page import setup_branches
 from .test_ui_branch_prefixes import ADMIN, mounted, publish
 from .test_ui_branch_render import BRANCH_HEADER, may_select_branches, put_item
 from .test_ui_branch_types import make_branch
@@ -747,3 +749,61 @@ def test_embed_with_an_invalid_scope_or_mode_is_refused(
             got = str(embed(url, **arguments))
         assert got == REFUSED, arguments
         assert len(embed_warnings(caplog)) == 1, arguments
+
+
+def embedded_content(markup):
+    """The content of the one resource frame `markup` holds (its
+    ``script.scrud-content``)."""
+    found = re.findall(
+        r'<script type="application/json" class="scrud-content">(.*?)</script>',
+        markup,
+        re.S,
+    )
+    assert len(found) == 1, markup
+    return json.loads(found[0])
+
+
+@pytest.mark.django_db
+@test_context
+def test_embedded_studio_data_reads_stored_items_in_safe_mode_and_under_drafts(
+    ui_alice_login,
+):
+    """Safe mode and drafts are render-only, cut at the embed boundary
+    (`dispatch.dispatch_path` runs the view in `stored_state`): the
+    studio's computed data embedded in a safe-mode render or a render
+    under drafts is what its URL answers as JSON, never the layers alone
+    nor the drafts."""
+    setup_branches(ui_alice_login)
+    request = RequestFactory().get("/somewhere/")
+    request.user = ui_alice_login
+    embed = embed_for(request)
+    draft = Draft(
+        "component",
+        {
+            "name": "row",
+            "engine": "jinja2",
+            "mode": "view",
+            "template": "<u>DRAFT</u>",
+            "rbac_context": "alice",
+        },
+    )
+    Given.http.force_authenticate(ui_alice_login)
+    for path in (
+        reverse("ui-branch-items-detail", args=["wip"]),
+        reverse("ui-push-previews-detail", args=["wip"]),
+    ):
+        When.http.get(path, HTTP_ACCEPT="application/json")
+        Then.http.status_code_is(200)
+        plain = Http.response.json()
+        assert embedded_content(str(embed(path))) == plain, path
+        with using_safe_mode():
+            safe = str(embed(path))
+        assert embedded_content(safe) == plain, path
+        if "items" in plain:
+            # The branch's own and inherited items, not the layers alone.
+            origins = {item["origin"] for item in embedded_content(safe)["items"]}
+            assert {"own", "inherited"} <= origins
+        with using_selection(Selection("wip")), using_drafts("wip", [draft]):
+            drafted = str(embed(path))
+        assert embedded_content(drafted) == plain, path
+        assert "DRAFT" not in drafted, path

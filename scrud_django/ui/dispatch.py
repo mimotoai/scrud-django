@@ -167,11 +167,17 @@ def dispatch_path(
     prefix's `Mount` (so the view's `check_mount` applies, and links stay
     in the prefix). A path nothing serves is the API's 404.
 
+    The view runs in `effective.stored_state`: what it reads as data is
+    the stored state, never the embedding render's safe mode or drafts;
+    its response is rendered after, outside that block, so that its
+    presentation keeps both.
+
     `path` is split once, with `urllib.parse.urlsplit` (its fragment
     dropped), unless `query` is given: `path` is then the path alone, as
     the caller split it, so that what is dispatched is what the caller
     checked. `resolved` is `resolve_path`'s answer for the path, when the
     caller has it already."""
+    from scrud_django.ui.branches.effective import stored_state
     from scrud_django.ui.branches.selection import MOUNT_ATTR
 
     path_only = path
@@ -198,7 +204,13 @@ def dispatch_path(
         setattr(internal, MOUNT_ATTR, resolved.mount)
         internal.path_info = resolved.path_info
     match = resolved.match
-    return _rendered(match.func(internal, *match.args, **match.kwargs))
+    # The view reads the stored state: safe mode and drafts are the
+    # embedding render's, render-only, so they are cut here, around the
+    # view alone. The response is rendered (DRF renders lazily) outside the
+    # block, so that its presentation keeps them.
+    with stored_state():
+        response = match.func(internal, *match.args, **match.kwargs)
+    return _rendered(response)
 
 
 def _extra(request, accept, headers, if_match=None):
