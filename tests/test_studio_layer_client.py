@@ -2750,7 +2750,7 @@ function render() {
   label = new Node('input', {type: 'text', name: '/label'}, push);
   const embedded = new Node('div', {'class': 'scrud-resource',
     'data-scrud-scope': 'studio studio-push-after'}, push);
-  section = new Node('section', {'class': 'studio-after-push',
+  section = new Node('section', {'class': 'studio-push-page-after',
     'data-studio-push-after': '', 'data-studio-source': 'alice-wip',
     'data-studio-target': 'shop & co'}, embedded);
   const types = new Node('div', {'class': 'scrud-resource',

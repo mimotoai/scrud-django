@@ -29,6 +29,7 @@ from .fixtures import assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_studio_computed import store_push
 from .test_studio_editors import content_of, root_frame
+from .test_studio_layer import css_selectors, layer_files
 from .test_studio_workbench import PROMOTE, Page, workbench_url
 from .test_ui_branch_push import (
     APPROVAL_POLICY,
@@ -714,25 +715,43 @@ def test_push_after_rule_and_component(studio_layer):
     assert (f"{AFTER_SCOPE} {UIPUSH_PREVIEW}", "studio:push-after") in rules
     _etag, found = layer_item("component", ("studio:push-after",))
     assert found["engine"] == "jinja2" and found["mode"] == "view"
-    # The section's CSS selects its own classes, none of which the push
-    # preview uses: studio:push-preview (the review, and the Promote panel)
-    # renders a change's After side as studio-push-after, which must keep
-    # the Before side's layout.
+    # The section's CSS rules select only what studio:push-after alone
+    # renders: other components already use look-alike names (the push
+    # preview's After side is studio-push-after; studio:status's Promote
+    # button is studio-after-push), which these rules must never restyle.
     _etag, css = layer_item("css", ("studio:studio",))
-    own = set(re.findall(r"\.(studio-after-push[\w-]*)", css["css"]))
-    assert own == {"studio-after-push", "studio-after-push-controls"}
-    _etag, review = layer_item("component", ("studio:push-preview",))
+    selectors = [s for s in css_selectors(css["css"]) if "push-after" in s]
+    assert selectors == [
+        ".studio [data-studio-push-after]",
+        ".studio [data-studio-push-after-controls]",
+    ]
+    names = set()
+    for selector in selectors:
+        names |= {("class", c) for c in re.findall(r"\.([\w-]+)", selector)}
+        names |= {("attr", a) for a in re.findall(r"\[([\w-]+)", selector)}
+    names.discard(("class", "studio"))  # the layer page's root, everywhere
+    assert names == {
+        ("attr", "data-studio-push-after"),
+        ("attr", "data-studio-push-after-controls"),
+    }
 
-    def classes(template):
-        return {
-            name
-            for found in re.findall(r'class="([^"]*)"', template)
-            for name in found.split()
-        }
+    def uses(template, kind, name):
+        if kind == "class":
+            return any(
+                name in found.split()
+                for found in re.findall(r'class="([^"]*)"', template)
+            )
+        # An attribute of a tag: the whole name, then `=`, a space or `>`.
+        return re.search(rf"<[^>]*\s{re.escape(name)}(?=[\s=>])", template) is not None
 
-    assert own <= classes(found["template"])
-    assert not own & classes(review["template"])
-    assert not [name for name in own if name in review["template"]]
+    templates = {
+        content["name"]: content["template"]
+        for content in layer_files("component").values()
+    }
+    assert "studio:push-after" in templates and "studio:status" in templates
+    for kind, name in names:
+        users = [n for n, template in templates.items() if uses(template, kind, name)]
+        assert users == ["studio:push-after"], (kind, name, users)
 
 
 @pytest.mark.django_db

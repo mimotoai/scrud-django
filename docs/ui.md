@@ -2526,7 +2526,7 @@ second time, in the scope `studio studio-push-after`, which the layer's
 stylesheet takes to `studio:push-after` (so a page computes the push's plan
 twice: once for the review, once for this). That component renders only when
 the push preview's `endpoints` are not `null` (the studio's URLs are
-included): `<section class="studio-after-push" data-studio-push-after
+included): `<section class="studio-push-page-after" data-studio-push-after
 data-studio-source="<source>" data-studio-target="<target>">` with the type
 picker (`studio:type-picker`, an embed of `api_url("ui-type-catalog",
 "all")` in the scope `studio studio-types`), a "Preview after push" button
