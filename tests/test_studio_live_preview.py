@@ -861,3 +861,76 @@ def test_studio_data_embedded_in_live_preview_shows_stored_items_not_drafts(
     assert section, page
     assert embedded_content(section.group(1)) == plain
     assert "DRAFT" not in section.group(1)
+
+
+@pytest.mark.django_db
+@test_context
+def test_live_preview_of_unreadable_instance_shows_nothing_of_it(
+    todo_list, todo_reader_login
+):
+    """An instance the user may not GET is refused as its resource view
+    refuses it (the same status and problem as its URL answers as JSON),
+    sandboxed, and the answer shows nothing of it: not its content, not
+    its title, not a frame of it."""
+    secret = make_list("Secret plans", context="project-b", items=["Hidden item"])
+    wip_for(todo_reader_login)
+    When.http.get(url_of(secret), HTTP_ACCEPT="application/json")
+    status = Http.response.status_code
+    assert status in (403, 404)
+    refusal = Http.response.json()
+    page = live(status=status, instance=secret.pk)
+    assert Http.response.json() == refusal
+    assert Http.response["Content-Security-Policy"].startswith("sandbox ")
+    for shown in ("Secret plans", "Hidden item", "project-b", url_of(secret)):
+        assert shown not in page
+    # The readable instance previews, as a check that the request is right.
+    assert "Groceries" in live(instance=todo_list.pk)
+
+
+@pytest.mark.django_db
+@test_context
+def test_layer_prefixed_drafts_follow_the_save_rules(ui_alice_login):
+    """A draft with a layer prefix is what its save would be: an override
+    of an installed layer's item (``layertest:sheet``) renders, and ranks
+    as the stored override it would be (above main's stored stylesheet, not
+    beneath it as the layer's own); a new prefixed name (``layertest:new``)
+    and a ``scrud:`` name are listed in the errors with the message their
+    save answers."""
+    main_row()
+    make_component("over", "<i>over {{ value.text }}</i>")
+    wip_for(ui_alice_login)
+    rules = [{"select": "ex:TodoItem", "component": "over"}]
+    override = draft(
+        "stylesheet", name="layertest:sheet", prefixes=PREFIXES, rules=rules
+    )
+    page = live(drafts=[override])
+    assert errors_of(page) == []
+    assert "<i>over Lorem ipsum</i>" in page and "<b>main" not in page
+    bad = [
+        draft("stylesheet", name="layertest:new", prefixes=PREFIXES, rules=rules),
+        django_component("scrud:x", "<i>x</i>"),
+    ]
+    page = live(drafts=bad)
+    errors = errors_of(page)
+    assert [(e["kind"], e["name"]) for e in errors] == [
+        ("stylesheet", "layertest:new"),
+        ("component", "scrud:x"),
+    ]
+    for found, item in zip(errors, bad, strict=True):
+        content = {k: v for k, v in item["content"].items() if k != "name"}
+        When.http.post(
+            reverse("scrud-studio:save-item"),
+            data={
+                "kind": item["kind"],
+                "branch": "wip",
+                "name": item["content"]["name"],
+                "content": content,
+            },
+            format="json",
+        )
+        Then.http.status_code_is(400)
+        assert found["messages"] == [problem()["detail"]]
+        assert item["content"]["name"] in found["messages"][0]
+    # The preview renders without them: main's own presentation.
+    assert "<b>main Lorem ipsum</b>" in page
+    assert not Resource.objects.filter(content__branch="wip").exists()

@@ -11,7 +11,9 @@ from types import SimpleNamespace
 import pytest
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.models import Resource
 from scrud_django.ui import renderer
+from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 from scrud_django.ui.branches.chrome import SAFE_NOTICE
 
 from .fixtures import *  # noqa
@@ -275,3 +277,45 @@ def test_safe_pages_mark_themselves(todo_list, todo_reader_login):
     assert frames and all('data-scrud-safe="1"' in f for f in frames)
     assert "data-scrud-safe" not in get_html(url)
     assert "data-scrud-safe" not in get_html(url, **{BRANCH_HEADER: "wip"})
+
+
+@pytest.mark.django_db
+@test_context
+def test_safe_mode_renders_with_a_broken_branch_chain(todo_list, todo_reader_login):
+    """A branch whose chain is broken (its parent is gone: never created,
+    or deleted) is refused as unavailable, in safe mode too, and the safe
+    page still renders: the notice, the banner's note, the built-in
+    rendering, the layers' CSS and JS alone; never a 500, nor the branch's
+    stored items."""
+    setup_stored(todo_reader_login)
+    make_branch("orphan", "project-a", parent="gone")
+    make_branch("child", "project-a", parent="wip")
+    put_item("ui-components", "title", "<h3>{{ value.title }}</h3>", "child")
+    Resource.objects.filter(
+        resource_type__type_uri=UI_BRANCH_TYPE_URI, content__name="wip"
+    ).delete()
+    url = api_url(todo_list)
+    with installed(MORE_APP):
+        for broken in ("orphan", "child"):
+            for headers in (
+                {BRANCH_HEADER: broken},
+                {**SAFE_HEADER, BRANCH_HEADER: broken},
+            ):
+                page = get_html(url + SAFE, **headers)
+                assert NOTICE in page, broken
+                assert f"The branch <code>{broken}</code> isn't available" in page
+                assert "Groceries" in page
+                for stored in ("<h1>", "<h2>", "<h3>"):
+                    assert stored + "Groceries" not in page, (broken, stored)
+                [css] = css_hrefs(page)
+                assert css.startswith("/api/ui-css-files/layermore:theme/")
+            # The fragment, in safe mode: the built-in's alone.
+            When.http.get(
+                url + SAFE,
+                HTTP_ACCEPT="text/html",
+                HTTP_HX_REQUEST="true",
+                **{BRANCH_HEADER: broken},
+            )
+            Then.http.status_code_is(200)
+            fragment = html_of_response()
+            assert "Groceries" in fragment and "<h3>" not in fragment

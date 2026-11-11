@@ -10,6 +10,7 @@ from scrud_django.ui.render import render_collection
 
 from .fixtures import *  # noqa: F401, F403
 from .fixtures import TYPE_URI_TODO_LIST
+from .test_ui_plain_output import ARRAY_OPS, golden, normalized
 from .test_ui_render import (  # noqa: F401
     envelope_of,
     make_component,
@@ -47,6 +48,11 @@ def test_list_unchanged_without_rule(todo_owner_login):
     )
     assert "studio-list" not in output
     assert output.count('class="scrud-resource"') == 2
+    # Exactly develop's output (f43f1e8, `tests/plain_output/`), but for
+    # the array edit controls of each list's one item, in edit mode.
+    edit = normalized(output)
+    assert len(ARRAY_OPS.findall(edit)) == 2
+    assert ARRAY_OPS.sub("", edit) == golden("collection")
 
 
 @pytest.mark.django_db
