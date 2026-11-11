@@ -233,8 +233,8 @@ returns that resource's HTML, the fragment its own URL answers.
   With no scope, the path's own `?ui-scope=` applies, as at its URL
   (`embed("/api/todo-lists/7/?ui-scope=sidebar")`); a `scope` given wins, as
   the header does.
-- `mode="view"` renders it read-only (as `Scrud-UI-Mode: view`); without a
-  mode, the mode is the user's own. Any other value is refused (below), as
+- `mode="view"` renders it read-only (as `Scrud-UI-Mode: view`), with no
+  Delete button; without a mode, the mode is the user's own. Any other value is refused (below), as
   any other `Scrud-UI-Mode` is a 400 at the resource's URL: a typo never
   puts edit controls in a card meant to be read-only.
 
@@ -565,8 +565,10 @@ named by JSON Pointer (`name="/items/0/text"`):
   index greater than the length, or one that is not a canonical non-negative
   integer (`01`, `-1`, `length`), is an error, and the input is skipped.
 * The CSRF token comes from the page's `csrf-token` meta tag.
-* The Delete button (shown when the user may DELETE the resource) asks for
-  confirmation and sends a `DELETE` with `If-Match`. On success (a 204) the
+* The Delete button (shown when the user may DELETE the resource, in edit
+  mode or in the view mode of a user who may not PUT it, but never under a
+  requested view mode: `?ui-mode=view`, `Scrud-UI-Mode: view`, or an embed's
+  `mode="view"`) asks for confirmation and sends a `DELETE` with `If-Match`. On success (a 204) the
   resource's frame is removed from the page, with the list item that held only
   it, and a `scrud:deleted` event is dispatched on `document` with
   `detail.href`, the resource's URL. A failed delete never removes the frame.
@@ -705,7 +707,7 @@ writes: PUT, POST and DELETE are a 405.
 |---|---|
 | `HX-Request: true` | Set by htmx: answer with a fragment (the frame) instead of a page. |
 | `Scrud-UI-Scope` | The root scope chain, outermost first: up to 16 space- or comma-separated scope names. An invalid value is ignored. The same chain may come in the URL as `?ui-scope=sidebar,main`; the header wins. |
-| `Scrud-UI-Mode` | `view` renders the resource (or each item of a list) read-only even for a user who may PUT it: no form, no `hx-put`. It only lowers what the user may do: `view` is the only valid value, any other (`edit`) is a 400, before a PUT writes anything. The same may come as `?ui-mode=view`; the header wins. |
+| `Scrud-UI-Mode` | `view` renders the resource (or each item of a list) read-only even for a user who may PUT it: no form, no `hx-put`, and no Delete button, even for a user who may DELETE it. It only lowers what the user may do: `view` is the only valid value, any other (`edit`) is a 400, before a PUT writes anything. The same may come as `?ui-mode=view`; the header wins. |
 | `Scrud-UI-Pointer` | The JSON Pointer of the node to render (default `""`). An invalid pointer (or one over 1024 characters) is a 400, before a PUT writes anything. |
 | `Scrud-UI-Safe` | `1` renders in [safe mode](#safe-mode), as `?ui-safe=1` does; any other value is ignored. scrud-ui.js sends it on the requests of a safe page. |
 
@@ -1931,7 +1933,11 @@ SCRUD_UI_STUDIO_BRANCH = "studio"  # default: None
 `scrud_django.ui.studio.studio_branch()` reads it. Studio pages are always in
 the scope `studio` (their URLs carry `?ui-scope=studio`); the studio root's
 own workbench is its `ui-branches` detail under its prefix, for example
-`/studio-root/ui-branches/3/?ui-scope=studio`.
+`/studio-root/ui-branches/3/?ui-scope=studio&ui-mode=view`. A workbench URL
+also requests view mode (`ui-mode=view`): the workbench is a view of its
+branch, and a user who may `PUT` the branch would otherwise get the branch's
+edit form, in which the view-mode workbench component is not used (and a
+requested view mode leaves out the frame's Delete button).
 
 **The studio links.** When the studio app is installed, every page of the
 seven UI types (`ui-components`, `ui-stylesheets`, `ui-branches`,
@@ -1941,7 +1947,7 @@ notice:
 
 ```html
 <nav class="scrud-studio-links">
-  <a href="/studio-root/ui-branches/3/?ui-scope=studio">Studio</a>
+  <a href="/studio-root/ui-branches/3/?ui-scope=studio&amp;ui-mode=view">Studio</a>
   <a href="/api/ui-components/9/?ui-safe=1">Safe mode</a>
   <a href="/studio/">Bootstrap studio</a>
 </nav>
@@ -1956,3 +1962,113 @@ does not include the studio's URLs. The links are server chrome, like the
 banner: a page component that leaves them out is replaced by the built-in page.
 So an author who breaks the studio's own components can still reach it in safe
 mode, or in the bootstrap studio. A fragment (an htmx request) has no links.
+
+### The workbench
+
+A branch's workbench is its `ui-branches` detail in the scope `studio`, in
+view mode: `<prefix>ui-branches/<pk>/?ui-scope=studio&ui-mode=view`. The
+branch it shows is *T*; the page itself renders on the branch its URL selects
+(*S*, the studio root under its prefix). The layer's stylesheet
+`studio:studio` takes the root of `UIBranch`
+(`http://api.openteams.com/json-ld/UIBranch`) in the scope `studio` to the
+component `studio:workbench`, which renders:
+
+- `<div class="studio-workbench" data-studio-workbench
+  data-studio-branch="<T>" data-studio-published="true|false">`; T is
+  published when it is `main` or its content has a `prefix`;
+- a top bar with T's name and the Items, Editor and Preview toggles;
+- a notice (`data-studio-notice`, `role="alert"`, hidden until a write is
+  refused);
+- three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`;
+- a bottom strip (`<footer class="studio-strip">`).
+
+The Items pane embeds `api_url("ui-branch-items", T)` in the scope
+`studio studio-items`, which the layer renders with `studio:items`; the strip
+embeds `api_url("ui-branch-status", T)` in `studio studio-status`
+(`studio:status`). Each embedding element carries `data-studio-embed`
+(`items`, `status`), `data-studio-src` (the path as the page's prefix serves
+it, `in_mount`) and `data-studio-scope` (its scope chain), from which the
+script fetches it again. The panes read T's studio data as the user's own
+JSON would, so items the user may not read are absent, and a write control
+is shown only where the data offers its action (see
+[Studio data as computed resources](#studio-data-as-computed-resources)).
+
+**Items** (`studio:items`) are a tree by kind (components, stylesheets, CSS,
+JS). Each entry is an `<li class="studio-item studio-own|studio-inherited|studio-packaged">`,
+with `studio-conflict-parent` or `studio-conflict-layer` for a conflict, and
+holds:
+
+- a button with `data-studio-open`, the JSON `{"kind", "name",
+  "applies_to", "href", "override"}` (`applies_to` is `null` but for a
+  stylesheet; `href` is the item's resource as the page's prefix serves it,
+  or `null` for a packaged item and an ancestor's item a pinned view reads
+  from a version);
+- for an item with no `href`, a hidden `<pre data-studio-content>` with its
+  content as indented JSON (Jinja's `tojson`, so `<`, `>`, `&` and `'` are
+  `\u` escapes: parse it, don't show it as is);
+- when the item's `override` is offered, an "Override on this branch" button
+  that sends it.
+
+**The strip** (`studio:status`) shows T's chain, its changed and conflict
+counts (`data-studio-changed`, `data-studio-conflict-count`), Pull
+(`actions.pull`), Push to and Propose to the parent (`actions.promote[0]`'s
+`apply` and `propose`), each only when offered, and "Browse app on this
+branch" when `browse_url` is set. Its root carries the studio's `endpoints`
+as JSON (`data-studio-endpoints`). `browse_url` is linked as it is: it
+already names the published root's prefix, which is not the studio's.
+
+Every action button is a [fixed-body element](#writes-from-the-browser):
+`hx-<method>` with the action's `href` (`in_mount`), `hx-ext="scrud-json"`,
+`data-scrud-json="fixed"`, `data-scrud-body` (the body, `tojson`),
+`data-scrud-etag` (the action's ETag, or empty for none) and
+`hx-swap="none"`: the script refreshes the panes after it.
+
+**The preview pane** holds a hidden
+`<form data-studio-preview-form method="post" target="studio-preview">` with
+`csrfmiddlewaretoken` and `request` inputs, and
+`<iframe name="studio-preview" sandbox="allow-scripts" class="studio-preview">`,
+for the live preview (`POST live-preview`, see [The studio API](#the-studio-api)).
+
+**The script** (`studio:studio`'s JS) runs only on a page with a
+`[data-studio-workbench]` element:
+
+- **Panes.** A toggle collapses its pane to a rail
+  (`data-studio-collapsed`; `aria-pressed` on the toggle). Which panes are
+  collapsed is remembered per viewer in `localStorage` under `studio:panes`
+  (`{"items": true, "editor": true}`); without storage, or when it refuses,
+  every pane starts open and the toggles still work. The preview can't be
+  hidden.
+- **State in the URL.** The workbench state is in the page's query: `type`
+  (the previewed type's slug), `item` (the open item:
+  `<kind>:<name>`, and `@<applies_to>` for a stylesheet that applies to a
+  context), `pointer`, `mode`, `context`, `scope`, `instance` and `pinned`.
+  The script rewrites them with `history.replaceState`, and keeps every
+  other parameter (`ui-scope=studio`, `ui-mode=view`, `ui-safe`), so a
+  workbench URL can be shared and reloaded.
+- **The strip with a type.** When the state has a `type` (on load, and when
+  it changes), the strip is fetched again with `?type=<type>`, for its browse
+  link.
+- **Opening an item.** A click on an entry sets `item` and dispatches
+  `studio:open` on the workbench (`detail.open` is the entry's
+  `data-studio-open`), which the editor handles.
+- **After a write.** After any write sent from inside the workbench
+  (`htmx:afterRequest` of a non-GET) that succeeds, the items and the strip
+  are fetched again (an htmx GET of `data-studio-src`, with the pane's own
+  `Scrud-UI-Scope`) and the preview is submitted again. A refused write shows
+  the server's error text in the workbench's notice, as text: a problem's
+  `title` and `detail`, else the notices of the HTML it answered.
+- **The preview.** `window.ScrudStudio.submitPreview(extra)` sets the form's
+  action to the strip's `endpoints.live_preview`, its CSRF token from the
+  page's `csrf-token` meta tag, and its `request` to the URL state (`type`,
+  T as `branch`, or `T@pinned` when `pinned` is `1`; `mode`, default `view`;
+  `scope` as a list; `context`; `instance`, a number when it is one, else
+  `null`) with `drafts`, `mark` and `after_push` from `extra`, and submits it
+  into the frame. On a published T it sends no drafts. Without a `type`, or
+  without `endpoints`, nothing is submitted (it returns `false`). The
+  preview is submitted on load when the state has a type.
+
+The script never sets `Scrud-UI-Branch`: its requests go through htmx, and
+`scrud-ui.js` sends the page's branch (S) and, on a safe page,
+`Scrud-UI-Safe`. `window.ScrudStudio` also has `state()`, `setState(changes)`
+(`null` or `""` removes a key), `itemKey(open)`, `refresh(pane)`, `branch`
+and `published`.

@@ -267,7 +267,11 @@ def test_studio_links_on_ui_type_pages_only(todo_list, admin_login):
     make_branch("no-prefix", "project-a", parent=None)
     row = make_component("row", "<b>{{ value }}</b>")
     Given.http.force_authenticate(admin_login)
-    studio_href = f"{STUDIO_ROOT}ui-branches/{root.pk}/?ui-scope=studio"
+    # The workbench in the scope studio, in view mode (the workbench is a view
+    # of its branch, also for a user who may PUT it), the & escaped.
+    studio_href = (
+        f"{STUDIO_ROOT}ui-branches/{root.pk}/?ui-scope=studio&amp;ui-mode=view"
+    )
     bootstrap_href = reverse("scrud-studio:types")
     with override_settings(SCRUD_UI_STUDIO_BRANCH="studio-root"):
         assert studio_branch() == "studio-root"

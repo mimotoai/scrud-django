@@ -422,6 +422,13 @@ def test_embed_view_mode(todo_list, todo_owner_login):
     assert len(found) == 2
     assert "hx-put" not in found[0]
     assert f'hx-put="{url}"' in found[1]
+    # A view-mode embed has no Delete button either; without a mode, the
+    # user who may DELETE gets it: one in the page, in the second embed.
+    assert page.count(f'hx-delete="{url}"') == 1
+    view_embed = page.split('<p class="v">', 1)[1].split('<p class="e">', 1)[0]
+    assert "hx-delete" not in view_embed and "Sweep" in view_embed
+    edit_embed = page.split('<p class="e">', 1)[1].split('<p class="x">', 1)[0]
+    assert f'hx-delete="{url}"' in edit_embed
     # Without a mode, the mode is the user's own.
     assert 'data-scrud-scope="plain"' in found[1]
     # Any other mode is refused, as ``ui-mode=edit`` is a 400 at the URL.

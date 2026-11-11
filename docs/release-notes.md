@@ -139,9 +139,23 @@
   apply or propose a push to each ancestor) and the bootstrap studio's
   `endpoints` (`null` when its URLs are not included). On a published branch
   no write is offered.
+* The self-hosted studio's workbench, in the studio layer: a branch's
+  `ui-branches` detail at `?ui-scope=studio&ui-mode=view` renders
+  `studio:workbench`, with Items, Editor and Preview panes (Items and Editor
+  collapse to rails, remembered per viewer in `localStorage`), the branch's
+  items as a tree (`studio:items`: own, inherited and packaged items,
+  conflicts, "Override on this branch"), a strip (`studio:status`: chain,
+  counts, Pull, Push and Propose to the parent, the browse link) and a bare
+  live preview in a sandboxed frame. The workbench state is in the URL's
+  query. The studio link now points at the workbench in view mode
+  (`&ui-mode=view`).
 
 ### Changed
 
+* A requested view mode (`?ui-mode=view`, `Scrud-UI-Mode: view`, or an
+  embed's `mode="view"`) also leaves out the frame's Delete button, even for
+  a user who may DELETE the resource. A user in view mode because they may
+  not PUT still gets it when they may DELETE.
 * A UI item whose name starts with `scrud:` is refused with 400
   `ui-layer-name-reserved`.
 * The built-in `array-edit` now shows Remove and Move controls in edit mode.

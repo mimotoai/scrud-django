@@ -19,11 +19,11 @@ from scrud_django.ui.branches import (
 from scrud_django.ui.branches.effective import SAFE_PARAMETER
 from scrud_django.ui.branches.selection import Mount, api_base
 from scrud_django.ui.branches.store import branches
+from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER, VIEW_MODE
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
 # The scope of the self-hosted studio's pages.
 STUDIO_SCOPE = "studio"
-SCOPE_PARAMETER = "ui-scope"
 
 UI_TYPE_URIS = frozenset(
     {
@@ -73,7 +73,8 @@ def studio_links(request) -> SafeString:
 def studio_href() -> str | None:
     """The workbench of the studio root (`studio.studio_branch`) on itself:
     its own ``ui-branches`` detail under its prefix, in the scope
-    ``studio``. ``None`` when the setting is unset, names no stored branch,
+    ``studio``, in view mode (the workbench is a view of its branch: a user
+    who may PUT it would otherwise get the branch's edit form). ``None`` when the setting is unset, names no stored branch,
     or that branch has no prefix."""
     from scrud_django.ui.studio import studio_branch
 
@@ -83,7 +84,10 @@ def studio_href() -> str | None:
         return None
     mount = Mount(branch.prefix, branch.name, api_base(), get_script_prefix())
     detail = reverse(f"{UI_BRANCH_SLUG}-detail", args=[branch.pk])
-    return f"{mount.href(detail)}?{SCOPE_PARAMETER}={STUDIO_SCOPE}"
+    return (
+        f"{mount.href(detail)}?{SCOPE_PARAMETER}={STUDIO_SCOPE}"
+        f"&{MODE_PARAMETER}={VIEW_MODE}"
+    )
 
 
 def safe_href(request) -> str:

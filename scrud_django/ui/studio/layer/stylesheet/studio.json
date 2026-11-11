@@ -5,6 +5,18 @@
     {
       "select": "studio scrud:page",
       "component": "studio:page"
+    },
+    {
+      "select": "studio http://api.openteams.com/json-ld/UIBranch",
+      "component": "studio:workbench"
+    },
+    {
+      "select": "studio studio-items http://api.openteams.com/json-ld/UIBranchItems",
+      "component": "studio:items"
+    },
+    {
+      "select": "studio studio-status http://api.openteams.com/json-ld/UIBranchStatus",
+      "component": "studio:status"
     }
   ]
 }

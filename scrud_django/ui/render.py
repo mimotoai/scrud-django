@@ -151,7 +151,9 @@ def render_resource(
     of the resource. `errors` maps JSON Pointers to messages (``""``: the
     resource's, shown at the top of the frame). `mode` is ``"view"`` or
     ``"edit"``; ``None`` is ``"edit"`` when the user may (or possibly may)
-    PUT the resource.
+    PUT the resource. A `mode` of ``"view"`` (a requested view mode) also
+    leaves out the Delete button; with ``None`` a user who may DELETE gets
+    it in either mode.
 
     `decisions` (as `decisions_for` gives them) and `contexts` (whose
     stylesheets apply) are those of `content` unless given: for content that
@@ -318,7 +320,10 @@ def _render_resource(
         scope_chain=scope_chain,
         pointer=node.pointer,
         mode=walk.mode,
+        # A requested view mode (`mode` given as "view": the header, the
+        # parameter, an embed's) is a view: no Delete button either.
         deletable=not preview
+        and mode != "view"
         and node.pointer == ""
         and walk.resource["decisions"]["DELETE"] == ALLOWED,
         branch=None if preview else frame_branch(request),
