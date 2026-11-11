@@ -46,6 +46,28 @@ def decisions_for(request, type_uri: str, content: dict) -> dict[str, str]:
     return decisions
 
 
+def may_send(request, method: str, type_uri: str, body, contexts=None) -> bool:
+    """Whether a control that sends `body` with `method` (``POST`` or
+    ``PUT``) to a resource of `type_uri` may be offered: the policy allows
+    ``http.<method>`` in one of `contexts` (default: `body`'s own,
+    `rbac_contexts_of`), reading `body` there, outright or inside a write's
+    checks (a ``scrud_workflow`` condition allows there, as for a
+    ``"possibly"`` PUT in `decisions_for`). Offering a control is a
+    convenience: the write's own checks decide."""
+    contexts = rbac_contexts_of(body) if contexts is None else contexts
+    permission = Permission(f"http.{method}", type_uri)
+    if may_act_in_context(request, permission, body, contexts):
+        return True
+    with _checking_write():
+        return may_act_in_context(request, permission, body, contexts)
+
+
+def may_post(request, type_uri: str, body) -> bool:
+    """`may_send` for a POST of `body` to `type_uri`'s collection, in
+    `body`'s contexts."""
+    return may_send(request, "POST", type_uri, body)
+
+
 def refusal_messages(request, type_uri: str, body: dict, stored: dict) -> list[str]:
     """The messages of the policy conditions that refuse a PUT of `body` over
     the resource whose content is `stored`, in order and each once; ``[]``

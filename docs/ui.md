@@ -1585,8 +1585,8 @@ rows the user may read (and add its layer conflicts).
 
 | Path | Type IRI | Content |
 |---|---|---|
-| `ui-branch-items/<branch>/` | `http://api.openteams.com/json-ld/UIBranchItems` | every item the branch shows |
-| `ui-branch-status/<branch>/` | `http://api.openteams.com/json-ld/UIBranchStatus` | the branch's chain, changes, conflicts and browse URL |
+| `ui-branch-items/<branch>/` | `http://api.openteams.com/json-ld/UIBranchItems` | every item the branch shows, and how to override it |
+| `ui-branch-status/<branch>/` | `http://api.openteams.com/json-ld/UIBranchStatus` | the branch's chain, changes, conflicts, browse URL, rights, pushes, versions, actions and the studio's endpoints |
 | `ui-type-catalog/all/` | `http://api.openteams.com/json-ld/UITypeCatalog` | the registered types |
 | `ui-selectable-branches/mine/` | `http://api.openteams.com/json-ld/UISelectableBranches` | the branches the user may select |
 | `ui-push-previews/<source>/?target=<name>` | `http://api.openteams.com/json-ld/UIPushPreview` | what a push would change ([below](#what-a-push-will-change)) |
@@ -1594,6 +1594,19 @@ rows the user may read (and add its layer conflicts).
 `<branch>` is a selection value: a branch name, or `<name>@pinned` for the
 branch at its branching point. The catalog's only key is `all` and the picker's
 only key is `mine`; any other key is a 404.
+
+**Actions.** Where studio data offers a write, it gives it as an *action*,
+`{"method", "href", "body", "etag"}`: what a control sends unchanged, as a
+[fixed-body element](#writes-from-the-browser) does. `method` is `POST` or
+`PUT`; `href` is an API path (a component maps it into its prefix with
+`in_mount(href)`); `body` is the JSON body, sent as it is (`data-scrud-body`);
+`etag` is the quoted `If-Match` to send (`data-scrud-etag`), or `null` for
+none (`data-scrud-etag=""`). An action is offered only when the user's grants
+allow it: the method on the body's type in the body's contexts, the body read
+there, counting what a condition allows only inside a write's checks (a
+`scrud_workflow` condition) as allowed. Offering one is a convenience: the
+write's own checks decide, and a refused write answers as it would to any
+client. An action is `null` when it is not offered.
 
 **Branch items** lists the components, stylesheets, CSS and JS items the
 branch shows (live, or pinned), by kind, each kind in the cascade's order:
@@ -1603,13 +1616,17 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
   {"kind": "component", "name": "row", "origin": "own", "from": "wip",
    "href": "/api/ui-components/12/", "etag": "\"3f…\"",
    "content": {"name": "row", "engine": "jinja2", "…": "…"},
-   "conflict": "parent"},
+   "conflict": "parent", "override": null},
   {"kind": "component", "name": "head", "origin": "inherited", "from": "main",
    "href": "/api/ui-components/7/", "etag": "\"9a…\"", "content": {"…": "…"},
-   "conflict": null},
+   "conflict": null,
+   "override": {"method": "POST", "href": "/api/ui-components/",
+                "body": {"name": "head", "engine": "jinja2", "…": "…",
+                         "branch": "wip", "rbac_context": "alice"},
+                "etag": null}},
   {"kind": "stylesheet", "name": "studio:workbench", "applies_to": "",
    "origin": "packaged", "from": null, "href": null, "etag": "\"c0…\"",
-   "content": {"…": "…"}, "conflict": null}
+   "content": {"…": "…"}, "conflict": null, "override": {"…": "…"}}
 ]}
 ```
 
@@ -1624,6 +1641,15 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
   packaged item that changed since the override was based on it, or whose
   layer item is gone ([layer conflicts](#packaged-ui-layers)). Where both
   apply, it is `parent`.
+- `override` is the action that creates the branch's override of an item it
+  shows but does not own (inherited or packaged): a `POST` to the item type's
+  list of the item's content without `base` and `deleted`, with `branch` set
+  to the branch, a stylesheet's `applies_to`, and `rbac_context` set to the
+  item's [authorizing context](#authorizing-contexts) on the branch, as a
+  studio save sends it. The server sets `base` (the inherited item's ETag, or
+  the packaged item's). It is `null` on the branch's own items, on a
+  published branch (`main`, or any with a prefix: changes reach it by a
+  push), for a deletion marker, and when the user may not `POST` that body.
 - A row the user may not `GET` is left out entirely, as its JSON list leaves
   it out. So is a row that rendering skips (stored with another context than
   its branch authorizes).
@@ -1638,7 +1664,31 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
  "changed": [{"kind": "component", "name": "row", "applies_to": "", "deleted": false}],
  "conflicts": [{"kind": "component", "name": "row", "applies_to": "", "with": "parent"},
                {"kind": "stylesheet", "name": "studio:workbench", "applies_to": "", "with": "layer"}],
- "browse_url": "/shop/todo-lists/?ui-branch=feat"}
+ "browse_url": "/shop/todo-lists/?ui-branch=feat",
+ "may_write": true, "may_publish": false,
+ "pushes": [{"href": "/api/ui-pushes/31/", "source": "feat", "target": "shop",
+             "state": "proposed", "label": null}],
+ "versions": [{"number": 4, "href": "/api/ui-branch-versions/58/"},
+              {"number": 3, "href": "/api/ui-branch-versions/51/"}],
+ "actions": {
+   "pull": {"method": "PUT", "href": "/api/ui-branches/9/",
+            "body": {"name": "feat", "parent": "shop", "…": "…", "pull": true},
+            "etag": "\"5d…\""},
+   "promote": [
+     {"target": "shop",
+      "apply": {"method": "POST", "href": "/api/ui-pushes/",
+                "body": {"source": "feat", "target": "shop", "state": "applied",
+                         "rbac_context": "project-a"},
+                "etag": null},
+      "propose": {"method": "POST", "href": "/api/ui-pushes/",
+                  "body": {"source": "feat", "target": "shop", "state": "proposed",
+                           "rbac_context": "project-a"},
+                  "etag": null}},
+     {"target": "main", "apply": null, "propose": null}]},
+ "endpoints": {"live_preview": "/studio/live-preview",
+               "explain": "/studio/types/{slug}/explain",
+               "options": "/studio/types/{slug}/new-component/options",
+               "new_component": "/studio/new-component"}}
 ```
 
 - `chain` is the branch and its ancestors, nearest first: the branch, its
@@ -1653,6 +1703,39 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
 - `browse_url` needs `?type=<slug>`: that type's list on the branch, under its
   published root's prefix, as the strip's link. Without `type`, or for a slug
   with no list, it is `null`.
+- `may_write` is `true` when the branch is a working branch and the user may
+  `PUT` it (a published branch is never written in the studio).
+  `may_publish` is `true` when the user may `PUT` UI branches in the context
+  `""`, the grant that sets, changes or removes a prefix
+  ([Who may publish](#prefixes)).
+- `pushes` are the latest 20 [pushes](#pushing-and-restoring) with the branch
+  as `source` or `target` (restores included), newest first, each one the user
+  may `GET` (the check its detail route makes; the others are left out, not
+  counted). `label` is the push's, or `null`.
+- `versions` are the branch's latest 20 versions the user may `GET`, newest
+  first; none when they may not `GET` its versions.
+- `actions` are what the studio may send to change the branch:
+  - `pull`: the `PUT` of the branch's stored content with `"pull": true` to
+    the branch's resource, with its ETag, when it has a parent and
+    `may_write`;
+  - `promote`: one entry per ancestor in `chain`, nearest first,
+    `{"target", "apply", "propose"}`, where `apply` and `propose` are the
+    `POST`s to `ui-pushes` of `{"source": <branch>, "target": <ancestor>,
+    "state": "applied" | "proposed", "rbac_context": <the ancestor's
+    context>}`, each when the user may `POST` that body. Ancestors the chain
+    leaves out are not offered.
+
+  On a published branch, `pull` is `null` and `promote` is empty.
+- `endpoints` are the bootstrap studio's own endpoints a studio built as a
+  layer calls, reversed from the `scrud-studio` namespace (so they include
+  where its URLs are included, and are not API paths; see
+  [The studio API](#the-studio-api)): `live_preview` (`POST live-preview`),
+  `explain` (`GET types/<slug>/explain`), `options`
+  (`GET types/<slug>/new-component/options`) and `new_component`
+  (`POST new-component`).
+  `explain` and `options` take the type's slug: they are templates in which
+  `{slug}` stands for it (replace it, URL-encoded). `endpoints` is `null` when
+  the studio's URLs are not included.
 
 **Type catalog**: `{"types": [{"slug", "title", "type_uri"}]}`, every
 registered type with a slug, by slug, as the type browser lists them

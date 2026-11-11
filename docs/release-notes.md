@@ -130,6 +130,15 @@
   page's published prefix) and `api_url(slug, key=None)` (the API path of a
   registered type's list or detail; an unknown slug fails the component)
   beside `embed`.
+* More studio data in the computed types, as *actions* (`{"method", "href",
+  "body", "etag"}`, what a control sends unchanged, offered only when the
+  user's grants allow it). Each item of `ui-branch-items` has `override`, the
+  `POST` that creates the branch's override of an item it shows but does not
+  own. `ui-branch-status` has `may_write`, `may_publish`, the latest 20
+  `pushes` and `versions` the user may read, `actions` (`pull`, and `promote`:
+  apply or propose a push to each ancestor) and the bootstrap studio's
+  `endpoints` (`null` when its URLs are not included). On a published branch
+  no write is offered.
 
 ### Changed
 
