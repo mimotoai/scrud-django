@@ -11,3 +11,12 @@ def studio_branch() -> str | None:
 
     name = getattr(settings, "SCRUD_UI_STUDIO_BRANCH", None)
     return name if isinstance(name, str) and name else None
+
+
+def studio_layer_enabled() -> bool:
+    """Whether the studio's packaged UI layer (``studio:``) is installed with
+    the app: the setting ``SCRUD_UI_STUDIO_LAYER`` (default ``True``), any
+    false value turning it off."""
+    from django.conf import settings
+
+    return bool(getattr(settings, "SCRUD_UI_STUDIO_LAYER", True))

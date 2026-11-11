@@ -130,8 +130,9 @@
   workbench (on a push's page `studio:promote` only stops the `change` of
   its state input). So the bodies of pages outside the studio render as
   before, but every HTML page of a site with the studio app installed, on
-  every branch, links the layer's CSS item and its five JS items (see
-  Upgrading). It adds no rights: every write is an ordinary request to a
+  every branch, links the layer's CSS item and its five JS items, unless the
+  new setting `SCRUD_UI_STUDIO_LAYER` (default `True`; `studio_layer_enabled()`)
+  is false (see Upgrading). It adds no rights: every write is an ordinary request to a
   resource view, and a control is shown only where the studio data offers
   its action. The setting `SCRUD_UI_STUDIO_BRANCH` (default `None`;
   `studio_branch()`) names the published root branch that hosts it, a tree of
@@ -310,10 +311,12 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   nothing without a workbench, the CSS selects only under `.studio` and
   `[data-studio…]`), and every item listing and branch's items include the
   layer's. To keep the bootstrap studio without the self-hosted one and
-  without those files, install a subclass of
-  `scrud_django.ui.studio.apps.ScrudUIStudioConfig` with
-  `scrud_ui_layer = None` in place of the app (see "Setting up the
-  self-hosted studio" in the UI page).
+  without those files, turn the layer off in your settings:
+  `SCRUD_UI_STUDIO_LAYER = False` (default `True`). Pages then link no
+  `studio:` item and no item listing has one; the bootstrap studio, the
+  studio's computed types and the studio links are unchanged. No config
+  subclass is needed (see "Setting up the self-hosted studio" in the UI
+  page).
 
 ## 0.16.0
 

@@ -102,9 +102,7 @@ SETTINGS: dict[str, Any] = dict(
         "scoped_rbac",
         "scrud_django",
         "scrud_django.ui",
-        # The studio without its UI layer (``studio:``), which the tests that
-        # need it install with the ``studio_layer`` fixture.
-        "tests.apps.StudioWithoutLayerConfig",
+        "scrud_django.ui.studio",
         "tests",
         "tests.apps.UILayerTestConfig",
         "reversion",
@@ -134,4 +132,8 @@ SETTINGS: dict[str, Any] = dict(
     },
     HAYSTACK_SIGNAL_PROCESSOR="scrud_django.search.OnCommitSignalProcessor",
     SCRUD_WORKFLOW_ACTIONS=["tests.workflow_actions.actions"],
+    # The studio app without its UI layer (``studio:``), whose page component,
+    # CSS and JS every page would link and every item listing would list. The
+    # tests that need it turn it on with the ``studio_layer`` fixture.
+    SCRUD_UI_STUDIO_LAYER=False,
 )

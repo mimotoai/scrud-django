@@ -22,8 +22,19 @@ class ScrudUIStudioConfig(AppConfig):
     name = "scrud_django.ui.studio"
     label = "scrud_django_ui_studio"
     default_auto_field = "django.db.models.AutoField"
-    # The studio's packaged UI layer (`scrud_django.ui.studio.layer`).
-    scrud_ui_layer = {"prefix": "studio:", "package": "scrud_django.ui.studio.layer"}
+
+    @property
+    def scrud_ui_layer(self):
+        """The studio's packaged UI layer (`scrud_django.ui.studio.layer`),
+        or ``None`` when ``SCRUD_UI_STUDIO_LAYER`` turns it off
+        (`studio_layer_enabled`). Read when the layers are
+        (`scrud_django.ui.layers`), so a change of the setting takes effect
+        without a restart."""
+        from scrud_django.ui.studio import studio_layer_enabled
+
+        if not studio_layer_enabled():
+            return None
+        return {"prefix": "studio:", "package": "scrud_django.ui.studio.layer"}
 
     def ready(self):
         checks.register(check_ui_installed)

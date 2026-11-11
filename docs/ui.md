@@ -459,7 +459,10 @@ The package holds `component/*.json`, `stylesheet/*.json`, `css/*.json` and
 (lowercase letters, digits and `-`, starting with a letter, ending with `:`;
 never `scrud:`). A layer stylesheet applies everywhere: its `applies_to`, if
 any, is `""`. Ship the files as package data. Layers are read once per process,
-and again after a setting changes.
+and again after a setting changes. The attribute is read with them, so it may be
+a property that reads a setting (as the studio app's does, which
+[`SCRUD_UI_STUDIO_LAYER`](#setting-up-the-self-hosted-studio) turns off); `None`
+declares no layer.
 
 - **Where it sits.** Layer items are on the virtual branch `@layers`, at the
   bottom of every chain, beneath every root branch (`main` and any parentless
@@ -1165,6 +1168,10 @@ urlpatterns = [
 The studio's pages, scripts and styles are its own templates and static files
 (`scrud_studio/`), with no inline scripts, so a `script-src 'self'` policy
 works. The URL names are in the `scrud-studio` namespace.
+
+The app also installs the [self-hosted studio](#self-hosted-studio)'s packaged
+UI layer, which every page then links; `SCRUD_UI_STUDIO_LAYER = False` leaves it
+out (see [Setting up the self-hosted studio](#setting-up-the-self-hosted-studio)).
 
 ### Signing in
 
@@ -1914,7 +1921,8 @@ layer's components and scripts never name S: they never set
 **The layer.** Installing `scrud_django.ui.studio` (as in [Setup](#setup))
 installs its packaged UI layer, prefix `studio:`
 (`scrud_django.ui.studio.layer`), beneath every branch (see
-[Packaged UI layers](#packaged-ui-layers)). Its stylesheet `studio:studio`
+[Packaged UI layers](#packaged-ui-layers)), unless the setting
+`SCRUD_UI_STUDIO_LAYER` turns it off (see *Without the layer* below). Its stylesheet `studio:studio`
 selects only in the scope `studio` (`studio scrud:page` takes the page to
 the component `studio:page`), so a page without `?ui-scope=studio` renders as
 before. `studio:page` keeps what every page needs (the CSRF meta tag, both
@@ -1970,31 +1978,29 @@ renders, on every branch and outside the studio too, links the layer's CSS
 item and its five JS items (a `<link>` and five `<script defer>` tags, each
 an immutable, privately cached file; the scripts return at once without a
 workbench). A project that wants the bootstrap studio and the studio data
-but not the self-hosted studio, and none of those files on its pages,
-installs the app through a subclass of its config that declares no layer, in
-place of `"scrud_django.ui.studio"`:
+but not the self-hosted studio, and none of those files on its pages, turns
+the layer off with a setting, beside `SCRUD_UI_STUDIO_BRANCH`:
 
 ```python
-# myproject/apps.py
-from scrud_django.ui.studio.apps import ScrudUIStudioConfig
-
-
-class StudioWithoutLayerConfig(ScrudUIStudioConfig):
-    scrud_ui_layer = None
+SCRUD_UI_STUDIO_LAYER = False  # default: True
 ```
 
-```python
-INSTALLED_APPS = [
-    ...
-    "scrud_django.ui",
-    "myproject.apps.StudioWithoutLayerConfig",
-]
-```
-
-Pages then link no `studio:` item, and a page in the scope `studio` renders
-with the built-ins: there is no workbench, so leave `SCRUD_UI_STUDIO_BRANCH`
-unset (the *Studio* link would lead to a plain branch page). The test suite
-installs the app this way (`tests.apps.StudioWithoutLayerConfig`), and
+`scrud_django.ui.studio.studio_layer_enabled()` reads it; any false value
+turns the layer off. The app then declares no layer: pages link no `studio:`
+item, no item listing has one, and a page in the scope `studio` renders with
+the built-ins. There is no workbench, so leave `SCRUD_UI_STUDIO_BRANCH` unset
+(the *Studio* link would lead to a plain branch page). The bootstrap studio,
+the studio data (its computed types) and the studio links work as before.
+`studio:` is then the prefix of a layer that is not installed: a new item may
+not have it, and an override of a studio item stored while the layer was on is
+an orphaned override (it keeps rendering, and is reported; see
+[Packaged UI layers](#packaged-ui-layers)). The layers are read again when a
+setting changes, so the setting takes effect without a restart (in a test,
+under `override_settings`). A subclass of the app's config that declares
+`scrud_ui_layer = None`, the earlier way to leave the layer out, is no longer
+needed (it still works). The test suite runs with the layer off
+(`SCRUD_UI_STUDIO_LAYER = False` in `tests/settings.py`; the `studio_layer`
+fixture turns it on), and
 `tests/test_studio_layer.py::test_studio_page_only_in_studio_scope` compares
 a page with and without the layer.
 
