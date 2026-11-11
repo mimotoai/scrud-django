@@ -9,11 +9,14 @@ from dataclasses import dataclass
 from rest_framework.exceptions import PermissionDenied
 from scoped_rbac.policy import Permission
 
-from scrud_django.exceptions import UIPushConflictError, UIPushForbiddenError
+from scrud_django.exceptions import (
+    UIBranchInvalidError,
+    UIPushConflictError,
+    UIPushForbiddenError,
+)
 from scrud_django.models import Resource, ResourceType
 from scrud_django.permissions import (
     may_act_in_context,
-    may_read_in_context,
     resource_contexts,
 )
 from scrud_django.registration import (
@@ -40,13 +43,15 @@ from scrud_django.ui.branches.model import (
     branch_of,
     item_key,
 )
-from scrud_django.ui.branches.store import ancestors, branches
+from scrud_django.ui.branches.reads import may_read_item
+from scrud_django.ui.branches.store import BranchChainError, ancestors, branches
 from scrud_django.ui.branches.versions import (
     batched_versions,
     current_version,
     record_now,
     snapshot,
 )
+from scrud_django.ui.layers import LAYER_BRANCH
 
 # Flags an item's write accepts but never stores.
 WRITE_ONLY = ("rebase",)
@@ -68,7 +73,9 @@ def conflicts(source: str, against: str, using=None) -> list[dict]:
     branch `against`'s effective item for the same key (``None`` for none, so
     a ``base`` of ``None`` conflicts once `against` has the key), as
     `against` shows it (`branch_state`: as of its branching point where it
-    is pinned; ruling R38). Read on `using` (default: the router's read
+    is pinned; ruling R38), the packaged layers' items beneath it: an
+    override of a layer item that `against` does not override is compared
+    with the layer's. Read on `using` (default: the router's read
     database)."""
     all_branches = branches(using)
     against_branch = chain_of(against, all_branches)[0]
@@ -226,16 +233,17 @@ def _type_ids(type_uri, using) -> list:
     )
 
 
-def _own_rows(type_uri: str, name: str, using) -> list[Resource]:
+def _own_rows(type_uri: str, name: str, using, lock=True) -> list[Resource]:
     """Branch `name`'s own items of `type_uri` on `using`, lowest pk first,
-    each locked until the transaction ends (items stored before branches,
-    with no ``branch``, are main's)."""
+    each locked until the transaction ends unless not `lock` (items stored
+    before branches, with no ``branch``, are main's)."""
     rows = Resource.objects.using(using).filter(
         resource_type_id__in=_type_ids(type_uri, using)
     )
     if name != MAIN:
         rows = rows.filter(content__branch=name)
-    return [row for row in locked_by_pk(rows) if branch_of(row.content) == name]
+    found = locked_by_pk(rows) if lock else by_pk(unsorted(rows), pk=lambda row: row.pk)
+    return [row for row in found if branch_of(row.content) == name]
 
 
 def _keyed(kind: str, rows, branch: Branch) -> dict[tuple, Resource]:
@@ -250,18 +258,28 @@ def _keyed(kind: str, rows, branch: Branch) -> dict[tuple, Resource]:
     return keyed
 
 
-def _parent_etags(kind, type_uri, target: Branch, all_branches, using) -> dict:
-    """The ETag of each item key visible on `target`'s parent as `target`
-    shows it (`parent_state`; none without a parent): the ``base`` of a
-    deletion marker a push adds to `target` over a row of its own."""
-    if target.parent is None:
-        return {}
-    parent = all_branches[target.parent]
+def _parent_items(kind, type_uri, target: Branch, all_branches, using) -> dict:
+    """``(pk, etag, content)`` of each item key visible on `target`'s
+    parent as `target` shows it (`parent_state`, with the packaged layers'
+    items beneath it, pk ``None``; a root's are the layers' alone)."""
+    parent = LAYER_BRANCH if target.parent is None else all_branches[target.parent]
     return {
-        item_key(kind, content, parent): etag
-        for _pk, etag, content in parent_state(
+        item_key(kind, content, parent): (pk, etag, content)
+        for pk, etag, content in parent_state(
             kind, type_uri, target, all_branches, using
         )
+    }
+
+
+def _parent_etags(kind, type_uri, target: Branch, all_branches, using) -> dict:
+    """The ETag of each item key visible on `target`'s parent as `target`
+    shows it (`_parent_items`): the ``base`` of a deletion marker a push
+    adds to `target` over a row of its own."""
+    return {
+        key: etag
+        for key, (_pk, etag, _content) in _parent_items(
+            kind, type_uri, target, all_branches, using
+        ).items()
     }
 
 
@@ -368,8 +386,8 @@ def _readable_conflicts(request, found, source, target, all_branches, using):
         if not entries:
             continue
         theirs = {
-            item_key(kind, content, target): content
-            for _pk, _etag, content in branch_state(
+            item_key(kind, content, target): (pk, content)
+            for pk, _etag, content in branch_state(
                 kind, type_uri, target.name, all_branches, using, include_deleted=True
             )
         }
@@ -379,49 +397,83 @@ def _readable_conflicts(request, found, source, target, all_branches, using):
                 mine.setdefault(item_key(kind, content, source), content)
         for entry in entries:
             key = tuple(entry["key"])
-            item = theirs.get(key)
+            pk, item = theirs.get(key, (None, None))
             if item is None and key in mine:
-                item = _onto(kind, mine[key], key, target, None)
-            if item is not None and may_read_in_context(
-                request, type_uri, item, resource_contexts(item)
-            ):
+                # As the push would write it: a new row on the target.
+                pk, item = None, _onto(kind, mine[key], key, target, None)
+            if item is not None and may_read_item(request, kind, pk, item):
                 shown.append(entry)
     return shown
 
 
-def apply_push(request, content, using) -> int:
-    """Write the overrides of branch ``content["source"]`` into branch
-    ``content["target"]`` for `request`, in its transaction on `using`, and
-    return the target's new version. Everything is checked before anything
-    is written: GET and PUT on the source (``PermissionDenied``, 403), no
-    `conflicts` of the source against the target (`UIPushConflictError`,
-    409, describing only those on items the pusher may read there), and, for
-    each item, the grant a direct write of it into the target needs
-    (`UIPushForbiddenError`, 403). Then, in one `batched_versions`, each
-    override is written into the target (`_push_writes`; a target row it
-    deletes leaves the target's ``conflicts``), the source's own rows are
-    deleted and its ``conflicts`` cleared, and the target's version
-    is recorded, then the source's: when the target is the source's parent,
-    the source's branching point first moves to its ancestors' current
-    versions, as a pull would."""
-    all_branches = branches(using)
-    source = all_branches[content["source"]]
-    target = all_branches[content["target"]]
-    locked = _locked_branches((source.name, target.name), using)
-    for method in ("http.GET", "http.PUT"):
-        _may_on_branch(request, method, source, locked.get(source.name))
+def refuse_push_between(source: str, target: str, all_branches):
+    """Refuse (`UIBranchInvalidError`, 400) a push of branch `source` into
+    branch `target` (both in `all_branches`) that would empty a root (a
+    source with no parent: ``main`` is the live site's) or write a branch's
+    overrides into its own base (a source that is the target or one of its
+    ancestors; a broken chain of the target is refused alike)."""
+    if all_branches[source].parent is None:
+        raise UIBranchInvalidError(
+            f"Branch {source!r} has no parent: pushing it would empty "
+            "it of its items. Restore a version, or edit it directly."
+        )
+    try:
+        chain = ancestors(target, all_branches)
+    except BranchChainError as error:
+        raise UIBranchInvalidError(str(error)) from error
+    if source == target or source in {branch.name for branch in chain}:
+        raise UIBranchInvalidError(
+            f"Branch {source!r} cannot be pushed into {target!r}: it is "
+            "the target or one of its ancestors."
+        )
+
+
+@dataclass(frozen=True)
+class PushPlan:
+    """What a push of one branch into another would do, for one user:
+    `writes`, the item writes into the target, in order (`_push_writes`);
+    `emptied`, the deletions of the source's own rows; `conflicts`, those of
+    the source against the target (`conflicts`) on items the user may read
+    there (`_readable_conflicts`); and `hidden_conflicts`, how many others
+    there are. A push with any conflict is refused."""
+
+    writes: list[_Write]
+    emptied: list[_Write]
+    conflicts: list[dict]
+    hidden_conflicts: int
+
+    @property
+    def conflicting(self) -> bool:
+        return bool(self.conflicts) or self.hidden_conflicts > 0
+
+
+def plan_push(
+    request, source: str, target: str, using=None, *, lock: bool, all_branches=None
+) -> PushPlan:
+    """The `PushPlan` of a push of branch `source` into branch `target` (by
+    name, both in `all_branches`, default `branches(using)`) for `request`,
+    read on `using` (default: the router's read database), its rows locked
+    until the transaction ends with `lock` (required: a write's plan locks
+    them, a read's does not). Nothing is written and nothing
+    raised for a conflict, and no grant is checked: `apply_push` checks
+    what a push needs, and a preview what it shows."""
+    if all_branches is None:
+        all_branches = branches(using)
+    source, target = all_branches[source], all_branches[target]
     source_rows = {
-        kind: _own_rows(type_uri, source.name, using)
+        kind: _own_rows(type_uri, source.name, using, lock)
         for kind, type_uri in ITEM_KINDS.items()
     }
     target_rows = {
-        kind: _own_rows(type_uri, target.name, using)
+        kind: _own_rows(type_uri, target.name, using, lock)
         for kind, type_uri in ITEM_KINDS.items()
     }
     found = conflicts(source.name, target.name, using)
-    if found:
-        shown = _readable_conflicts(request, found, source, target, all_branches, using)
-        raise UIPushConflictError(shown, len(found) - len(shown))
+    shown = (
+        _readable_conflicts(request, found, source, target, all_branches, using)
+        if found
+        else []
+    )
     writes = []
     for kind, type_uri in ITEM_KINDS.items():
         theirs = _keyed(kind, target_rows[kind], target)
@@ -434,19 +486,113 @@ def apply_push(request, content, using) -> int:
             writes.extend(
                 _push_writes(kind, type_uri, row.content, key, target, theirs, parent)
             )
-    for write in writes:
-        write.check(request)
     emptied = [
         _Write(kind, ITEM_KINDS[kind], (), "http.DELETE", source, row)
         for kind, rows in source_rows.items()
         for row in rows
     ]
+    return PushPlan(writes, emptied, shown, len(found) - len(shown))
+
+
+# A previewed change's action, by the method of its write.
+ACTIONS = {"http.POST": "create", "http.PUT": "update", "http.DELETE": "delete"}
+
+
+def push_changes(
+    request, plan: PushPlan, target: str, using=None, *, all_branches=None
+) -> tuple[list[dict], int]:
+    """``(changes, unreadable)``: ``{"kind", "key", "action", "before",
+    "after"}`` of each write of `plan` (a push into branch `target`) that
+    `request` may read, in order, and how many others there are. A write is
+    readable when `request` may read (`may_read_item`) its ``before``, its
+    ``after`` and the source's row it comes from. Its ``action`` is by its
+    method (`ACTIONS`); ``before``, the target's row it updates or deletes,
+    or, for a new row, the item the target shows beneath it (its parent's,
+    or a packaged layer's), ``None`` where there is none; ``after``, the row
+    as written, ``None`` for a deletion."""
+    if all_branches is None:
+        all_branches = branches(using)
+    target = all_branches[target]
+    emptied = {}  # the source's own rows, by kind
+    for write in plan.emptied:
+        emptied.setdefault(write.kind, []).append(write)
+    sources = {
+        kind: _keyed(kind, [write.row for write in writes], writes[0].target)
+        for kind, writes in emptied.items()
+    }
+    beneath = {
+        kind: _once(
+            lambda kind=kind, type_uri=type_uri: _parent_items(
+                kind, type_uri, target, all_branches, using
+            )
+        )
+        for kind, type_uri in ITEM_KINDS.items()
+    }
+    changes = []
+    for write in plan.writes:
+        if write.row is not None:
+            before_pk, before = write.row.pk, write.row.content
+        else:
+            before_pk, _etag, before = beneath[write.kind]().get(
+                write.key, (None, None, None)
+            )
+        source = sources.get(write.kind, {}).get(write.key)
+        seen = (
+            (source.pk, source.content) if source is not None else (None, None),
+            (before_pk, before),
+            (write.row.pk if write.row is not None else None, write.content),
+        )
+        if all(
+            may_read_item(request, write.kind, pk, content)
+            for pk, content in seen
+            if content is not None
+        ):
+            changes.append(
+                {
+                    "kind": write.kind,
+                    "key": list(write.key),
+                    "action": ACTIONS[write.method],
+                    "before": before,
+                    "after": write.content,
+                }
+            )
+    return changes, len(plan.writes) - len(changes)
+
+
+def apply_push(request, content, using) -> int:
+    """Write the overrides of branch ``content["source"]`` into branch
+    ``content["target"]`` for `request`, in its transaction on `using`, and
+    return the target's new version. Everything is checked before anything
+    is written: GET and PUT on the source (``PermissionDenied``, 403), no
+    `conflicts` of the source against the target (`UIPushConflictError`,
+    409, describing only those on items the pusher may read there), and, for
+    each item, the grant a direct write of it into the target needs
+    (`UIPushForbiddenError`, 403). Then, in one `batched_versions`, the
+    `plan_push` is written: each override into the target (`_push_writes`;
+    a target row it deletes leaves the target's ``conflicts``), the
+    source's own rows are deleted and its ``conflicts`` cleared, and the
+    target's version is recorded, then the source's: when the target is the
+    source's parent, the source's branching point first moves to its
+    ancestors' current versions, as a pull would."""
+    all_branches = branches(using)
+    source = all_branches[content["source"]]
+    target = all_branches[content["target"]]
+    locked = _locked_branches((source.name, target.name), using)
+    for method in ("http.GET", "http.PUT"):
+        _may_on_branch(request, method, source, locked.get(source.name))
+    plan = plan_push(
+        request, source.name, target.name, using, lock=True, all_branches=all_branches
+    )
+    if plan.conflicting:
+        raise UIPushConflictError(plan.conflicts, plan.hidden_conflicts)
+    for write in plan.writes:
+        write.check(request)
     with batched_versions():
-        _apply([*writes, *emptied], using)
-        _resolve_deleted(writes, target, using)
+        _apply([*plan.writes, *plan.emptied], using)
+        _resolve_deleted(plan.writes, target, using)
         number = record_now(target.name, using)
         moved = _empty_source(source, target, locked.get(source.name), using)
-        if emptied or moved:
+        if plan.emptied or moved:
             record_now(source.name, using)
     return number
 

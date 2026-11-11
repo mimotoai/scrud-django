@@ -23,8 +23,8 @@
     },
     "name": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-      "description": "The CSS item's name, unique on its branch."
+      "pattern": "^(?!scrud:)(?:[a-z][a-z0-9-]*:)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "The CSS item's name, unique on its branch. A name with a prefix (abc:name) may only override an installed UI layer's item of this kind; the scrud: prefix is reserved."
     },
     "css": {
       "type": "string",

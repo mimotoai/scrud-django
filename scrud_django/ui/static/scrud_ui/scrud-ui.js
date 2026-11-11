@@ -263,6 +263,47 @@
     return body;
   }
 
+  /**
+   * Apply an array operation to `body` (mutating it): `op.op` is "remove" (the
+   * element at `op.pointer`) or "move" (the element at `op.pointer` to index
+   * `op.to`, the others keeping their order). A pointer that is not an element
+   * of an array, an index out of range or another operation leaves `body` as it
+   * is, and, when `errors` (an array) is given, pushes why on it. Returns
+   * `body`.
+   */
+  function applyArrayOp(body, op, errors) {
+    function fail(reason) {
+      if (errors) errors.push(reason);
+      return body;
+    }
+    var segs;
+    try {
+      segs = parsePointer(op.pointer);
+    } catch (err) {
+      return fail(err.message);
+    }
+    if (!segs.length || !isIndex(segs[segs.length - 1])) {
+      return fail('not an array element: ' + op.pointer);
+    }
+    var array = valueAt(body, joinPointer(segs.slice(0, -1)));
+    var from = Number(segs[segs.length - 1]);
+    if (!Array.isArray(array) || from >= array.length) {
+      return fail('not an array element: ' + op.pointer);
+    }
+    if (op.op === 'remove') {
+      array.splice(from, 1);
+    } else if (op.op === 'move') {
+      var to = String(op.to);
+      if (!isIndex(to) || Number(to) >= array.length) {
+        return fail('not an index of the array: ' + op.to);
+      }
+      array.splice(Number(to), 0, array.splice(from, 1)[0]);
+    } else {
+      return fail('not an array operation: ' + op.op);
+    }
+    return body;
+  }
+
   function frameOf(el) {
     return el && el.closest ? el.closest(FRAME) : null;
   }
@@ -355,6 +396,7 @@
   }
 
   window.ScrudUI = {
+    applyArrayOp: applyArrayOp,
     applyPointer: applyPointer,
     buildBody: buildBody,
     fieldsOf: fieldsOf,
@@ -405,8 +447,98 @@
     if (value != null && !hasHeader(headers, name)) headers[name] = value;
   }
 
+  /**
+   * The URL a request goes to: htmx's `path`, else (when a caller gives none)
+   * the closest hx-<verb> attribute's value.
+   */
+  function requestPath(detail, verb) {
+    if (detail.path != null) return String(detail.path);
+    var elt = detail.elt;
+    if (!elt || !elt.closest) return null;
+    var names = ['hx-' + verb, 'data-hx-' + verb];
+    for (var i = 0; i < names.length; i++) {
+      var found = elt.closest('[' + names[i] + ']');
+      if (found) return found.getAttribute(names[i]);
+    }
+    return null;
+  }
+
+  /** `url` without this page's origin, so a path and a full URL compare. */
+  function localPath(url) {
+    var origin = typeof location !== 'undefined' && location.origin;
+    url = String(url);
+    return origin && url.indexOf(origin + '/') === 0 ? url.slice(origin.length) : url;
+  }
+
+  /**
+   * The If-Match tag of a write from `elt` (in `frame`) to `path`: the
+   * element's own data-scrud-etag (present but empty: none), else the frame's
+   * when the request goes to the frame's own data-scrud-href, else none. A
+   * write to another URL from inside a frame (a create posting to a list, the
+   * DELETE of another resource) never sends the frame's tag: it would be
+   * refused with 412.
+   */
+  function ifMatchTag(elt, frame, path) {
+    if (elt && elt !== frame && elt.hasAttribute && elt.hasAttribute('data-scrud-etag')) {
+      return elt.getAttribute('data-scrud-etag') || null;
+    }
+    if (!frame || path == null) return null;
+    var href = frame.getAttribute('data-scrud-href');
+    if (href == null || localPath(path) !== localPath(href)) return null;
+    return frame.getAttribute('data-scrud-etag') || null;
+  }
+
   function isPut(elt) {
     return elt.hasAttribute('hx-put') || elt.hasAttribute('data-hx-put');
+  }
+
+  var MISCONFIGURED = 'This action is misconfigured.';
+
+  /** "form" or "fixed" for an element that sends JSON for any method; else null. */
+  function jsonMode(elt) {
+    var mode = elt && elt.getAttribute ? elt.getAttribute('data-scrud-json') : null;
+    return mode === null ? null : mode || 'form';
+  }
+
+  /**
+   * The inputs a `data-scrud-json="form"` element sends: the named-by-pointer
+   * inputs inside it (not disabled, radios only when checked), as the
+   * {name, type, value, checked} buildBody reads. `data-scrud-type` on an
+   * input overrides its type.
+   */
+  function jsonFormFields(elt) {
+    return Array.prototype.filter
+      .call(elt.querySelectorAll('[name^="/"]'), function (input) {
+        return !input.disabled && !(input.type === 'radio' && !input.checked);
+      })
+      .map(function (input) {
+        return {
+          name: input.name,
+          type: input.getAttribute('data-scrud-type') || input.type,
+          value: input.value,
+          checked: !!input.checked
+        };
+      });
+  }
+
+  /** The parsed body of a `fixed` element, or undefined when it does not parse. */
+  function fixedBody(elt) {
+    var text = elt.getAttribute('data-scrud-body');
+    if (text === null) return undefined;
+    try {
+      JSON.parse(text);
+      return text;
+    } catch (err) {
+      return undefined;
+    }
+  }
+
+  /** The notice goes to the element's frame; outside any, it is logged. */
+  function refuse(evt, elt, text) {
+    evt.preventDefault();
+    var frame = frameOf(elt);
+    if (frame) showNotice(frame, text);
+    else console.error('scrud-ui: ' + text);
   }
 
   /** The frame's own scrud-content (not a nested frame's). */
@@ -417,6 +549,60 @@
     }
     return null;
   }
+
+  // An array operation (Remove, Move up, Move down) travels with the request
+  // its click triggers: in the triggered event's detail (`scrudArrayOp`), which
+  // htmx hands to that request as its triggeringEvent. It is applied to the
+  // body that PUT builds (`encodeParameters`), so it goes the way of every
+  // change: the frame's headers, If-Match among them. Another request of the
+  // frame (a save in flight, the next one) never sees it.
+  document.addEventListener('click', function (evt) {
+    var button =
+      evt.target && evt.target.closest
+        ? evt.target.closest('[data-scrud-array-op]')
+        : null;
+    if (!button) return;
+    var frame = frameOf(button);
+    if (!frame || !isPut(frame)) {
+      console.error(
+        'scrud-ui: an array operation button outside a frame that saves' +
+          ' (hx-put) does nothing.'
+      );
+      return;
+    }
+    evt.preventDefault();
+    htmx.trigger(frame, 'change', {
+      scrudArrayOp: {
+        op: button.getAttribute('data-scrud-array-op'),
+        pointer: button.getAttribute('data-scrud-pointer'),
+        to: button.getAttribute('data-scrud-to')
+      }
+    });
+  });
+
+  /**
+   * The array operation a request of `frame` carries: its triggering event's,
+   * when that event was triggered on `frame` itself (an outer frame the event
+   * bubbled to never applies an inner frame's operation); else null.
+   */
+  function arrayOpOf(frame, triggering) {
+    var detail = triggering && triggering.detail;
+    var op = detail && detail.scrudArrayOp;
+    return op && triggering.target === frame ? op : null;
+  }
+
+  // The array operation of each request, by its xhr: what encodeParameters
+  // (which is handed the xhr) applies.
+  var requestOps = new WeakMap();
+
+  document.addEventListener('htmx:beforeSend', function (evt) {
+    var detail = evt.detail || {};
+    var config = detail.requestConfig || {};
+    var elt = detail.elt;
+    if (!elt || !detail.xhr || !isPut(elt)) return;
+    var op = arrayOpOf(elt, config.triggeringEvent);
+    if (op) requestOps.set(detail.xhr, op);
+  });
 
   // Innermost frame only: an event inside nested frames is acted on by the
   // frame that encloses its target; outer frames' requests are cancelled.
@@ -449,30 +635,75 @@
     return own ? own.getAttribute('data-scrud-branch') : null;
   }
 
+  /**
+   * Whether `elt` is on a page rendered in safe mode: it or an ancestor (its
+   * frame) has data-scrud-safe, or the page's .scrud-branch-page does. Its
+   * requests target URLs without ?ui-safe=1, so they send Scrud-UI-Safe.
+   */
+  function safeOf(elt) {
+    if (elt && elt.closest && elt.closest('[data-scrud-safe]')) return true;
+    return !!document.querySelector('.scrud-branch-page[data-scrud-safe]');
+  }
+
   document.addEventListener('htmx:configRequest', function (evt) {
     var detail = evt.detail;
     var headers = detail.headers;
     var verb = String(detail.verb).toLowerCase();
     setDefault(headers, 'Accept', 'text/html');
     setDefault(headers, 'Scrud-UI-Branch', branchOf(detail.elt));
+    if (safeOf(detail.elt)) setDefault(headers, 'Scrud-UI-Safe', '1');
     if (verb === 'get') return;
     setDefault(headers, 'X-CSRFToken', csrfToken());
+    var mode = jsonMode(detail.elt);
+    if (mode) {
+      var own = frameOf(detail.elt);
+      if (own) clearNotice(own);
+      if (mode === 'fixed' ? fixedBody(detail.elt) === undefined : mode !== 'form') {
+        refuse(evt, detail.elt, MISCONFIGURED);
+        return;
+      }
+      if (mode === 'form') {
+        var bad = [];
+        buildBody({}, jsonFormFields(detail.elt), bad);
+        if (bad.length) {
+          refuse(evt, detail.elt, invalidFieldsText(bad));
+          return;
+        }
+      }
+      var tag = ifMatchTag(detail.elt, own, requestPath(detail, verb));
+      if (tag) setDefault(headers, 'If-Match', quoteEtag(tag));
+      headers['Content-Type'] = 'application/json';
+      return;
+    }
     var frame = frameOf(detail.elt);
     if (!frame) return;
     if (verb === 'put' && isPut(detail.elt)) {
       // An input that cannot be applied would be silently lost by a PUT that
-      // otherwise succeeds: send nothing and say so.
+      // otherwise succeeds: send nothing and say so. So would an array
+      // operation that cannot be applied (a button that names no element).
       clearNotice(frame);
       var content = contentOf(frame);
       var invalid = [];
-      if (content) buildBody(content, fieldsOf(frame), invalid);
+      var body = content ? buildBody(content, fieldsOf(frame), invalid) : null;
       if (invalid.length) {
         evt.preventDefault();
         showNotice(frame, invalidFieldsText(invalid));
         return;
       }
+      var op = detail.elt === frame ? arrayOpOf(frame, detail.triggeringEvent) : null;
+      if (op) {
+        var failures = [];
+        if (body) applyArrayOp(body, op, failures);
+        else failures.push('the frame has no content');
+        if (failures.length) {
+          console.error('scrud-ui: array operation not applied: ' + failures[0]);
+          evt.preventDefault();
+          showNotice(frame, MISCONFIGURED);
+          return;
+        }
+      }
     }
-    var etag = frame.getAttribute('data-scrud-etag');
+    var etag = ifMatchTag(detail.elt, frame, requestPath(detail, verb));
     if (etag) setDefault(headers, 'If-Match', quoteEtag(etag));
     setDefault(headers, 'Scrud-UI-Scope', frame.getAttribute('data-scrud-scope'));
     setDefault(headers, 'Scrud-UI-Pointer', frame.getAttribute('data-scrud-pointer'));
@@ -490,7 +721,8 @@
   document.addEventListener('htmx:afterRequest', function (evt) {
     var detail = evt.detail || {};
     var config = detail.requestConfig || {};
-    if (!detail.successful || String(config.verb).toLowerCase() !== 'delete') {
+    var verb = String(config.verb).toLowerCase();
+    if (!detail.successful || verb !== 'delete') {
       return;
     }
     var frame = frameOf(detail.elt);
@@ -543,12 +775,22 @@
   document.addEventListener('htmx:sendError', failed);
 
   htmx.defineExtension('scrud-json', {
+    // htmx 2.0.4 calls it after htmx:beforeSend, with the request's xhr.
     encodeParameters: function (xhr, parameters, elt) {
+      var mode = jsonMode(elt);
+      if (mode === 'fixed') return fixedBody(elt) || null;
+      if (mode === 'form') return JSON.stringify(buildBody({}, jsonFormFields(elt)));
       if (!isPut(elt)) return null;
       var frame = frameOf(elt);
       var content = frame && contentOf(frame);
       if (!content) return null;
-      return JSON.stringify(buildBody(content, fieldsOf(frame)));
+      var body = buildBody(content, fieldsOf(frame));
+      var op = xhr ? requestOps.get(xhr) : undefined;
+      if (op) {
+        requestOps.delete(xhr);
+        applyArrayOp(body, op);
+      }
+      return JSON.stringify(body);
     }
   });
 })();

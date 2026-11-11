@@ -1,0 +1,25 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UITypeCatalog",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Type Catalog",
+  "description": "Computed: every registered type with a slug, ordered by slug, as the studio lists them (unfiltered: reading a type's items is checked where they are read). Read-only.",
+  "type": "object",
+  "properties": {
+    "types": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "slug": { "type": "string" },
+          "title": {
+            "type": "string",
+            "description": "The schema's title, else the slug."
+          },
+          "type_uri": { "type": "string" }
+        },
+        "required": ["slug", "title", "type_uri"]
+      }
+    }
+  },
+  "required": ["types"]
+}

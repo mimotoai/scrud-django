@@ -27,8 +27,8 @@
     },
     "name": {
       "type": "string",
-      "pattern": "^(?!scrud:)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-      "description": "The stylesheet's name, unique on its branch for the context it applies to."
+      "pattern": "^(?!scrud:)(?:[a-z][a-z0-9-]*:)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "The stylesheet's name, unique on its branch for the context it applies to. A name with a prefix (abc:name) may only override an installed UI layer's item of this kind; the scrud: prefix is reserved."
     },
     "prefixes": {
       "type": "object",

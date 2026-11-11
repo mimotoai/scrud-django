@@ -1,0 +1,63 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIBranchStatus",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Branch Status",
+  "description": "Computed: a branch's chain to its root, its changed items and conflicts the requesting user may read, and the URL of a type's list on it. Read-only.",
+  "type": "object",
+  "properties": {
+    "branch": {
+      "type": "string",
+      "description": "The branch, as its URL names it (a name, optionally @pinned)."
+    },
+    "published": { "type": "boolean" },
+    "chain": {
+      "type": "array",
+      "description": "The branch, then its ancestors, nearest first.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "published": { "type": "boolean" },
+          "prefix": {
+            "type": ["string", "null"],
+            "description": "A published branch's prefix; null for a working branch."
+          }
+        },
+        "required": ["name", "published", "prefix"]
+      }
+    },
+    "changed": {
+      "type": "array",
+      "description": "The branch's own rows (overrides, additions, deletion markers) the user may read; none on main.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" },
+          "name": { "type": "string" },
+          "applies_to": { "type": "string" },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["kind", "name", "applies_to", "deleted"]
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "description": "The conflicts on own rows the user may read: those a pull listed (parent), then those with a packaged layer (layer).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" },
+          "name": { "type": "string" },
+          "applies_to": { "type": "string" },
+          "with": { "type": "string", "enum": ["parent", "layer"] }
+        },
+        "required": ["kind", "name", "applies_to", "with"]
+      }
+    },
+    "browse_url": {
+      "type": ["string", "null"],
+      "description": "With ?type=<slug>: that type's list on the branch, under its published root's prefix; else null."
+    }
+  },
+  "required": ["branch", "published", "chain", "changed", "conflicts", "browse_url"]
+}

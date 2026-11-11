@@ -357,7 +357,13 @@ _PENDING_LOCK = threading.RLock()
 
 
 def register_or_defer(
-    register, type_uri, slug, viewset_class, register_service=True, retry=None
+    register,
+    type_uri,
+    slug,
+    viewset_class,
+    register_service=True,
+    retry=None,
+    urls_func=None,
 ):
     """The routes of the resource type `slug` that `register` registers (a
     function returning its `ResourceTypeRegistration`), run in a
@@ -367,7 +373,8 @@ def register_or_defer(
     ``ProgrammingError``: the database is unreachable, or not migrated yet,
     as when ``migrate`` or ``check`` imports the URLconf), the routes are
     still returned, built from `slug` and `viewset_class` (they need no
-    database), the type is added to the service catalog (`type_uri`) when
+    database; `urls_func` builds them, default `resource_type_urls`), the
+    type is added to the service catalog (`type_uri`) when
     `register_service`, and its registration is left pending
     (`_PENDING_REGISTRATIONS`): it is retried when the type is next read, so
     a process that started while the database was unreachable serves the
@@ -427,7 +434,7 @@ def register_or_defer(
             _PENDING_REGISTRATIONS[slug] = retry or register
         if register_service:
             services.add_service(type_uri, slug)
-        return resource_type_urls(slug, viewset_class)
+        return (urls_func or resource_type_urls)(slug, viewset_class)
     with _PENDING_LOCK:
         _PROBED.pop(db, None)
     return urls
@@ -839,6 +846,57 @@ def json_resource_type(
         viewset_class or views.ResourceViewSet,
         register_service=register_service,
     )
+
+
+def computed_resource_type(
+    resource_type_uri: str,
+    slug: str,
+    schema_func,
+    context_func,
+    viewset_class,
+):
+    """Registration of a computed, read-only resource type
+    (`scrud_django.computed.ComputedResourceViewSet`): its `ResourceType` row
+    (so ``get_resource_type_for(slug)`` works, and a published branch's prefix
+    claims the slug), but only the route ``<slug>/<key>/`` (named
+    ``<slug>-detail``): no list route, and no reversion. The key is the URL
+    keyword ``slug``, which the view passes to ``compute``.
+
+    Returns the type's routes; the registration is retried when the type is
+    next read after a database error (`register_or_defer`). A
+    computed type has no list, so it is left out of the service catalog (the
+    URL of each type's list)."""
+
+    def register():
+        registration = ResourceTypeRegistration(
+            resource_type_uri,
+            slug=slug,
+            schema_func=schema_func,
+            context_func=context_func,
+            viewset_class=viewset_class,
+            uses_reversion=False,
+            register_service=False,
+        )
+        registration.urls = computed_urls(slug, viewset_class)
+        return registration
+
+    return register_or_defer(
+        register,
+        resource_type_uri,
+        slug,
+        viewset_class,
+        register_service=False,
+        urls_func=computed_urls,
+    )
+
+
+def computed_urls(slug, viewset_class):
+    """The detail route of a computed type: ``<slug>/<str:slug>/``."""
+    detail = viewset_class.as_view(
+        {'get': 'retrieve', 'head': 'retrieve'}, resource_type_name=slug
+    )
+    name = ResourceType(slug=slug).route_name_detail()
+    return [path(f'{slug}/<str:slug>/', detail, name=name)]
 
 
 def built_in_resource_type_urls():

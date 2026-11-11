@@ -1,0 +1,58 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIBranchItems",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Branch Items",
+  "description": "Computed: every component, stylesheet, CSS and JS item a branch shows that the requesting user may read, each marked own, inherited (from which branch) or packaged, with its content and its conflict. Read-only.",
+  "type": "object",
+  "properties": {
+    "branch": {
+      "type": "string",
+      "description": "The branch, as its URL names it (a name, optionally @pinned)."
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["component", "stylesheet", "css", "js"]
+          },
+          "name": { "type": "string" },
+          "applies_to": {
+            "type": "string",
+            "description": "A stylesheet's: the context it applies to (\"\": everywhere)."
+          },
+          "origin": {
+            "type": "string",
+            "enum": ["own", "inherited", "packaged"],
+            "description": "own: the branch's row; inherited: an ancestor's; packaged: an installed UI layer's."
+          },
+          "from": {
+            "type": ["string", "null"],
+            "description": "The branch whose row it is; null for a packaged item."
+          },
+          "href": {
+            "type": ["string", "null"],
+            "description": "The item's resource; null for a packaged item and for an ancestor's item read from a pinned version."
+          },
+          "etag": {
+            "type": ["string", "null"],
+            "description": "Its ETag, quoted as a header carries it."
+          },
+          "content": {
+            "type": "object",
+            "description": "The item's content."
+          },
+          "conflict": {
+            "type": ["string", "null"],
+            "enum": ["parent", "layer", null],
+            "description": "An own item's conflict: listed by a pull (parent), or with a packaged layer item it overrides (layer)."
+          }
+        },
+        "required": ["kind", "name", "origin", "from", "href", "etag", "content", "conflict"]
+      }
+    }
+  },
+  "required": ["branch", "items"]
+}

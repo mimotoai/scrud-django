@@ -16,6 +16,7 @@ urlpatterns = [
         views.new_component_options,
         name="new-component-options",
     ),
+    path("live-preview", views.live_preview, name="live-preview"),
     path("new-component", views.new_component, name="new-component"),
     path("item", views.item, name="item"),
     path("save-item", views.save_item, name="save-item"),

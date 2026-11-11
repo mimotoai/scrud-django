@@ -137,10 +137,19 @@ class UISelectorInvalidError(ScrudException):
     default_detail = "Bad Request"
     default_code = "ui_selector_invalid"
 
-    def __init__(self, reason):
+    def __init__(self, reason, rule=None):
         super().__init__(f"The stylesheet selector is invalid: {reason}")
         self.type = "https://api.openteams.com/http-problem/ui-selector-invalid"
         self.title = "UI selector invalid"
+        # The field of the rule's selector, as JSON Schema's validation
+        # errors name theirs (the UI shows the error beside that rule).
+        self.name = f"rules[{rule}].select" if rule is not None else None
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        if self.name is not None:
+            data["name"] = self.name
+        return data
 
 
 class UITemplateInvalidError(ScrudException):
@@ -172,6 +181,26 @@ class UIStylesheetNameTakenError(ScrudException):
         self.title = "UI stylesheet name taken"
 
 
+class UILayerNameReservedError(ScrudException):
+    """A UI item whose ``name`` has a prefix (``abc:``) that is not an
+    installed UI layer's, or that names no item of that layer of its kind
+    (and, for a stylesheet, ``applies_to``) for it to override. ``scrud:``,
+    the built-ins' prefix, is never a layer's."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_layer_name_reserved"
+
+    def __init__(self, name):
+        super().__init__(
+            f"The name {name!r} is reserved: a name with a prefix may only "
+            "override an item of that kind that an installed UI layer has, and "
+            "'scrud:' is reserved outright."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-layer-name-reserved"
+        self.title = "UI layer name reserved"
+
+
 class UICssNameTakenError(ScrudException):
     """A UI CSS item whose ``name`` another CSS item on the same branch
     already has."""
@@ -198,6 +227,34 @@ class UICssInvalidError(ScrudException):
         super().__init__("The CSS may not contain '</style'.")
         self.type = "https://api.openteams.com/http-problem/ui-css-invalid"
         self.title = "UI CSS invalid"
+
+
+class UIJsNameTakenError(ScrudException):
+    """A UI JS item whose ``name`` another JS item on the same branch already
+    has."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_js_name_taken"
+
+    def __init__(self, name):
+        super().__init__(f"A UI JS item named {name!r} already exists.")
+        self.type = "https://api.openteams.com/http-problem/ui-js-name-taken"
+        self.title = "UI JS name taken"
+
+
+class UIJsInvalidError(ScrudException):
+    """A UI JS item whose text could end the page's ``<script>`` (it contains
+    ``</script``)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_js_invalid"
+
+    def __init__(self):
+        super().__init__("The JavaScript may not contain '</script'.")
+        self.type = "https://api.openteams.com/http-problem/ui-js-invalid"
+        self.title = "UI JS invalid"
 
 
 class UIBranchInvalidError(ScrudException):
@@ -291,6 +348,23 @@ class UIStudioBranchReadOnlyError(ScrudException):
         )
         self.type = "https://api.openteams.com/http-problem/ui-studio-branch-read-only"
         self.title = "Studio branch read-only"
+
+
+class UIStudioPreviewInvalidError(ScrudException):
+    """A studio live preview whose ``request`` is not one: missing, not JSON
+    the server can read (nested too deep for the parser too), not a JSON
+    object, a field of the wrong shape, more than ``MAX_DRAFTS`` (50)
+    drafts, or an ``after_push`` sent with drafts of its own (it previews
+    the source's stored overrides alone)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_studio_preview_invalid"
+
+    def __init__(self, reason):
+        super().__init__(f"The live preview request is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-studio-preview-invalid"
+        self.title = "Studio preview request invalid"
 
 
 class UIBranchInUseError(ScrudException):

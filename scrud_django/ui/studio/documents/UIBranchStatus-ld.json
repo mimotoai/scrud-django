@@ -1,0 +1,46 @@
+{
+  "@version": 1.1,
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UIBranchStatus",
+  "branch": {
+    "@id": "openteams:UIBranchName"
+  },
+  "published": {
+    "@id": "openteams:UIBranchPublished"
+  },
+  "chain": {
+    "@id": "openteams:UIBranchChain",
+    "@context": {
+      "name": {
+        "@id": "openteams:UIBranchName"
+      }
+    }
+  },
+  "name": {
+    "@id": "openteams:UIItemName"
+  },
+  "prefix": {
+    "@id": "openteams:UIBranchPrefix"
+  },
+  "changed": {
+    "@id": "openteams:UIBranchChanged"
+  },
+  "conflicts": {
+    "@id": "openteams:UIBranchConflicts"
+  },
+  "kind": {
+    "@id": "openteams:UIItemKind"
+  },
+  "applies_to": {
+    "@id": "openteams:UIStylesheetAppliesTo"
+  },
+  "deleted": {
+    "@id": "openteams:UIItemDeleted"
+  },
+  "with": {
+    "@id": "openteams:UIConflictWith"
+  },
+  "browse_url": {
+    "@id": "openteams:UIBrowseURL"
+  }
+}

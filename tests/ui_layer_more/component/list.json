@@ -1,0 +1,6 @@
+{
+  "name": "layermore:list",
+  "engine": "django",
+  "mode": "view",
+  "template": "<p class=\"layermore\">{{ value.title }}</p>"
+}

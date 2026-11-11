@@ -13,6 +13,8 @@ contract of the built-ins); a stored component that fails while rendering is
 replaced by the built-in for its node and mode, after an HTML comment naming it.
 """
 
+import contextlib
+import contextvars
 import copy
 import hashlib
 import json
@@ -24,11 +26,13 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.utils.html import format_html
 from django.utils.safestring import SafeString, mark_safe
 
+from scrud_django import collection_type_uri_for
 from scrud_django.exceptions import UIPointerNotFoundError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.mixins.view_mixins import max_body_depth
 from scrud_django.ui import ld
 from scrud_django.ui.authz import ALLOWED, POSSIBLY, decisions_for
+from scrud_django.ui.branches.effective import safe_mode
 from scrud_django.ui.branches.selection import frame_branch, in_mount
 from scrud_django.ui.cascade import (
     BUILTIN_PREFIX,
@@ -36,12 +40,81 @@ from scrud_django.ui.cascade import (
     Rule,
     builtin_component,
     effective_rules,
+    rank_rules,
     request_memo,
     resolve_component,
+    rule_outcome,
 )
+from scrud_django.ui.embed import embed_for
 from scrud_django.ui.selectors import TypeTerm
 
 logger = logging.getLogger(__name__)
+
+# The engine whose stored components get ``embed`` in their context.
+JINJA_ENGINE = "jinja2"
+
+_preview: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "scrud_ui_preview", default=False
+)
+
+
+@contextlib.contextmanager
+def using_preview(on: bool = True):
+    """Render in preview mode inside the block (`on`): `render_resource`
+    and `render_collection` render as with ``preview=True``. A context
+    variable, so that an embed (`embed`), rendered in process, renders in
+    the preview it is in."""
+    token = _preview.set(on)
+    try:
+        yield
+    finally:
+        _preview.reset(token)
+
+
+def in_preview() -> bool:
+    """Whether a render in progress is a preview (`using_preview`)."""
+    return _preview.get()
+
+
+@dataclass(frozen=True)
+class Mark:
+    """A rule a preview marks the matches of (`using_mark`): rule `index`
+    (the last part of its cascade rank) of the stylesheet `stylesheet` that
+    applies to `applies_to`, from branch `branch` (as the previewed branch
+    resolves it: ``""`` for the default stylesheet)."""
+
+    stylesheet: str
+    applies_to: str
+    index: int
+    branch: str
+
+    def matches(self, rule: Rule) -> bool:
+        source = rule.source
+        return (
+            source is not None
+            and source.name == self.stylesheet
+            and source.applies_to == self.applies_to
+            and source.branch == self.branch
+            and rule.rank[-1] == self.index
+        )
+
+
+_mark: contextvars.ContextVar[Mark | None] = contextvars.ContextVar(
+    "scrud_ui_mark", default=None
+)
+
+
+@contextlib.contextmanager
+def using_mark(mark: Mark | None):
+    """Inside the block, a preview's ``<scrud-node>`` markers say how `mark`
+    fares at their node (`_Walk.match_of`). A context variable, so that a
+    preview's embeds are marked too."""
+    token = _mark.set(mark)
+    try:
+        yield
+    finally:
+        _mark.reset(token)
+
 
 # What a ``<script>`` element must not contain raw (as Django's `json_script`).
 _JSON_SCRIPT_ESCAPES = {
@@ -86,8 +159,11 @@ def render_resource(
 
     A `preview` (the studio's) has no write attributes: no ``hx-*`` and no
     Delete button, and its root is a ``div``, never a form. Each node's HTML
-    is wrapped in ``<scrud-node data-pointer="<its JSON Pointer>">``."""
-    with request_memo():
+    is wrapped in ``<scrud-node data-pointer="<its JSON Pointer>">``. Inside
+    a preview (`using_preview`, which a preview enters for what it embeds)
+    every render is one."""
+    preview = preview or in_preview()
+    with request_memo(), using_preview(preview):
         return _render_resource(
             content,
             resource_type=resource_type,
@@ -106,14 +182,30 @@ def render_resource(
 
 
 def render_collection(
-    envelope: dict, *, resource_type, href: str, request, scope_chain=()
+    envelope: dict,
+    *,
+    resource_type,
+    href: str,
+    request,
+    scope_chain=(),
+    mode: str | None = None,
 ) -> SafeString:
     """A page of a list (`envelope`, as the list route returns it: ``count``,
-    ``next``, ``previous`` and the ``content`` envelopes) rendered with
-    ``scrud:collection``, each resource in its own frame and its own
-    contexts' stylesheets. Under a published branch's prefix, the items'
-    and the pager's links are its (`selection.in_mount`)."""
+    ``next``, ``previous`` and the ``content`` envelopes): each resource in
+    its own frame and its own contexts' stylesheets, in the wrapper the
+    cascade chooses. The wrapper is the component of the winning rule for
+    the list's terms, most specific first: the collection IRI of
+    `resource_type`, then ``scrud:collection``; from the stylesheets in
+    ``""`` only (a list has no contexts of its own), in `scope_chain`, in
+    view mode. With no rule, the built-in ``scrud:collection``. A stored
+    wrapper gets the built-in's context plus ``href`` and ``scope`` (and
+    ``embed``, for a Jinja one), and falls back to the built-in if it fails.
+    Under a published branch's prefix, the items' and the pager's links are
+    its (`selection.in_mount`). `mode` is each item's (see
+    `render_resource`); inside a preview (`using_preview`) each item renders
+    as a preview."""
     scope_chain = tuple(scope_chain)
+    preview = in_preview()
     envelope = envelope if isinstance(envelope, Mapping) else {}
     items = envelope.get("content")
     children = []
@@ -134,22 +226,43 @@ def render_collection(
                     scope_chain=scope_chain,
                     pointer="",
                     errors=None,
-                    mode=None,
+                    mode=mode,
                     rules_cache=rules_cache,
+                    preview=preview,
                 )
             )
     schema = _document(resource_type.schema)
     title = schema.get("title")
-    body = _render_builtin(
-        "scrud:collection",
-        {
-            "children": children,
-            "count": envelope.get("count", len(children)),
-            "next": _pager_link(request, envelope.get("next")),
-            "previous": _pager_link(request, envelope.get("previous")),
-            "label": title if isinstance(title, str) else "",
-        },
+    context = {
+        "children": children,
+        "count": envelope.get("count", len(children)),
+        "next": _pager_link(request, envelope.get("next")),
+        "previous": _pager_link(request, envelope.get("previous")),
+        "label": title if isinstance(title, str) else "",
+    }
+    ranking = rank_rules(
+        effective_rules([]),
+        scope_chain,
+        [
+            TypeTerm(iri=collection_type_uri_for(resource_type.type_uri)),
+            TypeTerm(iri="scrud:collection"),
+        ],
+        "view",
     )
+    if ranking.winner is None:
+        body = _render_builtin("scrud:collection", context)
+    else:
+        component = ranking.components[ranking.ranked[ranking.winner][1].component]
+        if component.name.startswith(BUILTIN_PREFIX):
+            body = component.compiled().render(context)
+        else:
+            body = _render_stored(
+                component,
+                {**context, "href": href, "scope": list(scope_chain)},
+                href,
+                lambda: builtin_component("scrud:collection"),
+                request,
+            )
     return format_html(
         '<div class="scrud-collection-frame" data-scrud-href="{}"'
         ' data-scrud-scope="{}">{}</div>',
@@ -252,6 +365,7 @@ def _walk_of(
         id_prefix="scrud-" + hashlib.sha256(href.encode()).hexdigest()[:8],
         rules_cache=rules_cache,
         preview=preview,
+        request=request,
     )
     root_classes = [
         _keyword_free(ld.expand(t, ld_context)) if isinstance(t, str) else None
@@ -365,6 +479,7 @@ class _Walk:
     rules_cache: dict
     preview: bool = False  # wrap each node in a `scrud-node` marker
     rendered: set = field(default_factory=set)
+    request: object = None  # whose user a stored Jinja component embeds as
 
     def rules(self, linked):
         key = (tuple(self.contexts), linked)
@@ -506,9 +621,43 @@ class _Walk:
         html = self._render(node)
         if not self.preview:
             return html
+        match = self.match_of(node)
+        if match is None:
+            return format_html(
+                '<scrud-node data-pointer="{}">{}</scrud-node>', node.pointer, html
+            )
         return format_html(
-            '<scrud-node data-pointer="{}">{}</scrud-node>', node.pointer, html
+            '<scrud-node data-pointer="{}" data-scrud-match="{}"'
+            ' data-scrud-match-outcome="{}">{}</scrud-node>',
+            node.pointer,
+            *match,
+            html,
         )
+
+    def match_of(self, node: _Node) -> tuple[str, str] | None:
+        """How the rule a preview marks (`using_mark`) fares at `node`:
+        ``("wins", "wins")`` when it is the rule `resolve_component` picks;
+        ``("loses", <why>)`` when it matches the node but another wins (or
+        none does), `why` being the inspector's outcome of its best-ranked
+        match (`cascade.rule_outcome`); ``None`` when it does not match, or
+        there is no mark. Ranked with `rank_rules`, as `resolve_component`
+        ranks them."""
+        mark = _mark.get()
+        if mark is None or not node.ruled:
+            return None
+        ranking = rank_rules(
+            self.rules(node.linked), node.scope_chain, node.terms, self.mode
+        )
+        marked = [
+            index
+            for index, (_key, rule) in enumerate(ranking.ranked)
+            if mark.matches(rule)
+        ]
+        if not marked:
+            return None
+        if ranking.winner in marked:
+            return ("wins", "wins")
+        return ("loses", rule_outcome(ranking, marked[0]))
 
     def _render(self, node: _Node) -> SafeString:
         self.rendered.add(node.pointer)
@@ -550,29 +699,21 @@ class _Walk:
             )
         if builtin:
             return component.compiled().render(context)
-        try:
-            return component.compiled().render(_isolated(context))
-        except Exception:
-            logger.warning(
-                "scrud-ui: component %r failed to render %s",
-                component.name,
-                node.pointer or "/",
-                exc_info=True,
-            )
-        fallback = resolve_component(
-            tuple(
-                rule
-                for rule in self.rules(node.linked)
-                if rule.component.startswith(BUILTIN_PREFIX)
+        return _render_stored(
+            component,
+            context,
+            node.pointer or "/",
+            lambda: resolve_component(
+                tuple(
+                    rule
+                    for rule in self.rules(node.linked)
+                    if rule.component.startswith(BUILTIN_PREFIX)
+                ),
+                node.scope_chain,
+                node.terms,
+                self.mode,
             ),
-            node.scope_chain,
-            node.terms,
-            self.mode,
-        )
-        return format_html(
-            '<!-- scrud-ui: component "{}" failed -->{}',
-            component.name,
-            fallback.compiled().render(context),
+            self.request,
         )
 
     def append_fields(self, node):
@@ -635,8 +776,9 @@ def _frame(
 ):
     """The frame of a resource (or of a node of it). `branch`, unless
     ``None``, is its ``data-scrud-branch`` (`selection.frame_branch`): the
-    branch its requests send (``Scrud-UI-Branch``). A `preview`'s frame has
-    no write attributes and is a ``div``."""
+    branch its requests send (``Scrud-UI-Branch``). In safe mode it has
+    ``data-scrud-safe="1"``. A `preview`'s frame has no write attributes and
+    is a ``div``."""
     attributes = [
         ("class", "scrud-resource"),
         ("data-scrud-href", href),
@@ -644,6 +786,9 @@ def _frame(
         ("data-scrud-scope", " ".join(scope_chain)),
         ("data-scrud-pointer", pointer),
         *([("data-scrud-branch", branch)] if branch is not None else []),
+        # In safe mode: scrud-ui.js then sends `SAFE_HEADER` on the frame's
+        # requests, which target its URL without ``?ui-safe=1``.
+        *([("data-scrud-safe", "1")] if safe_mode() else []),
     ]
     writes = mode == "edit" and not preview
     if writes:
@@ -692,6 +837,30 @@ def _frame(
 
 def _render_builtin(name, context):
     return builtin_component(name).compiled().render(context)
+
+
+def _render_stored(component, context, where, fallback, request=None):
+    """A stored `component` rendered with an isolated copy of `context`, to
+    which a Jinja one's ``embed`` (`embed.embed_for` `request`) is added. If
+    it raises, the failure is logged (naming `where`) and the built-in that
+    ``fallback()`` returns renders `context` after a comment naming it."""
+    isolated = _isolated(context)
+    if getattr(component, "engine", None) == JINJA_ENGINE and request is not None:
+        isolated["embed"] = embed_for(request)
+    try:
+        return component.compiled().render(isolated)
+    except Exception:
+        logger.warning(
+            "scrud-ui: component %r failed to render %s",
+            component.name,
+            where,
+            exc_info=True,
+        )
+    return format_html(
+        '<!-- scrud-ui: component "{}" failed -->{}',
+        component.name,
+        fallback().compiled().render(context),
+    )
 
 
 def _isolated(context):

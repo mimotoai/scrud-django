@@ -36,7 +36,12 @@ from scrud_django.ui.branches.store import (
     branch_from,
     branches,
 )
-from scrud_django.ui.branches.sync import apply_push, apply_restore, pull
+from scrud_django.ui.branches.sync import (
+    apply_push,
+    apply_restore,
+    pull,
+    refuse_push_between,
+)
 from scrud_django.ui.branches.versions import (
     current_version,
     discard_branch,
@@ -440,20 +445,7 @@ class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
             # see is answered as unknown (ruling R36).
             raise UIBranchInvalidError(f"There is no UI branch named {source!r}.")
         if source is not None:
-            if all_branches[source].parent is None:
-                raise UIBranchInvalidError(
-                    f"Branch {source!r} has no parent: pushing it would empty "
-                    "it of its items. Restore a version, or edit it directly."
-                )
-            try:
-                chain = ancestors(target, all_branches)
-            except BranchChainError as error:
-                raise UIBranchInvalidError(str(error)) from error
-            if source == target or source in {branch.name for branch in chain}:
-                raise UIBranchInvalidError(
-                    f"Branch {source!r} cannot be pushed into {target!r}: it is "
-                    "the target or one of its ancestors."
-                )
+            refuse_push_between(source, target, all_branches)
         expected = all_branches[target].context
         if content.get("rbac_context") != expected:
             if not self.may_get(all_branches[target]):

@@ -13,6 +13,8 @@ UI_PUSH_TYPE_URI = "http://api.openteams.com/json-ld/UIPush"
 UI_PUSH_SLUG = "ui-pushes"
 UI_CSS_TYPE_URI = "http://api.openteams.com/json-ld/UICss"
 UI_CSS_SLUG = "ui-css"
+UI_JS_TYPE_URI = "http://api.openteams.com/json-ld/UIJs"
+UI_JS_SLUG = "ui-js"
 
 # The published branch at the API URLs (prefix ""), in context "", with no
 # parent: reserved (ruling R1).
@@ -26,4 +28,5 @@ ITEM_KINDS = {
     "component": UI_COMPONENT_TYPE_URI,
     "stylesheet": UI_STYLESHEET_TYPE_URI,
     "css": UI_CSS_TYPE_URI,
+    "js": UI_JS_TYPE_URI,
 }

@@ -1,0 +1,43 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UIPushPreview",
+  "source": {
+    "@id": "openteams:UIPushSource"
+  },
+  "target": {
+    "@id": "openteams:UIPushTarget"
+  },
+  "changes": {
+    "@id": "openteams:UIPushChanges"
+  },
+  "kind": {
+    "@id": "openteams:UIItemKind"
+  },
+  "key": {
+    "@id": "openteams:UIItemKey"
+  },
+  "action": {
+    "@id": "openteams:UIPushAction"
+  },
+  "before": {
+    "@id": "openteams:UIPushBefore"
+  },
+  "after": {
+    "@id": "openteams:UIPushAfter"
+  },
+  "conflicts": {
+    "@id": "openteams:UIBranchConflicts"
+  },
+  "base": {
+    "@id": "openteams:UIItemBase"
+  },
+  "current": {
+    "@id": "openteams:UIConflictCurrent"
+  },
+  "unreadable_changes": {
+    "@id": "openteams:UIUnreadableChanges"
+  },
+  "unreadable_conflicts": {
+    "@id": "openteams:UIUnreadableConflicts"
+  }
+}

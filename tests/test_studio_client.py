@@ -11,19 +11,23 @@ import re
 import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
 import scrud_django.ui.studio
+from scrud_django import collection_type_uri_for
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 
 from .fixtures import *  # noqa
+from .fixtures import TYPE_URI_TODO_LIST
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_render import put_item
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
+from .test_ui_embeds import host, make_list, url_of
 from .test_ui_http import grant, make_component
 from .test_ui_static import require_node
 
@@ -1036,3 +1040,233 @@ def test_broad_labels_name_the_data_context(ui_alice_login):
     assert out["acme"] == ["ex:Text", "every string in acme on this branch"]
     assert out["match"] == "string"
     assert out["back"] == out["everywhere"]
+
+
+BRIDGE_JS = (
+    Path(scrud_django.ui.studio.__file__).parent
+    / "static/scrud_studio/preview-bridge.js"
+)
+
+BRIDGE_HARNESS = (
+    HARNESS[: HARNESS.index("const document = new Doc();")]
+    + r"""
+const document = new Doc();
+build(input.preview, document);
+const posted = [];
+const window = {};
+window.parent = {
+  postMessage: (message, origin) =>
+    posted.push({message: JSON.parse(JSON.stringify(message)), origin}),
+};
+const ctx = vm.createContext({window, document, console});
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const node = (pointer) => document.querySelectorAll('scrud-node').find((n) => n.getAttribute('data-pointer') === pointer);
+const innermost = (n) => { while (n.children.some((c) => c.nodeType === 1)) n = n.children.find((c) => c.nodeType === 1); return n; };
+const click = (target) => { const ev = new Event_('click', {bubbles: true}); target.dispatchEvent(ev); return ev; };
+const out = {};
+try {
+  out.loaded = posted.splice(0);
+  out.outside = click(document.body).defaultPrevented;
+  out.afterOutside = posted.splice(0);
+  out.inside = click(innermost(node('/items/0/text'))).defaultPrevented;
+  // The item's own element, outside its children's nodes: the item.
+  const item = node('/items/0');
+  click(item);
+  out.clicks = posted.splice(0);
+  // An element of the previewed resource's root node, outside its children.
+  const section = document.querySelector('section');
+  if (section) { click(section); out.sectionClicks = posted.splice(0); }
+} catch (e) { errors.push(String(e && e.stack || e)); }
+out.errors = errors; out.htmlWrites = htmlWrites;
+console.log(JSON.stringify(out));
+"""
+)
+
+
+@pytest.mark.django_db
+@test_context
+def test_bridge_posts_select_and_errors(ui_alice_login):
+    setup_wip(ui_alice_login)
+    body = {
+        "type": SLUG,
+        "branch": "wip",
+        "drafts": [
+            {
+                "kind": "component",
+                "content": {
+                    "name": "bad",
+                    "engine": "django",
+                    "mode": "view",
+                    "template": "{% if %}",
+                },
+            }
+        ],
+    }
+    When.http.post(
+        reverse("scrud-studio:live-preview"),
+        data=urlencode({"request": json.dumps(body)}),
+        content_type="application/x-www-form-urlencoded",
+    )
+    Then.http.status_code_is(200)
+    out = run_bridge(Http.response.content.decode())
+    # On load: the draft errors the page lists, to the parent, to any
+    # origin (the frame's own is opaque).
+    (loaded,) = out["loaded"]
+    assert loaded["origin"] == "*"
+    assert loaded["message"]["type"] == "scrud-preview:errors"
+    (error,) = loaded["message"]["errors"]
+    assert error["kind"] == "component" and error["name"] == "bad"
+    assert "template is invalid" in error["messages"][0]
+    # A click outside every node posts nothing and is not prevented.
+    assert out["outside"] is False and out["afterOutside"] == []
+    # The click selects the nearest node, with its resource frame's href.
+    sample = reverse("scrud-studio:sample", args=[SLUG])
+    assert out["inside"] is True
+    assert out["clicks"] == [
+        {"message": select(POINTER, sample), "origin": "*"},
+        {"message": select("/items/0", sample), "origin": "*"},
+    ]
+    assert "sectionClicks" not in out
+
+
+def select(pointer, href):
+    return {"type": "scrud-preview:select", "pointer": pointer, "href": href}
+
+
+def run_bridge(page):
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", BRIDGE_HARNESS, str(BRIDGE_JS)],
+        capture_output=True,
+        text=True,
+        input=json.dumps({"preview": tree(page)}),
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["errors"] == [] and out["htmlWrites"] == []
+    return out
+
+
+@pytest.mark.django_db
+@test_context
+def test_bridge_tells_an_embeds_nodes_by_href(ui_alice_login):
+    """A node of an embedded resource has a pointer relative to it: the
+    select message's href is the embedded resource's, not the preview's."""
+    setup_wip(ui_alice_login)
+    grant(
+        ui_alice_login,
+        {
+            "http.GET": [
+                TYPE_URI_TODO_LIST,
+                collection_type_uri_for(TYPE_URI_TODO_LIST),
+            ]
+        },
+        "project-a",
+    )
+    other = make_list("Chores", items=["Sweep"])
+    host(
+        '<section class="host">{{ embed("' + url_of(other) + '", mode="view") }}'
+        "</section>"
+    )
+    body = {"type": SLUG, "branch": "wip", "scope": ["host"]}
+    When.http.post(
+        reverse("scrud-studio:live-preview"),
+        data=urlencode({"request": json.dumps(body)}),
+        content_type="application/x-www-form-urlencoded",
+    )
+    Then.http.status_code_is(200)
+    out = run_bridge(Http.response.content.decode())
+    assert out["loaded"][0]["message"] == {
+        "type": "scrud-preview:errors",
+        "errors": [],
+    }
+    # The host prints only the embed: these nodes are the embedded list's.
+    assert out["clicks"] == [
+        {"message": select(POINTER, url_of(other)), "origin": "*"},
+        {"message": select("/items/0", url_of(other)), "origin": "*"},
+    ]
+    sample = reverse("scrud-studio:sample", args=[SLUG])
+    assert out["sectionClicks"] == [{"message": select("", sample), "origin": "*"}]
+
+
+# The bridge on a page still loading: it is run, then a branch script
+# replaces the errors element's text (as one may: it runs in the same
+# document), then the document is loaded.
+BRIDGE_LOADING_HARNESS = BRIDGE_HARNESS.replace(
+    "vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);",
+    "document.readyState = 'loading';"
+    "vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);"
+    "document.getElementById('scrud-preview-errors').textContent ="
+    " JSON.stringify([{kind: 'component', name: 'forged', messages: []}]);"
+    "document.readyState = 'complete';"
+    "(document.listeners.DOMContentLoaded || []).forEach("
+    "(fn) => fn({type: 'DOMContentLoaded'}));",
+)
+
+
+def bad_draft_preview():
+    body = {
+        "type": SLUG,
+        "branch": "wip",
+        "drafts": [
+            {
+                "kind": "component",
+                "content": {
+                    "name": "bad",
+                    "engine": "django",
+                    "mode": "view",
+                    "template": "{% if %}",
+                },
+            }
+        ],
+    }
+    When.http.post(
+        reverse("scrud-studio:live-preview"),
+        data=urlencode({"request": json.dumps(body)}),
+        content_type="application/x-www-form-urlencoded",
+    )
+    Then.http.status_code_is(200)
+    return Http.response.content.decode()
+
+
+@pytest.mark.django_db
+@test_context
+def test_bridge_reads_the_errors_before_branch_scripts_run(ui_alice_login):
+    """The bridge reads the errors the server listed when it runs, before
+    the branch's scripts (which come after it): what it posts on load is
+    the server's list, whatever a script did to the element since."""
+    setup_wip(ui_alice_login)
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", BRIDGE_LOADING_HARNESS, str(BRIDGE_JS)],
+        capture_output=True,
+        text=True,
+        input=json.dumps({"preview": tree(bad_draft_preview())}),
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["errors"] == []
+    (loaded,) = out["loaded"]
+    assert [e["name"] for e in loaded["message"]["errors"]] == ["bad"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_bridge_says_when_the_errors_cannot_be_read(ui_alice_login):
+    """Errors it cannot parse are posted as ``errors: null, failed: true``,
+    never as an empty list, which would say every draft was shown."""
+    setup_wip(ui_alice_login)
+    page = re.sub(
+        r'(<script type="application/json" id="scrud-preview-errors"'
+        r' nonce="[^"]+">).*?(</script>)',
+        r"\1{not json\2",
+        bad_draft_preview(),
+        flags=re.S,
+    )
+    assert "{not json</script>" in page
+    (loaded,) = run_bridge(page)["loaded"]
+    assert loaded["message"] == {
+        "type": "scrud-preview:errors",
+        "errors": None,
+        "failed": True,
+    }

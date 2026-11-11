@@ -1,5 +1,6 @@
 """SCRUD DJANGO URL Configuration."""
 
+from django.apps import apps
 from django.urls import include, path
 from scoped_rbac.models import Role, RoleAssignment
 
@@ -33,6 +34,7 @@ urlpatterns.extend(registration.built_in_resource_type_urls())
 
 if ui.is_enabled():
     from scrud_django.ui.branches.css import CSS_FILE_URL_NAME, UICssFileView
+    from scrud_django.ui.branches.js import JS_FILE_URL_NAME, UIJsFileView
     from scrud_django.ui.types import ui_resource_type_urls
 
     urlpatterns.extend(ui_resource_type_urls())
@@ -43,6 +45,18 @@ if ui.is_enabled():
             name=CSS_FILE_URL_NAME,
         )
     )
+    urlpatterns.append(
+        path(
+            "ui-js-files/<str:name>/<str:etag>.js",
+            UIJsFileView.as_view(),
+            name=JS_FILE_URL_NAME,
+        )
+    )
+    if apps.is_installed("scrud_django.ui.studio"):
+        # The studio's data, as computed resources (spec E2).
+        from scrud_django.ui.studio.computed import studio_computed_type_urls
+
+        urlpatterns.extend(studio_computed_type_urls())
 
 services.add_service(collection_type_uri_for(Role.resource_type.iri), "role")
 services.add_service(

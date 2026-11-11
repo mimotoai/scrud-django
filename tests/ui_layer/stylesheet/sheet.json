@@ -1,0 +1,6 @@
+{
+  "name": "layertest:sheet",
+  "prefixes": {"ex": "http://example.org/todo#"},
+  "order": 0,
+  "rules": [{"select": "layertest ex:TodoList", "component": "scrud:json"}]
+}

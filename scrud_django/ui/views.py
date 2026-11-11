@@ -11,6 +11,9 @@ from scrud_django.exceptions import (
     UIComponentNameTakenError,
     UICssInvalidError,
     UICssNameTakenError,
+    UIJsInvalidError,
+    UIJsNameTakenError,
+    UILayerNameReservedError,
     UISelectorInvalidError,
     UIStylesheetNameTakenError,
     UITemplateInvalidError,
@@ -19,7 +22,11 @@ from scrud_django.models import Resource
 from scrud_django.registration import write_db
 from scrud_django.rows import unsorted
 from scrud_django.ui.branches import MAIN
-from scrud_django.ui.branches.effective import effective_rows, parent_state
+from scrud_django.ui.branches.effective import (
+    effective_rows,
+    parent_state,
+    stored_state,
+)
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
     applies_to,
@@ -38,6 +45,7 @@ from scrud_django.ui.branches.selection import (
 from scrud_django.ui.branches.store import BranchChainError, branches, ensure_main
 from scrud_django.ui.branches.sync import resolve_conflict
 from scrud_django.ui.engines import TemplateCompileError, compile_template
+from scrud_django.ui.layers import layer_item, may_use_name
 from scrud_django.ui.renderer import negotiated_html
 from scrud_django.ui.selectors import SelectorError, parse_selector
 from scrud_django.views import ResourceViewSet
@@ -65,7 +73,9 @@ class UIContentValidationMixin:
         names a branch that is refused is refused too
         (`UIBranchUnavailableError`, 400; ruling R40), never answered with
         the published branch's items; HTML renders the published branch
-        and says so in its banner."""
+        and says so in its banner. The rows are the stored ones
+        (`stored_state`): an embedded list shows neither its embedder's
+        safe mode nor its drafts."""
         queryset = super().filter_queryset(queryset)
         type_uri = self.get_resource_type().type_uri
         if getattr(self, "action", None) != "list" or kind_of(type_uri) is None:
@@ -74,10 +84,16 @@ class UIContentValidationMixin:
         chosen = choose(self.request, cookie=html)
         if not html and chosen.refused is not None and chosen.source in EXPLICIT:
             raise UIBranchUnavailableError(chosen.refused)
-        rows = effective_rows(
-            type_uri, chosen.selection, include_deleted=True, authorized_only=False
+        # The stored items, as the list's URL answers them: not the safe
+        # mode nor the drafts of a render this request is embedded in.
+        with stored_state():
+            rows = effective_rows(
+                type_uri, chosen.selection, include_deleted=True, authorized_only=False
+            )
+        # Not the packaged layers' items, which are no rows (pk None).
+        return queryset.filter(
+            pk__in=[pk for pk, _etag, _content in rows if pk is not None]
         )
-        return queryset.filter(pk__in=[pk for pk, _etag, _content in rows])
 
     def validate_content(self, content, instance=None):
         """Raise a ``ScrudException`` when `content` (the request body) is
@@ -90,11 +106,23 @@ class UIContentValidationMixin:
         the item's branch fields (`validate_branch`). `content` is the
         request body itself (``request.data``, the ``dict`` the JSON parser
         made), which `create_resource` and `update` then save: what this
-        sets in it is stored."""
+        sets in it is stored.
+
+        A name with a prefix (``abc:``) must be that of an installed layer's
+        item of the kind (and ``applies_to``) that the item overrides
+        (`layers.may_use_name`); else the write is refused
+        (`UILayerNameReservedError`, 400). So ``scrud:`` always is. An
+        update that keeps the item's name (and ``applies_to``) is not
+        refused: an override whose layer item an upgrade removed (an
+        orphan) stays editable."""
         kind = kind_of(self.get_resource_type().type_uri)
         self.rebased = False
         if kind is not None and isinstance(content, dict):
             self.item_branch = self.validate_branch(kind, content, instance)
+            if not may_use_name(kind, content) and not keeps_key(
+                kind, content, instance, self.item_branch
+            ):
+                raise UILayerNameReservedError(content["name"])
             self.rebased = self.validate_rebase(content, instance)
             if self.rebased:
                 content["base"] = self.base_of(kind, content, self.item_branch)
@@ -162,7 +190,9 @@ class UIContentValidationMixin:
         """Remove the write-only ``rebase`` from `content` and say whether
         the write keeps the override as it is (``rebase: true``), which
         resolves its conflict. Refuse (400) it anywhere but on an update of
-        an own item of a branch with a parent."""
+        an own item of a branch with a parent, or of a root branch's item
+        that overrides an installed layer item (`layers.layer_item`): there
+        it resolves its layer conflict."""
         rebase = content.pop("rebase", False)
         if rebase is False:
             return False
@@ -171,21 +201,37 @@ class UIContentValidationMixin:
             rebase is not True
             or instance is None
             or branch is None
-            or (branch.parent is None)
+            or (branch.parent is None and not self.overrides_layer_item(content))
         ):
             raise UIBranchInvalidError(
-                "rebase: true keeps an override of the parent's item: it is "
-                "valid only on an update of an item of a branch with a parent."
+                "rebase: true keeps an override of the parent's item (or, on a "
+                "branch without a parent, of a packaged UI layer's item): it is "
+                "valid only on an update of an item of a branch with a parent, "
+                "or of one that overrides an installed layer item."
             )
         return True
+
+    def overrides_layer_item(self, content) -> bool:
+        """Whether the item `content` on `item_branch` has the key of an
+        installed layer's item."""
+        kind = kind_of(self.get_resource_type().type_uri)
+        if not isinstance(content.get("name"), str):
+            return False
+        key = item_key(kind, content, self.item_branch)
+        return layer_item(kind, key) is not None
 
     def base_of(self, kind, content, branch):
         """The ETag of the parent's item for the key of `content` on
         `branch`, as `branch` shows it (`parent_state`): the current one on
         a live branch, the one its pinned version recorded on a pinned branch
-        (ruling R38); else ``None`` (no parent, or no item there)."""
+        (ruling R38), the installed layer item's where no ancestor has one;
+        else ``None``. On a root branch (no parent), the layer item's ETag
+        (`layers.layer_item`), else ``None``."""
         if branch.parent is None:
-            return None
+            if not isinstance(content.get("name"), str):
+                return None
+            found = layer_item(kind, item_key(kind, content, branch))
+            return None if found is None else found[0]
         write_db = self.write_database()
         type_uri = self.get_resource_type().type_uri
         all_branches = branches(write_db)
@@ -260,6 +306,17 @@ class UIContentValidationMixin:
         if instance is not None:
             resources = resources.exclude(pk=instance.pk)
         return resources
+
+
+def keeps_key(kind, content, instance, branch) -> bool:
+    """Whether `content`, the body of an update of `instance` on `branch`
+    (``None``: a body the schema refuses), keeps the stored item's
+    `item_key`: its name and, for a stylesheet, its ``applies_to``."""
+    if instance is None or branch is None or not isinstance(instance.content, dict):
+        return False
+    if not isinstance(content.get("name"), str):
+        return False
+    return item_key(kind, content, branch) == item_key(kind, instance.content, branch)
 
 
 def require_unless_deleted(content, fields):
@@ -346,26 +403,34 @@ class UIStylesheetViewSet(UIContentValidationMixin, ResourceViewSet):
         if not isinstance(prefixes, dict):
             prefixes = {}
         rules = content.get("rules")
-        for rule in rules if isinstance(rules, list) else []:
+        for index, rule in enumerate(rules if isinstance(rules, list) else []):
             select = rule.get("select") if isinstance(rule, dict) else None
             if not isinstance(select, str):
                 continue
             try:
                 parse_selector(select, prefixes)
             except SelectorError as error:
-                raise UISelectorInvalidError(error) from error
+                raise UISelectorInvalidError(error, rule=index) from error
 
 
-@scrudful_viewset
-class UICssViewSet(UIContentValidationMixin, ResourceViewSet):
+class UIItemTextValidationMixin:
+    """For the CSS and JS items: the text (`text_field`) is required unless
+    the item is a deletion marker, may not contain `closing_tag` (any case),
+    and the name is unique on the branch."""
+
+    text_field: str
+    closing_tag: str
+    invalid_error: type[Exception]
+    name_taken_error: type[Exception]
+
     def validate_content(self, content, instance=None):
         super().validate_content(content, instance=instance)
         if not isinstance(content, dict):
             return
-        require_unless_deleted(content, ("css",))
-        text = content.get("css")
-        if isinstance(text, str) and "</style" in text.lower():
-            raise UICssInvalidError()
+        require_unless_deleted(content, (self.text_field,))
+        text = content.get(self.text_field)
+        if isinstance(text, str) and self.closing_tag in text.lower():
+            raise self.invalid_error()
         name = content.get("name")
         branch = self.item_branch
         if (
@@ -373,9 +438,27 @@ class UICssViewSet(UIContentValidationMixin, ResourceViewSet):
             and branch is not None
             and same_item(
                 self.other_resources(instance).filter(content__name=name),
-                "css",
+                self.text_field,
                 content,
                 branch,
             )
         ):
-            raise UICssNameTakenError(name)
+            raise self.name_taken_error(name)
+
+
+@scrudful_viewset
+class UICssViewSet(
+    UIItemTextValidationMixin, UIContentValidationMixin, ResourceViewSet
+):
+    text_field = "css"
+    closing_tag = "</style"
+    invalid_error = UICssInvalidError
+    name_taken_error = UICssNameTakenError
+
+
+@scrudful_viewset
+class UIJsViewSet(UIItemTextValidationMixin, UIContentValidationMixin, ResourceViewSet):
+    text_field = "js"
+    closing_tag = "</script"
+    invalid_error = UIJsInvalidError
+    name_taken_error = UIJsNameTakenError

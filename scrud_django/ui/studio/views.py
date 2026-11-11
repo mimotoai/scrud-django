@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from functools import wraps
 
+from django.core.handlers.exception import response_for_exception
 from django.http import Http404, HttpResponse
 from django.shortcuts import render
 from django.urls import reverse
@@ -14,7 +15,7 @@ from rest_framework.decorators import (
     renderer_classes,
 )
 from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.parsers import JSONParser
+from rest_framework.parsers import FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
@@ -24,12 +25,12 @@ from scrud_django.exceptions import (
     UIStudioContextUnavailableError,
 )
 from scrud_django.models import ResourceType
-from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.registration import get_resource_type_for
 from scrud_django.rows import by_pk, unsorted
 from scrud_django.ui.branches import MAIN
 from scrud_django.ui.branches.effective import Selection, using_selection
 from scrud_django.ui.branches.model import Branch
+from scrud_django.ui.branches.reads import may_read_item
 from scrud_django.ui.branches.selection import parse_value, selectable
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.cascade import request_memo
@@ -37,6 +38,12 @@ from scrud_django.ui.render import node_at
 from scrud_django.ui.studio import writes
 from scrud_django.ui.studio.dispatch import call_view
 from scrud_django.ui.studio.explain import explain as explain_node
+from scrud_django.ui.studio.live_preview import (
+    live_preview_csp,
+    new_nonce,
+    parse_request,
+    render_live_preview,
+)
 from scrud_django.ui.studio.new_component import create as create_component
 from scrud_django.ui.studio.new_component import options as component_options
 from scrud_django.ui.studio.page import (
@@ -51,7 +58,6 @@ from scrud_django.ui.studio.preview import (
     render_preview,
     sample_of,
 )
-from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
 
 
 def registered_types(q: str = "") -> list[dict]:
@@ -252,6 +258,62 @@ def preview(request, slug):
     )
 
 
+# The request attribute holding a live preview response's CSP nonce.
+_NONCE_ATTR = "scrud_studio_preview_nonce"
+
+
+def _live_sandboxed(view):
+    """`view` with `live_preview_csp` and ``X-Frame-Options: SAMEORIGIN`` on
+    every response it gives, its nonce new with each (on the request as
+    `_NONCE_ATTR`). An exception DRF does not answer (a body over
+    ``DATA_UPLOAD_MAX_MEMORY_SIZE``, too many form fields, any error) is
+    answered here as Django would answer it (``response_for_exception``:
+    400 for a suspicious request, else 500, logged and signalled as usual),
+    so that its response is sandboxed too."""
+
+    @wraps(view)
+    def sandboxed(request, *args, **kwargs):
+        nonce = new_nonce()
+        setattr(request, _NONCE_ATTR, nonce)
+        try:
+            response = view(request, *args, **kwargs)
+        except Exception as error:
+            response = response_for_exception(request, error)
+        response["Content-Security-Policy"] = live_preview_csp(nonce)
+        response["X-Frame-Options"] = "SAMEORIGIN"
+        return response
+
+    return sandboxed
+
+
+@_live_sandboxed
+@xframe_options_sameorigin
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([FormParser])
+@renderer_classes([JSONRenderer])
+def live_preview(request):
+    """The live preview (`studio.live_preview`): a form-encoded POST, so
+    that a ``<form target=...>`` can submit it into a frame with the CSRF
+    token, whose one field ``request`` holds the preview's JSON
+    (`live_preview.parse_request`: a refused one is
+    `UIStudioPreviewInvalidError`). What it shows is read as `preview`
+    reads its parameters (`_shown`: the branch must be selectable, the data
+    context readable, an instance readable through its view), then
+    `render_live_preview` renders it. It writes nothing. Every response,
+    errors included, is framable by the same origin only and carries
+    `live_preview_csp` with its own nonce."""
+    live = parse_request(request.data.get("request"))
+    resource_type = get_resource_type_for(live.slug)
+    shown = _shown(request, live.slug, resource_type, live.params())
+    if isinstance(shown, HttpResponse):
+        return shown
+    nonce = getattr(request._request, _NONCE_ATTR)
+    return render_live_preview(
+        request, resource_type, shown, live, nonce, _readable(request)
+    )
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 @renderer_classes([JSONRenderer])
@@ -282,18 +344,13 @@ def explain(request, slug):
 
 def _readable(request):
     """Whether the user of `request` may read a rule's `RuleSource` (a
-    stylesheet), as the list filter checks a stored one; the default
-    stylesheet's are readable."""
+    stylesheet), as the list filter checks a stored one (`may_read_item`:
+    a packaged layer's is public); the default stylesheet's are readable."""
 
     def readable(source):
         if source is None or source.content is None:
             return True
-        return may_read_in_context(
-            request,
-            UI_STYLESHEET_TYPE_URI,
-            source.content,
-            resource_contexts(source.content),
-        )
+        return may_read_item(request, "stylesheet", source.pk, source.content)
 
     return readable
 

@@ -19,6 +19,7 @@ from scrud_django.models import Resource
 from scrud_django.registration import ResourceTypeRegistration
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 from scrud_django.ui.cascade import builtin_component
+from scrud_django.ui.layers import layer_item
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
 from .fixtures import *  # noqa
@@ -27,6 +28,7 @@ from .steps import *  # noqa: F403, F401
 from .test_ui_branch_push import create, make_wip, own_rows, stored_state
 from .test_ui_branch_types import component, make_branch, problem
 from .test_ui_http import grant, html, make_component, make_stylesheet
+from .test_ui_layers import MORE_APP, installed
 from .test_ui_render import make_component as scoped_component
 
 SLUG = "todo-lists"
@@ -571,6 +573,81 @@ def test_inside_type_keeps_a_scope_the_root_gives(admin_login, ui_alice_login):
     assert own_rows(UI_STYLESHEET_TYPE_URI, "wip")[0]["rules"] == [
         {"select": "notes string", "component": "todos-blockers-explanation-view"}
     ]
+
+
+@pytest.mark.django_db
+@test_context
+def test_inside_type_overrides_a_packaged_root_component(admin_login, ui_alice_login):
+    # The root is rendered by a packaged layer's component (ruling 3 of the
+    # runtime plan): "inside this type" overrides it on the branch, a copy
+    # of the layer's with the scope, based on the layer item's ETag.
+    make_stylesheet("s", [("tests://ToDo", "layermore:list")])
+    user = alice_on_wip(admin_login, ui_alice_login)
+    grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
+    with installed(MORE_APP):
+        etag, packaged = layer_item("component", ("layermore:list",))
+        assert options(slug="todos", pointer=EXPLANATION)["inside_type"] == {
+            "scope": "todos-blockers",
+            "root_component": "layermore:list",
+            "property": "blockers",
+            "creates_root": False,
+        }
+        got = new_component(
+            slug="todos", pointer=EXPLANATION, inside_type=True, template=MARK
+        )
+        assert got["written"][0] == {"kind": "component", "name": "layermore:list"}
+        assert got["wins"] is True
+        root, _node = own_rows(UI_COMPONENT_TYPE_URI, "wip")
+        assert root == {
+            "name": "layermore:list",
+            "engine": "django",
+            "mode": "view",
+            "template": packaged["template"],
+            "scopes": {"blockers": "todos-blockers"},
+            "branch": "wip",
+            "rbac_context": "alice",
+            "base": etag,
+        }
+        assert own_rows(UI_STYLESHEET_TYPE_URI, "wip")[0]["rules"] == [
+            {"select": "todos-blockers string", "component": _node["name"]}
+        ]
+
+
+@pytest.mark.django_db
+@test_context
+def test_inside_type_overrides_a_packaged_root_without_read_in_root_context(
+    admin_login, ui_alice_login
+):
+    """A packaged layer's component is public (spec R1, `may_read_item`):
+    a user who may not read components in ``""`` is offered "inside this
+    type" for a packaged root component, and the action copies it into an
+    override on their branch."""
+    make_stylesheet("s", [("tests://ToDo", "layermore:list")])
+    alice_on_wip(admin_login, ui_alice_login)
+    with installed(MORE_APP):
+        etag, packaged = layer_item("component", ("layermore:list",))
+        assert options(slug="todos", pointer=EXPLANATION)["inside_type"] == {
+            "scope": "todos-blockers",
+            "root_component": "layermore:list",
+            "property": "blockers",
+            "creates_root": False,
+        }
+        got = new_component(
+            slug="todos", pointer=EXPLANATION, inside_type=True, template=MARK
+        )
+        assert got["written"][0] == {"kind": "component", "name": "layermore:list"}
+        assert got["wins"] is True
+        root, _node = own_rows(UI_COMPONENT_TYPE_URI, "wip")
+        assert root == {
+            "name": "layermore:list",
+            "engine": "django",
+            "mode": "view",
+            "template": packaged["template"],
+            "scopes": {"blockers": "todos-blockers"},
+            "branch": "wip",
+            "rbac_context": "alice",
+            "base": etag,
+        }
 
 
 @pytest.mark.django_db

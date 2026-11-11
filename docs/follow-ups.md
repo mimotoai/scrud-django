@@ -5,6 +5,41 @@ kept by a decision, each saying what was decided and why. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
 
+<a id="embed-literal-path-save-check"></a>
+## embed-literal-path-save-check: a literal non-resource embed path is refused only at render
+
+The spec (R9) asked that an embed whose path is a literal that is not a
+resource URL be refused when the component is saved. Only the render-time
+refusal is implemented, so such a component saves and then renders the
+refusal notice. Test: in `tests/test_ui_embeds.py`, PUT a component whose
+template embeds a literal non-resource path; it should be a 400 and is a 200
+today.
+
+<a id="embed-preview-mode"></a>
+## embed-preview-mode: embeds in a view-mode preview use the viewer's own mode
+
+An embed inside a studio preview requested in view mode (the live preview,
+and the bootstrap studio's GET preview alike) renders in the viewer's own
+mode, not in view mode: the preview strips the write attributes (`hx-put`,
+`hx-ext`, ...), but the embedded resource's edit inputs and array controls
+are still rendered. Test: in `tests/test_studio_live_preview.py` (and in
+`tests/test_studio_preview.py`, for `scrud-studio:preview` with
+`mode=view`), preview a component that embeds an editable resource, with
+view mode requested, as a user who may PUT it; the embedded markup should
+contain no `<input name="/...">` (nor `<textarea name="/...">`) and no
+`data-scrud-array-op`, and has them today.
+
+<a id="push-preview-write-grants"></a>
+## push-preview-write-grants: the push preview does not check write grants
+
+`ui-push-previews` lists what a push would write but does not check the user's
+per-item write grants, nor the PUT on the source branch that applying the
+push needs, so it cannot say whether the user may apply the push (the push
+itself still checks them). Test: in `tests/test_studio_push_preview.py`,
+preview a push as a user with GET on both branches but no write on one changed
+item type; the response should flag that item as not applicable and has no such
+field today.
+
 <a id="mariadb-content-filter-padding"></a>
 ## mariadb-content-filter-padding: on MariaDB a list's query-parameter filter ignores trailing spaces
 
@@ -637,6 +672,66 @@ Fix: use the minimum only when `math.isfinite` holds, else `0`. Test: in
 `tests/test_studio_sample.py`, `sample_for({"type": "integer", "minimum":
 float("inf")})` and the same with `float("nan")` must return an integer; both
 raise today.
+
+<a id="rules-memo-render-state-key"></a>
+## rules-memo-render-state-key: the rules memo is not keyed by the render state
+
+`cascade._memo` (`rules_memo`) keeps a request's effective rules and stored
+components keyed by contexts and linked stylesheets only, not by the render
+state they were read in: the selected branch, safe mode and live-preview
+drafts. Today every caller sets that state before it opens the memo (an embed
+opens a memo of its own, the live preview sets its drafts first), so the
+ordering is load-bearing: a memo opened first would serve rules read without
+the drafts, or outside safe mode. Key the memo by `(selection, safe mode,
+drafts)`, or refuse a change of that state inside it. Test: in
+`tests/test_ui_cascade.py`, inside one `rules_memo()`, read `effective_rules`
+for `[""]` with a stored stylesheet on main, then read it again inside
+`using_safe_mode()`; the second read should not include the stored
+stylesheet's rules, and does today.
+
+<a id="push-write-invariants"></a>
+## push-write-invariants: a push's writes and plan do not enforce their own invariants
+
+`sync._Write` takes `method`, `row` and `content` independently, though only
+three shapes are valid (`http.PUT`: a row and content; `http.POST`: content
+and no row; `http.DELETE`: a row and no content); a `__post_init__` should
+check that table. `PushPlan` does not record whether its rows were locked
+(`plan_push(..., lock=...)`), so `apply_push` cannot refuse a plan made
+without the locks; `refuse_push_between` is called by the push view and the
+push preview, not inside `apply_push`, so another caller of `apply_push`
+skips it; and the writes that empty the source (`PushPlan.emptied`) carry
+the key `()` instead of their item's key. Test: in
+`tests/test_ui_branch_push.py`, `_Write("component", UI_COMPONENT_TYPE_URI,
+("row",), "http.PUT", branch, row=None, content={...})` should raise
+`ValueError`, and `apply_push` given a plan made with `lock=False` should
+refuse; both pass silently today.
+
+<a id="rule-index-not-rank-tail"></a>
+## rule-index-not-rank-tail: a marked rule is found by the tail of its rank
+
+`render.Mark.matches` finds the live preview's marked rule by `rule.rank[-1]
+== index`, which is the rule's index in its stylesheet only because every
+rank tuple the cascade builds ends with it; a `Rule.index` field would say
+so. Likewise `LiveRequest.mark` stays a dict, checked in `parse_request`
+and read again in `_mark`, rather than a parsed type; the drafts a request
+names and the drafts accepted for the render share one list; and
+`effective.using_drafts` makes no structural check of its drafts (a known
+kind, a mapping content, a name). Test: in
+`tests/test_studio_live_preview.py`, a rule whose rank does not end with its
+index (a cascade change that appends to the rank) should still be the one
+marked; and `using_drafts("wip", [Draft("nope", [])])` should raise
+`ValueError`, and is accepted today.
+
+<a id="collection-cascade-test-idiom"></a>
+## collection-cascade-test-idiom: the collection cascade tests are plain pytest
+
+`tests/test_ui_collection_cascade.py` calls `render_collection` directly in
+plain pytest functions (no `@test_context`, no Given/When/Then), like
+`tests/test_ui_render.py`, which tests the renderer below HTTP. The test
+conventions (CLAUDE.md) describe safetydance tests only. Either convert the
+module to the safetydance idiom, or say in CLAUDE.md that unit tests of the
+renderer below HTTP may be plain pytest, as these two modules are. Test:
+none; a convention to settle.
 
 # Decided
 

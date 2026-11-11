@@ -58,9 +58,18 @@ from scrud_django.exceptions import UIHeaderInvalidError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.permissions import content_of
 from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messages
-from scrud_django.ui.branches.chrome import banner, confirm_page
+from scrud_django.ui.branches.chrome import SAFE_NOTICE, banner, confirm_page
 from scrud_django.ui.branches.css import css_urls
-from scrud_django.ui.branches.effective import BRANCH_HEADER, using_selection
+from scrud_django.ui.branches.effective import (
+    BRANCH_HEADER,
+    SAFE_HEADER,
+    query_param,
+    safe_mode,
+    safe_mode_requested,
+    using_safe_mode,
+    using_selection,
+)
+from scrud_django.ui.branches.js import js_urls
 from scrud_django.ui.branches.selection import (
     CONFIRM_PARAMETER,
     PARAM,
@@ -81,7 +90,8 @@ from scrud_django.ui.cascade import (
     request_memo,
     resolve_component,
 )
-from scrud_django.ui.render import render_collection, render_resource
+from scrud_django.ui.embed import embed_for
+from scrud_django.ui.render import JINJA_ENGINE, render_collection, render_resource
 from scrud_django.ui.selectors import TypeTerm
 
 logger = logging.getLogger(__name__)
@@ -92,6 +102,11 @@ CONTENT_TYPE = "text/html; charset=utf-8"
 HX_REQUEST_HEADER = "HX-Request"
 SCOPE_HEADER = "Scrud-UI-Scope"
 POINTER_HEADER = "Scrud-UI-Pointer"
+MODE_HEADER = "Scrud-UI-Mode"
+# The scope chain and the mode may also come in the URL (a header wins).
+SCOPE_PARAMETER = "ui-scope"
+MODE_PARAMETER = "ui-mode"
+VIEW_MODE = "view"
 # The branch a page browses comes from a header, else a parameter (in the
 # URL), else a cookie.
 VARY = (
@@ -99,12 +114,15 @@ VARY = (
     HX_REQUEST_HEADER,
     SCOPE_HEADER,
     POINTER_HEADER,
+    MODE_HEADER,
     BRANCH_HEADER,
+    SAFE_HEADER,
     "Cookie",
 )
 
 MAX_SCOPES = 16
 MAX_POINTER_LENGTH = 1024
+_SCOPE_SEPARATORS = re.compile(r"[\s,]+")
 _SCOPE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 # RFC 6901: "" or "/"-prefixed reference tokens, "~" only as "~0" or "~1".
 _POINTER = re.compile(r"(?:/(?:[^~/]|~[01])*)*")
@@ -156,7 +174,13 @@ class ScrudHTMLRenderer(BaseRenderer):
                 chosen = choose(request)
                 if _asks_confirmation(chosen, request):
                     return str(confirm_page(chosen, request)).encode(self.charset)
-                with using_selection(chosen.selection):
+                # An embedded request (`embed`) stays in its embedder's safe
+                # mode: it is only ever turned on here (and, for the CSS
+                # and JS file responses, in `branches.files`).
+                with (
+                    using_selection(chosen.selection),
+                    using_safe_mode(safe_mode_requested(request) or safe_mode()),
+                ):
                     body, contexts = _body(data, status, request, view, response)
                     if not _is_htmx(request):
                         body = _page(
@@ -278,9 +302,10 @@ def remember_branch(request, response) -> None:
 
 def check_ui_headers(request) -> None:
     """Refuse (400) an HTML request whose `POINTER_HEADER` is not a JSON
-    Pointer of at most `MAX_POINTER_LENGTH` characters: before the view
-    acts, so a PUT carrying one writes nothing. An invalid `SCOPE_HEADER`
-    is ignored (`scope_chain_of`)."""
+    Pointer of at most `MAX_POINTER_LENGTH` characters, or whose requested
+    mode (`MODE_HEADER`, `MODE_PARAMETER`) is not ``"view"``: before the view
+    acts, so a PUT carrying one writes nothing. An invalid scope chain
+    (`SCOPE_HEADER`, `SCOPE_PARAMETER`) is ignored (`scope_chain_of`)."""
     if negotiated_html(request) is None:
         return
     if pointer_of(request) is None:
@@ -289,16 +314,52 @@ def check_ui_headers(request) -> None:
             f"a JSON Pointer (RFC 6901) of at most {MAX_POINTER_LENGTH} characters"
             " is expected.",
         )
+    mode = _requested_mode_value(request)
+    if mode is not None and mode != VIEW_MODE:
+        raise UIHeaderInvalidError(
+            MODE_HEADER, f'"{VIEW_MODE}" is the only mode that can be requested.'
+        )
 
 
 def scope_chain_of(request) -> tuple[str, ...]:
-    """The root scope chain `SCOPE_HEADER` names: up to `MAX_SCOPES`
-    space-separated names, each a letter then letters, digits, ``_`` or
-    ``-``. Anything else is ignored: ``()``."""
-    names = (_header(request, SCOPE_HEADER) or "").split()
+    """The root scope chain `SCOPE_HEADER` names, else `SCOPE_PARAMETER`:
+    up to `MAX_SCOPES` space- or comma-separated names, each a letter then
+    letters, digits, ``_`` or ``-``. Anything else is ignored: ``()``."""
+    value = _header(request, SCOPE_HEADER)
+    if value is None:
+        value = query_param(request, SCOPE_PARAMETER)
+    return parse_scope_chain(value)
+
+
+def parse_scope_chain(value: str | None) -> tuple[str, ...]:
+    """The scope chain `value` names, as `scope_chain_of` reads it; ``()``
+    when it is not one."""
+    names = scope_names(value)
     if len(names) > MAX_SCOPES or not all(_SCOPE_NAME.fullmatch(n) for n in names):
         return ()
     return tuple(names)
+
+
+def scope_names(value: str | None) -> list[str]:
+    """The names in `value`, split as a scope chain is (on whitespace and
+    commas), valid or not."""
+    return [n for n in _SCOPE_SEPARATORS.split(value or "") if n]
+
+
+def requested_mode_of(request) -> str | None:
+    """The mode the request asks for (`MODE_HEADER`, else `MODE_PARAMETER`):
+    ``"view"``, or ``None`` when absent. It can only lower what the user may
+    do. Any other value is refused by `check_ui_headers`, so it reads as
+    ``None`` here."""
+    value = _requested_mode_value(request)
+    return VIEW_MODE if value == VIEW_MODE else None
+
+
+def _requested_mode_value(request) -> str | None:
+    value = _header(request, MODE_HEADER)
+    if value is None:
+        value = query_param(request, MODE_PARAMETER)
+    return value
 
 
 def pointer_of(request) -> str | None:
@@ -379,11 +440,16 @@ def load_stored(view, request, response) -> None:
     remember_stored(view, request, obj)
 
 
+# What a computed view's content offers: reading only.
+COMPUTED_DECISIONS = {"GET": ALLOWED, "PUT": DENIED, "DELETE": DENIED}
+
+
 def _body(data, status, request, view, response):
     """``(html, contexts)``: the fragment answering the request, and the
     contexts whose stylesheets style its page."""
     scope_chain = scope_chain_of(request)
     pointer = pointer_of(request)
+    mode = requested_mode_of(request)
     resource_type = _resource_type(view)
     method = getattr(request, "method", None)
     if status >= 400:
@@ -408,6 +474,7 @@ def _body(data, status, request, view, response):
             href=request.path,
             request=request,
             scope_chain=scope_chain,
+            mode=mode,
         ), []
     if resource_type is not None and isinstance(data, Mapping):
         href = request.path
@@ -417,6 +484,14 @@ def _body(data, status, request, view, response):
         elif action not in ("retrieve", "update"):
             return _json(data), []
         etag = response.get("ETag") if response is not None else None
+        # A computed view's content is view-only, its contexts the content's
+        # own when it names them (never the stored resource's decisions).
+        computed = getattr(view, "computed", False)
+        contexts = (
+            (rbac_contexts_of(data) if "rbac_context" in data else [])
+            if computed
+            else rbac_contexts_of(data)
+        )
         return render_resource(
             data,
             resource_type=resource_type,
@@ -425,7 +500,13 @@ def _body(data, status, request, view, response):
             request=request,
             scope_chain=scope_chain,
             pointer=pointer or "",
-        ), rbac_contexts_of(data)
+            mode=mode,
+            **(
+                {"decisions": COMPUTED_DECISIONS, "contexts": contexts}
+                if computed
+                else {}
+            ),
+        ), contexts
     return _json(data), []
 
 
@@ -527,36 +608,49 @@ def _page(
     component that fails is replaced by the built-in.
 
     Off the published branch, or when it refused a branch, `chosen`'s banner
-    is put at the top of the body. So is the page's branch (`frame_branch`)
+    is put at the top of the body, and in safe mode its notice (`SAFE_NOTICE`).
+    So is the page's branch (`frame_branch`)
     when it has one, on a hidden ``.scrud-branch-page`` element, for the
-    requests of elements outside any frame. A page component that leaves
+    requests of elements outside any frame; in safe mode the element is
+    there with ``data-scrud-safe="1"``, so that those requests send
+    `SAFE_HEADER`. A page component that leaves
     them out is replaced by the built-in. (Branch CSS, or a component that
     wraps the body in a hidden element, can still hide the banner: follow-up
     ``ui-banner-hideable``.)
 
     The page component's context also has ``css``: the URLs of the CSS files
-    effective on the page's branch, in order."""
+    effective on the page's branch, in order, and ``scripts``: those of its
+    JS files (empty when it has none); a stored Jinja one's also has
+    ``embed`` (`embed.embed_for`)."""
     chrome = []
     branch = frame_branch(request) if chosen is not None else None
-    if branch is not None:
+    safe = safe_mode()
+    if branch is not None or safe:
         chrome.append(
             format_html(
-                '<div class="scrud-branch-page" data-scrud-branch="{}" hidden></div>',
-                branch,
+                '<div class="scrud-branch-page"{}{} hidden></div>',
+                format_html(' data-scrud-branch="{}"', branch)
+                if branch is not None
+                else "",
+                mark_safe(' data-scrud-safe="1"') if safe else "",
             )
         )
     if chosen is not None and (chosen.refused or not is_published(chosen, request)):
         chrome.append(banner(chosen, request))
+    if safe:
+        chrome.append(SAFE_NOTICE)
     chrome = mark_safe("".join(chrome)) if chrome else None
     if chrome is not None:
         body = mark_safe(chrome + body)
 
     css = css_urls(request)
+    scripts = js_urls(request)
 
-    def page_context():
-        return {
+    def page_context(component=None):
+        context = {
             "title": _title(resource_type),
             "css": css,
+            "scripts": scripts,
             "csrf_token": get_token(getattr(request, "_request", request)),
             "static": {
                 "htmx": static(STATIC_HTMX),
@@ -564,6 +658,9 @@ def _page(
             },
             "body": body,
         }
+        if getattr(component, "engine", None) == JINJA_ENGINE:
+            context["embed"] = embed_for(request)
+        return context
 
     component = resolve_component(
         effective_rules(list(contexts)), scope_chain, [PAGE_TERM], "view"
@@ -572,8 +669,9 @@ def _page(
         component = builtin_component(PAGE_BUILTIN)
     if component.name == PAGE_BUILTIN:
         return component.compiled().render(page_context())
+    comment = '<!-- scrud-ui: component "{}" failed -->{}'
     try:
-        page = component.compiled().render(page_context())
+        page = component.compiled().render(page_context(component))
     except Exception:
         logger.warning(
             "scrud-ui: page component %r failed to render",
@@ -584,12 +682,17 @@ def _page(
         if chrome is None or chrome in page:
             return page
         logger.warning(
-            "scrud-ui: page component %r leaves out the branch banner; the"
-            " built-in page is used",
+            "scrud-ui: page component %r leaves out the branch banner or the"
+            " safe mode notice; the built-in page is used",
             component.name,
         )
+        # It rendered: said as what it is, not as a failure.
+        comment = (
+            '<!-- scrud-ui: page component "{}" leaves out the branch banner'
+            " or the safe mode notice -->{}"
+        )
     return format_html(
-        '<!-- scrud-ui: component "{}" failed -->{}',
+        comment,
         component.name,
         builtin_component(PAGE_BUILTIN).compiled().render(page_context()),
     )
@@ -712,10 +815,15 @@ def _dotted_pointer(path: str) -> str:
 
 def _schema_name_pointer(name) -> str | None:
     """fastjsonschema's name of a value (``data.items[0].text``) as a JSON
-    Pointer (``/items/0/text``), or ``None``."""
-    if not isinstance(name, str) or not name.startswith("data"):
+    Pointer (``/items/0/text``), or ``None``. A name without the leading
+    ``data`` (``rules[1].select``, a selector error's) is accepted too."""
+    if not isinstance(name, str) or not name:
         return None
-    rest, segments = name[len("data") :], []
+    segments = []
+    if re.match(r"data(?=[.\[]|$)", name):
+        rest = name[len("data") :]
+    else:
+        rest = "." + name
     while rest:
         match = _SCHEMA_NAME_TOKEN.match(rest)
         if match is None:

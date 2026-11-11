@@ -12,7 +12,7 @@ import importlib.resources
 from functools import cache
 
 from django.utils.encoding import escape_uri_path
-from django.utils.safestring import SafeString
+from django.utils.safestring import SafeString, mark_safe
 
 from scrud_django.ui.branches.effective import BRANCH_PARAMETER, Selection
 from scrud_django.ui.branches.selection import (
@@ -26,6 +26,12 @@ from scrud_django.ui.branches.selection import (
 )
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.engines import cached_template
+
+# Server-rendered, constant: it names no branch and holds no input.
+SAFE_NOTICE = mark_safe(
+    '<div class="scrud-safe-mode" role="status">'
+    "Safe mode: this page ignores stored UI items.</div>"
+)
 
 
 def banner(chosen: Chosen, request) -> SafeString:

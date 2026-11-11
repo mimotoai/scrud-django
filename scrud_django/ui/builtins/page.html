@@ -8,7 +8,8 @@
 {% for href in css %}<link rel="stylesheet" href="{{ href }}">
 {% endfor %}<script src="{{ static.htmx }}" defer></script>
 <script src="{{ static.scrud_ui }}" defer></script>
-</head>
+{% for src in scripts %}<script src="{{ src }}" defer></script>
+{% endfor %}</head>
 <body>
 <main>{{ body }}</main>
 </body>

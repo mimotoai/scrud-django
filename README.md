@@ -188,7 +188,9 @@ type's row follows the registration's arguments (`slug`, `revision`,
 it, the stored row keeps its slug, revision and URIs, and only its
 documents (and `uses_reversion`) are updated. Pass
 `viewset_class=ResourceViewSetGenericFilter` (`scrud_django.views`) for a
-list that filters on its query parameters (`?text=...`).
+list that filters on its query parameters (`?text=...`; with `scrud_django.ui`
+installed, its URL parameters `ui-branch`, `ui-branch-confirm`, `ui-scope`,
+`ui-mode` and `ui-safe` are not filters).
 
 Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
 `http.POST`, `http.PUT`, `http.DELETE`) and `http.GET` on its list type,
@@ -390,6 +392,47 @@ RBAC-checked on their own routes.
 
 The Django admin shows `Resource` and `ResourceType` to superusers only: a
 write there bypasses scoped-rbac, the workflow and JSON Schema validation.
+
+### Computed resource types
+
+A computed type has a schema and a JSON-LD context like any resource type, but
+its content is computed per request, never stored: a read-only view of data
+the server derives for the requesting user. Subclass
+`scrud_django.computed.ComputedResourceViewSet`, implement
+`compute(request, key)` (return a mapping; raise `Http404` or
+`PermissionDenied`), and register it with `computed_resource_type`:
+
+```python
+from scrud_django import registration
+from scrud_django.computed import ComputedResourceViewSet
+
+
+class BranchSummaryViewSet(ComputedResourceViewSet):
+    def compute(self, request, key):
+        # Return only what request.user may read as JSON.
+        return {"name": key, "items": []}
+
+
+urlpatterns += registration.computed_resource_type(
+    resource_type_uri="http://example.org/BranchSummary",
+    slug="branch-summaries",
+    schema_func=lambda: SCHEMA_JSON,
+    context_func=lambda: CONTEXT_JSON,
+    viewset_class=BranchSummaryViewSet,
+)
+```
+
+It routes `branch-summaries/<key>/` only (route name `branch-summaries-detail`;
+no list route, so a computed type is not in the service catalog, which gives
+each type's list URL) and adds no revision history. A GET answers the content with an
+`ETag` (the SHA-256 of its canonical JSON) and a 304 for a matching
+`If-None-Match`; any method other than GET, HEAD and OPTIONS is a 405. The response carries the
+`Link` headers to the type's schema and JSON-LD context, as a stored resource's
+does. The view requires an authenticated
+user and applies no authorization of its own to the content: `compute` must ask
+the same checks the stored resources' views do. The type is registered, so a
+published branch's prefix claims its slug, and HTML negotiation renders it
+through the UI cascade as view-only content.
 
 ### Search (optional)
 

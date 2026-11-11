@@ -104,6 +104,7 @@ SETTINGS: dict[str, Any] = dict(
         "scrud_django.ui",
         "scrud_django.ui.studio",
         "tests",
+        "tests.apps.UILayerTestConfig",
         "reversion",
     ),
     PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"],

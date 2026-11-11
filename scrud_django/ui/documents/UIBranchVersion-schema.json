@@ -20,7 +20,7 @@
     },
     "items": {
       "type": "object",
-      "description": "The branch's own items (its overrides, deletion markers included) by kind (component, stylesheet), each the item's content.",
+      "description": "The branch's own items (its overrides, deletion markers included) by kind (component, stylesheet, css, js), each the item's content.",
       "additionalProperties": {
         "type": "array",
         "items": { "type": "object" }

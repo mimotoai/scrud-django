@@ -93,6 +93,7 @@ def test_every_item_write_creates_a_version(ui_alice_login):
             "component": components,
             "stylesheet": [],
             "css": [],
+            "js": [],
         }
     assert current_version("wip", write_db()) == 3
     # The items of main are not the branch's: main has no version.
@@ -120,6 +121,7 @@ def test_main_versions_hold_items_stored_before_branches(ui_author_login):
         "component": [old.content],
         "stylesheet": [sheet],
         "css": [],
+        "js": [],
     }
 
 
@@ -150,6 +152,7 @@ def test_branching_point_records_every_ancestor(admin_login):
         "component": [],
         "stylesheet": [],
         "css": [],
+        "js": [],
     }
     # A PUT keeps it, whatever the body says.
     stored = Resource.objects.get(
@@ -383,11 +386,17 @@ def test_version_reads_hide_items_the_reader_may_not_read(admin_login):
         "component": ["row"],
         "stylesheet": ["theme", "acme-theme"],
         "css": [],
+        "js": [],
     }
     assert version_as(admin_login, version) == (everything, stored_etag)
     assert version_as(acme_reader, version) == (everything, stored_etag)
     hidden, hidden_etag = version_as(reader, version)
-    assert hidden == {"component": ["row"], "stylesheet": ["theme"], "css": []}
+    assert hidden == {
+        "component": ["row"],
+        "stylesheet": ["theme"],
+        "css": [],
+        "js": [],
+    }
     assert hidden_etag != stored_etag
     # The ETags the version recorded (ruling R38) are hidden alike.
     etags = version.content["etags"]
@@ -395,6 +404,7 @@ def test_version_reads_hide_items_the_reader_may_not_read(admin_login):
         "component": etags["component"],
         "stylesheet": etags["stylesheet"][:1],
         "css": [],
+        "js": [],
     }
     assert len(etags["stylesheet"]) == 2
     # Its ETag is the reader's: another's does not match it.
