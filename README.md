@@ -188,7 +188,9 @@ type's row follows the registration's arguments (`slug`, `revision`,
 it, the stored row keeps its slug, revision and URIs, and only its
 documents (and `uses_reversion`) are updated. Pass
 `viewset_class=ResourceViewSetGenericFilter` (`scrud_django.views`) for a
-list that filters on its query parameters (`?text=...`).
+list that filters on its query parameters (`?text=...`; with `scrud_django.ui`
+installed, its URL parameters `ui-branch`, `ui-branch-confirm`, `ui-scope`,
+`ui-mode` and `ui-safe` are not filters).
 
 Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
 `http.POST`, `http.PUT`, `http.DELETE`) and `http.GET` on its list type,

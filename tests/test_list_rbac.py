@@ -417,6 +417,44 @@ def test_filtered_list_is_rbac_filtered_and_filters_on_query_parameters():
 
 @pytest.mark.django_db
 @test_context
+def test_filtered_list_ignores_the_ui_parameters():
+    """The UI's URL parameters select presentation (a branch, a scope, a
+    mode, safe mode), never content: with ``scrud_django.ui`` installed, a
+    list that filters on query parameters answers the same JSON with and
+    without each."""
+    from scrud_django.ui import is_enabled
+    from scrud_django.ui.branches.effective import BRANCH_PARAMETER, SAFE_PARAMETER
+    from scrud_django.ui.branches.selection import CONFIRM_PARAMETER
+    from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER
+
+    assert is_enabled()
+    profile("keep", rbac_context="b", display_name="Keep")
+    profile("other", rbac_context="b", display_name="Other")
+    path = reverse("filtered-partner-profiles-list")
+    Given.http.force_authenticate(user_with((READER, "b")))
+
+    def body(**params):
+        When.http.get(path, params, HTTP_ACCEPT="application/json")
+        Then.http.status_code_is(status.HTTP_200_OK)
+        return json.loads(Http.response.content)
+
+    plain = body()
+    assert len(plain["content"]) == 2
+    for name, value in (
+        (BRANCH_PARAMETER, "main"),
+        (CONFIRM_PARAMETER, "x"),
+        (SCOPE_PARAMETER, "a"),
+        (MODE_PARAMETER, "view"),
+        (SAFE_PARAMETER, "1"),
+    ):
+        assert body(**{name: value}) == plain, name
+    # A content filter beside them still applies.
+    filtered = body(display_name="Keep", **{SAFE_PARAMETER: "1"})
+    assert [e["content"]["name"] for e in filtered["content"]] == ["keep"]
+
+
+@pytest.mark.django_db
+@test_context
 def test_filtered_list_parameters_are_keys_not_lookups():
     profile("keep", rbac_context="b")
     path = reverse("filtered-partner-profiles-list")
@@ -464,3 +502,15 @@ def test_filtered_list_refuses_a_nul_in_a_parameter():
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
     When.http.get(path, {"name": "k\x00"})
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+
+
+def test_ui_parameters_are_content_filters_without_the_ui(monkeypatch):
+    """Without ``scrud_django.ui`` installed, ``ui-*`` keys are ordinary
+    content keys."""
+    from scrud_django import filters
+    from scrud_django.ui import django_apps
+
+    monkeypatch.setattr(django_apps, "is_installed", lambda name: False)
+    assert filters.ui_parameters() == frozenset()
+    monkeypatch.undo()
+    assert "ui-safe" in filters.ui_parameters()

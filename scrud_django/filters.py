@@ -547,6 +547,29 @@ class ResourceRbacFilter(RbacFilter):
 _INTEGER = re.compile(r"^[+-]?\d+$")
 
 
+def ui_parameters() -> frozenset[str]:
+    """The query parameters that select the UI's presentation, never content,
+    when ``scrud_django.ui`` is installed: the branch and its confirmation,
+    the scope chain, the mode and safe mode. Empty without the UI."""
+    from scrud_django.ui import is_enabled
+
+    if not is_enabled():
+        return frozenset()
+    from scrud_django.ui.branches.effective import BRANCH_PARAMETER, SAFE_PARAMETER
+    from scrud_django.ui.branches.selection import CONFIRM_PARAMETER
+    from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER
+
+    return frozenset(
+        (
+            BRANCH_PARAMETER,
+            CONFIRM_PARAMETER,
+            SCOPE_PARAMETER,
+            MODE_PARAMETER,
+            SAFE_PARAMETER,
+        )
+    )
+
+
 class ResourceContentFilter(BaseFilterBackend):
     """Filter a list of resources on its query parameters: each parameter
     ``key=value`` keeps the resources whose content's top-level ``key`` is the
@@ -555,7 +578,8 @@ class ResourceContentFilter(BaseFilterBackend):
     ``name__startswith=x`` keeps the resources whose key
     ``"name__startswith"`` is ``"x"``. All values of a repeated parameter must
     match. The pagination parameters and DRF's format override are not
-    filters. A key that is an integer is a 400 (a JSON path reads it as an
+    filters, and neither are the UI's URL parameters when ``scrud_django.ui``
+    is installed (`ui_parameters`). A key that is an integer is a 400 (a JSON path reads it as an
     array index), and so is a NUL character in a key or a value (PostgreSQL
     text cannot hold one). Only lists are filtered (``view.action == "list"``)."""
 
@@ -566,7 +590,7 @@ class ResourceContentFilter(BaseFilterBackend):
             value = getattr(paginator, name, None)
             if value:
                 ignored.add(value)
-        return ignored
+        return ignored | ui_parameters()
 
     def filter_queryset(self, request, queryset, view):
         if getattr(view, "action", None) != "list":
