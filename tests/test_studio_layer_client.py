@@ -2876,6 +2876,48 @@ out.deleted = out.reloads;
     assert out["other"] == 0 and out["deleted"] == 1
 
 
+PUBLISHED_DELETE = (
+    "Delete the published branch alice-wip? It is published at /shop/:"
+    " deleting it takes away the site's URLs under that prefix."
+)
+
+
+def test_published_branch_delete_says_it_takes_its_urls():
+    """Deleting a published branch from its settings takes its prefix's URLs
+    away: the frame's Delete asks with that, not the generic "Delete?". A
+    working branch keeps the runtime's confirmation."""
+    script = r"""
+const fill = (content) => {
+  el('script', {type: 'application/json', 'class': 'scrud-content'}, branchFrame)
+    .text = JSON.stringify(content);
+};
+out.start = deleteButton.getAttribute('hx-confirm');
+renderSettings();
+fill({name: 'alice-wip', prefix: '/shop/'});
+fire(branchPane, 'htmx:afterSwap', {target: branchPane});
+out.swapped = [deleteButton.getAttribute('hx-confirm'), deleteButton.text];
+// A delete of something else in the pane is left alone.
+const other = el('button', {type: 'button', 'hx-delete': '/workbench/ui-components/8/',
+  'hx-confirm': 'Delete?'}, branchFrame);
+fire(branchPane, 'htmx:afterSwap', {target: branchPane});
+out.other = other.getAttribute('hx-confirm');
+"""
+    out = branch_scenario(script, published=True, may_publish=True)
+    # Without its content the prefix is not named.
+    assert out["start"] == (
+        "Delete the published branch alice-wip? Deleting it takes away the"
+        " site's URLs under its prefix."
+    )
+    assert out["swapped"] == [PUBLISHED_DELETE, ""]
+    assert out["other"] == "Delete?"
+    # A working branch: the runtime's confirmation stays.
+    out = branch_scenario(
+        script.replace("prefix: '/shop/'", "prefix: null"), may_publish=True
+    )
+    assert out["start"] is None
+    assert out["swapped"] == [None, ""]
+
+
 # argv[1]: scrud-ui.js; stdin: the fields jsonFormFields reads ({name, type,
 # value, checked}). Prints the body buildBody builds onto {}, as a
 # data-scrud-json="form" element sends it.

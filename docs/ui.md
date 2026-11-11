@@ -2465,7 +2465,11 @@ the pane): only Save, or Enter in a text field, writes. The frame also has
 the runtime's Delete button (with its confirmation) for a user who may
 `DELETE` T: the API decides (a branch another names as its parent is a 409,
 a published one needs the site's grant); after T is deleted from there, the
-workbench is loaded again (and is then not found).
+workbench is loaded again (and is then not found). On a published T (a
+publisher gets the form there), `studio:branch` replaces the Delete's
+confirmation with one that says what it takes away: "Delete the published
+branch <T>? It is published at <prefix>: deleting it takes away the site's
+URLs under that prefix." (the prefix from the frame's content).
 
 **The prefix** is an input only for a user who may publish: the form renders
 it only in the scope `studio studio-branch studio-publish`, and the script
