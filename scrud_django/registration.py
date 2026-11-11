@@ -854,7 +854,6 @@ def computed_resource_type(
     schema_func,
     context_func,
     viewset_class,
-    register_service: bool = False,
 ):
     """Registration of a computed, read-only resource type
     (`scrud_django.computed.ComputedResourceViewSet`): its `ResourceType` row
@@ -866,8 +865,7 @@ def computed_resource_type(
     Returns the type's routes; the registration is retried when the type is
     next read after a database error (`register_or_defer`). A
     computed type has no list, so it is left out of the service catalog (the
-    URL of each type's list); `register_service` (default false) is accepted
-    for symmetry with `json_resource_type` and a true value is not honoured."""
+    URL of each type's list)."""
 
     def register():
         registration = ResourceTypeRegistration(

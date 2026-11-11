@@ -211,3 +211,18 @@ def test_computed_type_refused_under_prefix_without_branch_get(
     When.http.get(url, HTTP_ACCEPT=JSON)
     Then.http.status_code_is(403)
     assert "Groceries" not in Http.response.content.decode()
+
+
+def test_computed_registration_has_no_service_flag():
+    """A computed type has no list, so it is never in the service catalog:
+    its registration takes no ``register_service`` it would ignore."""
+    import inspect
+
+    from scrud_django import registration
+
+    parameters = inspect.signature(registration.computed_resource_type).parameters
+    assert "register_service" not in parameters
+    with pytest.raises(TypeError):
+        registration.computed_resource_type(
+            "http://example.org/X", "xs", dict, dict, object, register_service=True
+        )
