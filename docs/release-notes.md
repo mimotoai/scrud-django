@@ -146,7 +146,9 @@
   it), Items, Editor and Preview panes (Items
   and Editor collapse to rails, remembered per viewer in `localStorage`), the
   branch's items as a tree (`studio:items`: own, inherited and packaged
-  items, conflicts, "Override on this branch"), a strip (`studio:status`:
+  items, the packaged ones in a collapsed "Packaged (N)" group per kind,
+  conflicts, "Override on this branch"; the panes scroll on their own within
+  a viewport-bounded row), a strip (`studio:status`:
   chain, counts, Pull, promote panels, pushes, history, the browse link) and
   a live preview in a sandboxed frame. The workbench's state (type, item,
   node, preview controls) is in the URL's query, so a link reproduces the

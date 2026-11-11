@@ -2060,7 +2060,9 @@ component `studio:workbench`, which renders:
 - "Branch settings" and "New branch" (see [Branch settings](#branch-settings));
 - a notice (`data-studio-notice`, `role="alert"`, hidden until a write is
   refused);
-- three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`;
+- three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`,
+  in a row whose height the viewport bounds; each pane scrolls on its own,
+  so the strip stays near the preview however long the Items tree is;
 - a bottom strip (`<footer class="studio-strip">`).
 
 The Items pane embeds `api_url("ui-branch-items", T)` in the scope
@@ -2099,7 +2101,11 @@ on load and whenever the picker is fetched again. The *Studio* link (see
 the author on to a working branch's.
 
 **Items** (`studio:items`) are a tree by kind (components, stylesheets, CSS,
-JS). Each entry is an `<li class="studio-item studio-own|studio-inherited|studio-packaged">`,
+JS), a `<section class="studio-kind" data-studio-kind="<kind>">` each. A
+kind lists the branch's own and inherited items first; its packaged items
+follow in a `<details class="studio-packaged-group" data-studio-packaged>`,
+collapsed, whose summary counts them ("Packaged (N)"), so that the layer's
+items do not bury the branch's own. Each entry is an `<li class="studio-item studio-own|studio-inherited|studio-packaged">`,
 with `studio-conflict-parent` or `studio-conflict-layer` for a conflict, and
 holds:
 

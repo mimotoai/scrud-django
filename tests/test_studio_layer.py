@@ -151,6 +151,36 @@ def test_layer_code_min_height_is_the_editors_only(studio_layer):
     assert "data-studio-pane" not in template
 
 
+def css_declarations(css, selector):
+    """``{property: value}`` of every flat rule of `css` whose selector list
+    has `selector`, merged in order."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    found = {}
+    for prelude, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        if selector not in [part.strip() for part in prelude.split(",")]:
+            continue
+        for declaration in body.split(";"):
+            if ":" in declaration:
+                name, value = declaration.split(":", 1)
+                found[name.strip()] = value.strip()
+    return found
+
+
+def test_layer_panes_scroll_within_the_viewport(studio_layer):
+    """The panes row has a height bounded by the viewport and each pane
+    scrolls on its own, so a long Items tree no longer pushes the strip
+    (Promote, Pushes, History) far below the preview; the packaged group's
+    summary is styled under ``.studio``."""
+    [(_name, css)] = [
+        (name, content["css"]) for name, content in layer_files("css").items()
+    ]
+    panes = css_declarations(css, ".studio .studio-panes")
+    assert "vh" in panes["max-height"]
+    assert css_declarations(css, ".studio .studio-pane")["overflow"] == "auto"
+    summary = css_declarations(css, ".studio .studio-packaged-group > summary")
+    assert summary["cursor"] == "pointer"
+
+
 @pytest.mark.django_db
 def test_layer_installed_with_studio_app(studio_layer):
     assert STUDIO_LAYER in installed_layers()

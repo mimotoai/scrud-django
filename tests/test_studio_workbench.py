@@ -27,6 +27,7 @@ from .fixtures import *  # noqa
 from .fixtures import assign_role
 from .steps import *  # noqa: F403, F401
 from .test_studio_computed import pushes_into
+from .test_studio_layer import layer_files
 from .test_studio_page import CONFLICT, store_item
 from .test_ui_branch_css import make_css
 from .test_ui_branch_types import make_branch
@@ -506,6 +507,56 @@ def test_override_button_is_the_items_action(studio_layer, ui_alice_login):
     assert button.attrs["data-scrud-json"] == "fixed"
     assert json.loads(button.attrs["data-scrud-body"]) == action["body"]
     assert button.attrs["data-scrud-etag"] == ""
+
+
+@pytest.mark.django_db
+@test_context
+def test_items_tree_collapses_packaged_items_per_kind(studio_layer, ui_alice_login):
+    """The packaged items (the studio layer's 26 components among them) made the
+    Items pane so long that the strip landed far below the preview: each
+    kind lists the branch's own and inherited items, and its packaged ones
+    in a collapsed ``<details data-studio-packaged>`` "Packaged (N)"."""
+    _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+    page = Page(get_page(workbench_url(alice_wip)))
+    sections = {
+        e.attrs["data-studio-kind"]: e
+        for e in page.elements
+        if e.tag == "section" and "studio-kind" in e.classes()
+    }
+    assert list(sections) == ["component", "stylesheet", "css", "js"]
+    groups = {}
+    for group in page.having("data-studio-packaged"):
+        assert group.tag == "details" and "open" not in group.attrs
+        assert "studio-packaged-group" in group.classes()
+        [kind] = [k for k, section in sections.items() if group.within(section)]
+        assert kind not in groups
+        groups[kind] = group
+    assert list(groups) == ["component", "stylesheet", "css", "js"]
+    entries = page.entries()
+    for (kind, name), (classes, _opened, li) in entries.items():
+        packaged = "studio-packaged" in classes
+        assert li.within(sections[kind]), (kind, name)
+        assert li.within(groups[kind]) == packaged, (kind, name)
+    # Own and inherited items stay in view.
+    assert not entries[("component", "row")][2].within(groups["component"])
+    assert not entries[("component", "head")][2].within(groups["component"])
+    assert not entries[("css", "site")][2].within(groups["css"])
+    # Each summary counts its group: every packaged item of the kind, the
+    # studio layer's (but studio:page, which alice-wip overrides: its own
+    # item now) among them.
+    for kind, group in groups.items():
+        packaged = {
+            name
+            for (k, name), (classes, _o, _li) in entries.items()
+            if k == kind and "studio-packaged" in classes
+        }
+        studio = {content["name"] for content in layer_files(kind).values()}
+        assert studio - {"studio:page"} <= packaged, kind
+        assert "studio:page" not in packaged
+        [summary] = [e for e in page.elements if e.tag == "summary" and e.within(group)]
+        assert summary.text == f"Packaged ({len(packaged)})"
+    assert len(layer_files("component")) > 20
 
 
 @pytest.mark.django_db
