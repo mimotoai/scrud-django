@@ -92,7 +92,8 @@ def test_push_preview_matches_what_apply_push_writes(admin_login):
     assert body["unreadable_changes"] == 0
     # An override of main's row is an update of it; a new item a create;
     # a deletion marker deletes main's row (main has no parent: no marker).
-    # main's row keeps its base (none: main has no parent).
+    # An updated row keeps its own base: main's ``row`` has none (it
+    # overrides no packaged layer item).
     after_row = {
         **override.content,
         "branch": "main",

@@ -175,7 +175,8 @@ class ScrudHTMLRenderer(BaseRenderer):
                 if _asks_confirmation(chosen, request):
                     return str(confirm_page(chosen, request)).encode(self.charset)
                 # An embedded request (`embed`) stays in its embedder's safe
-                # mode: it is only ever turned on here.
+                # mode: it is only ever turned on here (and, for the CSS
+                # and JS file responses, in `branches.files`).
                 with (
                     using_selection(chosen.selection),
                     using_safe_mode(safe_mode_requested(request) or safe_mode()),

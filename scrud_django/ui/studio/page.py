@@ -2,8 +2,10 @@
 the preview controls, the branch strip (the branch's own items, its
 conflicts, its CSS items and the app on it), and the item the editor reads.
 Everything listed is what the user may GET: a branch they may select
-(`selectable`), an item the per-row read check allows (as a JSON list
-filters it)."""
+(`selectable`), an item `reads.may_read_item` allows (the per-row read
+check a JSON list filters with; a packaged layer's item is public). The
+conflicts a pull recorded on the branch are listed whole: they are its
+``conflicts`` field, which a user who may GET the branch reads anyway."""
 
 from collections.abc import Mapping
 from dataclasses import dataclass

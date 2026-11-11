@@ -351,9 +351,11 @@ class UIStudioBranchReadOnlyError(ScrudException):
 
 
 class UIStudioPreviewInvalidError(ScrudException):
-    """A studio live preview whose ``request`` is not one: missing, not a
-    JSON object, a field of the wrong shape, or an ``after_push`` sent with
-    drafts of its own (it previews the source's stored overrides alone)."""
+    """A studio live preview whose ``request`` is not one: missing, not JSON
+    the server can read (nested too deep for the parser too), not a JSON
+    object, a field of the wrong shape, more than ``MAX_DRAFTS`` (50)
+    drafts, or an ``after_push`` sent with drafts of its own (it previews
+    the source's stored overrides alone)."""
 
     status_code = 400
     default_detail = "Bad Request"

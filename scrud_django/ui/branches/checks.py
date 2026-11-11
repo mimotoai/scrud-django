@@ -218,8 +218,9 @@ def check_layer_conflicts(app_configs, databases=None, **kwargs):
     With no layer installed, only an orphan can be reported, and only an
     item named with a layer prefix (``abc:``) can be one: a database whose
     items have no such name is not read further (`_prefixed_names`, one
-    query), so a site without layers pays one query per database, not
-    several per branch."""
+    query), so a site without layers pays one query of its own per database
+    (besides the check that the database is migrated), not several per
+    branch."""
     from django.db.utils import OperationalError, ProgrammingError
 
     from scrud_django.checks import could_not_run, error_text, not_checked

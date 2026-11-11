@@ -78,7 +78,8 @@ def test_config_request_headers_come_from_the_innermost_frame():
     # the root frame's own request uses its own etag
     assert out["putRoot"]["headers"]["If-Match"] == '"root-etag"'
     assert out["putRoot"]["headers"]["Scrud-UI-Scope"] == "outer"
-    # DELETE from the button inside the node frame: same frame, no body type
+    # DELETE from the button inside the node frame, to the frame's own URL:
+    # the frame's ETag, and no body type
     assert out["delete"]["headers"]["If-Match"] == '"inner-etag"'
     assert out["delete"]["headers"]["X-CSRFToken"] == "csrf-123"
     assert "Content-Type" not in out["delete"]["headers"]

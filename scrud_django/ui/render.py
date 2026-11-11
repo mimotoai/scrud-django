@@ -191,12 +191,19 @@ def render_collection(
     mode: str | None = None,
 ) -> SafeString:
     """A page of a list (`envelope`, as the list route returns it: ``count``,
-    ``next``, ``previous`` and the ``content`` envelopes) rendered with
-    ``scrud:collection``, each resource in its own frame and its own
-    contexts' stylesheets. Under a published branch's prefix, the items'
-    and the pager's links are its (`selection.in_mount`). `mode` is each
-    item's (see `render_resource`); inside a preview (`using_preview`) each
-    item renders as a preview."""
+    ``next``, ``previous`` and the ``content`` envelopes): each resource in
+    its own frame and its own contexts' stylesheets, in the wrapper the
+    cascade chooses. The wrapper is the component of the winning rule for
+    the list's terms, most specific first: the collection IRI of
+    `resource_type`, then ``scrud:collection``; from the stylesheets in
+    ``""`` only (a list has no contexts of its own), in `scope_chain`, in
+    view mode. With no rule, the built-in ``scrud:collection``. A stored
+    wrapper gets the built-in's context plus ``href`` and ``scope`` (and
+    ``embed``, for a Jinja one), and falls back to the built-in if it fails.
+    Under a published branch's prefix, the items' and the pager's links are
+    its (`selection.in_mount`). `mode` is each item's (see
+    `render_resource`); inside a preview (`using_preview`) each item renders
+    as a preview."""
     scope_chain = tuple(scope_chain)
     preview = in_preview()
     envelope = envelope if isinstance(envelope, Mapping) else {}

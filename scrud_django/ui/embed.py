@@ -1,5 +1,5 @@
 """Server-side embeds: ``embed(path, scope, mode)`` in a stored Jinja
-component's context (node and page) renders the resource at `path` as the
+component's context (node, list and page) renders the resource at `path` as the
 fragment its own URL answers, in process, as the same user
 (`dispatch.dispatch_path`), so that its view's checks (RBAC, workflow,
 masking, ``check_mount``) apply unchanged.

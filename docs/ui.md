@@ -203,12 +203,16 @@ returns that resource's HTML, the fragment its own URL answers.
   prefix's checks; an API path the prefix doesn't serve (the API root) is
   refused.
 - `scope` is the scope chain to render it in: a string of space- or
-  comma-separated names, or a list of names (an invalid one is no scope).
+  comma-separated names, or a list of names. One that is not a scope chain
+  (not a string or a list of strings, more than 16 names, or a name that is
+  not a scope name) is refused (below).
   With no scope, the path's own `?ui-scope=` applies, as at its URL
   (`embed("/api/todo-lists/7/?ui-scope=sidebar")`); a `scope` given wins, as
   the header does.
-- `mode="view"` renders it read-only (as `Scrud-UI-Mode: view`); any other
-  value leaves the mode to the user's rights.
+- `mode="view"` renders it read-only (as `Scrud-UI-Mode: view`); without a
+  mode, the mode is the user's own. Any other value is refused (below), as
+  any other `Scrud-UI-Mode` is a 400 at the resource's URL: a typo never
+  puts edit controls in a card meant to be read-only.
 
 The embed is a GET made in process as the same user
 (`scrud_django.ui.dispatch.dispatch_path`), so the resource's view, its RBAC,
@@ -224,6 +228,9 @@ preview has no write attributes. They are render-only: what the embedded view
 reads as data (a list of UI items, a studio computed type) is the stored state,
 as its URL answers it, so an embedded list of UI items in safe mode lists the
 stored items, and one in a live preview lists the stored item a draft replaces.
+This holds by construction: `dispatch_path` runs the embedded view in
+`stored_state()` and renders its response after, outside it, so that the
+embedded presentation still sees safe mode and the drafts.
 Django components have no `embed`.
 
 These are refused, and render
@@ -240,8 +247,10 @@ in the embed's place (each refusal is logged as a warning by
   type's list or detail route. A project's page, the studio, the API root and
   the CSS and JavaScript file routes are refused, and so is a response that
   isn't the UI's HTML (`?format=json`, `?format=api`);
+- a `scope` that is not a scope chain, and a `mode` other than `"view"`;
 - a path and scope chain already being rendered, which would be a cycle: the
-  top-level request (its URL and `Scrud-UI-Scope`) and each embed it is inside.
+  top-level request (its URL and its scope chain: `Scrud-UI-Scope`, else
+  `?ui-scope=`) and each embed it is inside.
   A resource embedding itself in the scope it is rendered in, or two components
   embedding each other, stop there. The same resource in another scope is not a
   cycle;
@@ -250,8 +259,12 @@ in the embed's place (each refusal is logged as a warning by
 - every embed after the first 20 (`MAX_EMBEDS`) of a top-level response, nested
   ones included.
 
-A view that raises renders "This embed failed." the same way, logged with its
-traceback. Each embed reads the UI items of its branch again (it may be refused
+A view that raises renders "This embed failed." the same way, logged at ERROR
+with its traceback, and `got_request_exception` is sent (for error reporters),
+as for a view that raises at its URL. The embedded view runs in a savepoint on
+each database already in an atomic block (`ATOMIC_REQUESTS`, a studio
+preview), so a database error in it (which aborts the transaction on
+PostgreSQL) is rolled back alone and the rest of the page still renders. Each embed reads the UI items of its branch again (it may be refused
 the branch the embedding render shows, and then renders on its prefix's
 published branch): up to 20 renders per response.
 
@@ -347,10 +360,12 @@ A list's wrapper is resolved the same way, with two terms, most specific first:
 the collection IRI of the list's type
 (`https://api.openteams.com/json-schema/ResourceCollection?contents_type=<type uri>`,
 which is an absolute IRI and is used as written, or through a prefix) and
-`scrud:collection`. Scopes work as for any rule, so `sidebar scrud:collection`
-restyles lists under `?ui-scope=sidebar` only. The component gets the
-`scrud:collection` context plus `href` (the list's URL) and `scope` (the scope
-chain as a list). With no matching rule, or if the stored component fails to
+`scrud:collection`. The rules are those of the stylesheets in context `""`
+only (a list has no contexts of its own), in view mode. Scopes work as for any
+rule, so `sidebar scrud:collection` restyles lists under `?ui-scope=sidebar`
+only. The component gets the `scrud:collection` context plus `href` (the
+list's URL) and `scope` (the scope chain as a list), and `embed` when it is a
+Jinja component. With no matching rule, or if the stored component fails to
 render, the built-in `scrud:collection` is used (after the usual
 `<!-- scrud-ui: component "x" failed -->` comment on a failure).
 
@@ -474,14 +489,25 @@ and again after a setting changes.
   not a valid name, that has a branch field or another file's name, a
   stylesheet with a non-empty `applies_to`, or a CSS or JS item whose text has
   `</style` or `</script`, is reported by the system check
-  `scrud_django_ui.E002` (`manage.py check`) and is left out at runtime. The
-  database check `scrud_django_ui.W002` (`manage.py check --database
-  default`, and `migrate`) lists, per branch, its layer conflicts and its
-  orphaned overrides, as `scrud_django_ui.W001` lists prefixes. With no layer
-  installed it first reads the stored items' names (one query per database)
-  and stops there unless one has a layer prefix (`abc:`): only such an item can
-  be an orphan, so a site without layers pays one query, not several per
-  branch.
+  `scrud_django_ui.E002` (`manage.py check`) and is left out at runtime. So is
+  a file its item's viewset would refuse: one its kind's JSON Schema refuses,
+  one without a field its kind needs (a component's `engine`, `mode` and
+  `template`, a stylesheet's `rules`, a CSS item's `css`, a JS item's `js`), a
+  component whose template does not compile, and a stylesheet with a rule
+  whose selector does not parse; so the runtime's fallbacks (a skipped rule, a
+  component that fails to compile) never apply to a packaged item. A layer
+  folder that cannot be listed is reported too. Each of these errors is also
+  logged at ERROR (logger `scrud_django.ui.layers`) when the layers are read,
+  once per process, so a site that runs no checks still says why an item is
+  missing. The database check `scrud_django_ui.W002` (`manage.py check
+  --database default`, and `migrate`) lists, per branch, its layer conflicts
+  and its orphaned overrides, as `scrud_django_ui.W001` lists prefixes; a
+  branch it cannot check (its chain is broken, or its pinned snapshot is
+  missing: it renders its published branch) gets a Warning that says so. With
+  no layer installed it first reads the stored items' names (one query of its
+  own per database) and stops there unless one has a layer prefix (`abc:`):
+  only such an item can be an orphan, so a site without layers pays one query,
+  not several per branch.
 
 ## Modes, editing and the write path
 
@@ -547,11 +573,20 @@ named by JSON Pointer (`name="/items/0/text"`):
   first item's Move up or the last item's Move down). They are
   `<button type="button" data-scrud-array-op="remove|move"
   data-scrud-pointer="/rules/1" data-scrud-to="0">`; `data-scrud-to` is the
-  index a move puts the item at. View mode renders no controls. A click builds the
-  frame's body as a change does (the inputs applied at their current pointers),
-  applies the operation (`ScrudUI.applyArrayOp(body, op)`), and sends the
-  frame's own `PUT` with `If-Match`: a stale page gets the 412 reload, and the
-  list is never silently overwritten. The page shows the saved array after the
+  index a move puts the item at. View mode renders no controls. A click triggers
+  the frame's own `PUT` with the operation in the triggered event's detail
+  (`htmx.trigger(frame, "change", {scrudArrayOp: ...})`), so the operation
+  belongs to that one request: a save already in flight cannot drop it, and a
+  request htmx drops leaves nothing for the next save. The PUT builds the
+  frame's body as a change does (the inputs applied at their current
+  pointers), applies the operation (`ScrudUI.applyArrayOp(body, op, errors)`)
+  and is sent with `If-Match`: a stale page gets the 412 reload, and the list
+  is never silently overwritten. An operation that cannot be applied (a
+  pointer that is no element of an array, an index out of range, a bad
+  `data-scrud-to`, an unknown operation) cancels the PUT and shows "This
+  action is misconfigured." in the frame; a button outside a frame that PUTs
+  logs an error to the console. Only the frame the button is in applies the
+  operation, to its own content. The page shows the saved array after the
   response. A custom array component gets the same behaviour by rendering such
   buttons inside the frame.
 
@@ -898,7 +933,10 @@ branch was refused). It names the branch and its mode (`live`, or `pinned at
 viewer may select, as a switcher; offers a link to view live or at the branching
 point; a link to share; and the way back to the published branch. The server
 renders it outside stored components, from package templates, so a page
-component that leaves it out has it added anyway. A full page also carries the
+component that leaves it out is replaced by the built-in page, after the
+comment `<!-- scrud-ui: page component "x" leaves out the branch banner or
+the safe mode notice -->` (a page component that fails to render gets the
+usual `failed` comment). A full page also carries the
 branch in a hidden element, so that htmx requests made from outside a frame
 stay on it. The published branch has no banner.
 
@@ -1003,15 +1041,17 @@ The page's own requests stay safe: a safe page marks its frames and its hidden
 `data-scrud-branch` too when the page has a branch), and scrud-ui.js sends
 `Scrud-UI-Safe: 1` on every request from such a page (a frame's `PUT`, the
 reload after a 412, a refresh), which the server honours as `?ui-safe=1`, so
-the URLs stay clean. Like the parameter, the header only changes HTML: a JSON
-answer is the same with or without it.
+the URLs stay clean. Like the parameter, the header only changes HTML and the
+CSS and JavaScript file responses (which then serve the packaged layers'
+items only): a JSON answer is the same with or without it.
 
 In code, `scrud_django.ui.branches.effective.using_safe_mode()` turns it on for
 a block (a context variable, so in-process work during the render sees it too),
 and `safe_mode()` reads it. `stored_state()` (same module) turns safe mode and
-any live-preview drafts off for a block: views open it around their data reads
-(a list of UI items, the studio's computed types), so that what an embedded
-request reads is what its URL answers, while its rendering stays safe.
+any live-preview drafts off for a block: an embed runs its view in it
+(`dispatch_path`), and views also open it around their data reads (a list of
+UI items, the studio's computed types), so that what an embedded request reads
+is what its URL answers, while its rendering stays safe.
 
 ### CSS
 
@@ -1076,11 +1116,15 @@ What a user can see or do comes from their grants, whatever the studio shows:
 - A rule from a stylesheet the user may not `GET` shows in the inspector as its
   rank only (`{"readable": false, "rank": [...], "outcome": ...}`): no
   selector, component or stylesheet name. A packaged
-  [layer](#packaged-ui-layers)'s stylesheet is public: its rules are readable
-  to everyone, here, in the live preview's mark, in the editor's item read and
-  in a push's preview and conflicts alike
-  (`scrud_django.ui.branches.reads.may_read_item` is the one check). A
-  component the user may not read has no "inside this type" option. The scope chain of a node is shown in full,
+  [layer](#packaged-ui-layers)'s item is public: a layer stylesheet's rules
+  are readable to everyone, here, in the live preview's mark, in the editor's
+  item read, in the studio's computed data, in New component (its "inside this
+  type" option and its copy of an inherited item) and in a push's preview and
+  conflicts alike (`scrud_django.ui.branches.reads.may_read_item` is the one
+  check). A packaged item is one with no stored row: a stored row whose
+  content names the layers' branch (`@layers`, which the viewsets refuse) is
+  checked as any stored row. A component the user may not read (a packaged
+  one is readable) has no "inside this type" option. The scope chain of a node is shown in full,
   though, even when a scope came from a component the user cannot read: scope
   names are presentation identifiers an author needs to target rules.
 - Previewing in a data context other than `""` needs `GET` on UI stylesheets in
@@ -1277,7 +1321,8 @@ data-pointer>`), the branch's CSS in `<style>` elements and its JS in
 drafts left out are listed in
 `<script type="application/json" id="scrud-preview-errors">` as
 `[{"kind", "name", "messages"}]`, where `messages` are what the save would
-answer.
+answer. A check that fails as a server error (status 500 or more) is listed
+the same way and also logged at ERROR (logger `scrud_django.ui.studio.drafts`).
 
 **Isolation.** Every response, errors included, carries
 
@@ -1310,7 +1355,10 @@ scripts make at run time go without the login.
 frame's own origin is opaque; only a same-origin page may frame it):
 
 - `{"type": "scrud-preview:errors", "errors": [...]}` once, when loaded: the
-  drafts left out, as listed above;
+  drafts left out, as listed above, read when the bridge runs (before the
+  branch's scripts, which could change the element). When the list cannot be
+  read, it is `{"type": "scrud-preview:errors", "errors": null, "failed":
+  true}`, never an empty list (which would say every draft was shown);
 - `{"type": "scrud-preview:select", "pointer": "<JSON Pointer>", "href":
   "<URL>" | null}` on a click inside a node: the nearest `<scrud-node>`'s
   pointer, and the `data-scrud-href` of the resource frame it is in (its
@@ -1493,12 +1541,15 @@ layer renders it through the cascade, and a branch can restyle it, like any
 resource. They are part of the API (under `scrud_django.urls`, not the
 studio's include), registered when `scrud_django.ui.studio` is installed, and
 left out of the service catalog as every computed type is. Each is read-only
-(`GET` and `HEAD`; any other method is a 405), needs an authenticated user, has
-an ETag for `If-None-Match`, links its JSON Schema and JSON-LD context, and
-answers only what its user may `GET` as JSON: a branch the user may select
-(else 404, the same for every cause), and an item or conflict on a row the
-item's own read check allows. Packaged [layer](#packaged-ui-layers) items are
-public. The bootstrap studio's strip and picker read the same functions
+(`GET`, `HEAD` and `OPTIONS`; any other method is a 405), needs an
+authenticated user, has an ETag for `If-None-Match`, links its JSON Schema and
+JSON-LD context, and answers only what its user may `GET` as JSON: a branch the
+user may select (else 404, the same for every cause; the push preview instead
+needs `GET` on each of its two branches, [below](#what-a-push-will-change)),
+and an item or conflict on a row the item's own read check allows. The type
+catalog checks nothing: it lists every registered type, as the type browser
+does, and reading a type's items is checked where they are read. Packaged
+[layer](#packaged-ui-layers) items are public. The bootstrap studio's strip and picker read the same functions
 (`scrud_django.ui.studio.page`), so they agree on the items, changes and
 branches, but not on conflicts: the strip lists every conflict a pull recorded
 on the branch (its `conflicts` field, which a user who may GET the branch reads
@@ -1623,7 +1674,8 @@ the author applies or proposes it. It computes the same plan the push writes
   (`null` for none). `after` is the row exactly as the push stores it (its
   `branch`, `rbac_context` and `base` on the target); `null` for a delete.
 - A write on an item the user may not `GET` (the target's row, the row as
-  written, or the source's row it comes from) is left out of `changes`;
+  written, the source's row it comes from, or, for a create, the item the
+  target shows there now: its `before`) is left out of `changes`;
   `unreadable_changes` counts them. A packaged layer's item is public.
 - `conflicts` are those the push would be refused for (409), on items the
   user may read in the target, as the 409 lists them (a packaged layer's item

@@ -1,8 +1,9 @@
-"""Safe mode (``?ui-safe=1``): a page rendered from the packaged layers,
-built-ins and the default stylesheet alone, whatever is stored, so that a
-branch whose stored UI breaks rendering can still be reached. Every gate stays:
-`check_mount` and the refusal of a branch the viewer may not GET. These tests
-serve the API at ``/api/`` (``tests.mounted_urls``)."""
+"""Safe mode (``?ui-safe=1``, or the header ``Scrud-UI-Safe: 1``): a page
+rendered from the packaged layers, built-ins and the default stylesheet
+alone, whatever is stored, so that a branch whose stored UI breaks rendering
+can still be reached. Every gate stays: `check_mount` and the refusal of a
+branch the viewer may not GET. These tests serve the API at ``/api/``
+(``tests.mounted_urls``)."""
 
 import re
 from html import unescape

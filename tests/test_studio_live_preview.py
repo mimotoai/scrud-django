@@ -20,6 +20,7 @@ from rest_framework.test import force_authenticate
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
+from scrud_django.mixins.view_mixins import max_body_depth
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import (
@@ -969,3 +970,38 @@ def test_draft_check_failing_as_a_server_error_is_logged(ui_alice_login, caplog)
     ]
     assert len(logged) == 1 and logged[0].exc_info is not None
     assert "row" in logged[0].getMessage()
+
+
+@pytest.mark.django_db
+@test_context
+def test_deeply_nested_draft_is_listed_not_a_500(ui_alice_login):
+    """A draft whose content nests a few hundred levels (well under the
+    JSON parser's limit) is refused as its save would be (the body depth
+    check, `RequestBodyTooDeepError`) and listed; the preview renders
+    (it was the ``live-preview-draft-recursion`` follow-up, which no longer
+    reproduces)."""
+    main_row()
+    wip_for(ui_alice_login)
+    nested = "x"
+    for _ in range(300):
+        nested = {"a": nested}
+    deep = draft(
+        "component",
+        name="deep",
+        engine="django",
+        mode="view",
+        template="<i>deep</i>",
+        scopes=nested,
+    )
+    page = live(drafts=[deep])
+    assert errors_of(page) == [
+        {
+            "kind": "component",
+            "name": "deep",
+            "messages": [
+                f"A request body may be nested at most {max_body_depth()} levels"
+                " deep (objects and arrays)."
+            ],
+        }
+    ]
+    assert "<b>main Lorem ipsum</b>" in page
