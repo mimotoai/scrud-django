@@ -595,14 +595,54 @@
   // (which is handed the xhr) applies.
   var requestOps = new WeakMap();
 
+  // The frames with a request in flight, and those that refused a request
+  // meanwhile. htmx 2.0.4 queues an element's request behind its request in
+  // flight (the `last` strategy: a newer one replaces a queued one, with no
+  // event) and, when the request in flight ends, runs the queued one only if
+  // the element is still in the page. A frame's PUT is answered with the
+  // frame, which replaces it, so the queued request (an array operation, a
+  // change, a save) would be dropped without a word. It is refused instead
+  // (`htmx:confirm`), and the frame that answers the request in flight says
+  // the change was not sent (`htmx:afterRequest`, which htmx dispatches on
+  // the replaced frame's parent, with that parent as `elt`: the request's
+  // frame is found by its xhr).
+  var inFlight = new WeakSet();
+  var frameOfXhr = new WeakMap();
+  var refusedInFlight = new WeakSet();
+  var NOT_SENT =
+    'Your change was not sent: an earlier save of this item was still in' +
+    ' progress. Make the change again.';
+
   document.addEventListener('htmx:beforeSend', function (evt) {
     var detail = evt.detail || {};
     var config = detail.requestConfig || {};
     var elt = detail.elt;
+    if (elt && detail.xhr && !evt.defaultPrevented && elt.matches && elt.matches(FRAME)) {
+      inFlight.add(elt);
+      frameOfXhr.set(detail.xhr, elt);
+    }
     if (!elt || !detail.xhr || !isPut(elt)) return;
     var op = arrayOpOf(elt, config.triggeringEvent);
     if (op) requestOps.set(detail.xhr, op);
   });
+
+  /**
+   * The frame in the page now for `frame`: itself while it is in the page,
+   * else the frame of the same resource, scope and pointer that replaced it
+   * (the answer to its request); null when there is none.
+   */
+  function frameNow(frame) {
+    if (frame.isConnected) return frame;
+    var keys = ['data-scrud-href', 'data-scrud-scope', 'data-scrud-pointer'];
+    var all = document.querySelectorAll ? document.querySelectorAll(FRAME) : [];
+    for (var i = 0; i < all.length; i++) {
+      var same = keys.every(function (key) {
+        return all[i].getAttribute(key) === frame.getAttribute(key);
+      });
+      if (same) return all[i];
+    }
+    return null;
+  }
 
   // Innermost frame only: an event inside nested frames is acted on by the
   // frame that encloses its target; outer frames' requests are cancelled.
@@ -620,6 +660,12 @@
           '; the event target belongs to an inner frame'
       );
       evt.preventDefault();
+      return;
+    }
+    if (inFlight.has(elt)) {
+      // htmx would queue it and then drop it silently (see `inFlight`).
+      evt.preventDefault();
+      refusedInFlight.add(elt);
     }
   });
 
@@ -722,6 +768,16 @@
     var detail = evt.detail || {};
     var config = detail.requestConfig || {};
     var verb = String(config.verb).toLowerCase();
+    var sender = detail.xhr ? frameOfXhr.get(detail.xhr) : undefined;
+    if (sender) {
+      frameOfXhr.delete(detail.xhr);
+      inFlight.delete(sender);
+      if (refusedInFlight.has(sender)) {
+        refusedInFlight.delete(sender);
+        var now = frameNow(sender);
+        if (now) showNotice(now, NOT_SENT);
+      }
+    }
     if (!detail.successful || verb !== 'delete') {
       return;
     }

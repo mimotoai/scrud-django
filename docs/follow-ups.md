@@ -294,14 +294,16 @@ browser; the stored content keeps both as they were.
 <a id="ui-inflight-edit-dropped"></a>
 ## ui-inflight-edit-dropped: an edit made while a PUT is in flight is lost
 
-A frame PUTs on every `change`. With htmx's default synchronization, a change
-made while the frame's previous PUT is still in flight issues no request (it
-is dropped), and the first response then swaps the frame, which visually
-reverts the second change: the user sees it undone and it was never sent.
-Suggested fix: `hx-sync="this:queue last"` on the frame (the queued request
-must then use the ETag of the first response), or disable the frame's inputs
-while a request is in flight. Test: in a browser, tick two checkboxes in
-quick succession against a slow server; both are saved.
+A frame PUTs on every `change`. A change (or an array operation, or a save)
+made while the frame's previous PUT is still in flight is not sent: htmx would
+queue it and drop it when the first response swaps the frame, so `scrud-ui.js`
+refuses it and the swapped-in frame says "Your change was not sent ... Make the
+change again." It is no longer silent, but the change is still lost and must
+be made again. Suggested fix: send it after the first response, built from the
+swapped-in frame (its content and ETag) with the user's input re-applied, or
+disable the frame's inputs while a request is in flight. Test: in a browser,
+tick two checkboxes in quick succession against a slow server; both are saved
+(today the second gets the notice).
 
 <a id="ui-typeterm-invariants"></a>
 ## ui-typeterm-invariants: UI types state their invariants in docstrings, not code

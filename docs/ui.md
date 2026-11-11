@@ -611,8 +611,8 @@ named by JSON Pointer (`name="/items/0/text"`):
   index a move puts the item at. View mode renders no controls. A click triggers
   the frame's own `PUT` with the operation in the triggered event's detail
   (`htmx.trigger(frame, "change", {scrudArrayOp: ...})`), so the operation
-  belongs to that one request: a save already in flight cannot drop it, and a
-  request htmx drops leaves nothing for the next save. The PUT builds the
+  belongs to that one request, and a request that is not sent leaves nothing
+  for the next save. The PUT builds the
   frame's body as a change does (the inputs applied at their current
   pointers), applies the operation (`ScrudUI.applyArrayOp(body, op, errors)`)
   and is sent with `If-Match`: a stale page gets the 412 reload, and the list
@@ -624,6 +624,16 @@ named by JSON Pointer (`name="/items/0/text"`):
   operation, to its own content. The page shows the saved array after the
   response. A custom array component gets the same behaviour by rendering such
   buttons inside the frame.
+
+* A frame sends one request at a time. A request of a frame whose previous
+  request is still in flight (an array operation, a change or a save made
+  while a save is on its way) is not sent: htmx 2.0.4 would queue it (a newer
+  one replacing a queued one, with no event) and then drop it without a word,
+  since the answer to the request in flight replaces the frame. When that
+  request ends, the frame that answers it (or the frame itself, when nothing
+  replaced it) shows a client notice: "Your change was not sent: an earlier
+  save of this item was still in progress. Make the change again." The page
+  then shows the saved state, without the change.
 
 Custom components that want to be editable need only render inputs named by
 their JSON Pointer inside the frame.

@@ -268,6 +268,13 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ### Fixed
 
+* A frame's request made while its previous one is in flight (Move up
+  clicked twice during a save of the rule editor, a change made during a
+  save) was queued by htmx and dropped without a word when the save's answer
+  replaced the frame. `scrud-ui.js` now refuses such a request and shows "Your
+  change was not sent: an earlier save of this item was still in progress.
+  Make the change again." in the frame that answers the save (the MR 1
+  carry-over, reproduced in the self-hosted studio's acceptance run).
 * An embed in a studio preview requested in view mode (`preview` and
   `live-preview` with `mode` `view`, their default) renders in view mode, as
   with `mode="view"`: an embedded resource the user may `PUT` no longer shows

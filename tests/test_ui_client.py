@@ -520,8 +520,10 @@ console.log(JSON.stringify(out));
 def test_array_op_rides_on_its_own_request():
     """The operation a button asks for travels with the request its click
     triggers (the triggering event's detail), never in a per-frame slot: a
-    save in flight cannot drop it, a dropped request cannot leave it for
-    the next save, and only the frame it was clicked in applies it."""
+    save in flight never takes it, a dropped request cannot leave it for
+    the next save, and only the frame it was clicked in applies it. (A
+    request made while the frame's save is in flight is refused with a
+    notice: test_request_refused_while_frame_save_in_flight_says_not_sent.)"""
     require_node()
     out = run_node(ARRAY_OP_REQUEST_SCRIPT)
     assert out["inFlight"] == "bc"
@@ -554,6 +556,99 @@ def test_array_op_button_outside_a_put_frame_is_logged():
         ]
         * 2
     )
+
+
+IN_FLIGHT_SCRIPT = (
+    ARRAY_OP_STUB
+    + r"""
+const content = {rules: [{select: 'a'}, {select: 'b'}, {select: 'c'}]};
+const page = el('DIV', {});
+const root = putFrame('/l/1/', content, page);
+root.attrs['data-scrud-scope'] = 'studio';
+root.isConnected = true;
+const li = el('LI', {}, root);
+const notices = (f) =>
+  f.children.filter((c) => c.attrs.role === 'alert').map((c) => c.textContent);
+const confirm = (elt, triggeringEvent) => {
+  let cancelled = false;
+  handlers['htmx:confirm']({detail: {elt, triggeringEvent},
+                            preventDefault() { cancelled = true; }});
+  return cancelled;
+};
+const finish = (elt, sent) =>
+  handlers['htmx:afterRequest']({detail: {elt, xhr: sent.xhr, successful: true,
+    requestConfig: {verb: 'put'}}});
+
+// Nothing in flight: the click's request goes ahead.
+click(op(li, 'move', '/rules/2', '1'));
+out.idle = confirm(root, clicked());
+
+// A save in flight; Move up clicked twice meanwhile. htmx would queue the
+// second behind the save (replacing the first) and then drop it, since the
+// save's answer replaces the frame: both are refused here instead.
+const save = request(root, {type: 'submit', target: root});
+click(op(li, 'move', '/rules/2', '1'));
+out.first = confirm(root, clicked());
+click(op(li, 'move', '/rules/2', '1'));
+out.second = confirm(root, clicked());
+out.noticeBefore = notices(root);
+
+// The save's answer replaces the frame; htmx dispatches afterRequest on the
+// parent, with the parent as elt. The new frame says the change was not sent.
+root.isConnected = false;
+page.children = [];
+const fresh = putFrame('/l/1/', content, page);
+fresh.attrs['data-scrud-scope'] = 'studio';
+fresh.isConnected = true;
+const other = putFrame('/l/1/', content);
+other.attrs['data-scrud-scope'] = 'studio sidebar';
+document.querySelectorAll = (sel) => (sel === '.scrud-resource' ? [other, fresh] : []);
+finish(page, save);
+out.noticeAfter = notices(fresh);
+out.otherNotices = notices(other);
+
+// The new frame is not in flight: its next request goes ahead, and a save
+// that ends with nothing refused meanwhile adds no notice.
+const freshLi = el('LI', {}, fresh);
+click(op(freshLi, 'move', '/rules/2', '1'));
+out.afterwards = confirm(fresh, clicked());
+fresh.children = fresh.children.filter((c) => c.attrs.role !== 'alert');
+const quiet = request(fresh, {type: 'submit', target: fresh});
+finish(fresh, quiet);
+out.quiet = notices(fresh);
+
+// A frame still in the page when its request ends (a network failure) gets
+// the notice itself.
+const kept = request(fresh, {type: 'submit', target: fresh});
+out.keptRefused = confirm(fresh, {type: 'change', target: fresh});
+finish(fresh, kept);
+out.kept = notices(fresh);
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_request_refused_while_frame_save_in_flight_says_not_sent():
+    """MR 1 carry-over, reproduced in the acceptance run: a click on Move up
+    while the rule editor's save is in flight was queued by htmx (`last`)
+    and dropped without a word when the save's answer replaced the frame.
+    Such a request is refused, and the frame that replaces the one in flight
+    says the change was not sent."""
+    require_node()
+    out = run_node(IN_FLIGHT_SCRIPT)
+    not_sent = (
+        "Your change was not sent: an earlier save of this item was still in"
+        " progress. Make the change again."
+    )
+    assert out["idle"] is False
+    assert out["first"] is True and out["second"] is True
+    assert out["noticeBefore"] == []
+    assert out["noticeAfter"] == [not_sent]
+    assert out["otherNotices"] == []
+    assert out["afterwards"] is False
+    assert out["quiet"] == []
+    assert out["keptRefused"] is True
+    assert out["kept"] == [not_sent]
 
 
 @pytest.mark.django_db
