@@ -930,18 +930,6 @@ included: an internal name the author never chose, where the review's
 `studio studio-push`) of a push that overrides a layer item and assert its
 "Before" says packaged and does not show `@layers`.
 
-<a id="studio-order-text-input"></a>
-## studio-order-text-input: Order is a text input for a stylesheet stored without `order`
-
-The rule editor's `studio:field` renders `order` as `<input type="number"
-step="1">` only when the node's schema says `integer`. For a stylesheet stored
-without an `order` (as the demo's are; it defaults to 0), the field is a text
-input, empty, while the view mode shows 0, so the input neither shows the
-value in effect nor restricts it to a number. Test: in
-`tests/test_studio_rule_editor.py`, open the editor of a stylesheet stored
-without `order` and assert the Order input has `type="number"` (and shows
-0, or a placeholder of 0).
-
 <a id="studio-client-notice-unstyled"></a>
 ## studio-client-notice-unstyled: client notices are unstyled in the studio
 

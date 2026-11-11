@@ -3974,3 +3974,109 @@ out.post = out.fetches[out.fetches.length - 1];
     assert {"kind": "component", "name": offered["name"]} in made["written"]
     explained = explain(branch="alice-wip", pointer="/items/0")
     assert explained["rules"][explained["winner"]]["component"] == offered["name"]
+
+
+# argv[1]: scrud-ui.js; argv[2]: the frame's content (JSON); stdin: its
+# inputs ({name, type, value}). Prints the body Save sends (buildBody onto
+# the content) and whether the frame counts as changed.
+SAVE_BODY_HARNESS = r"""
+const vm = require('vm');
+const ui = vm.createContext({window: {}, console});
+vm.runInContext(process.argv[1], ui);
+const content = JSON.parse(process.argv[2]);
+let input = '';
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  const bad = [];
+  const body = ui.window.ScrudUI.buildBody(content, JSON.parse(input), bad);
+  console.log(JSON.stringify({body, bad,
+    changed: JSON.stringify(body) !== JSON.stringify(content)}));
+});
+"""
+
+
+def save_body(content, inputs):
+    """The body the frame's Save builds from `content` and `inputs` (the
+    rendered ``name``d inputs as ``{name, type, value}``), through the real
+    ``ScrudUI.buildBody``."""
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", SAVE_BODY_HARNESS, SCRUD_UI_JS.read_text(), json.dumps(content)],
+        input=json.dumps(inputs),
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@pytest.mark.django_db
+@test_context
+def test_order_shows_its_default_and_saves_nothing_untouched(
+    studio_layer, ui_alice_login, settings
+):
+    """A stylesheet stored without ``order`` (the demo's) showed 0 in view
+    mode but an empty Order input in edit mode. The input shows the default,
+    0, as its placeholder (the schema's ``default``): its value stays empty,
+    which the runtime's untouched rule reads as the missing value, so
+    opening the editor is no change and Save writes no ``order: 0``; a value
+    typed in it is saved."""
+    from .test_studio_editors import (
+        content_of,
+        open_editor,
+        root_frame,
+        workbench_entries,
+    )
+    from .test_studio_page import store_item
+    from .test_studio_workbench import Page, setup_studio
+
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+    _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
+    sheet = store_item(
+        "ui-stylesheets",
+        "alice-wip",
+        "alice",
+        name="plain",
+        applies_to="",
+        prefixes={},
+        rules=[{"select": "string", "component": "scrud:string"}],
+    )
+    assert "order" not in sheet.content
+    Given.http.force_authenticate(ui_alice_login)
+    classes, opened, _li, _page = workbench_entries(alice_wip)[("stylesheet", "plain")]
+    assert "studio-own" in classes
+    href = opened["href"]
+    page = Page(open_editor(href))
+    frame = root_frame(page, href)
+    stored = content_of(page, frame)
+    assert "order" not in stored
+    [order] = [e for e in page.elements if e.attrs.get("name") == "/order"]
+    assert order.tag == "input" and order.attrs["type"] == "number"
+    assert order.attrs.get("value", "") == ""
+    assert order.attrs["placeholder"] == "0"
+    # View mode shows the same default.
+    view = Page(open_editor(href, view=True))
+    shown = [e for e in view.elements if e.tag in ("dt", "dd")]
+    [at] = [n for n, e in enumerate(shown) if e.tag == "dt" and e.text == "Order"]
+    assert shown[at + 1].tag == "dd" and shown[at + 1].text == "0"
+    inputs = [
+        {
+            "name": e.attrs["name"],
+            "type": e.attrs.get("type", "text"),
+            "value": e.attrs.get("value", ""),
+        }
+        for e in page.elements
+        if e.tag == "input"
+        and "name" in e.attrs
+        and e.within(frame)
+        and e.attrs.get("type") not in ("hidden", "submit")
+    ]
+    assert "/order" in [i["name"] for i in inputs]
+    # Untouched: Save sends the content as stored, and nothing is unsaved.
+    untouched = save_body(stored, inputs)
+    assert untouched["bad"] == [] and untouched["changed"] is False
+    assert "order" not in untouched["body"]
+    # A typed order is saved.
+    typed = [{**i, "value": "5"} if i["name"] == "/order" else i for i in inputs]
+    saved = save_body(stored, typed)
+    assert saved["changed"] is True and saved["body"]["order"] == 5

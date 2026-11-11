@@ -2319,7 +2319,10 @@ data-studio-applies-to="<applies_to>">`:
 - **Edit mode.** The editor is the stylesheet's own frame, a `<form>`. The
   `name` is shown, not an input. `applies_to` and `order` are inputs
   (`studio:field`: a labelled `<input>` named by the node's pointer, with
-  its messages from a refused write beside it); each prefix is a row of its
+  its messages from a refused write beside it). A stylesheet stored without
+  `order` gets an empty number input with the default, `0`, as its
+  placeholder (the view shows `0`): left empty, it is untouched over the
+  missing value, so Save writes no `order`; each prefix is a row of its
   key, as text, and its IRI, an input named `/prefixes/<key>` (the key
   escaped as a JSON Pointer token). One more row adds a prefix: its key and
   IRI inputs have no name until the author types a key, when the script

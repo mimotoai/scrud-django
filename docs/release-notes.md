@@ -167,7 +167,8 @@
   draft (300 ms after the last key; none on a published branch), and the
   drafts the preview leaves out are listed under the editor, as text.
 * The rule editor: a stylesheet opens as its fields (`name` read-only,
-  `applies_to`, `order`, `prefixes` as key/value rows, with one new prefix at
+  `applies_to`, `order` (its default, 0, as the placeholder when it is
+  unset), `prefixes` as key/value rows, with one new prefix at
   a time) and its rules as rows of selector -> component inputs, each with
   Remove, Move up and Move down (they save at once) and an append row; every
   field is an input named by its JSON Pointer, saved only by Save, and a
