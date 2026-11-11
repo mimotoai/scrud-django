@@ -638,9 +638,18 @@ named by JSON Pointer (`name="/items/0/text"`):
   shown: neither replaces the other. When it is answered with a reload (a
   412, or a DELETE's 409), what replaces the frame is no frame, so there is
   no "not sent" notice: the stale notice and the reloaded frame follow,
-  without the change. A second click on Save while the first save is in
-  flight is refused with the notice too, although the first save carried the
-  same change.
+  without the change. No notice is shown when nothing new would have been
+  sent: the browser fires a field's `change` and then the form's `submit` in
+  a row (Enter in a text field, or typing and then a click on Save), and the
+  change's `PUT` already carries the edit; so for a second click on Save. The
+  refused request counts as nothing new when the frame's inputs, built onto
+  its content as a `PUT` builds them, give the body the request in flight was
+  built from; an array operation is always new. A frame is also no longer in
+  flight when handling its response throws (htmx 2.0.4 then fires
+  `htmx:onLoadError` and skips `htmx:afterRequest`), so it never refuses its
+  requests for good. The client tests drive these handlers with htmx's events
+  stubbed, in the order htmx 2.0.4 fires them (follow-up
+  [ui-inflight-test-real-htmx](follow-ups.md#ui-inflight-test-real-htmx)).
 
 Custom components that want to be editable need only render inputs named by
 their JSON Pointer inside the frame.

@@ -274,7 +274,12 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   replaced the frame. `scrud-ui.js` now refuses such a request and shows "Your
   change was not sent: an earlier save of this item was still in progress.
   Make the change again." in the frame that answers the save (the MR 1
-  carry-over, reproduced in the self-hosted studio's acceptance run).
+  carry-over, reproduced in the self-hosted studio's acceptance run). A
+  refused request that would have sent nothing new says nothing: Enter in a
+  field, or typing and then a click on Save, fires the field's change and
+  then the form's submit, and the change's save already carries the edit
+  (array operations always count). A frame whose response handling throws
+  (htmx's `htmx:onLoadError`) is no longer left refusing its requests.
 * An embed in a studio preview requested in view mode (`preview` and
   `live-preview` with `mode` `view`, their default) renders in view mode, as
   with `mode="view"`: an embedded resource the user may `PUT` no longer shows

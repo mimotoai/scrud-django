@@ -5,6 +5,22 @@ kept by a decision, each saying what was decided and why. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
 
+<a id="ui-inflight-test-real-htmx"></a>
+## ui-inflight-test-real-htmx: the in-flight refusal is tested with htmx's events stubbed
+
+`scrud-ui.js` refuses a frame's request while its previous one is in flight
+(`htmx:confirm`), says nothing when the refused request would send the body
+already in flight, and settles the frame on `htmx:afterRequest` or
+`htmx:onLoadError`. The node tests (`tests/test_ui_client.py`) call those
+handlers with hand-built events in the order htmx 2.0.4 fires them, since
+the suite has no DOM for the vendored `htmx.min.js` to run in (no jsdom). A
+change in htmx's order (confirm before or after `beforeSend` for the same
+request, which events a throwing swap fires) would not show. Test: drive the
+vendored htmx in a real DOM (jsdom, or the browser acceptance run) on a frame
+with one text field; type, press Enter (change, then submit), and assert one
+PUT and no "not sent" notice; then type, click Move up during the save, and
+assert the notice.
+
 <a id="embed-literal-path-save-check"></a>
 ## embed-literal-path-save-check: a literal non-resource embed path is refused only at render
 
