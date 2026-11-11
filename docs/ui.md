@@ -578,7 +578,7 @@ attribute with the URL, and `data-scrud-json`. The element may sit outside any
   ```
 
 * A DELETE with `If-Match` is a fixed element with a `data-scrud-etag`
-  (its own, else its frame's):
+  (its own, else its frame's when it deletes the frame's own resource):
 
   ```html
   <button hx-ext="scrud-json" hx-delete="/ui-branches/5/" data-scrud-json="fixed"
@@ -587,8 +587,13 @@ attribute with the URL, and `data-scrud-json`. The element may sit outside any
 
 These requests send `Content-Type: application/json`, `X-CSRFToken`,
 `Scrud-UI-Branch` (the frame's, else the page's `.scrud-branch-page`) and
-`If-Match` when the element or its frame has `data-scrud-etag`. The frame's
-`PUT` is unchanged. An unparsable or missing `data-scrud-body`, a
+`If-Match` from the element's own `data-scrud-etag`, else from its frame's
+`data-scrud-etag` only when the request goes to the frame's own
+`data-scrud-href`. A request to another URL from inside a frame (a create form
+posting to a list, the DELETE of another resource) sends no frame tag, which
+the server would refuse with 412; an empty `data-scrud-etag=""` on the element
+sends no `If-Match` at all. The same rule applies to any other write from
+inside a frame. The frame's `PUT` is otherwise unchanged. An unparsable or missing `data-scrud-body`, a
 `data-scrud-json` other than `form` or `fixed`, or an input that cannot be
 applied cancels the request: the element's frame shows "This action is
 misconfigured." (or the invalid-field notice), and outside a frame the message

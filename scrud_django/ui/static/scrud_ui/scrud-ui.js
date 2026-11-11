@@ -434,6 +434,47 @@
     if (value != null && !hasHeader(headers, name)) headers[name] = value;
   }
 
+  /**
+   * The URL a request goes to: htmx's `path`, else (when a caller gives none)
+   * the closest hx-<verb> attribute's value.
+   */
+  function requestPath(detail, verb) {
+    if (detail.path != null) return String(detail.path);
+    var elt = detail.elt;
+    if (!elt || !elt.closest) return null;
+    var names = ['hx-' + verb, 'data-hx-' + verb];
+    for (var i = 0; i < names.length; i++) {
+      var found = elt.closest('[' + names[i] + ']');
+      if (found) return found.getAttribute(names[i]);
+    }
+    return null;
+  }
+
+  /** `url` without this page's origin, so a path and a full URL compare. */
+  function localPath(url) {
+    var origin = typeof location !== 'undefined' && location.origin;
+    url = String(url);
+    return origin && url.indexOf(origin + '/') === 0 ? url.slice(origin.length) : url;
+  }
+
+  /**
+   * The If-Match tag of a write from `elt` (in `frame`) to `path`: the
+   * element's own data-scrud-etag (present but empty: none), else the frame's
+   * when the request goes to the frame's own data-scrud-href, else none. A
+   * write to another URL from inside a frame (a create posting to a list, the
+   * DELETE of another resource) never sends the frame's tag: it would be
+   * refused with 412.
+   */
+  function ifMatchTag(elt, frame, path) {
+    if (elt && elt !== frame && elt.hasAttribute && elt.hasAttribute('data-scrud-etag')) {
+      return elt.getAttribute('data-scrud-etag') || null;
+    }
+    if (!frame || path == null) return null;
+    var href = frame.getAttribute('data-scrud-href');
+    if (href == null || localPath(path) !== localPath(href)) return null;
+    return frame.getAttribute('data-scrud-etag') || null;
+  }
+
   function isPut(elt) {
     return elt.hasAttribute('hx-put') || elt.hasAttribute('data-hx-put');
   }
@@ -572,8 +613,7 @@
           return;
         }
       }
-      var tag = detail.elt.getAttribute('data-scrud-etag') ||
-        (own && own.getAttribute('data-scrud-etag'));
+      var tag = ifMatchTag(detail.elt, own, requestPath(detail, verb));
       if (tag) setDefault(headers, 'If-Match', quoteEtag(tag));
       headers['Content-Type'] = 'application/json';
       return;
@@ -594,7 +634,7 @@
         return;
       }
     }
-    var etag = frame.getAttribute('data-scrud-etag');
+    var etag = ifMatchTag(detail.elt, frame, requestPath(detail, verb));
     if (etag) setDefault(headers, 'If-Match', quoteEtag(etag));
     setDefault(headers, 'Scrud-UI-Scope', frame.getAttribute('data-scrud-scope'));
     setDefault(headers, 'Scrud-UI-Pointer', frame.getAttribute('data-scrud-pointer'));

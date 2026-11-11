@@ -569,3 +569,67 @@ console.log(JSON.stringify(out));
     )
     got = run_node(script)
     assert got["body"] == {"title": "b", "keep": 1} and got["notPut"] is None
+
+
+IF_MATCH_SCRIPT = (
+    STUB_DOM
+    + r"""
+document.querySelector = (sel) =>
+  sel === 'meta[name=csrf-token]' ? el('META', {content: 'csrf-123'}) : null;
+const fire = (elt, verb, path) => {
+  const detail = {elt, verb, headers: {}};
+  if (path !== undefined) detail.path = path;
+  handlers['htmx:configRequest']({detail, preventDefault() { detail.prevented = true; }});
+  return {headers: detail.headers, prevented: !!detail.prevented};
+};
+const fr = frame('/o/2/', el('MAIN', {}));
+fr.attrs['data-scrud-etag'] = '"frame-tag"';
+// a create form inside the frame posts to the list: never the frame's tag
+const create = el('FORM', {'hx-ext': 'scrud-json', 'hx-post': '/o/',
+  'data-scrud-json': 'form'}, fr);
+el('INPUT', {name: '/title'}, create, {type: 'text', value: 'x'});
+out.create = fire(create, 'post', '/o/');
+// a fixed DELETE of another resource inside the frame
+const other = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/9/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}'}, fr);
+out.deleteOther = fire(other, 'delete', '/o/9/');
+out.deleteOtherNoPath = fire(other, 'delete');
+// ... with its own tag: that one
+const otherOwn = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/9/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}', 'data-scrud-etag': '"nine"'}, fr);
+out.deleteOtherOwn = fire(otherOwn, 'delete', '/o/9/');
+// the frame's own href still sends the frame's tag
+const mine = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/2/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}'}, fr);
+out.deleteMine = fire(mine, 'delete', '/o/2/');
+// an empty own attribute: no If-Match at all
+const none = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/2/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}', 'data-scrud-etag': ''}, fr);
+out.deleteEmpty = fire(none, 'delete', '/o/2/');
+// a plain (non-JSON) DELETE of another URL inside the frame
+const plain = el('BUTTON', {'hx-delete': '/o/9/'}, fr);
+out.plainOther = fire(plain, 'delete', '/o/9/');
+const plainMine = el('BUTTON', {'hx-delete': '/o/2/'}, fr);
+out.plainMine = fire(plainMine, 'delete', '/o/2/');
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_if_match_comes_from_the_frame_only_for_its_own_href():
+    """A write inside a frame to another URL (a create posting to the list,
+    a DELETE of another resource) must not send the frame's ETag: the server
+    would answer 412."""
+    require_node()
+    out = run_node(IF_MATCH_SCRIPT)
+    assert not out["create"]["prevented"]
+    assert "If-Match" not in out["create"]["headers"]
+    assert out["create"]["headers"]["Content-Type"] == "application/json"
+    assert "If-Match" not in out["deleteOther"]["headers"]
+    assert "If-Match" not in out["deleteOtherNoPath"]["headers"]
+    assert out["deleteOtherOwn"]["headers"]["If-Match"] == '"nine"'
+    assert out["deleteMine"]["headers"]["If-Match"] == '"frame-tag"'
+    assert "If-Match" not in out["deleteEmpty"]["headers"]
+    assert not out["deleteEmpty"]["prevented"]
+    assert "If-Match" not in out["plainOther"]["headers"]
+    assert out["plainMine"]["headers"]["If-Match"] == '"frame-tag"'
