@@ -12,7 +12,8 @@ built as a UI layer renders it through the cascade like any resource:
   lists them;
 - ``ui-selectable-branches/mine/``: the branches the user may select;
 - ``ui-push-previews/<source>/``: what a push of a branch would change in
-  its target (spec E3).
+  its target (spec E3), and the studio's endpoints (a push's page previews
+  the target after the push with them).
 
 Each answers only what its user may GET as JSON: a branch it may select
 (`selection.selectable`; the push preview: both of its branches the user may
@@ -555,7 +556,8 @@ class PushPreviewViewSet(ComputedResourceViewSet):
     everyone may select, needs none, as for a push): an unknown branch and
     one the user may not GET are the same 404, before any 400 for a push the
     server would refuse (`refuse_push_between`) could describe it. Writes
-    on items the user may not read are only counted."""
+    on items the user may not read are only counted. ``endpoints`` are the
+    studio's (`_endpoints`), as the branch status has them."""
 
     def compute(self, request, key):
         with _stored_state():
@@ -591,6 +593,7 @@ class PushPreviewViewSet(ComputedResourceViewSet):
                 "unreadable_changes": unreadable,
                 "conflicts": plan.conflicts,
                 "unreadable_conflicts": plan.hidden_conflicts,
+                "endpoints": _endpoints(),
             }
 
 

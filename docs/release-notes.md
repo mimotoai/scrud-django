@@ -106,7 +106,8 @@
   data, `ui-branch-items/<branch>/`, `ui-branch-status/<branch>/`,
   `ui-type-catalog/all/`, `ui-selectable-branches/mine/` and
   `ui-push-previews/<source>/?target=<name>` (what a push would change,
-  without writing), each listing only what the user may GET (a branch's
+  without writing, and the studio's endpoints as the branch status has
+  them), each listing only what the user may GET (a branch's
   status names a published ancestor above its published root only when the
   user may GET it). A packaged layer's items are public everywhere in the
   studio: the inspector's rules, the live preview's mark, the computed data,
@@ -128,7 +129,8 @@
   (`studio:studio`, `studio:rules`, `studio:inspector`, `studio:promote`,
   `studio:branch`, orders 0 to 4), which do nothing on a page without a
   workbench (on a push's page `studio:promote` only stops the `change` of
-  its state input). So the bodies of pages outside the studio render as
+  its state input and its preview controls, and previews the target after
+  the push). So the bodies of pages outside the studio render as
   before, but every HTML page of a site with the studio app installed, on
   every branch, links the layer's CSS item and its five JS items, unless the
   new setting `SCRUD_UI_STUDIO_LAYER` (default `True`; `studio_layer_enabled()`)
@@ -194,7 +196,9 @@
   has loaded and shows no conflict, readable or not. A push's page
   (`studio:push`, or `studio:push-view` for a user who may not `PUT` it)
   shows its source, target, state, label and result, the preview of a push
-  not yet applied, and a state input (`proposed`, `applied`) saved only on
+  not yet applied with "Preview after push" (`studio:push-after`, when the
+  studio's URLs are included: a type picker, and the target as it renders
+  after the push in a sandboxed frame), and a state input (`proposed`, `applied`) saved only on
   Save, whose refusal (a workflow policy's, for example) is re-rendered with
   the server's message. History: the strip lists the branch's versions, each
   linked to its page in a new tab (`studio:version`: the ancestors' versions

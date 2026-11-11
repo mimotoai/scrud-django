@@ -5,20 +5,6 @@ kept by a decision, each saying what was decided and why. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
 
-<a id="studio-push-page-after-preview"></a>
-## studio-push-page-after-preview: a push's page has no after-push preview
-
-The self-hosted studio's spec (Publishing 2) asks that a push's page show
-its changes (the push preview, E3) and the after-preview: the target as it
-will render after the push. The push page (`studio:push`, `studio:push-view`)
-embeds the changes only; the after-push preview is "Preview after push" in
-the source branch's workbench, in its "Promote to <target>…" panel, reached
-through the workbench's branch picker. Test: in
-`tests/test_studio_promote.py`, render the page of a proposed push in the
-scope `studio` with a type in its URL; it should hold a preview of the
-target after the push (a live-preview form with `after_push` and the target
-as `branch`) and has none today.
-
 <a id="studio-rule-editor-duplicate-prefix"></a>
 ## studio-rule-editor-duplicate-prefix: a new prefix with a taken key overrides the stored one silently
 

@@ -87,6 +87,10 @@
       "component": "studio:push-preview"
     },
     {
+      "select": "studio studio-push-after http://api.openteams.com/json-ld/UIPushPreview",
+      "component": "studio:push-after"
+    },
+    {
       "select": "studio http://api.openteams.com/json-ld/UIPush",
       "component": "studio:push"
     },

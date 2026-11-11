@@ -39,5 +39,23 @@
   },
   "unreadable_conflicts": {
     "@id": "openteams:UIUnreadableConflicts"
+  },
+  "endpoints": {
+    "@id": "openteams:UIStudioEndpoints"
+  },
+  "live_preview": {
+    "@id": "openteams:UIStudioLivePreview"
+  },
+  "sample": {
+    "@id": "openteams:UIStudioSample"
+  },
+  "explain": {
+    "@id": "openteams:UIStudioExplain"
+  },
+  "options": {
+    "@id": "openteams:UIStudioNewComponentOptions"
+  },
+  "new_component": {
+    "@id": "openteams:UIStudioNewComponent"
   }
 }

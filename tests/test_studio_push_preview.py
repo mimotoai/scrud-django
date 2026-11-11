@@ -17,6 +17,7 @@ from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 from .fixtures import *  # noqa
 from .fixtures import assign_ui_role
 from .steps import *  # noqa: F403, F401
+from .test_studio_computed import ENDPOINTS, conforms
 from .test_ui_branch_push import (
     WIP,
     create,
@@ -473,3 +474,26 @@ def test_push_preview_into_a_branch_pinned_to_a_missing_version(admin_login):
     body = preview("child", status=400)
     assert body["type"].endswith("/ui-branch-invalid")
     assert "missing" in body["detail"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_push_preview_carries_the_studio_endpoints(admin_login, settings):
+    """``endpoints`` as ``ui-branch-status`` has them (`_endpoints`): what
+    a push's page calls to preview the target after the push."""
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+    wip_overrides_row(admin_login)
+    body = preview()
+    assert body["endpoints"] == ENDPOINTS
+    assert body["endpoints"]["live_preview"] == reverse("scrud-studio:live-preview")
+    conforms("UIPushPreview", body)
+    # The same shape and values as the branch status's.
+    When.http.get(reverse("ui-branch-status-detail", args=["wip"]), HTTP_ACCEPT=JSON)
+    Then.http.status_code_is(200)
+    assert Http.response.json()["endpoints"] == body["endpoints"]
+    # Without the studio's URLs (tests.urls), none.
+    settings.ROOT_URLCONF = "tests.urls"
+    body = preview()
+    assert body["endpoints"] is None
+    assert body["changes"] and body["target"] == "main"
+    conforms("UIPushPreview", body)

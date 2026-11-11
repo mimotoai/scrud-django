@@ -2523,25 +2523,29 @@ def test_promote_js_inert_without_workbench():
     assert out["attributes"] == {}
 
 
-def test_push_page_installs_only_the_change_stop():
+def test_push_page_installs_only_the_change_stop_and_the_preview():
     require_node()
     # On a push's page (no workbench) the other layer scripts stay inert.
-    for file in ("studio.json", "rules.json", "inspector.json"):
+    for file in ("studio.json", "rules.json", "inspector.json", "branch.json"):
         out = run(with_workbench=False, file=file, push=True)
         assert out["queries"] == ["[data-studio-workbench]"], file
         assert out["touched"] == ["document.querySelector"], file
         assert out["listeners"] == [] and out["fetches"] == 0, file
         assert out["attributes"] == {}, file
-    # studio:promote installs one change listener on the document, and does
-    # nothing else.
+    # studio:promote installs two listeners on the document: the change
+    # stop (only Save writes the push; it also takes the type picker's
+    # change, which previews the target after the push) and the click of
+    # "Preview after push". Nothing else: no query, fetch, window listener
+    # or attribute until an event comes.
     out = run(with_workbench=False, file="promote.json", push=True)
     assert out["queries"] == ["[data-studio-workbench]", "[data-studio-push]"]
     assert out["touched"] == [
         "document.querySelector",
         "document.querySelector",
         "document.addEventListener",
+        "document.addEventListener",
     ]
-    assert out["listeners"] == ["document:change"]
+    assert out["listeners"] == ["document:change", "document:click"]
     assert out["fetches"] == 0 and out["attributes"] == {}
 
 
@@ -2633,6 +2637,273 @@ def test_push_state_saves_only_on_save():
     # A change of the state input never reaches the frame (no PUT); the
     # form's submit (Save, or Enter) does, as do other inputs' changes.
     assert out["frame"] == ["change:/label", "submit", "submit"]
+
+
+# A push's page with "Preview after push" as studio:push and
+# studio:push-after render it in edit mode: the frame's form (htmx saves it
+# on change and on submit: counted), the push's root and state input, the
+# embedded section with the type picker (in its own embedded frame), the
+# button, the note, the live-preview form in a <template> (its content a
+# separate fragment, as a browser parses it) and the iframe; the CSRF meta
+# tag. A form's submit() is recorded with where the form is and what it
+# sends. A click on a button that is not type="button" submits its form
+# unless prevented, as a browser does. argv[1]: promote.js.
+PUSH_AFTER = r"""
+const vm = require('vm');
+const out = {frame: [], submits: [], clicks: []};
+class Node {
+  constructor(tag, attrs, parent) {
+    this.tagName = tag.toUpperCase();
+    this.attrs = attrs || {};
+    this.parentNode = null;
+    this.children = [];
+    this.listeners = {};
+    this.capture = {};
+    this.textContent = '';
+    this.value = '';
+    if (parent) parent.appendChild(this);
+  }
+  appendChild(child) {
+    if (child.parentNode) child.parentNode.removeChild(child);
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+  removeChild(child) {
+    this.children.splice(this.children.indexOf(child), 1);
+    child.parentNode = null;
+    return child;
+  }
+  hasAttribute(n) { return n in this.attrs; }
+  getAttribute(n) { return n in this.attrs ? this.attrs[n] : null; }
+  setAttribute(n, v) { this.attrs[n] = String(v); }
+  removeAttribute(n) { delete this.attrs[n]; }
+  // Only "tag", "[attr]", "tag[attr]" and "[attr=\"value\"]" selectors.
+  matches(sel) {
+    const m = /^([a-z]*)(?:\[([\w-]+)(?:="([^"]*)")?\])?$/.exec(sel);
+    if (!m) throw new Error('unsupported selector ' + sel);
+    if (m[1] && this.tagName !== m[1].toUpperCase()) return false;
+    if (!m[2]) return !!m[1];
+    if (!(m[2] in this.attrs)) return false;
+    return m[3] === undefined || this.attrs[m[2]] === m[3];
+  }
+  closest(sel) {
+    for (let n = this; n && n.attrs; n = n.parentNode) if (n.matches(sel)) return n;
+    return null;
+  }
+  querySelector(sel) {
+    for (const c of this.children) {
+      if (c.matches(sel)) return c;
+      const found = c.querySelector(sel);
+      if (found) return found;
+    }
+    return null;
+  }
+  cloneNode(deep) {
+    const copy = new Node(this.tagName.toLowerCase(), Object.assign({}, this.attrs));
+    copy.value = this.value;
+    copy.textContent = this.textContent;
+    copy.clone = true;
+    if (deep) this.children.forEach((c) => copy.appendChild(c.cloneNode(true)));
+    return copy;
+  }
+  addEventListener(type, fn, capture) {
+    const where = capture === true ? this.capture : this.listeners;
+    (where[type] = where[type] || []).push(fn);
+  }
+  submit() {
+    const field = (name) => this.querySelector('[name="' + name + '"]');
+    out.submits.push({
+      inBody: this.parentNode === body,
+      clone: !!this.clone,
+      forms: body.children.filter((c) => c.tagName === 'FORM' && c !== frame).length,
+      method: this.getAttribute('method'),
+      action: this.getAttribute('action'),
+      target: this.getAttribute('target'),
+      token: field('csrfmiddlewaretoken').value,
+      request: JSON.parse(field('request').value),
+    });
+  }
+}
+const document = new Node('#document', null, null);
+document.attrs = null;
+document.querySelector = (sel) => {
+  if (sel === '[data-studio-push]') return push;
+  if (sel === 'meta[name="csrf-token"]') return meta;
+  return null;
+};
+const head = new Node('head', {}, document);
+const meta = new Node('meta', {name: 'csrf-token', content: 'tok-123'}, head);
+const body = new Node('body', {}, document);
+document.body = body;
+let frame, push, state, label, section, select, button, note, iframe;
+function render() {
+  if (frame) body.removeChild(frame);
+  frame = new Node('form', {'class': 'scrud-resource', 'hx-put': '/ui-pushes/7/',
+    'hx-trigger': 'change, submit'}, body);
+  frame.addEventListener('change', (e) => out.frame.push('change:' + e.target.attrs.name));
+  frame.addEventListener('submit', () => out.frame.push('submit'));
+  push = new Node('div', {'class': 'studio-push', 'data-studio-push': '',
+    'data-studio-mode': 'edit'}, frame);
+  state = new Node('input', {type: 'text', name: '/state',
+    'data-studio-push-state-input': ''}, push);
+  label = new Node('input', {type: 'text', name: '/label'}, push);
+  const embedded = new Node('div', {'class': 'scrud-resource',
+    'data-scrud-scope': 'studio studio-push-after'}, push);
+  section = new Node('section', {'class': 'studio-push-after',
+    'data-studio-push-after': '', 'data-studio-source': 'alice-wip',
+    'data-studio-target': 'shop & co'}, embedded);
+  const types = new Node('div', {'class': 'scrud-resource',
+    'data-scrud-scope': 'studio studio-types'}, section);
+  select = new Node('select', {'data-studio-control': 'type'}, types);
+  button = new Node('button', {type: 'button', 'data-studio-push-after-show': ''}, section);
+  note = new Node('p', {'data-studio-push-after-note': ''}, section);
+  note.textContent = 'Choose a type to preview shop & co after this push.';
+  const template = new Node('template', {'data-studio-push-after-form': ''}, section);
+  template.content = new Node('#document-fragment', {});
+  const form = new Node('form', {'class': 'studio-preview-form',
+    'data-studio-preview-form': '', method: 'post', action: '/studio/live-preview',
+    target: 'studio-push-after-preview', hidden: ''}, template.content);
+  form.submit = () => { throw new Error('the template form itself is inert'); };
+  new Node('input', {type: 'hidden', name: 'csrfmiddlewaretoken', value: ''}, form);
+  new Node('input', {type: 'hidden', name: 'request', value: ''}, form);
+  iframe = new Node('iframe', {name: 'studio-push-after-preview',
+    'class': 'studio-preview', sandbox: 'allow-scripts'}, section);
+}
+function fire(target, type) {
+  const evt = {type, target, stopped: false, defaultPrevented: false};
+  evt.stopPropagation = () => { evt.stopped = true; };
+  evt.preventDefault = () => { evt.defaultPrevented = true; };
+  const path = [];
+  for (let n = target; n; n = n.parentNode) path.push(n);
+  let stopped = false;
+  for (const n of path.slice().reverse()) {
+    (n.capture[type] || []).forEach((fn) => fn(evt));
+    if (evt.stopped) { stopped = true; break; }
+  }
+  if (!stopped) {
+    for (const n of path) {
+      (n.listeners[type] || []).forEach((fn) => fn(evt));
+      if (evt.stopped) break;
+    }
+  }
+  // A browser's default action of a click on a submit button.
+  if (type === 'click' && target.tagName === 'BUTTON' &&
+      target.getAttribute('type') !== 'button' && !evt.defaultPrevented) {
+    const form = target.closest('form');
+    if (form) fire(form, 'submit');
+  }
+  return evt;
+}
+function choose(value) { select.value = value; return fire(select, 'change'); }
+render();
+vm.runInContext(process.argv[1], vm.createContext({document, window: {}}));
+"""
+
+
+def push_after_scenario(script):
+    """Run promote.js on `PUSH_AFTER`'s push page, then `script`; return
+    ``out``."""
+    require_node()
+    done = subprocess.run(
+        [
+            "node",
+            "-e",
+            PUSH_AFTER + script + "\nconsole.log(JSON.stringify(out));",
+            layer_source("promote.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+AFTER_REQUEST = {
+    "type": "todo-lists",
+    "branch": "shop & co",
+    "mode": "view",
+    "after_push": {"source": "alice-wip"},
+}
+
+
+def after_submit(request=AFTER_REQUEST, forms=1):
+    return {
+        "inBody": True,
+        "clone": True,
+        "forms": forms,
+        "method": "post",
+        "action": "/studio/live-preview",
+        "target": "studio-push-after-preview",
+        "token": "tok-123",
+        "request": request,
+    }
+
+
+def test_push_page_type_choice_previews_target_after_push():
+    out = push_after_scenario(
+        r"""
+// No type: nothing is sent, and the note says so.
+out.none = [choose('').stopped, out.submits.length, note.textContent];
+// A type: the live preview of the target after the push, in the clone of
+// the template's form, put in the body (outside the frame's form).
+out.chosen = [choose('todo-lists').stopped, note.textContent];
+out.templateForm = section.querySelector('template').content.children.length;
+"""
+    )
+    # The type picker's change never reaches the frame: no PUT.
+    assert out["frame"] == []
+    assert out["none"] == [
+        True,
+        0,
+        "Choose a type to preview shop & co after this push.",
+    ]
+    assert out["chosen"] == [True, "The preview shows shop & co after this push."]
+    # Exactly the request: the target as the branch, the source pushed, view
+    # mode, no drafts; the CSRF token from the meta tag.
+    assert out["submits"] == [after_submit()]
+    assert "drafts" not in out["submits"][0]["request"]
+    # The template keeps its form (cloned, not moved).
+    assert out["templateForm"] == 1
+
+
+def test_push_page_preview_button_sends_and_never_saves():
+    out = push_after_scenario(
+        r"""
+// Without a type, the button sends nothing.
+let evt = fire(button, 'click');
+out.clicks.push([evt.defaultPrevented, out.submits.length, note.textContent]);
+select.value = 'todo-lists';
+evt = fire(button, 'click');
+out.clicks.push([evt.defaultPrevented, out.submits.length, note.textContent]);
+// Again: the same clone is reused (one form in the body).
+fire(button, 'click');
+// The push's own inputs: the state's change is stopped, another's is not;
+// the form's submit (Save) is the frame's.
+fire(state, 'change');
+fire(label, 'change');
+fire(frame, 'submit');
+// A refused PUT swaps a new frame in: both still hold.
+render();
+choose('notes');
+fire(button, 'click');
+fire(state, 'change');
+"""
+    )
+    assert out["clicks"] == [
+        [True, 0, "Choose a type to preview shop & co after this push."],
+        [True, 1, "The preview shows shop & co after this push."],
+    ]
+    notes = {**AFTER_REQUEST, "type": "notes"}
+    assert out["submits"] == [
+        after_submit(),
+        after_submit(),
+        after_submit(notes),
+        after_submit(notes),
+    ]
+    # Neither a click nor a choice ever saves the push: only its own
+    # inputs' changes and Save reach the frame.
+    assert out["frame"] == ["change:/label", "submit"]
 
 
 # The strip's promote panels as studio:status renders them, one per

@@ -8,7 +8,7 @@ strip or the page renders. These tests serve the API at ``/api/``
 ``studio_layer`` fixture)."""
 
 import json
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import pytest
 from django.urls import reverse
@@ -48,6 +48,7 @@ from .test_ui_http import HTML, grant, make_component, make_stylesheet
 
 JSON = "application/json"
 PUSH_SCOPE = "studio studio-push"
+AFTER_SCOPE = "studio studio-push-after"
 UIPUSH = "http://api.openteams.com/json-ld/UIPush"
 UIPUSH_PREVIEW = "http://api.openteams.com/json-ld/UIPushPreview"
 
@@ -134,6 +135,31 @@ def counts(found):
 
 def push_page_url(href):
     return href + "?ui-scope=studio"
+
+
+def after_push_parts(page):
+    """The push page's "Preview after push" (``studio:push-after``): its
+    section, the ``<template>`` holding the live-preview form, that form,
+    its inputs by name, and the preview's iframe."""
+    [section] = page.having("data-studio-push-after")
+    [template] = [e for e in page.elements if e.tag == "template" and e.within(section)]
+    [form] = [e for e in page.elements if e.tag == "form" and e.within(template)]
+    inputs = {
+        e.attrs["name"]: e for e in page.elements if e.tag == "input" and e.within(form)
+    }
+    [iframe] = [e for e in page.elements if e.tag == "iframe" and e.within(section)]
+    return section, template, form, inputs, iframe
+
+
+def after_push_request(type_slug, source, target):
+    """The live preview's request JSON as studio:promote sends it from a
+    push's page: the target as the branch, the source pushed, no drafts."""
+    return {
+        "type": type_slug,
+        "branch": target,
+        "mode": "view",
+        "after_push": {"source": source},
+    }
 
 
 def put_frame(page, href, **fields):
@@ -368,14 +394,19 @@ def test_propose_then_apply_from_push_page(studio_layer, admin_login):
     found = preview_of(page)
     assert found.within(record)
     assert counts(found)["changes"] == "2"
-    [embedded] = [
-        e
+    # The push preview is embedded twice: the review in the scope studio
+    # studio-push, and "Preview after push" (its endpoints) in studio
+    # studio-push-after.
+    embedded = {
+        e.attrs["data-scrud-scope"]: e
         for e in page.having("data-scrud-href")
         if e.attrs["data-scrud-href"].startswith(
             reverse("ui-push-previews-detail", args=["wip"])
         )
-    ]
-    assert embedded.attrs["data-scrud-scope"] == PUSH_SCOPE
+    }
+    assert sorted(embedded) == [PUSH_SCOPE, AFTER_SCOPE]
+    assert found.within(embedded[PUSH_SCOPE])
+    assert page.one("data-studio-push-after").within(embedded[AFTER_SCOPE])
     frame = root_frame(page, href)
     assert frame.tag == "form" and frame.attrs["hx-put"] == href
     [state] = [e for e in page.elements if e.attrs.get("name") == "/state"]
@@ -412,6 +443,9 @@ def test_propose_then_apply_from_push_page(studio_layer, admin_login):
     assert text_of(page.one("data-studio-push-result")) == f"Version {version} of main"
     assert not [e for e in page.elements if e.attrs.get("name") == "/state"]
     assert not page.having("data-studio-push-preview")
+    # Nor a preview of the target after it.
+    assert not page.having("data-studio-push-after")
+    assert not [e for e in page.elements if e.tag in ("template", "iframe")]
 
 
 @pytest.mark.django_db
@@ -484,7 +518,16 @@ def test_push_page_view_mode_and_restore(studio_layer, admin_login):
     assert page.one("data-studio-push").attrs["data-studio-mode"] == "view"
     assert root_frame(page, href).tag == "div"
     assert not [e for e in page.elements if e.attrs.get("name") == "/state"]
-    assert not [e for e in page.elements if e.tag in ("form", "datalist")]
+    assert not [e for e in page.elements if e.tag == "datalist"]
+    # No write form: the page's one form is the live preview's, inert in
+    # the template of "Preview after push", posting to the studio's
+    # live-preview into the sandboxed frame (it writes nothing).
+    _section, template, form, inputs, iframe = after_push_parts(page)
+    assert [e for e in page.elements if e.tag == "form"] == [form]
+    assert form.within(template)
+    assert form.attrs["action"] == reverse("scrud-studio:live-preview")
+    assert form.attrs["target"] == iframe.attrs["name"]
+    assert sorted(inputs) == ["csrfmiddlewaretoken", "request"]
     assert page.writes() == []
     assert text_of(page.one("data-studio-push-state")) == "proposed"
     assert text_of(page.one("data-studio-push-label")) == "ship it"
@@ -498,6 +541,9 @@ def test_push_page_view_mode_and_restore(studio_layer, admin_login):
         text_of(page.one("data-studio-push-source")) == "None (a restore of version 1)"
     )
     assert not page.having("data-studio-push-preview")
+    # Nor a preview after it: a restore has no source to push.
+    assert not page.having("data-studio-push-after")
+    assert not [e for e in page.elements if e.tag in ("template", "iframe")]
     assert [e for e in page.elements if e.attrs.get("name") == "/state"]
 
 
@@ -651,3 +697,134 @@ def test_published_T_has_no_promote(studio_layer, admin_login):
     [new_branch] = page.writes()
     assert "data-studio-new-branch" in new_branch.attrs
     assert new_branch.attrs["hx-post"] == reverse("ui-branches-list")
+
+
+@pytest.mark.django_db
+def test_push_after_rule_and_component(studio_layer):
+    _etag, sheet = layer_item("stylesheet", ("studio:studio", ""))
+    rules = [(r["select"], r["component"]) for r in sheet["rules"]]
+    assert (f"{AFTER_SCOPE} {UIPUSH_PREVIEW}", "studio:push-after") in rules
+    _etag, found = layer_item("component", ("studio:push-after",))
+    assert found["engine"] == "jinja2" and found["mode"] == "view"
+
+
+@pytest.mark.django_db
+@test_context
+def test_push_page_previews_target_after_push(studio_layer, admin_login):
+    main_row, _override, _wip = wip_with_changes(admin_login)
+    # main shows each to-do item with ``row``, which wip overrides.
+    make_stylesheet("s", [("ex:TodoItem", "row")])
+    proposed = store_push("wip", "main", "")
+    href = reverse("ui-pushes-detail", args=[proposed.pk])
+    page = get_page(push_page_url(href))
+    record = page.one("data-studio-push")
+    assert record.attrs["data-studio-mode"] == "edit"
+    frame = root_frame(page, href)
+    assert frame.tag == "form"
+    section, template, form, inputs, iframe = after_push_parts(page)
+    assert section.within(record) and section.within(frame)
+    assert section.attrs["data-studio-source"] == "wip"
+    assert section.attrs["data-studio-target"] == "main"
+    # It is the push preview again, embedded in the scope studio
+    # studio-push-after (its endpoints), next to the review's embed.
+    [embedded] = [
+        e
+        for e in page.having("data-scrud-scope")
+        if e.attrs["data-scrud-scope"] == AFTER_SCOPE
+    ]
+    assert embedded.attrs["data-scrud-href"] == reverse(
+        "ui-push-previews-detail", args=["wip"]
+    )
+    assert section.within(embedded)
+    assert counts(preview_of(page))["changes"] == "2"
+    assert not preview_of(page).within(embedded)
+    # The workbench's live-preview form, inside a <template> (forms do not
+    # nest, and the edit page's frame is a form): studio:promote clones it
+    # into the body to submit it into the sandboxed iframe.
+    assert form.attrs["method"] == "post"
+    assert form.attrs["action"] == reverse("scrud-studio:live-preview")
+    assert form.attrs["target"] == iframe.attrs["name"] != ""
+    assert "hidden" in form.attrs and "data-studio-preview-form" in form.attrs
+    assert sorted(inputs) == ["csrfmiddlewaretoken", "request"]
+    for found in inputs.values():
+        assert found.attrs["type"] == "hidden" and found.attrs["value"] == ""
+    assert iframe.attrs["sandbox"] == "allow-scripts"
+    assert "studio-preview" in iframe.classes()
+    assert not iframe.within(template)
+    # The type picker (studio:type-picker, embedded) and the button.
+    [select] = [e for e in page.having("data-studio-control") if e.within(section)]
+    assert select.tag == "select" and select.attrs["data-studio-control"] == "type"
+    options = [
+        e.attrs["value"]
+        for e in page.elements
+        if e.tag == "option" and e.within(select)
+    ]
+    assert options[0] == "" and "todo-lists" in options
+    [button] = page.having("data-studio-push-after-show")
+    assert button.within(section) and button.tag == "button"
+    # A button, not a submit: it never saves the push's frame.
+    assert button.attrs["type"] == "button"
+    note = page.one("data-studio-push-after-note")
+    assert text_of(note) == "Choose a type to preview main after this push."
+    # Nothing in it is a field of the push's PUT or a write.
+    assert not [
+        e
+        for e in page.having("name")
+        if e.within(section) and e.attrs["name"].startswith("/")
+    ]
+    assert not [e for e in page.writes() if e.within(section)]
+    for e in page.elements:
+        assert not [a for a in e.attrs if a.startswith("on")], e.attrs
+        if e.tag == "script":
+            assert "src" in e.attrs or e.attrs.get("type") == JSON, e.attrs
+    # What studio:promote submits to the form's action: main as it renders
+    # after the push (main alone shows its own row).
+    sent = after_push_request("todo-lists", "wip", "main")
+    for request, shown, gone in (
+        (sent, "<i>wip</i>", "<b>main</b>"),
+        ({**sent, "after_push": None}, "<b>main</b>", "<i>wip</i>"),
+    ):
+        When.http.post(
+            form.attrs["action"],
+            data=urlencode({"csrfmiddlewaretoken": "", "request": json.dumps(request)}),
+            content_type="application/x-www-form-urlencoded",
+        )
+        Then.http.status_code_is(200)
+        body = Http.response.content.decode()
+        assert shown in body and gone not in body, request
+    # Nothing was pushed.
+    main_row.refresh_from_db()
+    assert main_row.content["template"] == "<b>main</b>"
+
+
+@pytest.mark.django_db
+@test_context
+def test_push_page_has_no_after_push_preview_without_studio_urls(
+    studio_layer, admin_login, settings
+):
+    wip_with_changes(admin_login)
+    proposed = store_push("wip", "main", "")
+    # Without the studio's URLs (tests.urls) the push preview has no
+    # endpoints: the review stays, with no preview after the push.
+    settings.ROOT_URLCONF = "tests.urls"
+    href = reverse("ui-pushes-detail", args=[proposed.pk])
+    page = get_page(push_page_url(href))
+    assert counts(preview_of(page))["changes"] == "2"
+    # The second embed renders (its frame, in the scope studio
+    # studio-push-after), with nothing in it: no controls, no frame.
+    [embedded] = [
+        e
+        for e in page.having("data-scrud-scope")
+        if e.attrs["data-scrud-scope"] == AFTER_SCOPE
+    ]
+    assert embedded.attrs["data-scrud-href"] == reverse(
+        "ui-push-previews-detail", args=["wip"]
+    )
+    assert not [e for e in page.elements if e.within(embedded) and e.tag != "script"]
+    assert not page.having("data-studio-push-after")
+    assert not [
+        e
+        for e in page.elements
+        if e.tag in ("template", "iframe", "select", "form")
+        and e is not root_frame(page, href)
+    ]

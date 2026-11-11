@@ -1676,7 +1676,7 @@ rows the user may read (and add its layer conflicts).
 | `ui-branch-status/<branch>/` | `http://api.openteams.com/json-ld/UIBranchStatus` | the branch's chain, changes, conflicts, browse URL, rights, pushes, versions, actions and the studio's endpoints |
 | `ui-type-catalog/all/` | `http://api.openteams.com/json-ld/UITypeCatalog` | the registered types |
 | `ui-selectable-branches/mine/` | `http://api.openteams.com/json-ld/UISelectableBranches` | the branches the user may select |
-| `ui-push-previews/<source>/?target=<name>` | `http://api.openteams.com/json-ld/UIPushPreview` | what a push would change ([below](#what-a-push-will-change)) |
+| `ui-push-previews/<source>/?target=<name>` | `http://api.openteams.com/json-ld/UIPushPreview` | what a push would change, and the studio's endpoints ([below](#what-a-push-will-change)) |
 
 `<branch>` is a selection value: a branch name, or `<name>@pinned` for the
 branch at its branching point. The catalog's only key is `all` and the picker's
@@ -1884,7 +1884,8 @@ the author applies or proposes it. It computes the same plan the push writes
  "unreadable_changes": 1,
  "conflicts": [{"kind": "component", "key": ["row"],
                 "base": "3f…", "current": "9a…"}],
- "unreadable_conflicts": 1}
+ "unreadable_conflicts": 1,
+ "endpoints": {"live_preview": "/studio/live-preview", "…": "…"}}
 ```
 
 - `changes` are the push's writes into the target, in the order it makes
@@ -1914,6 +1915,10 @@ the author applies or proposes it. It computes the same plan the push writes
   into a branch pinned to a missing version) is a 400 `ui-branch-invalid`, as
   the push is. It does not check the grants the
   push's writes need: applying it checks them (403 `ui-push-forbidden`).
+- `endpoints` are the studio's endpoints, the same map as the
+  branch status's `endpoints` ([above](#studio-data-as-computed-resources)) (`null` when the studio's
+  URLs are not included): a push's page previews the target after the push
+  with its `live_preview`.
 
 ## Self-hosted studio
 
@@ -1970,7 +1975,9 @@ page links them: every selector of the CSS is under a `.studio` class or a
 `[data-studio…]` attribute, and each script does nothing unless the page has a
 `[data-studio-workbench]` element, with one exception: on a push's page (a
 `[data-studio-push]` element) `studio:promote` stops the `change` of the
-push's state input, and does nothing else. No layer component has an inline
+push's state input and of the preview controls, and previews the target
+after the push ([the push page](#promote-and-push-records)), and does
+nothing else. No layer component has an inline
 script or an event handler attribute, so a `script-src 'self'` policy works. A
 branch overrides any of these items by name, as it does any layer item (see
 [Editing the studio](#editing-the-studio)).
@@ -2511,12 +2518,35 @@ restore of version N)"), target, state, label and result ("Version N of
 <target>", or "Not applied yet"), and, for a push with a source that is not
 yet applied (it has no `result`), an embed of
 `api_url("ui-push-previews", source)` with `?target=<target>` in the scope
-`studio studio-push`: what it will change, as the panel shows it. The push
-page has no preview of the target after the push: that is "Preview after
-push" in the source branch's workbench, in its "Promote to <target>…" panel
-(open the source's workbench from the [branch picker](#the-workbench); see
-the follow-up
-[studio-push-page-after-preview](follow-ups.md#studio-push-page-after-preview)).
+`studio studio-push`: what it will change, as the panel shows it.
+
+For the same push (one with a source, not yet applied), in either mode, the
+page also previews the target after the push. It embeds the push preview a
+second time, in the scope `studio studio-push-after`, which the layer's
+stylesheet takes to `studio:push-after` (so a page computes the push's plan
+twice: once for the review, once for this). That component renders only when
+the push preview's `endpoints` are not `null` (the studio's URLs are
+included): `<section class="studio-push-after" data-studio-push-after
+data-studio-source="<source>" data-studio-target="<target>">` with the type
+picker (`studio:type-picker`, an embed of `api_url("ui-type-catalog",
+"all")` in the scope `studio studio-types`), a "Preview after push" button
+(`type="button"`, `data-studio-push-after-show`), a note
+(`data-studio-push-after-note`), the workbench's live-preview form
+(`method="post"`, `action` the endpoints' `live_preview`, `target` the
+iframe's name, hidden inputs `csrfmiddlewaretoken` and `request`) inside a
+`<template data-studio-push-after-form>`, and an `<iframe
+sandbox="allow-scripts">`. The form is in a template because forms do not
+nest: in edit mode the push's frame is a form, and a browser drops a form
+written inside it. Choosing a type, or the button with a type chosen, makes
+`studio:promote` clone the template's form into the document's body (once,
+then reuse it), fill its token from the page's `csrf-token` meta tag and its
+`request` with `{"type": <slug>, "branch": <target>, "mode": "view",
+"after_push": {"source": <source>}}` (never drafts), and submit it into the
+iframe: the target as it renders with the source's overrides pushed, as
+"Preview after push" in the source's workbench shows it. The live preview
+needs `GET` on both branches, and a refusal (a 403) shows in the frame as
+the endpoint answers it. The note then says "The preview shows <target>
+after this push."; without a type, nothing is sent and it asks for one.
 
 In edit mode (a user who may `PUT` the push), a push not yet applied also has
 a state form in the frame's `<form>`: a text input named `/state`, with a
@@ -2526,7 +2556,9 @@ Save (or Enter in the input) saves: the input carries
 `data-studio-push-state-input`, and on a page with `[data-studio-push]` the
 script `studio:promote` stops its `change` on the document (in the capture
 phase) before the frame's form sees it, so choosing `applied` and leaving
-the field writes nothing. A move the server refuses, such as one a
+the field writes nothing. It stops the `change` of every control of
+"Preview after push" the same way, so choosing a type never saves the
+push. A move the server refuses, such as one a
 workflow policy forbids (Requiring approval, under
 [Pushing and restoring](#pushing-and-restoring)), is re-rendered with the
 server's message and the submitted state ([Refused writes](#refused-writes)).
