@@ -2412,7 +2412,13 @@ the rule that chose it, a rule the user can't read, or the built-in
 fallback), and every rule that matched, best first, as `<outcome>:
 <selector> -> <component> (stylesheet <name>[ on <branch>][, applies to
 <context>])`, or `<outcome>: a rule you can't read (rank [...])`. A refused
-request shows the server's text (a problem's `title` and `detail`).
+request shows the server's text (a problem's `title` and `detail`). When a
+write from the workbench succeeds (an action such as an override, Pull, Apply
+or Propose, or a save in the editor), the script `studio:studio` fetches the
+items, the strip and the preview again and dispatches `studio:written` on the
+workbench; the selected node, if there is one, is then explained again, so the
+verdict follows the write without a reload (an answer to an earlier request
+is dropped, as above).
 
 Under it, on a working branch T (none at all on a published T):
 

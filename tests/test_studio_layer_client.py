@@ -2128,6 +2128,81 @@ out.stale = texts(explainBox);
     assert all(row[1] != "Node /a" for row in out["stale"])
 
 
+AFTER_WIN = {**EXPLAINED["rules"][1], "branch": "testing-admin"}
+
+
+def test_explanation_fetched_again_after_a_write():
+    """After an override and after a promote, the inspector still named the
+    old winner's branch until a reload: a successful write from the
+    workbench (the one that fetches the items, the strip and the preview
+    again) asks `explain` again for the selected node. Nothing is asked
+    with no node selected, after a refused write or a GET, and an answer to
+    the explain the write superseded is dropped."""
+    out = inspector_scenario(
+        r"""
+const ok = (elt, verb) => fire(elt, 'htmx:afterRequest', {
+  elt, successful: true, requestConfig: {verb}, xhr: {status: 200}});
+// Nothing selected: a write asks nothing.
+ok(override, 'post');
+out.unselected = fetched();
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+reset();
+out.fetches = [];
+// The override succeeds: the node is explained again.
+ok(override, 'post');
+out.afterWrite = [fetched(), texts(explainBox)[0]];
+await respond(200, AFTER);
+out.rendered = texts(explainBox);
+out.fetches = [];
+// A GET, and a refused write, ask nothing.
+ok(pull, 'get');
+fire(pull, 'htmx:afterRequest', {elt: pull, successful: false,
+  requestConfig: {verb: 'put'}, xhr: {status: 403, responseText: '',
+  getResponseHeader: () => null}});
+out.ignored = fetched();
+// A write while an explain is in flight: the older answer is dropped.
+select('/items/1', SAMPLE);
+ok(pull, 'put');
+out.both = fetched();
+await respond(200, Object.assign({}, EXPLAINED, {pointer: '/stale'}));
+out.stale = texts(explainBox)[0];
+await respond(200, Object.assign({}, AFTER, {pointer: '/items/1'}));
+out.fresh = texts(explainBox)[0];
+""".replace("SAMPLE", repr(SAMPLE_HREF))
+        .replace("EXPLAINED", json.dumps(EXPLAINED))
+        .replace(
+            "AFTER",
+            json.dumps(
+                {
+                    **EXPLAINED,
+                    "rules": [EXPLAINED["rules"][0], AFTER_WIN, EXPLAINED["rules"][2]],
+                }
+            ),
+        ),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["unselected"] == []
+    urls, first = out["afterWrite"]
+    [url] = urls
+    assert query_of(url, EXPLAIN_PATH) == explain_query("/items/0")
+    assert first == ["p", "Explaining /items/0...", []]
+    verdict = [row for row in out["rendered"] if "chosen by" in row[1]]
+    assert verdict == [
+        [
+            "p",
+            "Component row, chosen by ex:TodoItem (stylesheet s on testing-admin).",
+            [],
+        ]
+    ]
+    assert out["ignored"] == []
+    selected, again = out["both"]
+    assert query_of(selected, EXPLAIN_PATH) == explain_query("/items/1")
+    assert query_of(again, EXPLAIN_PATH) == explain_query("/items/1")
+    assert out["stale"] == ["p", "Explaining /items/1...", []]
+    assert out["fresh"] == ["p", "Node /items/1", []]
+
+
 def test_edit_this_component_opens_the_tree_entry():
     out = inspector_scenario(
         r"""
