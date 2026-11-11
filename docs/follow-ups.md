@@ -816,6 +816,43 @@ config carries the response's nonce. Test: in
 `tests/test_studio_live_preview.py`, render a live preview and assert the page
 configures htmx without inline indicator styles (or with the nonce).
 
+<a id="studio-push-review-layers-branch"></a>
+## studio-push-review-layers-branch: the push review shows `branch @layers` before a create over a packaged item
+
+A push that creates the target's row of an item a packaged layer provides
+(an override of `studio:rule-row` pushed from `studio-wip` into `studio`, in
+the acceptance run) lists the layer's item as the change's `before`, and
+`studio:push-preview` shows its fields as they are, `branch` `@layers`
+included: an internal name the author never chose, where the review's
+"Before" should say the item is packaged. Test: in
+`tests/test_studio_promote.py`, render the review (scope
+`studio studio-push`) of a push that overrides a layer item and assert its
+"Before" says packaged and does not show `@layers`.
+
+<a id="studio-order-text-input"></a>
+## studio-order-text-input: Order is a text input for a stylesheet stored without `order`
+
+The rule editor's `studio:field` renders `order` as `<input type="number"
+step="1">` only when the node's schema says `integer`. For a stylesheet stored
+without an `order` (as the demo's are; it defaults to 0), the field is a text
+input, empty, while the view mode shows 0, so the input neither shows the
+value in effect nor restricts it to a number. Test: in
+`tests/test_studio_rule_editor.py`, open the editor of a stylesheet stored
+without `order` and assert the Order input has `type="number"` (and shows
+0, or a placeholder of 0).
+
+<a id="studio-client-notice-unstyled"></a>
+## studio-client-notice-unstyled: client notices are unstyled in the studio
+
+The studio's CSS item `studio:studio` styles the workbench's own notice
+(`.studio-notice`) but not the runtime's client notices
+(`.scrud-client-notice`: "Your change was not saved ...", "Your change was
+not sent ...", "This action is misconfigured."), which `scrud-ui.js` puts at
+the top of a frame, so in the editors they read as plain text above the form
+(seen in the acceptance run's step 9). Test: in `tests/test_studio_layer.py`,
+assert the layer's CSS has a rule for `.studio .scrud-client-notice` (or
+`[data-studio] .scrud-notice`).
+
 <a id="studio-promote-stale-review"></a>
 ## studio-promote-stale-review: a stale push review can enable Apply for a moment
 

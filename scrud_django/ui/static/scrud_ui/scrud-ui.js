@@ -374,9 +374,21 @@
     return [400, 403, 409, 412, 428].indexOf(status) < 0;
   }
 
-  function clearNotice(frame) {
+  // The notice that a request was refused while the frame's save was in flight
+  // (see `inFlight`): it stands beside the save's own notice, never replaces it.
+  var NOT_SENT_CLASS = 'scrud-client-notice-not-sent';
+
+  function hasClass(el, name) {
+    return String(el.className || '').split(' ').indexOf(name) >= 0;
+  }
+
+  /**
+   * Remove the client notices of `frame`: all of them, or those `only`
+   * chooses (a function of the notice element).
+   */
+  function clearNotice(frame, only) {
     Array.prototype.slice.call(frame.children || []).forEach(function (child) {
-      if (String(child.className || '').split(' ').indexOf(NOTICE_CLASS) >= 0) {
+      if (hasClass(child, NOTICE_CLASS) && (!only || only(child))) {
         frame.removeChild(child);
       }
     });
@@ -384,12 +396,22 @@
 
   /**
    * Insert a notice (the markup of the server's `scrud:notice`) at the top of
-   * `frame`, replacing a previous client notice. The text is set as text.
+   * `frame`, replacing a previous client notice of its kind. The text is set
+   * as text. `kind` is 'not-sent' for the notice of a request refused while a
+   * save was in flight, which is kept beside the other client notice (the
+   * save's failure, which htmx may report before or after it): neither
+   * replaces the other.
    */
-  function showNotice(frame, text) {
-    clearNotice(frame);
+  function showNotice(frame, text, kind) {
+    var notSent = kind === 'not-sent';
+    clearNotice(frame, function (child) {
+      return hasClass(child, NOT_SENT_CLASS) === notSent;
+    });
     var notice = document.createElement('div');
-    notice.className = 'scrud-notice scrud-notice-error ' + NOTICE_CLASS;
+    notice.className =
+      'scrud-notice scrud-notice-error ' +
+      NOTICE_CLASS +
+      (notSent ? ' ' + NOT_SENT_CLASS : '');
     notice.setAttribute('role', 'alert');
     notice.textContent = text;
     frame.insertBefore(notice, frame.firstChild);
@@ -605,7 +627,13 @@
   // (`htmx:confirm`), and the frame that answers the request in flight says
   // the change was not sent (`htmx:afterRequest`, which htmx dispatches on
   // the replaced frame's parent, with that parent as `elt`: the request's
-  // frame is found by its xhr).
+  // frame is found by its xhr). That notice stands beside a failure notice
+  // of the save itself (`failed`, before afterRequest for an error response,
+  // after it for a network error). When the save is answered with a
+  // reload (a 412, or a DELETE's 409), what replaces the frame is not a
+  // frame: no notice is shown, and the stale notice and the reloaded frame
+  // follow. A second click on Save while the first is in flight is refused
+  // with the notice too, although the first save carried the same change.
   var inFlight = new WeakSet();
   var frameOfXhr = new WeakMap();
   var refusedInFlight = new WeakSet();
@@ -775,7 +803,7 @@
       if (refusedInFlight.has(sender)) {
         refusedInFlight.delete(sender);
         var now = frameNow(sender);
-        if (now) showNotice(now, NOT_SENT);
+        if (now) showNotice(now, NOT_SENT, 'not-sent');
       }
     }
     if (!detail.successful || verb !== 'delete') {

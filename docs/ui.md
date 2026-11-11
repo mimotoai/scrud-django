@@ -633,7 +633,14 @@ named by JSON Pointer (`name="/items/0/text"`):
   request ends, the frame that answers it (or the frame itself, when nothing
   replaced it) shows a client notice: "Your change was not sent: an earlier
   save of this item was still in progress. Make the change again." The page
-  then shows the saved state, without the change.
+  then shows the saved state, without the change. When that save failed with
+  a client notice of its own (a 5xx, a network error), both notices are
+  shown: neither replaces the other. When it is answered with a reload (a
+  412, or a DELETE's 409), what replaces the frame is no frame, so there is
+  no "not sent" notice: the stale notice and the reloaded frame follow,
+  without the change. A second click on Save while the first save is in
+  flight is refused with the notice too, although the first save carried the
+  same change.
 
 Custom components that want to be editable need only render inputs named by
 their JSON Pointer inside the frame.

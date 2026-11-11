@@ -617,12 +617,32 @@ const quiet = request(fresh, {type: 'submit', target: fresh});
 finish(fresh, quiet);
 out.quiet = notices(fresh);
 
-// A frame still in the page when its request ends (a network failure) gets
-// the notice itself.
+// A frame still in the page when its save fails gets the notice itself,
+// beside the save's own failure notice, in the order htmx 2.0.4 reports
+// them. A network failure: afterRequest, then sendError.
+const failedSave = (name, elt, sent) =>
+  handlers[name]({detail: {elt, xhr: sent.xhr, requestConfig: {verb: 'put'}}});
 const kept = request(fresh, {type: 'submit', target: fresh});
 out.keptRefused = confirm(fresh, {type: 'change', target: fresh});
+kept.xhr.status = 0;
 finish(fresh, kept);
+failedSave('htmx:sendError', fresh, kept);
 out.kept = notices(fresh);
+
+// An error response that is not swapped (a 500): responseError, then
+// afterRequest.
+fresh.children = fresh.children.filter((c) => c.attrs.role !== 'alert');
+const broken = request(fresh, {type: 'submit', target: fresh});
+out.brokenRefused = confirm(fresh, {type: 'change', target: fresh});
+broken.xhr.status = 500;
+failedSave('htmx:responseError', fresh, broken);
+finish(fresh, broken);
+out.broken = notices(fresh);
+
+// The next request clears both.
+const next = request(fresh, {type: 'submit', target: fresh});
+out.cleared = notices(fresh);
+finish(fresh, next);
 console.log(JSON.stringify(out));
 """
 )
@@ -647,8 +667,17 @@ def test_request_refused_while_frame_save_in_flight_says_not_sent():
     assert out["otherNotices"] == []
     assert out["afterwards"] is False
     assert out["quiet"] == []
+    # A failed save keeps its own notice beside the not-sent one: the user
+    # must not read the not-sent notice as "the earlier save went through".
     assert out["keptRefused"] is True
-    assert out["kept"] == [not_sent]
+    assert sorted(out["kept"]) == sorted(
+        [not_sent, "Your change was not saved (network error)."]
+    )
+    assert out["brokenRefused"] is True
+    assert sorted(out["broken"]) == sorted(
+        [not_sent, "Something went wrong (HTTP 500). Reload to see the current state."]
+    )
+    assert out["cleared"] == []
 
 
 @pytest.mark.django_db
