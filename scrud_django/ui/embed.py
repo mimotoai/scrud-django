@@ -229,11 +229,15 @@ def _same_site(request, parts) -> bool:
 def _scope_chain(scope) -> tuple[str, ...] | None:
     """The scope chain `scope` names (a string of names, or a list or tuple
     of names, as `renderer.parse_scope_chain` reads a header's), ``()`` for
-    none; ``None`` when it is not one: not a string or a list of strings,
-    more than ``MAX_SCOPES`` names, or a name that is not one."""
+    none (``None`` too, as Jinja's ``none`` is no scope); ``None`` when it is
+    not one: not a string or a list of strings, more than ``MAX_SCOPES``
+    names, or a name that is not one. An undefined Jinja variable is not
+    ``None``, so a misspelt variable is refused, not read as no scope."""
     from scrud_django.ui import renderer
     from scrud_django.ui.renderer import scope_names
 
+    if scope is None:
+        return ()
     if isinstance(scope, (list, tuple)):
         if not all(isinstance(s, str) for s in scope):
             return None

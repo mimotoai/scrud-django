@@ -9,6 +9,7 @@ import json
 import logging
 import re
 
+import jinja2
 import pytest
 from django.test import RequestFactory
 from django.urls import reverse
@@ -733,12 +734,17 @@ def test_embed_with_an_invalid_scope_or_mode_is_refused(
     url = url_of(todo_list)
     assert "Buy milk" in str(embed(url, mode="view"))
     assert "Buy milk" in str(embed(url, scope=["a", "b-2"]))
+    # None (Jinja's ``none``) is no scope, like the default; not refused.
+    assert str(embed(url, scope=None)) == str(embed(url))
+    assert "Buy milk" in str(embed(url, scope=None))
     bad = [
         {"scope": 3},
         {"scope": ["a", 3]},
         {"scope": " ".join(f"s{i}" for i in range(MAX_SCOPES + 1))},
         {"scope": "a 9nine"},
         {"scope": ["a;b"]},
+        # A misspelt Jinja variable is Undefined, not None: refused.
+        {"scope": jinja2.Undefined(name="sidbar")},
         {"mode": "edit"},
         {"mode": "View"},
         {"mode": ""},

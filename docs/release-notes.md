@@ -83,9 +83,13 @@
   user (RBAC, workflow and masking apply), in a given scope chain and view
   mode, with depth and per-response count limits, and cycles refused, as are
   a scope that is not a scope chain and a mode other than `"view"`. Without a
-  `scope`, the embedded path's own `?ui-scope=` applies. An embedded view that
-  raises is logged at ERROR (with `got_request_exception` sent) and runs in a
-  savepoint, so a database error in it leaves the page's transaction usable.
+  `scope` (or with `none`), the embedded path's own `?ui-scope=` applies. An
+  embedded view that raises is logged at ERROR (with `got_request_exception`
+  sent) and runs in a savepoint, so a database error in it leaves the page's
+  transaction usable. Because the signal is sent, Django's test `Client`
+  (`raise_request_exception=True`, its default) re-raises that exception in a
+  project's tests, as it does for a view that raises; the page itself shows
+  "This embed failed.".
 * JSON bodies from the browser for any method: `scrud-ui.js` can POST a
   collection (`data-scrud-json="form"`), send a fixed body
   (`data-scrud-json="fixed"`) and DELETE with JSON, keeping `If-Match`, the

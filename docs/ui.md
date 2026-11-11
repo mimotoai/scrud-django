@@ -203,9 +203,11 @@ returns that resource's HTML, the fragment its own URL answers.
   prefix's checks; an API path the prefix doesn't serve (the API root) is
   refused.
 - `scope` is the scope chain to render it in: a string of space- or
-  comma-separated names, or a list of names. One that is not a scope chain
-  (not a string or a list of strings, more than 16 names, or a name that is
-  not a scope name) is refused (below).
+  comma-separated names, or a list of names; `none` is no scope, as the
+  default `()` is. One that is not a scope chain (not a string or a list of
+  strings, more than 16 names, or a name that is not a scope name) is refused
+  (below), and so is an undefined variable, so a misspelt one is never read
+  as no scope.
   With no scope, the path's own `?ui-scope=` applies, as at its URL
   (`embed("/api/todo-lists/7/?ui-scope=sidebar")`); a `scope` given wins, as
   the header does.
