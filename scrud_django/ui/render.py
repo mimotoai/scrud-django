@@ -32,6 +32,7 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.mixins.view_mixins import max_body_depth
 from scrud_django.ui import ld
 from scrud_django.ui.authz import ALLOWED, POSSIBLY, decisions_for
+from scrud_django.ui.branches.effective import safe_mode
 from scrud_django.ui.branches.selection import frame_branch, in_mount
 from scrud_django.ui.cascade import (
     BUILTIN_PREFIX,
@@ -768,8 +769,9 @@ def _frame(
 ):
     """The frame of a resource (or of a node of it). `branch`, unless
     ``None``, is its ``data-scrud-branch`` (`selection.frame_branch`): the
-    branch its requests send (``Scrud-UI-Branch``). A `preview`'s frame has
-    no write attributes and is a ``div``."""
+    branch its requests send (``Scrud-UI-Branch``). In safe mode it has
+    ``data-scrud-safe="1"``. A `preview`'s frame has no write attributes and
+    is a ``div``."""
     attributes = [
         ("class", "scrud-resource"),
         ("data-scrud-href", href),
@@ -777,6 +779,9 @@ def _frame(
         ("data-scrud-scope", " ".join(scope_chain)),
         ("data-scrud-pointer", pointer),
         *([("data-scrud-branch", branch)] if branch is not None else []),
+        # In safe mode: scrud-ui.js then sends `SAFE_HEADER` on the frame's
+        # requests, which target its URL without ``?ui-safe=1``.
+        *([("data-scrud-safe", "1")] if safe_mode() else []),
     ]
     writes = mode == "edit" and not preview
     if writes:

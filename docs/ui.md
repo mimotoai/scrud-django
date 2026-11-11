@@ -638,10 +638,11 @@ writes: PUT, POST and DELETE are a 405.
 | `Scrud-UI-Scope` | The root scope chain, outermost first: up to 16 space- or comma-separated scope names. An invalid value is ignored. The same chain may come in the URL as `?ui-scope=sidebar,main`; the header wins. |
 | `Scrud-UI-Mode` | `view` renders the resource (or each item of a list) read-only even for a user who may PUT it: no form, no `hx-put`. It only lowers what the user may do: `view` is the only valid value, any other (`edit`) is a 400, before a PUT writes anything. The same may come as `?ui-mode=view`; the header wins. |
 | `Scrud-UI-Pointer` | The JSON Pointer of the node to render (default `""`). An invalid pointer (or one over 1024 characters) is a 400, before a PUT writes anything. |
+| `Scrud-UI-Safe` | `1` renders in [safe mode](#safe-mode), as `?ui-safe=1` does; any other value is ignored. scrud-ui.js sends it on the requests of a safe page. |
 
 These select presentation only, never what is authorized. HTML responses carry
 `Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer, Scrud-UI-Mode,
-Scrud-UI-Branch, Cookie` (the branch a page browses comes from a header or a cookie) and
+Scrud-UI-Branch, Scrud-UI-Safe, Cookie` (the branch a page browses comes from a header or a cookie) and
 `Cache-Control: private, no-cache, no-store` (a page and its fragments share
 one ETag, so a cache must not keep either; the ETag stays, and the client sends
 it as `If-Match`). An error is the same status as JSON (401, 403, 404, ...) with
@@ -988,6 +989,15 @@ that a page component can't leave out (as with the branch banner, a page
 component that does is replaced by the built-in). The page's CSS and JavaScript
 URLs carry `?ui-safe=1` and serve the packaged layers' items only. Links inside
 the page do not carry the parameter: add it again to follow them.
+
+The page's own requests stay safe: a safe page marks its frames and its hidden
+`.scrud-branch-page` element with `data-scrud-safe="1"`
+(`<div class="scrud-branch-page" data-scrud-safe="1" hidden></div>`, with
+`data-scrud-branch` too when the page has a branch), and scrud-ui.js sends
+`Scrud-UI-Safe: 1` on every request from such a page (a frame's `PUT`, the
+reload after a 412, a refresh), which the server honours as `?ui-safe=1`, so
+the URLs stay clean. Like the parameter, the header only changes HTML: a JSON
+answer is the same with or without it.
 
 In code, `scrud_django.ui.branches.effective.using_safe_mode()` turns it on for
 a block (a context variable, so in-process work during the render sees it too),

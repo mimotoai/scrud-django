@@ -589,12 +589,23 @@
     return own ? own.getAttribute('data-scrud-branch') : null;
   }
 
+  /**
+   * Whether `elt` is on a page rendered in safe mode: it or an ancestor (its
+   * frame) has data-scrud-safe, or the page's .scrud-branch-page does. Its
+   * requests target URLs without ?ui-safe=1, so they send Scrud-UI-Safe.
+   */
+  function safeOf(elt) {
+    if (elt && elt.closest && elt.closest('[data-scrud-safe]')) return true;
+    return !!document.querySelector('.scrud-branch-page[data-scrud-safe]');
+  }
+
   document.addEventListener('htmx:configRequest', function (evt) {
     var detail = evt.detail;
     var headers = detail.headers;
     var verb = String(detail.verb).toLowerCase();
     setDefault(headers, 'Accept', 'text/html');
     setDefault(headers, 'Scrud-UI-Branch', branchOf(detail.elt));
+    if (safeOf(detail.elt)) setDefault(headers, 'Scrud-UI-Safe', '1');
     if (verb === 'get') return;
     setDefault(headers, 'X-CSRFToken', csrfToken());
     var mode = jsonMode(detail.elt);

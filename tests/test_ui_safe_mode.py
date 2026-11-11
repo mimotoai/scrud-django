@@ -202,3 +202,76 @@ def test_safe_mode_css_and_js_are_layer_only(todo_list, todo_reader_login):
         get_js(stored_js + SAFE, status=404)
         assert get_css(stored_css).content == b"h1 { color: red }"
         assert get_js(stored_js).content == b"window.stored = 1;"
+
+
+SAFE_HEADER = {"HTTP_SCRUD_UI_SAFE": "1"}
+SAFE_PAGE_MARK = '<div class="scrud-branch-page" data-scrud-safe="1" hidden></div>'
+
+
+def without_csrf(page):
+    """`page` without its CSRF token, and without the ``ui-safe=1`` that
+    the banner's links copy from the page's own query."""
+    page = page.replace("?ui-safe=1&amp;", "?")
+    return re.sub(r'name="csrf-token" content="[^"]*"', "", page)
+
+
+@pytest.mark.django_db
+@test_context
+def test_safe_header_enables_safe_mode_like_the_parameter(todo_list, todo_reader_login):
+    """The page's own fragment requests (a frame's PUT, the 412 reload, a
+    refresh) target the path without the query: they send ``Scrud-UI-Safe:
+    1``, which the server honours as ``?ui-safe=1``."""
+    setup_stored(todo_reader_login)
+    url = api_url(todo_list)
+    for headers in ({}, {BRANCH_HEADER: "wip"}):
+        page = get_html(url, **SAFE_HEADER, **headers)
+        assert without_csrf(page) == without_csrf(get_html(url + SAFE, **headers))
+        assert NOTICE in page
+        assert "<h2>Groceries" not in page and "<h1>Groceries" not in page
+        # A fragment too.
+        When.http.get(
+            url,
+            HTTP_ACCEPT="text/html",
+            HTTP_HX_REQUEST="true",
+            **SAFE_HEADER,
+            **headers,
+        )
+        Then.http.status_code_is(200)
+        fragment = html_of_response()
+        assert "<h2>Groceries" not in fragment and "<h1>Groceries" not in fragment
+        assert "Groceries" in fragment
+    assert "Scrud-UI-Safe" in Http.response["Vary"]
+    # Any other value is ignored.
+    page = get_html(url, HTTP_SCRUD_UI_SAFE="yes", **{BRANCH_HEADER: "wip"})
+    assert "<h2>Groceries" in page and NOTICE not in page
+    # JSON is not affected.
+    plain = get_json(url)
+    assert get_json(url, **SAFE_HEADER) == plain
+
+
+@pytest.mark.django_db
+@test_context
+def test_safe_pages_mark_themselves(todo_list, todo_reader_login):
+    """A safe page marks its chrome and its frames (``data-scrud-safe``), so
+    that scrud-ui.js sends the safe header on its requests; a page that is
+    not safe has no mark."""
+    setup_stored(todo_reader_login)
+    url = api_url(todo_list)
+    page = get_html(url + SAFE)
+    assert SAFE_PAGE_MARK in page
+    frames = re.findall(r'<(?:form|div) class="scrud-resource"[^>]*>', page)
+    assert frames and all('data-scrud-safe="1"' in f for f in frames)
+    # With a branch, the page's branch element carries both.
+    page = get_html(url + SAFE, **{BRANCH_HEADER: "wip"})
+    assert (
+        '<div class="scrud-branch-page" data-scrud-branch="wip" data-scrud-safe="1"'
+        " hidden></div>"
+    ) in page
+    # A fragment's frames are marked too.
+    When.http.get(url, HTTP_ACCEPT="text/html", HTTP_HX_REQUEST="true", **SAFE_HEADER)
+    frames = re.findall(
+        r'<(?:form|div) class="scrud-resource"[^>]*>', html_of_response()
+    )
+    assert frames and all('data-scrud-safe="1"' in f for f in frames)
+    assert "data-scrud-safe" not in get_html(url)
+    assert "data-scrud-safe" not in get_html(url, **{BRANCH_HEADER: "wip"})

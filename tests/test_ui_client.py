@@ -633,3 +633,48 @@ def test_if_match_comes_from_the_frame_only_for_its_own_href():
     assert not out["deleteEmpty"]["prevented"]
     assert "If-Match" not in out["plainOther"]["headers"]
     assert out["plainMine"]["headers"]["If-Match"] == '"frame-tag"'
+
+
+SAFE_SCRIPT = (
+    STUB_DOM
+    + r"""
+let marker = null;
+document.querySelector = (sel) =>
+  sel === 'meta[name=csrf-token]' ? el('META', {content: 'csrf-123'})
+  : sel === '.scrud-branch-page[data-scrud-safe]' ? marker : null;
+const fire = (elt, verb) => {
+  const detail = {elt, verb, headers: {}};
+  handlers['htmx:configRequest']({detail, preventDefault() {}});
+  return detail.headers;
+};
+const page = el('MAIN', {});
+const safe = frame('/l/1/', page);
+safe.attrs['data-scrud-safe'] = '1';
+safe.attrs['hx-put'] = '/l/1/';
+const input = el('INPUT', {name: '/title'}, safe, {type: 'text', value: 'x'});
+const plain = frame('/l/2/', page);
+const reload = el('DIV', {class: 'scrud-reload', 'hx-get': '/l/2/'}, page);
+out.put = fire(safe, 'put');
+out.get = fire(safe, 'get');
+out.input = fire(input, 'put');
+out.plain = fire(plain, 'get');
+out.reload = fire(reload, 'get');
+// a safe page marks its chrome: elements outside a frame send it too
+marker = el('DIV', {class: 'scrud-branch-page', 'data-scrud-safe': '1'});
+out.reloadOnSafePage = fire(reload, 'get');
+out.plainOnSafePage = fire(plain, 'delete');
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_requests_from_a_safe_page_send_the_safe_header():
+    """A safe page's own requests target URLs without ``?ui-safe=1``: they
+    carry ``Scrud-UI-Safe: 1`` instead, from the frame's or the page's
+    ``data-scrud-safe``."""
+    require_node()
+    out = run_node(SAFE_SCRIPT)
+    for key in ("put", "get", "input", "reloadOnSafePage", "plainOnSafePage"):
+        assert out[key]["Scrud-UI-Safe"] == "1", key
+    for key in ("plain", "reload"):
+        assert "Scrud-UI-Safe" not in out[key], key

@@ -62,6 +62,7 @@ from scrud_django.ui.branches.chrome import SAFE_NOTICE, banner, confirm_page
 from scrud_django.ui.branches.css import css_urls
 from scrud_django.ui.branches.effective import (
     BRANCH_HEADER,
+    SAFE_HEADER,
     query_param,
     safe_mode,
     safe_mode_requested,
@@ -115,6 +116,7 @@ VARY = (
     POINTER_HEADER,
     MODE_HEADER,
     BRANCH_HEADER,
+    SAFE_HEADER,
     "Cookie",
 )
 
@@ -602,7 +604,9 @@ def _page(
     is put at the top of the body, and in safe mode its notice (`SAFE_NOTICE`).
     So is the page's branch (`frame_branch`)
     when it has one, on a hidden ``.scrud-branch-page`` element, for the
-    requests of elements outside any frame. A page component that leaves
+    requests of elements outside any frame; in safe mode the element is
+    there with ``data-scrud-safe="1"``, so that those requests send
+    `SAFE_HEADER`. A page component that leaves
     them out is replaced by the built-in. (Branch CSS, or a component that
     wraps the body in a hidden element, can still hide the banner: follow-up
     ``ui-banner-hideable``.)
@@ -613,16 +617,20 @@ def _page(
     ``embed`` (`embed.embed_for`)."""
     chrome = []
     branch = frame_branch(request) if chosen is not None else None
-    if branch is not None:
+    safe = safe_mode()
+    if branch is not None or safe:
         chrome.append(
             format_html(
-                '<div class="scrud-branch-page" data-scrud-branch="{}" hidden></div>',
-                branch,
+                '<div class="scrud-branch-page"{}{} hidden></div>',
+                format_html(' data-scrud-branch="{}"', branch)
+                if branch is not None
+                else "",
+                mark_safe(' data-scrud-safe="1"') if safe else "",
             )
         )
     if chosen is not None and (chosen.refused or not is_published(chosen, request)):
         chrome.append(banner(chosen, request))
-    if safe_mode():
+    if safe:
         chrome.append(SAFE_NOTICE)
     chrome = mark_safe("".join(chrome)) if chrome else None
     if chrome is not None:

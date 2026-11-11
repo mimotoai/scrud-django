@@ -36,6 +36,9 @@ BRANCH_HEADER = "Scrud-UI-Branch"
 BRANCH_PARAMETER = "ui-branch"
 PINNED_SUFFIX = "@pinned"
 SAFE_PARAMETER = "ui-safe"
+# Sent by scrud-ui.js on the requests of a safe page (``data-scrud-safe``):
+# the page's own fragment requests target the path without the query.
+SAFE_HEADER = "Scrud-UI-Safe"
 
 
 @dataclass(frozen=True)
@@ -216,9 +219,13 @@ def query_param(request, name: str) -> str | None:
 
 
 def safe_mode_requested(request) -> bool:
-    """Whether `request` asks for safe mode: ``?ui-safe=1``. Any other
-    value is ignored."""
-    return query_param(request, SAFE_PARAMETER) == "1"
+    """Whether `request` asks for safe mode: ``?ui-safe=1``, or the header
+    ``Scrud-UI-Safe: 1`` (`SAFE_HEADER`), which the requests of a safe page
+    send. Any other value is ignored."""
+    if query_param(request, SAFE_PARAMETER) == "1":
+        return True
+    headers = getattr(request, "headers", None)
+    return headers is not None and headers.get(SAFE_HEADER) == "1"
 
 
 def chain_of(name: str, all_branches: Mapping[str, Branch]) -> list[Branch]:
