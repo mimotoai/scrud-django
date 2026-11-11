@@ -1411,7 +1411,12 @@ The response is the preview document: the frame rendered as `preview`
 renders it (no write attributes, each node in a `<scrud-node
 data-pointer>`), the branch's CSS in `<style>` elements and its JS in
 `<script>` elements, inlined, `scrud_studio/preview.css`, htmx and
-`scrud-ui.js` as a page has them, and `scrud_studio/preview-bridge.js`. The
+`scrud-ui.js` as a page has them, and `scrud_studio/preview-bridge.js`. htmx
+would insert its `.htmx-indicator` rules as a `<style>` without the nonce,
+which the policy below blocks: the document turns that off with
+`<meta name="htmx-config" content='{"includeIndicatorStyles": false}'>` and
+links the same rules from `scrud_studio/htmx-indicator.css` instead (a page
+outside the preview is unchanged). The
 drafts left out are listed in
 `<script type="application/json" id="scrud-preview-errors">` as
 `[{"kind", "name", "messages"}]`, where `messages` are what the save would

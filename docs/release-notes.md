@@ -102,7 +102,9 @@
   the element's own `data-scrud-etag` (an empty one sends none).
 * Studio additions in `scrud_django.ui.studio`: a live preview that renders
   unsaved drafts of items layered over a branch, marks the nodes a rule
-  wins or loses, and runs in an opaque-origin sandbox; and computed studio
+  wins or loses, and runs in an opaque-origin sandbox (htmx's indicator
+  rules come from a static file there, since its CSP allows no inline style
+  without the nonce); and computed studio
   data, `ui-branch-items/<branch>/`, `ui-branch-status/<branch>/`,
   `ui-type-catalog/all/`, `ui-selectable-branches/mine/` and
   `ui-push-previews/<source>/?target=<name>` (what a push would change,
