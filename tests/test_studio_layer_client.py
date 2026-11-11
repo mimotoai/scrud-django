@@ -2174,12 +2174,45 @@ def test_rules_below_the_winner_say_they_were_not_tried():
         **EXPLAINED,
         "rules": [*EXPLAINED["rules"][:2], edit_row, EXPLAINED["rules"][2]],
     }
+    # What is below the winner is its position in `rules` (after
+    # `winner`), not the outcome's words: with no winner nothing is, and an
+    # outcome the inspector does not know is annotated by position too.
+    no_winner = {
+        **EXPLAINED,
+        "pointer": "/items/1",
+        "winner": None,
+        "fallback": "scrud:object",
+        "rules": [
+            {**EXPLAINED["rules"][1], "outcome": "wrong mode"},
+            {**EXPLAINED["rules"][2], "outcome": "lower cascade rank"},
+        ],
+    }
+    newer = {
+        **EXPLAINED,
+        "pointer": "/items/2",
+        "winner": 0,
+        "rules": [
+            EXPLAINED["rules"][1],
+            {"readable": False, "rank": [0, 0, 1], "outcome": "a newer reason"},
+        ],
+    }
     out = inspector_scenario(
         r"""
+const listed = () => texts(explainBox).filter((row) => row[0] === 'ol')[0][2]
+  .map((li) => li[1]);
 select('/items/0', SAMPLE);
 await respond(200, EXPLAINED);
-out.rules = texts(explainBox).filter((row) => row[0] === 'ol')[0][2].map((li) => li[1]);
-""".replace("SAMPLE", repr(SAMPLE_HREF)).replace("EXPLAINED", json.dumps(explained)),
+out.rules = listed();
+select('/items/1', SAMPLE);
+await respond(200, NO_WINNER);
+out.noWinner = listed();
+select('/items/2', SAMPLE);
+await respond(200, NEWER);
+out.newer = listed();
+""".replace("SAMPLE", repr(SAMPLE_HREF))
+        .replace("EXPLAINED", json.dumps(explained))
+        .replace("NO_WINNER", json.dumps(no_winner))
+        .replace("NEWER", json.dumps(newer)),
         search=BASE + "&type=todo-lists",
     )
     assert out["rules"] == [
@@ -2191,6 +2224,73 @@ out.rules = texts(explainBox).filter((row) => row[0] === 'ol')[0][2].map((li) =>
         "less specific term (below the winner, not tried):"
         " object -> scrud:object (stylesheet studio)",
     ]
+    assert out["noWinner"] == [
+        "wrong mode: ex:TodoItem -> row (stylesheet s on alice-wip)",
+        "lower cascade rank: object -> scrud:object (stylesheet studio)",
+    ]
+    assert out["newer"] == [
+        "wins: ex:TodoItem -> row (stylesheet s on alice-wip)",
+        "a newer reason (below the winner, not tried):"
+        " a rule you can't read (rank [0,0,1])",
+    ]
+
+
+def test_new_rule_result_says_where_its_rule_ranks():
+    """Create's answer, when the new rule does not win, names its outcome
+    with the same annotation as the explanation's list: a rule below the
+    winner (by position) was not tried; one above it was, and keeps its
+    outcome as it is."""
+    made = "todo-lists-items-view"
+    mine = {
+        "readable": True,
+        "rank": [1, 0, 2, 5, 0],
+        "selector": "http://example.org/todo#TodoItem",
+        "component": made,
+        "stylesheet": "studio",
+        "branch": "alice-wip",
+        "applies_to": "",
+    }
+    winner = {**EXPLAINED["rules"][1], "selector": "row ex:TodoItem"}
+
+    def answer(rules, index):
+        return {
+            "written": [{"kind": "component", "name": made}],
+            "wins": False,
+            "explanation": {**EXPLAINED, "winner": index, "rules": rules},
+        }
+
+    below = answer([winner, {**mine, "outcome": "lower cascade rank"}], 0)
+    above = answer([{**mine, "outcome": "wrong mode"}, winner], 1)
+    out = inspector_scenario(
+        r"""
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+click(button('New rule for this node'));
+await respond(200, OPTIONS);
+const result = () => texts(newRule).slice(-1)[0][1];
+click(button('Create'));
+await respond(201, BELOW);
+out.below = result();
+await respond(200, EXPLAINED);
+click(button('Create'));
+await respond(201, ABOVE);
+out.above = result();
+""".replace("SAMPLE", repr(SAMPLE_HREF))
+        .replace("EXPLAINED", json.dumps(EXPLAINED))
+        .replace("OPTIONS", json.dumps(OPTIONS))
+        .replace("BELOW", json.dumps(below))
+        .replace("ABOVE", json.dumps(above)),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["below"] == (
+        "Created todo-lists-items-view. Its rule does not win for this node"
+        " (lower cascade rank, below the winner, not tried): it loses to"
+        " row ex:TodoItem -> row."
+    )
+    assert out["above"] == (
+        "Created todo-lists-items-view. Its rule does not win for this node"
+        " (wrong mode): it loses to row ex:TodoItem -> row."
+    )
 
 
 def test_explanation_refused_and_fallback_shown_as_text():

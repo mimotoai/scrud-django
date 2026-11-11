@@ -2427,8 +2427,9 @@ the rule that chose it, a rule the user can't read, or the built-in
 fallback), and every rule that matched, best first, as `<outcome>:
 <selector> -> <component> (stylesheet <name>[ on <branch>][, applies to
 <context>])`, or `<outcome>: a rule you can't read (rank [...])`. The outcome
-of a rule below the winner reads `<outcome> (below the winner, not tried)`:
-it says why the rule ranks lower, not whether it would serve the mode. A refused
+of a rule below the winner (one after `winner` in `rules`; none when
+`winner` is `null`) reads `<outcome> (below the winner, not tried)`: it says
+why the rule ranks lower, not whether it would serve the mode. A refused
 request shows the server's text (a problem's `title` and `detail`). When a
 write from the workbench succeeds (an action such as an override, Pull, Apply
 or Propose, or a save in the editor), the script `studio:studio` fetches the
@@ -2456,7 +2457,8 @@ Under it, on a working branch T (none at all on a published T):
   `csrf-token` meta tag, `Scrud-UI-Safe` on a safe page) with `branch` (T),
   `slug`, the preview's `mode`, `scope`, `context` and `instance`, the
   `pointer`, and the form's `match`, `inside_type`, `where`, `applies_to`
-  and `template`. On 201 it says whether the new rule wins for the node, and
+  and `template`. On 201 it says whether the new rule wins for the node (if
+  not, its outcome, annotated as in the list when it is below the winner), and
   the items, the strip, the preview and the explanation are fetched again; a
   refusal shows the server's text under the form. When the form has closed
   meanwhile (another node selected, a control changed), the answer goes to
