@@ -3523,6 +3523,54 @@ out.loads = [branchLoads(), notice.hasAttribute('hidden')];
     assert out["loads"] == [[branch_load("studio studio-branch")], True]
 
 
+def test_settings_not_refetched_over_typed_values_on_grant_change():
+    """The publish grant changing in the strip changes the scope the settings
+    are wanted in, but they hold input not saved: they are not fetched again
+    under it. The same notice offers the button that fetches them. Nothing
+    typed: fetched again at once."""
+    flip = r"""
+reset();
+status.setAttribute('data-studio-may-publish', 'true');
+fire(strip, 'htmx:afterSwap', {target: strip});
+"""
+    out = branch_scenario(
+        SETTINGS
+        + r"""
+labelInput.value = 'Typed';
+"""
+        + flip
+        + r"""
+out.kept = [branchLoads(), labelInput.value, noticeShown()];
+click(notice.children[0]);
+out.reloaded = [branchLoads(), notice.hasAttribute('hidden')];
+"""
+    )
+    loads, label, shown = out["kept"]
+    assert loads == [] and label == "Typed"
+    assert shown == [
+        False,
+        "This branch changed since its settings were loaded: they keep what"
+        " you typed, but their Save is refused until they are loaded again.",
+        [["button", "Reload settings", "button"]],
+    ]
+    assert out["reloaded"] == [
+        [branch_load("studio studio-branch studio-publish")],
+        True,
+    ]
+    # Nothing typed: fetched again at once, in the new scope.
+    out = branch_scenario(
+        SETTINGS
+        + flip
+        + r"""
+out.loads = [branchLoads(), notice.hasAttribute('hidden')];
+"""
+    )
+    assert out["loads"] == [
+        [branch_load("studio studio-branch studio-publish")],
+        True,
+    ]
+
+
 PUBLISHED_DELETE = (
     "Delete the published branch alice-wip? It is published at /shop/:"
     " deleting it takes away the site's URLs under that prefix."
