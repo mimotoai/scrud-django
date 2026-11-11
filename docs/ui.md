@@ -1538,7 +1538,11 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
  "browse_url": "/shop/todo-lists/?ui-branch=feat"}
 ```
 
-- `chain` is the branch and its ancestors, nearest first.
+- `chain` is the branch and its ancestors, nearest first: the branch, its
+  working ancestors (selecting it needs `GET` on each) and its published root
+  (which `browse_url` names anyway), then each ancestor above that root only
+  when the user may `GET` it (`main`, which everyone may select, always). A
+  published ancestor the user may not `GET` is left out.
 - `changed` are the branch's own rows the user may read (overrides, additions
   and deletion markers), as the strip lists them; none on `main`.
 - `conflicts` are those a pull listed (`with: "parent"`), then the layer

@@ -101,6 +101,32 @@ def _selected(request, key):
     return selection, branch, all_branches
 
 
+def _may_get_branch(request, branch) -> bool:
+    """Whether the user of `request` may GET `branch` (`may_get`): ``main``,
+    which everyone may select, needs no grant, as for a push."""
+    return branch.name == MAIN or may_get(request, branch)
+
+
+def _named_chain(request, branch, root, all_branches) -> list:
+    """`branch`'s chain (`chain_of`) as its status names it: the branch, its
+    working ancestors (a selectable branch's user may GET them all:
+    `selection.may_get_chain`) and its published `root` (which the browse
+    URL names anyway), then each ancestor above it only when the user may
+    GET it (`_may_get_branch`)."""
+    named = []
+    above_root = False
+    for ancestor in chain_of(branch.name, all_branches):
+        if (
+            not above_root
+            or not ancestor.published
+            or _may_get_branch(request, ancestor)
+        ):
+            named.append(ancestor)
+        if root is None or ancestor.name == root.name:
+            above_root = True
+    return named
+
+
 def _conflicts(request, branch) -> list[dict]:
     """``{kind, name, applies_to, with}`` of each conflict of `branch` on
     an own row of it the user may read: those a pull listed on it
@@ -195,7 +221,7 @@ class BranchStatusViewSet(ComputedResourceViewSet):
                 "published": branch.published,
                 "chain": [
                     {"name": b.name, "published": b.published, "prefix": b.prefix}
-                    for b in chain_of(branch.name, all_branches)
+                    for b in _named_chain(request, branch, root, all_branches)
                 ],
                 "changed": own_items(request, branch),
                 "conflicts": _conflicts(request, branch),
@@ -250,8 +276,8 @@ class PushPreviewViewSet(ComputedResourceViewSet):
             all_branches = branches()
 
             def known(name):
-                return name in all_branches and (
-                    name == MAIN or may_get(request, all_branches[name])
+                return name in all_branches and _may_get_branch(
+                    request, all_branches[name]
                 )
 
             if not known(key):

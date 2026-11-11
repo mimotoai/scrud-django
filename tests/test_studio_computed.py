@@ -26,7 +26,7 @@ from .steps import *  # noqa: F403, F401
 from .test_studio_page import CONFLICT, SLUG, section, setup_branches, store_item
 from .test_ui_branch_push import quoted
 from .test_ui_branch_types import make_branch
-from .test_ui_http import HTML, assert_html, html, make_component
+from .test_ui_http import HTML, assert_html, grant, html, make_component
 
 JSON = "application/json"
 OT = "http://api.openteams.com/json-ld/"
@@ -304,6 +304,35 @@ def test_branch_status_chain_and_browse_url(ui_alice_login):
     # No type, or an unknown one: nothing to browse.
     assert get("ui-branch-status", "wip")["browse_url"] is None
     assert get("ui-branch-status", "wip", type="nope")["browse_url"] is None
+
+
+@pytest.mark.django_db
+@test_context
+def test_branch_status_chain_hides_published_ancestors_not_readable(ui_alice_login):
+    """A published ancestor above the branch's published root is named in
+    the chain only when the user may GET it: its published root (which the
+    browse URL names anyway) and main always are."""
+    setup_branches(ui_alice_login)
+    make_branch("vault", "vault", prefix="/vault/")
+    make_branch("outlet", "project-a", parent="vault", prefix="/outlet/")
+    make_branch("feat", "alice", parent="outlet")
+    Given.http.force_authenticate(ui_alice_login)
+    status = get("ui-branch-status", "feat", type=SLUG)
+    assert status["chain"] == [
+        {"name": "feat", "published": False, "prefix": None},
+        {"name": "outlet", "published": True, "prefix": "/outlet/"},
+        {"name": "main", "published": True, "prefix": ""},
+    ]
+    assert status["browse_url"] == "/outlet/todo-lists/?ui-branch=feat"
+    # With GET on it, it is named.
+    grant(ui_alice_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "vault")
+    status = get("ui-branch-status", "feat", type=SLUG)
+    assert [b["name"] for b in status["chain"]] == ["feat", "outlet", "vault", "main"]
+    # The published root itself is always named, even without GET on it.
+    make_branch("hidden", "nobody", prefix="/hidden/")
+    make_branch("side", "alice", parent="hidden")
+    status = get("ui-branch-status", "side")
+    assert [b["name"] for b in status["chain"]] == ["side", "hidden", "main"]
 
 
 @pytest.mark.django_db
