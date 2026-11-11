@@ -1098,6 +1098,48 @@ about by key, plus a separate assertion that no unexpected write control
 appears (`Page.writes()`), so an addition fails only the test that is about
 it.
 
+<a id="studio-editor-load-race"></a>
+## studio-editor-load-race: an item still loading can land under the next item's header
+
+htmx 2.0.4 queues a second `htmx.ajax` on the same source element (the
+editor) with its "last" strategy. When item A is still loading as item B is
+opened, A's response swaps into the editor under B's header, replacing
+B's "Loading" placeholder; if B's queued GET then fails, `loadFailed`
+(`studio:studio`) finds no placeholder, so A's editable frame (which PUTs to
+A) stays under B's header. A possible fix: an `htmx:beforeSwap` guard on the
+editor that refuses a swap whose `requestConfig.path` is not the current
+`data-studio-loading` href. Test: in `tests/test_studio_layer_client.py`,
+open A, open B, swap A's frame into the editor (as htmx would deliver the
+late answer), then fail B's GET; assert no frame of A is in the editor and
+B's error text is.
+
+<a id="studio-new-rule-reopened-duplicate"></a>
+## studio-new-rule-reopened-duplicate: a form reopened before its Create answers invites a second Create
+
+Create clicked, the form closed (another node selected), and the same
+node's form opened again (restoring the kept template) before the 201
+arrives: the success marks only the old form as created. The reopened form
+shows the template just created, with "The template you typed for this node
+before is back.", counts as unsaved, and invites a duplicate Create. A
+possible fix: on success, when the form now shown has the same node key and
+its template equals the one sent, mark it created too. Test: in
+`tests/test_studio_layer_client.py`, type a template, Create, select another
+node, open the first node's form again, then answer the Create with 201;
+assert `S.unsaved()` is false and the form does not offer the created
+template as unsaved work.
+
+<a id="studio-new-rule-kept-key"></a>
+## studio-new-rule-kept-key: kept new-rule templates are keyed by type and pointer only
+
+A template typed in a new rule form that closes is kept by the preview's
+type and the node's pointer, not its instance, scope or data context, so a
+template typed for `/items/0` of one instance is restored in the form for
+`/items/0` of another instance (or another scope or context). Test: in
+`tests/test_studio_layer_client.py`, type a template for `/items/0` with
+`instance=7`, close the form, change `instance` to 8, open the form for
+`/items/0`; assert it has the default template, and that the typed one comes
+back with `instance=7` again.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>
