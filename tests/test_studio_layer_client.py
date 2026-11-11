@@ -2048,6 +2048,75 @@ out.refused = [out.ajax.length, out.submits.length, texts(newRule).slice(-1)[0]]
     assert out["innerHTML"] == 0
 
 
+def test_edit_new_component_whatever_answers_first():
+    """After a new rule, the explanation and the items tree are fetched
+    again at once. When the explanation (whose winner is the new
+    component) arrives before the tree's swap, "Edit this component"
+    appears once the tree lists it, and opens it."""
+    created = json.loads(json.dumps(EXPLAINED))
+    created["rules"][1]["component"] = "todo-lists-items-view"
+    out = inspector_scenario(
+        r"""
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+click(button('New rule for this node'));
+await respond(200, OPTIONS);
+click(button('Create'));
+await respond(201, {written: [{kind: 'component', name: 'todo-lists-items-view'}],
+  wins: true, explanation: CREATED});
+// The explanation first: the tree does not list the new component yet.
+await respond(200, CREATED);
+out.before = all(inspector, 'button').map((b) => b.text);
+// Then the items pane's swap, with the new component's entry.
+const made = {kind: 'component', name: 'todo-lists-items-view', applies_to: null,
+  href: '/workbench/ui-components/12/', override: null, reverts_to: null};
+const madeLi = el('li', {'class': 'studio-item studio-own'}, itemsFrame);
+el('button', {type: 'button', 'class': 'studio-open',
+  'data-studio-open': JSON.stringify(made)}, madeLi);
+fire(items, 'htmx:afterSwap', {target: items});
+out.after = all(inspector, 'button').map((b) => b.text);
+out.form = texts(newRule).slice(-1)[0];
+reset();
+click(button('Edit this component'));
+out.opened = [out.opened.slice(-1), state().item, out.ajax.map((a) => [a.path, a.target])];
+// A swap after another node was selected leaves its explanation alone.
+select('/title', SAMPLE);
+fire(items, 'htmx:afterSwap', {target: items});
+out.pending = texts(explainBox);
+""".replace("SAMPLE", repr(SAMPLE_HREF))
+        .replace("EXPLAINED", json.dumps(EXPLAINED))
+        .replace("OPTIONS", json.dumps(OPTIONS))
+        .replace("CREATED", json.dumps(created)),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["before"] == ["New rule for this node", "Create"]
+    assert out["after"] == [
+        "Edit this component",
+        "New rule for this node",
+        "Create",
+    ]
+    # The form and its result stay.
+    assert out["form"] == [
+        "p",
+        "Created todo-lists-items-view. Its rule now wins for this node.",
+        [],
+    ]
+    opened, item, ajax = out["opened"]
+    assert opened == [
+        {
+            "kind": "component",
+            "name": "todo-lists-items-view",
+            "applies_to": None,
+            "href": "/workbench/ui-components/12/",
+            "override": None,
+            "reverts_to": None,
+        }
+    ]
+    assert item == "component:todo-lists-items-view"
+    assert ajax == [["/workbench/ui-components/12/", "editor"]]
+    assert out["pending"] == [["p", "Explaining /title...", []]]
+
+
 def test_new_rule_off_while_pinned():
     out = inspector_scenario(
         r"""
