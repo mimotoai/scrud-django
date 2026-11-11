@@ -19,6 +19,10 @@
       "component": "studio:status"
     },
     {
+      "select": "studio studio-types http://api.openteams.com/json-ld/UITypeCatalog",
+      "component": "studio:type-picker"
+    },
+    {
       "select": "studio studio-editor http://api.openteams.com/json-ld/UIComponent",
       "component": "studio:component-editor"
     },

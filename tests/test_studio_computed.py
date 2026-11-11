@@ -178,6 +178,7 @@ def conforms(name, body):
 # The studio's endpoints at /studio/ (tests.mounted_urls).
 ENDPOINTS = {
     "live_preview": "/studio/live-preview",
+    "sample": "/studio/types/{slug}/sample",
     "explain": "/studio/types/{slug}/explain",
     "options": "/studio/types/{slug}/new-component/options",
     "new_component": "/studio/new-component",
@@ -935,6 +936,10 @@ def test_endpoints_in_status_reverse_correctly(ui_alice_login, settings):
     assert endpoints["live_preview"] == reverse("scrud-studio:live-preview")
     assert endpoints["new_component"] == reverse("scrud-studio:new-component")
     # The slug-taking routes are templates: {slug} is the type's slug.
+    # `sample` is the href of a sample's frame in the live preview.
+    assert endpoints["sample"].replace("{slug}", SLUG) == reverse(
+        "scrud-studio:sample", args=[SLUG]
+    )
     assert endpoints["explain"].replace("{slug}", SLUG) == reverse(
         "scrud-studio:explain", args=[SLUG]
     )

@@ -1710,6 +1710,7 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
                   "etag": null}},
      {"target": "main", "apply": null, "propose": null}]},
  "endpoints": {"live_preview": "/studio/live-preview",
+               "sample": "/studio/types/{slug}/sample",
                "explain": "/studio/types/{slug}/explain",
                "options": "/studio/types/{slug}/new-component/options",
                "new_component": "/studio/new-component"}}
@@ -1756,12 +1757,13 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
   layer calls, reversed from the `scrud-studio` namespace (so they include
   where its URLs are included, and are not API paths; see
   [The studio API](#the-studio-api)): `live_preview` (`POST live-preview`),
-  `explain` (`GET types/<slug>/explain`), `options`
-  (`GET types/<slug>/new-component/options`) and `new_component`
+  `sample` (`GET types/<slug>/sample`, which is also the `data-scrud-href`
+  of a sample's frame in a preview), `explain` (`GET types/<slug>/explain`),
+  `options` (`GET types/<slug>/new-component/options`) and `new_component`
   (`POST new-component`).
-  `explain` and `options` take the type's slug: they are templates in which
-  `{slug}` stands for it (replace it, URL-encoded). `endpoints` is `null` when
-  the studio's URLs are not included.
+  `sample`, `explain` and `options` take the type's slug: they are templates
+  in which `{slug}` stands for it (replace it, URL-encoded). `endpoints` is
+  `null` when the studio's URLs are not included.
 
 **Type catalog**: `{"types": [{"slug", "title", "type_uri"}]}`, every
 registered type with a slug, by slug, as the type browser lists them
@@ -1935,10 +1937,11 @@ the component `studio:page`), so a page without `?ui-scope=studio` renders as
 before. `studio:page` keeps what every page needs (the CSRF meta tag, both
 static scripts, the CSS and JS items' links, and the chrome) and wraps the body
 in `<div class="studio" data-studio>`. The layer's CSS item `studio:studio`
-and JS items `studio:studio` (order 0) and `studio:rules` (order 1, the
-[rule editor](#the-rule-editor)'s, which uses the API the first sets up) are
-effective on every branch, so every page links them: every selector of the
-CSS is under a `.studio` class or a `[data-studio…]` attribute, and each
+and JS items `studio:studio` (order 0), `studio:rules` (order 1, the
+[rule editor](#the-rule-editor)'s) and `studio:inspector` (order 2, the
+[preview pane and the inspector](#the-preview-pane-and-the-inspector)), the
+last two using the API the first sets up, are effective on every branch, so
+every page links them: every selector of the CSS is under a `.studio` class or a `[data-studio…]` attribute, and each
 script does nothing unless the page has a `[data-studio-workbench]` element. No layer component has an inline script or
 an event handler attribute, so a `script-src 'self'` policy works. A branch
 overrides any of these items by name, as it does any layer item.
@@ -2043,11 +2046,13 @@ Every action button is a [fixed-body element](#writes-from-the-browser):
 `data-scrud-etag` (the action's ETag, or empty for none) and
 `hx-swap="none"`: the script refreshes the panes after it.
 
-**The preview pane** holds a hidden
+**The preview pane** holds the preview's controls, a hidden
 `<form data-studio-preview-form method="post" target="studio-preview">` with
 `csrfmiddlewaretoken` and `request` inputs, and
 `<iframe name="studio-preview" sandbox="allow-scripts" class="studio-preview">`,
-for the live preview (`POST live-preview`, see [The studio API](#the-studio-api)).
+for the live preview (`POST live-preview`, see [The studio API](#the-studio-api)),
+and the inspector under it (see
+[The preview pane and the inspector](#the-preview-pane-and-the-inspector)).
 
 **The script** (`studio:studio`'s JS) runs only on a page with a
 `[data-studio-workbench]` element:
@@ -2096,7 +2101,14 @@ The script never sets `Scrud-UI-Branch`: its requests go through htmx, and
 `Scrud-UI-Safe`. `window.ScrudStudio` also has `state()`, `setState(changes)`
 (`null` or `""` removes a key), `itemKey(open)`, `refresh(pane)`, `reopen()`
 (open the state's `item` from the tree as it is), `contentOf(frame)` (a
-frame's own `scrud-content`, parsed, or `null`), `branch` and `published`.
+frame's own `scrud-content`, parsed, or `null`), `branch` and `published`;
+and, for the layer's other scripts, `endpoints()` (the strip's, or `null`),
+`csrfToken()` (the meta tag's), `safe()` (whether the page is in safe mode,
+as `scrud-ui.js` decides it), `fromPreview(event)` (whether a `message`
+event's `source` is the preview frame's window), `expand(pane)` (open a
+collapsed pane), `parseOpen(entry)`, `entryFor(item)` (the tree's entry for
+an `item` key, or `null`), `open(entry)` (open a tree entry, as a click on
+it does) and `errorText(xhr)` (a refused request's text).
 
 ### The editors
 
@@ -2242,3 +2254,75 @@ marked; it writes "matches N nodes, wins on M" (N the winning and losing
 nodes together, M the winning ones) as text into the counts under the rows.
 A new mark hides the counts until its preview answers; leaving the rows
 hides them.
+
+### The preview pane and the inspector
+
+**The controls.** Above the preview, the workbench embeds
+`api_url("ui-type-catalog", "all")` in the scope `studio studio-types`,
+which the layer's stylesheet takes to `studio:type-picker`: a
+`<select data-studio-control="type">` with "Choose a type" (empty) and one
+option per type (`<title> (<slug>)`, its value the slug). Beside it are a
+mode select (`data-studio-control="mode"`, `view` or `edit`), text inputs for
+the data context, the scope chain and the instance's key
+(`data-studio-control="context"`, `"scope"`, `"instance"`) and a "Pinned at
+the branching point" checkbox (`data-studio-control="pinned"`). None has a
+`name`. The script `studio:inspector` (the layer's third JS item) shows the
+URL state in them on load (a component cannot read the query). A change of
+one sets its key of the state (trimmed; empty removes it; `pinned` is `1`
+when checked), clears `pointer` and the inspector (the node was the old
+preview's), and submits the preview again; a new type also fetches the strip
+again with `?type=`.
+
+**The inspector** sits under the preview: `<section class="studio-inspector"
+data-studio-inspector>` with `<div data-studio-explain aria-live="polite">`
+and, on a working branch, `<div data-studio-new-rule hidden>` for the new
+rule form. The script accepts a `message` only from the preview frame's own
+window (`ScrudStudio.fromPreview`) and only `{"type":
+"scrud-preview:select", "pointer": <string>, "href": ...}`; anything else is
+ignored. The select names a node of the previewed resource when its `href`
+is that resource's own frame: the sample's (the strip's `endpoints.sample`
+with the type's slug) or, with an `instance`, the instance's detail (a path,
+not an absolute URL, ending in `/<slug>/<instance>/`). Any other `href` is an embedded resource,
+whose pointers are relative to it: the inspector says "Inside embedded
+resource" and the `href` (or "Not inside the previewed resource." without one),
+clears `pointer`, and does not ask `explain`. A node of the previewed
+resource sets `pointer` in the URL state (the resource itself, `""`, is no
+key) and is explained; so is the `pointer` of the URL on load.
+
+The explanation is a `GET` of `endpoints.explain` for the state's type with
+the preview's own parameters: `branch` (T, or `T@pinned` when `pinned`),
+`mode` (default `view`), `scope` (space-separated), `context`, `instance`
+(when set) and `pointer`, encoded with `URLSearchParams`, so a pointer with
+`~0`, `~1` or any reserved character reaches the server exactly. It is sent
+with `fetch` (`credentials: "same-origin"`, `Accept: application/json`, and
+`Scrud-UI-Safe: 1` on a safe page; never `Scrud-UI-Branch`); only the latest
+answer is shown. It is rendered as text only (`textContent`): the node's
+pointer, its terms and scope chain, the verdict (the winning component and
+the rule that chose it, a rule the user can't read, or the built-in
+fallback), and every rule that matched, best first, as `<outcome>:
+<selector> -> <component> (stylesheet <name>[ on <branch>][, applies to
+<context>])`, or `<outcome>: a rule you can't read (rank [...])`. A refused
+request shows the server's text (a problem's `title` and `detail`).
+
+Under it, on a working branch T (none at all on a published T):
+
+- **Edit this component**, when the winner is a rule the user can read, its
+  component is not a built-in (`scrud:`), and the items tree lists it: it
+  opens that tree entry in the editor, as a click on it does (`item` and
+  `studio:open`), opening the editor pane if it was collapsed.
+- **New rule for this node**, disabled while `pinned` is set (with a note: a
+  new rule is made on the live branch). It asks `endpoints.options` for the
+  node (the same parameters as `explain`) and shows the bootstrap studio's
+  form, built as elements: Match (the options' `matches`, the first chosen;
+  a broad label names the chosen data context), "Inside this type" (a
+  checkbox, when `inside_type` is offered), Where (anywhere, or inside one of
+  the node's scopes), Applies to (every context, or the preview's data
+  context), the name it will have, and the Jinja template, prefilled with
+  `<span>{{ value }}</span>`. Create `POST`s `endpoints.new_component` as JSON
+  (`fetch`, `credentials: "same-origin"`, `X-CSRFToken` from the page's
+  `csrf-token` meta tag, `Scrud-UI-Safe` on a safe page) with `branch` (T),
+  `slug`, the preview's `mode`, `scope`, `context` and `instance`, the
+  `pointer`, and the form's `match`, `inside_type`, `where`, `applies_to`
+  and `template`. On 201 it says whether the new rule wins for the node, and
+  the items, the strip, the preview and the explanation are fetched again; a
+  refusal shows the server's text under the form.

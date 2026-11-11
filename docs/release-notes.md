@@ -183,6 +183,25 @@
   `{"type": "scrud-preview:marks", "wins": M, "loses": L}` on load, after the
   errors message: the counts of the nodes marked as the marked rule winning
   and losing, read before the branch's scripts run (0 and 0 without a mark).
+* The workbench's preview pane and inspector, in the studio layer: a type
+  picker (`studio:type-picker`, the embedded `ui-type-catalog`) and mode, data
+  context, scope, instance and pinned controls, each of which sets the URL
+  state and submits the live preview again; and an inspector under the
+  preview that explains the node clicked in it (the bridge's select message,
+  from the preview's own window only) as text, with the preview's parameters
+  and the exact pointer, and says which embedded resource a click inside one
+  was in rather than explaining it. On a working branch it offers "Edit this
+  component" (the winning component, opened from the items tree) and "New
+  rule for this node" (the bootstrap studio's form from `options`, posted to
+  `new-component` as JSON with the CSRF token; off while pinned), and fetches
+  everything again after a new rule. The new layer JS item
+  `studio:inspector` (order 2) does this; `ScrudStudio` gains `endpoints()`,
+  `csrfToken()`, `safe()`, `fromPreview(event)` (which `studio:studio` and
+  `studio:rules` now use too), `expand(pane)`, `parseOpen(entry)`,
+  `entryFor(item)` and `open(entry)`.
+* `ui-branch-status`'s `endpoints` also have `sample` (`GET
+  types/<slug>/sample`, a template with `{slug}`), the `href` of a sample's
+  frame in a preview.
 
 ### Changed
 

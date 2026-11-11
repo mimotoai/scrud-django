@@ -12,17 +12,23 @@ record what it does; each test's scenario drives it."""
 import importlib.resources
 import json
 import subprocess
+from urllib.parse import urlsplit
 
 import pytest
+from django.http import QueryDict
+from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.registration import ResourceTypeRegistration
+from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_studio_client import BRIDGE_HARNESS, BRIDGE_JS, run_bridge, setup_wip, tree
 from .test_studio_live_preview import grant_items, live
-from .test_ui_http import make_stylesheet
+from .test_ui_branch_types import make_branch
+from .test_ui_http import grant, make_stylesheet
 from .test_ui_static import SCRUD_UI as SCRUD_UI_JS
 from .test_ui_static import require_node
 
@@ -1448,3 +1454,687 @@ def test_bridge_posts_marks(ui_alice_login, settings):
     assert done.returncode == 0, done.stderr
     loaded = json.loads(done.stdout)["loaded"]
     assert loaded[1:] == [marks_message(wins, loses)]
+
+
+# ---- the preview pane's controls and the inspector (inspector.js) --------
+
+
+def test_inspector_js_inert_without_workbench():
+    require_node()
+    out = run(with_workbench=False, file="inspector.json")
+    assert out["queries"] == ["[data-studio-workbench]"]
+    assert out["touched"] == ["document.querySelector"]
+    assert out["listeners"] == [] and out["fetches"] == 0
+    assert out["attributes"] == {}
+
+
+# The preview pane's controls (the type picker as studio:type-picker renders
+# it, in its embedded frame) and the inspector under the preview, as
+# studio:workbench renders them (no new rule form on a published T); a
+# `fetch` that records each request and answers when the scenario says
+# (`respond`); then inspector.js (argv[5]), after studio.js and rules.js.
+INSPECTOR_STUB = r"""
+const controlsBox = el('div', {'class': 'studio-preview-controls',
+  'data-studio-preview-controls': ''}, panes.preview);
+const typesFrame = el('div', {'class': 'scrud-resource',
+  'data-scrud-href': '/workbench/ui-type-catalog/all/'},
+  el('div', {'class': 'studio-types', 'data-studio-types': ''}, controlsBox));
+const control = {type: el('select', {'data-studio-control': 'type'}, typesFrame)};
+for (const slug of ['', 'todo-lists', 'notes']) {
+  el('option', {value: slug}, control.type);
+}
+control.mode = el('select', {'data-studio-control': 'mode'}, controlsBox);
+for (const name of ['context', 'scope', 'instance']) {
+  control[name] = el('input', {type: 'text', 'data-studio-control': name}, controlsBox);
+}
+control.pinned = el('input', {type: 'checkbox', 'data-studio-control': 'pinned'},
+  controlsBox);
+const inspector = el('section', {'class': 'studio-inspector',
+  'data-studio-inspector': ''}, panes.preview);
+const explainBox = el('div', {'class': 'studio-explain', 'data-studio-explain': '',
+  'aria-live': 'polite'}, inspector);
+const newRule = opts.published ? null : el('div', {'class': 'studio-new-rule',
+  'data-studio-new-rule': '', hidden: ''}, inspector);
+out.fetches = [];
+const pendingFetches = [];
+function fetch(url, init) {
+  init = init || {};
+  out.fetches.push({url: String(url), method: init.method || 'GET',
+    headers: init.headers || {}, credentials: init.credentials || null,
+    body: init.body === undefined ? null : JSON.parse(init.body)});
+  return new Promise((resolve) => pendingFetches.push(resolve));
+}
+context.fetch = fetch;
+window.fetch = fetch;
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+// Answer the oldest pending fetch, and let the script take the answer.
+async function respond(status, data, type = 'application/json') {
+  const next = pendingFetches.shift();
+  if (!next) throw new Error('stub: no fetch pending');
+  const text = typeof data === 'string' ? data : JSON.stringify(data);
+  next({ok: status >= 200 && status < 300, status,
+    headers: {get(name) { return name.toLowerCase() === 'content-type' ? type : null; }},
+    json() { return Promise.resolve(JSON.parse(text)); },
+    text() { return Promise.resolve(text); }});
+  for (let i = 0; i < 5; i += 1) await settle();
+}
+const select = (pointer, href) => post(iframe.contentWindow,
+  {type: 'scrud-preview:select', pointer, href});
+const change = (node, value) => {
+  if (node.attrs.type === 'checkbox') node.checked = value;
+  else node.value = value;
+  fire(node, 'change', undefined);
+};
+// The elements of `node` (deep) matching `sel`.
+const all = (node, sel) => node.querySelectorAll(sel);
+const button = (label) => all(inspector, 'button').filter((b) => b.text === label)[0];
+const fetched = () => out.fetches.map((f) => f.url);
+const requests = () => out.submits.map((s) => s.request);
+vm.runInContext(process.argv[5], context);
+"""
+
+ENDPOINTS = {
+    "live_preview": "/studio/live-preview",
+    "sample": "/studio/types/{slug}/sample",
+    "explain": "/studio/types/{slug}/explain",
+    "options": "/studio/types/{slug}/new-component/options",
+    "new_component": "/studio/new-component",
+}
+SAMPLE_HREF = "/studio/types/todo-lists/sample"
+EXPLAINED = {
+    "pointer": "/items/0",
+    "terms": ["http://example.org/todo#TodoItem", "object"],
+    "scope": [],
+    "winner": 1,
+    "fallback": None,
+    "rules": [
+        {"readable": False, "rank": [3, 1, 0, 2], "outcome": "missing component"},
+        {
+            "readable": True,
+            "rank": [2, 0, 1, 0],
+            "outcome": "wins",
+            "selector": "ex:TodoItem",
+            "component": "row",
+            "stylesheet": "s",
+            "branch": "alice-wip",
+            "applies_to": "",
+        },
+        {
+            "readable": True,
+            "rank": [1, 1, 0, 4],
+            "outcome": "less specific term",
+            "selector": "object",
+            "component": "scrud:object",
+            "stylesheet": "studio",
+            "branch": "",
+            "applies_to": "",
+        },
+    ],
+}
+OPTIONS = {
+    "matches": [
+        {
+            "select": "http://example.org/todo#TodoItem",
+            "label": "ex:TodoItem",
+            "broad": False,
+        },
+        {"select": "object", "label": "every object on this branch", "broad": True},
+    ],
+    "inside_type": None,
+    "where": ["row"],
+    "applies_to": ["", "project-a"],
+    "name": "todo-lists-items-view",
+}
+
+
+def inspector_scenario(script, **opts):
+    """Run studio.js, rules.js and inspector.js on the stub workbench with
+    the preview pane's controls and the inspector (`INSPECTOR_STUB`), with
+    `opts` (the endpoints are `ENDPOINTS` unless given), then `script`, an
+    async function's body (it may `await respond(...)`); return what it
+    printed (JSON)."""
+    require_node()
+    opts.setdefault("endpoints", ENDPOINTS)
+    script = (
+        "(async () => {\n"
+        + script
+        + "\nconsole.log(JSON.stringify(out));\n})().catch((e) => {"
+        " console.error(e && e.stack || e); process.exit(1); });"
+    )
+    done = subprocess.run(
+        [
+            "node",
+            "-e",
+            WORKBENCH + INSPECTOR_STUB + script,
+            layer_source(),
+            json.dumps(opts),
+            layer_source("rules.json"),
+            SCRUD_UI_JS.read_text(),
+            layer_source("inspector.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def query_of(url, path):
+    """The parameters of `url` as the server reads them (Django's
+    ``QueryDict``), after checking its path is `path`."""
+    parts = urlsplit(url)
+    assert parts.path == path, url
+    return {key: values for key, values in QueryDict(parts.query).lists()}
+
+
+def explain_query(pointer, **params):
+    """What the inspector asks `explain` for `pointer` on alice-wip."""
+    found = {"branch": ["alice-wip"], "mode": ["view"], "scope": [""], "context": [""]}
+    found.update({key: [value] for key, value in params.items()})
+    return {**found, "pointer": [pointer]}
+
+
+EXPLAIN_PATH = "/studio/types/todo-lists/explain"
+OPTIONS_PATH = "/studio/types/todo-lists/new-component/options"
+
+
+def test_csrf_token_filled_from_meta():
+    out = scenario(
+        r"""
+out.first = out.submits.map((s) => [s.action, s.token]);
+meta.setAttribute('content', 'rotated');
+reset();
+S.submitPreview({});
+out.second = out.submits.map((s) => [s.action, s.token]);
+out.inForm = token.value;
+""",
+        search=BASE + "&type=todo-lists",
+    )
+    # The node component has no csrf_token: the token is the meta tag's,
+    # read on every submit.
+    assert out["first"] == [["/studio/live-preview", "tok"]]
+    assert out["second"] == [["/studio/live-preview", "rotated"]]
+    assert out["inForm"] == "rotated"
+
+
+def test_controls_update_state_and_resubmit():
+    out = inspector_scenario(
+        r"""
+out.initial = [control.type.value, control.mode.value, control.context.value,
+  control.scope.value, control.instance.value, !!control.pinned.checked];
+reset();
+change(control.mode, 'edit');
+change(control.context, ' project-a ');
+change(control.scope, 'row card');
+change(control.instance, '12');
+change(control.pinned, true);
+out.set = [state(), requests(), out.ajax.length];
+reset();
+change(control.instance, '');
+change(control.pinned, false);
+out.cleared = [state(), requests()];
+reset();
+change(control.type, 'notes');
+out.typed = [state(), requests(), out.ajax.map((a) => a.path)];
+""",
+        search=BASE + "&type=todo-lists&mode=view&scope=row&instance=7&pointer=%2Fa",
+    )
+    assert out["initial"] == ["todo-lists", "view", "", "row", "7", False]
+    state, requests, ajax = out["set"]
+    assert state == {
+        "type": "todo-lists",
+        "mode": "edit",
+        "context": "project-a",
+        "scope": "row card",
+        "instance": "12",
+        "pinned": "1",
+    }
+    # Each change resubmits the preview (the pointer is of the old preview:
+    # it is cleared), and only a new type fetches the strip.
+    assert len(requests) == 5 and ajax == 0
+    assert requests[-1] == preview_request(
+        branch="alice-wip@pinned",
+        mode="edit",
+        scope=["row", "card"],
+        context="project-a",
+        instance=12,
+    )
+    state, requests = out["cleared"]
+    assert "instance" not in state and "pinned" not in state
+    assert requests[-1]["instance"] is None
+    assert requests[-1]["branch"] == "alice-wip"
+    state, requests, ajax = out["typed"]
+    assert state["type"] == "notes"
+    assert [r["type"] for r in requests] == ["notes"]
+    assert ajax == [f"{STATUS_SRC}?type=notes"]
+
+
+def test_select_message_from_preview_only():
+    out = inspector_scenario(
+        r"""
+reset();
+select('/items/0', SAMPLE);
+out.fromPreview = [fetched(), state().pointer || null];
+// From another window, of another shape, or not an object: ignored.
+post({}, {type: 'scrud-preview:select', pointer: '/title', href: SAMPLE});
+post(null, {type: 'scrud-preview:select', pointer: '/title', href: SAMPLE});
+post(iframe.contentWindow, {type: 'scrud-preview:select', pointer: 5, href: SAMPLE});
+post(iframe.contentWindow, {type: 'scrud-preview:errors', errors: []});
+post(iframe.contentWindow, 'scrud-preview:select');
+out.ignored = [fetched(), state().pointer];
+""".replace("SAMPLE", repr(SAMPLE_HREF)),
+        search=BASE + "&type=todo-lists",
+    )
+    urls, pointer = out["fromPreview"]
+    assert pointer == "/items/0"
+    [url] = urls
+    assert query_of(url, EXPLAIN_PATH) == explain_query("/items/0")
+    assert out["ignored"] == [urls, "/items/0"]
+
+
+def test_select_in_embedded_resource_not_explained():
+    out = inspector_scenario(
+        r"""
+select('/items/0', '/api/todo-lists/31/');
+out.embedded = [fetched(), state().pointer || null, texts(explainBox)];
+// An instance: its own frame is its detail; another is embedded.
+S.setState({instance: '7'});
+select('/title', '/api/todo-lists/7/');
+out.own = fetched();
+await respond(200, {pointer: '/title', terms: ['string'], scope: [], winner: null,
+  fallback: 'scrud:string', rules: []});
+select('/title', SAMPLE);
+out.sampleHref = [fetched().length, texts(explainBox), state().pointer || null];
+select('/title', null);
+out.noHref = [fetched().length, texts(explainBox)];
+// A list's item, of the same type and key, has an absolute URL: embedded.
+S.setState({instance: '7'});
+select('/title', 'http://testserver/api/todo-lists/7/');
+select('/title', '//testserver/api/todo-lists/7/');
+out.absolute = fetched().length;
+""".replace("SAMPLE", repr(SAMPLE_HREF)),
+        search=BASE + "&type=todo-lists",
+    )
+    urls, pointer, shown = out["embedded"]
+    # Its pointer is relative to the embedded resource: not explained, and
+    # the URL keeps no pointer.
+    assert urls == [] and pointer is None
+    assert shown == [["p", "Inside embedded resource /api/todo-lists/31/", []]]
+    [own] = out["own"]
+    assert query_of(own, EXPLAIN_PATH) == explain_query("/title", instance="7")
+    # With an instance, the sample's href is not the previewed frame.
+    count, shown, pointer = out["sampleHref"]
+    assert count == 1 and pointer is None
+    assert shown == [["p", f"Inside embedded resource {SAMPLE_HREF}", []]]
+    count, shown = out["noHref"]
+    assert count == 1
+    assert shown == [["p", "Not inside the previewed resource.", []]]
+    assert out["absolute"] == 1
+
+
+def test_pointer_with_tilde_explained_exactly_in_client():
+    """Review Focus 5: a click on a node whose pointer has ``~1`` and ``~0``
+    asks ``explain`` for that exact pointer (as the server decodes the
+    query), pinned, in the preview's mode, scope and context, with
+    ``Scrud-UI-Safe`` on a safe page."""
+    pointer = "/a~1b~0c/0/x y+z%"
+    out = inspector_scenario(
+        r"""
+select(POINTER, SAMPLE);
+out.state = state().pointer;
+out.fetch = out.fetches[0];
+""".replace("POINTER", json.dumps(pointer)).replace("SAMPLE", repr(SAMPLE_HREF)),
+        search=BASE
+        + "&ui-safe=1&type=todo-lists&mode=edit&scope=row,card&context=acme&pinned=1",
+    )
+    assert out["state"] == pointer
+    fetch = out["fetch"]
+    assert query_of(fetch["url"], EXPLAIN_PATH) == explain_query(
+        pointer,
+        branch="alice-wip@pinned",
+        mode="edit",
+        scope="row card",
+        context="acme",
+    )
+    assert fetch["method"] == "GET" and fetch["credentials"] == "same-origin"
+    # The script never sets the branch header (scrud-ui.js's is the page's).
+    assert "Scrud-UI-Branch" not in fetch["headers"]
+
+
+def test_fetches_send_safe_header_on_safe_page():
+    out = inspector_scenario(
+        r"""
+body.setAttribute('class', 'scrud-branch-page');
+select('/items/0', SAMPLE);
+body.setAttribute('data-scrud-safe', '1');
+select('/items/1', SAMPLE);
+out.headers = out.fetches.map((f) => f.headers);
+""".replace("SAMPLE", repr(SAMPLE_HREF)),
+        search=BASE + "&type=todo-lists",
+    )
+    plain, safe = out["headers"]
+    assert plain == {"Accept": "application/json"}
+    assert safe == {"Accept": "application/json", "Scrud-UI-Safe": "1"}
+
+
+def test_inspector_text_only():
+    explained = json.loads(json.dumps(EXPLAINED))
+    explained["pointer"] = "/<b>x</b>"
+    explained["terms"] = ["<img src=x onerror=alert(1)>", "object"]
+    explained["scope"] = ["<i>row</i>"]
+    explained["rules"][1]["selector"] = "<script>alert(1)</script>"
+    explained["rules"][1]["component"] = "<b>row</b>"
+    out = inspector_scenario(
+        r"""
+select('/<b>x</b>', SAMPLE);
+await respond(200, EXPLAINED);
+out.shown = texts(explainBox);
+""".replace("SAMPLE", repr(SAMPLE_HREF)).replace("EXPLAINED", json.dumps(explained)),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["innerHTML"] == 0
+    shown = out["shown"]
+    assert shown[0] == ["p", "Node /<b>x</b>", []]
+    assert shown[1] == [
+        "dl",
+        "",
+        [
+            ["dt", "Terms", []],
+            ["dd", "<img src=x onerror=alert(1)> object", []],
+            ["dt", "Scope", []],
+            ["dd", "<i>row</i>", []],
+        ],
+    ]
+    assert shown[2] == [
+        "p",
+        "Component <b>row</b>, chosen by <script>alert(1)</script>"
+        " (stylesheet s on alice-wip).",
+        [],
+    ]
+    assert shown[3] == [
+        "ol",
+        "",
+        [
+            ["li", "missing component: a rule you can't read (rank [3,1,0,2])", []],
+            [
+                "li",
+                "wins: <script>alert(1)</script> -> <b>row</b>"
+                " (stylesheet s on alice-wip)",
+                [],
+            ],
+            [
+                "li",
+                "less specific term: object -> scrud:object (stylesheet studio)",
+                [],
+            ],
+        ],
+    ]
+
+
+def test_explanation_refused_and_fallback_shown_as_text():
+    out = inspector_scenario(
+        r"""
+select('/nope', SAMPLE);
+await respond(400, {title: 'No such node', detail: 'Pointer <b>/nope</b>.'},
+  'application/problem+json');
+out.refused = texts(explainBox);
+select('/done', SAMPLE);
+await respond(200, {pointer: '/done', terms: ['boolean'], scope: [], winner: null,
+  fallback: 'scrud:boolean', rules: []});
+out.fallback = texts(explainBox);
+// A slow answer for an older select never replaces a newer one.
+select('/a', SAMPLE);
+select('/b', SAMPLE);
+await respond(200, {pointer: '/a', terms: [], scope: [], winner: null,
+  fallback: 'scrud:json', rules: []});
+out.stale = texts(explainBox);
+""".replace("SAMPLE", repr(SAMPLE_HREF)),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["refused"] == [
+        ["p", "Refused (HTTP 400): No such node: Pointer <b>/nope</b>.", []]
+    ]
+    fallback = out["fallback"]
+    assert fallback[0] == ["p", "Node /done", []]
+    assert fallback[2] == [
+        "p",
+        "No rule chose a component: it gets the built-in scrud:boolean.",
+        [],
+    ]
+    # No "Edit this component" for a built-in; "New rule for this node" is.
+    labels = [c[1] for c in fallback[-1][2]]
+    assert fallback[-1][0] == "div" and labels == ["New rule for this node"]
+    assert all(row[1] != "Node /a" for row in out["stale"])
+
+
+def test_edit_this_component_opens_the_tree_entry():
+    out = inspector_scenario(
+        r"""
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+out.labels = all(inspector, 'button').map((b) => b.text);
+click(toggles.editor);
+out.collapsedBefore = panes.editor.hasAttribute('data-studio-collapsed');
+reset();
+click(button('Edit this component'));
+out.opened = [out.opened.slice(), state().item, out.ajax.map((a) => [a.path, a.target]),
+  panes.editor.hasAttribute('data-studio-collapsed')];
+// A winner the tree does not list, or the user may not read: no action.
+const unlisted = JSON.parse(JSON.stringify(EXPLAINED));
+unlisted.rules[1].component = 'gone';
+select('/items/0', SAMPLE);
+await respond(200, unlisted);
+out.unlisted = all(inspector, 'button').map((b) => b.text);
+const unreadable = JSON.parse(JSON.stringify(EXPLAINED));
+unreadable.winner = 0;
+select('/items/0', SAMPLE);
+await respond(200, unreadable);
+out.unreadable = [all(inspector, 'button').map((b) => b.text), texts(explainBox)[2]];
+""".replace("SAMPLE", repr(SAMPLE_HREF)).replace("EXPLAINED", json.dumps(EXPLAINED)),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["labels"] == ["Edit this component", "New rule for this node"]
+    opened, item, ajax, collapsed = out["opened"]
+    assert opened == [
+        {
+            "kind": "component",
+            "name": "row",
+            "applies_to": None,
+            "href": ROW_HREF,
+            "override": None,
+            "reverts_to": "inherited",
+        }
+    ]
+    assert item == "component:row"
+    assert ajax == [[ROW_HREF, "editor"]]
+    # The editor pane opens if it was collapsed.
+    assert out["collapsedBefore"] is True and collapsed is False
+    assert out["unlisted"] == ["New rule for this node"]
+    labels, verdict = out["unreadable"]
+    assert labels == ["New rule for this node"]
+    assert verdict == ["p", "Its component is chosen by a rule you can't read.", []]
+
+
+def test_new_rule_posts_and_refreshes():
+    out = inspector_scenario(
+        r"""
+// The instance's own frame.
+select('/items/0', '/api/todo-lists/7/');
+await respond(200, EXPLAINED);
+reset();
+click(button('New rule for this node'));
+out.optionsUrl = fetched()[1];
+await respond(200, OPTIONS);
+out.form = [newRule.hasAttribute('hidden'), texts(newRule)];
+const field = (name) => all(newRule, '[data-studio-new-field="' + name + '"]')[0];
+out.defaults = ['match', 'where', 'applies_to', 'template'].map((n) => field(n).value);
+field('where').value = 'row';
+field('applies_to').value = 'project-a';
+fire(field('applies_to'), 'change', undefined);
+out.relabelled = texts(field('match')).map((o) => o[1]);
+field('template').value = '<em>{{ value.text }}</em>';
+reset();
+click(button('Create'));
+out.post = out.fetches[out.fetches.length - 1];
+await respond(201, {written: [{kind: 'component', name: 'todo-lists-items-view'}],
+  wins: true, explanation: EXPLAINED});
+out.created = [out.ajax.map((a) => a.target), out.submits.length, fetched().slice(-1),
+  texts(newRule).slice(-1)[0]];
+await respond(200, EXPLAINED);
+// A refusal shows the problem's text, and refreshes nothing.
+reset();
+click(button('Create'));
+await respond(400, {title: 'Invalid', detail: 'Bad <b>template</b>.'},
+  'application/problem+json');
+out.refused = [out.ajax.length, out.submits.length, texts(newRule).slice(-1)[0]];
+""".replace("EXPLAINED", json.dumps(EXPLAINED)).replace("OPTIONS", json.dumps(OPTIONS)),
+        search=BASE + "&type=todo-lists&scope=row&instance=7&context=project-a",
+    )
+    assert query_of(out["optionsUrl"], OPTIONS_PATH) == explain_query(
+        "/items/0", scope="row", instance="7", context="project-a"
+    )
+    hidden, form = out["form"]
+    assert hidden is False
+    labels = [row[1] for row in form]
+    assert labels[0] == "New rule for this node"
+    assert "It will be called todo-lists-items-view." in labels
+    assert out["defaults"] == [
+        "http://example.org/todo#TodoItem",
+        "",
+        "",
+        "<span>{{ value }}</span>",
+    ]
+    assert out["relabelled"] == [
+        "ex:TodoItem",
+        "every object in project-a on this branch",
+    ]
+    post = out["post"]
+    assert post["url"] == "/studio/new-component"
+    assert post["method"] == "POST" and post["credentials"] == "same-origin"
+    assert post["headers"] == {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-CSRFToken": "tok",
+    }
+    assert post["body"] == {
+        "branch": "alice-wip",
+        "slug": "todo-lists",
+        "mode": "view",
+        "scope": "row",
+        "context": "project-a",
+        "instance": "7",
+        "pointer": "/items/0",
+        "match": "http://example.org/todo#TodoItem",
+        "inside_type": False,
+        "where": "row",
+        "applies_to": "project-a",
+        "template": "<em>{{ value.text }}</em>",
+    }
+    targets, submits, last_fetch, result = out["created"]
+    # Everything again: the items, the strip, the preview and the
+    # explanation of the node.
+    assert targets == ["items", "status"] and submits == 1
+    assert query_of(last_fetch[0], EXPLAIN_PATH) == explain_query(
+        "/items/0", scope="row", instance="7", context="project-a"
+    )
+    assert result == [
+        "p",
+        "Created todo-lists-items-view. Its rule now wins for this node.",
+        [],
+    ]
+    ajax, submits, result = out["refused"]
+    assert ajax == 0 and submits == 0
+    assert result == ["p", "Refused (HTTP 400): Invalid: Bad <b>template</b>.", []]
+    assert out["innerHTML"] == 0
+
+
+def test_new_rule_off_while_pinned():
+    out = inspector_scenario(
+        r"""
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+const create = button('New rule for this node');
+out.pinned = [create.hasAttribute('disabled'), texts(explainBox).slice(-1)];
+click(create);
+out.fetched = fetched().length;
+""".replace("SAMPLE", repr(SAMPLE_HREF)).replace("EXPLAINED", json.dumps(EXPLAINED)),
+        search=BASE + "&type=todo-lists&pinned=1",
+    )
+    disabled, actions = out["pinned"]
+    assert disabled is True
+    assert actions[0][2][-1] == [
+        "p",
+        "The preview is pinned at the branching point, but a new rule is made on"
+        " the live branch. Unpin the preview to make one.",
+        [],
+    ]
+    assert out["fetched"] == 1
+
+
+def test_no_inspector_actions_when_published():
+    out = inspector_scenario(
+        r"""
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+out.shown = texts(explainBox);
+out.buttons = all(inspector, 'button').length;
+out.fetched = fetched().length;
+""".replace("SAMPLE", repr(SAMPLE_HREF)).replace("EXPLAINED", json.dumps(EXPLAINED)),
+        search=BASE + "&type=todo-lists",
+        published=True,
+    )
+    # The explanation, and no action: no "Edit this component", no "New rule
+    # for this node", and no options asked for.
+    assert [row[0] for row in out["shown"]] == ["p", "dl", "p", "ol"]
+    assert out["buttons"] == 0 and out["fetched"] == 1
+
+
+def test_pointer_restored_on_load_is_explained():
+    out = inspector_scenario(
+        r"""
+out.fetched = fetched();
+""",
+        search=BASE + "&type=todo-lists&pointer=%2Fa~1b~0c",
+    )
+    [url] = out["fetched"]
+    assert query_of(url, EXPLAIN_PATH) == explain_query("/a~1b~0c")
+
+
+@pytest.mark.django_db
+@test_context
+def test_pointer_with_tilde_explained_exactly(ui_alice_login, settings):
+    """Review Focus 5, end to end: the live preview renders a node whose
+    pointer has ``~1`` and ``~0``; the inspector, told of a click on it by
+    the bridge's select message, asks ``explain`` a URL that explains that
+    exact node."""
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+    ResourceTypeRegistration(
+        "tests://StudioTilde",
+        slug="studio-tilde",
+        schema_func=lambda: json.dumps(
+            {"type": "object", "properties": {"a/b~c": {"type": "string"}}}
+        ),
+        context_func=lambda: json.dumps({"@type": "urn:x:Tilde"}),
+        register_service=False,
+    )
+    reverse("todo-lists-list")
+    make_branch("alice-wip", "alice")
+    grant(ui_alice_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(ui_alice_login)
+    page = live(type="studio-tilde", branch="alice-wip")
+    pointer = "/a~1b~0c"
+    assert f'<scrud-node data-pointer="{pointer}">' in page
+    sample = reverse("scrud-studio:sample", args=["studio-tilde"])
+    assert f'data-scrud-href="{sample}"' in page
+    out = inspector_scenario(
+        r"""
+select(POINTER, SAMPLE);
+out.url = fetched()[0];
+""".replace("POINTER", json.dumps(pointer)).replace("SAMPLE", json.dumps(sample)),
+        search=BASE + "&type=studio-tilde",
+    )
+    When.http.get(out["url"], HTTP_ACCEPT="application/json")
+    Then.http.status_code_is(200)
+    explained = Http.response.json()
+    assert explained["pointer"] == pointer
+    assert explained["terms"] == ["string"]

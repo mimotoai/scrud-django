@@ -125,14 +125,15 @@
     },
     "endpoints": {
       "type": ["object", "null"],
-      "description": "The studio's endpoints (paths, not under the API); explain and options are templates in which {slug} stands for a type's slug. null when the studio's URLs are not included.",
+      "description": "The studio's endpoints (paths, not under the API); sample, explain and options are templates in which {slug} stands for a type's slug. null when the studio's URLs are not included.",
       "properties": {
         "live_preview": { "type": "string" },
+        "sample": { "type": "string" },
         "explain": { "type": "string" },
         "options": { "type": "string" },
         "new_component": { "type": "string" }
       },
-      "required": ["live_preview", "explain", "options", "new_component"]
+      "required": ["live_preview", "sample", "explain", "options", "new_component"]
     }
   },
   "required": [

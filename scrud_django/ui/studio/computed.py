@@ -464,9 +464,11 @@ def _actions(request, branch, content, etag, chain, may_write) -> dict:
 
 def _endpoints() -> dict | None:
     """The studio's own endpoints a self-hosted studio calls, from the
-    ``scrud-studio`` namespace: ``explain`` and ``options`` take the type's
-    slug, so they are templates in which ``{slug}`` stands for it. ``None``
-    when the studio's URLs are not included."""
+    ``scrud-studio`` namespace: ``sample``, ``explain`` and ``options`` take
+    the type's slug, so they are templates in which ``{slug}`` stands for
+    it. ``sample`` is the ``href`` of a sample's frame in a preview, which
+    tells the previewed resource's own nodes from an embedded one's.
+    ``None`` when the studio's URLs are not included."""
 
     def slugged(name):
         path = reverse(f"scrud-studio:{name}", args=[_SLUG_PLACEHOLDER])
@@ -475,6 +477,7 @@ def _endpoints() -> dict | None:
     try:
         return {
             "live_preview": reverse("scrud-studio:live-preview"),
+            "sample": slugged("sample"),
             "explain": slugged("explain"),
             "options": slugged("new-component-options"),
             "new_component": reverse("scrud-studio:new-component"),
