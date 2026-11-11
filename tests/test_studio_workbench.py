@@ -561,6 +561,32 @@ def test_items_tree_collapses_packaged_items_per_kind(studio_layer, ui_alice_log
 
 @pytest.mark.django_db
 @test_context
+def test_items_tree_kind_headings(studio_layer, ui_alice_login):
+    """Each kind of the items tree has its proper heading, as the version
+    page has them: Components, Stylesheets, CSS (the text is upper case; in
+    the system font's bold its C and S can look like lower case) and
+    JavaScript (it was "JS")."""
+    _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+    page = Page(get_page(workbench_url(alice_wip)))
+    headings = [
+        (e.parent.attrs["data-studio-kind"], e.text)
+        for e in page.elements
+        if "studio-kind-title" in e.classes()
+    ]
+    assert headings == [
+        ("component", "Components"),
+        ("stylesheet", "Stylesheets"),
+        ("css", "CSS"),
+        ("js", "JavaScript"),
+    ]
+    assert all(
+        e.tag == "h3" for e in page.elements if "studio-kind-title" in e.classes()
+    )
+
+
+@pytest.mark.django_db
+@test_context
 def test_reader_without_ui_grants_sees_no_write_controls(studio_layer, ui_alice_login):
     """Review Focus 4: a user who may GET T but holds no grant on the UI
     item types gets the workbench, without the items they can't read and

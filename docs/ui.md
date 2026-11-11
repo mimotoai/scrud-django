@@ -2104,8 +2104,9 @@ on load and whenever the picker is fetched again. The *Studio* link (see
 [Ways out](#ways-out)) lands on the studio root's workbench; the picker takes
 the author on to a working branch's.
 
-**Items** (`studio:items`) are a tree by kind (components, stylesheets, CSS,
-JS), a `<section class="studio-kind" data-studio-kind="<kind>">` each. A
+**Items** (`studio:items`) are a tree by kind, a `<section class="studio-kind"
+data-studio-kind="<kind>">` each headed "Components", "Stylesheets", "CSS" or
+"JavaScript". A
 kind lists the branch's own and inherited items first; its packaged items
 follow in a `<details class="studio-packaged-group" data-studio-packaged>`,
 collapsed, whose summary counts them ("Packaged (N)"), so that the layer's
