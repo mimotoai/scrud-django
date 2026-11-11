@@ -15,7 +15,7 @@ from scrud_django.ui.branches.effective import (
 )
 from scrud_django.ui.branches.selection import Mount, api_base, selection_value
 from scrud_django.ui.branches.store import BranchChainError, branches, published_root
-from scrud_django.ui.render import render_resource
+from scrud_django.ui.render import render_resource, using_view_preview
 from scrud_django.ui.studio.sample import sample_for
 
 # What a sample may do: it is shown as editable, never deletable.
@@ -52,8 +52,12 @@ def render_preview(
 
     The rules memo (`cascade.rules_memo`) is keyed without the selection:
     never render two branches' previews inside one ``rules_memo()``, or the
-    second gets the first's rules."""
-    with using_selection(selection):
+    second gets the first's rules.
+
+    In view mode, what the preview embeds renders in view mode too
+    (`using_view_preview`): an embedded resource shows no edit controls,
+    whatever the user's own mode on it."""
+    with using_selection(selection), using_view_preview(mode == "view"):
         return render_resource(
             content,
             resource_type=resource_type,

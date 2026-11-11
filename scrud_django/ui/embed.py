@@ -14,7 +14,8 @@ the notice the resource's own URL answers with.
 What the embed carries over in process, by context variable rather than by
 header: safe mode (`branches.effective.using_safe_mode`, which the
 renderer keeps), preview (`render.using_preview`, which `render_resource`
-keeps), the embed stack and the response's embed count (`_state`). Safe
+keeps; a preview requested in view mode, `render.using_view_preview`, sends
+``Scrud-UI-Mode: view`` with every embed in it), the embed stack and the response's embed count (`_state`). Safe
 mode and a live preview's drafts are render-only: `dispatch_path` runs the
 embedded view in `effective.stored_state`, so that what it reads as data
 is the stored state, and renders its response outside that block.
@@ -159,6 +160,7 @@ def api_url(slug, key=None) -> str:
 
 def _embed(request, path, scope, mode) -> str:
     from scrud_django.ui import renderer
+    from scrud_django.ui.render import in_view_preview
 
     state = _state.get() or _top_state(request)
     state.count.embeds += 1
@@ -207,7 +209,8 @@ def _embed(request, path, scope, mode) -> str:
     key = (resolved.path_info, chain)
     if key in state.stack:
         return _refused(path, f"a cycle (in scope {' '.join(chain)!r})")
-    if mode == renderer.VIEW_MODE:
+    if mode == renderer.VIEW_MODE or in_view_preview():
+        # In a preview requested in view mode, every embed is in view mode.
         headers[renderer.MODE_HEADER] = renderer.VIEW_MODE
     token = _state.set(_EmbedState(state.stack + (key,), state.count))
     try:

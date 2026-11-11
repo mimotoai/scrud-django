@@ -77,6 +77,30 @@ def in_preview() -> bool:
     return _preview.get()
 
 
+_preview_in_view: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "scrud_ui_preview_in_view", default=False
+)
+
+
+@contextlib.contextmanager
+def using_view_preview(on: bool = True):
+    """Inside the block, a preview (`using_preview`) was requested in view
+    mode (`on`): an embed in it renders in view mode, as one with
+    ``mode="view"`` does (`embed`), whatever the user's own mode. A context
+    variable, so that an embed in an embed is in view mode too."""
+    token = _preview_in_view.set(on)
+    try:
+        yield
+    finally:
+        _preview_in_view.reset(token)
+
+
+def in_view_preview() -> bool:
+    """Whether a render in progress is a preview requested in view mode
+    (`using_view_preview` inside `using_preview`)."""
+    return _preview.get() and _preview_in_view.get()
+
+
 @dataclass(frozen=True)
 class Mark:
     """A rule a preview marks the matches of (`using_mark`): rule `index`

@@ -15,20 +15,6 @@ refusal notice. Test: in `tests/test_ui_embeds.py`, PUT a component whose
 template embeds a literal non-resource path; it should be a 400 and is a 200
 today.
 
-<a id="embed-preview-mode"></a>
-## embed-preview-mode: embeds in a view-mode preview use the viewer's own mode
-
-An embed inside a studio preview requested in view mode (the live preview,
-and the bootstrap studio's GET preview alike) renders in the viewer's own
-mode, not in view mode: the preview strips the write attributes (`hx-put`,
-`hx-ext`, ...), but the embedded resource's edit inputs and array controls
-are still rendered. Test: in `tests/test_studio_live_preview.py` (and in
-`tests/test_studio_preview.py`, for `scrud-studio:preview` with
-`mode=view`), preview a component that embeds an editable resource, with
-view mode requested, as a user who may PUT it; the embedded markup should
-contain no `<input name="/...">` (nor `<textarea name="/...">`) and no
-`data-scrud-array-op`, and has them today.
-
 <a id="push-preview-write-grants"></a>
 ## push-preview-write-grants: the push preview does not check write grants
 

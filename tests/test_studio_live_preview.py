@@ -1005,3 +1005,45 @@ def test_deeply_nested_draft_is_listed_not_a_500(ui_alice_login):
         }
     ]
     assert "<b>main Lorem ipsum</b>" in page
+
+
+# What an edit-mode render of a resource has and a view-mode one has not.
+EDIT_MARKUP = (
+    re.compile(r'<input[^>]*\sname="/'),
+    re.compile(r'<textarea[^>]*\sname="/'),
+    re.compile(r"data-scrud-array-op"),
+)
+
+
+def edit_markup_in(markup):
+    """The edit-mode markup `markup` has (`EDIT_MARKUP` found in it)."""
+    return [pattern.pattern for pattern in EDIT_MARKUP if pattern.search(markup)]
+
+
+@pytest.mark.django_db
+@test_context
+def test_embed_in_view_mode_preview_is_view_mode(todo_list, todo_owner_login):
+    """An embed with no mode, in a live preview requested in view mode,
+    renders in view mode (the ``embed-preview-mode`` follow-up): no edit
+    inputs and no array operations, even for a user who may PUT the
+    embedded resource. In an edit-mode preview it keeps the user's own
+    mode, as outside a preview."""
+    other = make_list("Chores", items=["Sweep"])
+    host('<section class="host">{{ embed("' + url_of(other) + '") }}</section>')
+    wip_for(todo_owner_login)
+
+    def embedded(page):
+        found = re.search(r'<section class="host">(.*)</section>', page, re.S)
+        assert found, page
+        return found.group(1)
+
+    page = live(instance=todo_list.pk, scope=["host"], mode="view")
+    section = embedded(page)
+    assert f'data-scrud-href="{url_of(other)}"' in section
+    assert "Sweep" in section
+    assert edit_markup_in(section) == []
+    # In edit mode the embed is the owner's own: edit mode, inputs and all.
+    page = live(instance=todo_list.pk, scope=["host"], mode="edit")
+    section = embedded(page)
+    assert "Sweep" in section
+    assert len(edit_markup_in(section)) == len(EDIT_MARKUP)

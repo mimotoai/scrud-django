@@ -17,6 +17,7 @@ from scrud_django.ui.branches.selection import choose, parse_value, selectable
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
+from .test_studio_live_preview import EDIT_MARKUP, edit_markup_in
 from .test_ui_branch_css import css_hrefs, file_url, make_css
 from .test_ui_branch_render import (
     BRANCH_HEADER,
@@ -24,6 +25,7 @@ from .test_ui_branch_render import (
     setup_main_and_wip,
 )
 from .test_ui_branch_types import make_branch, problem
+from .test_ui_embeds import host, make_list, url_of
 from .test_ui_http import html, make_component, make_stylesheet
 
 SLUG = "todo-lists"
@@ -329,3 +331,31 @@ def test_every_preview_response_is_sandboxed(todo_list, todo_reader_login):
     Given.http.force_authenticate(None)
     preview(401)
     sandboxed()
+
+
+@pytest.mark.django_db
+@test_context
+def test_embed_in_view_mode_preview_is_view_mode(todo_list, todo_owner_login):
+    """An embed with no mode, in a preview requested with ``mode=view``,
+    renders in view mode (the ``embed-preview-mode`` follow-up): no edit
+    inputs and no array operations, even for a user who may PUT the
+    embedded resource. With ``mode=edit`` it keeps the user's own mode."""
+    other = make_list("Chores", items=["Sweep"])
+    host('<section class="host">{{ embed("' + url_of(other) + '") }}</section>')
+    Given.http.force_authenticate(todo_owner_login)
+
+    def embedded(page):
+        found = re.search(r'<section class="host">(.*)</section>', page, re.S)
+        assert found, page
+        return found.group(1)
+
+    section = embedded(preview(instance=todo_list.pk, scope="host", mode="view"))
+    assert f'data-scrud-href="{url_of(other)}"' in section
+    assert "Sweep" in section
+    assert edit_markup_in(section) == []
+    # The default mode is view too.
+    section = embedded(preview(instance=todo_list.pk, scope="host"))
+    assert "Sweep" in section and edit_markup_in(section) == []
+    section = embedded(preview(instance=todo_list.pk, scope="host", mode="edit"))
+    assert "Sweep" in section
+    assert len(edit_markup_in(section)) == len(EDIT_MARKUP)

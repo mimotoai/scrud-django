@@ -218,6 +218,11 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ### Fixed
 
+* An embed in a studio preview requested in view mode (`preview` and
+  `live-preview` with `mode` `view`, their default) renders in view mode, as
+  with `mode="view"`: an embedded resource the user may `PUT` no longer shows
+  its edit inputs and array operations there (the `embed-preview-mode`
+  follow-up).
 * On MySQL, a resource whose JSON content is larger than the server's
   `sort_buffer_size` (256 KB by default) no longer breaks the reads that
   sorted it (error 1038, "Out of sort memory"): UI rendering, CSS files, item

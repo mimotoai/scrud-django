@@ -234,9 +234,10 @@ returns that resource's HTML, the fragment its own URL answers.
   (`embed("/api/todo-lists/7/?ui-scope=sidebar")`); a `scope` given wins, as
   the header does.
 - `mode="view"` renders it read-only (as `Scrud-UI-Mode: view`), with no
-  Delete button; without a mode, the mode is the user's own. Any other value is refused (below), as
-  any other `Scrud-UI-Mode` is a 400 at the resource's URL: a typo never
-  puts edit controls in a card meant to be read-only.
+  Delete button; without a mode, the mode is the user's own (in a studio
+  preview requested in view mode, view mode: see below). Any other value is
+  refused (below), as any other `Scrud-UI-Mode` is a 400 at the resource's
+  URL: a typo never puts edit controls in a card meant to be read-only.
 
 The embed is a GET made in process as the same user
 (`scrud_django.ui.dispatch.dispatch_path`), so the resource's view, its RBAC,
@@ -248,9 +249,14 @@ frame's own requests stay there. A response of 400 or more is embedded as the
 notice the resource's URL answers with (a 403 or a 404 for a resource the
 viewer can't read): never its content. Safe mode and the studio's preview carry
 over to what is embedded (as context variables, not headers): an embed in a
-preview has no write attributes. They are render-only: what the embedded view
-reads as data (a list of UI items, a studio computed type) is the stored state,
-as its URL answers it, so an embedded list of UI items in safe mode lists the
+preview has no write attributes. In a preview requested in view mode (the
+studio's `preview` and `live-preview` with `mode` `view`, their default), every
+embed is in view mode too, as with `mode="view"` (it sends `Scrud-UI-Mode:
+view`): the embedded resource shows no edit inputs and no array operations,
+whatever the user's own mode on it; in an edit-mode preview an embed with no
+`mode` has the user's own mode. Safe mode and drafts are render-only: what the
+embedded view reads as data (a list of UI items, a studio computed type) is the
+stored state, as its URL answers it, so an embedded list of UI items in safe mode lists the
 stored items, and one in a live preview lists the stored item a draft replaces.
 This holds by construction: `dispatch_path` runs the embedded view in
 `stored_state()` and renders its response after, outside it, so that the
