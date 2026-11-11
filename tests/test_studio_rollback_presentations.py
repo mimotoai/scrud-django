@@ -1,12 +1,15 @@
 """Roll back and presentations in the self-hosted studio: the strip's version
-history, a version's page (``studio:version``) with "Restore to this
-version", the workbench's "Branch settings" panel (T's own ``ui-branches``
+history (each version linked to its page, ``studio:version``, opened in a
+new tab, with "Restore to version N" from ``ui-branch-status``'s ``restore``
+action), the workbench's "Branch settings" panel (T's own ``ui-branches``
 resource embedded in the scope ``studio studio-branch``: ``studio:branch-form``
 for a user who may PUT it, else ``studio:branch-view``) and its "New branch"
 form. Every write goes through the API with the exact body the page renders
-(a frame's PUT: its ``scrud-content`` with the inputs it names applied).
-These tests serve the API at ``/api/`` (``tests.mounted_urls``), with the
-studio layer installed (the ``studio_layer`` fixture)."""
+(a fixed body as it is; a frame's PUT: its ``scrud-content`` with the inputs
+it names applied; a ``data-scrud-json="form"`` element: `form_body`, as
+scrud-ui.js builds it). These tests serve the API at ``/api/``
+(``tests.mounted_urls``), with the studio layer installed (the
+``studio_layer`` fixture)."""
 
 import json
 
@@ -141,6 +144,42 @@ def no_inline_script(page):
             assert e.attrs.get("type") == JSON and "scrud-content" in e.classes()
 
 
+# scrud-ui.js's text-like input types (TEXT_LIKE).
+TEXT_LIKE = ("text", "textarea", "url", "date", "number")
+
+
+def form_inputs(page, form):
+    """The JSON-Pointer-named inputs of `form` (a ``data-scrud-json="form"``
+    element), as scrud-ui.js's jsonFormFields reads them: ``{name: (type,
+    value)}``, the type being ``data-scrud-type`` when set."""
+    return {
+        e.attrs["name"]: (
+            e.attrs.get("data-scrud-type") or e.attrs.get("type", "text"),
+            e.attrs.get("value", ""),
+        )
+        for e in page.elements
+        if e.tag == "input"
+        and e.within(form)
+        and e.attrs.get("name", "").startswith("/")
+        and "disabled" not in e.attrs
+    }
+
+
+def form_body(inputs, **typed):
+    """The body scrud-ui.js's buildBody builds from `inputs` (`form_inputs`)
+    onto ``{}``, with `typed` (``{property: value}``) typed into the text
+    inputs: a text-like input left empty is over a missing value, so it is
+    "untouched" and left out; any other input sends its value (only text
+    values here)."""
+    body = {}
+    for name, (kind, value) in inputs.items():
+        value = typed.get(name[1:], value)
+        if kind in TEXT_LIKE and value == "":
+            continue
+        body[name[1:]] = value
+    return body
+
+
 def version_links(page):
     status = page.one("data-studio-status")
     return [
@@ -225,6 +264,9 @@ def test_restore_from_strip_round_trip(studio_layer, admin_login):
     ]
     href = reverse("ui-branch-versions-detail", args=[kept_version.pk])
     assert links[1].attrs["href"] == href + "?ui-scope=studio&ui-mode=view"
+    # Opened in a new tab: the workbench stays open.
+    for link in links:
+        assert link.attrs["target"] == "_blank" and link.attrs["rel"] == "noopener"
     [button] = restore_buttons(page, entries[1])
     assert text_of(button) == f"Restore to version {kept}"
     assert button.attrs["hx-post"] == reverse("ui-pushes-list")
@@ -585,20 +627,17 @@ def test_new_branch_form_creates_working_branch(studio_layer, admin_login):
     }
     # Outside the settings' frame: its inputs are not the branch's.
     assert not form.within(settings_frame(page, branch_href(wip)))
-    inputs = {
-        e.attrs["name"]: e
-        for e in page.elements
-        if e.tag == "input"
-        and e.within(form)
-        and e.attrs.get("name", "").startswith("/")
+    inputs = form_inputs(page, form)
+    # The context is sent even when it is "" (main's, the site's): a
+    # non-text-like type, so an empty value is no "untouched" field.
+    assert inputs == {
+        "/name": ("text", ""),
+        "/parent": ("text", "wip"),
+        "/rbac_context": ("string", "alice"),
     }
-    assert sorted(inputs) == ["/name", "/parent", "/rbac_context"]
-    assert inputs["/name"].attrs["value"] == ""
-    assert inputs["/parent"].attrs["value"] == "wip"
-    assert inputs["/rbac_context"].attrs["value"] == "alice"
     # The body scrud-json builds from them, onto {}.
-    body = {name[1:]: e.attrs["value"] for name, e in inputs.items()}
-    body["name"] = "wip-2"
+    body = form_body(inputs, name="wip-2")
+    assert body == {"name": "wip-2", "parent": "wip", "rbac_context": "alice"}
     request_headers = {
         "HTTP_" + k.upper().replace("-", "_"): v for k, v in headers.items()
     }
@@ -634,6 +673,34 @@ def test_new_branch_form_creates_working_branch(studio_layer, admin_login):
     )
     Then.http.status_code_is(400)
     assert "already exists" in Http.response.content.decode()
+
+
+@pytest.mark.django_db
+@test_context
+def test_new_branch_from_main(studio_layer, admin_login):
+    """main is in the context "": its New branch form sends that empty
+    context (scrud-ui.js would leave an empty text input out, and the
+    schema requires ``rbac_context``)."""
+    main = make_branch("main", "", parent=None)
+    Given.http.force_authenticate(admin_login)
+    page = get_page(workbench_url(main))
+    [form] = page.having("data-studio-new-branch")
+    inputs = form_inputs(page, form)
+    assert inputs["/rbac_context"] == ("string", "")
+    assert inputs["/parent"] == ("text", "main")
+    body = form_body(inputs, name="feature")
+    assert body == {"name": "feature", "parent": "main", "rbac_context": ""}
+    When.http.post(
+        form.attrs["hx-post"],
+        data=json.dumps(body),
+        content_type=JSON,
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+    )
+    Then.http.status_code_is(201)
+    made = stored_branch("feature")
+    assert made.content["parent"] == "main"
+    assert made.content["rbac_context"] == ""
 
 
 @pytest.mark.django_db

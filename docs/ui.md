@@ -2458,7 +2458,8 @@ the push gets the view: no form, no Save.
 the user may read, newest first) under `<details class="studio-versions">`:
 each `<li class="studio-version-entry" data-studio-version-number="<N>">`
 links "Version N" to the version's page, `in_mount(href)` with
-`?ui-scope=studio&ui-mode=view` (a version is read-only), and, when the entry
+`?ui-scope=studio&ui-mode=view` (a version is read-only), opened in a new tab
+(`target="_blank" rel="noopener"`) so the workbench stays open, and, when the entry
 has a `restore` action, "Restore to version N": a
 [fixed-body](#writes-from-the-browser) button like Pull and Apply (`hx-post`
 of `in_mount(href)`, `data-scrud-body` the action's body, `data-scrud-etag=""`,
@@ -2480,9 +2481,9 @@ JavaScript), each `<li class="studio-version-item"
 data-studio-version-item="<name>">` with its template, CSS or JavaScript as
 text (a stylesheet's rules as `select → component`), and "deleted on this
 branch" for a deletion marker. Only the items the user may read are listed,
-as the version's JSON lists them. It has no write control: a version names
-its branch but not the branch's resource, so the page can't link T's
-workbench either; restore from the workbench's history.
+as the version's JSON lists them. It has no write control: its hint says to
+restore it from the history of the workbench, which is still open in the
+tab the link came from.
 
 **Branch settings.** The workbench has a "Branch settings" panel
 (`<details data-studio-branch-panel>`) that embeds T's own resource,
@@ -2535,7 +2536,11 @@ branch beside it; the server decides), the workbench has "New branch"
 (`<details>`), a `<form data-studio-new-branch data-scrud-json="form">`
 outside the settings' frame that `POST`s to `in_mount(api_url("ui-branches"))`
 the inputs `/name` (empty), `/parent` (T) and `/rbac_context` (T's context),
-with `data-scrud-etag=""` (no `If-Match`: it is not the frame's URL). It is
+with `data-scrud-etag=""` (no `If-Match`: it is not the frame's URL). The
+context input has `data-scrud-type="string"`, which is not a text-like type,
+so it is always sent, `""` included (`main`'s, the site's): an empty text
+input is left out of a form body, and `rbac_context` is required. An empty
+name or parent is left out (no parent: a root branch). It is
 offered on a published T too: a branch under a published one is how work on
 it starts. It sends `Scrud-UI-Scope: studio studio-new-branch` and
 `Scrud-UI-Mode: view`, and its answer goes into `data-studio-new-branch-result`:

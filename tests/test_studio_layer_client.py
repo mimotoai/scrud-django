@@ -2825,3 +2825,66 @@ out.deleted = out.reloads;
 """
     )
     assert out["other"] == 0 and out["deleted"] == 1
+
+
+# argv[1]: scrud-ui.js; stdin: the fields jsonFormFields reads ({name, type,
+# value, checked}). Prints the body buildBody builds onto {}, as a
+# data-scrud-json="form" element sends it.
+FORM_BODY_HARNESS = r"""
+const vm = require('vm');
+const ui = vm.createContext({window: {}, console});
+vm.runInContext(process.argv[1], ui);
+let input = '';
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  const bad = [];
+  const body = ui.window.ScrudUI.buildBody({}, JSON.parse(input), bad);
+  console.log(JSON.stringify({body, bad}));
+});
+"""
+
+
+@pytest.mark.django_db
+@test_context
+def test_new_branch_form_body_from_main(studio_layer, admin_login, settings):
+    """The New branch form on main's workbench (context ""), through the real
+    buildBody: the empty context is sent (the schema requires it), and the
+    branch is created."""
+    from .test_studio_rollback_presentations import form_inputs
+    from .test_studio_workbench import Page, workbench_url
+
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+    main = make_branch("main", "", parent=None)
+    Given.http.force_authenticate(admin_login)
+    When.http.get(workbench_url(main), HTTP_ACCEPT="text/html")
+    Then.http.status_code_is(200)
+    page = Page(Http.response.content.decode())
+    [form] = page.having("data-studio-new-branch")
+    fields = [
+        {
+            "name": name,
+            "type": kind,
+            "value": "feature" if name == "/name" else value,
+            "checked": False,
+        }
+        for name, (kind, value) in form_inputs(page, form).items()
+    ]
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", FORM_BODY_HARNESS, SCRUD_UI_JS.read_text()],
+        capture_output=True,
+        text=True,
+        input=json.dumps(fields),
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["bad"] == []
+    assert out["body"] == {"name": "feature", "parent": "main", "rbac_context": ""}
+    When.http.post(
+        form.attrs["hx-post"],
+        data=json.dumps(out["body"]),
+        content_type="application/json",
+        HTTP_ACCEPT="application/json",
+    )
+    Then.http.status_code_is(201)
+    assert Http.response.json()["rbac_context"] == ""

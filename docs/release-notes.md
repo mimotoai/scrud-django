@@ -223,8 +223,8 @@
   takes a `branch` (the branch to preview instead of the workbench's) and
   sends no drafts with `after_push`.
 * Roll back and presentations in the self-hosted studio. The strip lists the
-  branch's versions, each linked to its page (`studio:version`, in the scope
-  `studio`: the ancestors' versions and the branch's own items then, as
+  branch's versions, each linked to its page in a new tab (`studio:version`,
+  in the scope `studio`: the ancestors' versions and the branch's own items then, as
   text), with "Restore to version N" when the user may `POST` that restore
   push (`source: null`, `restore: N`, `state: applied`), on published
   branches too: `ui-branch-status`'s `versions` entries gain that `restore`
