@@ -204,13 +204,16 @@ returns that resource's HTML, the fragment its own URL answers.
   refused.
 - `scope` is the scope chain to render it in: a string of space- or
   comma-separated names, or a list of names (an invalid one is no scope).
+  With no scope, the path's own `?ui-scope=` applies, as at its URL
+  (`embed("/api/todo-lists/7/?ui-scope=sidebar")`); a `scope` given wins, as
+  the header does.
 - `mode="view"` renders it read-only (as `Scrud-UI-Mode: view`); any other
   value leaves the mode to the user's rights.
 
 The embed is a GET made in process as the same user
 (`scrud_django.ui.dispatch.dispatch_path`), so the resource's view, its RBAC,
 workflow, masking and `check_mount` apply unchanged. It sends `HX-Request:
-true`, `Scrud-UI-Scope`, `Scrud-UI-Mode: view` when asked, and
+true`, `Scrud-UI-Scope` when a scope is given, `Scrud-UI-Mode: view` when asked, and
 `Scrud-UI-Branch` with the embedding render's branch (as `name` or
 `name@pinned`), so the embed renders on the same branch, and the embedded
 frame's own requests stay there. A response of 400 or more is embedded as the

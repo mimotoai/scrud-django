@@ -633,3 +633,26 @@ def test_embedded_item_list_in_live_preview_lists_drafted_item():
         with using_drafts("wip", [draft]):
             drafted = str(embed(path))
     assert own.pk in component_frames(drafted)
+
+
+@pytest.mark.django_db
+@test_context
+def test_embed_without_scope_keeps_the_query_scope(todo_list, todo_owner_login):
+    """``embed("/x/?ui-scope=a")`` renders in scope ``a``: no empty
+    ``Scrud-UI-Scope`` header overrides the query's. A scope given to
+    ``embed`` wins, as the header does."""
+    other = make_list("Chores", items=["Sweep"])
+    url = url_of(other)
+    make_component("inner-title", "<h4>{{ value.title }}</h4>")
+    make_stylesheet("inner", [("inner ex:TodoList", "inner-title")])
+    host(
+        '<p class="q">{{ embed("' + url + '?ui-scope=inner", mode="view") }}</p>'
+        '<p class="s">{{ embed("' + url + '?ui-scope=inner", scope="other",'
+        ' mode="view") }}</p>'
+    )
+    Given.http.force_authenticate(todo_owner_login)
+    page = get_page(url_of(todo_list), scope="host")
+    query = re.search(r'<p class="q">(.*?)</p>', page, re.S).group(1)
+    given = re.search(r'<p class="s">(.*?)</p>', page, re.S).group(1)
+    assert "<h4>Chores</h4>" in query
+    assert "<h4>Chores</h4>" not in given and "Chores" in given

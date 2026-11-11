@@ -5,7 +5,8 @@ fragment its own URL answers, in process, as the same user
 masking, ``check_mount``) apply unchanged.
 
 The embedded request is a GET with ``HX-Request: true`` (a fragment), the
-scope chain (`SCOPE_HEADER`), ``Scrud-UI-Mode: view`` when `mode` is
+scope chain (`SCOPE_HEADER`) when one is given (else the path's own
+``?ui-scope=`` applies), ``Scrud-UI-Mode: view`` when `mode` is
 ``"view"``, and the embedding render's branch (`BRANCH_HEADER`, the active
 selection's value). A response of status 400 or more is embedded as it is:
 the notice the resource's own URL answers with.
@@ -37,6 +38,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from django.core.exceptions import DisallowedHost
+from django.http import QueryDict
 from markupsafe import Markup
 
 from scrud_django.ui.branches.effective import BRANCH_HEADER, active_selection
@@ -124,14 +126,21 @@ def _embed(request, path, scope, mode) -> str:
     if resolved is None or not _is_resource_view(resolved.match.func):
         return _refused(path, "not a resource view")
     chain = renderer.parse_scope_chain(_scope_value(scope))
+    headers = {
+        renderer.HX_REQUEST_HEADER: "true",
+        BRANCH_HEADER: selection_value(active_selection()),
+    }
+    if chain:
+        headers[renderer.SCOPE_HEADER] = " ".join(chain)
+    else:
+        # No scope given: the path's own ``?ui-scope=`` applies, as at its
+        # URL (an empty header would override it).
+        chain = renderer.parse_scope_chain(
+            QueryDict(parts.query).get(renderer.SCOPE_PARAMETER)
+        )
     key = (resolved.path_info, chain)
     if key in state.stack:
         return _refused(path, f"a cycle (in scope {' '.join(chain)!r})")
-    headers = {
-        renderer.HX_REQUEST_HEADER: "true",
-        renderer.SCOPE_HEADER: " ".join(chain),
-        BRANCH_HEADER: selection_value(active_selection()),
-    }
     if mode == renderer.VIEW_MODE:
         headers[renderer.MODE_HEADER] = renderer.VIEW_MODE
     token = _state.set(_EmbedState(state.stack + (key,), state.count))
