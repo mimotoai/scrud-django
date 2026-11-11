@@ -569,6 +569,39 @@ def test_match_markers_agree_with_resolve_component(case, admin_login):
 
 @pytest.mark.django_db
 @test_context
+def test_edit_rule_moved_up_reports_its_rank(admin_login):
+    """The recorded tour's Move up: with ``-> row-edit`` after ``-> row``
+    (the same selector) it ranks above the view winner and loses as the
+    wrong mode; moved before it, it ranks below the winner and reports the
+    first rank part lower than the winner's, ``lower cascade rank``, as
+    `explain` documents for a rule below the winner (the cascade never
+    tries it, so its mode is not checked). The live preview's marker says
+    the same as `explain` in both orders."""
+    make_component("row", "<b>{{ value.text }}</b>")
+    make_component("row-edit", "<u>{{ value.text }}</u>", mode="edit")
+    sheet = make_stylesheet("s", [("ex:TodoItem", "row"), ("ex:TodoItem", "row-edit")])
+    Given.http.force_authenticate(admin_login)
+    edit_after = {"stylesheet": "s", "applies_to": "", "index": 1}
+    found = nodes(live(branch="main", mode="view", mark=edit_after))["/items/0"]
+    assert found == ("loses", "wrong mode")
+    assert found == expected_marks("/items/0", edit_after, "view", [])
+    # Move up: row-edit first.
+    sheet.content["rules"].reverse()
+    sheet.save()
+    edit_first = {"stylesheet": "s", "applies_to": "", "index": 0}
+    found = nodes(live(branch="main", mode="view", mark=edit_first))["/items/0"]
+    assert found == ("loses", "lower cascade rank")
+    assert found == expected_marks("/items/0", edit_first, "view", [])
+    # row still wins in view mode either way.
+    row = {"stylesheet": "s", "applies_to": "", "index": 1}
+    assert nodes(live(branch="main", mode="view", mark=row))["/items/0"] == (
+        "wins",
+        "wins",
+    )
+
+
+@pytest.mark.django_db
+@test_context
 def test_mark_on_a_draft_rule(ui_alice_login):
     main_row()
     wip_for(ui_alice_login)

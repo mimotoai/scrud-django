@@ -2083,12 +2083,56 @@ out.shown = texts(explainBox);
                 " (stylesheet s on alice-wip)",
                 [],
             ],
+            # A rule below the winner says it was never tried (its outcome
+            # is why it ranks lower, not that its mode was checked).
             [
                 "li",
-                "less specific term: object -> scrud:object (stylesheet studio)",
+                "less specific term (below the winner, not tried):"
+                " object -> scrud:object (stylesheet studio)",
                 [],
             ],
         ],
+    ]
+
+
+def test_rules_below_the_winner_say_they_were_not_tried():
+    """After Move up put ``row ex:TodoItem -> todo-row-edit`` before
+    ``-> todo-row``, the edit-mode rule ranks below the view winner and
+    `explain` reports why it ranks lower ("lower cascade rank"), as
+    documented: the cascade never tries a rule below the winner, so its mode
+    is not checked. The inspector says so, rather than leaving it to read as
+    the reason the rule did not apply; a rule above the winner, which was
+    tried, keeps its outcome as it is."""
+    edit_row = {
+        "readable": True,
+        "rank": [1, 0, 2, 0, 0, 3],
+        "outcome": "lower cascade rank",
+        "selector": "row http://example.org/todo#TodoItem",
+        "component": "todo-row-edit",
+        "stylesheet": "todo",
+        "branch": "main",
+        "applies_to": "",
+    }
+    explained = {
+        **EXPLAINED,
+        "rules": [*EXPLAINED["rules"][:2], edit_row, EXPLAINED["rules"][2]],
+    }
+    out = inspector_scenario(
+        r"""
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+out.rules = texts(explainBox).filter((row) => row[0] === 'ol')[0][2].map((li) => li[1]);
+""".replace("SAMPLE", repr(SAMPLE_HREF)).replace("EXPLAINED", json.dumps(explained)),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["rules"] == [
+        "missing component: a rule you can't read (rank [3,1,0,2])",
+        "wins: ex:TodoItem -> row (stylesheet s on alice-wip)",
+        "lower cascade rank (below the winner, not tried):"
+        " row http://example.org/todo#TodoItem -> todo-row-edit"
+        " (stylesheet todo on main)",
+        "less specific term (below the winner, not tried):"
+        " object -> scrud:object (stylesheet studio)",
     ]
 
 

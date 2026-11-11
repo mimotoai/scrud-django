@@ -185,7 +185,8 @@
   preview (from the preview's own window only) as text, with the preview's
   parameters and the exact pointer, and names the embedded resource a click
   inside one was in rather than explaining it, and explains the node again
-  after a successful write from the workbench. On a working branch it offers
+  after a successful write from the workbench (a rule below the winner is
+  shown as not tried). On a working branch it offers
   "Edit this component" and "New rule for this node" (the bootstrap studio's
   form, posted to `new-component` as JSON with the CSRF token; off while
   pinned).

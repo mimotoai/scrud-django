@@ -1504,7 +1504,11 @@ tries them. `outcome` is `wins`; for a rule below the winner, the first part
 of its rank that is lower than the winner's: `fewer scopes`, `less specific
 term` (a later term of the node) or `lower cascade rank`; for a rule above the
 winner, or when there is none, `missing component` or `wrong mode`. A rule the
-user may not read says why it lost too. `winner` is an
+user may not read says why it lost too. The cascade never tries a rule below
+the winner, so it reports why it ranks lower even when its component could
+not serve the mode: an edit-mode rule moved before the view rule it used to
+follow (so that it now ranks below it) is `lower cascade rank` in view mode,
+where it was `wrong mode`. `winner` is an
 index into `rules`, or `null` with `fallback` naming the built-in component
 (`scrud:json` for a node that renders as JSON whatever the rules). A rule the
 user may not read has only `readable: false`, `rank` and `outcome`. Errors:
@@ -2411,7 +2415,9 @@ pointer, its terms and scope chain, the verdict (the winning component and
 the rule that chose it, a rule the user can't read, or the built-in
 fallback), and every rule that matched, best first, as `<outcome>:
 <selector> -> <component> (stylesheet <name>[ on <branch>][, applies to
-<context>])`, or `<outcome>: a rule you can't read (rank [...])`. A refused
+<context>])`, or `<outcome>: a rule you can't read (rank [...])`. The outcome
+of a rule below the winner reads `<outcome> (below the winner, not tried)`:
+it says why the rule ranks lower, not whether it would serve the mode. A refused
 request shows the server's text (a problem's `title` and `detail`). When a
 write from the workbench succeeds (an action such as an override, Pull, Apply
 or Propose, or a save in the editor), the script `studio:studio` fetches the
