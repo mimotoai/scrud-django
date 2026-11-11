@@ -1016,6 +1016,62 @@ out.remove = [added.remove.text, added.remove.getAttribute('hx-confirm'),
     )
 
 
+def test_failed_editor_load_clears_the_old_item():
+    """Opening an item empties the editor until its frame arrives: a load
+    that fails with nothing swapped in (404, 401, 5xx, no network) leaves no
+    frame of the item open before under the new item's header, and says
+    why. A refusal htmx swaps (its notice) and a failed load of another
+    item are left alone."""
+    out = scenario(
+        r"""
+const all = (node, sel) => node.querySelectorAll(sel);
+click(openRow);
+swapEditor();
+reset();
+click(openFresh);
+out.loading = [texts(editor), texts(editorHead)[0], out.ajax.length];
+const failed = (status, text, path = '/workbench/ui-components/9/') => fire(editor,
+  'htmx:afterRequest', {elt: editor, successful: false,
+  requestConfig: {verb: 'get', path}, xhr: {status, responseText: text || '',
+    getResponseHeader: () => 'application/problem+json'}});
+// The item opened before failing late: not this load's.
+failed(404, '', '/workbench/ui-components/8/');
+out.other = texts(editor);
+failed(404, '{"title": "Not Found", "detail": "No <b>such</b> item."}');
+out.failed = [texts(editor), all(editor, '.scrud-resource').length,
+  all(editor, '[hx-put]').length, texts(editorHead)[0]];
+click(openRow);
+failed(0, '', '/workbench/ui-components/8/');
+out.network = texts(editor);
+// The server's notice, swapped in for a 403: kept.
+click(openFresh);
+while (editor.firstChild) editor.removeChild(editor.firstChild);
+el('div', {'class': 'scrud-notice'}, editor).text = 'You may not read it.';
+failed(403, '{"title": "Forbidden"}');
+out.swapped = texts(editor);
+// The item loaded: a failure of a request inside its frame is its own.
+click(openRow);
+const {frame} = swapEditor();
+fire(frame, 'htmx:afterRequest', {elt: frame, successful: false,
+  requestConfig: {verb: 'get'}, xhr: {status: 500, responseText: ''}});
+out.inside = [all(editor, '.scrud-resource').length, all(editor, '[hx-put]').length];
+""",
+        search=BASE,
+    )
+    body, head, fetches = out["loading"]
+    assert body == [["p", "Loading component fresh...", []]]
+    assert head == ["h3", "component fresh", []] and fetches == 1
+    assert out["other"] == body
+    body, frames, puts, head = out["failed"]
+    assert frames == 0 and puts == 0
+    assert body == [["p", "Refused (HTTP 404): Not Found: No <b>such</b> item.", []]]
+    assert head == ["h3", "component fresh", []]
+    assert out["network"] == [["p", "The request failed (network error).", []]]
+    assert out["swapped"] == [["div", "You may not read it.", []]]
+    assert out["inside"] == [1, 1]
+    assert out["innerHTML"] == 0
+
+
 def test_open_published_reopen_and_refresh():
     # A published T: every item in view mode, no override offered.
     out = scenario(

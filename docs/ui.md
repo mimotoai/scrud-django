@@ -2122,7 +2122,9 @@ and the inspector under it (see
   the refreshed tree; after a save it is not (the save's response is the
   editor). A refused write shows
   the server's error text in the workbench's notice, as text: a problem's
-  `title` and `detail`, else the notices of the HTML it answered. A write
+  `title` and `detail`, then each of its fields' messages after the field's
+  path (a uniform problem's `errors`, or a bare `{field: [messages]}` body),
+  else the notices of the HTML it answered. A write
   refused for a stale state (412, 409) also fetches the items and the strip
   again, so a retry (a Pull, an override) sends their new ETags instead of
   being refused for the same stale one.
@@ -2166,11 +2168,16 @@ itself (`data-studio-editor`) and, under it, the drafts the preview left out
   never built by the script. After the override (a 201) the panes are
   fetched again and the new own row opens.
 - **An item with an `href`** is loaded with an htmx GET of it into the
-  editor, with `Scrud-UI-Scope: studio studio-editor`, and `Scrud-UI-Mode:
-  view` when T is published or the item is not T's own (its entry is not
-  `studio-own`). The resource view then decides the mode as for any request:
-  edit only for a user who may `PUT` the item. The script never sets
-  `Scrud-UI-Branch`.
+  editor, with `Scrud-UI-Scope: studio studio-editor`. It is sent with
+  `Scrud-UI-Mode: view` when T is published or the item is not T's own (its
+  entry is not `studio-own`); otherwise with no mode header, so the mode is
+  the user's own: edit only for a user who may `PUT` the item. The script
+  never sets `Scrud-UI-Branch`. The item open before is taken away at once:
+  until the new one arrives the editor says `Loading <kind> <name>...`, and
+  a load that fails with nothing swapped in (a 404, a 401, a 5xx, no
+  network) leaves the error text there, so no frame of the item opened
+  before stays editable under the new item's header. A refusal htmx swaps
+  in (a 403) shows the server's notice.
 - **An item with no `href`** (a packaged item, an ancestor's item a pinned
   view reads from a version) shows its content, the entry's
   `<pre data-studio-content>` parsed and indented, as text.
