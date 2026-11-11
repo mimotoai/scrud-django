@@ -944,3 +944,28 @@ def test_endpoints_in_status_reverse_correctly(ui_alice_login, settings):
     found = status()
     assert found["endpoints"] is None
     conforms("UIBranchStatus", found)
+
+
+@pytest.mark.django_db
+@test_context
+def test_override_null_on_a_pinned_view(ui_alice_login):
+    """A ``@pinned`` view shows the parent's items as of the branching
+    point, but an override is based on the live parent item: sent, it would
+    silently revert the parent's changes since. None is offered there."""
+    setup_branches(ui_alice_login)
+    head = head_component()
+    ResourceRegistration.update(
+        {**head.content, "template": "<h1>changed</h1>"}, "ui-components", head.pk
+    )
+    Given.http.force_authenticate(ui_alice_login)
+    pinned = {(i["kind"], i["name"]): i for i in items("wip@pinned")["items"]}
+    assert pinned["component", "head"]["origin"] == "inherited"
+    assert pinned["component", "head"]["content"]["template"] == "<h1>main</h1>"
+    assert [i["override"] for i in pinned.values()] == [None] * len(pinned)
+    # Live, the same item's override is offered, with the live content.
+    live = {(i["kind"], i["name"]): i for i in items()["items"]}
+    offered = live["component", "head"]["override"]
+    assert offered["body"]["template"] == "<h1>changed</h1>"
+    # The status of a pinned view keeps its actions: they act on the
+    # branch's stored rows, not on what the snapshot shows.
+    assert status("wip@pinned")["actions"] == status()["actions"]

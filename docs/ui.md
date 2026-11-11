@@ -1649,7 +1649,10 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
   studio save sends it. The server sets `base` (the inherited item's ETag, or
   the packaged item's). It is `null` on the branch's own items, on a
   published branch (`main`, or any with a prefix: changes reach it by a
-  push), for a deletion marker, and when the user may not `POST` that body.
+  push), on a `@pinned` view (it shows the parent as of the branching point,
+  but the server bases an override on what the branch shows itself, so it
+  would silently revert the parent's changes since), for a deletion marker,
+  and when the user may not `POST` that body.
 - A row the user may not `GET` is left out entirely, as its JSON list leaves
   it out. So is a row that rendering skips (stored with another context than
   its branch authorizes).
@@ -1725,7 +1728,9 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
     context>}`, each when the user may `POST` that body. Ancestors the chain
     leaves out are not offered.
 
-  On a published branch, `pull` is `null` and `promote` is empty.
+  On a published branch, `pull` is `null` and `promote` is empty. A
+  `@pinned` view has the same actions as the live one: they act on the
+  branch's stored rows, not on what the snapshot shows.
 - `endpoints` are the bootstrap studio's own endpoints a studio built as a
   layer calls, reversed from the `scrud-studio` namespace (so they include
   where its URLs are included, and are not API paths; see

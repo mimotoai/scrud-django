@@ -51,7 +51,7 @@
           },
           "override": {
             "$ref": "#/definitions/action",
-            "description": "For an item the branch shows but does not own: the POST that creates the branch's override of it (its content without base and deleted, on the branch, in its authorizing context; the server sets base). null on a published branch, for the branch's own items, and when the user may not POST it."
+            "description": "For an item the branch shows but does not own: the POST that creates the branch's override of it (its content without base and deleted, on the branch, in its authorizing context; the server sets base). null on a published branch, on a @pinned view, for the branch's own items, and when the user may not POST it."
           }
         },
         "required": ["kind", "name", "origin", "from", "href", "etag", "content", "conflict", "override"]

@@ -205,7 +205,15 @@ class BranchItemsViewSet(ComputedResourceViewSet):
                 rows = readable_rows(request, kind, selection)
                 for pk, etag, content in rows:
                     items.append(
-                        _item(request, kind, pk, etag, content, branch, on, conflicts)
+                        _item(
+                            request,
+                            kind,
+                            (pk, etag, content),
+                            selection,
+                            branch,
+                            on,
+                            conflicts,
+                        )
                     )
             return {"branch": selection_value(selection), "items": items}
 
@@ -216,14 +224,17 @@ def _action(method: str, href: str, body: dict, etag: str | None = None) -> dict
     return {"method": method, "href": href, "body": body, "etag": etag}
 
 
-def _override(request, kind, key, content, branch) -> dict | None:
+def _override(request, kind, key, content, selection, branch) -> dict | None:
     """The POST that creates `branch`'s override of the item of `kind` it
     shows with `content` and `item_key` `key`, but does not own: the
     content without ``base`` (the server sets it) and ``deleted``, as a
     studio save sends it (`item_content`: on `branch`, in its authorizing
-    context). ``None`` on a published branch (a push writes there), for a
+    context). ``None`` on a published branch (a push writes there), on a
+    ``@pinned`` view (`selection`: it shows the parent as of the branching
+    point, but the server bases the override on what the branch itself
+    shows, so it would silently revert the parent's changes since), for a
     deletion marker, and when the user may not POST that body."""
-    if branch.published or content.get("deleted") is True:
+    if branch.published or selection.pinned or content.get("deleted") is True:
         return None
     kept = {k: v for k, v in content.items() if k not in ("base", "deleted")}
     target = key[1] if kind == "stylesheet" else ""
@@ -233,10 +244,12 @@ def _override(request, kind, key, content, branch) -> dict | None:
     return _action("POST", reverse(f"{KIND_SLUGS[kind]}-list"), body)
 
 
-def _item(request, kind, pk, etag, content, branch, on, conflicts) -> dict:
-    """The entry of the item of `kind` stored with `content` (a row
-    `effective_rows` gives) in the items of `branch`; `on` are the branches
-    by name, the layers' virtual branch included."""
+def _item(request, kind, row, selection, branch, on, conflicts) -> dict:
+    """The entry of the item of `kind` stored as `row`, ``(pk, etag,
+    content)`` (a row `effective_rows` gives), in the items of `branch`
+    shown as `selection`; `on` are the branches by name, the layers'
+    virtual branch included."""
+    pk, etag, content = row
     source = branch_of(content)
     key = item_key(kind, content, on.get(source, branch))
     packaged = source == LAYER_BRANCH_NAME
@@ -254,7 +267,9 @@ def _item(request, kind, pk, etag, content, branch, on, conflicts) -> dict:
     item["etag"] = f'"{etag}"' if etag else None
     item["content"] = content
     item["conflict"] = conflicts.get((kind, key)) if own else None
-    item["override"] = None if own else _override(request, kind, key, content, branch)
+    item["override"] = (
+        None if own else _override(request, kind, key, content, selection, branch)
+    )
     return item
 
 
