@@ -774,6 +774,18 @@ def test_mark_tells_nothing_of_an_unreadable_stylesheet(login_no_roles):
 
 @pytest.mark.django_db
 @test_context
+def test_mark_on_a_packaged_stylesheet_for_anyone(login_no_roles):
+    """A packaged layer's stylesheet is public (spec R1): a user who may
+    read no stylesheet marks the nodes of its rules, as the inspector shows
+    them."""
+    wip_for(login_no_roles)
+    mark = {"stylesheet": "layertest:sheet", "applies_to": "", "index": 0}
+    page = live(scope=["layertest"], mark=mark)
+    assert nodes(page)[""] == ("wins", "wins")
+
+
+@pytest.mark.django_db
+@test_context
 def test_embeds_in_live_preview_compose_server_side(todo_list, todo_owner_login):
     other = make_list("Chores", items=["Sweep"])
     main_row()

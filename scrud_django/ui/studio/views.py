@@ -25,12 +25,12 @@ from scrud_django.exceptions import (
     UIStudioContextUnavailableError,
 )
 from scrud_django.models import ResourceType
-from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.registration import get_resource_type_for
 from scrud_django.rows import by_pk, unsorted
 from scrud_django.ui.branches import MAIN
 from scrud_django.ui.branches.effective import Selection, using_selection
 from scrud_django.ui.branches.model import Branch
+from scrud_django.ui.branches.reads import may_read_item
 from scrud_django.ui.branches.selection import parse_value, selectable
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.cascade import request_memo
@@ -58,7 +58,6 @@ from scrud_django.ui.studio.preview import (
     render_preview,
     sample_of,
 )
-from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
 
 
 def registered_types(q: str = "") -> list[dict]:
@@ -345,18 +344,13 @@ def explain(request, slug):
 
 def _readable(request):
     """Whether the user of `request` may read a rule's `RuleSource` (a
-    stylesheet), as the list filter checks a stored one; the default
-    stylesheet's are readable."""
+    stylesheet), as the list filter checks a stored one (`may_read_item`:
+    a packaged layer's is public); the default stylesheet's are readable."""
 
     def readable(source):
         if source is None or source.content is None:
             return True
-        return may_read_in_context(
-            request,
-            UI_STYLESHEET_TYPE_URI,
-            source.content,
-            resource_contexts(source.content),
-        )
+        return may_read_item(request, "stylesheet", source.content)
 
     return readable
 

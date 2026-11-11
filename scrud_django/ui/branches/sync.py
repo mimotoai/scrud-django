@@ -17,7 +17,6 @@ from scrud_django.exceptions import (
 from scrud_django.models import Resource, ResourceType
 from scrud_django.permissions import (
     may_act_in_context,
-    may_read_in_context,
     resource_contexts,
 )
 from scrud_django.registration import (
@@ -44,6 +43,7 @@ from scrud_django.ui.branches.model import (
     branch_of,
     item_key,
 )
+from scrud_django.ui.branches.reads import may_read_item
 from scrud_django.ui.branches.store import BranchChainError, ancestors, branches
 from scrud_django.ui.branches.versions import (
     batched_versions,
@@ -51,7 +51,7 @@ from scrud_django.ui.branches.versions import (
     record_now,
     snapshot,
 )
-from scrud_django.ui.layers import LAYER_BRANCH, LAYER_BRANCH_NAME
+from scrud_django.ui.layers import LAYER_BRANCH
 
 # Flags an item's write accepts but never stores.
 WRITE_ONLY = ("rebase",)
@@ -400,9 +400,7 @@ def _readable_conflicts(request, found, source, target, all_branches, using):
             item = theirs.get(key)
             if item is None and key in mine:
                 item = _onto(kind, mine[key], key, target, None)
-            if item is not None and may_read_in_context(
-                request, type_uri, item, resource_contexts(item)
-            ):
+            if item is not None and may_read_item(request, kind, item):
                 shown.append(entry)
     return shown
 
@@ -499,22 +497,13 @@ def plan_push(
 ACTIONS = {"http.POST": "create", "http.PUT": "update", "http.DELETE": "delete"}
 
 
-def _may_read(request, kind, content) -> bool:
-    """Whether `request` may GET the item of `kind` stored with `content`:
-    a packaged layer's item is public (spec R1); any other as its JSON
-    read check decides."""
-    return branch_of(content) == LAYER_BRANCH_NAME or may_read_in_context(
-        request, ITEM_KINDS[kind], content, resource_contexts(content)
-    )
-
-
 def push_changes(
     request, plan: PushPlan, target: str, using=None, *, all_branches=None
 ) -> tuple[list[dict], int]:
     """``(changes, unreadable)``: ``{"kind", "key", "action", "before",
     "after"}`` of each write of `plan` (a push into branch `target`) that
     `request` may read, in order, and how many others there are. A write is
-    readable when `request` may read (`_may_read`) its ``before``, its
+    readable when `request` may read (`may_read_item`) its ``before``, its
     ``after`` and the source's row it comes from. Its ``action`` is by its
     method (`ACTIONS`); ``before``, the target's row it updates or deletes,
     or, for a new row, the item the target shows beneath it (its parent's,
@@ -547,7 +536,7 @@ def push_changes(
         source = sources.get(write.kind, {}).get(write.key)
         seen = (source.content if source is not None else None, before, write.content)
         if all(
-            _may_read(request, write.kind, content)
+            may_read_item(request, write.kind, content)
             for content in seen
             if content is not None
         ):

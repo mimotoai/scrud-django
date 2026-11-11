@@ -33,6 +33,7 @@ from scrud_django.ui.branches.effective import (
     stored_state,
 )
 from scrud_django.ui.branches.model import branch_of, item_key
+from scrud_django.ui.branches.reads import may_read_item
 from scrud_django.ui.branches.selection import (
     may_get,
     parse_value,
@@ -48,7 +49,6 @@ from scrud_django.ui.branches.sync import (
 from scrud_django.ui.cascade import request_memo
 from scrud_django.ui.layers import LAYER_BRANCH, LAYER_BRANCH_NAME, layer_conflicts
 from scrud_django.ui.studio.page import (
-    _may_read,
     branch_conflicts,
     browse_url,
     conflict_key,
@@ -139,7 +139,7 @@ def _conflicts(request, branch) -> list[dict]:
 
     def readable(kind, key):
         content = own.get((kind, key))
-        return content is not None and _may_read(request, kind, content)
+        return content is not None and may_read_item(request, kind, content)
 
     found = [
         {**conflict, "with": "parent"}
@@ -174,7 +174,7 @@ class BranchItemsViewSet(ComputedResourceViewSet):
                 conflicts.setdefault(key, conflict["with"])
             items = []
             for kind in ITEM_KINDS:
-                rows = readable_rows(request, kind, selection, packaged_public=True)
+                rows = readable_rows(request, kind, selection)
                 for pk, etag, content in rows:
                     items.append(_item(kind, pk, etag, content, branch, on, conflicts))
             return {"branch": selection_value(selection), "items": items}

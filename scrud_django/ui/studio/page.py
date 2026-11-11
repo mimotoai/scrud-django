@@ -11,10 +11,11 @@ from urllib.parse import urlencode
 
 from django.urls import NoReverseMatch, get_script_prefix, reverse
 
-from scrud_django.permissions import may_read_in_context, resource_contexts
+from scrud_django.permissions import may_read_in_context
 from scrud_django.ui.branches import ITEM_KINDS, MAIN
 from scrud_django.ui.branches.effective import Selection, effective_rows
 from scrud_django.ui.branches.model import Branch, branch_of, item_key
+from scrud_django.ui.branches.reads import may_read_item
 from scrud_django.ui.branches.selection import (
     BRANCH_PARAMETER,
     Mount,
@@ -25,7 +26,6 @@ from scrud_django.ui.branches.selection import (
 )
 from scrud_django.ui.branches.store import BranchChainError, branches, published_root
 from scrud_django.ui.cascade import item_rows
-from scrud_django.ui.layers import LAYER_BRANCH_NAME
 from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
 
 MODES = ("view", "edit")
@@ -131,14 +131,6 @@ def strip_context(request, slug, branch: Branch, selection, all_branches) -> dic
     }
 
 
-def _may_read(request, kind, content) -> bool:
-    """Whether the user of `request` may GET the item of `kind` stored with
-    `content`, as the per-row read check of its JSON list decides."""
-    return may_read_in_context(
-        request, ITEM_KINDS[kind], content, resource_contexts(content)
-    )
-
-
 def own_rows(branch: Branch) -> dict[str, list[tuple[int, str, dict]]]:
     """``{kind: [(pk, etag, content), ...]}``: every row of `branch`'s own
     (overrides, additions, deletion markers), whoever may read it, by kind,
@@ -165,7 +157,7 @@ def own_items(request, branch: Branch) -> list[dict]:
         _described(kind, content, branch)
         for kind, rows in own_rows(branch).items()
         for _pk, _etag, content in rows
-        if _may_read(request, kind, content)
+        if may_read_item(request, kind, content)
     ]
 
 
@@ -204,17 +196,16 @@ def branch_conflicts(branch: Branch) -> list[dict]:
 
 
 def readable_rows(
-    request, kind: str, selection: Selection, packaged_public: bool = False
+    request, kind: str, selection: Selection
 ) -> list[tuple[int | None, str, dict]]:
     """``(pk, etag, content)`` of the items of `kind` effective on
-    `selection` (`effective_rows`) that the user of `request` may read, in
-    the cascade's order. With `packaged_public`, a packaged layer's item
-    (spec R1: public) is kept without asking."""
+    `selection` (`effective_rows`) that the user of `request` may read
+    (`may_read_item`: a packaged layer's item is public), in the cascade's
+    order."""
     return [
         (pk, etag, content)
         for pk, etag, content in effective_rows(ITEM_KINDS[kind], selection)
-        if (packaged_public and branch_of(content) == LAYER_BRANCH_NAME)
-        or _may_read(request, kind, content)
+        if may_read_item(request, kind, content)
     ]
 
 
@@ -277,7 +268,7 @@ def read_item(request, branch: Branch, kind: str, name: str, target: str) -> dic
     for _pk, etag, content in rows:
         if item_key(kind, content, branch) != key:
             continue
-        if not _may_read(request, kind, content):
+        if not may_read_item(request, kind, content):
             return None
         return {
             "kind": kind,

@@ -428,6 +428,43 @@ def test_push_preview_shows_a_packaged_item_as_before_to_any_reader(admin_login)
 
 @pytest.mark.django_db
 @test_context
+def test_push_preview_conflicts_and_changes_agree_on_a_packaged_item(admin_login):
+    # A packaged layer item is public in the conflicts as in the changes: a
+    # user who may not read context "" sees the conflict of an override with
+    # the layer item the target shows.
+    Given.http.force_authenticate(admin_login)
+    make_wip(admin_login, "team", context="project-a")
+    make_wip(admin_login, "wip", parent="team", context="project-a")
+    user = assign_ui_role((), "project-a")
+    grant(user, {"http.GET": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "project-a")
+    with installed(MORE_APP):
+        layer_etag, layer_component = layer_item("component", ("layermore:list",))
+        create("ui-components", wip_body())
+        Then.http.status_code_is(201)
+        override = Resource.objects.get(
+            resource_type__type_uri=UI_COMPONENT_TYPE_URI,
+            content__name="layermore:list",
+        )
+        # Based on an older layer item (an upgrade changed it since).
+        override.content = {**override.content, "base": "older"}
+        override.save()
+        Given.http.force_authenticate(user)
+        body = preview()
+        [change_] = body["changes"]
+        assert change_["before"] == layer_component
+        assert body["conflicts"] == [
+            {
+                "kind": "component",
+                "key": ["layermore:list"],
+                "base": "older",
+                "current": layer_etag,
+            }
+        ]
+        assert body["unreadable_conflicts"] == 0
+
+
+@pytest.mark.django_db
+@test_context
 def test_push_preview_into_a_branch_pinned_to_a_missing_version(admin_login):
     Given.http.force_authenticate(admin_login)
     make_branch("gap", "alice", branching_point={"main": 999}, base="pinned")

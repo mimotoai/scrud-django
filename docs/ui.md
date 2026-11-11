@@ -1068,8 +1068,12 @@ What a user can see or do comes from their grants, whatever the studio shows:
   a push. The page opens on the first working branch the user may select.
 - A rule from a stylesheet the user may not `GET` shows in the inspector as its
   rank only (`{"readable": false, "rank": [...], "outcome": ...}`): no
-  selector, component or stylesheet name. A component the user may not read
-  has no "inside this type" option. The scope chain of a node is shown in full,
+  selector, component or stylesheet name. A packaged
+  [layer](#packaged-ui-layers)'s stylesheet is public: its rules are readable
+  to everyone, here, in the live preview's mark, in the editor's item read and
+  in a push's preview and conflicts alike
+  (`scrud_django.ui.branches.reads.may_read_item` is the one check). A
+  component the user may not read has no "inside this type" option. The scope chain of a node is shown in full,
   though, even when a scope came from a component the user cannot read: scope
   names are presentation identifiers an author needs to target rules.
 - Previewing in a data context other than `""` needs `GET` on UI stylesheets in
@@ -1611,8 +1615,9 @@ the author applies or proposes it. It computes the same plan the push writes
   written, or the source's row it comes from) is left out of `changes`;
   `unreadable_changes` counts them. A packaged layer's item is public.
 - `conflicts` are those the push would be refused for (409), on items the
-  user may read in the target, as the 409 lists them; `unreadable_conflicts`
-  counts the others. A push with any conflict, readable or not, is refused.
+  user may read in the target, as the 409 lists them (a packaged layer's item
+  is public here too, as in `changes`); `unreadable_conflicts` counts the
+  others. A push with any conflict, readable or not, is refused.
 - It needs `GET` on both branches (`main` needs none, as for a push): a
   branch (or `?target=`) the user may not `GET` is a 404, the same as an
   unknown one, before anything else is checked. A push the server would

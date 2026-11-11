@@ -604,6 +604,19 @@ def test_unreadable_rules_show_rank_only(login_no_roles, ui_acme_stylesheet_logi
 
 @pytest.mark.django_db
 @test_context
+def test_packaged_rules_are_readable_to_anyone(login_no_roles):
+    """A packaged layer's stylesheet is public (spec R1): its rules show
+    their source to a user who may read no stylesheet."""
+    Given.http.force_authenticate(login_no_roles)
+    explained = get_explain(scope="layertest")
+    won = winning(explained)
+    assert won["readable"] is True
+    assert won["stylesheet"] == "layertest:sheet"
+    assert won["component"] == "scrud:json"
+
+
+@pytest.mark.django_db
+@test_context
 def test_unreadable_rules_of_a_pinned_snapshot(todo_reader_login):
     make_component("secret-row", "<b>{{ value.text }}</b>")
     make_stylesheet("hidden-sheet", [("ex:TodoItem", "secret-row")])
