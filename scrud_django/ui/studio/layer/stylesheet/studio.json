@@ -23,6 +23,10 @@
       "component": "studio:type-picker"
     },
     {
+      "select": "studio studio-branches http://api.openteams.com/json-ld/UISelectableBranches",
+      "component": "studio:branch-picker"
+    },
+    {
       "select": "studio studio-editor http://api.openteams.com/json-ld/UIComponent",
       "component": "studio:component-editor"
     },

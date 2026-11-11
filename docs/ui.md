@@ -1974,7 +1974,8 @@ component `studio:workbench`, which renders:
 - `<div class="studio-workbench" data-studio-workbench
   data-studio-branch="<T>" data-studio-published="true|false">`; T is
   published when it is `main` or its content has a `prefix`;
-- a top bar with T's name and the Items, Editor and Preview toggles;
+- a top bar with T's name, the branch picker and the Items, Editor and
+  Preview toggles;
 - "Branch settings" and "New branch" (see [Branch settings](#branch-settings));
 - a notice (`data-studio-notice`, `role="alert"`, hidden until a write is
   refused);
@@ -1985,13 +1986,36 @@ The Items pane embeds `api_url("ui-branch-items", T)` in the scope
 `studio studio-items`, which the layer renders with `studio:items`; the strip
 embeds `api_url("ui-branch-status", T)` in `studio studio-status`
 (`studio:status`); the branch settings embed T itself. Each embedding
-element carries `data-studio-embed` (`items`, `status`, `branch`),
+element carries `data-studio-embed` (`items`, `status`, `branch`, and
+`branches` for the branch picker),
 `data-studio-src` (the path as the page's prefix serves
 it, `in_mount`) and `data-studio-scope` (its scope chain), from which the
 script fetches it again. The panes read T's studio data as the user's own
 JSON would, so items the user may not read are absent, and a write control
 is shown only where the data offers its action (see
 [Studio data as computed resources](#studio-data-as-computed-resources)).
+
+**The branch picker** (`studio:branch-picker`) is how the workbench reaches
+the other branches: the top bar embeds `api_url("ui-selectable-branches",
+"mine")` in the scope `studio studio-branches` (`data-studio-embed="branches"`;
+the layer's rule takes the root of `UISelectableBranches`,
+`http://api.openteams.com/json-ld/UISelectableBranches`, there to the
+picker). It renders `<nav class="studio-branch-picker"
+data-studio-branch-picker aria-label="Branches">` with a "Branches (N)"
+`<details>` listing every branch the user may select, `main` first, each an
+`<li class="studio-branch-choice studio-branch-published|studio-branch-working"
+data-studio-branch-name="<name>">` with a "published" or "working" badge.
+A branch whose resource the user may `GET` (its `href`) links to its
+workbench, `in_mount(href)` with `?ui-scope=studio&ui-mode=view`, so under
+the studio's prefix the link stays there; one they may select but not `GET`
+(`href` is `null`; typically `main`, readable by everyone, whose resource
+needs a grant in `""`) is its name as text (`<span class="studio-branch-name">`):
+it has no workbench to open. A branch the user may not select is not listed.
+A component can't know which page it is on, so the script `studio:studio`
+marks T's entry (`data-studio-current`, and `aria-current="page"` on its link)
+on load and whenever the picker is fetched again. The *Studio* link (see
+[Ways out](#ways-out)) lands on the studio root's workbench; the picker takes
+the author on to a working branch's.
 
 **Items** (`studio:items`) are a tree by kind (components, stylesheets, CSS,
 JS). Each entry is an `<li class="studio-item studio-own|studio-inherited|studio-packaged">`,

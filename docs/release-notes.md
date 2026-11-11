@@ -134,7 +134,10 @@
   `studio_branch()`) names the published root branch that hosts it, a tree of
   its own so that the app's CSS and JS don't load under the studio's prefix.
   See the "Self-hosted studio" chapter of the UI page.
-* The workbench (`studio:workbench`): Items, Editor and Preview panes (Items
+* The workbench (`studio:workbench`): a branch picker in its top bar
+  (`studio:branch-picker`, the embedded `ui-selectable-branches/mine/`: each
+  branch the user may select, linked to its workbench when they may `GET`
+  it), Items, Editor and Preview panes (Items
   and Editor collapse to rails, remembered per viewer in `localStorage`), the
   branch's items as a tree (`studio:items`: own, inherited and packaged
   items, conflicts, "Override on this branch"), a strip (`studio:status`:

@@ -38,6 +38,7 @@ WORKBENCH = "?ui-scope=studio&ui-mode=view"
 UIBRANCH = "http://api.openteams.com/json-ld/UIBranch"
 UIBRANCH_ITEMS = "http://api.openteams.com/json-ld/UIBranchItems"
 UIBRANCH_STATUS = "http://api.openteams.com/json-ld/UIBranchStatus"
+UISELECTABLE = "http://api.openteams.com/json-ld/UISelectableBranches"
 PROMOTE = ("Push to", "Propose to", "Apply to", "Promote to")
 WRITE_ATTRIBUTES = ("hx-post", "hx-put", "hx-patch", "hx-delete", "data-scrud-json")
 
@@ -199,7 +200,16 @@ def test_workbench_rules_select_branch_items_and_status(studio_layer):
     assert (f"studio {UIBRANCH}", "studio:workbench") in rules
     assert (f"studio studio-items {UIBRANCH_ITEMS}", "studio:items") in rules
     assert (f"studio studio-status {UIBRANCH_STATUS}", "studio:status") in rules
-    for name in ("studio:workbench", "studio:items", "studio:status"):
+    assert (
+        f"studio studio-branches {UISELECTABLE}",
+        "studio:branch-picker",
+    ) in rules
+    for name in (
+        "studio:workbench",
+        "studio:items",
+        "studio:status",
+        "studio:branch-picker",
+    ):
         _etag, component = layer_item("component", (name,))
         assert component["engine"] == "jinja2" and component["mode"] == "view"
 
@@ -241,14 +251,20 @@ def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login)
         for e in page.having("data-studio-embed")
     }
     # Task 8 adds the branch settings: T's own resource in the scope
-    # studio studio-branch (see test_studio_rollback_presentations).
+    # studio studio-branch (see test_studio_rollback_presentations). The
+    # final review adds the top bar's branch picker: the user's selectable
+    # branches in the scope studio studio-branches
+    # (test_workbench_branch_picker_links_readable_branches).
     branch_url = reverse("ui-branches-detail", args=[alice_wip.pk])
+    branches_url = reverse("ui-selectable-branches-detail", args=["mine"])
     assert embeds == {
+        "branches": ("div", branches_url, "studio studio-branches"),
         "branch": ("div", branch_url, "studio studio-branch"),
         "items": ("div", items_url, "studio studio-items"),
         "status": ("footer", status_url, "studio studio-status"),
     }
-    [settings, items_pane, strip] = page.having("data-studio-embed")
+    [picker, settings, items_pane, strip] = page.having("data-studio-embed")
+    assert picker.within(page.one("data-studio-topbar"))
     assert settings.within(page.one("data-studio-branch-panel"))
     assert not any(settings.within(pane) for pane in panes)
     assert items_pane.within(panes[0]) and not strip.within(panes[2])
@@ -356,6 +372,105 @@ def test_workbench_embeds_items_and_strip_for_T_not_S(studio_layer, ui_alice_log
     assert endpoints["live_preview"] == reverse("scrud-studio:live-preview")
     # The strip has no browse link without a type (studio.js asks with one).
     assert not [e for e in page.elements if "studio-browse" in e.classes()]
+
+
+def picker_entries(page):
+    """``[(name, classes, link href or None, badge, current)]`` of the top
+    bar's branch picker, in order."""
+    picker = page.one("data-studio-branch-picker")
+    found = []
+    for entry in page.having("data-studio-branch-name", within=picker):
+        links = [e for e in page.elements if e.tag == "a" and e.within(entry)]
+        [badge] = [
+            e
+            for e in page.elements
+            if e.within(entry) and "studio-badge" in e.classes()
+        ]
+        found.append(
+            (
+                entry.attrs["data-studio-branch-name"],
+                entry.classes(),
+                links[0].attrs["href"] if links else None,
+                badge.text,
+                "data-studio-current" in entry.attrs,
+            )
+        )
+    return found
+
+
+@pytest.mark.django_db
+@test_context
+def test_workbench_branch_picker_links_readable_branches(studio_layer, ui_alice_login):
+    """The top bar's branch picker (spec Goal 2) lists the branches the user
+    may select (``ui-selectable-branches/mine/``), main first: each one whose
+    resource the user may GET links to its workbench under the page's prefix;
+    one they may not GET (main here) is text, with no workbench to open. A
+    branch the user may not select (bobs) is absent."""
+    studio, alice_wip, _bobs = setup_studio(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+    page = Page(get_page(workbench_url(alice_wip, STUDIO_ROOT)))
+    topbar = page.one("data-studio-topbar")
+    [embed] = [
+        e
+        for e in page.having("data-studio-embed")
+        if e.attrs["data-studio-embed"] == "branches"
+    ]
+    assert embed.within(topbar)
+    assert (
+        embed.attrs["data-studio-src"] == STUDIO_ROOT + "ui-selectable-branches/mine/"
+    )
+    assert embed.attrs["data-studio-scope"] == "studio studio-branches"
+    picker = page.one("data-studio-branch-picker")
+    assert picker.tag == "nav" and picker.within(embed)
+    assert picker.attrs["aria-label"] == "Branches"
+    frames = [e for e in page.having("data-scrud-href") if e.within(embed)]
+    assert [
+        (f.attrs["data-scrud-href"], f.attrs["data-scrud-scope"]) for f in frames
+    ] == [(embed.attrs["data-studio-src"], "studio studio-branches")]
+    assert picker_entries(page) == [
+        (
+            "main",
+            ["studio-branch-choice", "studio-branch-published"],
+            None,
+            "published",
+            False,
+        ),
+        (
+            "alice-wip",
+            ["studio-branch-choice", "studio-branch-working"],
+            workbench_url(alice_wip, STUDIO_ROOT),
+            "working",
+            False,
+        ),
+        (
+            "studio",
+            ["studio-branch-choice", "studio-branch-published"],
+            workbench_url(studio, STUDIO_ROOT),
+            "published",
+            False,
+        ),
+    ]
+    # main, which alice may not GET, is its name as text.
+    [main] = [
+        e
+        for e in page.having("data-studio-branch-name", within=picker)
+        if e.attrs["data-studio-branch-name"] == "main"
+    ]
+    [name] = [
+        e
+        for e in page.elements
+        if e.within(main) and "studio-branch-name" in e.classes()
+    ]
+    assert name.tag == "span" and name.text == "main"
+    # The picker writes nothing.
+    assert not [e for e in page.writes() if e.within(picker)]
+    # At the API's URLs the links stay there.
+    page = Page(get_page(workbench_url(alice_wip)))
+    links = [href for _n, _c, href, _b, _cur in picker_entries(page) if href]
+    assert links == [workbench_url(alice_wip), workbench_url(studio)]
+    # Each link is the workbench of its branch.
+    for href in links:
+        assert Page(get_page(href)).one("data-studio-workbench")
 
 
 @pytest.mark.django_db

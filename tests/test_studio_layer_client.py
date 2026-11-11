@@ -306,6 +306,25 @@ const endpoints = opts.endpoints === undefined
 const status = el('div', {'class': 'studio-status', 'data-studio-status': '',
   'data-studio-endpoints': JSON.stringify(endpoints)}, stripFrame);
 const pull = el('button', {type: 'button', 'hx-put': '/workbench/ui-branches/9/'}, status);
+// The top bar's branch picker (studio:branch-picker), with opts.picker: the
+// branches' entries, linked when they have a workbench.
+const branchesEmbed = el('div', {'class': 'studio-branches', 'data-studio-embed': 'branches',
+  'data-studio-src': '/workbench/ui-selectable-branches/mine/',
+  'data-studio-scope': 'studio studio-branches'}, workbench);
+function renderPicker(names) {
+  while (branchesEmbed.firstChild) branchesEmbed.removeChild(branchesEmbed.firstChild);
+  const nav = el('nav', {'class': 'studio-branch-picker', 'data-studio-branch-picker': ''},
+    el('div', {'class': 'scrud-resource'}, branchesEmbed));
+  const entries = {};
+  for (const name of names) {
+    const li = el('li', {'class': 'studio-branch-choice', 'data-studio-branch-name': name}, nav);
+    const link = name === 'main' ? null : el('a', {'class': 'studio-branch-link',
+      href: '/workbench/ui-branches/' + name + '/?ui-scope=studio&ui-mode=view'}, li);
+    entries[name] = {li, link};
+  }
+  return entries;
+}
+let pickerEntries = opts.picker ? renderPicker(opts.picker) : {};
 
 const docListeners = {};
 const document = {
@@ -772,6 +791,35 @@ for (const status of [412, 409, 403, 400, 0]) {
     for status in (403, 400, 0):
         _text, ajax, submits = out[f"s{status}"]
         assert ajax == [] and submits == [], status
+
+
+def test_branch_picker_marks_T():
+    """The picker lists the user's branches; a component can't know which
+    one the page shows, so studio.js marks T's entry (data-studio-current,
+    and aria-current on its link), on load and when the picker is fetched
+    again."""
+    out = scenario(
+        r"""
+const marks = (entries) => Object.fromEntries(Object.entries(entries).map(
+  ([name, e]) => [name, [e.li.hasAttribute('data-studio-current'),
+                         e.link ? e.link.getAttribute('aria-current') : null]]));
+out.load = marks(pickerEntries);
+pickerEntries = renderPicker(['main', 'alice-wip', 'zed']);
+fire(branchesEmbed, 'htmx:afterSwap', {target: branchesEmbed});
+out.swapped = marks(pickerEntries);
+""",
+        picker=["main", "alice-wip", "studio"],
+    )
+    assert out["load"] == {
+        "main": [False, None],
+        "alice-wip": [True, "page"],
+        "studio": [False, None],
+    }
+    assert out["swapped"] == {
+        "main": [False, None],
+        "alice-wip": [True, "page"],
+        "zed": [False, None],
+    }
 
 
 def test_preview_needs_type_and_endpoints():
