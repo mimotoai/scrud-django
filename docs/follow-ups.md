@@ -5,6 +5,87 @@ kept by a decision, each saying what was decided and why. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
 
+<a id="studio-push-page-after-preview"></a>
+## studio-push-page-after-preview: a push's page has no after-push preview
+
+The self-hosted studio's spec (Publishing 2) asks that a push's page show
+its changes (the push preview, E3) and the after-preview: the target as it
+will render after the push. The push page (`studio:push`, `studio:push-view`)
+embeds the changes only; the after-push preview is "Preview after push" in
+the source branch's workbench, in its "Promote to <target>…" panel, reached
+through the workbench's branch picker. Test: in
+`tests/test_studio_promote.py`, render the page of a proposed push in the
+scope `studio` with a type in its URL; it should hold a preview of the
+target after the push (a live-preview form with `after_push` and the target
+as `branch`) and has none today.
+
+<a id="studio-rule-editor-duplicate-prefix"></a>
+## studio-rule-editor-duplicate-prefix: a new prefix with a taken key overrides the stored one silently
+
+In the rule editor (`studio:stylesheet-editor`, `studio:rules`), the new
+prefix row's IRI input is named `/prefixes/<key>` from the key the author
+types. A key the stylesheet already has gives two inputs with that name;
+`ScrudUI.buildBody` applies them in order, so the new row's IRI replaces the
+stored one on Save, with no word. Test: in
+`tests/test_studio_layer_client.py`, with the rules harness, type a key the
+stylesheet already has (with another IRI) in the new prefix row and build
+the frame's body; it should be refused as an invalid field (or the new row
+named apart and reported) and today carries the new IRI under the old key.
+
+<a id="studio-may-send-workflow-path"></a>
+## studio-may-send-workflow-path: `may_send`'s workflow-only ("possibly") path is untested
+
+`scrud_django.ui.authz.may_send` offers a control when the policy allows the
+write outright or only inside a write's checks (a `scrud_workflow`
+condition, which allows there, as `decisions_for` counts a "possibly" PUT).
+Only the outright path is exercised by the studio's tests. Test: in
+`tests/test_studio_computed.py`, grant a user `http.POST` on `ui-components`
+only through a `scrud_workflow` condition in a working branch's context;
+`ui-branch-items/<branch>/` should offer that user's `override` (and
+`ui-branch-status` the promote `apply` when the same holds for `ui-pushes`),
+and a user with no such condition none.
+
+<a id="studio-reverts-to-pinned"></a>
+## studio-reverts-to-pinned: `reverts_to` on a pinned view is untested
+
+`ui-branch-items/<branch>@pinned/` lists the branch's own items with
+`reverts_to` from `_beneath`, which reads the parent's effective items as
+the branch shows them (`parent_state`), not as of the branching point the
+pinned view shows. No test pins what a pinned view's own items say they
+revert to. Test: in `tests/test_studio_computed.py`, give a working branch
+an own item over one its parent changed after the branching point, and one
+over an item its parent added after it; read the pinned items and assert
+each own item's `reverts_to` against what deleting the row would show on
+the branch (and decide whether a pinned view should offer it at all).
+
+<a id="studio-preview-nested-embeds"></a>
+## studio-preview-nested-embeds: nested embeds in a view-mode preview are untested
+
+A preview requested in view mode renders its embeds in view mode
+(`embed-preview-mode`, fixed in this release), and the studio's previews
+embed editable resources. The tests cover one level: an embed inside an
+embedded resource (depth 2 or 3) in a view-mode `preview` or `live-preview`
+is not exercised, so a nested embed that went back to the user's own mode
+(an edit form, array operations) would not show. Test: in
+`tests/test_studio_live_preview.py`, preview a resource whose component
+embeds a resource whose component embeds another the user may `PUT`, in
+view mode; the inner frame should be a view (no `hx-put`, no
+`data-scrud-array-op`).
+
+<a id="studio-items-pane-cost"></a>
+## studio-items-pane-cost: the items pane's cost grows with the branch's items
+
+`ui-branch-items/<branch>/` (the workbench's Items pane, fetched again after
+every write) evaluates `may_post` once per item it does not own (the
+`override` action: a policy evaluation each) and reads `_beneath` (the
+parent's effective items, `parent_state`) once per kind that has rows. Both
+are linear in the items per render, which is fine at the sizes the studio
+targets and not measured beyond them. Test (a budget, not a bug): in
+`tests/test_studio_computed.py`, with `django_assert_max_num_queries`, read
+the items of a branch with 10 and with 100 inherited components; the query
+count should not grow with the item count (the policy evaluations are in
+memory).
+
 <a id="ui-inflight-test-real-htmx"></a>
 ## ui-inflight-test-real-htmx: the in-flight refusal is tested with htmx's events stubbed
 

@@ -1961,6 +1961,39 @@ The demo seeds such a tree: the root `studio` at `/workbench/` (context
 `ui-studio`) and its working branch `studio-wip` (context `ui-studio-wip`); see
 [The to-do demo](#the-to-do-demo).
 
+**Without the layer.** With the studio app installed, every HTML page the UI
+renders, on every branch and outside the studio too, links the layer's CSS
+item and its five JS items (a `<link>` and five `<script defer>` tags, each
+an immutable, privately cached file; the scripts return at once without a
+workbench). A project that wants the bootstrap studio and the studio data
+but not the self-hosted studio, and none of those files on its pages,
+installs the app through a subclass of its config that declares no layer, in
+place of `"scrud_django.ui.studio"`:
+
+```python
+# myproject/apps.py
+from scrud_django.ui.studio.apps import ScrudUIStudioConfig
+
+
+class StudioWithoutLayerConfig(ScrudUIStudioConfig):
+    scrud_ui_layer = None
+```
+
+```python
+INSTALLED_APPS = [
+    ...
+    "scrud_django.ui",
+    "myproject.apps.StudioWithoutLayerConfig",
+]
+```
+
+Pages then link no `studio:` item, and a page in the scope `studio` renders
+with the built-ins: there is no workbench, so leave `SCRUD_UI_STUDIO_BRANCH`
+unset (the *Studio* link would lead to a plain branch page). The test suite
+installs the app this way (`tests.apps.StudioWithoutLayerConfig`), and
+`tests/test_studio_layer.py::test_studio_page_only_in_studio_scope` compares
+a page with and without the layer.
+
 ### The workbench
 
 A branch's workbench is its `ui-branches` detail in the scope `studio`, in
@@ -2097,8 +2130,8 @@ and the inspector under it (see
   action to the strip's `endpoints.live_preview`, its CSRF token from the
   page's `csrf-token` meta tag, and its `request` to the URL state (`type`,
   T as `branch`, or `T@pinned` when `pinned` is `1`; `mode`, default `view`;
-  `scope` as a list; `context`; `instance`, a number when it is one, else
-  `null`) with `drafts`, `mark` and `after_push` from `extra`, and submits it
+  `scope` as a list; `context`; `instance`: a number when it is all digits,
+  else the text as typed, and `null` when it is not set) with `drafts`, `mark` and `after_push` from `extra`, and submits it
   into the frame; `extra.branch`, when given, is sent as `branch` instead
   (the target of "Preview after push"). On a published T it sends no
   drafts, nor with `after_push` (the server refuses drafts with it). Without a `type`, or
@@ -2418,7 +2451,12 @@ restore of version N)"), target, state, label and result ("Version N of
 <target>", or "Not applied yet"), and, for a push with a source that is not
 yet applied (it has no `result`), an embed of
 `api_url("ui-push-previews", source)` with `?target=<target>` in the scope
-`studio studio-push`: what it will change, as the panel shows it.
+`studio studio-push`: what it will change, as the panel shows it. The push
+page has no preview of the target after the push: that is "Preview after
+push" in the source branch's workbench, in its "Promote to <target>…" panel
+(open the source's workbench from the [branch picker](#the-workbench); see
+the follow-up
+[studio-push-page-after-preview](follow-ups.md#studio-push-page-after-preview)).
 
 In edit mode (a user who may `PUT` the push), a push not yet applied also has
 a state form in the frame's `<form>`: a text input named `/state`, with a
@@ -2621,7 +2659,11 @@ banner: a page component that leaves them out is replaced by the built-in page,
 as is one that fails to render (after the comment `<!-- scrud-ui: component
 "studio:page" failed -->`). A fragment (an htmx request) has no links. As with
 the banner, a branch's CSS can still hide them (follow-up
-[ui-banner-hideable](follow-ups.md#ui-banner-hideable)).
+[ui-banner-hideable](follow-ups.md#ui-banner-hideable)), and a branch's JS
+items (`ui-js`) on S, which run in the page, can do more: remove the links,
+the safe mode link among them, or the page's body. Safe mode still reaches
+the studio then: type `?ui-safe=1` into the address bar by hand. A safe page
+links only the packaged layers' CSS and JS, so S's scripts don't run there.
 
 **Safe mode** (see [Safe mode](#safe-mode)). The *Safe mode* link renders the
 same workbench from the package only: the layer's `studio:page`,
