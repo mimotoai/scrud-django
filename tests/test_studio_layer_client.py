@@ -253,7 +253,8 @@ const sheet = {kind: 'stylesheet', name: 'theme', applies_to: 'alice', href: nul
   override: null};
 const openSheet = el('button', {'data-studio-open': JSON.stringify(sheet)}, li);
 el('span', {'class': 'studio-origin'}, li).text = 'from main';
-const override = el('button', {type: 'button', 'class': 'studio-override',
+// opts.override: the attributes of a button the server rendered.
+const override = el('button', opts.override || {type: 'button', 'class': 'studio-override',
   'hx-post': '/workbench/ui-components/', 'hx-ext': 'scrud-json',
   'hx-swap': 'none', 'data-scrud-json': 'fixed',
   'data-scrud-body': '{"name": "head", "branch": "alice-wip"}',
@@ -2643,9 +2644,12 @@ def test_push_state_saves_only_on_save():
 PROMOTE_STUB = r"""
 out.reviews = [];
 const promotes = el('div', {'class': 'studio-promotes'}, status);
-function promoteBox(target, index, {apply = true} = {}) {
+// With `rendered` ({src, apply, propose}: what the server rendered), the
+// box's source and its buttons' attributes are those.
+function promoteBox(target, index, {apply = true, rendered = null} = {}) {
   const box = el('div', {'class': 'studio-promote', 'data-studio-promote': target,
-    'data-studio-promote-src': '/workbench/ui-push-previews/alice-wip/'}, promotes);
+    'data-studio-promote-src': rendered ? rendered.src
+      : '/workbench/ui-push-previews/alice-wip/'}, promotes);
   const opener = el('button', {type: 'button', 'class': 'studio-promote-open',
     'data-studio-promote-open': '', 'aria-expanded': 'false',
     'aria-controls': 'studio-promote-' + index}, box);
@@ -2663,17 +2667,19 @@ function promoteBox(target, index, {apply = true} = {}) {
     'data-studio-after-push': ''}, actions);
   const body = (state) => JSON.stringify({source: 'alice-wip', target, state,
     rbac_context: ''});
-  const applyButton = apply ? el('button', {type: 'button', 'class': 'studio-apply',
+  const applyButton = apply ? el('button', rendered ? rendered.apply : {type: 'button',
+    'class': 'studio-apply',
     'hx-post': '/workbench/ui-pushes/', 'hx-ext': 'scrud-json', 'hx-swap': 'none',
     'data-scrud-json': 'fixed', 'data-scrud-body': body('applied'),
     'data-scrud-etag': '', disabled: ''}, actions) : null;
-  const propose = el('button', {type: 'button', 'class': 'studio-propose',
+  const propose = el('button', rendered ? rendered.propose : {type: 'button',
+    'class': 'studio-propose',
     'hx-post': '/workbench/ui-pushes/', 'hx-ext': 'scrud-json', 'hx-swap': 'none',
     'data-scrud-json': 'fixed', 'data-scrud-body': body('proposed'),
     'data-scrud-etag': ''}, actions);
   return {box, opener, panel, review, reason, note, after, apply: applyButton, propose};
 }
-const toMain = promoteBox('main', 1);
+const toMain = promoteBox('main', 1, {rendered: opts.promote || null});
 const toShop = promoteBox('shop & co', 2, {apply: false});
 const ajaxBefore = htmx.ajax;
 htmx.ajax = function (verb, path, context) {
@@ -3349,3 +3355,184 @@ def test_new_branch_form_body_from_main(studio_layer, admin_login, settings):
     )
     Then.http.status_code_is(201)
     assert Http.response.json()["rbac_context"] == ""
+
+
+# ---- bodies from the server's markup, through the API ---------------------
+
+
+@pytest.mark.django_db
+@test_context
+def test_override_copy_sends_the_rendered_body(studio_layer, settings):
+    """The editor header's "Override on this branch" is a copy of the
+    tree's button as the server renders it: the copy keeps its URL and body
+    byte for byte, and sent as scrud-json sends it, the API makes T's own
+    row of the item."""
+    from django.contrib.auth import get_user_model
+
+    from .test_studio_promote import press
+    from .test_studio_workbench import (
+        STUDIO_ROOT,
+        Element,
+        Page,
+        get_page,
+        load_seed,
+        run_seed,
+        seeded_branch,
+        workbench_url,
+    )
+
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+    run_seed(load_seed())
+    alice = seeded_branch("alice-wip")
+    Given.http.force_authenticate(get_user_model().objects.get(username="author"))
+    page = Page(get_page(workbench_url(alice, STUDIO_ROOT)))
+    classes, _row, li = page.entries()[("component", "todo-row")]
+    assert "studio-own" not in classes
+    [button] = [e for e in page.writes() if e.within(li)]
+    out = scenario(
+        r"""
+click(label);
+out.copies = editorHead.children.filter((c) => c.tagName === 'BUTTON')
+  .map((c) => c.attrs);
+""",
+        search=BASE,
+        override=button.attrs,
+    )
+    [copy] = out["copies"]
+    assert copy == button.attrs
+    press(Element("button", copy, None), 201)
+    page = Page(get_page(workbench_url(alice, STUDIO_ROOT)))
+    classes, own, _li = page.entries()[("component", "todo-row")]
+    assert "studio-own" in classes and own["override"] is None
+
+
+@pytest.mark.django_db
+@test_context
+def test_promote_sends_the_rendered_bodies(studio_layer, admin_login, settings):
+    """The strip's promote panel as the server renders it: promote.js loads
+    the review from the box's own source, turns Apply on for the review the
+    server answers (no conflict), and Propose and Apply, sent as scrud-json
+    sends them, are pushes the API makes."""
+    from .test_studio_promote import (
+        box_button,
+        get_page,
+        press,
+        promote_boxes,
+        wip_with_changes,
+    )
+    from .test_studio_workbench import Element, Page, workbench_url
+    from .test_ui_branch_push import created
+
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+    main_row, _override, wip = wip_with_changes(admin_login)
+    page = get_page(workbench_url(wip))
+    box = promote_boxes(page)["main"]
+    rendered = {
+        "src": box.attrs["data-studio-promote-src"],
+        "apply": box_button(page, box, "studio-apply").attrs,
+        "propose": box_button(page, box, "studio-propose").attrs,
+    }
+    # The review, fetched as promote.js asks for it.
+    out = promote_scenario(
+        "click(toMain.opener); out.review = out.reviews[0];",
+        search=BASE,
+        promote=rendered,
+    )
+    review = out["review"]
+    assert review["verb"] == "GET" and review["source"] is True
+    When.http.get(
+        review["path"],
+        HTTP_ACCEPT="text/html",
+        HTTP_HX_REQUEST="true",
+        HTTP_SCRUD_UI_SCOPE=review["headers"]["Scrud-UI-Scope"],
+    )
+    Then.http.status_code_is(200)
+    [found] = Page(Http.response.content.decode()).having("data-studio-push-preview")
+    answered = {
+        "conflicts": found.attrs["data-studio-conflicts"],
+        "unreadable": found.attrs["data-studio-unreadable-conflicts"],
+    }
+    assert answered == {"conflicts": "0", "unreadable": "0"}
+    out = promote_scenario(
+        r"""
+click(toMain.opener);
+answer(toMain, ANSWERED);
+out.buttons = [toMain.propose.attrs, toMain.apply.attrs, shown(toMain.reason)];
+""".replace("ANSWERED", json.dumps(answered)),
+        search=BASE,
+        promote=rendered,
+    )
+    propose, apply, reason = out["buttons"]
+    assert propose == rendered["propose"]
+    assert "disabled" not in apply and reason == [True, ""]
+    assert apply == {k: v for k, v in rendered["apply"].items() if k != "disabled"}
+    press(Element("button", propose, None), 201)
+    assert created().content["state"] == "proposed"
+    press(Element("button", apply, None), 201)
+    assert created().content["state"] == "applied"
+    main_row.refresh_from_db()
+    assert main_row.content["template"] == "<i>wip</i>"
+
+
+@pytest.mark.django_db
+@test_context
+def test_new_rule_sends_what_the_server_offers(admin_login, ui_alice_login, settings):
+    """New rule for a node, end to end: the inspector asks the options at the
+    strip's own endpoints, builds its form from the server's answer, and the
+    body its Create posts makes the rule (201), which then wins for the
+    node."""
+    from .test_studio_new_component import explain
+    from .test_ui_branch_push import make_wip
+
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+    reverse("todo-lists-list")
+    make_wip(admin_login, name="alice-wip")
+    grant(ui_alice_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(ui_alice_login)
+    When.http.get(
+        reverse("ui-branch-status-detail", args=["alice-wip"]),
+        HTTP_ACCEPT="application/json",
+    )
+    Then.http.status_code_is(200)
+    endpoints = Http.response.json()["endpoints"]
+    sample = endpoints["sample"].replace("{slug}", "todo-lists")
+    select = r"""
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+click(button('New rule for this node'));
+""".replace("SAMPLE", json.dumps(sample)).replace("EXPLAINED", json.dumps(EXPLAINED))
+    out = inspector_scenario(
+        select + "out.asked = fetched()[1];",
+        search=BASE + "&type=todo-lists",
+        endpoints=endpoints,
+    )
+    When.http.get(out["asked"], HTTP_ACCEPT="application/json")
+    Then.http.status_code_is(200)
+    offered = Http.response.json()
+    out = inspector_scenario(
+        select
+        + r"""
+await respond(200, OFFERED);
+const field = (name) => all(newRule, '[data-studio-new-field="' + name + '"]')[0];
+field('template').value = '<em>{{ value.text }}</em>';
+click(button('Create'));
+out.post = out.fetches[out.fetches.length - 1];
+""".replace("OFFERED", json.dumps(offered)),
+        search=BASE + "&type=todo-lists",
+        endpoints=endpoints,
+    )
+    post = out["post"]
+    assert post["url"] == endpoints["new_component"]
+    assert post["body"]["match"] == offered["matches"][0]["select"]
+    When.http.post(
+        post["url"],
+        data=json.dumps(post["body"]),
+        content_type="application/json",
+        HTTP_ACCEPT="application/json",
+    )
+    Then.http.status_code_is(201)
+    made = Http.response.json()
+    assert made["wins"] is True
+    assert {"kind": "component", "name": offered["name"]} in made["written"]
+    explained = explain(branch="alice-wip", pointer="/items/0")
+    assert explained["rules"][explained["winner"]]["component"] == offered["name"]
