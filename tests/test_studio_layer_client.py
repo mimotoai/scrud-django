@@ -2268,6 +2268,86 @@ out.refused = [out.ajax.length, out.submits.length, texts(newRule).slice(-1)[0]]
     assert out["innerHTML"] == 0
 
 
+def test_new_rule_answer_after_its_form_closed():
+    """Another node selected, or a control changed, while Create is in
+    flight closes the form: the answer is not dropped, it goes to the
+    workbench's notice (a refusal with its field messages, a success with
+    what was created). A template typed in a closed form is kept for its
+    node, and comes back when the form opens there again, until a Create
+    from it succeeds; meanwhile it counts as unsaved."""
+    out = inspector_scenario(
+        r"""
+const field = (name) => all(newRule, '[data-studio-new-field="' + name + '"]')[0];
+const openForm = async (pointer) => {
+  select(pointer, SAMPLE);
+  await respond(200, EXPLAINED);
+  click(button('New rule for this node'));
+  await respond(200, OPTIONS);
+};
+await openForm('/items/0');
+out.fresh = S.unsaved();
+field('template').value = '<em>typed</em>';
+out.typed = S.unsaved();
+click(button('Create'));
+// Another node while the Create is in flight: the form closes.
+select('/title', SAMPLE);
+out.closed = [newRule.hasAttribute('hidden'), S.unsaved()];
+reset();
+await respond(400, UNIFORM, 'application/problem+json');
+out.refused = [notice.hasAttribute('hidden'), notice.textContent, out.ajax.length,
+  out.submits.length];
+await respond(200, EXPLAINED);
+// Another node's form: the default template.
+click(button('New rule for this node'));
+await respond(200, OPTIONS);
+out.other = field('template').value;
+// Back to the node: what was typed there.
+await openForm('/items/0');
+out.restored = [field('template').value, texts(newRule).map((row) => row[1])];
+// A control changed while the Create is in flight: closed; the success is
+// in the notice, and everything is fetched again.
+click(button('Create'));
+change(control.mode, 'edit');
+reset();
+await respond(201, {written: [{kind: 'component', name: 'todo-lists-items-view'}],
+  wins: true, explanation: EXPLAINED});
+out.created = [notice.hasAttribute('hidden'), notice.textContent,
+  out.ajax.map((a) => a.target), out.submits.length, S.unsaved()];
+// Created: nothing kept for the node any more.
+change(control.mode, 'view');
+await openForm('/items/0');
+out.after = field('template').value;
+""".replace("SAMPLE", repr(SAMPLE_HREF))
+        .replace("EXPLAINED", json.dumps(EXPLAINED))
+        .replace("OPTIONS", json.dumps(OPTIONS))
+        .replace("UNIFORM", json.dumps(UNIFORM_400)),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["fresh"] is False and out["typed"] is True
+    assert out["closed"] == [True, True]
+    assert out["refused"] == [
+        False,
+        "New rule for /items/0: Refused (HTTP 400): Bad Request: Invalid input."
+        " template: A template is required.; Pick a match.",
+        0,
+        0,
+    ]
+    assert out["other"] == "<span>{{ value }}</span>"
+    template, labels = out["restored"]
+    assert template == "<em>typed</em>"
+    assert "The template you typed for this node before is back." in labels
+    hidden, text, targets, submits, unsaved = out["created"]
+    assert hidden is False
+    assert text == (
+        "New rule for /items/0: Created todo-lists-items-view."
+        " Its rule now wins for this node."
+    )
+    assert targets == ["items", "status"] and submits == 1
+    assert unsaved is False
+    assert out["after"] == "<span>{{ value }}</span>"
+    assert out["innerHTML"] == 0
+
+
 def test_edit_new_component_whatever_answers_first():
     """After a new rule, the explanation and the items tree are fetched
     again at once. When the explanation (whose winner is the new

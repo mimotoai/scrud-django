@@ -2379,7 +2379,12 @@ Under it, on a working branch T (none at all on a published T):
   `pointer`, and the form's `match`, `inside_type`, `where`, `applies_to`
   and `template`. On 201 it says whether the new rule wins for the node, and
   the items, the strip, the preview and the explanation are fetched again; a
-  refusal shows the server's text under the form.
+  refusal shows the server's text under the form. When the form has closed
+  meanwhile (another node selected, a control changed), the answer goes to
+  the workbench's notice instead, after `New rule for <node>:`. A template
+  typed in a form that closes is kept for its node (the preview's type and
+  the pointer) and fills the form when it opens there again, until a Create
+  from it succeeds; until then it counts as unsaved.
 
 ### Promote and push records
 
