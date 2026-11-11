@@ -29,7 +29,7 @@ from .fixtures import assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_studio_computed import store_push
 from .test_studio_editors import content_of, root_frame
-from .test_studio_layer import css_selectors, layer_files
+from .test_studio_layer import css_declarations, css_selectors, layer_files
 from .test_studio_workbench import PROMOTE, Page, workbench_url
 from .test_ui_branch_push import (
     APPROVAL_POLICY,
@@ -329,6 +329,63 @@ def test_promote_panel_shows_changes_and_conflicts(studio_layer, admin_login):
     main_row.refresh_from_db()
     assert main_row.content["template"] == "<b>changed</b>"
     assert Resource.objects.filter(pk=override.pk).exists()
+
+
+@pytest.mark.django_db
+@test_context
+def test_promote_panel_actions_above_the_review(studio_layer, admin_login):
+    """The review can be long and the panel scrolls inside a bounded height:
+    its actions (Preview after push, Apply, Propose) and the reason Apply is
+    off come first, above the review, so they are in view when it opens."""
+    _main_row, _override, wip = wip_with_changes(admin_login)
+    page = get_page(workbench_url(wip))
+    box = promote_boxes(page)["main"]
+    [panel] = page.having("data-studio-promote-panel", within=box)
+    order = [
+        e
+        for e in page.elements
+        if e.within(panel)
+        and (
+            "studio-promote-actions" in e.classes()
+            or any(
+                a in e.attrs
+                for a in (
+                    "data-studio-promote-review",
+                    "data-studio-promote-reason",
+                    "data-studio-promote-note",
+                )
+            )
+        )
+    ]
+    named = [
+        "actions"
+        if "studio-promote-actions" in e.classes()
+        else next(
+            a.removeprefix("data-studio-promote-")
+            for a in e.attrs
+            if a.startswith("data-studio-promote-")
+        )
+        for e in order
+    ]
+    assert named == ["actions", "reason", "note", "review"]
+    actions = order[0]
+    after = box_button(page, panel, "studio-after-push")
+    apply = box_button(page, panel, "studio-apply")
+    propose = box_button(page, panel, "studio-propose")
+    assert all(b.within(actions) for b in (after, apply, propose))
+    assert [text_of(b) for b in (after, apply, propose)] == [
+        "Preview after push",
+        "Apply to main",
+        "Propose to main",
+    ]
+    # The actions' row stays in view while the review scrolls under it,
+    # stuck at the panel's border (over its padding, which nothing then
+    # shows through).
+    css = layer_files("css")["studio.json"]["css"]
+    row = css_declarations(css, ".studio .studio-promote-actions")
+    panel = css_declarations(css, ".studio .studio-promote-panel")
+    assert row["position"] == "sticky" and row["background"]
+    assert panel["padding"] == "0.5rem" and row["top"] == "-0.5rem"
 
 
 @pytest.mark.django_db

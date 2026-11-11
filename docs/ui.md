@@ -2454,20 +2454,23 @@ entry of T's `actions.promote` (the parent first, then the ancestors in
 data-studio-promote="<target>" data-studio-promote-src="<path>">` holding the
 opener (`data-studio-promote-open`, `aria-expanded`) and its panel
 (`data-studio-promote-panel`, hidden). `data-studio-promote-src` is T's push
-preview, `in_mount(api_url("ui-push-previews", T))`. The panel holds:
+preview, `in_mount(api_url("ui-push-previews", T))`. The panel scrolls
+within a bounded height and holds, in this order:
 
+- its actions (`<div class="studio-promote-actions">`, which stays at the
+  top of the panel while the review scrolls under it): "Preview after push"
+  (`data-studio-after-push`), then Apply and Propose: the entry's `apply` and
+  `propose` actions, as the strip's other
+  [fixed-body](#writes-from-the-browser) buttons (`hx-post` of `ui-pushes`
+  with the body the server gave, `hx-swap="none"`), labelled "Apply to
+  <target>" and "Propose to <target>", each only when offered. Apply is
+  rendered `disabled`. A user who may read the branches but not push gets
+  "Preview after push" and the review alone;
+- a reason (`data-studio-promote-reason`) and a note
+  (`data-studio-promote-note`), hidden, for the script's text;
 - the review (`data-studio-promote-review`), empty at render: the push
   preview is not embedded (embeds are limited), but loaded when the panel
-  opens, each time it opens;
-- "Preview after push" (`data-studio-after-push`);
-- Apply and Propose: the entry's `apply` and `propose` actions, as the
-  strip's other [fixed-body](#writes-from-the-browser) buttons (`hx-post` of
-  `ui-pushes` with the body the server gave, `hx-swap="none"`), labelled
-  "Apply to <target>" and "Propose to <target>", each only when offered. Apply
-  is rendered `disabled`. A user who may read the branches but not push gets
-  the review alone;
-- a reason (`data-studio-promote-reason`) and a note
-  (`data-studio-promote-note`), hidden, for the script's text.
+  opens, each time it opens.
 
 The script `studio:promote` (the layer's fourth JS item) opens and closes a
 panel on its opener and loads the review: an htmx GET of

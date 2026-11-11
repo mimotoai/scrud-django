@@ -194,7 +194,8 @@
   `studio studio-push`): the changes, each with its item before and after,
   the conflicts, and those on items the user can't read, counted. "Preview
   after push" shows the target with the branch pushed. Apply and Propose are
-  the entry's own actions; Apply stays off, with the reason, until the review
+  the entry's own actions, above the review and kept in view while it
+  scrolls; Apply stays off, with the reason, until the review
   has loaded and shows no conflict, readable or not. A push's page
   (`studio:push`, or `studio:push-view` for a user who may not `PUT` it)
   shows its source, target, state, label and result, the preview of a push
