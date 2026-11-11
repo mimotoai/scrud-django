@@ -218,7 +218,8 @@
 * For the studio's components and scripts, and usable by any: stored Jinja
   components get `in_mount(href)` (an API URL mapped into the page's
   published prefix) and `api_url(slug, key=None)` (the API path of a
-  registered type's list or detail; an unknown slug fails the component)
+  registered type's list or detail; an unknown slug, or one whose route is
+  not that type's resource view, fails the component)
   beside `embed`. The computed studio data gains *actions* (`{"method",
   "href", "body", "etag"}`, what a control sends unchanged, offered only when
   the user's grants allow it): each item of `ui-branch-items` has `override`
@@ -279,8 +280,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   save) was queued by htmx and dropped without a word when the save's answer
   replaced the frame. `scrud-ui.js` now refuses such a request and shows "Your
   change was not sent: an earlier save of this item was still in progress.
-  Make the change again." in the frame that answers the save (the MR 1
-  carry-over, reproduced in the self-hosted studio's acceptance run). A
+  Make the change again." in the frame that answers the save (follow-up
+  `ui-inflight-edit-dropped`, reproduced in the self-hosted studio's
+  acceptance run). A
   refused request that would have sent nothing new says nothing: Enter in a
   field, or typing and then a click on Save, fires the field's change and
   then the form's submit, and the change's save already carries the edit

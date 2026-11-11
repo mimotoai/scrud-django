@@ -18,8 +18,10 @@ Each answers only what its user may GET as JSON: a branch it may select
 (`selection.selectable`; the push preview: both of its branches the user may
 GET), else 404, the same for every cause; an item the item's own read check allows (packaged
 layer items are public). A write is offered as an action (`_action`) only
-when the user's grants allow it (`authz.may_send`), and never on a published
-branch. The bootstrap studio's strip reads the same functions
+when the user's grants allow it (`authz.may_send`). On a published branch the
+only write offered is a restore of one of its versions (`_versions`: rolling
+back a publish is what a restore is for); its overrides, pulls and pushes
+are not. The bootstrap studio's strip reads the same functions
 (`scrud_django.ui.studio.page`)."""
 
 import contextlib

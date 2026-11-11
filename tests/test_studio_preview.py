@@ -337,7 +337,7 @@ def test_every_preview_response_is_sandboxed(todo_list, todo_reader_login):
 @test_context
 def test_embed_in_view_mode_preview_is_view_mode(todo_list, todo_owner_login):
     """An embed with no mode, in a preview requested with ``mode=view``,
-    renders in view mode (the ``embed-preview-mode`` follow-up): no edit
+    renders in view mode (docs/ui.md, "Embeds"): no edit
     inputs and no array operations, even for a user who may PUT the
     embedded resource. With ``mode=edit`` it keeps the user's own mode."""
     other = make_list("Chores", items=["Sweep"])

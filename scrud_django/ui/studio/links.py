@@ -74,8 +74,9 @@ def studio_href() -> str | None:
     """The workbench of the studio root (`studio.studio_branch`) on itself:
     its own ``ui-branches`` detail under its prefix, in the scope
     ``studio``, in view mode (the workbench is a view of its branch: a user
-    who may PUT it would otherwise get the branch's edit form). ``None`` when the setting is unset, names no stored branch,
-    or that branch has no prefix."""
+    who may PUT it would otherwise get the branch's edit form). ``None``
+    when the setting is unset, names no stored branch, or that branch has
+    no prefix."""
     from scrud_django.ui.studio import studio_branch
 
     name = studio_branch()

@@ -1000,6 +1000,104 @@ which names the wrong chrome. Test: in `tests/test_studio_layer.py`
 (`test_studio_links_required_in_page`), assert a comment that names the
 studio links.
 
+<a id="studio-inspector-stuck"></a>
+## studio-inspector-stuck: the inspector can be left "Explaining..." or invite a second Create
+
+The inspector's `send` (`studio:inspector`) reads a response's body with
+`response.text()` and has no handler for that promise failing, nor for an
+exception in what renders the answer. A connection dropped in the middle of
+the body, or a render that throws on an odd answer, leaves the explanation
+at "Explaining..." or the form at "Loading the options..." with no message.
+And a 201 whose body does not parse as JSON is shown under the form as "The
+answer could not be read.", like a refusal, though the rule was made:
+pressing Create again makes a second component. Test: in
+`tests/test_studio_layer_client.py`, answer an explain with a response
+whose `text()` rejects, and assert the inspector says the request failed;
+answer a Create with a 201 whose body is not JSON, and assert the form
+says the rule was made (and the panes are fetched again), not a failure.
+
+<a id="ui-load-error-request-lock"></a>
+## ui-load-error-request-lock: after `htmx:onLoadError` a frame's later edits are queued and never sent
+
+When handling a response throws, htmx 2.0.4 fires `htmx:onLoadError` and
+does not end the element's request lock (no `endRequestLock`). `scrud-ui.js`
+stops counting the frame as in flight then (it settles on
+`htmx:onLoadError`), but htmx itself still sees a request in flight on that
+element: its later requests are queued behind one that never ends, and so
+never sent, with no notice. This pairs with
+[ui-inflight-test-real-htmx](#ui-inflight-test-real-htmx): only the
+vendored htmx shows it. Test: with the vendored htmx in a real DOM (jsdom,
+or the browser acceptance run), make a frame's save answer with markup whose
+swap throws, then change a field of the frame; assert a PUT is sent (or a
+notice says it was not).
+
+<a id="studio-link-unreadable-root"></a>
+## studio-link-unreadable-root: the Studio link shows the studio root to viewers who can't read it
+
+`studio.links.studio_href` builds the *Studio* link from
+`SCRUD_UI_STUDIO_BRANCH` without checking that the viewer may GET that
+branch: every viewer of a UI type's page gets a link that names the studio
+root's primary key under its prefix, and for one who may not read it the
+link is dead (a 404). Test: in `tests/test_studio_layer.py`, render a UI
+type's page for a user who may GET the page but not the studio root; assert
+there is no *Studio* link (or that it says the user can't open it).
+
+<a id="studio-api-url-edge-tests"></a>
+## studio-api-url-edge-tests: `api_url`, `in_mount` and `safe_href` edge cases are untested
+
+`embed.api_url` refuses a slug that is not a string or is empty, one with no
+such route, one whose route is not under the script prefix, one that does
+not resolve (`Resolver404`), and one whose route is not that type's resource
+view; a computed type has only a detail route. The tests cover the common
+cases only: none passes a non-string or empty slug, asks a computed type's
+list (no key), uses a key that needs percent-encoding, or runs under a
+non-default script prefix. `in_mount` (outside a mount, a path outside the
+API, an absolute URL) and `studio.links.safe_href` (a query with repeated or
+encoded parameters, an existing `ui-safe`) are likewise only tested on
+their plain path. Test: in `tests/test_studio_layer.py`, call each with
+those inputs (`api_url(7)`, `api_url("")`, a computed type with no key,
+`api_url("todo-lists", "a/b c")`, under `set_script_prefix("/app/")`) and
+assert the `ValueError`s and the exact paths.
+
+<a id="studio-endpoints-all-or-none"></a>
+## studio-endpoints-all-or-none: the strip's `endpoints` is null when any one of them does not reverse
+
+`studio.computed._endpoints` reverses the five bootstrap studio endpoints in
+one `try`: a `NoReverseMatch` for any one of them (a project that includes
+some of the studio's URLs, or renamed one) makes the whole map `null`, so
+the workbench loses the live preview and the inspector though most of them
+exist. It is documented (docs/ui.md, the status's `endpoints`). Test: in
+`tests/test_studio_computed.py`, with a URLconf that includes the studio's
+URLs without `new-component`, read the status; it answers
+`"endpoints": null` today, where the others (and `null` for the missing one)
+would keep the preview working.
+
+<a id="studio-beneath-chain-error"></a>
+## studio-beneath-chain-error: an own row's Delete says nothing is inherited when the parent can't be read
+
+`studio.computed._beneath` reads what deleting an own row reverts to from
+the parent's state (`parent_state`). When that read fails (a broken chain, a
+missing pinned snapshot: `BranchChainError`), it now logs a warning, but the
+entries still get `reverts_to: null`, so the editor's Delete asks "The
+branch has no inherited version of it" when there may well be one. Test: in
+`tests/test_studio_computed.py`
+(`test_items_beneath_a_broken_chain_are_logged`), the own row's
+`reverts_to` is `null`; it should say that what is beneath is unknown (for
+example `"unknown"`), and the workbench's Delete should say so instead of
+claiming nothing is inherited.
+
+<a id="studio-workbench-brittle-asserts"></a>
+## studio-workbench-brittle-asserts: workbench tests assert whole structures
+
+Some tests in `tests/test_studio_workbench.py` assert exact structures of
+the page: the dict of every embed (`data-studio-embed` to tag, source and
+scope) and the list of every form in the page. Any new embed or form fails
+them though nothing they check changed, which invites loosening them by
+hand. Test (a refactor, not a bug): assert each embed and form the test is
+about by key, plus a separate assertion that no unexpected write control
+appears (`Page.writes()`), so an addition fails only the test that is about
+it.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

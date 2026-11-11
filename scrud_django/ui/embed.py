@@ -15,10 +15,11 @@ What the embed carries over in process, by context variable rather than by
 header: safe mode (`branches.effective.using_safe_mode`, which the
 renderer keeps), preview (`render.using_preview`, which `render_resource`
 keeps; a preview requested in view mode, `render.using_view_preview`, sends
-``Scrud-UI-Mode: view`` with every embed in it), the embed stack and the response's embed count (`_state`). Safe
-mode and a live preview's drafts are render-only: `dispatch_path` runs the
-embedded view in `effective.stored_state`, so that what it reads as data
-is the stored state, and renders its response outside that block.
+``Scrud-UI-Mode: view`` with every embed in it), the embed stack and the
+response's embed count (`_state`). Safe mode and a live preview's drafts
+are render-only: `dispatch_path` runs the embedded view in
+`effective.stored_state`, so that what it reads as data is the stored
+state, and renders its response outside that block.
 
 `path` is split once (`urllib.parse.urlsplit`; its fragment is dropped),
 and its path and query are what is checked and dispatched. An ``http`` or
@@ -29,14 +30,15 @@ published branch's prefix, an API path is embedded under the prefix
 the prefix's branch, with `check_mount`.
 
 Refused, with the notice `REFUSED_MESSAGE` (and a warning logged): a path
-that is not a string, not absolute, or has another scheme or host; one that does
-not resolve to a resource view (`ResourceViewMixin`: stored and computed
-types), or whose response is not the UI's HTML (``?format=json``); a path and scope chain already on the embed stack (a cycle; the
-top-level request is its bottom); an embed deeper than `MAX_EMBED_DEPTH`;
-and any embed past the first `MAX_EMBEDS` of a top-level response. A view
-that raises renders `FAILED_MESSAGE`: logged at ERROR, with
-``got_request_exception`` sent, and rolled back to a savepoint of its own
-on each database in an atomic block, so that the embedding render's
+that is not a string, not absolute, or has another scheme or host; one that
+does not resolve to a resource view (`ResourceViewMixin`: stored and
+computed types), or whose response is not the UI's HTML
+(``?format=json``); a path and scope chain already on the embed stack (a
+cycle; the top-level request is its bottom); an embed deeper than
+`MAX_EMBED_DEPTH`; and any embed past the first `MAX_EMBEDS` of a top-level
+response. A view that raises renders `FAILED_MESSAGE`: logged at ERROR, with
+``got_request_exception`` sent, and rolled back to a savepoint of its own on
+each database in an atomic block, so that the embedding render's
 transaction stays usable.
 
 `component_globals` gives a stored Jinja component ``embed`` and two more
@@ -210,7 +212,8 @@ def _embed(request, path, scope, mode) -> str:
     if key in state.stack:
         return _refused(path, f"a cycle (in scope {' '.join(chain)!r})")
     if mode == renderer.VIEW_MODE or in_view_preview():
-        # In a preview requested in view mode, every embed is in view mode.
+        # A view-mode preview shows what a viewer sees: an embed in it keeps
+        # no edit control of a user who may PUT the embedded resource.
         headers[renderer.MODE_HEADER] = renderer.VIEW_MODE
     token = _state.set(_EmbedState(state.stack + (key,), state.count))
     try:

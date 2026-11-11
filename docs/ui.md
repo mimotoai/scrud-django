@@ -641,7 +641,8 @@ named by JSON Pointer (`name="/items/0/text"`):
   without the change. No notice is shown when nothing new would have been
   sent: the browser fires a field's `change` and then the form's `submit` in
   a row (Enter in a text field, or typing and then a click on Save), and the
-  change's `PUT` already carries the edit; so for a second click on Save. The
+  change's `PUT` already carries the edit. The same holds for a second
+  click on Save while the first save is in flight. The
   refused request counts as nothing new when the frame's inputs, built onto
   its content as a `PUT` builds them, give the body the request in flight was
   built from; an array operation is always new. A frame is also no longer in
@@ -717,10 +718,10 @@ the stored resource, never from the request. Policy condition messages are
 shown only to a user who may read the stored resource, and only in HTML; the
 JSON error bodies are unchanged. A stylesheet whose rule has a selector that does not parse is a 400 problem
 with `name: "rules[<i>].select"` (the field, as JSON Schema's errors name
-theirs), so the re-render shows the message beside rule `<i>`. So is a
+theirs), so the re-render shows the message beside rule `<i>`. Likewise, a
 `ui-branches` write refused for its `prefix` (a malformed one, one another
-branch has, or one that overlaps another branch's or the API's URLs: 400
-`ui-branch-invalid` with `name: "prefix"`).
+branch has, or one that overlaps another branch's or the API's URLs) is a 400
+`ui-branch-invalid` with `name: "prefix"`, shown beside the prefix.
 A 412 (PUT or DELETE) shows a notice and reloads
 the frame with the current state, and so does a 409 DELETE.
 
@@ -1809,7 +1810,10 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
   (`POST new-component`).
   `sample`, `explain` and `options` take the type's slug: they are templates
   in which `{slug}` stands for it (replace it, URL-encoded). `endpoints` is
-  `null` when the studio's URLs are not included.
+  `null` when the studio's URLs are not included, and also when any one of
+  them does not reverse (a project that includes some of the studio's URLs
+  but not all): never a partial map (follow-up
+  [studio-endpoints-all-or-none](follow-ups.md#studio-endpoints-all-or-none)).
 
 **Type catalog**: `{"types": [{"slug", "title", "type_uri"}]}`, every
 registered type with a slug, by slug, as the type browser lists them
@@ -2131,7 +2135,8 @@ and the inspector under it (see
 - **The preview.** `window.ScrudStudio.submitPreview(extra)` sets the form's
   action to the strip's `endpoints.live_preview`, its CSRF token from the
   page's `csrf-token` meta tag, and its `request` to the URL state (`type`,
-  T as `branch`, or `T@pinned` when `pinned` is `1`; `mode`, default `view`;
+  T as `branch`, or `T@pinned` when `pinned` is `1` or `true`; `mode`,
+  default `view`;
   `scope` as a list; `context`; `instance`: a number when it is all digits,
   else the text as typed, and `null` when it is not set) with `drafts`, `mark` and `after_push` from `extra`, and submits it
   into the frame; `extra.branch`, when given, is sent as `branch` instead
@@ -2323,7 +2328,7 @@ the branching point" checkbox (`data-studio-control="pinned"`). None has a
 `name`. The script `studio:inspector` (the layer's third JS item) shows the
 URL state in them on load (a component cannot read the query). A change of
 one sets its key of the state (trimmed; empty removes it; `pinned` is `1`
-when checked), clears `pointer` and the inspector (the node was the old
+when checked; `1` or `true` in the URL pins it), clears `pointer` and the inspector (the node was the old
 preview's), and submits the preview again; a new type also fetches the strip
 again with `?type=`.
 
@@ -2344,7 +2349,8 @@ resource sets `pointer` in the URL state (the resource itself, `""`, is no
 key) and is explained; so is the `pointer` of the URL on load.
 
 The explanation is a `GET` of `endpoints.explain` for the state's type with
-the preview's own parameters: `branch` (T, or `T@pinned` when `pinned`),
+the preview's own parameters: `branch` (T, or `T@pinned` when `pinned` is
+`1` or `true`),
 `mode` (default `view`), `scope` (space-separated), `context`, `instance`
 (when set) and `pointer`, encoded with `URLSearchParams`, so a pointer with
 `~0`, `~1` or any reserved character reaches the server exactly. It is sent
@@ -2679,15 +2685,22 @@ stored branch, or names a branch with no prefix. *Safe mode* is the current
 URL with `ui-safe=1` (its other parameters kept). *Bootstrap studio* is the
 bootstrap studio's types page (`scrud-studio:types`), left out when the project
 does not include the studio's URLs. The links are server chrome, like the
-banner: a page component that leaves them out is replaced by the built-in page,
-as is one that fails to render (after the comment `<!-- scrud-ui: component
-"studio:page" failed -->`). A fragment (an htmx request) has no links. As with
+banner, and a page component that breaks them is replaced by the built-in page,
+which has them. One that fails to render is replaced after the comment
+`<!-- scrud-ui: component "studio:page" failed -->` (its own name in place of
+`studio:page`). One that renders but leaves the links out is replaced after
+the comment `<!-- scrud-ui: page component "studio:page" leaves out the branch
+banner or the safe mode notice -->`, which names the wrong chrome for the
+links (follow-up
+[ui-page-fallback-comment](follow-ups.md#ui-page-fallback-comment)). A
+fragment (an htmx request) has no links. As with
 the banner, a branch's CSS can still hide them (follow-up
 [ui-banner-hideable](follow-ups.md#ui-banner-hideable)), and a branch's JS
 items (`ui-js`) on S, which run in the page, can do more: remove the links,
 the safe mode link among them, or the page's body. Safe mode still reaches
 the studio then: type `?ui-safe=1` into the address bar by hand. A safe page
-links only the packaged layers' CSS and JS, so S's scripts don't run there.
+links S's CSS and JS URLs with `?ui-safe=1`, which serve only the packaged
+layers' items, so S's scripts don't run there.
 
 **Safe mode** (see [Safe mode](#safe-mode)). The *Safe mode* link renders the
 same workbench from the package only: the layer's `studio:page`,
