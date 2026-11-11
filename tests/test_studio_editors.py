@@ -408,6 +408,8 @@ def test_django_engine_component_read_only(studio_layer, ui_alice_login):
         assert editor.attrs["data-studio-mode"] == ("view" if view else "edit")
         [note] = [e for e in page.elements if "studio-note" in e.classes()]
         assert "Django" in note.text and "read-only" in note.text
+        # The bootstrap studio shows them read-only too: only the API edits.
+        assert "bootstrap studio" not in note.text and "the API" in note.text
         [code] = [e for e in page.elements if "studio-code" in e.classes()]
         assert code.tag == "textarea" and "readonly" in code.attrs
         assert "name" not in code.attrs and "data-studio-code" not in code.attrs
