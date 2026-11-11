@@ -34,12 +34,14 @@ from .test_ui_static import require_node
 
 LAYER_PACKAGE = "scrud_django.ui.studio.layer"
 
-# argv[1]: the script; argv[2]: "1" when the page has a workbench. Prints
-# what the script did.
+# argv[1]: the script; argv[2]: "1" when the page has a workbench, "push"
+# when it is a push's page (a ``[data-studio-push]`` element). Prints what the
+# script did.
 HARNESS = r"""
 const vm = require('vm');
 const source = process.argv[1];
 const withWorkbench = process.argv[2] === '1';
+const withPush = process.argv[2] === 'push';
 const out = {queries: [], touched: [], listeners: [], fetches: 0, attributes: {}};
 const workbench = {
   setAttribute(name, value) { out.attributes[name] = String(value); },
@@ -59,7 +61,8 @@ const document = recorded('document', {
   readyState: 'interactive',
   querySelector(selector) {
     out.queries.push(selector);
-    return withWorkbench && selector === '[data-studio-workbench]' ? workbench : null;
+    if (withWorkbench && selector === '[data-studio-workbench]') return workbench;
+    return withPush && selector === '[data-studio-push]' ? workbench : null;
   },
   addEventListener(type) { out.listeners.push('document:' + type); },
 });
@@ -84,10 +87,11 @@ def layer_source(file="studio.json"):
     return json.loads(layer_js.read_text(encoding="utf-8"))["js"]
 
 
-def run(with_workbench, file="studio.json"):
+def run(with_workbench, file="studio.json", push=False):
     source = layer_source(file)
+    page = "push" if push else "1" if with_workbench else "0"
     done = subprocess.run(
-        ["node", "-e", HARNESS, source, "1" if with_workbench else "0"],
+        ["node", "-e", HARNESS, source, page],
         capture_output=True,
         text=True,
     )
@@ -2215,10 +2219,123 @@ out.url = fetched()[0];
 def test_promote_js_inert_without_workbench():
     require_node()
     out = run(with_workbench=False, file="promote.json")
-    assert out["queries"] == ["[data-studio-workbench]"]
-    assert out["touched"] == ["document.querySelector"]
+    # It also looks for a push's page, and finds none: nothing else.
+    assert out["queries"] == ["[data-studio-workbench]", "[data-studio-push]"]
+    assert out["touched"] == ["document.querySelector", "document.querySelector"]
     assert out["listeners"] == [] and out["fetches"] == 0
     assert out["attributes"] == {}
+
+
+def test_push_page_installs_only_the_change_stop():
+    require_node()
+    # On a push's page (no workbench) the other layer scripts stay inert.
+    for file in ("studio.json", "rules.json", "inspector.json"):
+        out = run(with_workbench=False, file=file, push=True)
+        assert out["queries"] == ["[data-studio-workbench]"], file
+        assert out["touched"] == ["document.querySelector"], file
+        assert out["listeners"] == [] and out["fetches"] == 0, file
+        assert out["attributes"] == {}, file
+    # studio:promote installs one change listener on the document, and does
+    # nothing else.
+    out = run(with_workbench=False, file="promote.json", push=True)
+    assert out["queries"] == ["[data-studio-workbench]", "[data-studio-push]"]
+    assert out["touched"] == [
+        "document.querySelector",
+        "document.querySelector",
+        "document.addEventListener",
+    ]
+    assert out["listeners"] == ["document:change"]
+    assert out["fetches"] == 0 and out["attributes"] == {}
+
+
+# A push's page as studio:push renders it in edit mode: the frame's form
+# (htmx saves it on change and on submit: counted), the push's root, the
+# state input and another input; a document whose events capture from the
+# document down, then bubble. argv[1]: promote.js.
+PUSH_PAGE = r"""
+const vm = require('vm');
+const out = {frame: [], input: []};
+class Node {
+  constructor(tag, attrs, parent) {
+    this.tagName = tag.toUpperCase();
+    this.attrs = attrs || {};
+    this.parentNode = parent || null;
+    this.listeners = {};
+    this.capture = {};
+  }
+  hasAttribute(n) { return n in this.attrs; }
+  getAttribute(n) { return n in this.attrs ? this.attrs[n] : null; }
+  // Only "[attr]" selectors.
+  closest(sel) {
+    const name = /^\[([\w-]+)\]$/.exec(sel)[1];
+    for (let n = this; n && n.attrs; n = n.parentNode) if (name in n.attrs) return n;
+    return null;
+  }
+  addEventListener(type, fn, capture) {
+    const where = capture === true ? this.capture : this.listeners;
+    (where[type] = where[type] || []).push(fn);
+  }
+}
+const document = new Node('#document', null, null);
+document.attrs = null;
+document.querySelector = (sel) => (sel === '[data-studio-push]' ? push : null);
+const body = new Node('body', {}, document);
+let frame;
+let push;
+let state;
+let label;
+function render() {
+  frame = new Node('form', {'class': 'scrud-resource', 'hx-put': '/ui-pushes/7/',
+    'hx-trigger': 'change, submit'}, body);
+  frame.addEventListener('change', (e) => out.frame.push('change:' + e.target.attrs.name));
+  frame.addEventListener('submit', () => out.frame.push('submit'));
+  push = new Node('div', {'class': 'studio-push', 'data-studio-push': '',
+    'data-studio-mode': 'edit'}, frame);
+  state = new Node('input', {type: 'text', name: '/state', list: 'states',
+    'data-studio-push-state-input': ''}, push);
+  state.addEventListener('change', () => out.input.push('change'));
+  label = new Node('input', {type: 'text', name: '/label'}, push);
+}
+function fire(target, type) {
+  const evt = {type, target, stopped: false};
+  evt.stopPropagation = () => { evt.stopped = true; };
+  const path = [];
+  for (let n = target; n; n = n.parentNode) path.push(n);
+  for (const n of path.slice().reverse()) {
+    (n.capture[type] || []).forEach((fn) => fn(evt));
+    if (evt.stopped) return evt;
+  }
+  for (const n of path) {
+    (n.listeners[type] || []).forEach((fn) => fn(evt));
+    if (evt.stopped) return evt;
+  }
+  return evt;
+}
+render();
+vm.runInContext(process.argv[1], vm.createContext({document, window: {}}));
+fire(state, 'change');
+fire(label, 'change');
+fire(frame, 'submit');
+// A refused PUT swaps a new frame in: the stop still holds.
+render();
+fire(state, 'change');
+fire(frame, 'submit');
+console.log(JSON.stringify(out));
+"""
+
+
+def test_push_state_saves_only_on_save():
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", PUSH_PAGE, layer_source("promote.json")],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    # A change of the state input never reaches the frame (no PUT); the
+    # form's submit (Save, or Enter) does, as do other inputs' changes.
+    assert out["frame"] == ["change:/label", "submit", "submit"]
 
 
 # The strip's promote panels as studio:status renders them, one per

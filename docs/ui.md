@@ -1943,7 +1943,10 @@ and JS items `studio:studio` (order 0), `studio:rules` (order 1, the
 `studio:promote` (order 3, [promote and push pages](#promote-and-push-pages)),
 the last three using the API the first sets up, are effective on every branch, so
 every page links them: every selector of the CSS is under a `.studio` class or a `[data-studio…]` attribute, and each
-script does nothing unless the page has a `[data-studio-workbench]` element. No layer component has an inline script or
+script does nothing unless the page has a `[data-studio-workbench]` element,
+with one exception: on a push's page (a `[data-studio-push]` element, see
+[Promote and push pages](#promote-and-push-pages)) `studio:promote` stops the
+`change` of the push's state input, and does nothing else. No layer component has an inline script or
 an event handler attribute, so a `script-src 'self'` policy works. A branch
 overrides any of these items by name, as it does any layer item.
 
@@ -2413,9 +2416,12 @@ yet applied (it has no `result`), an embed of
 In edit mode (a user who may `PUT` the push), a push not yet applied also has
 a state form in the frame's `<form>`: a text input named `/state`, with a
 `<datalist>` of `proposed` and `applied`, and a Save button. Saving is the
-frame's `PUT`, which applies the push when it moves it to `applied`; as in
-any edit-mode frame, a `change` of the input also saves it (the layer's
-scripts run only on a workbench). A move the server refuses, such as one a
+frame's `PUT`, which applies the push when it moves it to `applied`. Only
+Save (or Enter in the input) saves: the input carries
+`data-studio-push-state-input`, and on a page with `[data-studio-push]` the
+script `studio:promote` stops its `change` on the document (in the capture
+phase) before the frame's form sees it, so choosing `applied` and leaving
+the field writes nothing. A move the server refuses, such as one a
 workflow policy forbids (Requiring approval, under
 [Pushing and restoring](#pushing-and-restoring)), is re-rendered with the
 server's message and the submitted state ([Refused writes](#refused-writes)).

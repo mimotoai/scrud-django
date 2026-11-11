@@ -215,9 +215,11 @@
   `studio` (`studio:push`, and `studio:push-view` for a user who may not
   `PUT` it): source, target, state, label and result, the push preview of a
   push not yet applied, and a state input (`proposed`, `applied`) saved by
-  the frame's `PUT`, whose refusal (a workflow policy's, for example) is
-  re-rendered with the server's message. The new layer JS item
-  `studio:promote` (order 3) does this, and `ScrudStudio.submitPreview`
+  the frame's `PUT` only on Save, whose refusal (a workflow policy's, for
+  example) is re-rendered with the server's message. The new layer JS item
+  `studio:promote` (order 3) does this (on a push's page, a
+  `[data-studio-push]` element, it only stops the state input's `change`;
+  elsewhere it needs a workbench, as the other layer scripts do), and `ScrudStudio.submitPreview`
   takes a `branch` (the branch to preview instead of the workbench's) and
   sends no drafts with `after_push`.
 

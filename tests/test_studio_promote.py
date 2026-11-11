@@ -381,6 +381,8 @@ def test_propose_then_apply_from_push_page(studio_layer, admin_login):
     [state] = [e for e in page.elements if e.attrs.get("name") == "/state"]
     assert state.tag == "input" and state.attrs["type"] == "text"
     assert state.attrs["value"] == "proposed" and state.within(frame)
+    # studio:promote stops its change (only Save writes) by this marker.
+    assert "data-studio-push-state-input" in state.attrs
     [datalist] = [e for e in page.elements if e.tag == "datalist"]
     assert datalist.attrs["id"] == state.attrs["list"]
     options = [
