@@ -2662,7 +2662,9 @@ and `studio:items` on S and takes each of these ways back.
 
 `demo/` includes a seed command that creates users, a to-do list, and the
 components and stylesheets that render it (a detail page with editable rows, a
-compact sidebar list, and a page with a layout), and four branches: the
+compact sidebar list, and a page with a layout; Django-engine components but
+for the read-only row `todo-row`, a Jinja one, which the self-hosted studio
+can edit), and four branches: the
 published `admin` branch at `/manage/` (with an extra component and its own CSS),
 the published `customer` branch at `/todo/` (with its own CSS), and a working
 branch `testing-admin` over `admin`, and a working branch `alice-wip` over

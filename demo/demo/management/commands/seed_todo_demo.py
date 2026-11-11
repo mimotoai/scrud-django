@@ -245,9 +245,11 @@ COMPONENTS = [
         ),
     },
     {
-        # An item, read-only.
+        # An item, read-only. A Jinja component, so that the self-hosted
+        # studio, which edits Jinja only, can edit it (its override in
+        # alice-wip's workbench, for one); the others are Django's.
         "name": "todo-row",
-        "engine": "django",
+        "engine": "jinja2",
         "mode": "view",
         "label": "To-do item",
         "template": (

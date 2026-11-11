@@ -601,3 +601,34 @@ def test_seed_creates_studio_tree_and_grants(studio_layer, settings):
         user__username="owner", rbac_context=DEFAULT_CONTEXT
     )
     assert UI_BRANCH_TYPE_URI in assignment.role.definition["http.PUT"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_seed_todo_row_override_is_editable_in_the_workbench(studio_layer):
+    """The acceptance run's step 3: in alice-wip's workbench, the author
+    overrides the demo's ``todo-row`` and types in its template. The studio
+    edits Jinja only (Django-engine components are read-only), so the seed's
+    ``todo-row`` is a Jinja component and its override opens in edit mode,
+    with the named code textarea and Save."""
+    from django.contrib.auth import get_user_model
+
+    from .test_studio_editors import open_editor
+
+    run_seed(load_seed())
+    alice = seeded_branch("alice-wip")
+    Given.http.force_authenticate(get_user_model().objects.get(username="author"))
+    page = Page(get_page(workbench_url(alice, STUDIO_ROOT)))
+    _classes, row, _li = page.entries()[("component", "todo-row")]
+    action = row["override"]
+    assert action["body"]["engine"] == "jinja2"
+    When.http.post(action["href"], data=action["body"], format="json")
+    Then.http.status_code_is(201)
+    page = Page(get_page(workbench_url(alice, STUDIO_ROOT)))
+    classes, own, _li = page.entries()[("component", "todo-row")]
+    assert "studio-own" in classes
+    editor = Page(open_editor(own["href"]))
+    [code] = editor.having("data-studio-code")
+    assert code.tag == "textarea" and code.attrs["name"] == "/template"
+    assert "readonly" not in code.attrs
+    assert "Save" in editor.buttons()
