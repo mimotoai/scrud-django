@@ -52,6 +52,8 @@ from scrud_django.views import ResourceViewSet
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 BASES = ("live", "pinned")
+# The field a refused prefix names (`UIBranchInvalidError.name`).
+PREFIX_FIELD = "prefix"
 
 
 @scrudful_viewset
@@ -269,7 +271,8 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
         if prefix is not None and prefix and not PREFIX.fullmatch(prefix):
             raise UIBranchInvalidError(
                 f'A branch prefix is "" or matches {PREFIX.pattern}; {prefix!r} '
-                "does not."
+                "does not.",
+                name=PREFIX_FIELD,
             )
         stored = (
             None if instance is None else branch_from(instance.pk, instance.content)
@@ -282,13 +285,14 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
         for other in all_branches.values():
             if other.name != name and other.prefix == prefix:
                 raise UIBranchInvalidError(
-                    f"Branch {other.name!r} already has the prefix {prefix!r}."
+                    f"Branch {other.name!r} already has the prefix {prefix!r}.",
+                    name=PREFIX_FIELD,
                 )
         if changed and prefix:
             others = [b for b in all_branches.values() if b.name != name]
             problems = prefix_problems(prefix, others, type_db())
             if problems:
-                raise UIBranchInvalidError(" ".join(problems))
+                raise UIBranchInvalidError(" ".join(problems), name=PREFIX_FIELD)
 
     def check_publisher(self, content):
         """Refuse (``PermissionDenied``, 403) unless the writer may PUT

@@ -3,7 +3,8 @@ stylesheets that render it, and four UI branches: ``admin`` published at
 ``/manage/`` (not ``/admin/resources/``: Django's admin claims ``/admin/``),
 ``customer`` published at ``/todo/``, ``testing-admin``, a working branch
 over ``admin``, and ``alice-wip``, a working branch over ``testing-admin`` that
-the studio edits.
+the studio edits; and the self-hosted studio's tree: the root ``studio``
+published at ``/workbench/`` and its working branch ``studio-wip``.
 
 Idempotent: a second run creates nothing new. Users, role assignments,
 components and stylesheets are brought back to the definitions below; the
@@ -37,6 +38,7 @@ from scrud_django.ui.branches import (
     UI_BRANCH_VERSION_TYPE_URI,
     UI_CSS_SLUG,
     UI_CSS_TYPE_URI,
+    UI_JS_TYPE_URI,
     UI_PUSH_TYPE_URI,
 )
 from scrud_django.ui.branches.store import branches, ensure_main
@@ -74,6 +76,23 @@ BRANCH_TYPES = [
     )
     for uri in (type_uri, collection_type_uri_for(type_uri))
 ]
+# The items a branch holds, and what pushing them needs.
+STUDIO_ITEM_TYPES = [
+    uri
+    for type_uri in (
+        UI_COMPONENT_TYPE_URI,
+        UI_STYLESHEET_TYPE_URI,
+        UI_CSS_TYPE_URI,
+        UI_JS_TYPE_URI,
+    )
+    for uri in (type_uri, collection_type_uri_for(type_uri))
+]
+PUSHES = [UI_PUSH_TYPE_URI, collection_type_uri_for(UI_PUSH_TYPE_URI)]
+BRANCHES_AND_VERSIONS = [
+    uri
+    for type_uri in (UI_BRANCH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI)
+    for uri in (type_uri, collection_type_uri_for(type_uri))
+]
 WRITES = ("GET", "POST", "PUT", "DELETE")
 
 # The branches' RBAC contexts.
@@ -81,6 +100,9 @@ ADMIN_CONTEXT = "ui-admin"
 CUSTOMER_CONTEXT = "ui-customer"
 TESTING_CONTEXT = "ui-testing"
 ALICE_CONTEXT = "ui-alice"
+STUDIO_CONTEXT = "ui-studio"
+STUDIO_WIP_CONTEXT = "ui-studio-wip"
+STUDIO_PREFIX = "/workbench/"
 
 # {username: {rbac_context: role definition}}; the password is the username.
 USERS = {
@@ -91,7 +113,10 @@ USERS = {
             "http.DELETE": [TODO_LIST_TYPE_URI],
             "http.POST": [TODO_LIST_TYPE_URI, TODO_LISTS],
         },
-        DEFAULT_CONTEXT: {"http.GET": UI_TYPES},
+        DEFAULT_CONTEXT: {
+            "http.GET": [*UI_TYPES, *BRANCHES_AND_VERSIONS],
+            "http.PUT": [UI_BRANCH_TYPE_URI],
+        },
         # May open the customer branch's prefix too.
         CUSTOMER_CONTEXT: {"http.GET": [UI_BRANCH_TYPE_URI]},
     },
@@ -109,6 +134,23 @@ USERS = {
         CUSTOMER_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
         TESTING_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
         ALICE_CONTEXT: {f"http.{method}": BRANCH_TYPES for method in WRITES},
+        # The studio's own tree: read the studio root (its workbench), push
+        # into it (a push, and the writes of the items it applies, in the
+        # root's context), and write its working branch.
+        STUDIO_CONTEXT: {
+            "http.GET": [*BRANCHES_AND_VERSIONS, *STUDIO_ITEM_TYPES, *PUSHES],
+            "http.POST": [*STUDIO_ITEM_TYPES, *PUSHES],
+            "http.PUT": STUDIO_ITEM_TYPES,
+            "http.DELETE": STUDIO_ITEM_TYPES,
+        },
+        STUDIO_WIP_CONTEXT: {
+            f"http.{method}": [
+                *BRANCHES_AND_VERSIONS,
+                *STUDIO_ITEM_TYPES,
+                *PUSHES,
+            ]
+            for method in WRITES
+        },
     },
 }
 
@@ -203,9 +245,11 @@ COMPONENTS = [
         ),
     },
     {
-        # An item, read-only.
+        # An item, read-only. A Jinja component, so that the self-hosted
+        # studio, which edits Jinja only, can edit it (its override in
+        # alice-wip's workbench, for one); the others are Django's.
         "name": "todo-row",
-        "engine": "django",
+        "engine": "jinja2",
         "mode": "view",
         "label": "To-do item",
         "template": (
@@ -300,6 +344,23 @@ BRANCHES = [
         "prefix": None,
         "label": "Alice (work in progress)",
         "description": "A working branch for the studio; push it to testing-admin.",
+    },
+    {
+        # The self-hosted studio's root (SCRUD_UI_STUDIO_BRANCH).
+        "name": "studio",
+        "rbac_context": STUDIO_CONTEXT,
+        "parent": None,
+        "prefix": STUDIO_PREFIX,
+        "label": "Studio",
+        "description": "The self-hosted studio, at /workbench/.",
+    },
+    {
+        "name": "studio-wip",
+        "rbac_context": STUDIO_WIP_CONTEXT,
+        "parent": "studio",
+        "prefix": None,
+        "label": "Studio (work in progress)",
+        "description": "A working branch for editing the studio; push it to studio.",
     },
 ]
 
@@ -429,6 +490,13 @@ class Command(BaseCommand):
             f"; customer: /todo/{TODO_LIST_SLUG}/{groceries.pk}/"
             " (author, reader, owner)"
         )
+        self.stdout.write("the studio, as author (sign in at /api-auth/login/):")
+        for name in ("alice-wip", "studio-wip"):
+            pk = self.find(UI_BRANCH_SLUG, name=name).pk
+            self.stdout.write(
+                f"  {name}: {STUDIO_PREFIX}{UI_BRANCH_SLUG}/{pk}/"
+                "?ui-scope=studio&ui-mode=view"
+            )
 
     def seed_user(self, username, roles):
         user, created = get_user_model().objects.get_or_create(username=username)

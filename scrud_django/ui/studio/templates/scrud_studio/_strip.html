@@ -1,7 +1,7 @@
 <section id="studio-strip" class="studio-strip" hx-get="{% url 'scrud-studio:strip' type.slug %}?branch={{ branch.name|urlencode }}" hx-trigger="scrud-studio-saved from:body" hx-swap="outerHTML">
 <div id="studio-strip-body">
 <h2>Branch {{ branch.name }}</h2>
-<p>{% if branch.published %}Published, read-only in the studio: changes reach it by a push.{% else %}Working branch{% if branch.base == "pinned" %}, pinned{% endif %}.{% endif %}
+<p>{% if branch.published %}Published, read-only in the studio: changes reach it by a push. {% if branch.name == "main" %}Its items are not listed here: open one from the preview, and one of its own can be reverted or deleted there.{% else %}Its own items, listed below, can be reverted or deleted.{% endif %}{% else %}Working branch{% if branch.base == "pinned" %}, pinned{% endif %}.{% endif %}
 {% if branch.parent %}Parent: <strong>{{ branch.parent }}</strong>.{% endif %}
 {% if root %}Published root: <strong>{{ root.name }}</strong>.{% endif %}</p>
 <div class="studio-strip-actions">

@@ -14,10 +14,12 @@ the notice the resource's own URL answers with.
 What the embed carries over in process, by context variable rather than by
 header: safe mode (`branches.effective.using_safe_mode`, which the
 renderer keeps), preview (`render.using_preview`, which `render_resource`
-keeps), the embed stack and the response's embed count (`_state`). Safe
-mode and a live preview's drafts are render-only: `dispatch_path` runs the
-embedded view in `effective.stored_state`, so that what it reads as data
-is the stored state, and renders its response outside that block.
+keeps; a preview requested in view mode, `render.using_view_preview`, sends
+``Scrud-UI-Mode: view`` with every embed in it), the embed stack and the
+response's embed count (`_state`). Safe mode and a live preview's drafts
+are render-only: `dispatch_path` runs the embedded view in
+`effective.stored_state`, so that what it reads as data is the stored
+state, and renders its response outside that block.
 
 `path` is split once (`urllib.parse.urlsplit`; its fragment is dropped),
 and its path and query are what is checked and dispatched. An ``http`` or
@@ -28,30 +30,37 @@ published branch's prefix, an API path is embedded under the prefix
 the prefix's branch, with `check_mount`.
 
 Refused, with the notice `REFUSED_MESSAGE` (and a warning logged): a path
-that is not a string, not absolute, or has another scheme or host; one that does
-not resolve to a resource view (`ResourceViewMixin`: stored and computed
-types), or whose response is not the UI's HTML (``?format=json``); a path and scope chain already on the embed stack (a cycle; the
-top-level request is its bottom); an embed deeper than `MAX_EMBED_DEPTH`;
-and any embed past the first `MAX_EMBEDS` of a top-level response. A view
-that raises renders `FAILED_MESSAGE`: logged at ERROR, with
-``got_request_exception`` sent, and rolled back to a savepoint of its own
-on each database in an atomic block, so that the embedding render's
-transaction stays usable."""
+that is not a string, not absolute, or has another scheme or host; one that
+does not resolve to a resource view (`ResourceViewMixin`: stored and
+computed types), or whose response is not the UI's HTML
+(``?format=json``); a path and scope chain already on the embed stack (a
+cycle; the top-level request is its bottom); an embed deeper than
+`MAX_EMBED_DEPTH`; and any embed past the first `MAX_EMBEDS` of a top-level
+response. A view that raises renders `FAILED_MESSAGE`: logged at ERROR, with
+``got_request_exception`` sent, and rolled back to a savepoint of its own on
+each database in an atomic block, so that the embedding render's
+transaction stays usable.
+
+`component_globals` gives a stored Jinja component ``embed`` and two more
+globals: ``in_mount(href)``, an API URL as the request's prefix serves it
+(`selection.in_mount`), and ``api_url(slug, key=None)``, the API path of a
+registered type's list or detail (`api_url`)."""
 
 import contextvars
 import logging
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from django.core.exceptions import DisallowedHost
 from django.core.signals import got_request_exception
 from django.db import connections, transaction
 from django.http import QueryDict
+from django.urls import Resolver404, get_script_prefix, resolve, reverse
 from markupsafe import Markup
 
 from scrud_django.ui.branches.effective import BRANCH_HEADER, active_selection
-from scrud_django.ui.branches.selection import mount_of, selection_value
+from scrud_django.ui.branches.selection import in_mount, mount_of, selection_value
 from scrud_django.ui.cascade import builtin_component, rules_memo
 from scrud_django.ui.dispatch import dispatch_path, resolve_path
 
@@ -104,8 +113,56 @@ def embed_for(request):
     return embed
 
 
+def component_globals(request) -> dict:
+    """The globals a stored Jinja component rendered for `request` gets in
+    its context (node, list and page): ``embed`` (`embed_for`),
+    ``in_mount(href)``, `href` mapped into the request's prefix as
+    `selection.in_mount` maps links (a value that is not a string is
+    returned as it is), and ``api_url`` (`api_url`)."""
+
+    def in_mount_global(href):
+        return in_mount(request, href) if isinstance(href, str) else href
+
+    return {
+        "embed": embed_for(request),
+        "in_mount": in_mount_global,
+        "api_url": api_url,
+    }
+
+
+def api_url(slug, key=None) -> str:
+    """The API path of the list of the registered resource type `slug` (its
+    route ``<slug>-list``), or of its detail for `key` (``<slug>-detail``;
+    a computed type has only that one), as `reverse` gives it: under the
+    API's base, never a published branch's prefix (`embed` maps an API path
+    into the page's prefix). `ValueError` (or `NoReverseMatch`) for a `slug`
+    that is not a string, that has no such route, or whose route is not a
+    resource view of the type `slug`, so that a component calling it fails
+    and falls back."""
+    from scrud_django.ui.branches.middleware import is_resource_view
+
+    if not isinstance(slug, str) or not slug:
+        raise ValueError(f"api_url: {slug!r} is not a type's slug")
+    if key is None:
+        path = reverse(f"{slug}-list")
+    else:
+        path = reverse(f"{slug}-detail", args=[key])
+    script = get_script_prefix()
+    if not path.startswith(script):
+        raise ValueError(f"api_url: {path!r} is not under {script!r}")
+    try:
+        # As the server hands the path to Django: decoded.
+        match = resolve("/" + unquote(path[len(script) :]))
+    except Resolver404:
+        raise ValueError(f"api_url: {path!r} is not served") from None
+    if not is_resource_view(match.func, slug):
+        raise ValueError(f"api_url: {slug!r} is not a registered resource type")
+    return path
+
+
 def _embed(request, path, scope, mode) -> str:
     from scrud_django.ui import renderer
+    from scrud_django.ui.render import in_view_preview
 
     state = _state.get() or _top_state(request)
     state.count.embeds += 1
@@ -154,7 +211,9 @@ def _embed(request, path, scope, mode) -> str:
     key = (resolved.path_info, chain)
     if key in state.stack:
         return _refused(path, f"a cycle (in scope {' '.join(chain)!r})")
-    if mode == renderer.VIEW_MODE:
+    if mode == renderer.VIEW_MODE or in_view_preview():
+        # A view-mode preview shows what a viewer sees: an embed in it keeps
+        # no edit control of a user who may PUT the embedded resource.
         headers[renderer.MODE_HEADER] = renderer.VIEW_MODE
     token = _state.set(_EmbedState(state.stack + (key,), state.count))
     try:

@@ -11,6 +11,12 @@
 //     server listed them (#scrud-preview-errors, read when this script runs,
 //     before the branch's own scripts); when that list cannot be read,
 //     {"type": "scrud-preview:errors", "errors": null, "failed": true};
+//   {"type": "scrud-preview:marks", "wins": <M>, "loses": <L>}
+//     once, when loaded, after the errors message: how many nodes the
+//     preview marks as the marked rule winning (data-scrud-match="wins")
+//     and losing ("loses"), counted when this script runs, before the
+//     branch's scripts; 0 and 0 when the request had no mark (it is posted
+//     either way);
 //   {"type": "scrud-preview:select", "pointer": "<JSON Pointer>",
 //    "href": "<data-scrud-href>" | null}
 //     on a click inside a node: the nearest scrud-node's pointer, and the
@@ -51,6 +57,16 @@
   }
   var errors = errorsMessage();
 
+  // The marks message, counted now, for the same reason.
+  function marksMessage() {
+    return {
+      type: "scrud-preview:marks",
+      wins: document.querySelectorAll('[data-scrud-match="wins"]').length,
+      loses: document.querySelectorAll('[data-scrud-match="loses"]').length,
+    };
+  }
+  var marks = marksMessage();
+
   document.addEventListener(
     "click",
     function (event) {
@@ -75,6 +91,7 @@
 
   function loaded() {
     post(errors);
+    post(marks);
   }
 
   if (document.readyState === "loading") {

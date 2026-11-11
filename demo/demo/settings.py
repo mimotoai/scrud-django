@@ -171,6 +171,9 @@ REST_FRAMEWORK = {
 
 SCRUDFUL = {"BASE_URL": "http://127.0.0.1:8000"}
 
+# The published branch that serves the self-hosted studio (see seed_todo_demo).
+SCRUD_UI_STUDIO_BRANCH = "studio"
+
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/3.1/howto/static-files/

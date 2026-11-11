@@ -2,7 +2,7 @@
   "$id": "http://api.openteams.com/json-schema/UIBranchItems",
   "$schema": "http://json-schema.org/draft-04/schema",
   "title": "UI Branch Items",
-  "description": "Computed: every component, stylesheet, CSS and JS item a branch shows that the requesting user may read, each marked own, inherited (from which branch) or packaged, with its content and its conflict. Read-only.",
+  "description": "Computed: every component, stylesheet, CSS and JS item a branch shows that the requesting user may read, each marked own, inherited (from which branch) or packaged, with its content, its conflict and the action that overrides it on the branch. Read-only.",
   "type": "object",
   "properties": {
     "branch": {
@@ -48,11 +48,39 @@
             "type": ["string", "null"],
             "enum": ["parent", "layer", null],
             "description": "An own item's conflict: listed by a pull (parent), or with a packaged layer item it overrides (layer)."
+          },
+          "override": {
+            "$ref": "#/definitions/action",
+            "description": "For an item the branch shows but does not own: the POST that creates the branch's override of it (its content without base and deleted, on the branch, in its authorizing context; the server sets base). null on a published branch, on a @pinned view, for the branch's own items, and when the user may not POST it."
+          },
+          "reverts_to": {
+            "type": ["string", "null"],
+            "enum": ["inherited", "packaged", null],
+            "description": "For an own item: what the branch shows once its row is deleted, an ancestor's item (inherited) or a packaged layer's (packaged); null when there is none the user may read (the branch added the item), and for an item the branch does not own."
           }
         },
-        "required": ["kind", "name", "origin", "from", "href", "etag", "content", "conflict"]
+        "required": ["kind", "name", "origin", "from", "href", "etag", "content", "conflict", "override", "reverts_to"]
       }
     }
   },
-  "required": ["branch", "items"]
+  "required": ["branch", "items"],
+  "definitions": {
+    "action": {
+      "type": ["object", "null"],
+      "description": "What a studio control sends unchanged (an R3 fixed-body element): body as JSON with method to href, with etag as If-Match. null when it is not offered.",
+      "properties": {
+        "method": { "type": "string", "enum": ["POST", "PUT"] },
+        "href": {
+          "type": "string",
+          "description": "An API path (a component maps it with in_mount)."
+        },
+        "body": { "type": "object", "description": "The JSON body, sent as it is." },
+        "etag": {
+          "type": ["string", "null"],
+          "description": "The If-Match to send, quoted; null for none."
+        }
+      },
+      "required": ["method", "href", "body", "etag"]
+    }
+  }
 }

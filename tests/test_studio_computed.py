@@ -5,28 +5,37 @@ are public), and renders through the cascade like any resource. These tests
 serve the API at ``/api/`` and the studio at ``/studio/``
 (``tests.mounted_urls``)."""
 
+import importlib.resources
+import json
 import logging
 import re
 from html import unescape
 from unittest import mock
 
+import fastjsonschema
 import pytest
-from django.urls import reverse
+from django.urls import resolve, reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
-from scrud_django.registration import ResourceRegistration
-from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, UI_CSS_TYPE_URI
+from scrud_django.registration import ResourceRegistration, write_db
+from scrud_django.ui.branches import (
+    UI_BRANCH_TYPE_URI,
+    UI_BRANCH_VERSION_TYPE_URI,
+    UI_CSS_TYPE_URI,
+    UI_PUSH_TYPE_URI,
+)
 from scrud_django.ui.branches.store import branches
+from scrud_django.ui.branches.versions import record_version
 from scrud_django.ui.layers import layer_item
 from scrud_django.ui.studio.views import registered_types
-from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
+from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
 from .fixtures import *  # noqa
 from .fixtures import assign_role
 from .steps import *  # noqa: F403, F401
 from .test_studio_page import CONFLICT, SLUG, section, setup_branches, store_item
-from .test_ui_branch_push import quoted
+from .test_ui_branch_push import make_wip, quoted
 from .test_ui_branch_types import make_branch
 from .test_ui_http import HTML, assert_html, grant, html, make_component
 
@@ -77,7 +86,7 @@ def css_site():
     )
 
 
-def layer_sheet_item(conflict=None):
+def layer_sheet_item(conflict=None, override=None):
     etag, content = layer_item("stylesheet", ("layertest:sheet", ""))
     return {
         "kind": "stylesheet",
@@ -89,7 +98,91 @@ def layer_sheet_item(conflict=None):
         "etag": quoted(etag),
         "content": content,
         "conflict": conflict,
+        "override": override,
+        "reverts_to": None,
     }
+
+
+def action(method, href, body, etag=None):
+    return {"method": method, "href": href, "body": body, "etag": etag}
+
+
+def override_of(slug, content, branch="wip", context="alice", **fields):
+    """The action that creates `branch`'s override of the item stored with
+    `content` (of type `slug`): a POST of its content without ``base`` and
+    ``deleted``, on `branch`, in `context`."""
+    body = {k: v for k, v in content.items() if k not in ("base", "deleted")}
+    body.update(branch=branch, rbac_context=context, **fields)
+    return action("POST", reverse(f"{slug}-list"), body)
+
+
+def send(sent):
+    """Send the action `sent` as the studio layer does (an R3 fixed-body
+    element): its method to its href with its body as JSON, and its etag as
+    ``If-Match`` (none when it is null)."""
+    headers = {} if sent["etag"] is None else {"HTTP_IF_MATCH": sent["etag"]}
+    request = getattr(When.http, sent["method"].lower())
+    request(sent["href"], data=sent["body"], format="json", HTTP_ACCEPT=JSON, **headers)
+    return Http.response
+
+
+def status(branch="wip", **params):
+    return get("ui-branch-status", branch, **params)
+
+
+def store_push(source, target, context, state="proposed", **fields):
+    """A push stored as is (not through the API: nothing is applied)."""
+    reverse("ui-pushes-list")
+    return ResourceRegistration.register(
+        {
+            "source": source,
+            "target": target,
+            "restore": None,
+            "state": state,
+            "rbac_context": context,
+            **fields,
+        },
+        "ui-pushes",
+    )
+
+
+def pushes_into(user, *contexts):
+    """Let `user` create and read pushes, and create, read and update
+    components, in each of `contexts` (what a push into a branch there
+    needs)."""
+    for context in contexts:
+        grant(
+            user,
+            {
+                "http.GET": [UI_PUSH_TYPE_URI, UI_COMPONENT_TYPE_URI],
+                "http.POST": [UI_PUSH_TYPE_URI, UI_COMPONENT_TYPE_URI],
+                "http.PUT": [UI_COMPONENT_TYPE_URI],
+            },
+            context,
+        )
+
+
+def conforms(name, body):
+    """Validate `body` against the packaged schema of the studio's computed
+    type `name`, and parse it as JSON-LD with the type's context."""
+    from rdflib import Graph
+
+    documents = importlib.resources.files("scrud_django.ui.studio.documents")
+    schema = json.loads(documents.joinpath(f"{name}-schema.json").read_text())
+    fastjsonschema.compile(schema)(body)
+    context = json.loads(documents.joinpath(f"{name}-ld.json").read_text())
+    document = {"@context": context, "@id": "http://example.org/data", **body}
+    assert len(Graph().parse(data=json.dumps(document), format="json-ld")) > 0
+
+
+# The studio's endpoints at /studio/ (tests.mounted_urls).
+ENDPOINTS = {
+    "live_preview": "/studio/live-preview",
+    "sample": "/studio/types/{slug}/sample",
+    "explain": "/studio/types/{slug}/explain",
+    "options": "/studio/types/{slug}/new-component/options",
+    "new_component": "/studio/new-component",
+}
 
 
 @pytest.mark.django_db
@@ -112,6 +205,9 @@ def test_branch_items_marks_own_inherited_packaged(ui_alice_login):
                 "etag": quoted(head.etag),
                 "content": head.content,
                 "conflict": None,
+                # An inherited item: the POST that overrides it on wip.
+                "override": override_of("ui-components", head.content),
+                "reverts_to": None,
             },
             {
                 "kind": "component",
@@ -122,8 +218,17 @@ def test_branch_items_marks_own_inherited_packaged(ui_alice_login):
                 "etag": quoted(row.etag),
                 "content": row.content,
                 "conflict": "parent",
+                # wip's own: nothing to override; deleting it shows main's.
+                "override": None,
+                "reverts_to": "inherited",
             },
-            layer_sheet_item(),
+            layer_sheet_item(
+                override=override_of(
+                    "ui-stylesheets",
+                    layer_item("stylesheet", ("layertest:sheet", ""))[1],
+                    applies_to="",
+                )
+            ),
             # main's CSS ``base`` is in "", which alice may not read.
             {
                 "kind": "css",
@@ -134,6 +239,9 @@ def test_branch_items_marks_own_inherited_packaged(ui_alice_login):
                 "etag": quoted(site.etag),
                 "content": site.content,
                 "conflict": None,
+                "override": None,
+                # wip added it: deleting it shows nothing in its place.
+                "reverts_to": None,
             },
         ],
     }
@@ -275,6 +383,9 @@ def test_branch_status_chain_and_browse_url(ui_alice_login):
     make_branch("feat", "alice", parent="shop")
     Given.http.force_authenticate(ui_alice_login)
     status = get("ui-branch-status", "wip", type=SLUG)
+    wip = Resource.objects.get(
+        resource_type__type_uri=UI_BRANCH_TYPE_URI, content__name="wip"
+    )
     assert status == {
         "branch": "wip",
         "published": False,
@@ -290,6 +401,23 @@ def test_branch_status_chain_and_browse_url(ui_alice_login):
             {"kind": "component", "name": "row", "applies_to": "", "with": "parent"}
         ],
         "browse_url": reverse("todo-lists-list") + "?ui-branch=wip",
+        # alice may PUT wip (in "alice"), not branches in "".
+        "may_write": True,
+        "may_publish": False,
+        # No GET on pushes or on versions.
+        "pushes": [],
+        "versions": [],
+        "actions": {
+            "pull": action(
+                "PUT",
+                detail("ui-branches", wip),
+                {**wip.content, "pull": True},
+                quoted(wip.etag),
+            ),
+            # No POST on pushes in "".
+            "promote": [{"target": "main", "apply": None, "propose": None}],
+        },
+        "endpoints": ENDPOINTS,
     }
     # Under a published branch: browsed under its prefix.
     status = get("ui-branch-status", "feat", type=SLUG)
@@ -534,3 +662,373 @@ def test_status_of_a_branch_with_no_published_root_is_logged(ui_alice_login, cap
     ]
     assert len(logged) == 1
     assert "'wip'" in logged[0] and "no published ancestor" in logged[0]
+
+
+@pytest.mark.django_db
+@test_context
+def test_items_beneath_a_broken_chain_are_logged(ui_alice_login, caplog):
+    """What an own row reverts to is read from the parent's state; when that
+    read fails (a broken chain, a missing pinned snapshot) the entries say
+    nothing is beneath them, and a warning names the branch, never
+    silently (follow-up studio-beneath-chain-error)."""
+    from scrud_django.ui.branches.store import BranchChainError
+
+    setup_branches(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+    with (
+        mock.patch(
+            "scrud_django.ui.studio.computed.parent_state",
+            side_effect=BranchChainError(
+                "Branch 'wip' is pinned to a missing version."
+            ),
+        ),
+        caplog.at_level(logging.WARNING, logger="scrud_django.ui.studio.computed"),
+    ):
+        listed = {(i["kind"], i["name"]): i for i in items()["items"]}
+    assert listed["component", "row"]["reverts_to"] is None
+    logged = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "scrud_django.ui.studio.computed" and r.levelno == logging.WARNING
+    ]
+    assert logged and all("'wip'" in m and "missing version" in m for m in logged)
+
+
+@pytest.mark.django_db
+@test_context
+def test_override_body_creates_the_override(ui_alice_login):
+    """An item wip shows but does not own carries the POST that creates
+    wip's override of it: sent as it is, it creates the override, and the
+    server sets its ``base`` (an inherited item's ETag; a packaged item's,
+    its layer item's)."""
+    setup_branches(ui_alice_login)
+    head = head_component()
+    sheet_etag, _sheet = layer_item("stylesheet", ("layertest:sheet", ""))
+    Given.http.force_authenticate(ui_alice_login)
+    listed = {(i["kind"], i["name"]): i for i in items()["items"]}
+    inherited = listed["component", "head"]["override"]
+    assert inherited["method"] == "POST" and inherited["etag"] is None
+    assert inherited["href"] == reverse("ui-components-list")
+    assert "base" not in inherited["body"]
+    response = send(inherited)
+    Then.http.status_code_is(201)
+    created = response.json()
+    assert created["base"] == head.etag
+    assert created["branch"] == "wip" and created["rbac_context"] == "alice"
+    assert created["template"] == head.content["template"]
+    packaged = listed["stylesheet", "layertest:sheet"]["override"]
+    assert packaged["href"] == reverse("ui-stylesheets-list")
+    response = send(packaged)
+    Then.http.status_code_is(201)
+    created = response.json()
+    assert created["base"] == sheet_etag
+    assert (created["name"], created["applies_to"]) == ("layertest:sheet", "")
+    assert created["branch"] == "wip" and created["rbac_context"] == "alice"
+    # Both are now wip's own: no override is offered for them.
+    listed = {(i["kind"], i["name"]): i for i in items()["items"]}
+    for key in (("component", "head"), ("stylesheet", "layertest:sheet")):
+        assert listed[key]["origin"] == "own"
+        assert listed[key]["override"] is None
+    # main's head is untouched.
+    assert stored(head).etag == head.etag
+
+
+@pytest.mark.django_db
+@test_context
+def test_override_null_on_published_or_without_grant(ui_alice_login):
+    setup_branches(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+    # A published branch is written by a push, never by an override.
+    for published in ("main", "shop"):
+        listed = items(published)["items"]
+        assert listed, published
+        assert [i["override"] for i in listed] == [None] * len(listed)
+    # A reader of wip and of components who may POST none.
+    reader = assign_role(
+        {"http.GET": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "alice"
+    )
+    grant(reader, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
+    Given.http.force_authenticate(reader)
+    listed = {(i["kind"], i["name"]): i for i in items()["items"]}
+    assert listed["component", "head"]["origin"] == "inherited"
+    assert listed["stylesheet", "layertest:sheet"]["origin"] == "packaged"
+    assert [i["override"] for i in listed.values()] == [None] * len(listed)
+    # POST on stylesheets in "alice" alone: the packaged stylesheet's is
+    # offered, the inherited component's is not.
+    grant(reader, {"http.POST": [UI_STYLESHEET_TYPE_URI]}, "alice")
+    listed = {(i["kind"], i["name"]): i for i in items()["items"]}
+    assert listed["component", "head"]["override"] is None
+    assert listed["stylesheet", "layertest:sheet"]["override"] is not None
+
+
+@pytest.mark.django_db
+@test_context
+def test_status_may_flags(ui_alice_login):
+    setup_branches(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+
+    def flags(branch):
+        found = status(branch)
+        return found["may_write"], found["may_publish"]
+
+    # PUT on wip's context; none in "".
+    assert flags("wip") == (True, False)
+    # A published branch is not written in the studio.
+    assert flags("shop") == (False, False)
+    assert flags("main") == (False, False)
+    # A reader of wip may not write it.
+    reader = assign_role({"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(reader)
+    assert flags("wip") == (False, False)
+    # PUT on branches in "" publishes, on any branch.
+    grant(reader, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "")
+    assert flags("wip") == (False, True)
+    Given.http.force_authenticate(ui_alice_login)
+    grant(ui_alice_login, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "")
+    assert flags("wip") == (True, True)
+    assert flags("shop") == (False, True)
+
+
+@pytest.mark.django_db
+@test_context
+def test_status_pushes_and_versions_readable_only(ui_alice_login):
+    setup_branches(ui_alice_login)
+    hidden = store_push("wip", "main", "")
+    store_push("bobs", "shop", "project-a")  # not wip's
+    many = [store_push("wip", "shop", "project-a", label=f"p{i}") for i in range(21)]
+    restore = store_push(None, "wip", "alice", restore=1)
+    for _ in range(21):
+        record_version("wip", write_db())
+    Given.http.force_authenticate(ui_alice_login)
+    # No GET on pushes nor on versions: none listed.
+    found = status()
+    assert found["pushes"] == [] and found["versions"] == []
+    grant(ui_alice_login, {"http.GET": [UI_PUSH_TYPE_URI]}, "project-a")
+    grant(ui_alice_login, {"http.GET": [UI_PUSH_TYPE_URI]}, "alice")
+    grant(ui_alice_login, {"http.GET": [UI_BRANCH_VERSION_TYPE_URI]}, "alice")
+    found = status()
+
+    def listed(push):
+        content = push.content
+        return {
+            "href": detail("ui-pushes", push),
+            "source": content["source"],
+            "target": content["target"],
+            "state": content["state"],
+            "label": content.get("label"),
+        }
+
+    # The latest 20 with wip as source or target that alice may GET, newest
+    # first: the one in "" is not among them.
+    assert found["pushes"] == [listed(p) for p in [restore, *reversed(many)][:20]]
+    for push in found["pushes"]:
+        When.http.get(push["href"], HTTP_ACCEPT=JSON)
+        Then.http.status_code_is(200)
+    When.http.get(detail("ui-pushes", hidden), HTTP_ACCEPT=JSON)
+    assert Http.response.status_code in (403, 404)
+    # wip's latest 20 versions, newest first, each one alice may GET.
+    versions = Resource.objects.filter(
+        resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI, content__branch="wip"
+    ).order_by("-pk")[:20]
+    assert len(versions) == 20
+    # alice may not POST pushes in "alice": no restore is offered.
+    assert found["versions"] == [
+        {
+            "number": v.content["number"],
+            "href": detail("ui-branch-versions", v),
+            "restore": None,
+        }
+        for v in versions
+    ]
+    numbers = [v["number"] for v in found["versions"]]
+    assert numbers == sorted(numbers, reverse=True)
+    for version in found["versions"]:
+        When.http.get(version["href"], HTTP_ACCEPT=JSON)
+        Then.http.status_code_is(200)
+        assert Http.response.json()["number"] == version["number"]
+    # With the grant, each version's restore: the POST of a restore push of
+    # it into wip, in wip's context, applied.
+    grant(ui_alice_login, {"http.POST": [UI_PUSH_TYPE_URI]}, "alice")
+    found = status()
+    assert [v["restore"] for v in found["versions"]] == [
+        action(
+            "POST",
+            reverse("ui-pushes-list"),
+            {
+                "source": None,
+                "target": "wip",
+                "restore": v.content["number"],
+                "state": "applied",
+                "rbac_context": "alice",
+            },
+        )
+        for v in versions
+    ]
+    # main's versions are in "", which alice may not read.
+    assert status("main")["versions"] == []
+
+
+@pytest.mark.django_db
+@test_context
+def test_status_actions_round_trip(admin_login, ui_alice_login):
+    """Each action, sent as the layer sends it, succeeds: the pull, a
+    proposal and a push to the parent, and a push to a further ancestor."""
+    main_row = make_component("row", "<b>main</b>")
+    make_branch("team", "team", prefix="/team/")
+    make_wip(admin_login, parent="team")
+    Then.http.status_code_is(201)
+    pushes_into(ui_alice_login, "team", "")
+    Given.http.force_authenticate(ui_alice_login)
+    # wip overrides main's row (which team shows), then changes it.
+    listed = {(i["kind"], i["name"]): i for i in items()["items"]}
+    assert listed["component", "row"]["from"] == "main"
+    response = send(listed["component", "row"]["override"])
+    Then.http.status_code_is(201)
+    override = response.json()
+    When.http.put(
+        response["Location"],
+        data={**override, "template": "<i>wip</i>"},
+        format="json",
+        HTTP_IF_MATCH=response["ETag"],
+    )
+    Then.http.status_code_is(200)
+    # The pull: wip's PUT with pull, and its ETag.
+    found = status()
+    assert found["may_write"] is True
+    pull = found["actions"]["pull"]
+    assert pull["method"] == "PUT" and pull["body"]["pull"] is True
+    response = send(pull)
+    Then.http.status_code_is(200)
+    assert "pull" not in response.json()
+    # Promote: to each ancestor, nearest first.
+    found = status()
+    conforms("UIBranchStatus", found)
+    promote = found["actions"]["promote"]
+    assert [entry["target"] for entry in promote] == ["team", "main"]
+    pushes = reverse("ui-pushes-list")
+    for entry, context in zip(promote, ("team", ""), strict=True):
+        for name, state in (("apply", "applied"), ("propose", "proposed")):
+            assert entry[name] == action(
+                "POST",
+                pushes,
+                {
+                    "source": "wip",
+                    "target": entry["target"],
+                    "state": state,
+                    "rbac_context": context,
+                },
+            )
+    # Apply to main, a further ancestor.
+    response = send(promote[1]["apply"])
+    Then.http.status_code_is(201)
+    assert response.json()["state"] == "applied"
+    assert stored(main_row).content["template"] == "<i>wip</i>"
+    # Propose to team, the parent.
+    response = send(status()["actions"]["promote"][0]["propose"])
+    Then.http.status_code_is(201)
+    assert response.json()["state"] == "proposed"
+    # Override main's row again, and apply to team.
+    body = items()
+    conforms("UIBranchItems", body)
+    listed = {(i["kind"], i["name"]): i for i in body["items"]}
+    send(listed["component", "row"]["override"])
+    Then.http.status_code_is(201)
+    response = send(status()["actions"]["promote"][0]["apply"])
+    Then.http.status_code_is(201)
+    assert response.json()["state"] == "applied"
+    team_rows = Resource.objects.filter(
+        resource_type__type_uri=UI_COMPONENT_TYPE_URI, content__branch="team"
+    )
+    assert [r.content["template"] for r in team_rows] == ["<i>wip</i>"]
+    # The pushes alice made (she may GET pushes in "team" and ""), newest
+    # first.
+    found = status()
+    conforms("UIBranchStatus", found)
+    assert [(p["target"], p["state"]) for p in found["pushes"]] == [
+        ("team", "applied"),
+        ("team", "proposed"),
+        ("main", "applied"),
+    ]
+
+
+@pytest.mark.django_db
+@test_context
+def test_status_actions_null_on_published_T(ui_alice_login):
+    setup_branches(ui_alice_login)
+    make_branch("team", "alice", parent="shop", prefix="/team/")
+    pushes_into(ui_alice_login, "", "project-a", "alice")
+    grant(ui_alice_login, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "project-a")
+    Given.http.force_authenticate(ui_alice_login)
+    # Published: no action, whatever the grants.
+    for published in ("main", "shop", "team"):
+        found = status(published)
+        assert found["published"] is True
+        assert found["may_write"] is False
+        assert found["actions"] == {"pull": None, "promote": []}, published
+    # A working branch with the same grants has them.
+    found = status()
+    assert found["actions"]["pull"] is not None
+    assert [e["target"] for e in found["actions"]["promote"]] == ["main"]
+    assert found["actions"]["promote"][0]["apply"] is not None
+    # Without PUT on wip, and without POST on pushes: none.
+    reader = assign_role({"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    Given.http.force_authenticate(reader)
+    assert status()["actions"] == {
+        "pull": None,
+        "promote": [{"target": "main", "apply": None, "propose": None}],
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_endpoints_in_status_reverse_correctly(ui_alice_login, settings):
+    setup_branches(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+    endpoints = status()["endpoints"]
+    assert endpoints == ENDPOINTS
+    assert endpoints["live_preview"] == reverse("scrud-studio:live-preview")
+    assert endpoints["new_component"] == reverse("scrud-studio:new-component")
+    # The slug-taking routes are templates: {slug} is the type's slug.
+    # `sample` is the href of a sample's frame in the live preview.
+    assert endpoints["sample"].replace("{slug}", SLUG) == reverse(
+        "scrud-studio:sample", args=[SLUG]
+    )
+    assert endpoints["explain"].replace("{slug}", SLUG) == reverse(
+        "scrud-studio:explain", args=[SLUG]
+    )
+    assert endpoints["options"].replace("{slug}", SLUG) == reverse(
+        "scrud-studio:new-component-options", args=[SLUG]
+    )
+    for name, path in endpoints.items():
+        match = resolve(path.replace("{slug}", SLUG))
+        assert match.namespace == "scrud-studio", name
+    # Without the studio's URLs (tests.urls), there are none.
+    settings.ROOT_URLCONF = "tests.urls"
+    found = status()
+    assert found["endpoints"] is None
+    conforms("UIBranchStatus", found)
+
+
+@pytest.mark.django_db
+@test_context
+def test_override_null_on_a_pinned_view(ui_alice_login):
+    """A ``@pinned`` view shows the parent's items as of the branching
+    point, but an override is based on the live parent item: sent, it would
+    silently revert the parent's changes since. None is offered there."""
+    setup_branches(ui_alice_login)
+    head = head_component()
+    ResourceRegistration.update(
+        {**head.content, "template": "<h1>changed</h1>"}, "ui-components", head.pk
+    )
+    Given.http.force_authenticate(ui_alice_login)
+    pinned = {(i["kind"], i["name"]): i for i in items("wip@pinned")["items"]}
+    assert pinned["component", "head"]["origin"] == "inherited"
+    assert pinned["component", "head"]["content"]["template"] == "<h1>main</h1>"
+    assert [i["override"] for i in pinned.values()] == [None] * len(pinned)
+    # Live, the same item's override is offered, with the live content.
+    live = {(i["kind"], i["name"]): i for i in items()["items"]}
+    offered = live["component", "head"]["override"]
+    assert offered["body"]["template"] == "<h1>changed</h1>"
+    # The status of a pinned view keeps its actions: they act on the
+    # branch's stored rows, not on what the snapshot shows.
+    assert status("wip@pinned")["actions"] == status()["actions"]

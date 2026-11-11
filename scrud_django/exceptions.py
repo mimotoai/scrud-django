@@ -261,16 +261,25 @@ class UIBranchInvalidError(ScrudException):
     """A UI branch write that is refused (a bad or taken name or prefix, a
     missing parent, a cycle of parents, a reserved ``main`` that is not as
     reserved), or a UI item naming a branch that does not exist, with the
-    reason as ``detail``."""
+    reason as ``detail``. `name` is the refused field, when it is one
+    (``prefix``), as JSON Schema's errors name theirs: the UI shows the
+    error beside it."""
 
     status_code = 400
     default_detail = "Bad Request"
     default_code = "ui_branch_invalid"
 
-    def __init__(self, reason):
+    def __init__(self, reason, name=None):
         super().__init__(reason)
         self.type = "https://api.openteams.com/http-problem/ui-branch-invalid"
         self.title = "UI branch invalid"
+        self.name = name
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        if self.name is not None:
+            data["name"] = self.name
+        return data
 
 
 class UIBranchContextError(ScrudException):
@@ -332,9 +341,10 @@ class UIStudioContextUnavailableError(ScrudException):
 
 
 class UIStudioBranchReadOnlyError(ScrudException):
-    """A studio write naming a published branch (``main``, or one with a
-    ``prefix``): the studio edits working branches only, so that changes
-    reach a published branch by a push. Refused before anything is
+    """A studio write other than a revert naming a published branch
+    (``main``, or one with a ``prefix``): the studio edits working branches
+    only, so that changes reach a published branch by a push; it only
+    reverts a published branch's own items. Refused before anything is
     written or dispatched."""
 
     status_code = 400
@@ -343,8 +353,8 @@ class UIStudioBranchReadOnlyError(ScrudException):
 
     def __init__(self, branch):
         super().__init__(
-            f"UI branch {branch!r} is published: the studio does not edit it. "
-            "Edit a working branch, then push it."
+            f"UI branch {branch!r} is published: the studio does not edit it "
+            "(it only reverts its own items). Edit a working branch, then push it."
         )
         self.type = "https://api.openteams.com/http-problem/ui-studio-branch-read-only"
         self.title = "Studio branch read-only"

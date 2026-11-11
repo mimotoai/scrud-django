@@ -1,4 +1,5 @@
 {
+  "@version": 1.1,
   "openteams": "http://api.openteams.com/json-ld/",
   "@type": "http://api.openteams.com/json-ld/UIBranchItems",
   "branch": {
@@ -33,5 +34,22 @@
   },
   "conflict": {
     "@id": "openteams:UIItemConflict"
+  },
+  "override": {
+    "@id": "openteams:UIItemOverride",
+    "@context": {
+      "href": {
+        "@id": "openteams:UIActionHref"
+      },
+      "etag": {
+        "@id": "openteams:UIActionETag"
+      }
+    }
+  },
+  "method": {
+    "@id": "openteams:UIActionMethod"
+  },
+  "body": {
+    "@id": "openteams:UIActionBody"
   }
 }

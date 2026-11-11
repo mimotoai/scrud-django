@@ -6,6 +6,7 @@ import pytest
 from safetydance_django.test import *  # noqa: F403, F401
 
 from .fixtures import *  # noqa
+from .fixtures import TYPE_URI_TODO_LIST, assign_role
 from .steps import *  # noqa: F403, F401
 from .test_ui_http import (
     HTML,
@@ -103,6 +104,53 @@ def test_view_mode_downgrades_a_writer(todo_list, todo_owner_login):
         assert "Buy milk" in html()
         assert "hx-put" not in html()
         assert "<form" not in html()
+
+
+DELETE_BUTTON = ">Delete</button>"
+
+
+@pytest.mark.django_db
+@test_context
+def test_requested_view_mode_omits_delete(todo_list, todo_owner_login):
+    """A requested view mode (the parameter or the header) is a view: the
+    frame has no Delete button, though the user may DELETE."""
+    url = detail_url(todo_list)
+    Given.http.force_authenticate(todo_owner_login)
+    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    assert f'hx-delete="{url}"' in html() and DELETE_BUTTON in html()
+    for kwargs in (
+        {"path": url + "?ui-mode=view"},
+        {"path": url, "HTTP_SCRUD_UI_MODE": "view"},
+    ):
+        When.http.get(
+            kwargs.pop("path"), HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true", **kwargs
+        )
+        Then.http.status_code_is(200)
+        assert "Buy milk" in html()
+        assert "hx-delete" not in html() and DELETE_BUTTON not in html()
+    # A list's items too.
+    When.http.get(
+        list_url() + "?ui-mode=view", HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true"
+    )
+    Then.http.status_code_is(200)
+    assert "Buy milk" in html() and "hx-delete" not in html()
+
+
+@pytest.mark.django_db
+@test_context
+def test_natural_view_mode_keeps_delete(todo_list):
+    """A user in view mode because they may not PUT, who may DELETE, keeps
+    the Delete button: only a requested view mode leaves it out."""
+    deleter = assign_role(
+        {"http.GET": [TYPE_URI_TODO_LIST], "http.DELETE": [TYPE_URI_TODO_LIST]},
+        "project-a",
+    )
+    url = detail_url(todo_list)
+    Given.http.force_authenticate(deleter)
+    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    Then.http.status_code_is(200)
+    assert "hx-put" not in html() and "<form" not in html()
+    assert f'hx-delete="{url}"' in html() and DELETE_BUTTON in html()
 
 
 @pytest.mark.django_db

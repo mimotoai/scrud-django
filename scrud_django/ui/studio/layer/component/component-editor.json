@@ -1,0 +1,6 @@
+{
+  "name": "studio:component-editor",
+  "engine": "jinja2",
+  "mode": "edit",
+  "template": "{%- set django = value.get(\"engine\") == \"django\" -%}\n<div class=\"studio-editor\" data-studio-editor-item data-studio-kind=\"component\" data-studio-mode=\"edit\">\n<p class=\"studio-editor-meta\">{{ value.get(\"engine\") or \"\" }} \u00b7 {{ value.get(\"mode\") or \"\" }}</p>\n{%- if django %}\n<p class=\"studio-note\">This component uses the Django engine, which the studio does not edit: it is shown read-only. Edit it through the API.</p>\n<textarea class=\"studio-code\" readonly rows=\"20\" spellcheck=\"false\" aria-label=\"Template of {{ value.name }} (read-only)\">\n{{ value.get(\"template\") or \"\" }}</textarea>\n{%- else %}\n<label class=\"studio-code-label\" for=\"{{ input_id }}\">Template</label>\n<textarea id=\"{{ input_id }}\" class=\"studio-code\" name=\"/template\" data-studio-code rows=\"20\" spellcheck=\"false\">\n{{ value.get(\"template\") or \"\" }}</textarea>\n<div class=\"studio-editor-actions\"><button type=\"submit\" class=\"studio-save\">Save</button></div>\n{%- endif %}\n</div>\n"
+}

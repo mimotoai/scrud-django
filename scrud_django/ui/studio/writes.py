@@ -1,14 +1,17 @@
 """The studio's writes: save or revert an item on a working branch, pull the
-branch, push it. Each is a request to a resource view made in process
+branch, push it; and revert an item on a published branch. Each is a request to a resource view made in process
 (`call_view`) for the studio user, so every check of the API applies (scoped
 RBAC, ruling R36, R14's ``base``, versions) and the studio adds no rights.
 The view's answer is passed through as it is, its errors included.
 
 The studio refuses, before dispatching anything, a branch that is unknown or
 that the user may not select (`selectable`: GET on it and its working
-ancestors), alike (`UIBranchUnavailableError`), then a published one
-(`UIStudioBranchReadOnlyError`): changes reach a published branch by a
-push."""
+ancestors), alike (`UIBranchUnavailableError`), then, for every write but a
+revert, a published one (`UIStudioBranchReadOnlyError`): changes reach a
+published branch by a push. A revert on a published branch is the
+bootstrap studio's way to repair it (a broken override on the self-hosted
+studio's root, say): the DELETE of the branch's own row, which the resource
+view authorizes as the API's DELETE of that row."""
 
 from collections.abc import Mapping
 
@@ -37,6 +40,7 @@ from scrud_django.ui.branches.model import (
     branch_of,
     item_key,
 )
+from scrud_django.ui.branches.reads import may_read_item
 from scrud_django.ui.branches.selection import (
     branch_content,
     may_get_stored,
@@ -128,16 +132,21 @@ def item_content(kind: str, name: str, target: str, content: dict, branch) -> di
 
 
 def revert_item(request, body) -> HttpResponse:
-    """Delete the working ``branch``'s own row of the item ``{kind, name,
+    """Delete the ``branch``'s own row of the item ``{kind, name,
     applies_to?}``, so that the branch shows its parent's again: the undo,
-    and "take theirs" for a conflict. 404 when the branch has none. The
-    request's ``If-Match`` is sent as it is, with no fallback (ruling S10):
-    without one the view answers 428, and a stale one 412, so a revert
-    never deletes an edit its author has not seen."""
+    and "take theirs" for a conflict. The branch may be a published one
+    (``main`` included, whose own row of an item is the item itself): the
+    one studio write there. 404 when the branch has none, or one the user
+    may not read (`may_read_item`, as the API's list filters it): one
+    answer for both, before anything is dispatched, so that a revert tells
+    nothing of a row the user may not GET. The request's ``If-Match`` is
+    sent as it is, with no fallback (ruling S10): without one the view
+    answers 428, and a stale one 412, so a revert never deletes an edit its
+    author has not seen."""
     kind, name, target = _item(body)
-    branch = _working_branch(request, body.get("branch"))
+    branch = _selected_branch(request, body.get("branch"))
     own = own_item(kind, branch, name, target)
-    if own is None:
+    if own is None or not may_read_item(request, kind, own.pk, own.content):
         raise NotFound(f"Branch {branch.name!r} has no row of its own for this item.")
     return _passed(
         call_view(
@@ -224,8 +233,17 @@ def _item(body) -> tuple[str, str, str]:
 
 def _working_branch(request, name) -> Branch:
     """The branch named `name`, which the studio may write: refused alike
-    when it is unknown or the user may not select it (`selectable`), and
-    as read-only when it is published."""
+    when it is unknown or the user may not select it (`_selected_branch`),
+    and as read-only when it is published."""
+    branch = _selected_branch(request, name)
+    if branch.published:
+        raise UIStudioBranchReadOnlyError(name)
+    return branch
+
+
+def _selected_branch(request, name) -> Branch:
+    """The branch named `name`, published or not, refused alike when it is
+    unknown or the user may not select it (`selectable`)."""
     if not isinstance(name, str) or not name:
         raise ValidationError({"branch": ["A branch name is required."]})
     all_branches = branches(write_db())
@@ -234,8 +252,6 @@ def _working_branch(request, name) -> Branch:
         request, Selection(branch=name), all_branches=all_branches
     ):
         raise UIBranchUnavailableError(name)
-    if branch.published:
-        raise UIStudioBranchReadOnlyError(name)
     return branch
 
 

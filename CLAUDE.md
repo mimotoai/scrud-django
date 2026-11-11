@@ -101,6 +101,9 @@ uv run python manage.py createsuperuser
 uv run python manage.py runserver
 ```
 
+The seed prints the self-hosted studio's workbench URLs (sign in as
+`author`/`author`): `/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`.
+
 CI is `.gitlab-ci.yml`: lint, migrations check, docs build, tests with
 coverage on 3.11-3.13 (then again with `--reverse`), the suite on PostgreSQL
 14 via `SCRUD_TEST_PG_*` (`test-postgres`) and on MySQL 8.4 and MariaDB 11.4

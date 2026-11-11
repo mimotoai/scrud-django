@@ -45,12 +45,13 @@ from scrud_django.ui.cascade import (
     resolve_component,
     rule_outcome,
 )
-from scrud_django.ui.embed import embed_for
+from scrud_django.ui.embed import component_globals
 from scrud_django.ui.selectors import TypeTerm
 
 logger = logging.getLogger(__name__)
 
-# The engine whose stored components get ``embed`` in their context.
+# The engine whose stored components get ``embed``, ``in_mount`` and
+# ``api_url`` in their context (`embed.component_globals`).
 JINJA_ENGINE = "jinja2"
 
 _preview: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -74,6 +75,30 @@ def using_preview(on: bool = True):
 def in_preview() -> bool:
     """Whether a render in progress is a preview (`using_preview`)."""
     return _preview.get()
+
+
+_preview_in_view: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "scrud_ui_preview_in_view", default=False
+)
+
+
+@contextlib.contextmanager
+def using_view_preview(on: bool = True):
+    """Inside the block, a preview (`using_preview`) was requested in view
+    mode (`on`): an embed in it renders in view mode, as one with
+    ``mode="view"`` does (`embed`), whatever the user's own mode. A context
+    variable, so that an embed in an embed is in view mode too."""
+    token = _preview_in_view.set(on)
+    try:
+        yield
+    finally:
+        _preview_in_view.reset(token)
+
+
+def in_view_preview() -> bool:
+    """Whether a render in progress is a preview requested in view mode
+    (`using_view_preview` inside `using_preview`)."""
+    return _preview.get() and _preview_in_view.get()
 
 
 @dataclass(frozen=True)
@@ -150,7 +175,9 @@ def render_resource(
     of the resource. `errors` maps JSON Pointers to messages (``""``: the
     resource's, shown at the top of the frame). `mode` is ``"view"`` or
     ``"edit"``; ``None`` is ``"edit"`` when the user may (or possibly may)
-    PUT the resource.
+    PUT the resource. A `mode` of ``"view"`` (a requested view mode) also
+    leaves out the Delete button; with ``None`` a user who may DELETE gets
+    it in either mode.
 
     `decisions` (as `decisions_for` gives them) and `contexts` (whose
     stylesheets apply) are those of `content` unless given: for content that
@@ -317,7 +344,10 @@ def _render_resource(
         scope_chain=scope_chain,
         pointer=node.pointer,
         mode=walk.mode,
+        # A requested view mode (`mode` given as "view": the header, the
+        # parameter, an embed's) is a view: no Delete button either.
         deletable=not preview
+        and mode != "view"
         and node.pointer == ""
         and walk.resource["decisions"]["DELETE"] == ALLOWED,
         branch=None if preview else frame_branch(request),
@@ -841,12 +871,13 @@ def _render_builtin(name, context):
 
 def _render_stored(component, context, where, fallback, request=None):
     """A stored `component` rendered with an isolated copy of `context`, to
-    which a Jinja one's ``embed`` (`embed.embed_for` `request`) is added. If
+    which a Jinja one's ``embed``, ``in_mount`` and ``api_url``
+    (`embed.component_globals` of `request`) are added. If
     it raises, the failure is logged (naming `where`) and the built-in that
     ``fallback()`` returns renders `context` after a comment naming it."""
     isolated = _isolated(context)
     if getattr(component, "engine", None) == JINJA_ENGINE and request is not None:
-        isolated["embed"] = embed_for(request)
+        isolated.update(component_globals(request))
     try:
         return component.compiled().render(isolated)
     except Exception:

@@ -374,9 +374,21 @@
     return [400, 403, 409, 412, 428].indexOf(status) < 0;
   }
 
-  function clearNotice(frame) {
+  // The notice that a request was refused while the frame's save was in flight
+  // (see `inFlight`): it stands beside the save's own notice, never replaces it.
+  var NOT_SENT_CLASS = 'scrud-client-notice-not-sent';
+
+  function hasClass(el, name) {
+    return String(el.className || '').split(' ').indexOf(name) >= 0;
+  }
+
+  /**
+   * Remove the client notices of `frame`: all of them, or those `only`
+   * chooses (a function of the notice element).
+   */
+  function clearNotice(frame, only) {
     Array.prototype.slice.call(frame.children || []).forEach(function (child) {
-      if (String(child.className || '').split(' ').indexOf(NOTICE_CLASS) >= 0) {
+      if (hasClass(child, NOTICE_CLASS) && (!only || only(child))) {
         frame.removeChild(child);
       }
     });
@@ -384,12 +396,22 @@
 
   /**
    * Insert a notice (the markup of the server's `scrud:notice`) at the top of
-   * `frame`, replacing a previous client notice. The text is set as text.
+   * `frame`, replacing a previous client notice of its kind. The text is set
+   * as text. `kind` is 'not-sent' for the notice of a request refused while a
+   * save was in flight, which is kept beside the other client notice (the
+   * save's failure, which htmx may report before or after it): neither
+   * replaces the other.
    */
-  function showNotice(frame, text) {
-    clearNotice(frame);
+  function showNotice(frame, text, kind) {
+    var notSent = kind === 'not-sent';
+    clearNotice(frame, function (child) {
+      return hasClass(child, NOT_SENT_CLASS) === notSent;
+    });
     var notice = document.createElement('div');
-    notice.className = 'scrud-notice scrud-notice-error ' + NOTICE_CLASS;
+    notice.className =
+      'scrud-notice scrud-notice-error ' +
+      NOTICE_CLASS +
+      (notSent ? ' ' + NOT_SENT_CLASS : '');
     notice.setAttribute('role', 'alert');
     notice.textContent = text;
     frame.insertBefore(notice, frame.firstChild);
@@ -595,14 +617,88 @@
   // (which is handed the xhr) applies.
   var requestOps = new WeakMap();
 
+  // The frames with a request in flight, and those that refused a request
+  // meanwhile. htmx 2.0.4 queues an element's request behind its request in
+  // flight (the `last` strategy: a newer one replaces a queued one, with no
+  // event) and, when the request in flight ends, runs the queued one only if
+  // the element is still in the page. A frame's PUT is answered with the
+  // frame, which replaces it, so the queued request (an array operation, a
+  // change, a save) would be dropped without a word. It is refused instead
+  // (`htmx:confirm`), and the frame that answers the request in flight says
+  // the change was not sent (`htmx:afterRequest`, which htmx dispatches on
+  // the replaced frame's parent, with that parent as `elt`: the request's
+  // frame is found by its xhr). That notice stands beside a failure notice
+  // of the save itself (`failed`, before afterRequest for an error response,
+  // after it for a network error). When the save is answered with a
+  // reload (a 412, or a DELETE's 409), what replaces the frame is not a
+  // frame: no notice is shown, and the stale notice and the reloaded frame
+  // follow. A refused request that would have sent nothing new says nothing:
+  // the browser fires a field's change and then the form's submit in a row
+  // (Enter in a field, or typing and then a click on Save), and the change's
+  // PUT already carries the edit. "Nothing new" is the frame's inputs built
+  // onto its content (`inputsBody`) as the request in flight sent them; an
+  // array operation is always new. htmx 2.0.4 skips afterRequest when
+  // handling the response throws (it fires only htmx:onLoadError): the frame
+  // is settled on either, so it never refuses forever.
+  var inFlight = new WeakSet();
+  var frameOfXhr = new WeakMap();
+  var refusedInFlight = new WeakSet();
+  // The body a frame's PUT in flight was built from (`inputsBody`), by frame.
+  var sentBody = new WeakMap();
+  var NOT_SENT =
+    'Your change was not sent: an earlier save of this item was still in' +
+    ' progress. Make the change again.';
+
+  /**
+   * The JSON of `frame`'s inputs built onto its content, as its PUT builds
+   * them before an array operation; null when that can't be built (no
+   * content, an invalid field).
+   */
+  function inputsBody(frame) {
+    try {
+      var content = contentOf(frame);
+      if (!content) return null;
+      var invalid = [];
+      var body = buildBody(content, fieldsOf(frame), invalid);
+      return invalid.length ? null : JSON.stringify(body);
+    } catch (err) {
+      return null;
+    }
+  }
+
   document.addEventListener('htmx:beforeSend', function (evt) {
     var detail = evt.detail || {};
     var config = detail.requestConfig || {};
     var elt = detail.elt;
+    if (elt && detail.xhr && !evt.defaultPrevented && elt.matches && elt.matches(FRAME)) {
+      inFlight.add(elt);
+      frameOfXhr.set(detail.xhr, elt);
+      var sent = isPut(elt) ? inputsBody(elt) : null;
+      if (sent === null) sentBody.delete(elt);
+      else sentBody.set(elt, sent);
+    }
     if (!elt || !detail.xhr || !isPut(elt)) return;
     var op = arrayOpOf(elt, config.triggeringEvent);
     if (op) requestOps.set(detail.xhr, op);
   });
+
+  /**
+   * The frame in the page now for `frame`: itself while it is in the page,
+   * else the frame of the same resource, scope and pointer that replaced it
+   * (the answer to its request); null when there is none.
+   */
+  function frameNow(frame) {
+    if (frame.isConnected) return frame;
+    var keys = ['data-scrud-href', 'data-scrud-scope', 'data-scrud-pointer'];
+    var all = document.querySelectorAll ? document.querySelectorAll(FRAME) : [];
+    for (var i = 0; i < all.length; i++) {
+      var same = keys.every(function (key) {
+        return all[i].getAttribute(key) === frame.getAttribute(key);
+      });
+      if (same) return all[i];
+    }
+    return null;
+  }
 
   // Innermost frame only: an event inside nested frames is acted on by the
   // frame that encloses its target; outer frames' requests are cancelled.
@@ -620,6 +716,17 @@
           '; the event target belongs to an inner frame'
       );
       evt.preventDefault();
+      return;
+    }
+    if (inFlight.has(elt)) {
+      // htmx would queue it and then drop it silently (see `inFlight`).
+      evt.preventDefault();
+      // Nothing new: the request in flight sends this very body.
+      var sent = sentBody.get(elt);
+      if (!arrayOpOf(elt, triggering) && sent != null && inputsBody(elt) === sent) {
+        return;
+      }
+      refusedInFlight.add(elt);
     }
   });
 
@@ -713,6 +820,29 @@
   });
 
   /**
+   * The request of `detail.xhr` has ended: its frame is no longer in flight,
+   * and says the change was not sent when it refused one meanwhile (see
+   * `inFlight`). Once per request: on htmx:afterRequest, or on
+   * htmx:onLoadError when handling the response threw.
+   */
+  function settle(detail) {
+    var sender = detail.xhr ? frameOfXhr.get(detail.xhr) : undefined;
+    if (!sender) return;
+    frameOfXhr.delete(detail.xhr);
+    inFlight.delete(sender);
+    sentBody.delete(sender);
+    if (refusedInFlight.has(sender)) {
+      refusedInFlight.delete(sender);
+      var now = frameNow(sender);
+      if (now) showNotice(now, NOT_SENT, 'not-sent');
+    }
+  }
+
+  document.addEventListener('htmx:onLoadError', function (evt) {
+    settle(evt.detail || {});
+  });
+
+  /**
    * After a successful DELETE of a frame's resource (its Delete button), remove
    * the frame from the page (and the list item that held only it), and
    * dispatch `scrud:deleted` on the document with the resource's href. The
@@ -722,6 +852,7 @@
     var detail = evt.detail || {};
     var config = detail.requestConfig || {};
     var verb = String(config.verb).toLowerCase();
+    settle(detail);
     if (!detail.successful || verb !== 'delete') {
       return;
     }

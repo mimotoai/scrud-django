@@ -1,0 +1,122 @@
+{
+  "name": "studio:studio",
+  "order": 0,
+  "rules": [
+    {
+      "select": "studio scrud:page",
+      "component": "studio:page"
+    },
+    {
+      "select": "studio http://api.openteams.com/json-ld/UIBranch",
+      "component": "studio:workbench"
+    },
+    {
+      "select": "studio studio-items http://api.openteams.com/json-ld/UIBranchItems",
+      "component": "studio:items"
+    },
+    {
+      "select": "studio studio-status http://api.openteams.com/json-ld/UIBranchStatus",
+      "component": "studio:status"
+    },
+    {
+      "select": "studio studio-types http://api.openteams.com/json-ld/UITypeCatalog",
+      "component": "studio:type-picker"
+    },
+    {
+      "select": "studio studio-branches http://api.openteams.com/json-ld/UISelectableBranches",
+      "component": "studio:branch-picker"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIComponent",
+      "component": "studio:component-editor"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIComponent",
+      "component": "studio:component-view"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UICss",
+      "component": "studio:text-editor"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UICss",
+      "component": "studio:text-view"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIJs",
+      "component": "studio:text-editor"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIJs",
+      "component": "studio:text-view"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIStylesheet",
+      "component": "studio:stylesheet-editor"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIStylesheet",
+      "component": "studio:stylesheet-view"
+    },
+    {
+      "select": "studio studio-editor studio-rules http://api.openteams.com/json-ld/UIStylesheetRules",
+      "component": "studio:rules-editor"
+    },
+    {
+      "select": "studio studio-editor studio-rules http://api.openteams.com/json-ld/UIStylesheetRules",
+      "component": "studio:rules-view"
+    },
+    {
+      "select": "studio studio-editor studio-rule object",
+      "component": "studio:rule-row"
+    },
+    {
+      "select": "studio studio-editor studio-rule object",
+      "component": "studio:rule-row-view"
+    },
+    {
+      "select": "studio studio-editor studio-field string",
+      "component": "studio:field"
+    },
+    {
+      "select": "studio studio-editor studio-field integer",
+      "component": "studio:field"
+    },
+    {
+      "select": "studio studio-push http://api.openteams.com/json-ld/UIPushPreview",
+      "component": "studio:push-preview"
+    },
+    {
+      "select": "studio studio-push-after http://api.openteams.com/json-ld/UIPushPreview",
+      "component": "studio:push-after"
+    },
+    {
+      "select": "studio http://api.openteams.com/json-ld/UIPush",
+      "component": "studio:push"
+    },
+    {
+      "select": "studio http://api.openteams.com/json-ld/UIPush",
+      "component": "studio:push-view"
+    },
+    {
+      "select": "studio http://api.openteams.com/json-ld/UIBranchVersion",
+      "component": "studio:version"
+    },
+    {
+      "select": "studio studio-branch http://api.openteams.com/json-ld/UIBranch",
+      "component": "studio:branch-form"
+    },
+    {
+      "select": "studio studio-branch http://api.openteams.com/json-ld/UIBranch",
+      "component": "studio:branch-view"
+    },
+    {
+      "select": "studio studio-branch studio-branch-prefix string",
+      "component": "studio:branch-prefix"
+    },
+    {
+      "select": "studio studio-new-branch http://api.openteams.com/json-ld/UIBranch",
+      "component": "studio:branch-created"
+    }
+  ]
+}

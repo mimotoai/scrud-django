@@ -1,0 +1,6 @@
+{
+  "name": "studio:type-picker",
+  "engine": "jinja2",
+  "mode": "view",
+  "template": "<label class=\"studio-control studio-type-picker\">Type <select data-studio-control=\"type\"><option value=\"\">Choose a type</option>\n{%- for t in value.types %}<option value=\"{{ t.slug }}\">{{ t.title }} ({{ t.slug }})</option>{% endfor -%}\n</select></label>\n"
+}

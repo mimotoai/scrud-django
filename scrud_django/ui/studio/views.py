@@ -440,7 +440,8 @@ def save_item(request):
 @parser_classes([JSONParser])
 @renderer_classes([JSONRenderer])
 def revert_item(request):
-    """Drop a working branch's own row of an item (`writes.revert_item`)."""
+    """Drop a branch's own row of an item, a published branch's too
+    (`writes.revert_item`)."""
     return writes.revert_item(request, _body(request))
 
 

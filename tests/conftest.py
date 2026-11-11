@@ -66,6 +66,17 @@ def django_db_setup(django_db_setup, django_db_blocker):
         studio_computed_type_urls()
 
 
+@pytest.fixture
+def studio_layer():
+    """The studio's UI layer (``studio:``), which the suite turns off
+    (``SCRUD_UI_STUDIO_LAYER = False``), on for the test. The layers are
+    read again on the settings change (and after it)."""
+    from django.test import override_settings
+
+    with override_settings(SCRUD_UI_STUDIO_LAYER=True):
+        yield
+
+
 # The built-in resource types `scrud_django.registration` caches at module
 # level.
 REGISTRATION_CACHES = [

@@ -1,0 +1,6 @@
+{
+  "name": "studio:rule-row-view",
+  "engine": "jinja2",
+  "mode": "view",
+  "template": "<span class=\"studio-rule-row\"><code class=\"studio-rule-select\">{{ value.get(\"select\") or \"\" }}</code> <span class=\"studio-rule-arrow\" aria-hidden=\"true\">\u2192</span> <code class=\"studio-rule-component\">{{ value.get(\"component\") or \"\" }}</code></span>\n"
+}

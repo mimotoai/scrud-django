@@ -1,0 +1,6 @@
+{
+  "name": "studio:field",
+  "engine": "jinja2",
+  "mode": "edit",
+  "template": "{%- set names = {\"select\": \"Selector\", \"component\": \"Component\", \"applies_to\": \"Applies to\", \"order\": \"Order\"} -%}\n{%- set key = pointer.split(\"/\")|last -%}\n{%- set integer = schema.get(\"type\") == \"integer\" -%}\n<span class=\"studio-field studio-field-{{ key }}\"><label class=\"studio-field-label\" for=\"{{ input_id }}\">{{ names.get(key, label) }}</label><input id=\"{{ input_id }}\" class=\"studio-field-input\" type=\"{{ \"number\" if integer else \"text\" }}\"{% if integer %} step=\"1\"{% endif %} name=\"{{ pointer }}\" value=\"{{ \"\" if value is none else value }}\" data-studio-field spellcheck=\"false\"{% if errors %} aria-invalid=\"true\" aria-describedby=\"{{ input_id }}-errors\"{% endif %}>{%- if errors %}<ul class=\"scrud-errors studio-field-errors\" id=\"{{ input_id }}-errors\" role=\"alert\">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}</span>\n"
+}

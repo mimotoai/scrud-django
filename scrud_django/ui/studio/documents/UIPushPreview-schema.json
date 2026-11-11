@@ -2,7 +2,7 @@
   "$id": "http://api.openteams.com/json-schema/UIPushPreview",
   "$schema": "http://json-schema.org/draft-04/schema",
   "title": "UI Push Preview",
-  "description": "Computed: what a push of the source branch into the target branch would write there, and the conflicts it would hit, as the requesting user may read them. Read-only; nothing is written.",
+  "description": "Computed: what a push of the source branch into the target branch would write there, and the conflicts it would hit, as the requesting user may read them, and the studio's endpoints. Read-only; nothing is written.",
   "type": "object",
   "properties": {
     "source": {
@@ -61,6 +61,18 @@
       "type": "integer",
       "minimum": 0,
       "description": "How many other conflicts there are, on items the user may not read."
+    },
+    "endpoints": {
+      "type": ["object", "null"],
+      "description": "The studio's endpoints, as UIBranchStatus has them (paths, not under the API; sample, explain and options are templates in which {slug} stands for a type's slug). null when the studio's URLs are not included.",
+      "properties": {
+        "live_preview": { "type": "string" },
+        "sample": { "type": "string" },
+        "explain": { "type": "string" },
+        "options": { "type": "string" },
+        "new_component": { "type": "string" }
+      },
+      "required": ["live_preview", "sample", "explain", "options", "new_component"]
     }
   },
   "required": [
@@ -69,6 +81,7 @@
     "changes",
     "unreadable_changes",
     "conflicts",
-    "unreadable_conflicts"
+    "unreadable_conflicts",
+    "endpoints"
   ]
 }

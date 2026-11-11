@@ -42,5 +42,87 @@
   },
   "browse_url": {
     "@id": "openteams:UIBrowseURL"
+  },
+  "may_write": {
+    "@id": "openteams:UIMayWrite"
+  },
+  "may_publish": {
+    "@id": "openteams:UIMayPublish"
+  },
+  "pushes": {
+    "@id": "openteams:UIBranchPushes",
+    "@context": {
+      "href": {
+        "@id": "openteams:UIPushResource"
+      }
+    }
+  },
+  "source": {
+    "@id": "openteams:UIPushSource"
+  },
+  "target": {
+    "@id": "openteams:UIPushTarget"
+  },
+  "state": {
+    "@id": "openteams:UIPushState"
+  },
+  "label": {
+    "@id": "openteams:UILabel"
+  },
+  "versions": {
+    "@id": "openteams:UIBranchVersions",
+    "@context": {
+      "href": {
+        "@id": "openteams:UIBranchVersionResource"
+      }
+    }
+  },
+  "number": {
+    "@id": "openteams:UIBranchVersionNumber"
+  },
+  "actions": {
+    "@id": "openteams:UIBranchActions"
+  },
+  "pull": {
+    "@id": "openteams:UIBranchPull"
+  },
+  "promote": {
+    "@id": "openteams:UIBranchPromote"
+  },
+  "apply": {
+    "@id": "openteams:UIPushApply"
+  },
+  "propose": {
+    "@id": "openteams:UIPushPropose"
+  },
+  "method": {
+    "@id": "openteams:UIActionMethod"
+  },
+  "href": {
+    "@id": "openteams:UIActionHref"
+  },
+  "body": {
+    "@id": "openteams:UIActionBody"
+  },
+  "etag": {
+    "@id": "openteams:UIActionETag"
+  },
+  "endpoints": {
+    "@id": "openteams:UIStudioEndpoints"
+  },
+  "live_preview": {
+    "@id": "openteams:UIStudioLivePreview"
+  },
+  "sample": {
+    "@id": "openteams:UIStudioSample"
+  },
+  "explain": {
+    "@id": "openteams:UIStudioExplain"
+  },
+  "options": {
+    "@id": "openteams:UIStudioNewComponentOptions"
+  },
+  "new_component": {
+    "@id": "openteams:UIStudioNewComponent"
   }
 }

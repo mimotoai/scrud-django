@@ -5,6 +5,104 @@ kept by a decision, each saying what was decided and why. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
 
+<a id="studio-push-page-embeds-twice"></a>
+## studio-push-page-embeds-twice: a push's page embeds the push preview twice
+
+A push's page (`studio:push`, `studio:push-view`) embeds
+`ui-push-previews/<source>/?target=<target>` twice: the review (scope
+`studio studio-push`) and "Preview after push" (scope `studio
+studio-push-after`, `studio:push-after`). Each embed computes the push's
+plan, so the second runs even when its `endpoints` are `null` and it
+renders nothing. A viewer who may open the push but not `GET` its source or
+target gets the push preview's 404 from both embeds: the same refusal shown
+twice. Test: in `tests/test_studio_promote.py`, give a user `GET` on
+`ui-pushes` (and `PUT`, for edit mode) but not on the source branch, render
+the push's page in the scope `studio`, and count the 404 renderings of the
+push preview; it should be one, and is two today.
+
+<a id="studio-rule-editor-duplicate-prefix"></a>
+## studio-rule-editor-duplicate-prefix: a new prefix with a taken key overrides the stored one silently
+
+In the rule editor (`studio:stylesheet-editor`, `studio:rules`), the new
+prefix row's IRI input is named `/prefixes/<key>` from the key the author
+types. A key the stylesheet already has gives two inputs with that name;
+`ScrudUI.buildBody` applies them in order, so the new row's IRI replaces the
+stored one on Save, with no word. Test: in
+`tests/test_studio_layer_client.py`, with the rules harness, type a key the
+stylesheet already has (with another IRI) in the new prefix row and build
+the frame's body; it should be refused as an invalid field (or the new row
+named apart and reported) and today carries the new IRI under the old key.
+
+<a id="studio-may-send-workflow-path"></a>
+## studio-may-send-workflow-path: `may_send`'s workflow-only ("possibly") path is untested
+
+`scrud_django.ui.authz.may_send` offers a control when the policy allows the
+write outright or only inside a write's checks (a `scrud_workflow`
+condition, which allows there, as `decisions_for` counts a "possibly" PUT).
+Only the outright path is exercised by the studio's tests. Test: in
+`tests/test_studio_computed.py`, grant a user `http.POST` on `ui-components`
+only through a `scrud_workflow` condition in a working branch's context;
+`ui-branch-items/<branch>/` should offer that user's `override` (and
+`ui-branch-status` the promote `apply` when the same holds for `ui-pushes`),
+and a user with no such condition none.
+
+<a id="studio-reverts-to-pinned"></a>
+## studio-reverts-to-pinned: `reverts_to` on a pinned view is untested
+
+`ui-branch-items/<branch>@pinned/` lists the branch's own items with
+`reverts_to` from `_beneath`, which reads the parent's effective items as
+the branch shows them (`parent_state`), not as of the branching point the
+pinned view shows. No test pins what a pinned view's own items say they
+revert to. Test: in `tests/test_studio_computed.py`, give a working branch
+an own item over one its parent changed after the branching point, and one
+over an item its parent added after it; read the pinned items and assert
+each own item's `reverts_to` against what deleting the row would show on
+the branch (and decide whether a pinned view should offer it at all).
+
+<a id="studio-preview-nested-embeds"></a>
+## studio-preview-nested-embeds: nested embeds in a view-mode preview are untested
+
+A preview requested in view mode renders its embeds in view mode
+(`embed-preview-mode`, fixed in this release), and the studio's previews
+embed editable resources. The tests cover one level: an embed inside an
+embedded resource (depth 2 or 3) in a view-mode `preview` or `live-preview`
+is not exercised, so a nested embed that went back to the user's own mode
+(an edit form, array operations) would not show. Test: in
+`tests/test_studio_live_preview.py`, preview a resource whose component
+embeds a resource whose component embeds another the user may `PUT`, in
+view mode; the inner frame should be a view (no `hx-put`, no
+`data-scrud-array-op`).
+
+<a id="studio-items-pane-cost"></a>
+## studio-items-pane-cost: the items pane's cost grows with the branch's items
+
+`ui-branch-items/<branch>/` (the workbench's Items pane, fetched again after
+every write) evaluates `may_post` once per item it does not own (the
+`override` action: a policy evaluation each) and reads `_beneath` (the
+parent's effective items, `parent_state`) once per kind that has rows. Both
+are linear in the items per render, which is fine at the sizes the studio
+targets and not measured beyond them. Test (a budget, not a bug): in
+`tests/test_studio_computed.py`, with `django_assert_max_num_queries`, read
+the items of a branch with 10 and with 100 inherited components; the query
+count should not grow with the item count (the policy evaluations are in
+memory).
+
+<a id="ui-inflight-test-real-htmx"></a>
+## ui-inflight-test-real-htmx: the in-flight refusal is tested with htmx's events stubbed
+
+`scrud-ui.js` refuses a frame's request while its previous one is in flight
+(`htmx:confirm`), says nothing when the refused request would send the body
+already in flight, and settles the frame on `htmx:afterRequest` or
+`htmx:onLoadError`. The node tests (`tests/test_ui_client.py`) call those
+handlers with hand-built events in the order htmx 2.0.4 fires them, since
+the suite has no DOM for the vendored `htmx.min.js` to run in (no jsdom). A
+change in htmx's order (confirm before or after `beforeSend` for the same
+request, which events a throwing swap fires) would not show. Test: drive the
+vendored htmx in a real DOM (jsdom, or the browser acceptance run) on a frame
+with one text field; type, press Enter (change, then submit), and assert one
+PUT and no "not sent" notice; then type, click Move up during the save, and
+assert the notice.
+
 <a id="embed-literal-path-save-check"></a>
 ## embed-literal-path-save-check: a literal non-resource embed path is refused only at render
 
@@ -14,20 +112,6 @@ refusal is implemented, so such a component saves and then renders the
 refusal notice. Test: in `tests/test_ui_embeds.py`, PUT a component whose
 template embeds a literal non-resource path; it should be a 400 and is a 200
 today.
-
-<a id="embed-preview-mode"></a>
-## embed-preview-mode: embeds in a view-mode preview use the viewer's own mode
-
-An embed inside a studio preview requested in view mode (the live preview,
-and the bootstrap studio's GET preview alike) renders in the viewer's own
-mode, not in view mode: the preview strips the write attributes (`hx-put`,
-`hx-ext`, ...), but the embedded resource's edit inputs and array controls
-are still rendered. Test: in `tests/test_studio_live_preview.py` (and in
-`tests/test_studio_preview.py`, for `scrud-studio:preview` with
-`mode=view`), preview a component that embeds an editable resource, with
-view mode requested, as a user who may PUT it; the embedded markup should
-contain no `<input name="/...">` (nor `<textarea name="/...">`) and no
-`data-scrud-array-op`, and has them today.
 
 <a id="push-preview-write-grants"></a>
 ## push-preview-write-grants: the push preview does not check write grants
@@ -308,14 +392,16 @@ browser; the stored content keeps both as they were.
 <a id="ui-inflight-edit-dropped"></a>
 ## ui-inflight-edit-dropped: an edit made while a PUT is in flight is lost
 
-A frame PUTs on every `change`. With htmx's default synchronization, a change
-made while the frame's previous PUT is still in flight issues no request (it
-is dropped), and the first response then swaps the frame, which visually
-reverts the second change: the user sees it undone and it was never sent.
-Suggested fix: `hx-sync="this:queue last"` on the frame (the queued request
-must then use the ETag of the first response), or disable the frame's inputs
-while a request is in flight. Test: in a browser, tick two checkboxes in
-quick succession against a slow server; both are saved.
+A frame PUTs on every `change`. A change (or an array operation, or a save)
+made while the frame's previous PUT is still in flight is not sent: htmx would
+queue it and drop it when the first response swaps the frame, so `scrud-ui.js`
+refuses it and the swapped-in frame says "Your change was not sent ... Make the
+change again." It is no longer silent, but the change is still lost and must
+be made again. Suggested fix: send it after the first response, built from the
+swapped-in frame (its content and ETag) with the user's input re-applied, or
+disable the frame's inputs while a request is in flight. Test: in a browser,
+tick two checkboxes in quick succession against a slow server; both are saved
+(today the second gets the notice).
 
 <a id="ui-typeterm-invariants"></a>
 ## ui-typeterm-invariants: UI types state their invariants in docstrings, not code
@@ -628,22 +714,25 @@ three chained branches and assert that adding a branch adds no more than a
 constant number of queries; it grows with the branch count today.
 
 <a id="studio-own-item-existence"></a>
-## studio-own-item-existence: a studio write can reveal whether a branch has an override
+## studio-own-item-existence: a studio save can reveal whether a branch has an override
 
 `writes.own_item` finds the branch's own row of an item with a system read
 (the write database, so that an item just written is seen) before the write is
-dispatched. A user who may `GET` the branch but may not read its items
-therefore learns from the answer (404 "no row of its own" from `revert-item`,
-or which of 428 and 403 comes first from `save-item`) whether an override
-exists, where the resource view alone would answer 403 or 404 alike. It
-reveals an item's existence and name only, never its content, and only to
-someone already allowed to select the branch.
+dispatched. A user who may `GET` the working branch but may not read its items
+therefore learns from `save-item`'s answer whether an override exists: with
+one the save is a `PUT` of it, without one a `POST`, and which of 428 and 403
+comes first can differ between the two, where the resource view alone would
+answer alike. It reveals an item's existence and name only, never its
+content, and only to someone already allowed to select the branch.
+(`revert-item` no longer does: it answers an own row the user may not read as
+a missing one, 404, before anything is dispatched; see
+`test_revert_reveals_no_row_the_user_may_not_read`.)
 
-Fix: check that the user may read the branch's items in its context before
-`own_item`, and answer as the view does when not. Test: in
+Fix: in `save_item`, treat an own row the user may not read as none, or
+answer as the view does when not, before choosing `POST` or `PUT`. Test: in
 `tests/test_studio_writes.py`, as a user with `GET` on the branch and none on its
-item types, `revert-item` of an item the branch overrides and of one it does
-not must answer the same status; today they differ (403 or 428 against 404).
+item types, `save-item` (no `If-Match`) of an item the branch overrides and of
+one it does not must answer the same status.
 
 <a id="studio-replica-lag"></a>
 ## studio-replica-lag: the answer of new-component reads `wins` and `explanation` from the read database
@@ -732,6 +821,328 @@ conventions (CLAUDE.md) describe safetydance tests only. Either convert the
 module to the safetydance idiom, or say in CLAUDE.md that unit tests of the
 renderer below HTTP may be plain pytest, as these two modules are. Test:
 none; a convention to settle.
+
+<a id="studio-safe-links"></a>
+## studio-safe-links: the strip's push and version links leave safe mode
+
+On a workbench in safe mode (`?ui-safe=1`), the strip links each push to
+`<href>?ui-scope=studio` and each version to
+`<href>?ui-scope=studio&ui-mode=view`, without `ui-safe=1`. Following one
+from a safe workbench while the studio root's components are broken opens a
+page rendered with them (its studio links still offer *Safe mode* again).
+The workbench's own requests stay safe (`Scrud-UI-Safe`); only these links do
+not. Test: in `tests/test_studio_self_editing.py`, render a workbench with
+`?ui-safe=1` and a push and a version in its strip; their links should carry
+`ui-safe=1` and do not today.
+
+<a id="studio-editor-drafts"></a>
+## studio-editor-drafts: the live preview can lose or miss the editor's unsaved text
+
+`studio:studio` sends the editor's text to the live preview on `keyup` only,
+so a paste, cut or drop with the mouse does not update the preview until the
+next key. A change of a preview control, and the refresh after a write
+(a new rule's 201 included), submit the preview again without the open
+editor's draft or the rule editor's mark, so the preview stops showing the
+unsaved text. Opening another item, or the same item again after the panes
+are fetched again, discards the editor's unsaved text without a warning. And
+the draft errors under the editor can still show the previous item's after a
+new one opens. Test: in `tests/test_studio_layer_client.py` (node), fire an
+`input` event without a `keyup` in the code editor and assert a preview
+submit with the draft; change a control with a draft open and assert the
+submitted request still has it.
+
+<a id="studio-stylesheet-errors-unshown"></a>
+## studio-stylesheet-errors-unshown: some refused fields of a stylesheet show no message
+
+The rule editor renders a refused save's messages beside `applies_to`,
+`order` and a rule's `select` and `component`, but not those at `/name`,
+`/prefixes/<key>` or `/rules/<i>` itself (a whole rule refused): their nodes
+are marked rendered, so the editor's top-level error list skips them, and the
+author sees the re-render with no reason. Test: in
+`tests/test_studio_rule_editor.py`, PUT the editor's frame with a prefix the
+server refuses and assert the message is in the re-render; it is not today.
+
+<a id="studio-rule-editor-preview"></a>
+## studio-rule-editor-preview: the rule editor's preview is wrong after editing `applies_to`, and marks nothing on legacy stylesheets
+
+A draft of a stylesheet whose `applies_to` the author changed is previewed as
+a second stylesheet beside the stored one, while its save replaces the stored
+one (and the open item then names a key that no longer exists). A stylesheet
+stored without an `applies_to` field never shows match markers: the mark is
+sent with `applies_to` `""`, which does not find it. Test: in
+`tests/test_studio_live_preview.py`, preview a stylesheet draft with a changed
+`applies_to` and assert the stored rules no longer apply; and mark a rule of a
+stylesheet stored without `applies_to` and assert marked nodes.
+
+<a id="studio-new-rule-double-post"></a>
+## studio-new-rule-double-post: "New rule for this node" can be created twice
+
+The inspector's Create button is not disabled while its `POST` is in flight,
+so a double click creates two components and two rules. Test: in
+`tests/test_studio_layer_client.py` (node), click Create twice before the
+first answer and assert one request.
+
+<a id="studio-choose-type-stale-preview"></a>
+## studio-choose-type-stale-preview: "Choose a type" leaves the old preview
+
+Choosing the type picker's empty option clears `type` from the URL state, but
+the previous preview stays in the frame and its clicks are ignored without a
+word. Test: in `tests/test_studio_layer_client.py` (node), choose the empty
+type after a preview and assert the frame is cleared or a hint is shown.
+
+<a id="studio-strip-refresh-failure"></a>
+## studio-strip-refresh-failure: a failed strip refresh stops the preview silently
+
+When fetching the strip again is answered with an error that `scrud-ui.js`
+lets htmx swap in (400, 403, 409, 412, 428), the answer replaces the strip,
+which removes `[data-studio-endpoints]`; `submitPreview` then returns `false`
+and the preview, the explanation and the new rule stop working with no notice
+until the page is reloaded. Test: in `tests/test_studio_layer_client.py`
+(node), answer the strip's refresh with a 403 and assert the endpoints are
+kept (or a notice shown) and the next `submitPreview` sends.
+
+<a id="studio-preview-htmx-indicator-style"></a>
+## studio-preview-htmx-indicator-style: htmx's indicator style is blocked in the live preview
+
+The live preview's `Content-Security-Policy` allows styles by nonce only
+(`style-src 'self' 'nonce-<n>'`), and htmx 2.0.4, which the preview's page
+loads, inserts its `.htmx-indicator` style element on load without one. The
+browser blocks it and logs a CSP error in the console on every preview load
+(the acceptance run saw one per preview), and an `.htmx-indicator` in a
+previewed component is not hidden as it is on the real page. Nothing else
+breaks. Suggested fix: the preview's page sets
+`<meta name="htmx-config" content='{"includeIndicatorStyles": false}'>` and
+links the indicator rules from a static file, or htmx's `inlineStyleNonce`
+config carries the response's nonce. Test: in
+`tests/test_studio_live_preview.py`, render a live preview and assert the page
+configures htmx without inline indicator styles (or with the nonce).
+
+<a id="studio-push-review-layers-branch"></a>
+## studio-push-review-layers-branch: the push review shows `branch @layers` before a create over a packaged item
+
+A push that creates the target's row of an item a packaged layer provides
+(an override of `studio:rule-row` pushed from `studio-wip` into `studio`, in
+the acceptance run) lists the layer's item as the change's `before`, and
+`studio:push-preview` shows its fields as they are, `branch` `@layers`
+included: an internal name the author never chose, where the review's
+"Before" should say the item is packaged. Test: in
+`tests/test_studio_promote.py`, render the review (scope
+`studio studio-push`) of a push that overrides a layer item and assert its
+"Before" says packaged and does not show `@layers`.
+
+<a id="studio-order-text-input"></a>
+## studio-order-text-input: Order is a text input for a stylesheet stored without `order`
+
+The rule editor's `studio:field` renders `order` as `<input type="number"
+step="1">` only when the node's schema says `integer`. For a stylesheet stored
+without an `order` (as the demo's are; it defaults to 0), the field is a text
+input, empty, while the view mode shows 0, so the input neither shows the
+value in effect nor restricts it to a number. Test: in
+`tests/test_studio_rule_editor.py`, open the editor of a stylesheet stored
+without `order` and assert the Order input has `type="number"` (and shows
+0, or a placeholder of 0).
+
+<a id="studio-client-notice-unstyled"></a>
+## studio-client-notice-unstyled: client notices are unstyled in the studio
+
+The studio's CSS item `studio:studio` styles the workbench's own notice
+(`.studio-notice`) but not the runtime's client notices
+(`.scrud-client-notice`: "Your change was not saved ...", "Your change was
+not sent ...", "This action is misconfigured."), which `scrud-ui.js` puts at
+the top of a frame, so in the editors they read as plain text above the form
+(seen in the acceptance run's step 9). Test: in `tests/test_studio_layer.py`,
+assert the layer's CSS has a rule for `.studio .scrud-client-notice` (or
+`[data-studio] .scrud-notice`).
+
+<a id="studio-promote-stale-review"></a>
+## studio-promote-stale-review: a stale push review can enable Apply for a moment
+
+Opening, closing and opening a promote panel again sends two review requests;
+the first answer, if it arrives last, can turn Apply on from a stale review.
+The server still refuses a push with a conflict (409), so nothing wrong is
+written. Test: in `tests/test_studio_layer_client.py` (node), answer the
+second review with a conflict and then the first without one, and assert
+Apply stays off.
+
+<a id="studio-refused-push-state"></a>
+## studio-refused-push-state: a refused push shows the state it was refused
+
+A push page whose move to `applied` is refused (a workflow policy, a
+conflict) re-renders the submitted body, so the state input reads `applied`
+beside the refusal, although the push is still `proposed`. Test: in
+`tests/test_studio_promote.py`, refuse the move with a policy and assert the
+re-render's state is the stored one, or is marked as not saved.
+
+<a id="studio-after-push-inspector"></a>
+## studio-after-push-inspector: after "Preview after push" the inspector explains T, not the target
+
+"Preview after push" shows the target branch in the preview, but a click in it
+is explained for T (and "New rule for this node" would create on T), which is
+wrong when the target's presentation differs. Test: in
+`tests/test_studio_layer_client.py` (node), preview after push and click a
+node; the explanation request should name the target with `after_push`, or
+the inspector should say it cannot explain that preview.
+
+<a id="studio-remove-prefix-submitted"></a>
+## studio-remove-prefix-submitted: "Remove the prefix" in a refused re-render saves the other submitted edits
+
+When a publisher's save of a working branch's settings is refused for its
+prefix, the re-render is built from the submitted body, and so is its "Remove
+the prefix" button: pressing it saves the other fields as they were
+submitted, not as stored. Test: in
+`tests/test_studio_rollback_presentations.py`, refuse a save that changed the
+label and the prefix, press "Remove the prefix" from the re-render, and
+assert the stored label is unchanged.
+
+<a id="ui-page-fallback-comment"></a>
+## ui-page-fallback-comment: the page fallback names the banner when the studio links are missing
+
+A page component that leaves out the studio links (and not the banner or the
+safe mode notice) is replaced by the built-in page after the comment and log
+`page component "x" leaves out the branch banner or the safe mode notice`,
+which names the wrong chrome. Test: in `tests/test_studio_layer.py`
+(`test_studio_links_required_in_page`), assert a comment that names the
+studio links.
+
+<a id="studio-inspector-stuck"></a>
+## studio-inspector-stuck: the inspector can be left "Explaining..." or invite a second Create
+
+The inspector's `send` (`studio:inspector`) reads a response's body with
+`response.text()` and has no handler for that promise failing, nor for an
+exception in what renders the answer. A connection dropped in the middle of
+the body, or a render that throws on an odd answer, leaves the explanation
+at "Explaining..." or the form at "Loading the options..." with no message.
+And a 201 whose body does not parse as JSON is shown under the form as "The
+answer could not be read.", like a refusal, though the rule was made:
+pressing Create again makes a second component. Test: in
+`tests/test_studio_layer_client.py`, answer an explain with a response
+whose `text()` rejects, and assert the inspector says the request failed;
+answer a Create with a 201 whose body is not JSON, and assert the form
+says the rule was made (and the panes are fetched again), not a failure.
+
+<a id="ui-load-error-request-lock"></a>
+## ui-load-error-request-lock: after `htmx:onLoadError` a frame's later edits are queued and never sent
+
+When handling a response throws, htmx 2.0.4 fires `htmx:onLoadError` and
+does not end the element's request lock (no `endRequestLock`). `scrud-ui.js`
+stops counting the frame as in flight then (it settles on
+`htmx:onLoadError`), but htmx itself still sees a request in flight on that
+element: its later requests are queued behind one that never ends, and so
+never sent, with no notice. This pairs with
+[ui-inflight-test-real-htmx](#ui-inflight-test-real-htmx): only the
+vendored htmx shows it. Test: with the vendored htmx in a real DOM (jsdom,
+or the browser acceptance run), make a frame's save answer with markup whose
+swap throws, then change a field of the frame; assert a PUT is sent (or a
+notice says it was not).
+
+<a id="studio-link-unreadable-root"></a>
+## studio-link-unreadable-root: the Studio link shows the studio root to viewers who can't read it
+
+`studio.links.studio_href` builds the *Studio* link from
+`SCRUD_UI_STUDIO_BRANCH` without checking that the viewer may GET that
+branch: every viewer of a UI type's page gets a link that names the studio
+root's primary key under its prefix, and for one who may not read it the
+link is dead (a 404). Test: in `tests/test_studio_layer.py`, render a UI
+type's page for a user who may GET the page but not the studio root; assert
+there is no *Studio* link (or that it says the user can't open it).
+
+<a id="studio-api-url-edge-tests"></a>
+## studio-api-url-edge-tests: `api_url`, `in_mount` and `safe_href` edge cases are untested
+
+`embed.api_url` refuses a slug that is not a string or is empty, one with no
+such route, one whose route is not under the script prefix, one that does
+not resolve (`Resolver404`), and one whose route is not that type's resource
+view; a computed type has only a detail route. The tests cover the common
+cases only: none passes a non-string or empty slug, asks a computed type's
+list (no key), uses a key that needs percent-encoding, or runs under a
+non-default script prefix. `in_mount` (outside a mount, a path outside the
+API, an absolute URL) and `studio.links.safe_href` (a query with repeated or
+encoded parameters, an existing `ui-safe`) are likewise only tested on
+their plain path. Test: in `tests/test_studio_layer.py`, call each with
+those inputs (`api_url(7)`, `api_url("")`, a computed type with no key,
+`api_url("todo-lists", "a/b c")`, under `set_script_prefix("/app/")`) and
+assert the `ValueError`s and the exact paths.
+
+<a id="studio-endpoints-all-or-none"></a>
+## studio-endpoints-all-or-none: the strip's `endpoints` is null when any one of them does not reverse
+
+`studio.computed._endpoints` reverses the five bootstrap studio endpoints in
+one `try`: a `NoReverseMatch` for any one of them (a project that includes
+some of the studio's URLs, or renamed one) makes the whole map `null`, so
+the workbench loses the live preview and the inspector though most of them
+exist. It is documented (docs/ui.md, the status's `endpoints`). Test: in
+`tests/test_studio_computed.py`, with a URLconf that includes the studio's
+URLs without `new-component`, read the status; it answers
+`"endpoints": null` today, where the others (and `null` for the missing one)
+would keep the preview working.
+
+<a id="studio-beneath-chain-error"></a>
+## studio-beneath-chain-error: an own row's Delete says nothing is inherited when the parent can't be read
+
+`studio.computed._beneath` reads what deleting an own row reverts to from
+the parent's state (`parent_state`). When that read fails (a broken chain, a
+missing pinned snapshot: `BranchChainError`), it now logs a warning, but the
+entries still get `reverts_to: null`, so the editor's Delete asks "The
+branch has no inherited version of it" when there may well be one. Test: in
+`tests/test_studio_computed.py`
+(`test_items_beneath_a_broken_chain_are_logged`), the own row's
+`reverts_to` is `null`; it should say that what is beneath is unknown (for
+example `"unknown"`), and the workbench's Delete should say so instead of
+claiming nothing is inherited.
+
+<a id="studio-workbench-brittle-asserts"></a>
+## studio-workbench-brittle-asserts: workbench tests assert whole structures
+
+Some tests in `tests/test_studio_workbench.py` assert exact structures of
+the page: the dict of every embed (`data-studio-embed` to tag, source and
+scope) and the list of every form in the page. Any new embed or form fails
+them though nothing they check changed, which invites loosening them by
+hand. Test (a refactor, not a bug): assert each embed and form the test is
+about by key, plus a separate assertion that no unexpected write control
+appears (`Page.writes()`), so an addition fails only the test that is about
+it.
+
+<a id="studio-editor-load-race"></a>
+## studio-editor-load-race: an item still loading can land under the next item's header
+
+htmx 2.0.4 queues a second `htmx.ajax` on the same source element (the
+editor) with its "last" strategy. When item A is still loading as item B is
+opened, A's response swaps into the editor under B's header, replacing
+B's "Loading" placeholder; if B's queued GET then fails, `loadFailed`
+(`studio:studio`) finds no placeholder, so A's editable frame (which PUTs to
+A) stays under B's header. A possible fix: an `htmx:beforeSwap` guard on the
+editor that refuses a swap whose `requestConfig.path` is not the current
+`data-studio-loading` href. Test: in `tests/test_studio_layer_client.py`,
+open A, open B, swap A's frame into the editor (as htmx would deliver the
+late answer), then fail B's GET; assert no frame of A is in the editor and
+B's error text is.
+
+<a id="studio-new-rule-reopened-duplicate"></a>
+## studio-new-rule-reopened-duplicate: a form reopened before its Create answers invites a second Create
+
+Create clicked, the form closed (another node selected), and the same
+node's form opened again (restoring the kept template) before the 201
+arrives: the success marks only the old form as created. The reopened form
+shows the template just created, with "The template you typed for this node
+before is back.", counts as unsaved, and invites a duplicate Create. A
+possible fix: on success, when the form now shown has the same node key and
+its template equals the one sent, mark it created too. Test: in
+`tests/test_studio_layer_client.py`, type a template, Create, select another
+node, open the first node's form again, then answer the Create with 201;
+assert `S.unsaved()` is false and the form does not offer the created
+template as unsaved work.
+
+<a id="studio-new-rule-kept-key"></a>
+## studio-new-rule-kept-key: kept new-rule templates are keyed by type and pointer only
+
+A template typed in a new rule form that closes is kept by the preview's
+type and the node's pointer, not its instance, scope or data context, so a
+template typed for `/items/0` of one instance is restored in the form for
+`/items/0` of another instance (or another scope or context). Test: in
+`tests/test_studio_layer_client.py`, type a template for `/items/0` with
+`instance=7`, close the form, change `instance` to 8, open the form for
+`/items/0`; assert it has the default template, and that the typed one comes
+back with `instance=7` again.
 
 # Decided
 

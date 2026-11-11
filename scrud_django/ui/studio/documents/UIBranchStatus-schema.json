@@ -2,7 +2,7 @@
   "$id": "http://api.openteams.com/json-schema/UIBranchStatus",
   "$schema": "http://json-schema.org/draft-04/schema",
   "title": "UI Branch Status",
-  "description": "Computed: a branch's chain to its root, its changed items and conflicts the requesting user may read, and the URL of a type's list on it. Read-only.",
+  "description": "Computed: a branch's chain to its root, its changed items and conflicts the requesting user may read, the URL of a type's list on it, what the user may do with it (write, publish, pull, push), its pushes and versions the user may read, and the studio's endpoints. Read-only.",
   "type": "object",
   "properties": {
     "branch": {
@@ -57,7 +57,120 @@
     "browse_url": {
       "type": ["string", "null"],
       "description": "With ?type=<slug>: that type's list on the branch, under its published root's prefix; else null."
+    },
+    "may_write": {
+      "type": "boolean",
+      "description": "The branch is a working branch and the user may PUT it."
+    },
+    "may_publish": {
+      "type": "boolean",
+      "description": "The user may PUT UI branches in the context \"\": set, change or remove a prefix."
+    },
+    "pushes": {
+      "type": "array",
+      "description": "The latest 20 pushes (restores included) with the branch as source or target that the user may GET, newest first.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "href": { "type": "string", "description": "The push's resource (an API path)." },
+          "source": { "type": ["string", "null"] },
+          "target": { "type": "string" },
+          "state": { "type": "string" },
+          "label": { "type": ["string", "null"] }
+        },
+        "required": ["href", "source", "target", "state", "label"]
+      }
+    },
+    "versions": {
+      "type": "array",
+      "description": "The branch's latest 20 versions the user may GET, newest first.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "number": { "type": "integer" },
+          "href": { "type": "string", "description": "The version's resource (an API path)." },
+          "restore": {
+            "$ref": "#/definitions/action",
+            "description": "The POST of a restore push of the version into the branch (source null, state applied, in the branch's context), when the user may POST it; published branches included."
+          }
+        },
+        "required": ["number", "href", "restore"]
+      }
+    },
+    "actions": {
+      "type": "object",
+      "description": "What the studio may send to change the branch; on a published branch, no pull and no promote targets.",
+      "properties": {
+        "pull": {
+          "$ref": "#/definitions/action",
+          "description": "The PUT of the branch's content with pull: true and its ETag; when it has a parent and may_write."
+        },
+        "promote": {
+          "type": "array",
+          "description": "One entry per ancestor in chain, nearest first.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "target": { "type": "string" },
+              "apply": {
+                "$ref": "#/definitions/action",
+                "description": "The POST of a push into target in the state applied, when the user may POST it."
+              },
+              "propose": {
+                "$ref": "#/definitions/action",
+                "description": "The POST of a push into target in the state proposed, when the user may POST it."
+              }
+            },
+            "required": ["target", "apply", "propose"]
+          }
+        }
+      },
+      "required": ["pull", "promote"]
+    },
+    "endpoints": {
+      "type": ["object", "null"],
+      "description": "The studio's endpoints (paths, not under the API); sample, explain and options are templates in which {slug} stands for a type's slug. null when the studio's URLs are not included.",
+      "properties": {
+        "live_preview": { "type": "string" },
+        "sample": { "type": "string" },
+        "explain": { "type": "string" },
+        "options": { "type": "string" },
+        "new_component": { "type": "string" }
+      },
+      "required": ["live_preview", "sample", "explain", "options", "new_component"]
     }
   },
-  "required": ["branch", "published", "chain", "changed", "conflicts", "browse_url"]
+  "required": [
+    "branch",
+    "published",
+    "chain",
+    "changed",
+    "conflicts",
+    "browse_url",
+    "may_write",
+    "may_publish",
+    "pushes",
+    "versions",
+    "actions",
+    "endpoints"
+  ],
+  "definitions": {
+    "action": {
+      "type": ["object", "null"],
+      "description": "What a studio control sends unchanged (an R3 fixed-body element): body as JSON with method to href, with etag as If-Match. null when it is not offered.",
+      "properties": {
+        "method": { "type": "string", "enum": ["POST", "PUT"] },
+        "href": {
+          "type": "string",
+          "description": "An API path (a component maps it with in_mount)."
+        },
+        "body": { "type": "object", "description": "The JSON body, sent as it is." },
+        "etag": {
+          "type": ["string", "null"],
+          "description": "The If-Match to send, quoted; null for none."
+        }
+      },
+      "required": ["method", "href", "body", "etag"]
+    }
+  }
 }

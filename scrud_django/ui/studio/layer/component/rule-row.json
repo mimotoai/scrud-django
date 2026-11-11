@@ -1,0 +1,10 @@
+{
+  "name": "studio:rule-row",
+  "engine": "jinja2",
+  "mode": "edit",
+  "scopes": {
+    "select": "studio-field",
+    "component": "studio-field"
+  },
+  "template": "<span class=\"studio-rule-row\">{{ children.get(\"select\") or \"\" }} <span class=\"studio-rule-arrow\" aria-hidden=\"true\">\u2192</span> {{ children.get(\"component\") or \"\" }}</span>\n"
+}

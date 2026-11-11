@@ -293,6 +293,80 @@ def test_published_branch_is_read_only_and_browses_under_its_prefix(ui_alice_log
 
 @pytest.mark.django_db
 @test_context
+def test_published_branch_lists_its_own_items_to_revert(ui_alice_login):
+    """A published branch's own rows are listed in its strip, as a working
+    branch's are, so that the editor opens them and offers Revert; the
+    strip says so. Inherited items are not listed."""
+    setup_branches(ui_alice_login)
+    store_item(
+        "ui-components",
+        "shop",
+        "project-a",
+        name="row",
+        engine="jinja2",
+        mode="view",
+        template="<u>{{ value }}</u>",
+    )
+    grant(ui_alice_login, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "project-a")
+    Given.http.force_authenticate(ui_alice_login)
+    shown = page(branch="shop")
+    assert attr(shown, "data-editable") == "false"
+    changes = section(shown, "studio-changes")
+    assert re.search(r'data-kind="component"[^>]*data-name="row"', changes)
+    assert 'data-name="head"' not in changes  # main's, inherited
+    text = strip_text(section(shown, "studio-strip-body"))
+    assert "read-only" in text and "revert" in text.lower()
+    # The editor has its Revert control (studio.js shows it for an own item).
+    assert re.search(r'<button[^>]*id="studio-revert"', section(shown, "studio-editor"))
+    assert "listed below" in text
+    # main's items are all its own: the strip lists none, and says they are
+    # opened from the preview instead of promising a list.
+    shown = page(branch="main")
+    text = strip_text(section(shown, "studio-strip-body"))
+    assert "read-only" in text and "open one from the preview" in text
+    assert "listed below" not in text
+    assert strip_text(section(shown, "studio-changes")) == "None"
+
+
+@pytest.mark.django_db
+@test_context
+def test_item_says_what_a_revert_shows(studio_layer, ui_alice_login):
+    """``reverts_to`` of the editor's item: what the branch shows once its
+    own row is deleted, ``inherited`` (its parent's) or ``packaged`` (a
+    layer's, on a root), when the user may read it; ``null`` when nothing
+    is beneath, when what is beneath is unreadable, and for an item the
+    branch does not own. The editor labels its Revert or Delete with it."""
+    setup_branches(ui_alice_login)
+    # wip's own CSS over main's "base", which alice may not read (CSS in "").
+    store_item("ui-css", "wip", "alice", name="base", css="p { color: blue }")
+    # main's own override of a packaged studio layer component.
+    store_item(
+        "ui-components",
+        "main",
+        "",
+        name="studio:items",
+        engine="jinja2",
+        mode="view",
+        template="<i>main's</i>",
+    )
+    Given.http.force_authenticate(ui_alice_login)
+    url = reverse("scrud-studio:item")
+
+    def reverts_to(branch, kind, name):
+        When.http.get(url, {"branch": branch, "kind": kind, "name": name})
+        Then.http.status_code_is(200)
+        return Http.response.json()["own"], Http.response.json()["reverts_to"]
+
+    assert reverts_to("wip", "component", "row") == (True, "inherited")
+    assert reverts_to("main", "component", "studio:items") == (True, "packaged")
+    assert reverts_to("wip", "css", "site") == (True, None)  # nothing beneath
+    assert reverts_to("wip", "css", "base") == (True, None)  # unreadable beneath
+    assert reverts_to("wip", "component", "head") == (False, None)  # inherited
+    assert reverts_to("main", "component", "head") == (True, None)  # main's own
+
+
+@pytest.mark.django_db
+@test_context
 def test_item_reads_the_effective_item_the_user_may_read(ui_alice_login):
     row = setup_branches(ui_alice_login)
     Given.http.force_authenticate(ui_alice_login)
