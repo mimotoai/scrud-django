@@ -17,6 +17,30 @@
     {
       "select": "studio studio-status http://api.openteams.com/json-ld/UIBranchStatus",
       "component": "studio:status"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIComponent",
+      "component": "studio:component-editor"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIComponent",
+      "component": "studio:component-view"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UICss",
+      "component": "studio:text-editor"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UICss",
+      "component": "studio:text-view"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIJs",
+      "component": "studio:text-editor"
+    },
+    {
+      "select": "studio studio-editor http://api.openteams.com/json-ld/UIJs",
+      "component": "studio:text-view"
     }
   ]
 }

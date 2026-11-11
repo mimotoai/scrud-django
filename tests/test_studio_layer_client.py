@@ -104,7 +104,10 @@ WORKBENCH = r"""
 const vm = require('vm');
 const source = process.argv[1];
 const opts = JSON.parse(process.argv[2]);
-const out = {ajax: [], replaced: [], submits: [], opened: [], innerHTML: 0};
+const out = {ajax: [], replaced: [], submits: [], opened: [], innerHTML: 0,
+  changes: 0};
+// The elements htmx.process() was given (nodes: not printed).
+let processed = [];
 
 function parseSelector(sel) {
   const m = /^([a-zA-Z]*)((?:\.[\w-]+|\[[\w-]+(?:="[^"]*")?\])*)$/.exec(sel);
@@ -125,11 +128,24 @@ class Node {
     this.children = [];
     this.parentNode = null;
     this.listeners = {};
+    this.capture = {};
     this.text = '';
     this.value = '';
     if (parent) parent.appendChild(this);
   }
   appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+  removeChild(c) {
+    this.children = this.children.filter((n) => n !== c);
+    c.parentNode = null;
+    return c;
+  }
+  get firstChild() { return this.children[0] || null; }
+  cloneNode(deep) {
+    const copy = new Node(this.tagName, this.attrs);
+    copy.text = this.text;
+    if (deep) this.children.forEach((c) => copy.appendChild(c.cloneNode(true)));
+    return copy;
+  }
   getAttribute(n) { return n in this.attrs ? this.attrs[n] : null; }
   hasAttribute(n) { return n in this.attrs; }
   setAttribute(n, v) { this.attrs[n] = String(v); }
@@ -159,7 +175,10 @@ class Node {
     return found;
   }
   querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
-  addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  addEventListener(type, fn, capture) {
+    const where = capture === true ? this.capture : this.listeners;
+    (where[type] = where[type] || []).push(fn);
+  }
   dispatchEvent(evt) { fire(this, evt.type, evt.detail, evt); return true; }
 }
 const el = (tag, attrs, parent) => new Node(tag, attrs, parent);
@@ -196,9 +215,34 @@ const label = el('span', {}, openHead);
 const sheet = {kind: 'stylesheet', name: 'theme', applies_to: 'alice', href: null,
   override: null};
 const openSheet = el('button', {'data-studio-open': JSON.stringify(sheet)}, li);
+el('span', {'class': 'studio-origin'}, li).text = 'from main';
 const override = el('button', {type: 'button', 'class': 'studio-override',
-  'hx-post': '/workbench/ui-components/', 'data-scrud-json': 'fixed'}, li);
-const editor = el('div', {'data-studio-editor': ''}, panes.editor);
+  'hx-post': '/workbench/ui-components/', 'hx-ext': 'scrud-json',
+  'hx-swap': 'none', 'data-scrud-json': 'fixed',
+  'data-scrud-body': '{"name": "head", "branch": "alice-wip"}',
+  'data-scrud-etag': ''}, li);
+override.text = 'Override on this branch';
+// alice-wip's own row, and a packaged item (no href: its content in a
+// hidden <pre>, as tojson escapes it).
+const ownLi = el('li', {'class': 'studio-item studio-own'}, itemsFrame);
+const row = {kind: 'component', name: 'row', applies_to: null,
+  href: '/workbench/ui-components/8/', override: null};
+const openRow = el('button', {type: 'button', 'class': 'studio-open',
+  'data-studio-open': JSON.stringify(row)}, ownLi);
+el('span', {'class': 'studio-origin'}, ownLi).text = 'own';
+const packagedLi = el('li', {'class': 'studio-item studio-packaged'}, itemsFrame);
+const page = {kind: 'component', name: 'studio:page', applies_to: null, href: null,
+  override: null};
+const openPage = el('button', {type: 'button', 'class': 'studio-open',
+  'data-studio-open': JSON.stringify(page)}, packagedLi);
+const pre = el('pre', {'data-studio-content': '', hidden: ''}, packagedLi);
+pre.text = '{\n  "name": "studio:page",\n  "template": "\\u003cmain\\u003e"\n}';
+const editorHead = el('div', {'class': 'studio-editor-head',
+  'data-studio-editor-head': '', hidden: ''}, panes.editor);
+const editor = el('div', {'class': 'studio-pane-body', 'data-studio-editor': ''},
+  panes.editor);
+const draftErrors = el('div', {'class': 'studio-draft-errors',
+  'data-studio-draft-errors': '', role: 'status', hidden: ''}, panes.editor);
 const form = el('form', {'data-studio-preview-form': '', method: 'post',
   target: 'studio-preview', hidden: ''}, panes.preview);
 const token = el('input', {type: 'hidden', name: 'csrfmiddlewaretoken', value: ''}, form);
@@ -207,8 +251,9 @@ form.submit = function () {
   out.submits.push({action: form.getAttribute('action'), token: token.value,
     request: JSON.parse(request.value)});
 };
-el('iframe', {name: 'studio-preview', sandbox: 'allow-scripts',
+const iframe = el('iframe', {name: 'studio-preview', sandbox: 'allow-scripts',
   'class': 'studio-preview'}, panes.preview);
+iframe.contentWindow = {name: 'preview window'};
 const strip = el('footer', {'class': 'studio-strip', 'data-studio-embed': 'status',
   'data-studio-src': '/workbench/ui-branch-status/alice-wip/',
   'data-studio-scope': 'studio studio-status'}, workbench);
@@ -229,13 +274,22 @@ const document = {
 };
 // An event dispatched on `target`, bubbling to the document (a detached
 // node's never reaches it).
+// Capture listeners run first, from the root down; stopPropagation() ends
+// the dispatch.
 function fire(target, type, detail, evt) {
   evt = evt || {type, detail};
   evt.target = target;
-  let attached = false;
-  for (let n = target; n; n = n.parentNode) {
+  evt.stopPropagation = () => { evt.stopped = true; };
+  const path = [];
+  for (let n = target; n; n = n.parentNode) path.push(n);
+  const attached = path.includes(root);
+  for (const n of path.slice().reverse()) {
+    (n.capture[type] || []).forEach((fn) => fn(evt));
+    if (evt.stopped) return evt;
+  }
+  for (const n of path) {
     (n.listeners[type] || []).forEach((fn) => fn(evt));
-    if (n === root) attached = true;
+    if (evt.stopped) return evt;
   }
   if (attached) (docListeners[type] || []).forEach((fn) => fn(evt));
   return evt;
@@ -279,12 +333,61 @@ const history = {
 };
 const htmx = {
   ajax(verb, path, context) {
-    out.ajax.push({verb, path, target: context.target.getAttribute('data-studio-embed'),
-      source: context.source === context.target, swap: context.swap,
-      headers: context.headers});
+    const target = context.target.getAttribute('data-studio-embed')
+      || (context.target === editor ? 'editor' : null);
+    out.ajax.push({verb, path, target, source: context.source === context.target,
+      swap: context.swap, headers: context.headers});
   },
+  process(elt) { processed.push(elt); },
 };
-const window = {location, history, htmx};
+// Timers run when `tick(ms)` passes their time.
+let now = 0;
+let timers = [];
+let timerId = 0;
+function tick(ms) {
+  now += ms;
+  const due = timers.filter((t) => t.at <= now);
+  timers = timers.filter((t) => t.at > now);
+  due.forEach((t) => t.fn());
+}
+const windowListeners = {};
+const window = {
+  location, history, htmx,
+  setTimeout(fn, ms) { timerId += 1; timers.push({id: timerId, fn, at: now + ms}); return timerId; },
+  clearTimeout(id) { timers = timers.filter((t) => t.id !== id); },
+  addEventListener(type, fn) { (windowListeners[type] = windowListeners[type] || []).push(fn); },
+};
+// A message posted to the page from `source`.
+const post = (source, data) => (windowListeners.message || []).forEach(
+  (fn) => fn({type: 'message', source, data}));
+// The server's editor for an item, as htmx swaps it into the editor pane:
+// the frame (a form in edit mode), its scrud-content, the editor element,
+// the code textarea (named in edit mode) and the frame's Delete button.
+function swapEditor({href = '/workbench/ui-components/8/', edit = true, kind = 'component',
+                     field = 'template', content = {name: 'row', engine: 'jinja2',
+                     mode: 'view', template: '<b>row</b>', branch: 'alice-wip',
+                     rbac_context: 'alice'}, deletable = true} = {}) {
+  while (editor.firstChild) editor.removeChild(editor.firstChild);
+  const frame = el(edit ? 'form' : 'div', {'class': 'scrud-resource',
+    'data-scrud-href': href, 'data-scrud-etag': '"e1"',
+    'data-scrud-scope': 'studio studio-editor',
+    ...(edit ? {'hx-put': href, 'hx-trigger': 'change, submit'} : {})}, editor);
+  frame.addEventListener('change', () => { out.changes += 1; });
+  el('script', {type: 'application/json', 'class': 'scrud-content'}, frame).text =
+    JSON.stringify(content);
+  const item = el('div', {'class': 'studio-editor', 'data-studio-editor-item': '',
+    'data-studio-kind': kind, 'data-studio-mode': edit ? 'edit' : 'view'}, frame);
+  const code = el('textarea', edit
+    ? {'class': 'studio-code', name: '/' + field, 'data-studio-code': ''}
+    : {'class': 'studio-code', readonly: ''}, item);
+  code.value = content[field];
+  const remove = deletable ? el('button', {type: 'button', 'hx-delete': href,
+    'hx-confirm': 'Delete?', 'hx-target': 'closest .scrud-resource'}, frame) : null;
+  if (remove) remove.text = 'Delete';
+  fire(frame, 'htmx:afterSwap', {target: editor});
+  return {frame, code, remove};
+}
+const typing = (code, text) => { code.value = text; fire(code, 'keyup', undefined); };
 Object.defineProperty(window, 'localStorage', {
   get() {
     if (opts.storage === 'missing') throw new Error('SecurityError');
@@ -293,7 +396,8 @@ Object.defineProperty(window, 'localStorage', {
 });
 workbench.addEventListener('studio:open', (evt) => out.opened.push(evt.detail.open));
 const context = vm.createContext({window, document, URLSearchParams, CustomEvent,
-  DOMParser, console, htmx});
+  DOMParser, console, htmx, setTimeout: window.setTimeout,
+  clearTimeout: window.clearTimeout});
 vm.runInContext(source, context);
 const S = window.ScrudStudio;
 const state = () => S.state();
@@ -301,7 +405,11 @@ const collapsed = () => Object.fromEntries(Object.entries(panes).map(
   ([name, pane]) => [name, pane.hasAttribute('data-studio-collapsed')]));
 const pressed = () => Object.fromEntries(Object.entries(toggles).map(
   ([name, t]) => [name, t.getAttribute('aria-pressed')]));
-const reset = () => { out.ajax = []; out.submits = []; out.replaced = []; };
+const reset = () => {
+  out.ajax = []; out.submits = []; out.replaced = []; processed = [];
+};
+const texts = (node) => node.children.map((c) => [c.tagName.toLowerCase(), c.text,
+  texts(c)]);
 """
 
 
@@ -593,3 +701,289 @@ out.sent = S.submitPreview({drafts: [{kind: 'css', content: {name: 'x'}}],
     out = scenario(script, search=BASE + query, published=True)
     [sent] = out["submits"]
     assert sent["request"] == preview_request(**state)
+
+
+EDITOR_SCOPE = {"Scrud-UI-Scope": "studio studio-editor"}
+VIEW_SCOPE = {**EDITOR_SCOPE, "Scrud-UI-Mode": "view"}
+ROW_HREF = "/workbench/ui-components/8/"
+ROW = {
+    "name": "row",
+    "engine": "jinja2",
+    "mode": "view",
+    "template": "<b>row</b>",
+    "branch": "alice-wip",
+    "rbac_context": "alice",
+}
+
+
+def editor_fetch(path, headers):
+    return {
+        "verb": "GET",
+        "path": path,
+        "target": "editor",
+        "source": True,
+        "swap": "innerHTML",
+        "headers": headers,
+    }
+
+
+def test_open_loads_editor():
+    out = scenario(
+        r"""
+reset();
+click(openRow);
+out.own = [out.ajax.slice(), texts(editorHead), editorHead.hasAttribute('hidden')];
+reset();
+click(label);
+out.inherited = [out.ajax.slice(), texts(editorHead),
+  editorHead.children.filter((c) => c.tagName === 'BUTTON').map((c) => c.attrs),
+  processed.map((p) => editorHead.contains(p) && p !== override)];
+reset();
+click(openPage);
+out.packaged = [out.ajax.slice(), texts(editorHead), texts(editor)];
+// The frame's Delete is the one revert control.
+click(openRow);
+const swapped = swapEditor();
+out.revert = [swapped.remove.text, swapped.remove.getAttribute('hx-confirm'),
+  swapped.remove.getAttribute('class'), swapped.remove.getAttribute('hx-delete')];
+""",
+        search=BASE,
+    )
+    own_fetch, own_head, own_hidden = out["own"]
+    assert own_fetch == [editor_fetch(ROW_HREF, EDITOR_SCOPE)]
+    assert own_head == [["h3", "component row", []], ["span", "own", []]]
+    assert own_hidden is False
+    # An item T does not own: view mode, and the tree's override, copied
+    # (its body the server's) and processed by htmx.
+    fetch, head, buttons, processed = out["inherited"]
+    assert fetch == [editor_fetch("/workbench/ui-components/7/", VIEW_SCOPE)]
+    assert head[:2] == [["h3", "component head", []], ["span", "from main", []]]
+    assert buttons == [
+        {
+            "type": "button",
+            "class": "studio-override",
+            "hx-post": "/workbench/ui-components/",
+            "hx-ext": "scrud-json",
+            "hx-swap": "none",
+            "data-scrud-json": "fixed",
+            "data-scrud-body": '{"name": "head", "branch": "alice-wip"}',
+            "data-scrud-etag": "",
+        }
+    ]
+    assert processed == [True]
+    # No href: the content as text, parsed and indented; nothing fetched.
+    fetch, head, body = out["packaged"]
+    assert fetch == []
+    assert head == [["h3", "component studio:page", []]]
+    content = json.dumps({"name": "studio:page", "template": "<main>"}, indent=2)
+    assert body == [["pre", content, []]]
+    assert out["innerHTML"] == 0
+    label_text, confirm, classes, href = out["revert"]
+    assert label_text == "Revert to inherited" and href == ROW_HREF
+    assert "studio-revert" in classes.split() and confirm != "Delete?"
+
+
+def test_open_published_reopen_and_refresh():
+    # A published T: every item in view mode, no override offered.
+    out = scenario(
+        r"""
+reset();
+click(openRow);
+click(label);
+out.fetches = out.ajax.slice();
+out.buttons = editorHead.children.filter((c) => c.tagName === 'BUTTON').length;
+out.processed = processed.length;
+""",
+        search=BASE,
+        published=True,
+    )
+    assert out["fetches"] == [
+        editor_fetch(ROW_HREF, VIEW_SCOPE),
+        editor_fetch("/workbench/ui-components/7/", VIEW_SCOPE),
+    ]
+    assert out["buttons"] == 0 and out["processed"] == 0
+    # The URL's item opens on load.
+    out = scenario(
+        "out.loaded = out.ajax.slice();", search=BASE + "&item=component:row"
+    )
+    assert out["loaded"] == [editor_fetch(ROW_HREF, EDITOR_SCOPE)]
+    # After an override or a revert, the refreshed tree's entry opens again;
+    # after the editor's own save (its response is the editor) it does not.
+    out = scenario(
+        r"""
+click(openRow);
+const {frame, remove} = swapEditor();
+reset();
+const done = (elt, verb) => fire(elt, 'htmx:afterRequest', {elt, successful: true,
+  requestConfig: {verb}, xhr: {status: 200}});
+done(frame, 'put');
+fire(items, 'htmx:afterSwap', {target: items});
+out.saved = out.ajax.map((a) => a.target);
+reset();
+done(remove, 'delete');
+out.reverted = out.ajax.map((a) => a.target);
+reset();
+fire(items, 'htmx:afterSwap', {target: items});
+fire(items, 'htmx:afterSwap', {target: items});
+out.reopened = out.ajax.slice();
+reset();
+// An item the refreshed tree no longer has.
+S.setState({item: 'component:gone'});
+done(override, 'post');
+reset();
+fire(items, 'htmx:afterSwap', {target: items});
+out.gone = [out.ajax.length, texts(editor), editorHead.hasAttribute('hidden')];
+""",
+        search=BASE,
+    )
+    assert out["saved"] == ["items", "status"]
+    assert out["reverted"] == ["items", "status"]
+    assert out["reopened"] == [editor_fetch(ROW_HREF, EDITOR_SCOPE)]
+    count, body, hidden = out["gone"]
+    assert count == 0 and hidden is True
+    assert body == [["p", "component:gone is not on this branch.", []]]
+    for fetch in out["reopened"]:
+        assert "Scrud-UI-Branch" not in fetch["headers"]
+
+
+def test_keyup_debounced_sends_drafts():
+    out = scenario(
+        r"""
+click(openRow);
+const {code} = swapEditor();
+reset();
+typing(code, '<i>1</i>');
+tick(100);
+typing(code, '<i>12</i>');
+tick(299);
+out.early = out.submits.length;
+tick(1);
+out.sent = out.submits.slice();
+reset();
+typing(code, '<i>12</i>');
+tick(300);
+out.same = out.submits.length;
+// A change of the code never reaches the frame: Save is the only save.
+fire(code, 'change');
+out.changes = out.changes;
+// View mode: no drafts.
+const view = swapEditor({edit: false});
+reset();
+typing(view.code, 'x');
+tick(300);
+out.view = out.submits.length;
+// The CSS and JS editor.
+const css = swapEditor({href: '/workbench/ui-css/3/', kind: 'css', field: 'css',
+  content: {name: 'site', css: 'p {}', branch: 'alice-wip', rbac_context: 'alice'}});
+typing(css.code, 'p { color: red }');
+tick(300);
+out.css = out.submits.map((s) => s.request.drafts);
+reset();
+// Replaced before the delay passed (a save, another item): nothing.
+const before = swapEditor();
+typing(before.code, 'late');
+swapEditor();
+tick(300);
+out.replaced = out.submits.length;
+""",
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["early"] == 0
+    [sent] = out["sent"]
+    assert sent["action"] == "/studio/live-preview"
+    assert sent["request"] == preview_request(
+        drafts=[{"kind": "component", "content": {**ROW, "template": "<i>12</i>"}}]
+    )
+    assert out["same"] == 0
+    assert out["changes"] == 0
+    assert out["view"] == 0
+    assert out["css"] == [
+        [
+            {
+                "kind": "css",
+                "content": {
+                    "name": "site",
+                    "css": "p { color: red }",
+                    "branch": "alice-wip",
+                    "rbac_context": "alice",
+                },
+            }
+        ]
+    ]
+    assert out["replaced"] == 0
+    # No type chosen: nothing is sent.
+    out = scenario(
+        r"""
+click(openRow);
+const {code} = swapEditor();
+typing(code, 'x');
+tick(300);
+""",
+        search=BASE,
+    )
+    assert out["submits"] == []
+
+
+def test_no_drafts_when_published():
+    out = scenario(
+        r"""
+click(openRow);
+// Even an edit-mode editor (crafted): a published T sends no drafts.
+const {code} = swapEditor();
+reset();
+typing(code, '<i>draft</i>');
+tick(1000);
+out.after = out.submits.slice();
+out.direct = S.submitPreview({drafts: [{kind: 'component', content: {name: 'row'}}]});
+""",
+        search=BASE + "&type=todo-lists",
+        published=True,
+    )
+    assert out["after"] == []
+    assert out["direct"] is True
+    [direct] = out["submits"]
+    assert direct["request"]["drafts"] == []
+
+
+def test_draft_errors_shown_as_text():
+    out = scenario(
+        r"""
+const errors = [{kind: 'component', name: 'row',
+                 messages: ['Template error: <b>x</b>', 'Second.']},
+                {kind: 'css', name: 'site', messages: ['Bad.']}];
+post(iframe.contentWindow, {type: 'scrud-preview:errors', errors});
+out.shown = [draftErrors.hasAttribute('hidden'), texts(draftErrors)];
+// From another window, of another type, or not an object: ignored.
+post({}, {type: 'scrud-preview:errors', errors: null, failed: true});
+post(null, {type: 'scrud-preview:errors', errors: []});
+post(iframe.contentWindow, {type: 'scrud-preview:select', pointer: '/a', href: null});
+post(iframe.contentWindow, 'scrud-preview:errors');
+out.kept = texts(draftErrors);
+post(iframe.contentWindow, {type: 'scrud-preview:errors', errors: null, failed: true});
+out.failed = [draftErrors.hasAttribute('hidden'), texts(draftErrors)];
+post(iframe.contentWindow, {type: 'scrud-preview:errors', errors: []});
+out.none = [draftErrors.hasAttribute('hidden'), texts(draftErrors)];
+""",
+        search=BASE + "&type=todo-lists",
+    )
+    hidden, shown = out["shown"]
+    assert hidden is False
+    assert shown == [
+        ["p", "Not shown in the preview:", []],
+        [
+            "ul",
+            "",
+            [
+                ["li", "component row: Template error: <b>x</b> Second.", []],
+                ["li", "css site: Bad.", []],
+            ],
+        ],
+    ]
+    assert out["kept"] == shown
+    hidden, failed = out["failed"]
+    assert hidden is False
+    assert failed == [
+        ["p", "The preview could not report its errors: a draft may not be shown.", []]
+    ]
+    assert out["none"] == [True, []]
+    assert out["innerHTML"] == 0

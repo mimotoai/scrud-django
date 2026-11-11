@@ -149,6 +149,19 @@
   live preview in a sandboxed frame. The workbench state is in the URL's
   query. The studio link now points at the workbench in view mode
   (`&ui-mode=view`).
+* The workbench's template, CSS and JS editors, in the studio layer:
+  `studio:component-editor` and `studio:component-view` (`UIComponent`),
+  `studio:text-editor` and `studio:text-view` (`UICss` and `UIJs`), selected
+  in the scope `studio studio-editor`. Opening an item loads its resource
+  into the Editor pane, in view mode when the branch is published or does not
+  own the item (an item with no URL shows its content as text). An own item's
+  editor is its frame's form: Save is the frame's `PUT` with `If-Match` (a
+  stale one gets the 412 reload), and the frame's Delete button, relabelled
+  "Revert to inherited", deletes the branch's row. An item the branch does not
+  own offers the items tree's "Override on this branch". A Django-engine
+  component is shown read-only. Typing sends the editor's content to the live
+  preview as a draft (300 ms after the last key; none on a published branch),
+  and the drafts the preview leaves out are listed under the editor, as text.
 
 ### Changed
 

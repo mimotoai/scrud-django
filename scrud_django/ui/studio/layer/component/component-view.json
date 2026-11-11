@@ -1,0 +1,6 @@
+{
+  "name": "studio:component-view",
+  "engine": "jinja2",
+  "mode": "view",
+  "template": "{%- set django = value.get(\"engine\") == \"django\" -%}\n<div class=\"studio-editor\" data-studio-editor-item data-studio-kind=\"component\" data-studio-mode=\"view\">\n<p class=\"studio-editor-meta\">{{ value.get(\"engine\") or \"\" }} \u00b7 {{ value.get(\"mode\") or \"\" }}</p>\n{%- if django %}\n<p class=\"studio-note\">This component uses the Django engine, which the studio does not edit: it is shown read-only. Edit it through the API or the bootstrap studio.</p>\n{%- endif %}\n<textarea class=\"studio-code\" readonly rows=\"20\" spellcheck=\"false\" aria-label=\"Template of {{ value.name }} (read-only)\">\n{{ value.get(\"template\") or \"\" }}</textarea>\n</div>\n"
+}

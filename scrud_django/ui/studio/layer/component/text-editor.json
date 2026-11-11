@@ -1,0 +1,6 @@
+{
+  "name": "studio:text-editor",
+  "engine": "jinja2",
+  "mode": "edit",
+  "template": "{%- set field = \"js\" if resource.type == \"http://api.openteams.com/json-ld/UIJs\" else \"css\" -%}\n<div class=\"studio-editor\" data-studio-editor-item data-studio-kind=\"{{ field }}\" data-studio-mode=\"edit\">\n<label class=\"studio-code-label\" for=\"{{ input_id }}\">{{ \"JavaScript\" if field == \"js\" else \"CSS\" }}</label>\n<textarea id=\"{{ input_id }}\" class=\"studio-code\" name=\"/{{ field }}\" data-studio-code rows=\"20\" spellcheck=\"false\">\n{{ value.get(field) or \"\" }}</textarea>\n<div class=\"studio-editor-actions\"><button type=\"submit\" class=\"studio-save\">Save</button></div>\n</div>\n"
+}

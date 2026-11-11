@@ -2050,11 +2050,15 @@ for the live preview (`POST live-preview`, see [The studio API](#the-studio-api)
   link.
 - **Opening an item.** A click on an entry sets `item` and dispatches
   `studio:open` on the workbench (`detail.open` is the entry's
-  `data-studio-open`), which the editor handles.
+  `data-studio-open`, `detail.entry` the entry), which the editor handles
+  (see [The editors](#the-editors)). The `item` in the URL opens on load.
 - **After a write.** After any write sent from inside the workbench
   (`htmx:afterRequest` of a non-GET) that succeeds, the items and the strip
   are fetched again (an htmx GET of `data-studio-src`, with the pane's own
-  `Scrud-UI-Scope`) and the preview is submitted again. A refused write shows
+  `Scrud-UI-Scope`) and the preview is submitted again. After a POST or a
+  DELETE (an override, a revert, a push), the open item is opened again from
+  the refreshed tree; after a save it is not (the save's response is the
+  editor). A refused write shows
   the server's error text in the workbench's notice, as text: a problem's
   `title` and `detail`, else the notices of the HTML it answered.
 - **The preview.** `window.ScrudStudio.submitPreview(extra)` sets the form's
@@ -2070,5 +2074,74 @@ for the live preview (`POST live-preview`, see [The studio API](#the-studio-api)
 The script never sets `Scrud-UI-Branch`: its requests go through htmx, and
 `scrud-ui.js` sends the page's branch (S) and, on a safe page,
 `Scrud-UI-Safe`. `window.ScrudStudio` also has `state()`, `setState(changes)`
-(`null` or `""` removes a key), `itemKey(open)`, `refresh(pane)`, `branch`
-and `published`.
+(`null` or `""` removes a key), `itemKey(open)`, `refresh(pane)`, `reopen()`
+(open the state's `item` from the tree as it is), `branch` and `published`.
+
+### The editors
+
+The Editor pane holds a header (`data-studio-editor-head`), the editor
+itself (`data-studio-editor`) and, under it, the drafts the preview left out
+(`data-studio-draft-errors`). Opening an item fills them:
+
+- **The header** names the item (`<kind> <name>`), where it comes from (the
+  tree's `own`, `from <branch>` or `packaged`) and, for an item T does not
+  own, a copy of the tree's "Override on this branch" button, processed by
+  htmx: its body is the server's (`override`, see
+  [Studio data as computed resources](#studio-data-as-computed-resources)),
+  never built by the script. After the override (a 201) the panes are
+  fetched again and the new own row opens.
+- **An item with an `href`** is loaded with an htmx GET of it into the
+  editor, with `Scrud-UI-Scope: studio studio-editor`, and `Scrud-UI-Mode:
+  view` when T is published or the item is not T's own (its entry is not
+  `studio-own`). The resource view then decides the mode as for any request:
+  edit only for a user who may `PUT` the item. The script never sets
+  `Scrud-UI-Branch`.
+- **An item with no `href`** (a packaged item, an ancestor's item a pinned
+  view reads from a version) shows its content, the entry's
+  `<pre data-studio-content>` parsed and indented, as text.
+
+The layer's stylesheet selects, in the scope `studio studio-editor`, the root
+of `UIComponent` (`http://api.openteams.com/json-ld/UIComponent`) for
+`studio:component-editor` (edit mode) or `studio:component-view` (view
+mode), and the roots of `UICss` and `UIJs` for `studio:text-editor` or
+`studio:text-view`. Each renders a `<div class="studio-editor"
+data-studio-editor-item data-studio-kind="component|css|js"
+data-studio-mode="edit|view">`:
+
+- **Edit mode.** The editor is the item's own frame, a `<form>` (see
+  [Modes, editing and the write path](#modes-editing-and-the-write-path)).
+  It holds a monospace `<textarea class="studio-code" data-studio-code>`
+  named by the field's pointer (`/template`, `/css` or `/js`) and a Save
+  button, the form's submit: the frame's `PUT` of its `scrud-content` with
+  the textarea applied, with `If-Match`. A `change` of the textarea is not
+  a save (the script stops it before the frame sees it), so the text is
+  saved only by Save. A save that is refused re-renders the editor with the
+  messages (Refused writes); a stale one (another tab saved first) gets
+  the notice and the frame that reloads the current state, in the editor's
+  scope, and the workbench's notice says why.
+- **Revert to inherited.** The frame's own Delete button is the one control
+  that deletes T's row of the item: the script relabels it "Revert to
+  inherited" (with its own confirmation). It sends `If-Match`, a stale one
+  gets the 412 reload, and on success the panes are fetched again and the
+  item opens again: now the inherited or packaged item, or, when T added it,
+  a note that it is not on the branch.
+- **View mode** (a published T, an item T does not own, a user who may not
+  `PUT` it) shows the text in a read-only `<textarea>` with no `name`: no
+  form, no Save. A requested view mode also has no Delete button.
+- **A Django-engine component** is read-only in both modes, with a note: its
+  textarea has no `name`, and there is no Save.
+
+**Live typing.** A `keyup` in the editor's code starts a 300 ms timer; when
+the typing pauses, the editor's content (the frame's `scrud-content` with the
+textarea's value at its pointer) is submitted to the live preview as
+`drafts: [{kind, content}]` (`ScrudStudio.submitPreview`). Nothing is sent
+when T is published, when the editor is in view mode, when the state has no
+`type`, or when the draft is the one the preview already shows. A draft is
+never stored: only Save writes.
+
+**Draft errors.** The script accepts a `message` only from the preview
+frame's own window (`event.source`), and only `{"type":
+"scrud-preview:errors"}`; any other message is ignored. Each draft the
+preview left out is listed under the editor as `<kind> <name>: <messages>`,
+as text. `failed: true` shows "The preview could not report its errors: a
+draft may not be shown.", never an empty list; an empty list hides them.
