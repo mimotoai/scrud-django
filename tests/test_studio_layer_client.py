@@ -683,6 +683,8 @@ fire(pull, 'htmx:afterRequest', {elt: pull, successful: false,
   responseText: '{"title": "Conflict", "detail": "Pull first."}',
   getResponseHeader: () => 'application/problem+json'}});
 out.problem = notice.textContent;
+// A 409 is a stale state: the items and the strip are fetched again.
+out.problemAjax = out.ajax.map((a) => a.target); reset();
 // A frame's own request whose element was swapped out: htmx fires it again
 // on an ancestor still in the page.
 ok(itemsFrame, 'put', 200);
@@ -720,9 +722,56 @@ out.cleared = [notice.textContent, notice.hasAttribute('hidden'), out.ajax.lengt
     assert hidden is False and ajax == [] and submits == []
     assert out["network"] == "The request failed (network error)."
     assert out["problem"] == "Refused (HTTP 409): Conflict: Pull first."
+    assert out["problemAjax"] == ["items", "status"]
     assert out["innerHTML"] == 0
     # A successful write clears the notice.
     assert out["cleared"] == ["", True, 2]
+
+
+def test_stale_write_refreshes_items_and_strip():
+    """A write refused 412 (a stale ETag) or 409 shows the server's text and
+    fetches the items and the strip again, so the next try sends their new
+    ETags: a Pull refused 412 would otherwise keep the strip's stale tag and
+    be refused again on every retry. Other refusals refresh nothing."""
+    out = scenario(
+        r"""
+reset();
+const refused = (status) => fire(pull, 'htmx:afterRequest', {elt: pull,
+  successful: false, requestConfig: {verb: 'put'}, xhr: {status,
+  responseText: '{"title": "Stale"}',
+  getResponseHeader: () => 'application/problem+json'}});
+for (const status of [412, 409, 403, 400, 0]) {
+  refused(status);
+  out['s' + status] = [notice.textContent, out.ajax.slice(), out.submits.slice()];
+  reset();
+}
+"""
+    )
+    refreshed = [
+        {
+            "verb": "GET",
+            "path": ITEMS_SRC,
+            "target": "items",
+            "source": True,
+            "swap": "innerHTML",
+            "headers": ITEMS_SCOPE,
+        },
+        {
+            "verb": "GET",
+            "path": STATUS_SRC,
+            "target": "status",
+            "source": True,
+            "swap": "innerHTML",
+            "headers": STATUS_SCOPE,
+        },
+    ]
+    for status in (412, 409):
+        text, ajax, submits = out[f"s{status}"]
+        assert text == f"Refused (HTTP {status}): Stale", status
+        assert ajax == refreshed and submits == [], status
+    for status in (403, 400, 0):
+        _text, ajax, submits = out[f"s{status}"]
+        assert ajax == [] and submits == [], status
 
 
 def test_preview_needs_type_and_endpoints():

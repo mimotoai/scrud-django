@@ -2065,7 +2065,10 @@ and the inspector under it (see
   the refreshed tree; after a save it is not (the save's response is the
   editor). A refused write shows
   the server's error text in the workbench's notice, as text: a problem's
-  `title` and `detail`, else the notices of the HTML it answered.
+  `title` and `detail`, else the notices of the HTML it answered. A write
+  refused for a stale state (412, 409) also fetches the items and the strip
+  again, so a retry (a Pull, an override) sends their new ETags instead of
+  being refused for the same stale one.
 - **The preview.** `window.ScrudStudio.submitPreview(extra)` sets the form's
   action to the strip's `endpoints.live_preview`, its CSRF token from the
   page's `csrf-token` meta tag, and its `request` to the URL state (`type`,
