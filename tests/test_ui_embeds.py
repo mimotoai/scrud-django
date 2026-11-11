@@ -416,11 +416,13 @@ def test_embed_view_mode(todo_list, todo_owner_login):
     Given.http.force_authenticate(todo_owner_login)
     page = get_page(url_of(todo_list), scope="host")
     found = frames(page, url)
-    assert len(found) == 3
+    assert len(found) == 2
     assert "hx-put" not in found[0]
-    assert f'hx-put="{url}"' in found[1] and f'hx-put="{url}"' in found[2]
-    # Only "view" is passed on; another mode is the user's own.
+    assert f'hx-put="{url}"' in found[1]
+    # Without a mode, the mode is the user's own.
     assert 'data-scrud-scope="plain"' in found[1]
+    # Any other mode is refused, as ``ui-mode=edit`` is a 400 at the URL.
+    assert '<p class="x">' + REFUSED + "</p>" in page
 
 
 @pytest.mark.django_db
@@ -656,3 +658,92 @@ def test_embed_without_scope_keeps_the_query_scope(todo_list, todo_owner_login):
     given = re.search(r'<p class="s">(.*?)</p>', page, re.S).group(1)
     assert "<h4>Chores</h4>" in query
     assert "<h4>Chores</h4>" not in given and "Chores" in given
+
+
+@pytest.mark.django_db
+@test_context
+def test_embedded_view_database_error_leaves_the_transaction_usable(
+    todo_list, todo_reader_login, monkeypatch, caplog
+):
+    """An embedded view that fails on the database (on PostgreSQL, its
+    failed query aborts the transaction it runs in) is rolled back to a
+    savepoint of its own: the embedding render's transaction stays usable,
+    the failure is logged at ERROR with its traceback, and
+    ``got_request_exception`` is sent, as for a view that raises at its URL."""
+    from django.core.signals import got_request_exception
+    from django.db import DatabaseError, connection, transaction
+
+    from scrud_django.models import Resource
+    from scrud_django.ui.embed import FAILED_MESSAGE
+    from scrud_django.views import ResourceViewSet
+
+    def broken(self, request, *args, **kwargs):
+        # No savepoint of its own: the failure reaches the caller's
+        # transaction, as a failed query does on PostgreSQL.
+        with transaction.atomic(savepoint=False):
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT * FROM scrud_no_such_table")
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(ResourceViewSet, "retrieve", broken)
+    sent = []
+
+    def receiver(sender, request=None, **kwargs):
+        sent.append(request)
+
+    got_request_exception.connect(receiver)
+    try:
+        request = RequestFactory().get("/somewhere/")
+        request.user = todo_reader_login
+        assert connection.in_atomic_block
+        with caplog.at_level(logging.ERROR, logger="scrud_django.ui.embed"):
+            notice = str(embed_for(request)(url_of(todo_list)))
+    finally:
+        got_request_exception.disconnect(receiver)
+    assert FAILED_MESSAGE in notice
+    # The embedding render's transaction is usable: a later query works.
+    assert Resource.objects.filter(pk=todo_list.pk).exists()
+    errors = [
+        r
+        for r in caplog.records
+        if r.name == "scrud_django.ui.embed" and r.levelno == logging.ERROR
+    ]
+    assert len(errors) == 1 and errors[0].exc_info is not None
+    assert issubclass(errors[0].exc_info[0], DatabaseError)
+    assert sent == [request]
+
+
+@pytest.mark.django_db
+@test_context
+def test_embed_with_an_invalid_scope_or_mode_is_refused(
+    todo_list, todo_owner_login, caplog
+):
+    """A scope that is not a scope chain (not a string or a list of
+    strings, more than ``MAX_SCOPES`` names, a name that is not one) and a
+    mode other than ``"view"`` are refused with the embed notice, as the
+    same mode at the resource's URL is a 400: never ignored, which would
+    put edit controls in a card meant to be read-only."""
+    from scrud_django.ui.renderer import MAX_SCOPES
+
+    request = RequestFactory().get("/somewhere/")
+    request.user = todo_owner_login
+    embed = embed_for(request)
+    url = url_of(todo_list)
+    assert "Buy milk" in str(embed(url, mode="view"))
+    assert "Buy milk" in str(embed(url, scope=["a", "b-2"]))
+    bad = [
+        {"scope": 3},
+        {"scope": ["a", 3]},
+        {"scope": " ".join(f"s{i}" for i in range(MAX_SCOPES + 1))},
+        {"scope": "a 9nine"},
+        {"scope": ["a;b"]},
+        {"mode": "edit"},
+        {"mode": "View"},
+        {"mode": ""},
+    ]
+    for arguments in bad:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="scrud_django.ui.embed"):
+            got = str(embed(url, **arguments))
+        assert got == REFUSED, arguments
+        assert len(embed_warnings(caplog)) == 1, arguments

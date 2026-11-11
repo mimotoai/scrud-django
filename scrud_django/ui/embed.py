@@ -30,14 +30,20 @@ not resolve to a resource view (`ResourceViewMixin`: stored and computed
 types), or whose response is not the UI's HTML (``?format=json``); a path and scope chain already on the embed stack (a cycle; the
 top-level request is its bottom); an embed deeper than `MAX_EMBED_DEPTH`;
 and any embed past the first `MAX_EMBEDS` of a top-level response. A view
-that raises renders `FAILED_MESSAGE` (logged)."""
+that raises renders `FAILED_MESSAGE`: logged at ERROR, with
+``got_request_exception`` sent, and rolled back to a savepoint of its own
+on each database in an atomic block, so that the embedding render's
+transaction stays usable."""
 
 import contextvars
 import logging
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from django.core.exceptions import DisallowedHost
+from django.core.signals import got_request_exception
+from django.db import connections, transaction
 from django.http import QueryDict
 from markupsafe import Markup
 
@@ -125,7 +131,11 @@ def _embed(request, path, scope, mode) -> str:
     resolved = resolve_path(target)
     if resolved is None or not _is_resource_view(resolved.match.func):
         return _refused(path, "not a resource view")
-    chain = renderer.parse_scope_chain(_scope_value(scope))
+    chain = _scope_chain(scope)
+    if chain is None:
+        return _refused(path, f"scope {scope!r} is not a scope chain")
+    if mode is not None and mode != renderer.VIEW_MODE:
+        return _refused(path, f'mode {mode!r} is not "{renderer.VIEW_MODE}"')
     headers = {
         renderer.HX_REQUEST_HEADER: "true",
         BRANCH_HEADER: selection_value(active_selection()),
@@ -147,7 +157,7 @@ def _embed(request, path, scope, mode) -> str:
     try:
         # A memo of its own: the embedded request chooses its branch again
         # (it may be refused), and the memo is keyed without the branch.
-        with rules_memo():
+        with rules_memo(), _savepoints():
             response = dispatch_path(
                 request,
                 target,
@@ -156,7 +166,10 @@ def _embed(request, path, scope, mode) -> str:
                 resolved=resolved,
             )
     except Exception:
-        logger.warning("scrud-ui: embed of %r failed", path, exc_info=True)
+        # As Django reports a view that raises at its URL: an error, with
+        # its traceback, and the signal error reporters listen to.
+        logger.error("scrud-ui: embed of %r failed", path, exc_info=True)
+        got_request_exception.send(sender=None, request=request)
         return _notice(FAILED_MESSAGE)
     finally:
         _state.reset(token)
@@ -167,6 +180,21 @@ def _embed(request, path, scope, mode) -> str:
     ):
         return _refused(path, f"answered {response.get('Content-Type')!r}, not UI HTML")
     return response.content.decode(response.charset or "utf-8")
+
+
+@contextmanager
+def _savepoints():
+    """A savepoint on each database connection in an atomic block (the
+    embedding request's, under ``ATOMIC_REQUESTS``, or a studio preview's),
+    so that an embedded view that fails on the database (on PostgreSQL, a
+    failed query aborts the transaction) is rolled back alone: the
+    embedding render's later queries still run (as `renderer.load_stored`
+    guards its lookup)."""
+    with ExitStack() as stack:
+        for alias in connections:
+            if connections[alias].in_atomic_block:
+                stack.enter_context(transaction.atomic(using=alias))
+        yield
 
 
 def _top_state(request) -> _EmbedState:
@@ -195,14 +223,24 @@ def _same_site(request, parts) -> bool:
     return parts.netloc.lower() == host.lower()
 
 
-def _scope_value(scope) -> str:
-    """`scope` (a string of names, or a list or tuple of names) as a scope
-    header's value; anything else as no scope."""
-    if isinstance(scope, str):
-        return scope
-    if isinstance(scope, (list, tuple)) and all(isinstance(s, str) for s in scope):
-        return " ".join(scope)
-    return ""
+def _scope_chain(scope) -> tuple[str, ...] | None:
+    """The scope chain `scope` names (a string of names, or a list or tuple
+    of names, as `renderer.parse_scope_chain` reads a header's), ``()`` for
+    none; ``None`` when it is not one: not a string or a list of strings,
+    more than ``MAX_SCOPES`` names, or a name that is not one."""
+    from scrud_django.ui import renderer
+    from scrud_django.ui.renderer import scope_names
+
+    if isinstance(scope, (list, tuple)):
+        if not all(isinstance(s, str) for s in scope):
+            return None
+        scope = " ".join(scope)
+    if not isinstance(scope, str):
+        return None
+    chain = renderer.parse_scope_chain(scope)
+    if not chain and scope_names(scope):
+        return None  # names that are not a chain (``()`` is also no names)
+    return chain
 
 
 def _is_resource_view(view) -> bool:

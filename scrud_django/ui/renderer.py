@@ -333,10 +333,16 @@ def scope_chain_of(request) -> tuple[str, ...]:
 def parse_scope_chain(value: str | None) -> tuple[str, ...]:
     """The scope chain `value` names, as `scope_chain_of` reads it; ``()``
     when it is not one."""
-    names = [n for n in _SCOPE_SEPARATORS.split(value or "") if n]
+    names = scope_names(value)
     if len(names) > MAX_SCOPES or not all(_SCOPE_NAME.fullmatch(n) for n in names):
         return ()
     return tuple(names)
+
+
+def scope_names(value: str | None) -> list[str]:
+    """The names in `value`, split as a scope chain is (on whitespace and
+    commas), valid or not."""
+    return [n for n in _SCOPE_SEPARATORS.split(value or "") if n]
 
 
 def requested_mode_of(request) -> str | None:
