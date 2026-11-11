@@ -52,11 +52,18 @@
   the branch's effective items and reported by the new check
   `scrud_django_ui.W002` (a database check, a Warning); an invalid layer
   declaration is the check Error `scrud_django_ui.E002` and is left out. Layer
-  items are not rows and are not in the item lists.
-* Safe mode: `?ui-safe=1` renders from packaged layers, built-ins and the
-  default stylesheet only, ignoring every branch's stored items, and says so
-  in a notice on the page. It reveals nothing new and changes no
-  authorization.
+  items are not rows and are not in the item lists. Without a layer installed,
+  `W002` costs one query per database unless an item is named with a layer
+  prefix (an orphan of an uninstalled layer, which it still reports).
+* Safe mode: `?ui-safe=1` (or the header `Scrud-UI-Safe: 1`) renders from
+  packaged layers, built-ins and the default stylesheet only, ignoring every
+  branch's stored items, and says so in a notice on the page. A safe page marks
+  its frames and its `.scrud-branch-page` element with `data-scrud-safe="1"`,
+  and `scrud-ui.js` sends the header on that page's own requests (a frame's
+  `PUT`, the 412 reload, refreshes), so edits stay in safe mode. Safe mode is
+  render-only: what an embedded view reads as data (a list of UI items, the
+  studio's computed types) is the stored state. It reveals nothing new and
+  changes no authorization.
 * Computed, read-only resource types (GET only, other methods 405): an app can
   register a type whose content Python computes per request, with a schema,
   JSON-LD, an ETag and rendering through the cascade. Authorization stays with
@@ -64,18 +71,28 @@
 * Server-side embeds: a component can embed another resource URL rendered on
   the server as the same user (RBAC, workflow and masking apply), in a given
   scope chain and view mode, with depth and per-response count limits, and
-  cycles refused.
+  cycles refused. Without a `scope`, the embedded path's own `?ui-scope=`
+  applies.
 * JSON bodies from the browser for any method: `scrud-ui.js` can POST a
   collection (`data-scrud-json="form"`), send a fixed body
   (`data-scrud-json="fixed"`) and DELETE with JSON, keeping `If-Match`, the
-  CSRF token and the UI headers.
+  CSRF token and the UI headers. A write from inside a frame sends the frame's
+  ETag as `If-Match` only when it goes to the frame's own URL; otherwise only
+  the element's own `data-scrud-etag` (an empty one sends none).
 * Studio additions in `scrud_django.ui.studio`: a live preview that renders
   unsaved drafts of items layered over a branch, marks the nodes a rule
   wins or loses, and runs in an opaque-origin sandbox; and computed studio
   data, `ui-branch-items/<branch>/`, `ui-branch-status/<branch>/`,
   `ui-type-catalog/all/`, `ui-selectable-branches/mine/` and
   `ui-push-previews/<source>/?target=<name>` (what a push would change,
-  without writing), each listing only what the user may GET.
+  without writing), each listing only what the user may GET (a branch's
+  status names a published ancestor above its published root only when the
+  user may GET it). A packaged layer's items are public everywhere in the
+  studio: the inspector's rules, the live preview's mark, the push preview's
+  changes and conflicts read them with one check
+  (`scrud_django.ui.branches.reads.may_read_item`). Live-preview drafts are
+  render-only too: an embedded list of the branch's items lists the stored
+  item a draft replaces.
 
 ### Changed
 
@@ -89,7 +106,10 @@
   trusting everyone who can write to it: read the Security section.
 * A JSON list of UI items that names a branch (`Scrud-UI-Branch` header or
   `ui-branch` parameter) it may not show answers 400 (`ui-branch-unavailable`).
-* The UI's `Vary` header adds `Scrud-UI-Branch` and `Cookie`. `scrud:page`
+* With `scrud_django.ui` installed, the lists of `ResourceViewSetGenericFilter`
+  no longer read the UI's URL parameters (`ui-branch`, `ui-branch-confirm`,
+  `ui-scope`, `ui-mode`, `ui-safe`) as content filters, which emptied them.
+* The UI's `Vary` header adds `Scrud-UI-Branch`, `Scrud-UI-Safe` and `Cookie`. `scrud:page`
   gets a `css` list of the CSS file URLs; a custom page component should link
   them.
 * Setting, changing or removing a branch's prefix (publishing it at site
