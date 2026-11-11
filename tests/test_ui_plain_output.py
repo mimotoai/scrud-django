@@ -1,8 +1,8 @@
 """The plain app (no stored or packaged presentation in use, no JavaScript
 item, no scope, no requested mode) renders as it did before the studio's
 runtime features (develop at f43f1e8): the files in ``plain_output/`` are
-that commit's output for the same requests, normalized
-(`normalized`). The suite installs the ``layertest:`` layer
+that commit's output for the same requests, normalized (`normalized`), for
+each order a database stores JSON keys in (`golden`). The suite installs the ``layertest:`` layer
 (`tests.ui_layer`), inert by design: it changes none of this. The intended
 differences (the ``Vary`` header's new names, the array edit controls in
 edit mode) are asserted on their own."""
@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
+
+from scrud_django.models import Resource
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
@@ -47,8 +49,24 @@ def normalized(text):
     return re.sub(r"/todo-lists/(\d+)/", key, text)
 
 
+# The key order of a to-do list as written (the fixtures'), and as
+# PostgreSQL's jsonb and MySQL's JSON store it (by length, then bytes).
+WRITTEN_KEYS = ["title", "rbac_context", "items"]
+SORTED_KEYS = ["items", "title", "rbac_context"]
+
+
 def golden(name):
-    return (GOLDEN / f"{name}.html").read_text(encoding="utf-8")
+    """Develop's output `name` for this database. The rendering follows the
+    key order of the stored JSON (a type's schema properties, a resource's
+    content), which SQLite and MariaDB keep as written and PostgreSQL and
+    MySQL sort: `plain_output/` holds the first, `plain_output/sorted-keys/`
+    the second, both captured from f43f1e8. Which one applies is read from
+    a stored to-do list (each test has one)."""
+    stored = Resource.objects.filter(resource_type__slug="todo-lists").first()
+    keys = list(stored.content)
+    assert keys in (WRITTEN_KEYS, SORTED_KEYS), keys
+    folder = GOLDEN if keys == WRITTEN_KEYS else GOLDEN / "sorted-keys"
+    return (folder / f"{name}.html").read_text(encoding="utf-8")
 
 
 def get(url, **headers):
