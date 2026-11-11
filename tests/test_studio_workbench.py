@@ -18,6 +18,7 @@ from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
+from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, UI_CSS_TYPE_URI
 from scrud_django.ui.layers import layer_item
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
@@ -311,15 +312,30 @@ def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login)
     assert [d.within(settings) for d in deletes] == [True]
     others = [e for e in page.elements if e.tag == "form" and e is not form]
     assert others == [settings, page.one("data-studio-new-branch")]
-    # A branch the user may not GET: as ui-branches answers it.
+    # A branch the user may not GET: as ui-branches answers it for that
+    # user (alice may GET no branch in "bob": not found), and nothing of the
+    # branch shows, neither its name nor its label nor its items.
+    ResourceRegistration.update(
+        {**bobs.content, "label": "Label Only Bob Sees"}, "ui-branches", bobs.pk
+    )
+    store_item(
+        "ui-components",
+        "bobs",
+        "bob",
+        name="bobs-own-row",
+        engine="jinja2",
+        mode="view",
+        template="template only bob sees",
+    )
     When.http.get(
         reverse("ui-branches-detail", args=[bobs.pk]), HTTP_ACCEPT="application/json"
     )
     refused = Http.response.status_code
-    assert refused in (403, 404)
-    assert not Page(get_page(workbench_url(bobs), status=refused)).having(
-        "data-studio-workbench"
-    )
+    assert refused == 404
+    refused_page = get_page(workbench_url(bobs), status=refused)
+    assert not Page(refused_page).having("data-studio-workbench")
+    for secret in ("bobs", "Label Only Bob Sees", "template only bob sees"):
+        assert secret not in refused_page, secret
     get_page(reverse("ui-branches-detail", args=[999999]) + WORKBENCH, status=404)
 
 
