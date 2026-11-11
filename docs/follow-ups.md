@@ -713,26 +713,25 @@ three chained branches and assert that adding a branch adds no more than a
 constant number of queries; it grows with the branch count today.
 
 <a id="studio-own-item-existence"></a>
-## studio-own-item-existence: a studio write can reveal whether a branch has an override
+## studio-own-item-existence: a studio save can reveal whether a branch has an override
 
 `writes.own_item` finds the branch's own row of an item with a system read
 (the write database, so that an item just written is seen) before the write is
-dispatched. A user who may `GET` the branch but may not read its items
-therefore learns from the answer (404 "no row of its own" from `revert-item`,
-or which of 428 and 403 comes first from `save-item`) whether an override
-exists, where the resource view alone would answer 403 or 404 alike. It
-reveals an item's existence and name only, never its content, and only to
-someone already allowed to select the branch. Since `revert-item` accepts
-published branches, that includes them, `main` too, which every signed-in
-user may select: anyone signed in can tell whether `main` has an item of a
-given name.
+dispatched. A user who may `GET` the working branch but may not read its items
+therefore learns from `save-item`'s answer whether an override exists: with
+one the save is a `PUT` of it, without one a `POST`, and which of 428 and 403
+comes first can differ between the two, where the resource view alone would
+answer alike. It reveals an item's existence and name only, never its
+content, and only to someone already allowed to select the branch.
+(`revert-item` no longer does: it answers an own row the user may not read as
+a missing one, 404, before anything is dispatched; see
+`test_revert_reveals_no_row_the_user_may_not_read`.)
 
-Fix: check that the user may read the branch's items in its context before
-`own_item`, and answer as the view does when not. Test: in
+Fix: in `save_item`, treat an own row the user may not read as none, or
+answer as the view does when not, before choosing `POST` or `PUT`. Test: in
 `tests/test_studio_writes.py`, as a user with `GET` on the branch and none on its
-item types, `revert-item` of an item the branch overrides and of one it does
-not must answer the same status; today they differ (403 or 428 against 404).
-The same on `main`, for a user with no grant at all.
+item types, `save-item` (no `If-Match`) of an item the branch overrides and of
+one it does not must answer the same status.
 
 <a id="studio-replica-lag"></a>
 ## studio-replica-lag: the answer of new-component reads `wins` and `explanation` from the read database

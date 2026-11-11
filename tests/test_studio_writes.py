@@ -4,6 +4,7 @@ studio user's own rights (`studio.dispatch.call_view`), so that the studio
 adds no rights. These tests serve the API at ``/api/`` and the studio at
 ``/studio/`` (``tests.mounted_urls``)."""
 
+import json
 from unittest import mock
 
 import pytest
@@ -295,6 +296,53 @@ def test_revert_on_a_published_branch(admin_login):
         )
         Then.http.status_code_is(400)
         assert problem()["type"] == READ_ONLY
+
+
+@pytest.mark.django_db
+@test_context
+def test_revert_reveals_no_row_the_user_may_not_read(admin_login):
+    """A revert tells nothing of a branch's own rows the user may not GET:
+    an existing one is answered exactly as one that does not exist (404,
+    the same body), before If-Match is looked at, on a published branch
+    and a working one alike; nothing is dispatched."""
+    main_and_wip(admin_login)
+    make_branch("shop", "project-a", parent="main", prefix="/shop/")
+    _pk, etag = shop_override(admin_login)
+    Given.http.force_authenticate(admin_login)
+    When.http.post(
+        reverse("ui-components-list"),
+        data=component(name="row", template="<i>wip</i>", **WIP),
+        format="json",
+    )
+    Then.http.status_code_is(201)
+    # May select shop and wip (GET on branches), may not GET components.
+    user = assign_ui_role((UI_BRANCH_TYPE_URI,), "project-a")
+    grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    before = stored_state()
+    Given.http.force_authenticate(user)
+    with mock.patch(
+        "scrud_django.ui.studio.writes.call_view",
+        side_effect=AssertionError("dispatched"),
+    ):
+        for branch in ("shop", "wip"):
+            answers = set()
+            for name in ("row", "no-such-item"):
+                for headers in ({}, {"HTTP_IF_MATCH": etag}):
+                    response = studio(
+                        "revert-item",
+                        {"kind": "component", "branch": branch, "name": name},
+                        **headers,
+                    )
+                    Then.http.status_code_is(404)
+                    assert "HX-Trigger" not in response
+                    answers.add(
+                        (
+                            response["Content-Type"],
+                            json.dumps(response.json(), sort_keys=True),
+                        )
+                    )
+            assert len(answers) == 1, answers
+    assert stored_state() == before
 
 
 @pytest.mark.django_db

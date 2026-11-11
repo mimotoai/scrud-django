@@ -430,7 +430,11 @@
     var reason = "";
     if (!this.editable) {
       reason = "This branch is published: read-only. Changes reach it by a push from a working branch.";
-      if (item.own) reason += " Revert drops this branch's own row of the item.";
+      if (item.own && item.reverts_to) {
+        reason += " Revert drops this branch's own row: it then shows the " + item.reverts_to + " item.";
+      } else if (item.own) {
+        reason += " Delete removes the item from this branch, so from the live site.";
+      }
     } else if (content.deleted === true) {
       reason = "Deleted on this branch.";
     } else if (item.kind === "component" && content.engine !== "jinja2") {
@@ -447,7 +451,11 @@
     var source;
     if (item.isNew) source = "New on branch " + this.branch + ".";
     else if (item.own) source = "Changed on branch " + this.branch + ".";
-    else source = "Inherited from " + item.from + ". Saving makes an override on " + this.branch + ".";
+    else {
+      source = "Inherited from " + item.from + ".";
+      // Saving is refused on a published branch: it makes no override.
+      if (this.editable) source += " Saving makes an override on " + this.branch + ".";
+    }
     show(byId("studio-editor-source"), source);
     show(byId("studio-editor-reason"), reason);
     var area = byId("studio-editor-text");
@@ -457,8 +465,12 @@
     area.readOnly = !editable;
     byId("studio-save").hidden = !editable;
     // A published branch's own item can be reverted too: the one write the
-    // studio makes on a published branch, its way to repair one.
-    byId("studio-revert").hidden = !item.own;
+    // studio makes on a published branch, its way to repair one. With
+    // nothing beneath it the user may read (reverts_to null), the revert
+    // deletes the item: it says so.
+    var revert = byId("studio-revert");
+    revert.hidden = !item.own;
+    revert.textContent = item.reverts_to ? "Revert to inherited" : "Delete from " + this.branch;
     clear(byId("studio-editor-errors"));
     showDraft(draft);
   };
@@ -505,18 +517,27 @@
     return send(this.url.save, body, headers, this.reported("Saved " + item.name + ".", true));
   };
 
+  // Revert the branch's own row of the item. With nothing beneath it
+  // (reverts_to null) that deletes the item, from the live site on a
+  // published branch: asked first.
   Studio.prototype.revert = function () {
     var item = this.item;
     if (!item || !item.own) return Promise.resolve();
+    var done = "Reverted " + item.name + " to the " + item.reverts_to + " item.";
+    if (!item.reverts_to) {
+      var where = this.editable ? "this branch" : "the live site";
+      var question =
+        "Delete " + item.name + " from branch " + this.branch + "? Nothing is beneath it" +
+        " to show instead: the item is removed from " + where + ".";
+      if (typeof window.confirm === "function" && !window.confirm(question)) {
+        return Promise.resolve();
+      }
+      done = "Deleted " + item.name + " from " + this.branch + ".";
+    }
     var body = { kind: item.kind, branch: this.branch, name: item.name };
     if (item.kind === "stylesheet") body.applies_to = item.applies_to;
     var headers = item.etag ? { "If-Match": item.etag } : {};
-    return send(
-      this.url.revert,
-      body,
-      headers,
-      this.reported("Reverted " + item.name + " to the inherited item.")
-    );
+    return send(this.url.revert, body, headers, this.reported(done));
   };
 
   Studio.prototype.pull = function () {

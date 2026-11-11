@@ -259,10 +259,14 @@ def browse_url(slug: str, root: Branch | None, selection: Selection) -> str | No
 def read_item(request, branch: Branch, kind: str, name: str, target: str) -> dict:
     """The item of `kind` named `name` (a stylesheet: that applies to
     `target`) as `branch` shows it live, deletion markers included:
-    ``{kind, name, applies_to, own, from, etag, content}`` (``etag`` quoted,
-    as a header carries it; ``own``: it is `branch`'s own row, so a save is
-    a PUT with it as ``If-Match``). ``None`` when the branch shows none, or
-    one the user may not read: one answer for both."""
+    ``{kind, name, applies_to, own, from, reverts_to, etag, content}``
+    (``etag`` quoted, as a header carries it; ``own``: it is `branch`'s own
+    row, so a save is a PUT with it as ``If-Match``; ``reverts_to``, for an
+    own row: what the branch shows once it is deleted, ``"inherited"`` or
+    ``"packaged"``, or ``None`` when nothing the user may read is beneath,
+    as the self-hosted studio's items say, `computed._beneath`). ``None``
+    when the branch shows none, or one the user may not read: one answer
+    for both."""
     key = (name, target) if kind == "stylesheet" else (name,)
     rows = effective_rows(
         ITEM_KINDS[kind], Selection(branch=branch.name), include_deleted=True
@@ -272,13 +276,25 @@ def read_item(request, branch: Branch, kind: str, name: str, target: str) -> dic
             continue
         if not may_read_item(request, kind, pk, content):
             return None
+        own = branch_of(content) == branch.name
         return {
             "kind": kind,
             "name": name,
             "applies_to": target,
-            "own": branch_of(content) == branch.name,
+            "own": own,
             "from": branch_of(content),
+            "reverts_to": _reverts_to(request, kind, branch, key) if own else None,
             "etag": f'"{etag}"' if etag else None,
             "content": content,
         }
     return None
+
+
+def _reverts_to(request, kind, branch: Branch, key) -> str | None:
+    """What `branch` shows of the item of `kind` with `item_key` `key` once
+    its own row is deleted, as the self-hosted studio's items say it
+    (`computed._beneath`): ``"inherited"``, ``"packaged"``, or ``None``."""
+    # computed imports this module: imported here, not at the top.
+    from scrud_django.ui.studio.computed import _beneath
+
+    return _beneath(request, kind, branch, branches()).get(key)

@@ -252,7 +252,10 @@ function fetch(url, init) {
   return Promise.resolve(answer);
 }
 
-const window = {};
+// window.confirm records its question and answers from `confirm` (true
+// when none are left).
+const confirms = [], answers = (input.confirm || []).slice();
+const window = {confirm: (q) => { confirms.push(String(q)); return answers.length ? answers.shift() : true; }};
 const ctx = vm.createContext({
   window, document, fetch, URLSearchParams, CustomEvent: Event_, Event: Event_,
   console, setTimeout, WeakSet,
@@ -273,7 +276,7 @@ const saved = () => document.body.dispatchEvent(new Event_('scrud-studio-saved',
 const out = {};
 const finish = () => {
   out.calls = calls; out.created = created; out.htmlWrites = htmlWrites;
-  out.errors = errors; out.srcSets = srcSets;
+  out.errors = errors; out.srcSets = srcSets; out.confirms = confirms;
   console.log(JSON.stringify(out));
 };
 (async () => {
@@ -285,12 +288,14 @@ SCENARIO
 """
 
 
-def run_studio(page, preview, routes, scenario):
+def run_studio(page, preview, routes, scenario, confirm=()):
     """Run `scenario` (JS, inside an async function) on the parsed `page`
     and `preview` HTML with `routes` ``[{method, url, status, body,
     headers, delay}]`` answering ``fetch`` (several for one URL answer in
-    turn, the last again and again; ``delay`` ms later when given). Returns what the scenario put in ``out``, with
-    ``calls``, ``created``, ``htmlWrites``, ``errors`` and ``srcSets``."""
+    turn, the last again and again; ``delay`` ms later when given), and
+    `confirm` answering ``window.confirm`` in turn (then true). Returns what the scenario put in ``out``, with
+    ``calls``, ``created``, ``htmlWrites``, ``errors``, ``srcSets`` and
+    ``confirms`` (the questions asked)."""
     require_node()
     script = HARNESS.replace("SCENARIO", scenario)
     done = subprocess.run(
@@ -298,7 +303,12 @@ def run_studio(page, preview, routes, scenario):
         capture_output=True,
         text=True,
         input=json.dumps(
-            {"page": tree(page), "preview": tree(preview), "routes": routes}
+            {
+                "page": tree(page),
+                "preview": tree(preview),
+                "routes": routes,
+                "confirm": list(confirm),
+            }
         ),
     )
     assert done.returncode == 0, done.stderr
@@ -386,12 +396,15 @@ NO_OPTIONS = {"matches": [], "inside_type": None, "where": [], "applies_to": [""
 
 
 def item(template, engine="jinja2", own=True, etag='"e1"', name="row"):
+    """The item endpoint's JSON for a component: wip's own (over main's,
+    which a revert shows again), or main's, inherited."""
     return {
         "kind": "component",
         "name": name,
         "applies_to": "",
         "own": own,
         "from": "wip" if own else "main",
+        "reverts_to": "inherited" if own else None,
         "etag": etag,
         "content": {
             "name": name,
@@ -761,6 +774,7 @@ def test_published_branch_offers_revert_for_its_own_items_only(ui_alice_login):
           readOnly: byId('studio-editor-text').readOnly,
           saveHidden: byId('studio-save').hidden,
           revertHidden: byId('studio-revert').hidden,
+          label: text('studio-revert'),
           source: text('studio-editor-source'),
           reason: text('studio-editor-reason'),
         });
@@ -773,8 +787,14 @@ def test_published_branch_offers_revert_for_its_own_items_only(ui_alice_login):
     )
     assert out["own"]["readOnly"] is True and out["own"]["saveHidden"] is True
     assert out["own"]["revertHidden"] is False
+    # Main has the item beneath (reverts_to "inherited"): a revert, which
+    # asks nothing.
+    assert out["own"]["label"] == "Revert to inherited"
+    assert out["confirms"] == []
     assert "Changed on branch shop" in out["own"]["source"]
     assert "read-only" in out["own"]["reason"]
+    assert "Revert" in out["own"]["reason"]
+    assert "Saving" not in out["own"]["source"] + out["own"]["reason"]
     (revert,) = [c for c in out["calls"] if c["url"].endswith("revert-item")]
     assert revert["method"] == "POST"
     assert revert["headers"]["If-Match"] == '"s1"'
@@ -786,7 +806,62 @@ def test_published_branch_offers_revert_for_its_own_items_only(ui_alice_login):
     assert out["after"]["readOnly"] is True and out["after"]["saveHidden"] is True
     assert out["after"]["revertHidden"] is True
     assert "Inherited from main" in out["after"]["source"]
+    # Saving is refused on a published branch: the editor does not offer it.
+    assert "Saving" not in out["after"]["source"] + out["after"]["reason"]
+    assert "read-only" in out["after"]["reason"]
     assert "Reverted row" in out["message"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_own_item_with_nothing_beneath_is_deleted_after_a_confirm(
+    ui_alice_login,
+):
+    """An own item whose deletion shows nothing in its place (``reverts_to``
+    null: nothing beneath, or nothing the user may read) is labelled "Delete
+    from <branch>", and asks first: from a published branch, that it is
+    removed from the live site; from a working branch, from that branch.
+    Declined, nothing is sent; confirmed, the revert is sent as a revert
+    is."""
+    setup_wip(ui_alice_login)
+    make_branch("shop", "alice", prefix="/shop/")
+    script = r"""
+        click(byId('studio-changes').querySelector('[data-studio-open]'));
+        await settle();
+        out.label = text('studio-revert');
+        out.reason = text('studio-editor-reason');
+        out.hidden = byId('studio-revert').hidden;
+        click(byId('studio-revert'));
+        await settle();
+        out.declined = calls.filter((c) => c.url.endsWith('revert-item')).length;
+        click(byId('studio-revert'));
+        await settle();
+        out.message = text('studio-message');
+        """
+    saved = {"HX-Trigger": "scrud-studio-saved"}
+    for branch, where in (("shop", "live site"), ("wip", "branch wip")):
+        put_item("ui-components", "row", "<u>{{ value }}</u>", branch, "alice")
+        added = {**item("<u>x</u>", etag='"a1"'), "from": branch}
+        added["reverts_to"] = None
+        out = run_studio(
+            studio_page(branch=branch),
+            preview_page(branch=branch),
+            [
+                route("GET", item_url("row", branch=branch), body=added),
+                route("POST", reverse("scrud-studio:revert-item"), 204, None, saved),
+            ],
+            script,
+            confirm=[False, True],
+        )
+        assert out["hidden"] is False
+        assert out["label"] == f"Delete from {branch}"
+        assert len(out["confirms"]) == 2
+        assert "row" in out["confirms"][0] and where in out["confirms"][0]
+        assert out["declined"] == 0
+        (revert,) = [c for c in out["calls"] if c["url"].endswith("revert-item")]
+        assert revert["headers"]["If-Match"] == '"a1"'
+        assert revert["body"] == {"kind": "component", "branch": branch, "name": "row"}
+        assert "Deleted row" in out["message"]
 
 
 @pytest.mark.django_db

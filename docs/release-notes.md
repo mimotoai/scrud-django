@@ -222,7 +222,11 @@
   `DELETE` of the branch's own row of the item through its resource view,
   with `If-Match` required and the API's checks and grants, no others. The
   strip lists a published branch's own items, and the editor shows them
-  read-only with Revert and no Save; an inherited item has none. Every other
+  read-only with Revert and no Save; an inherited item has none. The
+  editor's item (`GET item`) gains `reverts_to`, as `ui-branch-items` has it:
+  with nothing readable beneath, the control is "Delete from `<branch>`" and
+  asks first. A revert answers an own row the user may not `GET` as a
+  missing one (404), so that it reveals nothing. Every other
   studio write on a published branch (`save-item`, `new-component`, `pull`,
   `push`, drafts in a live preview) is still refused with
   `ui-studio-branch-read-only`.

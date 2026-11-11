@@ -322,6 +322,43 @@ def test_published_branch_lists_its_own_items_to_revert(ui_alice_login):
 
 @pytest.mark.django_db
 @test_context
+def test_item_says_what_a_revert_shows(studio_layer, ui_alice_login):
+    """``reverts_to`` of the editor's item: what the branch shows once its
+    own row is deleted, ``inherited`` (its parent's) or ``packaged`` (a
+    layer's, on a root), when the user may read it; ``null`` when nothing
+    is beneath, when what is beneath is unreadable, and for an item the
+    branch does not own. The editor labels its Revert or Delete with it."""
+    setup_branches(ui_alice_login)
+    # wip's own CSS over main's "base", which alice may not read (CSS in "").
+    store_item("ui-css", "wip", "alice", name="base", css="p { color: blue }")
+    # main's own override of a packaged studio layer component.
+    store_item(
+        "ui-components",
+        "main",
+        "",
+        name="studio:items",
+        engine="jinja2",
+        mode="view",
+        template="<i>main's</i>",
+    )
+    Given.http.force_authenticate(ui_alice_login)
+    url = reverse("scrud-studio:item")
+
+    def reverts_to(branch, kind, name):
+        When.http.get(url, {"branch": branch, "kind": kind, "name": name})
+        Then.http.status_code_is(200)
+        return Http.response.json()["own"], Http.response.json()["reverts_to"]
+
+    assert reverts_to("wip", "component", "row") == (True, "inherited")
+    assert reverts_to("main", "component", "studio:items") == (True, "packaged")
+    assert reverts_to("wip", "css", "site") == (True, None)  # nothing beneath
+    assert reverts_to("wip", "css", "base") == (True, None)  # unreadable beneath
+    assert reverts_to("wip", "component", "head") == (False, None)  # inherited
+    assert reverts_to("main", "component", "head") == (True, None)  # main's own
+
+
+@pytest.mark.django_db
+@test_context
 def test_item_reads_the_effective_item_the_user_may_read(ui_alice_login):
     row = setup_branches(ui_alice_login)
     Given.http.force_authenticate(ui_alice_login)

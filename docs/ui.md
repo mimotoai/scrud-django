@@ -1256,7 +1256,12 @@ A click on a node opens its winning component in the editor, when it is a
 stored one you may read; the branch strip opens any item the branch changed.
 **Revert** shows for an item that is the branch's own row, on a working or a
 published branch alike, and sends the ETag the editor read as `If-Match`; an
-item the branch inherits has none.
+item the branch inherits has none. It is labelled "Revert to inherited" when
+the branch would then show an item the user may read (its parent's, or on a
+root a packaged layer's: the item's `reverts_to`); otherwise it is "Delete
+from `<branch>`" and asks first, saying that the item is removed from the
+branch (from the live site, on a published branch). On a published branch the
+editor is read-only and says so, with no Save.
 After a save or a revert the editor reopens the item it was showing, not the
 node's winner; after **New component** it opens the node's winner, the new
 component when its rule wins. A save refused with 412 (the item changed since
@@ -1571,9 +1576,13 @@ for a bad field, and the resource views' (403, 400, 412) as they are.
 
 The item `{kind, name, applies_to?}` (query parameters; `kind` is `component`,
 `stylesheet` or `css`) as `branch` (default `main`) shows it live, for the
-editor: `{kind, name, applies_to, own, from, etag, content}`, with the ETag
-header. `own` says that it is the branch's own row (a save is then a `PUT`);
-`from` is the branch the row comes from. Deletion markers are shown. 404 when
+editor: `{kind, name, applies_to, own, from, reverts_to, etag, content}`,
+with the ETag header. `own` says that it is the branch's own row (a save is
+then a `PUT`); `from` is the branch the row comes from. `reverts_to`, for an
+own row, is what the branch shows once a revert deletes it: `"inherited"` (its
+parent's item), `"packaged"` (a packaged layer's, on a root) or `null` when
+nothing the user may read is beneath, as the self-hosted studio's
+`ui-branch-items` entries say it; `null` for an item the branch does not own. Deletion markers are shown. 404 when
 the branch shows no such item or one the user may not read, alike. 400
 `ui-branch-unavailable`.
 
@@ -1603,8 +1612,10 @@ needs the grant the API's `DELETE` of that row needs, in the row's context
 **`If-Match` is
 required**: the studio sends it as given, so without one the answer is 428 and
 a stale one gets 412; a revert must not silently delete a newer edit on a
-shared branch. 404 when the branch has no row of its own for the item.
-Errors besides: 400 `ui-branch-unavailable`, 400 for a bad field, and the
+shared branch. 404 when the branch has no row of its own for the item, and
+the same 404 for one the user may not `GET`, before `If-Match` is looked at
+and before anything is dispatched: a revert tells nothing of a row the user
+may not read. Errors besides: 400 `ui-branch-unavailable`, 400 for a bad field, and the
 view's (403, 412, 428) as they are.
 
 #### `POST pull`

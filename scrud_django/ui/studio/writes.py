@@ -40,6 +40,7 @@ from scrud_django.ui.branches.model import (
     branch_of,
     item_key,
 )
+from scrud_django.ui.branches.reads import may_read_item
 from scrud_django.ui.branches.selection import (
     branch_content,
     may_get_stored,
@@ -135,14 +136,17 @@ def revert_item(request, body) -> HttpResponse:
     applies_to?}``, so that the branch shows its parent's again: the undo,
     and "take theirs" for a conflict. The branch may be a published one
     (``main`` included, whose own row of an item is the item itself): the
-    one studio write there. 404 when the branch has none. The request's
-    ``If-Match`` is sent as it is, with no fallback (ruling S10): without
-    one the view answers 428, and a stale one 412, so a revert never
-    deletes an edit its author has not seen."""
+    one studio write there. 404 when the branch has none, or one the user
+    may not read (`may_read_item`, as the API's list filters it): one
+    answer for both, before anything is dispatched, so that a revert tells
+    nothing of a row the user may not GET. The request's ``If-Match`` is
+    sent as it is, with no fallback (ruling S10): without one the view
+    answers 428, and a stale one 412, so a revert never deletes an edit its
+    author has not seen."""
     kind, name, target = _item(body)
     branch = _selected_branch(request, body.get("branch"))
     own = own_item(kind, branch, name, target)
-    if own is None:
+    if own is None or not may_read_item(request, kind, own.pk, own.content):
         raise NotFound(f"Branch {branch.name!r} has no row of its own for this item.")
     return _passed(
         call_view(
