@@ -1492,7 +1492,11 @@ answers only what its user may `GET` as JSON: a branch the user may select
 (else 404, the same for every cause), and an item or conflict on a row the
 item's own read check allows. Packaged [layer](#packaged-ui-layers) items are
 public. The bootstrap studio's strip and picker read the same functions
-(`scrud_django.ui.studio.page`), so the two agree.
+(`scrud_django.ui.studio.page`), so they agree on the items, changes and
+branches, but not on conflicts: the strip lists every conflict a pull recorded
+on the branch (its `conflicts` field, which a user who may GET the branch reads
+anyway), while the computed types list only conflicts on the branch's own
+rows the user may read (and add its layer conflicts).
 
 | Path | Type IRI | Content |
 |---|---|---|
