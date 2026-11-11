@@ -1112,6 +1112,11 @@ client of the resource API: every write goes through the resource viewsets
 in-process, as the signed-in user, so scoped RBAC, the `base` checks and
 versions apply as they do for a direct API call. It adds no rights.
 
+This is the *bootstrap studio*: its pages are package templates, not UI
+items, so nothing stored changes it. The [self-hosted studio](#self-hosted-studio)
+is built from UI items on the same API, and the bootstrap studio stays as its
+way out.
+
 ### Setup
 
 Add the app after `scrud_django.ui` (a system check fails without it) and
@@ -1220,8 +1225,8 @@ branch").
 
 ### The studio API
 
-The studio page is built on a JSON API, and a later self-hosted studio would
-use the same endpoints. Paths are relative to where you include the URLs.
+The studio page is built on a JSON API, which the
+[self-hosted studio](#self-hosted-studio) uses too. Paths are relative to where you include the URLs.
 A studio write calls the resource viewsets in-process (`call_view`), not
 through a new HTTP request, so the site's middleware does not run for that
 inner call: a middleware-only check on the API's URLs (an IP allowlist on
@@ -1287,8 +1292,8 @@ SAMEORIGIN`.
 
 The live preview: what a branch would show with unsaved drafts of its items,
 or what a branch will show after a push, with the matches of one rule marked.
-It is the preview a self-hosted studio's workbench shows while its author
-types. It is a `POST` because it carries a body, and it never writes: drafts
+It is the preview the [self-hosted studio](#self-hosted-studio)'s workbench
+shows while its author types. It is a `POST` because it carries a body, and it never writes: drafts
 are layered over the branch for one render and never stored.
 
 The body is form-encoded (`application/x-www-form-urlencoded`) with one field,
@@ -1842,118 +1847,39 @@ the author applies or proposes it. It computes the same plan the push writes
   the push is. It does not check the grants the
   push's writes need: applying it checks them (403 `ui-push-forbidden`).
 
-## Security
+## Self-hosted studio
 
-* **Viewing a branch means trusting everyone who can write to it.** There is no
-  separate trusted role: writes are authorized by scoped RBAC in the context of
-  the branch (see [Authorizing contexts](#authorizing-contexts)), so trust is
-  per RBAC context. Whoever may write components, CSS or JavaScript on a branch controls
-  the markup of every page that shows it. A component can carry client
-  scripts, and they run in the page with the viewer's rights. A user with write
-  grants in a personal branch's context could send a link to a colleague with
-  broader rights. Untrusted authors are phase 3.
-* The mitigations: a viewer sees only the branches they may GET; the banner
-  always names a working branch, and the server renders it outside stored
-  components; a link that would switch the viewer to a working branch asks first
-  (confirmation, with a token only the server can issue for that viewer, which
-  needs `CsrfViewMiddleware`); and the CSP below blocks inline scripts. The
-  confirmation is a click on a page the server renders, so it holds only while
-  other sites cannot frame that page and steer the click (clickjacking): keep
-  the CSP's `frame-ancestors` (below), or Django's `XFrameOptionsMiddleware`
-  (`X-Frame-Options: DENY` by default). `frame-ancestors 'self'` still lets
-  the site's own pages, a branch's components among them, frame it; `'none'`
-  (or `DENY`) does not. The
-  banner is not a guarantee: a branch's CSS, or a page component that wraps
-  its body in a hidden element, can hide it (see the follow-up
-  [ui-banner-hideable](follow-ups.md#ui-banner-hideable)). Trust the writers
-  of the branches you let people browse.
-* A branch never changes what a viewer may read or write through the API's
-  views: under a prefix the same views answer with the same checks. A prefix
-  does add one: its URLs need GET on its branch. So publishing a prefix can
-  put URLs behind a branch's grants, and is site-level: it needs PUT on
-  `ui-branches` in the context `""` (see [Prefixes](#prefixes)), and a prefix
-  that would hide the project's own URLs, overlap another or lie under the
-  API's is refused. Grant it to the site's administrators only. A mount that
-  hides a field is presentation, not access control.
-* Stored Jinja templates run in Jinja's sandbox; stored Django templates run on
-  a restricted engine (no loaders, no tag libraries), which is not a sandbox.
-  Both escape everything they are given.
-* Components are presentation, not access control. A component is only given
-  what the viewer may read, so it cannot reveal more; but hiding a field in a
-  component does not keep it from the viewer, who can read it as JSON.
-* The page loads only its own scripts. Recommended Content-Security-Policy:
-  `script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self';
-  frame-ancestors 'self'`. `scrud-ui.js` sets htmx's `selfRequestsOnly`.
-  `script-src 'self'` blocks inline scripts, those in components included:
-  ship a component's scripts as static files, or have the site allow them with
-  CSP nonces or hashes.
-* The vendored htmx is **2.0.4** (`scrud_ui/htmx.min.js`), sha384
-  `HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+`.
+The self-hosted studio is a studio made of the UI itself: its pages are the
+UI types' own resources (a branch, a component, a stylesheet, a push, a
+version) rendered through the cascade in the scope `studio`, and styled by
+the packaged layer of `scrud_django.ui.studio`. Since the studio's look is UI
+items like any other, an author edits the studio with the studio, on a
+working branch, and promotes the change as any other. It is built on runtime
+features this page describes ([embeds](#embeds),
+[computed resource types](#computed-resource-types),
+[safe mode](#safe-mode), the requested view mode of
+[Modes, editing and the write path](#modes-editing-and-the-write-path)), on
+the [studio API](#the-studio-api) (the live preview, `explain`, the new rule)
+and on the [studio data](#studio-data-as-computed-resources). Like the
+[bootstrap studio](#studio), it adds no rights: every write is an ordinary
+request to a resource view, which makes its own checks, and a control is shown
+only where the data offers its action. The design is in
+`docs/superpowers/specs/2026-11-10-ui-self-hosted-studio-design.md`.
 
-## The to-do demo
+Two branches are at work on a studio page:
 
-`demo/` includes a seed command that creates users, a to-do list, and the
-components and stylesheets that render it (a detail page with editable rows, a
-compact sidebar list, and a page with a layout), and four branches: the
-published `admin` branch at `/manage/` (with an extra component and its own CSS),
-the published `customer` branch at `/todo/` (with its own CSS), and a working
-branch `testing-admin` over `admin`, and a working branch `alice-wip` over
-`testing-admin` for the studio. It also seeds the self-hosted studio's tree: the
-published root `studio` at `/workbench/` (context `ui-studio`, named by
-`SCRUD_UI_STUDIO_BRANCH = "studio"` in the demo's settings) and its working
-branch `studio-wip` (context `ui-studio-wip`). The demo adds
-`PublishedBranchMiddleware` to its settings. The admin prefix is `/manage/`, not
-`/admin/resources/`, because Django's admin has a catch-all route under
-`/admin/`, which a prefix there would hide.
+- **S** is the branch the request selects, as for any page (the prefix, a
+  header, the parameter or the cookie; see [Browsing](#browsing)): normally the
+  studio root under its prefix. It decides how the studio looks.
+- **T** is the branch whose data is shown: the `ui-branches` resource rendered
+  as the workbench, and the branch named in the URL of each studio resource
+  the workbench embeds. It is any branch the user may `GET`, in any tree.
 
-```bash
-cd demo
-uv run python manage.py migrate
-uv run python manage.py seed_todo_demo
-uv run python manage.py runserver
-```
+Normally S is the published studio and T an author's working branch. The
+layer's components and scripts never name S: they never set
+`Scrud-UI-Branch`, and `scrud-ui.js` keeps sending the page's own branch.
 
-Sign in at `/api-auth/login/` and open `/api/todo-lists/` with a browser (or
-use HTTP Basic auth). The users are `owner`/`owner` (reads and edits the list),
-`reader`/`reader` (reads it) and `author`/`author` (writes the UI components
-and stylesheets); these passwords are for the demo only. `author` writes the UI
-in the four branches' contexts (`ui-admin`, `ui-customer`, `ui-testing`,
-`ui-alice`) and may open both prefixes. For the studio's tree, `author` may GET
-the `studio` root, write the UI items and `ui-pushes` in `ui-studio-wip`, and
-push into `studio` (it holds `ui-pushes` and the item writes a push applies in
-`ui-studio`: applying a push needs the grants a direct write would, so it can
-also write items there directly); `owner` holds PUT on `ui-branches` in `""`,
-the grant that publishing a prefix needs; `reader` may open `/todo/` (it may GET
-the `customer` branch) and gets a 403 at `/manage/`; `owner` may open `/todo/`
-too. To try the flow: as `author`, write a component on `testing-admin` (a POST
-of a `ui-components` item with `"branch": "testing-admin"` and
-`"rbac_context": "ui-testing"`), browse
-`/manage/todo-lists/<id>/?ui-branch=testing-admin` (confirm the switch), then
-POST a `ui-pushes` item with `source` `testing-admin`, `target` `admin`,
-`rbac_context` `ui-admin` and `state` `applied`.
-
-The command prints the self-hosted studio's workbench URLs, as `author`:
-`/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`, for `alice-wip`
-and for `studio-wip`.
-
-The demo also includes the studio at `/studio/`. Sign in at `/api-auth/login/` as
-`author`, open `/studio/types/todo-lists/`, pick `alice-wip`, click an item in the
-preview, write a "New component for this node" (choose the `row` scope under
-"where", so the rule is as specific as the existing `row` rules), then push to
-`testing-admin` and browse `/manage/todo-lists/<id>/?ui-branch=testing-admin`.
-
-Known limitations of phase 1 are recorded in the [follow-ups](follow-ups.md),
-under the `ui-` names.
-
-## Self-hosted studio: setup
-
-The bootstrap studio above is joined by a studio hosted by the UI itself: its
-pages are UI-type resources rendered through the cascade, styled by the
-studio's packaged layer, so an author can edit the studio with the studio. It
-uses the runtime features described in this chapter (embeds, computed resource
-types, safe mode, drafts in the live preview). The design is in
-`docs/superpowers/specs/2026-11-10-ui-self-hosted-studio-design.md`; this
-section grows with it.
+### Setting up the self-hosted studio
 
 **The layer.** Installing `scrud_django.ui.studio` (as in [Setup](#setup))
 installs its packaged UI layer, prefix `studio:`
@@ -1964,60 +1890,50 @@ the component `studio:page`), so a page without `?ui-scope=studio` renders as
 before. `studio:page` keeps what every page needs (the CSRF meta tag, both
 static scripts, the CSS and JS items' links, and the chrome) and wraps the body
 in `<div class="studio" data-studio>`. The layer's CSS item `studio:studio`
-and JS items `studio:studio` (order 0), `studio:rules` (order 1, the
-[rule editor](#the-rule-editor)'s), `studio:inspector` (order 2, the
-[preview pane and the inspector](#the-preview-pane-and-the-inspector)) and
-`studio:promote` (order 3, [promote and push pages](#promote-and-push-pages))
-and `studio:branch` (order 4, the
-[branch settings](#history-restore-and-branch-settings)), the last four using
-the API the first sets up, are effective on every branch, so
-every page links them: every selector of the CSS is under a `.studio` class or a `[data-studio…]` attribute, and each
-script does nothing unless the page has a `[data-studio-workbench]` element,
-with one exception: on a push's page (a `[data-studio-push]` element, see
-[Promote and push pages](#promote-and-push-pages)) `studio:promote` stops the
-`change` of the push's state input, and does nothing else. No layer component has an inline script or
-an event handler attribute, so a `script-src 'self'` policy works. A branch
-overrides any of these items by name, as it does any layer item.
+and JS items `studio:studio` (order 0, [the workbench](#the-workbench)'s),
+`studio:rules` (order 1, [the rule editor](#the-rule-editor)'s),
+`studio:inspector` (order 2,
+[the preview pane and the inspector](#the-preview-pane-and-the-inspector)),
+`studio:promote` (order 3, [promote and push records](#promote-and-push-records))
+and `studio:branch` (order 4, [branch settings](#branch-settings)), the last
+four using the API the first sets up, are effective on every branch, so every
+page links them: every selector of the CSS is under a `.studio` class or a
+`[data-studio…]` attribute, and each script does nothing unless the page has a
+`[data-studio-workbench]` element, with one exception: on a push's page (a
+`[data-studio-push]` element) `studio:promote` stops the `change` of the
+push's state input, and does nothing else. No layer component has an inline
+script or an event handler attribute, so a `script-src 'self'` policy works. A
+branch overrides any of these items by name, as it does any layer item (see
+[Editing the studio](#editing-the-studio)).
 
 **The studio root.** The studio is served from a published branch, the
-*studio root*: a root branch with a prefix, which the setting names.
+*studio root*: a root branch (no parent) with a prefix, which a setting names.
 
 ```python
 SCRUD_UI_STUDIO_BRANCH = "studio"  # default: None
 ```
 
-`scrud_django.ui.studio.studio_branch()` reads it. Studio pages are always in
-the scope `studio` (their URLs carry `?ui-scope=studio`); the studio root's
-own workbench is its `ui-branches` detail under its prefix, for example
+`scrud_django.ui.studio.studio_branch()` reads it. Make it a root of its own,
+not a branch of `main`'s tree, with its own working branches: CSS and JS items
+apply to every page of a branch, so under `main`'s tree the app's CSS would
+restyle the studio and the app's JS would run on the studio's pages, in the
+sessions of the people who publish (see [Editing the studio](#editing-the-studio)).
+Grant its context to the studio's authors as for any branch: `GET` on the root
+(and its versions, for its history), and, to push into it, `ui-pushes` and the
+item writes a push applies there.
+
+Studio pages are always in the scope `studio` (their URLs carry
+`?ui-scope=studio`); the studio root's own workbench is its `ui-branches`
+detail under its prefix, for example
 `/studio-root/ui-branches/3/?ui-scope=studio&ui-mode=view`. A workbench URL
 also requests view mode (`ui-mode=view`): the workbench is a view of its
 branch, and a user who may `PUT` the branch would otherwise get the branch's
 edit form, in which the view-mode workbench component is not used (and a
 requested view mode leaves out the frame's Delete button).
 
-**The studio links.** When the studio app is installed, every page of the
-seven UI types (`ui-components`, `ui-stylesheets`, `ui-branches`,
-`ui-branch-versions`, `ui-pushes`, `ui-css`, `ui-js`, lists and details) and of
-the studio's computed types carries, after the banner and the safe mode
-notice:
-
-```html
-<nav class="scrud-studio-links">
-  <a href="/studio-root/ui-branches/3/?ui-scope=studio&amp;ui-mode=view">Studio</a>
-  <a href="/api/ui-components/9/?ui-safe=1">Safe mode</a>
-  <a href="/studio/">Bootstrap studio</a>
-</nav>
-```
-
-(on one line, without the whitespace). *Studio* links to the studio root's
-workbench; it is left out when `SCRUD_UI_STUDIO_BRANCH` is unset, names no
-stored branch, or names a branch with no prefix. *Safe mode* is the current
-URL with `ui-safe=1` (its other parameters kept). *Bootstrap studio* is the
-bootstrap studio's types page (`scrud-studio:types`), left out when the project
-does not include the studio's URLs. The links are server chrome, like the
-banner: a page component that leaves them out is replaced by the built-in page.
-So an author who breaks the studio's own components can still reach it in safe
-mode, or in the bootstrap studio. A fragment (an htmx request) has no links.
+The demo seeds such a tree: the root `studio` at `/workbench/` (context
+`ui-studio`) and its working branch `studio-wip` (context `ui-studio-wip`); see
+[The to-do demo](#the-to-do-demo).
 
 ### The workbench
 
@@ -2033,8 +1949,7 @@ component `studio:workbench`, which renders:
   data-studio-branch="<T>" data-studio-published="true|false">`; T is
   published when it is `main` or its content has a `prefix`;
 - a top bar with T's name and the Items, Editor and Preview toggles;
-- "Branch settings" and "New branch" (see
-  [History, restore and branch settings](#history-restore-and-branch-settings));
+- "Branch settings" and "New branch" (see [Branch settings](#branch-settings));
 - a notice (`data-studio-notice`, `role="alert"`, hidden until a write is
   refused);
 - three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`;
@@ -2072,9 +1987,8 @@ holds:
 counts (`data-studio-changed`, `data-studio-conflict-count`), Pull
 (`actions.pull`, only when offered), "Browse app on this branch" when
 `browse_url` is set, a "Promote to <target>…" panel per `actions.promote`
-entry, T's pushes (see [Promote and push pages](#promote-and-push-pages))
-and T's history (see
-[History, restore and branch settings](#history-restore-and-branch-settings)).
+entry, T's pushes (see [Promote and push records](#promote-and-push-records))
+and T's history (see [History and restore](#history-and-restore)).
 Its root carries the studio's `endpoints` as JSON (`data-studio-endpoints`),
 and `published` and `may_publish` as `data-studio-published` and
 `data-studio-may-publish` (`true` or `false`). `browse_url` is linked as it is: it
@@ -2369,7 +2283,11 @@ Under it, on a working branch T (none at all on a published T):
   the items, the strip, the preview and the explanation are fetched again; a
   refusal shows the server's text under the form.
 
-### Promote and push pages
+### Promote and push records
+
+Changes leave a working branch as everywhere else: by a push into an
+ancestor (see [Pushing and restoring](#pushing-and-restoring)). The workbench
+reviews a push before it is made, and shows the push records that result.
 
 **Promote panels.** The strip has one "Promote to <target>…" control per
 entry of T's `actions.promote` (the parent first, then the ancestors in
@@ -2464,7 +2382,7 @@ server's message and the submitted state ([Refused writes](#refused-writes)).
 An applied push is a record: no form, no preview. A user who may only read
 the push gets the view: no form, no Save.
 
-### History, restore and branch settings
+### History and restore
 
 **History.** The strip lists T's `versions` (`ui-branch-status`'s latest 20
 the user may read, newest first) under `<details class="studio-versions">`:
@@ -2497,7 +2415,9 @@ as the version's JSON lists them. It has no write control: its hint says to
 restore it from the history of the workbench, which is still open in the
 tab the link came from.
 
-**Branch settings.** The workbench has a "Branch settings" panel
+### Branch settings
+
+The workbench has a "Branch settings" panel
 (`<details data-studio-branch-panel>`) that embeds T's own resource,
 `resource.href`, in the scope `studio studio-branch` (a different scope
 chain from the workbench's, so no cycle), in the user's own mode, or in view
@@ -2561,3 +2481,235 @@ the new branch as `studio:branch-created` renders it (the layer's rule for
 workbench; a refusal (a taken name, a parent the user may not `GET`) shows
 the server's notice there. On success the panes are fetched again, as after
 any write from the workbench.
+
+### Editing the studio
+
+The studio is drawn from, bottom to top:
+
+1. **the package**: the `scrud:` built-ins, the default stylesheet and the
+   studio layer, which no stored item can break;
+2. **the studio root** (`studio` in the demo) and the branches published
+   under it: overrides of studio items live there, as any UI item does;
+3. **S**, the branch the studio renders itself from;
+4. **T**, the branch being edited and previewed.
+
+**The studio's own tree.** Under the studio root's prefix a page links the
+studio root's CSS and JS items and the layers' (`studio:studio`), never
+`main`'s: the app's CSS and JS don't load under the studio's prefix. The
+workbench there still lists, edits and previews any branch the user may
+`GET`, in any tree, as T: the branch shown is data, not the page's
+presentation. The layer sits under every root, so a UI-type page opened at
+the API's URLs in the scope `studio` also renders with the studio's
+components, but with `main`'s CSS and JS: use the studio under its own
+prefix, where the [studio link](#ways-out) points. Studio changes are
+promoted along the studio tree's chain, app changes along the app's.
+
+**Changing the studio**, say the rule editor's view of a rule
+(`studio:rule-row-view`):
+
+1. Open the workbench of a working branch of the studio's tree (`studio-wip`
+   in the demo) under the studio root's prefix. T is the working branch; S
+   stays the published studio.
+2. In Items, the layer's items are listed as packaged (or as the studio
+   root's, where it overrides them). Open the item and choose "Override on
+   this branch", then edit T's own row in the editor and save it.
+3. Preview a resource the item renders: choose the type `ui-stylesheets`, the
+   scope `studio studio-editor` (the editor pane's) and the pk of a
+   stylesheet as the instance. The preview renders it as T would, with the
+   override, and with the editor's unsaved text as a draft while you type.
+   S is unchanged: the studio itself, the editor pane included, still renders
+   from S, so a broken edit breaks only the preview (a component that fails
+   to render falls back to the built-in there, after the usual `failed`
+   comment).
+4. To try the whole studio on T, browse it as any working branch: add
+   `ui-branch=<T>` to a workbench URL under the studio root's prefix, which
+   asks you to confirm the switch (see [Browsing](#browsing)). The page then
+   renders on T, under the branch banner.
+5. Promote T into the studio root ("Promote to studio…", review, "Apply to
+   studio"; see [Promote and push records](#promote-and-push-records)). From
+   then on the studio under its prefix uses the change, for every branch it
+   shows.
+
+`tests/test_studio_self_editing.py` follows this path.
+
+### Ways out
+
+A change that reaches S, the published studio, can break the studio itself:
+a page component that fails, a workbench with nothing in it. The anti-goal is
+an author locked out of the studio with no way back but the database or
+hand-made API calls, so every studio page keeps three ways out that no stored
+item can remove.
+
+**The studio links.** When the studio app is installed, every page of the
+seven UI types (`ui-components`, `ui-stylesheets`, `ui-branches`,
+`ui-branch-versions`, `ui-pushes`, `ui-css`, `ui-js`, lists and details) and of
+the studio's computed types carries, after the banner and the safe mode
+notice:
+
+```html
+<nav class="scrud-studio-links">
+  <a href="/studio-root/ui-branches/3/?ui-scope=studio&amp;ui-mode=view">Studio</a>
+  <a href="/api/ui-components/9/?ui-safe=1">Safe mode</a>
+  <a href="/studio/">Bootstrap studio</a>
+</nav>
+```
+
+(on one line, without the whitespace). *Studio* links to the studio root's
+workbench; it is left out when `SCRUD_UI_STUDIO_BRANCH` is unset, names no
+stored branch, or names a branch with no prefix. *Safe mode* is the current
+URL with `ui-safe=1` (its other parameters kept). *Bootstrap studio* is the
+bootstrap studio's types page (`scrud-studio:types`), left out when the project
+does not include the studio's URLs. The links are server chrome, like the
+banner: a page component that leaves them out is replaced by the built-in page,
+as is one that fails to render (after the comment `<!-- scrud-ui: component
+"studio:page" failed -->`). A fragment (an htmx request) has no links. As with
+the banner, a branch's CSS can still hide them (follow-up
+[ui-banner-hideable](follow-ups.md#ui-banner-hideable)).
+
+**Safe mode** (see [Safe mode](#safe-mode)). The *Safe mode* link renders the
+same workbench from the package only: the layer's `studio:page`,
+`studio:workbench` and panes, with the safe mode notice, whatever S stores.
+The page's own requests stay safe: `scrud-ui.js` sends `Scrud-UI-Safe: 1` on
+the htmx requests of a safe page (a pane fetched again, an item opened in the
+editor, a promote review), and the layer's scripts send it on their `fetch`
+requests (`explain`, the new rule). The live preview is not in safe mode: it
+shows T as T renders, which is what it is for. Every write from a safe page is
+the same request as from a normal one, with the same checks.
+
+**The bootstrap studio** at its mount (`/studio/` in the demo) is package
+templates and static files, not UI items, so nothing stored changes it. It
+writes working branches only: on a published branch, the studio root
+included, its saves and reverts are refused with 400
+`ui-studio-branch-read-only` (changes reach a published branch by a push).
+
+**Undoing a break on S.** Each of these is a click in a page that the break
+cannot reach:
+
+- **Restore S** from its own workbench in safe mode: open the *Studio* link's
+  page (S's workbench), follow *Safe mode*, and in the strip's history choose
+  "Restore to version N" for the version before the break (see
+  [History and restore](#history-and-restore)). The restore is a push record
+  into S that makes S's own items those of version N again (an override the
+  break added is deleted), and history is kept. It needs `POST` on
+  `ui-pushes` and the item writes in S's context.
+- **Delete the override** from the items' own pages. The UI items'
+  resources under S's prefix are not in the scope `studio`, so they render
+  with the runtime's page, which the break does not touch (add `?ui-safe=1`
+  if S's other items break it too): the list (`/workbench/ui-components/` in
+  the demo) shows each of S's components as its own frame, and the item's
+  page (`<prefix>ui-components/<pk>/`) shows it, each with the frame's Delete
+  button for a user who may `DELETE` it, which sends the frame's `If-Match`.
+  Deleting the override shows the packaged item again. This works when S has
+  no version from before the break, as when the break was S's first change.
+- **Repair it through a working branch**, in the bootstrap studio (or the
+  workbench, in safe mode): on `studio-wip`, save the item with content that
+  works (the packaged file's, under `scrud_django/ui/studio/layer/component/`,
+  is a start), then push `studio-wip` into the studio root. S then has a
+  working override rather than none.
+
+`tests/test_studio_self_editing.py` breaks `studio:page`, `studio:workbench`
+and `studio:items` on S and takes each of these ways back.
+
+## Security
+
+* **Viewing a branch means trusting everyone who can write to it.** There is no
+  separate trusted role: writes are authorized by scoped RBAC in the context of
+  the branch (see [Authorizing contexts](#authorizing-contexts)), so trust is
+  per RBAC context. Whoever may write components, CSS or JavaScript on a branch controls
+  the markup of every page that shows it. A component can carry client
+  scripts, and they run in the page with the viewer's rights. A user with write
+  grants in a personal branch's context could send a link to a colleague with
+  broader rights. Untrusted authors are phase 3.
+* The mitigations: a viewer sees only the branches they may GET; the banner
+  always names a working branch, and the server renders it outside stored
+  components; a link that would switch the viewer to a working branch asks first
+  (confirmation, with a token only the server can issue for that viewer, which
+  needs `CsrfViewMiddleware`); and the CSP below blocks inline scripts. The
+  confirmation is a click on a page the server renders, so it holds only while
+  other sites cannot frame that page and steer the click (clickjacking): keep
+  the CSP's `frame-ancestors` (below), or Django's `XFrameOptionsMiddleware`
+  (`X-Frame-Options: DENY` by default). `frame-ancestors 'self'` still lets
+  the site's own pages, a branch's components among them, frame it; `'none'`
+  (or `DENY`) does not. The
+  banner is not a guarantee: a branch's CSS, or a page component that wraps
+  its body in a hidden element, can hide it (see the follow-up
+  [ui-banner-hideable](follow-ups.md#ui-banner-hideable)). Trust the writers
+  of the branches you let people browse.
+* A branch never changes what a viewer may read or write through the API's
+  views: under a prefix the same views answer with the same checks. A prefix
+  does add one: its URLs need GET on its branch. So publishing a prefix can
+  put URLs behind a branch's grants, and is site-level: it needs PUT on
+  `ui-branches` in the context `""` (see [Prefixes](#prefixes)), and a prefix
+  that would hide the project's own URLs, overlap another or lie under the
+  API's is refused. Grant it to the site's administrators only. A mount that
+  hides a field is presentation, not access control.
+* Stored Jinja templates run in Jinja's sandbox; stored Django templates run on
+  a restricted engine (no loaders, no tag libraries), which is not a sandbox.
+  Both escape everything they are given.
+* Components are presentation, not access control. A component is only given
+  what the viewer may read, so it cannot reveal more; but hiding a field in a
+  component does not keep it from the viewer, who can read it as JSON.
+* The page loads only its own scripts. Recommended Content-Security-Policy:
+  `script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self';
+  frame-ancestors 'self'`. `scrud-ui.js` sets htmx's `selfRequestsOnly`.
+  `script-src 'self'` blocks inline scripts, those in components included:
+  ship a component's scripts as static files, or have the site allow them with
+  CSP nonces or hashes.
+* The vendored htmx is **2.0.4** (`scrud_ui/htmx.min.js`), sha384
+  `HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+`.
+
+## The to-do demo
+
+`demo/` includes a seed command that creates users, a to-do list, and the
+components and stylesheets that render it (a detail page with editable rows, a
+compact sidebar list, and a page with a layout), and four branches: the
+published `admin` branch at `/manage/` (with an extra component and its own CSS),
+the published `customer` branch at `/todo/` (with its own CSS), and a working
+branch `testing-admin` over `admin`, and a working branch `alice-wip` over
+`testing-admin` for the studio. It also seeds the self-hosted studio's tree: the
+published root `studio` at `/workbench/` (context `ui-studio`, named by
+`SCRUD_UI_STUDIO_BRANCH = "studio"` in the demo's settings) and its working
+branch `studio-wip` (context `ui-studio-wip`). The demo adds
+`PublishedBranchMiddleware` to its settings. The admin prefix is `/manage/`, not
+`/admin/resources/`, because Django's admin has a catch-all route under
+`/admin/`, which a prefix there would hide.
+
+```bash
+cd demo
+uv run python manage.py migrate
+uv run python manage.py seed_todo_demo
+uv run python manage.py runserver
+```
+
+Sign in at `/api-auth/login/` and open `/api/todo-lists/` with a browser (or
+use HTTP Basic auth). The users are `owner`/`owner` (reads and edits the list),
+`reader`/`reader` (reads it) and `author`/`author` (writes the UI components
+and stylesheets); these passwords are for the demo only. `author` writes the UI
+in the four branches' contexts (`ui-admin`, `ui-customer`, `ui-testing`,
+`ui-alice`) and may open both prefixes. For the studio's tree, `author` may GET
+the `studio` root, write the UI items and `ui-pushes` in `ui-studio-wip`, and
+push into `studio` (it holds `ui-pushes` and the item writes a push applies in
+`ui-studio`: applying a push needs the grants a direct write would, so it can
+also write items there directly); `owner` holds PUT on `ui-branches` in `""`,
+the grant that publishing a prefix needs; `reader` may open `/todo/` (it may GET
+the `customer` branch) and gets a 403 at `/manage/`; `owner` may open `/todo/`
+too. To try the flow: as `author`, write a component on `testing-admin` (a POST
+of a `ui-components` item with `"branch": "testing-admin"` and
+`"rbac_context": "ui-testing"`), browse
+`/manage/todo-lists/<id>/?ui-branch=testing-admin` (confirm the switch), then
+POST a `ui-pushes` item with `source` `testing-admin`, `target` `admin`,
+`rbac_context` `ui-admin` and `state` `applied`.
+
+The command prints the self-hosted studio's workbench URLs, as `author`:
+`/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`, for `alice-wip`
+and for `studio-wip` (see [Self-hosted studio](#self-hosted-studio); to edit
+the studio itself, work on `studio-wip` and push it to `studio`).
+
+The demo also includes the studio at `/studio/`. Sign in at `/api-auth/login/` as
+`author`, open `/studio/types/todo-lists/`, pick `alice-wip`, click an item in the
+preview, write a "New component for this node" (choose the `row` scope under
+"where", so the rule is as specific as the existing `row` rules), then push to
+`testing-admin` and browse `/manage/todo-lists/<id>/?ui-branch=testing-admin`.
+
+Known limitations of phase 1 are recorded in the [follow-ups](follow-ups.md),
+under the `ui-` names.

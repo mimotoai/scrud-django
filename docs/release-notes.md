@@ -115,133 +115,120 @@
   is one with no stored row. Live-preview drafts are render-only too: an
   embedded list of the branch's items lists the stored item a draft
   replaces, and embedded studio data shows the stored items.
-* The studio's packaged UI layer, `studio:` (`scrud_django.ui.studio.layer`),
-  installed with `scrud_django.ui.studio`: a page component `studio:page`,
-  selected only in the scope `studio` (`?ui-scope=studio`), and the CSS and JS
-  items `studio:studio`, which every page links. Its CSS selects only under
-  `.studio` or `[data-studio…]`, and its script does nothing on a page without
-  a studio workbench, so pages outside the studio render as before.
-* The setting `SCRUD_UI_STUDIO_BRANCH` (default `None`) names the published
-  branch that hosts the self-hosted studio (`studio_branch()` in
-  `scrud_django.ui.studio`). With the studio app installed, the pages of the UI
-  types and of the studio's computed types carry studio links
-  (`<nav class="scrud-studio-links">`): to that branch's workbench (when the
-  setting names a branch with a prefix), to the same page in safe mode, and to
-  the bootstrap studio. They are page chrome: a page component that leaves
-  them out is replaced by the built-in page.
-* Stored Jinja components get `in_mount(href)` (an API URL mapped into the
-  page's published prefix) and `api_url(slug, key=None)` (the API path of a
-  registered type's list or detail; an unknown slug fails the component)
-  beside `embed`.
-* More studio data in the computed types, as *actions* (`{"method", "href",
-  "body", "etag"}`, what a control sends unchanged, offered only when the
-  user's grants allow it). Each item of `ui-branch-items` has `override`, the
-  `POST` that creates the branch's override of an item it shows but does not
-  own. `ui-branch-status` has `may_write`, `may_publish`, the latest 20
-  `pushes` and `versions` the user may read, `actions` (`pull`, and `promote`:
-  apply or propose a push to each ancestor) and the bootstrap studio's
-  `endpoints` (`null` when its URLs are not included). On a published branch
-  no write is offered.
-* The self-hosted studio's workbench, in the studio layer: a branch's
-  `ui-branches` detail at `?ui-scope=studio&ui-mode=view` renders
-  `studio:workbench`, with Items, Editor and Preview panes (Items and Editor
-  collapse to rails, remembered per viewer in `localStorage`), the branch's
-  items as a tree (`studio:items`: own, inherited and packaged items,
-  conflicts, "Override on this branch"), a strip (`studio:status`: chain,
-  counts, Pull, promote panels, the browse link) and a bare
-  live preview in a sandboxed frame. The workbench state is in the URL's
-  query. The studio link now points at the workbench in view mode
-  (`&ui-mode=view`).
-* The workbench's template, CSS and JS editors, in the studio layer:
-  `studio:component-editor` and `studio:component-view` (`UIComponent`),
-  `studio:text-editor` and `studio:text-view` (`UICss` and `UIJs`), selected
-  in the scope `studio studio-editor`. Opening an item loads its resource
-  into the Editor pane, in view mode when the branch is published or does not
-  own the item (an item with no URL shows its content as text). An own item's
-  editor is its frame's form: Save is the frame's `PUT` with `If-Match` (a
-  stale one gets the 412 reload), and the frame's Delete button deletes the
-  branch's row: relabelled "Revert to inherited" when the branch then shows
-  an ancestor's or a packaged item (the items entry's new `reverts_to`), else
-  left "Delete" with a confirmation that nothing is inherited. An item the branch does not
-  own offers the items tree's "Override on this branch". A Django-engine
-  component is shown read-only. Typing sends the editor's content to the live
-  preview as a draft (300 ms after the last key; none on a published branch),
-  and the drafts the preview leaves out are listed under the editor, as text.
-* The workbench's rule editor, in the studio layer: a stylesheet opens as
-  its fields (`name` read-only, `applies_to`, `order`, `prefixes` as
-  key/value rows, with one new prefix at a time) and its rules as rows of
-  selector -> component inputs, each with Remove, Move up and Move down
-  (they save at once) and an append row (saved with Save); every field is an
-  input named by its JSON Pointer, saved only by Save, and a refused selector
-  is shown beside its row (`studio:stylesheet-editor`, `studio:rules-editor`,
-  `studio:rule-row`, `studio:field` and the view twins
+* The self-hosted studio, in `scrud_django.ui.studio`: a studio made of the
+  UI itself, so that the studio can be edited with the studio. Its pages are
+  the UI types' own resources rendered in the scope `studio`
+  (`?ui-scope=studio`) by the app's packaged UI layer, `studio:`
+  (`scrud_django.ui.studio.layer`): a branch's `ui-branches` detail at
+  `?ui-scope=studio&ui-mode=view` is its workbench, a component, CSS or JS
+  item its editor, a stylesheet its rule editor, a push its review, a branch
+  version its page. The layer's page component `studio:page` is selected only
+  in that scope. Every page links the layer's CSS item `studio:studio`, which
+  selects only under `.studio` or `[data-studio…]`, and its JS items
+  (`studio:studio`, `studio:rules`, `studio:inspector`, `studio:promote`,
+  `studio:branch`, orders 0 to 4), which do nothing on a page without a
+  workbench (on a push's page `studio:promote` only stops the `change` of
+  its state input), so pages outside the studio render as before. It adds no rights: every write is an ordinary request to a
+  resource view, and a control is shown only where the studio data offers
+  its action. The setting `SCRUD_UI_STUDIO_BRANCH` (default `None`;
+  `studio_branch()`) names the published root branch that hosts it, a tree of
+  its own so that the app's CSS and JS don't load under the studio's prefix.
+  See the "Self-hosted studio" chapter of the UI page.
+* The workbench (`studio:workbench`): Items, Editor and Preview panes (Items
+  and Editor collapse to rails, remembered per viewer in `localStorage`), the
+  branch's items as a tree (`studio:items`: own, inherited and packaged
+  items, conflicts, "Override on this branch"), a strip (`studio:status`:
+  chain, counts, Pull, promote panels, pushes, history, the browse link) and
+  a live preview in a sandboxed frame. The workbench's state (type, item,
+  node, preview controls) is in the URL's query, so a link reproduces the
+  view. A refused write shows the server's text in the workbench's notice.
+* The editors: `studio:component-editor` and `studio:component-view`
+  (`UIComponent`), `studio:text-editor` and `studio:text-view` (`UICss` and
+  `UIJs`), selected in the scope `studio studio-editor`. An item opens in view
+  mode when the branch is published or does not own it (an item with no URL
+  shows its content as text, a Django-engine component is read-only). An own
+  item's editor is its frame's form: Save is the frame's `PUT` with
+  `If-Match` (a stale one gets the 412 reload), and the frame's Delete button
+  deletes the branch's row, relabelled "Revert to inherited" when the branch
+  then shows an ancestor's or a packaged item (the items entry's new
+  `reverts_to`), else left "Delete" with a confirmation that nothing is
+  inherited. Typing sends the editor's content to the live preview as a
+  draft (300 ms after the last key; none on a published branch), and the
+  drafts the preview leaves out are listed under the editor, as text.
+* The rule editor: a stylesheet opens as its fields (`name` read-only,
+  `applies_to`, `order`, `prefixes` as key/value rows, with one new prefix at
+  a time) and its rules as rows of selector -> component inputs, each with
+  Remove, Move up and Move down (they save at once) and an append row; every
+  field is an input named by its JSON Pointer, saved only by Save, and a
+  refused selector is shown beside its row (`studio:stylesheet-editor`,
+  `studio:rules-editor`, `studio:rule-row`, `studio:field` and the view twins
   `studio:stylesheet-view`, `studio:rules-view`, `studio:rule-row-view`).
   Focus on a row marks its rule's matches in the live preview, with the
   stylesheet as the form shows it as a draft (the mark only on a published
   branch or in view mode), and shows "matches N nodes, wins on M" under the
-  rows; leaving the rows clears the mark. The new layer JS item
-  `studio:rules` (order 1, after `studio:studio`) does this; `ScrudStudio`
-  gains `contentOf(frame)`.
-* The live preview's bridge (`preview-bridge.js`) also posts
+  rows; leaving the rows clears the mark.
+* The preview pane and the inspector: a type picker (`studio:type-picker`,
+  the embedded `ui-type-catalog`) and mode, data context, scope, instance and
+  pinned controls, each of which sets the URL state and submits the live
+  preview again; and an inspector that explains the node clicked in the
+  preview (from the preview's own window only) as text, with the preview's
+  parameters and the exact pointer, and names the embedded resource a click
+  inside one was in rather than explaining it. On a working branch it offers
+  "Edit this component" and "New rule for this node" (the bootstrap studio's
+  form, posted to `new-component` as JSON with the CSRF token; off while
+  pinned).
+* Publishing in the workbench. Promote: a "Promote to <target>…" panel for
+  each entry of `actions.promote` (the parent, then the ancestors in the
+  chain) loads the push preview (`studio:push-preview`, in the scope
+  `studio studio-push`): the changes, each with its item before and after,
+  the conflicts, and those on items the user can't read, counted. "Preview
+  after push" shows the target with the branch pushed. Apply and Propose are
+  the entry's own actions; Apply stays off, with the reason, until the review
+  has loaded and shows no conflict, readable or not. A push's page
+  (`studio:push`, or `studio:push-view` for a user who may not `PUT` it)
+  shows its source, target, state, label and result, the preview of a push
+  not yet applied, and a state input (`proposed`, `applied`) saved only on
+  Save, whose refusal (a workflow policy's, for example) is re-rendered with
+  the server's message. History: the strip lists the branch's versions, each
+  linked to its page in a new tab (`studio:version`: the ancestors' versions
+  and the branch's own items then, as text), with "Restore to version N" when
+  the user may `POST` that restore push (on published branches too). Branch
+  settings: the branch itself embedded in the scope `studio studio-branch`
+  (`studio:branch-form`, or `studio:branch-view`): label, description and
+  base on a working branch, saved only on Save, the prefix as an input only
+  for a user who may publish (in the scope `studio studio-branch
+  studio-publish`), with "Remove the prefix" on a published branch, and the
+  frame's Delete for a user who may delete the branch. "New branch" creates a
+  branch (`name`, `parent` and `rbac_context`, defaulting to the
+  workbench's) and links its workbench.
+* Ways out when a change breaks the studio itself. With the studio app
+  installed, the pages of the UI types and of the studio's computed types
+  carry studio links (`<nav class="scrud-studio-links">`): to the studio
+  root's workbench in view mode (when the setting names a branch with a
+  prefix), to the same page in safe mode, and to the bootstrap studio. They
+  are page chrome: a page component that leaves them out, or fails, is
+  replaced by the built-in page. In safe mode the whole workbench renders
+  from the layer, its panes included. The bootstrap studio is unchanged.
+* For the studio's components and scripts, and usable by any: stored Jinja
+  components get `in_mount(href)` (an API URL mapped into the page's
+  published prefix) and `api_url(slug, key=None)` (the API path of a
+  registered type's list or detail; an unknown slug fails the component)
+  beside `embed`. The computed studio data gains *actions* (`{"method",
+  "href", "body", "etag"}`, what a control sends unchanged, offered only when
+  the user's grants allow it): each item of `ui-branch-items` has `override`
+  (the `POST` that creates the branch's override of an item it shows but
+  does not own) and `reverts_to`; `ui-branch-status` has `may_write`,
+  `may_publish`, the latest 20 `pushes` and `versions` the user may read
+  (each version with its `restore` action, or `null`), `actions` (`pull`, and
+  `promote`: apply or propose a push to each ancestor) and the bootstrap
+  studio's `endpoints` (`null` when its URLs are not included; with `sample`,
+  a template with `{slug}`). On a published branch no write is offered but
+  a restore. The live preview's bridge (`preview-bridge.js`) also posts
   `{"type": "scrud-preview:marks", "wins": M, "loses": L}` on load, after the
   errors message: the counts of the nodes marked as the marked rule winning
   and losing, read before the branch's scripts run (0 and 0 without a mark).
-* The workbench's preview pane and inspector, in the studio layer: a type
-  picker (`studio:type-picker`, the embedded `ui-type-catalog`) and mode, data
-  context, scope, instance and pinned controls, each of which sets the URL
-  state and submits the live preview again; and an inspector under the
-  preview that explains the node clicked in it (the bridge's select message,
-  from the preview's own window only) as text, with the preview's parameters
-  and the exact pointer, and says which embedded resource a click inside one
-  was in rather than explaining it. On a working branch it offers "Edit this
-  component" (the winning component, opened from the items tree) and "New
-  rule for this node" (the bootstrap studio's form from `options`, posted to
-  `new-component` as JSON with the CSRF token; off while pinned), and fetches
-  everything again after a new rule. The new layer JS item
-  `studio:inspector` (order 2) does this; `ScrudStudio` gains `endpoints()`,
-  `csrfToken()`, `safe()`, `fromPreview(event)` (which `studio:studio` and
-  `studio:rules` now use too), `expand(pane)`, `parseOpen(entry)`,
-  `entryFor(item)` and `open(entry)`.
-* `ui-branch-status`'s `endpoints` also have `sample` (`GET
-  types/<slug>/sample`, a template with `{slug}`), the `href` of a sample's
-  frame in a preview.
-* Promote in the self-hosted studio: the workbench's strip has a "Promote to
-  <target>…" panel for each entry of `actions.promote` (the parent, then the
-  ancestors in the chain). Opening one loads the push preview into it
-  (`studio:push-preview`, in the scope `studio studio-push`): the changes,
-  each with its item before and after, the conflicts, and the changes and
-  conflicts on items the user can't read, counted. "Preview after push"
-  shows the target with the branch pushed in the live preview. Apply and
-  Propose are the entry's own actions; Apply stays off, with the reason,
-  until the review is loaded and shows no conflict, readable or not. The
-  strip lists the branch's pushes, each linked to its page in the scope
-  `studio` (`studio:push`, and `studio:push-view` for a user who may not
-  `PUT` it): source, target, state, label and result, the push preview of a
-  push not yet applied, and a state input (`proposed`, `applied`) saved by
-  the frame's `PUT` only on Save, whose refusal (a workflow policy's, for
-  example) is re-rendered with the server's message. The new layer JS item
-  `studio:promote` (order 3) does this (on a push's page, a
-  `[data-studio-push]` element, it only stops the state input's `change`;
-  elsewhere it needs a workbench, as the other layer scripts do), and `ScrudStudio.submitPreview`
-  takes a `branch` (the branch to preview instead of the workbench's) and
-  sends no drafts with `after_push`.
-* Roll back and presentations in the self-hosted studio. The strip lists the
-  branch's versions, each linked to its page in a new tab (`studio:version`,
-  in the scope `studio`: the ancestors' versions and the branch's own items then, as
-  text), with "Restore to version N" when the user may `POST` that restore
-  push (`source: null`, `restore: N`, `state: applied`), on published
-  branches too: `ui-branch-status`'s `versions` entries gain that `restore`
-  action (or `null`). The workbench's "Branch settings" panel embeds
-  the branch itself in the scope `studio studio-branch` (`studio:branch-form`,
-  or `studio:branch-view` for a user who may not `PUT` it): label,
-  description and base on a working branch, saved only on Save, and the
-  prefix, an input only for a user who may publish (the new layer JS item
-  `studio:branch`, order 4, asks for it in the scope `studio studio-branch
-  studio-publish` when the strip's new `data-studio-may-publish` says so),
-  with "Remove the prefix" on a published branch, and the frame's Delete for
-  a user who may delete the branch. "New branch" creates a
-  branch (`name`, `parent` and `rbac_context`, defaulting to the workbench's)
-  and links its workbench.
+  The workbench's script exposes `window.ScrudStudio` for the layer's other
+  scripts and a branch's overrides of them.
 
 ### Changed
 
@@ -249,7 +236,6 @@
   overlapping another branch's or the API's URLs) now has `name: "prefix"` in
   its 400 `ui-branch-invalid` problem, as a JSON Schema error names its field,
   so a refused PUT's HTML re-render shows the message beside the prefix.
-
 * A requested view mode (`?ui-mode=view`, `Scrud-UI-Mode: view`, or an
   embed's `mode="view"`) also leaves out the frame's Delete button, even for
   a user who may DELETE the resource. A user in view mode because they may

@@ -719,6 +719,135 @@ module to the safetydance idiom, or say in CLAUDE.md that unit tests of the
 renderer below HTTP may be plain pytest, as these two modules are. Test:
 none; a convention to settle.
 
+<a id="studio-safe-links"></a>
+## studio-safe-links: the strip's push and version links leave safe mode
+
+On a workbench in safe mode (`?ui-safe=1`), the strip links each push to
+`<href>?ui-scope=studio` and each version to
+`<href>?ui-scope=studio&ui-mode=view`, without `ui-safe=1`. Following one
+from a safe workbench while the studio root's components are broken opens a
+page rendered with them (its studio links still offer *Safe mode* again).
+The workbench's own requests stay safe (`Scrud-UI-Safe`); only these links do
+not. Test: in `tests/test_studio_self_editing.py`, render a workbench with
+`?ui-safe=1` and a push and a version in its strip; their links should carry
+`ui-safe=1` and do not today.
+
+<a id="studio-editor-drafts"></a>
+## studio-editor-drafts: the live preview can lose or miss the editor's unsaved text
+
+`studio:studio` sends the editor's text to the live preview on `keyup` only,
+so a paste, cut or drop with the mouse does not update the preview until the
+next key. A change of a preview control, and the refresh after a write
+(a new rule's 201 included), submit the preview again without the open
+editor's draft or the rule editor's mark, so the preview stops showing the
+unsaved text. Opening another item, or the same item again after the panes
+are fetched again, discards the editor's unsaved text without a warning. And
+the draft errors under the editor can still show the previous item's after a
+new one opens. Test: in `tests/test_studio_layer_client.py` (node), fire an
+`input` event without a `keyup` in the code editor and assert a preview
+submit with the draft; change a control with a draft open and assert the
+submitted request still has it.
+
+<a id="studio-stylesheet-errors-unshown"></a>
+## studio-stylesheet-errors-unshown: some refused fields of a stylesheet show no message
+
+The rule editor renders a refused save's messages beside `applies_to`,
+`order` and a rule's `select` and `component`, but not those at `/name`,
+`/prefixes/<key>` or `/rules/<i>` itself (a whole rule refused): their nodes
+are marked rendered, so the editor's top-level error list skips them, and the
+author sees the re-render with no reason. Test: in
+`tests/test_studio_rule_editor.py`, PUT the editor's frame with a prefix the
+server refuses and assert the message is in the re-render; it is not today.
+
+<a id="studio-rule-editor-preview"></a>
+## studio-rule-editor-preview: the rule editor's preview is wrong after editing `applies_to`, and marks nothing on legacy stylesheets
+
+A draft of a stylesheet whose `applies_to` the author changed is previewed as
+a second stylesheet beside the stored one, while its save replaces the stored
+one (and the open item then names a key that no longer exists). A stylesheet
+stored without an `applies_to` field never shows match markers: the mark is
+sent with `applies_to` `""`, which does not find it. Test: in
+`tests/test_studio_live_preview.py`, preview a stylesheet draft with a changed
+`applies_to` and assert the stored rules no longer apply; and mark a rule of a
+stylesheet stored without `applies_to` and assert marked nodes.
+
+<a id="studio-new-rule-double-post"></a>
+## studio-new-rule-double-post: "New rule for this node" can be created twice
+
+The inspector's Create button is not disabled while its `POST` is in flight,
+so a double click creates two components and two rules. Test: in
+`tests/test_studio_layer_client.py` (node), click Create twice before the
+first answer and assert one request.
+
+<a id="studio-choose-type-stale-preview"></a>
+## studio-choose-type-stale-preview: "Choose a type" leaves the old preview
+
+Choosing the type picker's empty option clears `type` from the URL state, but
+the previous preview stays in the frame and its clicks are ignored without a
+word. Test: in `tests/test_studio_layer_client.py` (node), choose the empty
+type after a preview and assert the frame is cleared or a hint is shown.
+
+<a id="studio-strip-refresh-failure"></a>
+## studio-strip-refresh-failure: a failed strip refresh stops the preview silently
+
+When fetching the strip again is answered with an error that `scrud-ui.js`
+lets htmx swap in (400, 403, 409, 412, 428), the answer replaces the strip,
+which removes `[data-studio-endpoints]`; `submitPreview` then returns `false`
+and the preview, the explanation and the new rule stop working with no notice
+until the page is reloaded. Test: in `tests/test_studio_layer_client.py`
+(node), answer the strip's refresh with a 403 and assert the endpoints are
+kept (or a notice shown) and the next `submitPreview` sends.
+
+<a id="studio-promote-stale-review"></a>
+## studio-promote-stale-review: a stale push review can enable Apply for a moment
+
+Opening, closing and opening a promote panel again sends two review requests;
+the first answer, if it arrives last, can turn Apply on from a stale review.
+The server still refuses a push with a conflict (409), so nothing wrong is
+written. Test: in `tests/test_studio_layer_client.py` (node), answer the
+second review with a conflict and then the first without one, and assert
+Apply stays off.
+
+<a id="studio-refused-push-state"></a>
+## studio-refused-push-state: a refused push shows the state it was refused
+
+A push page whose move to `applied` is refused (a workflow policy, a
+conflict) re-renders the submitted body, so the state input reads `applied`
+beside the refusal, although the push is still `proposed`. Test: in
+`tests/test_studio_promote.py`, refuse the move with a policy and assert the
+re-render's state is the stored one, or is marked as not saved.
+
+<a id="studio-after-push-inspector"></a>
+## studio-after-push-inspector: after "Preview after push" the inspector explains T, not the target
+
+"Preview after push" shows the target branch in the preview, but a click in it
+is explained for T (and "New rule for this node" would create on T), which is
+wrong when the target's presentation differs. Test: in
+`tests/test_studio_layer_client.py` (node), preview after push and click a
+node; the explanation request should name the target with `after_push`, or
+the inspector should say it cannot explain that preview.
+
+<a id="studio-remove-prefix-submitted"></a>
+## studio-remove-prefix-submitted: "Remove the prefix" in a refused re-render saves the other submitted edits
+
+When a publisher's save of a working branch's settings is refused for its
+prefix, the re-render is built from the submitted body, and so is its "Remove
+the prefix" button: pressing it saves the other fields as they were
+submitted, not as stored. Test: in
+`tests/test_studio_rollback_presentations.py`, refuse a save that changed the
+label and the prefix, press "Remove the prefix" from the re-render, and
+assert the stored label is unchanged.
+
+<a id="ui-page-fallback-comment"></a>
+## ui-page-fallback-comment: the page fallback names the banner when the studio links are missing
+
+A page component that leaves out the studio links (and not the banner or the
+safe mode notice) is replaced by the built-in page after the comment and log
+`page component "x" leaves out the branch banner or the safe mode notice`,
+which names the wrong chrome. Test: in `tests/test_studio_layer.py`
+(`test_studio_links_required_in_page`), assert a comment that names the
+studio links.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>
