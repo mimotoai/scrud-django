@@ -793,6 +793,69 @@ for (const status of [412, 409, 403, 400, 0]) {
         assert ajax == [] and submits == [], status
 
 
+# A refusal of new-component's (a missing template), as scoped-rbac's
+# uniform errors answer it.
+UNIFORM_400 = {
+    "type": "about:blank",
+    "title": "Bad Request",
+    "status": 400,
+    "detail": "Invalid input.",
+    "code": "invalid",
+    "errors": {
+        "template": [{"code": "invalid", "message": "A template is required."}],
+        "": [{"code": "invalid", "message": "Pick a match."}],
+    },
+}
+
+
+def test_refusal_shows_field_messages():
+    """A validation refusal says why: each field's messages, after its path
+    (none for the non-field errors under ""), whether the body is a uniform
+    problem (``errors``), a bare ``{field: [messages]}`` (no title or
+    detail) or a JSON validation error naming its field (``name``). Text
+    only."""
+    out = scenario(
+        r"""
+const xhr = (status, body, type = 'application/problem+json') => ({status,
+  responseText: typeof body === 'string' ? body : JSON.stringify(body),
+  getResponseHeader: () => type});
+out.uniform = S.errorText(xhr(400, UNIFORM));
+out.bare = S.errorText(xhr(400, {template: ['A template is required.'],
+  where: {scope: ['Not a scope <b>here</b>.']}, applies_to: 'Must be "".'},
+  'application/json'));
+out.named = [S.errorText(xhr(400, {title: 'JSON Validation Error',
+  detail: 'must be string', name: 'data.template'})),
+  S.errorText(xhr(400, {title: 'JSON Validation Error',
+  detail: 'data.template must be string', name: 'data.template'}))];
+// Messages that are no text are left out, and so is an empty "errors".
+out.odd = S.errorText(xhr(400, {title: 'Bad Request', detail: 'Invalid input.',
+  errors: {template: [{code: 'invalid'}, 7, null], x: []}}));
+out.plain = S.errorText(xhr(409, {title: 'Conflict', detail: 'Pull first.'}));
+fire(override, 'htmx:afterRequest', {elt: override, successful: false,
+  requestConfig: {verb: 'post'}, xhr: xhr(400, UNIFORM)});
+out.notice = [notice.textContent, notice.hasAttribute('hidden'), notice.children.length];
+""".replace("UNIFORM", json.dumps(UNIFORM_400)),
+    )
+    uniform = (
+        "Refused (HTTP 400): Bad Request: Invalid input."
+        " template: A template is required.; Pick a match."
+    )
+    assert out["uniform"] == uniform
+    assert out["bare"] == (
+        "Refused (HTTP 400): template: A template is required.;"
+        " where.scope: Not a scope <b>here</b>.; applies_to: Must be \"\"."
+    )
+    # The field named once: not again when the detail names it.
+    assert out["named"] == [
+        "Refused (HTTP 400): JSON Validation Error: data.template: must be string",
+        "Refused (HTTP 400): JSON Validation Error: data.template must be string",
+    ]
+    assert out["odd"] == "Refused (HTTP 400): Bad Request: Invalid input."
+    assert out["plain"] == "Refused (HTTP 409): Conflict: Pull first."
+    assert out["notice"] == [uniform, False, 0]
+    assert out["innerHTML"] == 0
+
+
 def test_branch_picker_marks_T():
     """The picker lists the user's branches; a component can't know which
     one the page shows, so studio.js marks T's entry (data-studio-current,
