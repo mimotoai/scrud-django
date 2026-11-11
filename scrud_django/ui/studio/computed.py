@@ -256,7 +256,13 @@ def _beneath(request, kind, branch, all_branches) -> dict:
     that the entry reveals nothing more than the user's own JSON would."""
     try:
         rows = parent_state(kind, ITEM_KINDS[kind], branch, all_branches, None)
-    except BranchChainError:
+    except BranchChainError as exc:
+        # Nothing beneath can be told: the Delete then says so.
+        logger.warning(
+            "scrud-ui: what branch %r's own items revert to is unknown: %s",
+            branch.name,
+            exc,
+        )
         return {}
     found = {}
     for pk, _etag, content in rows:

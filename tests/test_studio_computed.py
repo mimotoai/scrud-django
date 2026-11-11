@@ -666,6 +666,36 @@ def test_status_of_a_branch_with_no_published_root_is_logged(ui_alice_login, cap
 
 @pytest.mark.django_db
 @test_context
+def test_items_beneath_a_broken_chain_are_logged(ui_alice_login, caplog):
+    """What an own row reverts to is read from the parent's state; when that
+    read fails (a broken chain, a missing pinned snapshot) the entries say
+    nothing is beneath them, and a warning names the branch, never
+    silently (follow-up studio-beneath-chain-error)."""
+    from scrud_django.ui.branches.store import BranchChainError
+
+    setup_branches(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+    with (
+        mock.patch(
+            "scrud_django.ui.studio.computed.parent_state",
+            side_effect=BranchChainError(
+                "Branch 'wip' is pinned to a missing version."
+            ),
+        ),
+        caplog.at_level(logging.WARNING, logger="scrud_django.ui.studio.computed"),
+    ):
+        listed = {(i["kind"], i["name"]): i for i in items()["items"]}
+    assert listed["component", "row"]["reverts_to"] is None
+    logged = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "scrud_django.ui.studio.computed" and r.levelno == logging.WARNING
+    ]
+    assert logged and all("'wip'" in m and "missing version" in m for m in logged)
+
+
+@pytest.mark.django_db
+@test_context
 def test_override_body_creates_the_override(ui_alice_login):
     """An item wip shows but does not own carries the POST that creates
     wip's override of it: sent as it is, it creates the override, and the
