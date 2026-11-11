@@ -800,6 +800,22 @@ until the page is reloaded. Test: in `tests/test_studio_layer_client.py`
 (node), answer the strip's refresh with a 403 and assert the endpoints are
 kept (or a notice shown) and the next `submitPreview` sends.
 
+<a id="studio-preview-htmx-indicator-style"></a>
+## studio-preview-htmx-indicator-style: htmx's indicator style is blocked in the live preview
+
+The live preview's `Content-Security-Policy` allows styles by nonce only
+(`style-src 'self' 'nonce-<n>'`), and htmx 2.0.4, which the preview's page
+loads, inserts its `.htmx-indicator` style element on load without one. The
+browser blocks it and logs a CSP error in the console on every preview load
+(the acceptance run saw one per preview), and an `.htmx-indicator` in a
+previewed component is not hidden as it is on the real page. Nothing else
+breaks. Suggested fix: the preview's page sets
+`<meta name="htmx-config" content='{"includeIndicatorStyles": false}'>` and
+links the indicator rules from a static file, or htmx's `inlineStyleNonce`
+config carries the response's nonce. Test: in
+`tests/test_studio_live_preview.py`, render a live preview and assert the page
+configures htmx without inline indicator styles (or with the nonce).
+
 <a id="studio-promote-stale-review"></a>
 ## studio-promote-stale-review: a stale push review can enable Apply for a moment
 
