@@ -1,0 +1,5 @@
+{
+  "name": "studio:studio",
+  "order": 0,
+  "css": ".studio {\n  font-family: system-ui, -apple-system, \"Segoe UI\", sans-serif;\n  line-height: 1.4;\n}\n.studio main {\n  margin: 0;\n  padding: 0.5rem 1rem;\n}\n.studio .scrud-studio-links {\n  display: flex;\n  gap: 1rem;\n  font-size: 0.875rem;\n}\n[data-studio-workbench] {\n  display: grid;\n  gap: 1rem;\n}\n"
+}

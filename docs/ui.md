@@ -104,6 +104,28 @@ Every template is given plain JSON, plus its children's already rendered HTML:
 | `append_row` | For an array node: whether the append row has an input to render. It is false when every item property is an object or array, or when the items are objects without properties (or empty `properties`) or arrays; `scrud:array-edit` then renders no `scrud-append` element. |
 | `append_fields` | For an array node: `[{name, type, pointer_name}]` of its items' properties, for an append form. `type` is the property's schema type (the first non-null one of a list, through a local `$ref`), or `None`; `pointer_name` is `name` escaped as a JSON Pointer reference token (`~` as `~0`, `/` as `~1`), for input names such as `{{ pointer }}/-/{{ field.pointer_name }}`. |
 
+A stored Jinja component also gets three functions: `embed` (see
+[Embeds](#embeds)), `in_mount(href)` and `api_url(slug, key=None)`:
+
+- `in_mount(href)` is `href`, an API URL, as the page's published prefix
+  serves it: on a page under a branch's prefix, `in_mount("/api/todo-lists/7/")`
+  is that prefix's `todo-lists/7/`; at the API's URLs it is `href` unchanged.
+  It maps links as the server maps a frame's own (`selection.in_mount`), so an
+  API path found in the data (an item's `href` in the studio's computed types)
+  links within the page's prefix. A value that is not a string is returned
+  unchanged.
+- `api_url(slug, key=None)` is the API path of the registered type `slug`'s
+  list (`api_url("todo-lists")` is `/api/todo-lists/`), or of its detail for
+  `key` (`api_url("todo-lists", 7)`), computed types included
+  (`api_url("ui-branch-items", "main")`; a computed type has no list). It is
+  always the API's path, which `embed` maps into the page's prefix, so
+  `embed(api_url("ui-branch-items", value.name))` works under a prefix too.
+  A `slug` that is not a registered type's (no `<slug>-list` or
+  `<slug>-detail` route serving that type) raises, so the component fails and
+  falls back, as any component that fails does.
+
+Django components have neither, nor `embed`.
+
 Be careful with the name `items`. In a Django template `children.items`
 resolves to a property named `items` (as the to-do demo's schema has), so
 iterate `child_items` for every property. In Jinja, `children.items` is the
@@ -233,7 +255,10 @@ stored items, and one in a live preview lists the stored item a draft replaces.
 This holds by construction: `dispatch_path` runs the embedded view in
 `stored_state()` and renders its response after, outside it, so that the
 embedded presentation still sees safe mode and the drafts.
-Django components have no `embed`.
+Django components have no `embed`. Build an embed's path with `api_url`
+(`embed(api_url("todo-lists", value.list_id))`) rather than by hand, and link
+an API path from the data with `in_mount` (see
+[The node context](#the-node-context)).
 
 These are refused, and render
 `<div class="scrud-notice scrud-notice-error" role="alert">This embed was refused.</div>`
@@ -1782,10 +1807,64 @@ preview, write a "New component for this node" (choose the `row` scope under
 Known limitations of phase 1 are recorded in the [follow-ups](follow-ups.md),
 under the `ui-` names.
 
-## Self-hosted studio (coming)
+## Self-hosted studio: setup
 
-The bootstrap studio above will be joined by a studio hosted by the UI itself,
-styled with the packaged layers and the runtime features described in this
-chapter (embeds, computed resource types, safe mode, drafts in the live
-preview). The design is in
-`docs/superpowers/specs/2026-11-10-ui-self-hosted-studio-design.md`.
+The bootstrap studio above is joined by a studio hosted by the UI itself: its
+pages are UI-type resources rendered through the cascade, styled by the
+studio's packaged layer, so an author can edit the studio with the studio. It
+uses the runtime features described in this chapter (embeds, computed resource
+types, safe mode, drafts in the live preview). The design is in
+`docs/superpowers/specs/2026-11-10-ui-self-hosted-studio-design.md`; this
+section grows with it.
+
+**The layer.** Installing `scrud_django.ui.studio` (as in [Setup](#setup))
+installs its packaged UI layer, prefix `studio:`
+(`scrud_django.ui.studio.layer`), beneath every branch (see
+[Packaged UI layers](#packaged-ui-layers)). Its stylesheet `studio:studio`
+selects only in the scope `studio` (`studio scrud:page` takes the page to
+the component `studio:page`), so a page without `?ui-scope=studio` renders as
+before. `studio:page` keeps what every page needs (the CSRF meta tag, both
+static scripts, the CSS and JS items' links, and the chrome) and wraps the body
+in `<div class="studio" data-studio>`. The layer's CSS item `studio:studio`
+and JS item `studio:studio` are effective on every branch, so every page links
+them: every selector of the CSS is under a `.studio` class or a
+`[data-studio…]` attribute, and the script does nothing unless the page has a
+`[data-studio-workbench]` element. No layer component has an inline script or
+an event handler attribute, so a `script-src 'self'` policy works. A branch
+overrides any of these items by name, as it does any layer item.
+
+**The studio root.** The studio is served from a published branch, the
+*studio root*: a root branch with a prefix, which the setting names.
+
+```python
+SCRUD_UI_STUDIO_BRANCH = "studio"  # default: None
+```
+
+`scrud_django.ui.studio.studio_branch()` reads it. Studio pages are always in
+the scope `studio` (their URLs carry `?ui-scope=studio`); the studio root's
+own workbench is its `ui-branches` detail under its prefix, for example
+`/studio-root/ui-branches/3/?ui-scope=studio`.
+
+**The studio links.** When the studio app is installed, every page of the
+seven UI types (`ui-components`, `ui-stylesheets`, `ui-branches`,
+`ui-branch-versions`, `ui-pushes`, `ui-css`, `ui-js`, lists and details) and of
+the studio's computed types carries, after the banner and the safe mode
+notice:
+
+```html
+<nav class="scrud-studio-links">
+  <a href="/studio-root/ui-branches/3/?ui-scope=studio">Studio</a>
+  <a href="/api/ui-components/9/?ui-safe=1">Safe mode</a>
+  <a href="/studio/">Bootstrap studio</a>
+</nav>
+```
+
+(on one line, without the whitespace). *Studio* links to the studio root's
+workbench; it is left out when `SCRUD_UI_STUDIO_BRANCH` is unset, names no
+stored branch, or names a branch with no prefix. *Safe mode* is the current
+URL with `ui-safe=1` (its other parameters kept). *Bootstrap studio* is the
+bootstrap studio's types page (`scrud-studio:types`), left out when the project
+does not include the studio's URLs. The links are server chrome, like the
+banner: a page component that leaves them out is replaced by the built-in page.
+So an author who breaks the studio's own components can still reach it in safe
+mode, or in the bootstrap studio. A fragment (an htmx request) has no links.

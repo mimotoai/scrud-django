@@ -112,6 +112,24 @@
   is one with no stored row. Live-preview drafts are render-only too: an
   embedded list of the branch's items lists the stored item a draft
   replaces, and embedded studio data shows the stored items.
+* The studio's packaged UI layer, `studio:` (`scrud_django.ui.studio.layer`),
+  installed with `scrud_django.ui.studio`: a page component `studio:page`,
+  selected only in the scope `studio` (`?ui-scope=studio`), and the CSS and JS
+  items `studio:studio`, which every page links. Its CSS selects only under
+  `.studio` or `[data-studio…]`, and its script does nothing on a page without
+  a studio workbench, so pages outside the studio render as before.
+* The setting `SCRUD_UI_STUDIO_BRANCH` (default `None`) names the published
+  branch that hosts the self-hosted studio (`studio_branch()` in
+  `scrud_django.ui.studio`). With the studio app installed, the pages of the UI
+  types and of the studio's computed types carry studio links
+  (`<nav class="scrud-studio-links">`): to that branch's workbench (when the
+  setting names a branch with a prefix), to the same page in safe mode, and to
+  the bootstrap studio. They are page chrome: a page component that leaves
+  them out is replaced by the built-in page.
+* Stored Jinja components get `in_mount(href)` (an API URL mapped into the
+  page's published prefix) and `api_url(slug, key=None)` (the API path of a
+  registered type's list or detail; an unknown slug fails the component)
+  beside `embed`.
 
 ### Changed
 

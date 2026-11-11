@@ -22,6 +22,8 @@ class ScrudUIStudioConfig(AppConfig):
     name = "scrud_django.ui.studio"
     label = "scrud_django_ui_studio"
     default_auto_field = "django.db.models.AutoField"
+    # The studio's packaged UI layer (`scrud_django.ui.studio.layer`).
+    scrud_ui_layer = {"prefix": "studio:", "package": "scrud_django.ui.studio.layer"}
 
     def ready(self):
         checks.register(check_ui_installed)

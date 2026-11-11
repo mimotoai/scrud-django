@@ -1,5 +1,7 @@
 from django.apps import AppConfig
 
+from scrud_django.ui.studio.apps import ScrudUIStudioConfig
+
 
 class TestsConfig(AppConfig):
     name = "tests"
@@ -38,3 +40,12 @@ class UILayerInvalidConfig(AppConfig):
     name = "tests.ui_layer_invalid"
     label = "tests_ui_layer_invalid"
     scrud_ui_layer = {"prefix": "layerinvalid:", "package": "tests.ui_layer_invalid"}
+
+
+class StudioWithoutLayerConfig(ScrudUIStudioConfig):
+    """The studio app as the suite installs it: without its UI layer
+    (``studio:``), whose page component, CSS and JS every page would link and
+    every item listing would list. The studio layer's tests install the real
+    config (``scrud_django.ui.studio``) with the ``studio_layer`` fixture."""
+
+    scrud_ui_layer = None

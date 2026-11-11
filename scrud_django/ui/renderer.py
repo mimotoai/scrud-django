@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from urllib.parse import urlsplit
 
+from django.apps import apps
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.db import DatabaseError, transaction
 from django.http import Http404, QueryDict
@@ -90,7 +91,7 @@ from scrud_django.ui.cascade import (
     request_memo,
     resolve_component,
 )
-from scrud_django.ui.embed import embed_for
+from scrud_django.ui.embed import component_globals
 from scrud_django.ui.render import JINJA_ENGINE, render_collection, render_resource
 from scrud_django.ui.selectors import TypeTerm
 
@@ -126,6 +127,9 @@ _SCOPE_SEPARATORS = re.compile(r"[\s,]+")
 _SCOPE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 # RFC 6901: "" or "/"-prefixed reference tokens, "~" only as "~0" or "~1".
 _POINTER = re.compile(r"(?:/(?:[^~/]|~[01])*)*")
+
+# The app whose links (`studio.links`) the pages of the UI's types carry.
+STUDIO_APP = "scrud_django.ui.studio"
 
 PAGE_TERM = TypeTerm(iri="scrud:page")
 PAGE_BUILTIN = "scrud:page"
@@ -613,7 +617,9 @@ def _page(
     when it has one, on a hidden ``.scrud-branch-page`` element, for the
     requests of elements outside any frame; in safe mode the element is
     there with ``data-scrud-safe="1"``, so that those requests send
-    `SAFE_HEADER`. A page component that leaves
+    `SAFE_HEADER`. So are the studio links (`studio.links.studio_links`) on
+    a page of a UI type or a studio computed type, when the studio app is
+    installed. A page component that leaves
     them out is replaced by the built-in. (Branch CSS, or a component that
     wraps the body in a hidden element, can still hide the banner: follow-up
     ``ui-banner-hideable``.)
@@ -621,7 +627,7 @@ def _page(
     The page component's context also has ``css``: the URLs of the CSS files
     effective on the page's branch, in order, and ``scripts``: those of its
     JS files (empty when it has none); a stored Jinja one's also has
-    ``embed`` (`embed.embed_for`)."""
+    ``embed``, ``in_mount`` and ``api_url`` (`embed.component_globals`)."""
     chrome = []
     branch = frame_branch(request) if chosen is not None else None
     safe = safe_mode()
@@ -639,6 +645,11 @@ def _page(
         chrome.append(banner(chosen, request))
     if safe:
         chrome.append(SAFE_NOTICE)
+    if apps.is_installed(STUDIO_APP):
+        from scrud_django.ui.studio.links import has_studio_links, studio_links
+
+        if has_studio_links(resource_type):
+            chrome.append(studio_links(request))
     chrome = mark_safe("".join(chrome)) if chrome else None
     if chrome is not None:
         body = mark_safe(chrome + body)
@@ -659,7 +670,7 @@ def _page(
             "body": body,
         }
         if getattr(component, "engine", None) == JINJA_ENGINE:
-            context["embed"] = embed_for(request)
+            context.update(component_globals(request))
         return context
 
     component = resolve_component(

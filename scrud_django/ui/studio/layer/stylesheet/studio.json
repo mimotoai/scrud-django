@@ -1,0 +1,10 @@
+{
+  "name": "studio:studio",
+  "order": 0,
+  "rules": [
+    {
+      "select": "studio scrud:page",
+      "component": "studio:page"
+    }
+  ]
+}

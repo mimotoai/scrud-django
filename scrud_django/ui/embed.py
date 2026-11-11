@@ -36,22 +36,28 @@ and any embed past the first `MAX_EMBEDS` of a top-level response. A view
 that raises renders `FAILED_MESSAGE`: logged at ERROR, with
 ``got_request_exception`` sent, and rolled back to a savepoint of its own
 on each database in an atomic block, so that the embedding render's
-transaction stays usable."""
+transaction stays usable.
+
+`component_globals` gives a stored Jinja component ``embed`` and two more
+globals: ``in_mount(href)``, an API URL as the request's prefix serves it
+(`selection.in_mount`), and ``api_url(slug, key=None)``, the API path of a
+registered type's list or detail (`api_url`)."""
 
 import contextvars
 import logging
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from django.core.exceptions import DisallowedHost
 from django.core.signals import got_request_exception
 from django.db import connections, transaction
 from django.http import QueryDict
+from django.urls import Resolver404, get_script_prefix, resolve, reverse
 from markupsafe import Markup
 
 from scrud_django.ui.branches.effective import BRANCH_HEADER, active_selection
-from scrud_django.ui.branches.selection import mount_of, selection_value
+from scrud_django.ui.branches.selection import in_mount, mount_of, selection_value
 from scrud_django.ui.cascade import builtin_component, rules_memo
 from scrud_django.ui.dispatch import dispatch_path, resolve_path
 
@@ -102,6 +108,53 @@ def embed_for(request):
         return Markup(_embed(request, path, scope, mode))
 
     return embed
+
+
+def component_globals(request) -> dict:
+    """The globals a stored Jinja component rendered for `request` gets in
+    its context (node, list and page): ``embed`` (`embed_for`),
+    ``in_mount(href)``, `href` mapped into the request's prefix as
+    `selection.in_mount` maps links (a value that is not a string is
+    returned as it is), and ``api_url`` (`api_url`)."""
+
+    def in_mount_global(href):
+        return in_mount(request, href) if isinstance(href, str) else href
+
+    return {
+        "embed": embed_for(request),
+        "in_mount": in_mount_global,
+        "api_url": api_url,
+    }
+
+
+def api_url(slug, key=None) -> str:
+    """The API path of the list of the registered resource type `slug` (its
+    route ``<slug>-list``), or of its detail for `key` (``<slug>-detail``;
+    a computed type has only that one), as `reverse` gives it: under the
+    API's base, never a published branch's prefix (`embed` maps an API path
+    into the page's prefix). `ValueError` (or `NoReverseMatch`) for a `slug`
+    that is not a string, that has no such route, or whose route is not a
+    resource view of the type `slug`, so that a component calling it fails
+    and falls back."""
+    from scrud_django.ui.branches.middleware import is_resource_view
+
+    if not isinstance(slug, str) or not slug:
+        raise ValueError(f"api_url: {slug!r} is not a type's slug")
+    if key is None:
+        path = reverse(f"{slug}-list")
+    else:
+        path = reverse(f"{slug}-detail", args=[key])
+    script = get_script_prefix()
+    if not path.startswith(script):
+        raise ValueError(f"api_url: {path!r} is not under {script!r}")
+    try:
+        # As the server hands the path to Django: decoded.
+        match = resolve("/" + unquote(path[len(script) :]))
+    except Resolver404:
+        raise ValueError(f"api_url: {path!r} is not served") from None
+    if not is_resource_view(match.func, slug):
+        raise ValueError(f"api_url: {slug!r} is not a registered resource type")
+    return path
 
 
 def _embed(request, path, scope, mode) -> str:

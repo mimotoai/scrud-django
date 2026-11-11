@@ -102,7 +102,9 @@ SETTINGS: dict[str, Any] = dict(
         "scoped_rbac",
         "scrud_django",
         "scrud_django.ui",
-        "scrud_django.ui.studio",
+        # The studio without its UI layer (``studio:``), which the tests that
+        # need it install with the ``studio_layer`` fixture.
+        "tests.apps.StudioWithoutLayerConfig",
         "tests",
         "tests.apps.UILayerTestConfig",
         "reversion",

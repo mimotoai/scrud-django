@@ -45,12 +45,13 @@ from scrud_django.ui.cascade import (
     resolve_component,
     rule_outcome,
 )
-from scrud_django.ui.embed import embed_for
+from scrud_django.ui.embed import component_globals
 from scrud_django.ui.selectors import TypeTerm
 
 logger = logging.getLogger(__name__)
 
-# The engine whose stored components get ``embed`` in their context.
+# The engine whose stored components get ``embed``, ``in_mount`` and
+# ``api_url`` in their context (`embed.component_globals`).
 JINJA_ENGINE = "jinja2"
 
 _preview: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -841,12 +842,13 @@ def _render_builtin(name, context):
 
 def _render_stored(component, context, where, fallback, request=None):
     """A stored `component` rendered with an isolated copy of `context`, to
-    which a Jinja one's ``embed`` (`embed.embed_for` `request`) is added. If
+    which a Jinja one's ``embed``, ``in_mount`` and ``api_url``
+    (`embed.component_globals` of `request`) are added. If
     it raises, the failure is logged (naming `where`) and the built-in that
     ``fallback()`` returns renders `context` after a comment naming it."""
     isolated = _isolated(context)
     if getattr(component, "engine", None) == JINJA_ENGINE and request is not None:
-        isolated["embed"] = embed_for(request)
+        isolated.update(component_globals(request))
     try:
         return component.compiled().render(isolated)
     except Exception:

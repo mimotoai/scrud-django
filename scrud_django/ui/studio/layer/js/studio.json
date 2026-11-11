@@ -1,0 +1,5 @@
+{
+  "name": "studio:studio",
+  "order": 0,
+  "js": "(function () {\n  \"use strict\";\n  // Layer JS loads on every page: it does nothing without a workbench.\n  var workbench = document.querySelector(\"[data-studio-workbench]\");\n  if (!workbench) {\n    return;\n  }\n  workbench.setAttribute(\"data-studio-ready\", \"1\");\n})();\n"
+}
