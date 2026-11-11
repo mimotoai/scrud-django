@@ -28,7 +28,10 @@
   resource view as the user), and needs a signed-in user (401 otherwise). New
   problem types: `ui-studio-branch-read-only`, `ui-studio-context-unavailable`,
   `ui-pointer-not-found`. See the Studio chapter of the UI page. The demo
-  mounts it at `/studio/` and seeds a working branch `alice-wip`.
+  mounts it at `/studio/` and seeds a working branch `alice-wip`, and the
+  self-hosted studio's tree: the published root `studio` at `/workbench/`
+  (`SCRUD_UI_STUDIO_BRANCH`) and its working branch `studio-wip`, with grants
+  for the demo users.
 * `ui-js` items in `scrud_django.ui`: a new item type shaped like `ui-css`
   (`name`, `js`, `order`, the branch fields), served at versioned, immutable
   same-origin URLs (`ui-js-files/<name>/<etag>.js`, also under a published

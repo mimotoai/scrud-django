@@ -7,12 +7,16 @@ named by the resource. These tests serve the API at ``/api/`` and the
 bootstrap studio at ``/studio/`` (``tests.mounted_urls``), with the studio
 layer installed (the ``studio_layer`` fixture)."""
 
+import importlib.util
+import io
 import json
 from html.parser import HTMLParser
+from pathlib import Path
 
 import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
+from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, UI_CSS_TYPE_URI
 from scrud_django.ui.layers import layer_item
@@ -479,3 +483,121 @@ def test_workbench_hrefs_stay_in_mount(studio_layer, ui_alice_login):
         assert button.attrs["hx-swap"] == "none"
         assert button.attrs["data-scrud-etag"] == ""
         assert json.loads(button.attrs["data-scrud-body"])["state"] == state
+
+
+SEED = Path(__file__).parent.parent / "demo/demo/management/commands/seed_todo_demo.py"
+
+
+def load_seed():
+    """The demo's seed command module. The suite does not put ``demo/`` on
+    the path (and a package called ``demo`` is not this project's), so it is
+    loaded from its file; it imports only scrud_django and Django."""
+    spec = importlib.util.spec_from_file_location("seed_todo_demo", SEED)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_seed(module):
+    out = io.StringIO()
+    module.Command(stdout=out, stderr=io.StringIO()).handle()
+    return out.getvalue()
+
+
+def stored_state():
+    from scoped_rbac.models import Role, RoleAssignment
+
+    from scrud_django.models import Resource
+
+    return (
+        sorted(
+            (r.pk, r.etag, json.dumps(r.content, sort_keys=True))
+            for r in Resource.objects.all()
+        ),
+        sorted((r.pk, r.etag) for r in Role.objects.all()),
+        sorted((a.pk, a.etag) for a in RoleAssignment.objects.all()),
+    )
+
+
+def seeded_branch(name):
+    from scrud_django.models import Resource
+
+    [branch] = [
+        r
+        for r in Resource.objects.filter(resource_type__slug="ui-branches")
+        if r.content["name"] == name
+    ]
+    return branch
+
+
+@pytest.mark.django_db
+@test_context
+def test_seed_creates_studio_tree_and_grants(studio_layer, settings):
+    from django.contrib.auth import get_user_model
+
+    module = load_seed()
+    first = run_seed(module)
+    state = stored_state()
+    second = run_seed(module)
+    assert stored_state() == state
+    assert "created" not in second and "updated" not in second
+
+    studio = seeded_branch("studio")
+    assert studio.content["parent"] is None
+    assert studio.content["prefix"] == STUDIO_ROOT
+    assert studio.content["rbac_context"] == STUDIO_CONTEXT
+    wip = seeded_branch("studio-wip")
+    assert wip.content["parent"] == "studio"
+    assert wip.content.get("prefix") is None
+    assert wip.content["rbac_context"] == "ui-studio-wip"
+    alice = seeded_branch("alice-wip")
+    for branch in (alice, wip):
+        assert f"/workbench/ui-branches/{branch.pk}/{WORKBENCH}" in first
+
+    author = get_user_model().objects.get(username="author")
+    Given.http.force_authenticate(author)
+    # The workbench of the working branch, served by the published studio.
+    get_page(workbench_url(wip, STUDIO_ROOT))
+    get_page(workbench_url(studio, STUDIO_ROOT))
+    component = {
+        "name": "from-seed-test",
+        "engine": "jinja2",
+        "mode": "view",
+        "template": "<b>x</b>",
+    }
+    When.http.post(
+        reverse("ui-components-list"),
+        data={**component, "branch": "studio-wip", "rbac_context": "ui-studio-wip"},
+        format="json",
+    )
+    Then.http.status_code_is(201)
+    # Pushing the working branch into the studio root is allowed.
+    When.http.post(
+        reverse("ui-pushes-list"),
+        data={
+            "source": "studio-wip",
+            "target": "studio",
+            "rbac_context": STUDIO_CONTEXT,
+            "state": "applied",
+        },
+        format="json",
+    )
+    Then.http.status_code_is(201)
+    # Only the author holds the studio's grants: the owner may not write
+    # its working branch. (The author's POST on the studio root itself is
+    # allowed too: applying a push needs the grants a direct write needs.)
+    Given.http.force_authenticate(get_user_model().objects.get(username="owner"))
+    When.http.post(
+        reverse("ui-components-list"),
+        data={**component, "branch": "studio-wip", "rbac_context": "ui-studio-wip"},
+        format="json",
+    )
+    Then.http.status_code_is(403)
+    # The owner holds the site-level ui-branches grant (PUT in "") that
+    # publishing a prefix needs.
+    from scoped_rbac.models import RoleAssignment
+
+    assignment = RoleAssignment.objects.get(
+        user__username="owner", rbac_context=DEFAULT_CONTEXT
+    )
+    assert UI_BRANCH_TYPE_URI in assignment.role.definition["http.PUT"]

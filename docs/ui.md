@@ -1898,7 +1898,10 @@ compact sidebar list, and a page with a layout), and four branches: the
 published `admin` branch at `/manage/` (with an extra component and its own CSS),
 the published `customer` branch at `/todo/` (with its own CSS), and a working
 branch `testing-admin` over `admin`, and a working branch `alice-wip` over
-`testing-admin` for the studio. The demo adds
+`testing-admin` for the studio. It also seeds the self-hosted studio's tree: the
+published root `studio` at `/workbench/` (context `ui-studio`, named by
+`SCRUD_UI_STUDIO_BRANCH = "studio"` in the demo's settings) and its working
+branch `studio-wip` (context `ui-studio-wip`). The demo adds
 `PublishedBranchMiddleware` to its settings. The admin prefix is `/manage/`, not
 `/admin/resources/`, because Django's admin has a catch-all route under
 `/admin/`, which a prefix there would hide.
@@ -1915,7 +1918,12 @@ use HTTP Basic auth). The users are `owner`/`owner` (reads and edits the list),
 `reader`/`reader` (reads it) and `author`/`author` (writes the UI components
 and stylesheets); these passwords are for the demo only. `author` writes the UI
 in the four branches' contexts (`ui-admin`, `ui-customer`, `ui-testing`,
-`ui-alice`) and may open both prefixes; `reader` may open `/todo/` (it may GET
+`ui-alice`) and may open both prefixes. For the studio's tree, `author` may GET
+the `studio` root, write the UI items and `ui-pushes` in `ui-studio-wip`, and
+push into `studio` (it holds `ui-pushes` and the item writes a push applies in
+`ui-studio`: applying a push needs the grants a direct write would, so it can
+also write items there directly); `owner` holds PUT on `ui-branches` in `""`,
+the grant that publishing a prefix needs; `reader` may open `/todo/` (it may GET
 the `customer` branch) and gets a 403 at `/manage/`; `owner` may open `/todo/`
 too. To try the flow: as `author`, write a component on `testing-admin` (a POST
 of a `ui-components` item with `"branch": "testing-admin"` and
@@ -1923,6 +1931,10 @@ of a `ui-components` item with `"branch": "testing-admin"` and
 `/manage/todo-lists/<id>/?ui-branch=testing-admin` (confirm the switch), then
 POST a `ui-pushes` item with `source` `testing-admin`, `target` `admin`,
 `rbac_context` `ui-admin` and `state` `applied`.
+
+The command prints the self-hosted studio's workbench URLs, as `author`:
+`/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`, for `alice-wip`
+and for `studio-wip`.
 
 The demo also includes the studio at `/studio/`. Sign in at `/api-auth/login/` as
 `author`, open `/studio/types/todo-lists/`, pick `alice-wip`, click an item in the
