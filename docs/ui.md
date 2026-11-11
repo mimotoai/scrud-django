@@ -217,7 +217,11 @@ frame's own requests stay there. A response of 400 or more is embedded as the
 notice the resource's URL answers with (a 403 or a 404 for a resource the
 viewer can't read): never its content. Safe mode and the studio's preview carry
 over to what is embedded (as context variables, not headers): an embed in a
-preview has no write attributes. Django components have no `embed`.
+preview has no write attributes. They are render-only: what the embedded view
+reads as data (a list of UI items, a studio computed type) is the stored state,
+as its URL answers it, so an embedded list of UI items in safe mode lists the
+stored items, and one in a live preview lists the stored item a draft replaces.
+Django components have no `embed`.
 
 These are refused, and render
 `<div class="scrud-notice scrud-notice-error" role="alert">This embed was refused.</div>`
@@ -987,7 +991,10 @@ the page do not carry the parameter: add it again to follow them.
 
 In code, `scrud_django.ui.branches.effective.using_safe_mode()` turns it on for
 a block (a context variable, so in-process work during the render sees it too),
-and `safe_mode()` reads it.
+and `safe_mode()` reads it. `stored_state()` (same module) turns safe mode and
+any live-preview drafts off for a block: views open it around their data reads
+(a list of UI items, the studio's computed types), so that what an embedded
+request reads is what its URL answers, while its rendering stays safe.
 
 ### CSS
 
@@ -1216,7 +1223,8 @@ parameters, read and checked the same way.
   on the body and the row, the item's own checks, the type's JSON Schema),
   without making it. A draft that fails is left out and listed with its
   errors (below). Embedded resources render in process, so they show the
-  drafts too.
+  drafts too; the data they read does not (a list of the branch's items lists
+  the stored item, not the draft).
 - **Drafts on a published branch** (`main`, or one with a prefix) are refused
   with 400 `ui-studio-branch-read-only`: the studio edits working branches.
 - **After a push.** With `after_push`, the branch is shown with the source

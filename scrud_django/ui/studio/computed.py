@@ -30,8 +30,7 @@ from scrud_django.ui.branches import ITEM_KINDS, MAIN, UI_BRANCH_SLUG
 from scrud_django.ui.branches.effective import (
     Selection,
     chain_of,
-    using_drafts,
-    using_safe_mode,
+    stored_state,
 )
 from scrud_django.ui.branches.model import branch_of, item_key
 from scrud_django.ui.branches.selection import (
@@ -82,11 +81,7 @@ def _stored_state():
     for the response (shared with a render's, for an embed), and neither
     the safe mode nor the drafts of a render it is embedded in (an embed
     runs inside its embedder's context)."""
-    with (
-        request_memo(),
-        using_safe_mode(False),
-        using_drafts(LAYER_BRANCH_NAME, ()),
-    ):
+    with request_memo(), stored_state():
         yield
 
 

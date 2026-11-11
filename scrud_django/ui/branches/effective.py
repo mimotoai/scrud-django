@@ -145,6 +145,23 @@ def using_drafts(branch: str, drafts: Iterable[Draft]):
         _drafts.reset(token)
 
 
+@contextlib.contextmanager
+def stored_state():
+    """Inside the block, data reads see the stored items: neither the safe
+    mode (`using_safe_mode`) nor the drafts (`using_drafts`) of a render in
+    progress, which are render-only state. An embedded request runs inside
+    its embedder's context, so a view's data read (a list of UI items, a
+    computed type of the studio) opens this block; rendering (the cascade's
+    components, stylesheets, CSS and JS) does not, and keeps both."""
+    safe_token = _safe_mode.set(False)
+    drafts_token = _drafts.set(None)
+    try:
+        yield
+    finally:
+        _drafts.reset(drafts_token)
+        _safe_mode.reset(safe_token)
+
+
 def draft_position(etag) -> int | None:
     """The cascade position of the draft row whose ETag is `etag`, where its
     save would put it: the pk of the branch's own row it replaces (a save

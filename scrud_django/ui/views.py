@@ -22,7 +22,11 @@ from scrud_django.models import Resource
 from scrud_django.registration import write_db
 from scrud_django.rows import unsorted
 from scrud_django.ui.branches import MAIN
-from scrud_django.ui.branches.effective import effective_rows, parent_state
+from scrud_django.ui.branches.effective import (
+    effective_rows,
+    parent_state,
+    stored_state,
+)
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
     applies_to,
@@ -69,7 +73,9 @@ class UIContentValidationMixin:
         names a branch that is refused is refused too
         (`UIBranchUnavailableError`, 400; ruling R40), never answered with
         the published branch's items; HTML renders the published branch
-        and says so in its banner."""
+        and says so in its banner. The rows are the stored ones
+        (`stored_state`): an embedded list shows neither its embedder's
+        safe mode nor its drafts."""
         queryset = super().filter_queryset(queryset)
         type_uri = self.get_resource_type().type_uri
         if getattr(self, "action", None) != "list" or kind_of(type_uri) is None:
@@ -78,9 +84,12 @@ class UIContentValidationMixin:
         chosen = choose(self.request, cookie=html)
         if not html and chosen.refused is not None and chosen.source in EXPLICIT:
             raise UIBranchUnavailableError(chosen.refused)
-        rows = effective_rows(
-            type_uri, chosen.selection, include_deleted=True, authorized_only=False
-        )
+        # The stored items, as the list's URL answers them: not the safe
+        # mode nor the drafts of a render this request is embedded in.
+        with stored_state():
+            rows = effective_rows(
+                type_uri, chosen.selection, include_deleted=True, authorized_only=False
+            )
         # Not the packaged layers' items, which are no rows (pk None).
         return queryset.filter(
             pk__in=[pk for pk, _etag, _content in rows if pk is not None]

@@ -16,8 +16,14 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scrud_django import collection_type_uri_for
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui import dispatch as ui_dispatch
-from scrud_django.ui.branches import middleware
-from scrud_django.ui.branches.effective import using_safe_mode
+from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, middleware
+from scrud_django.ui.branches.effective import (
+    Draft,
+    Selection,
+    using_drafts,
+    using_safe_mode,
+    using_selection,
+)
 from scrud_django.ui.embed import (
     MAX_EMBED_DEPTH,
     MAX_EMBEDS,
@@ -25,9 +31,10 @@ from scrud_django.ui.embed import (
     embed_for,
 )
 from scrud_django.ui.studio import dispatch as studio_dispatch
+from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .fixtures import *  # noqa
-from .fixtures import TYPE_URI_TODO_LIST, assign_role
+from .fixtures import TYPE_URI_TODO_LIST, assign_role, assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_prefixes import ADMIN, mounted, publish
 from .test_ui_branch_render import BRANCH_HEADER, may_select_branches, put_item
@@ -569,3 +576,60 @@ def test_embed_path_parsed_once(todo_list, todo_owner_login, caplog):
     assert "hx-put" not in embedded("query")
     assert f'hx-put="{url}"' in embedded("fragment")
     assert f'hx-put="{url}"' in embedded("space")
+
+
+def component_frames(page):
+    """The pks of the ui-components frames in `page`."""
+    return {
+        int(pk)
+        for pk in re.findall(
+            r'class="scrud-resource" data-scrud-href="(?:http://testserver)?'
+            r'/api/ui-components/(\d+)/"',
+            page,
+        )
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_embedded_item_list_in_safe_mode_lists_stored_items(ui_author_login):
+    """Safe mode is render-only: an embedded list of UI items reads the
+    stored items as its URL answers them, not the packaged layers alone."""
+    stored = make_component("row", "<b>{{ value.text }}</b>")
+    request = RequestFactory().get("/somewhere/")
+    request.user = ui_author_login
+    embed = embed_for(request)
+    path = reverse("ui-components-list")
+    assert stored.pk in component_frames(str(embed(path)))
+    with using_safe_mode():
+        safe = str(embed(path))
+    assert stored.pk in component_frames(safe)
+
+
+@pytest.mark.django_db
+@test_context
+def test_embedded_item_list_in_live_preview_lists_drafted_item():
+    """A live preview's drafts are render-only: an embedded list of the
+    branch's items still lists the stored item a draft replaces."""
+    make_branch("wip", "project-a")
+    own = put_item("ui-components", "row", "<b>{{ value.text }}</b>", "wip")
+    user = assign_ui_role((UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI), "project-a")
+    request = RequestFactory().get("/somewhere/")
+    request.user = user
+    embed = embed_for(request)
+    path = reverse("ui-components-list")
+    draft = Draft(
+        "component",
+        {
+            "name": "row",
+            "engine": "django",
+            "mode": "view",
+            "template": "<i>{{ value.text }}</i>",
+            "rbac_context": "project-a",
+        },
+    )
+    with using_selection(Selection(branch="wip")):
+        assert own.pk in component_frames(str(embed(path)))
+        with using_drafts("wip", [draft]):
+            drafted = str(embed(path))
+    assert own.pk in component_frames(drafted)
