@@ -127,6 +127,30 @@ def css_selectors(css):
     return selectors
 
 
+def test_layer_code_min_height_is_the_editors_only(studio_layer):
+    """The editors' code blocks (``.studio-code``) are tall; the push
+    review's read-only blocks carry the same class and size to their
+    content. So the min-height is set only under the editor pane."""
+    [(_name, css)] = [
+        (name, content["css"]) for name, content in layer_files("css").items()
+    ]
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    tall = [
+        selector.strip()
+        for prelude, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+        if re.search(r"(^|;|\s)min-height\s*:", body)
+        for selector in prelude.split(",")
+        if "studio-code" in selector
+    ]
+    # The editors still get it ...
+    assert tall == ['.studio [data-studio-pane="editor"] .studio-code']
+    # ... and the review's blocks (a pre in the push preview, outside the
+    # editor pane) are not selected by it.
+    template = layer_files("component")["push-preview.json"]["template"]
+    assert '<pre class="studio-code">' in template
+    assert "data-studio-pane" not in template
+
+
 @pytest.mark.django_db
 def test_layer_installed_with_studio_app(studio_layer):
     assert STUDIO_LAYER in installed_layers()
