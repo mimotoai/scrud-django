@@ -468,6 +468,10 @@ def test_broken_studio_page_on_S_recoverable(studio_layer):
     )
     Then.http.status_code_is(200)
     assert Http.response.json()["own"] is False
+    # The page is broken again, so that the restore below has a broken
+    # studio:page to repair, as it had before the bootstrap revert.
+    override("studio:page", "studio", RAISES)
+    assert get_text(url).startswith(PAGE_FAILED)
     # From S's own workbench in safe mode, the history rolls S back: a
     # restore of the version before the break removes the overrides.
     safe = Page(get_text(studio_links(get_text(links["Studio"]))["Safe mode"]))

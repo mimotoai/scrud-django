@@ -470,7 +470,10 @@
     // deletes the item: it says so.
     var revert = byId("studio-revert");
     revert.hidden = !item.own;
-    revert.textContent = item.reverts_to ? "Revert to inherited" : "Delete from " + this.branch;
+    // "Revert to inherited" or "Revert to packaged": what the branch shows then.
+    revert.textContent = item.reverts_to
+      ? "Revert to " + item.reverts_to
+      : "Delete from " + this.branch;
     clear(byId("studio-editor-errors"));
     showDraft(draft);
   };
@@ -527,7 +530,7 @@
     if (!item.reverts_to) {
       var where = this.editable ? "this branch" : "the live site";
       var question =
-        "Delete " + item.name + " from branch " + this.branch + "? Nothing is beneath it" +
+        "Delete " + item.name + " from branch " + this.branch + "? Nothing you may read is beneath it" +
         " to show instead: the item is removed from " + where + ".";
       if (typeof window.confirm === "function" && !window.confirm(question)) {
         return Promise.resolve();

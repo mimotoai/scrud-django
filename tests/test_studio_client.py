@@ -822,7 +822,8 @@ def test_an_own_item_with_nothing_beneath_is_deleted_after_a_confirm(
     from <branch>", and asks first: from a published branch, that it is
     removed from the live site; from a working branch, from that branch.
     Declined, nothing is sent; confirmed, the revert is sent as a revert
-    is."""
+    is. With a packaged item beneath it is "Revert to packaged", asking
+    nothing."""
     setup_wip(ui_alice_login)
     make_branch("shop", "alice", prefix="/shop/")
     script = r"""
@@ -857,11 +858,33 @@ def test_an_own_item_with_nothing_beneath_is_deleted_after_a_confirm(
         assert out["label"] == f"Delete from {branch}"
         assert len(out["confirms"]) == 2
         assert "row" in out["confirms"][0] and where in out["confirms"][0]
+        # Something unreadable may be beneath: the question does not say
+        # that nothing is.
+        assert "Nothing you may read is beneath it" in out["confirms"][0]
         assert out["declined"] == 0
         (revert,) = [c for c in out["calls"] if c["url"].endswith("revert-item")]
         assert revert["headers"]["If-Match"] == '"a1"'
         assert revert["body"] == {"kind": "component", "branch": branch, "name": "row"}
         assert "Deleted row" in out["message"]
+    # A packaged layer item beneath (on a root): "Revert to packaged", and
+    # no question.
+    packaged = {**item("<u>x</u>", etag='"p1"'), "from": "shop"}
+    packaged["reverts_to"] = "packaged"
+    out = run_studio(
+        studio_page(branch="shop"),
+        preview_page(branch="shop"),
+        [
+            route("GET", item_url("row", branch="shop"), body=packaged),
+            route("POST", reverse("scrud-studio:revert-item"), 204, None, saved),
+        ],
+        script,
+    )
+    assert out["label"] == "Revert to packaged"
+    assert out["confirms"] == []
+    assert "packaged item" in out["reason"]
+    reverts = [c for c in out["calls"] if c["url"].endswith("revert-item")]
+    assert len(reverts) == 2 and reverts[0]["headers"]["If-Match"] == '"p1"'
+    assert "Reverted row to the packaged item" in out["message"]
 
 
 @pytest.mark.django_db

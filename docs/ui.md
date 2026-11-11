@@ -1194,9 +1194,10 @@ What a user can see or do comes from their grants, whatever the studio shows:
   the branch's own items (an override on the self-hosted studio's root, say):
   the branch strip lists a published branch's own items as it lists a working
   branch's changes (on `main`, whose every item is its own, it lists none;
-  open one from the preview), and the editor shows them read-only, with
-  **Revert** and no Save. The page opens on the first working branch the user
-  may select.
+  open one from the preview), and the editor shows them read-only, with no
+  Save and with "Revert to inherited", "Revert to packaged" or "Delete from
+  `<branch>`" (see [The editor](#the-editor)). The page opens on the first
+  working branch the user may select.
 - A rule from a stylesheet the user may not `GET` shows in the inspector as its
   rank only (`{"readable": false, "rank": [...], "outcome": ...}`): no
   selector, component or stylesheet name. A packaged
@@ -1254,14 +1255,15 @@ first response.
 
 A click on a node opens its winning component in the editor, when it is a
 stored one you may read; the branch strip opens any item the branch changed.
-**Revert** shows for an item that is the branch's own row, on a working or a
-published branch alike, and sends the ETag the editor read as `If-Match`; an
-item the branch inherits has none. It is labelled "Revert to inherited" when
-the branch would then show an item the user may read (its parent's, or on a
-root a packaged layer's: the item's `reverts_to`); otherwise it is "Delete
-from `<branch>`" and asks first, saying that the item is removed from the
-branch (from the live site, on a published branch). On a published branch the
-editor is read-only and says so, with no Save.
+An item that is the branch's own row, on a working or a published branch
+alike, has a revert control, which sends the ETag the editor read as
+`If-Match`; an item the branch inherits has none. Its label is what the branch
+shows once the row is deleted (the item's `reverts_to`): "Revert to
+inherited" (its parent's item) or "Revert to packaged" (a packaged layer's, on
+a root), when the user may read it; otherwise "Delete from `<branch>`", which
+asks first, saying that nothing the user may read is beneath it and that the
+item is removed from the branch (from the live site, on a published branch).
+On a published branch the editor is read-only and says so, with no Save.
 After a save or a revert the editor reopens the item it was showing, not the
 node's winner; after **New component** it opens the node's winner, the new
 component when its rule wins. A save refused with 412 (the item changed since
@@ -1582,9 +1584,9 @@ then a `PUT`); `from` is the branch the row comes from. `reverts_to`, for an
 own row, is what the branch shows once a revert deletes it: `"inherited"` (its
 parent's item), `"packaged"` (a packaged layer's, on a root) or `null` when
 nothing the user may read is beneath, as the self-hosted studio's
-`ui-branch-items` entries say it; `null` for an item the branch does not own. Deletion markers are shown. 404 when
-the branch shows no such item or one the user may not read, alike. 400
-`ui-branch-unavailable`.
+`ui-branch-items` entries say it; `null` for an item the branch does not own.
+Deletion markers are shown. 404 when the branch shows no such item or one the
+user may not read, alike. 400 `ui-branch-unavailable`.
 
 #### `POST save-item`
 
@@ -1609,14 +1611,13 @@ a packaged layer's item of that name, if any. The revert is the `DELETE` of
 the row through its resource view, with that view's checks and no others: it
 needs the grant the API's `DELETE` of that row needs, in the row's context
 (on `main`, usually the site's, `""`), and `GET` on the branch to select it.
-**`If-Match` is
-required**: the studio sends it as given, so without one the answer is 428 and
-a stale one gets 412; a revert must not silently delete a newer edit on a
-shared branch. 404 when the branch has no row of its own for the item, and
-the same 404 for one the user may not `GET`, before `If-Match` is looked at
-and before anything is dispatched: a revert tells nothing of a row the user
-may not read. Errors besides: 400 `ui-branch-unavailable`, 400 for a bad field, and the
-view's (403, 412, 428) as they are.
+**`If-Match` is required**: the studio sends it as given, so without one the
+answer is 428 and a stale one gets 412; a revert must not silently delete a
+newer edit on a shared branch. 404 when the branch has no row of its own for
+the item, and the same 404 for one the user may not `GET`, before `If-Match`
+is looked at and before anything is dispatched: a revert tells nothing of a
+row the user may not read. Errors besides: 400 `ui-branch-unavailable`, 400
+for a bad field, and the view's (403, 412, 428) as they are.
 
 #### `POST pull`
 
@@ -2761,10 +2762,12 @@ cannot reach:
 - **Revert the override in the bootstrap studio**: open any type's page in
   the bootstrap studio (its link above), pick the studio root as the branch,
   open the broken item from the strip's list of the branch's own items, and
-  choose **Revert** (`POST revert-item` in [The studio API](#the-studio-api)). S's own
-  row is deleted and S shows the packaged item again (or the one it
-  inherits). It needs the grant the API's `DELETE` of that row needs, in its
-  context, and `GET` on S to select it.
+  choose "Revert to packaged" (an override of a layer item; "Revert to
+  inherited" when S has a parent with the item, "Delete from `<branch>`" when
+  nothing readable is beneath; `POST revert-item` in
+  [The studio API](#the-studio-api)). S's own row is deleted and S shows the
+  packaged item again (or the one it inherits). It needs the grant the API's
+  `DELETE` of that row needs, in its context, and `GET` on S to select it.
 - **Restore S** from its own workbench in safe mode: open the *Studio* link's
   page (S's workbench), follow *Safe mode*, and in the strip's history choose
   "Restore to version N" for the version before the break (see

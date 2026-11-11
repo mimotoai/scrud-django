@@ -318,6 +318,14 @@ def test_published_branch_lists_its_own_items_to_revert(ui_alice_login):
     assert "read-only" in text and "revert" in text.lower()
     # The editor has its Revert control (studio.js shows it for an own item).
     assert re.search(r'<button[^>]*id="studio-revert"', section(shown, "studio-editor"))
+    assert "listed below" in text
+    # main's items are all its own: the strip lists none, and says they are
+    # opened from the preview instead of promising a list.
+    shown = page(branch="main")
+    text = strip_text(section(shown, "studio-strip-body"))
+    assert "read-only" in text and "open one from the preview" in text
+    assert "listed below" not in text
+    assert strip_text(section(shown, "studio-changes")) == "None"
 
 
 @pytest.mark.django_db

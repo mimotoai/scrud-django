@@ -20,7 +20,7 @@ from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, UI_PUSH_TYPE_URI
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
 from .fixtures import *  # noqa
-from .fixtures import assign_ui_role
+from .fixtures import assign_role, assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_push import make_wip, own_rows, quoted, stored_state
 from .test_ui_branch_push import push as api_push
@@ -277,6 +277,30 @@ def test_revert_on_a_published_branch(admin_login):
     # Nothing left to revert.
     studio("revert-item", revert, HTTP_IF_MATCH=current)
     Then.http.status_code_is(404)
+    # On main, DELETE in a project context is not DELETE of main's row (in
+    # ""): a user who may read it there, but DELETE only in "project-a", is
+    # refused as the API refuses them, and nothing is deleted.
+    deleter = assign_role(
+        {"http.GET": read, "http.DELETE": [UI_COMPONENT_TYPE_URI]}, "project-a"
+    )
+    grant(deleter, {"http.GET": read}, "")
+    Given.http.force_authenticate(deleter)
+    before = stored_state()
+    When.http.delete(
+        reverse("ui-components-detail", args=[main_row.pk]),
+        HTTP_IF_MATCH=quoted(main_row.etag),
+    )
+    Then.http.status_code_is(403)
+    api = (Http.response["Content-Type"], Http.response.json())
+    response = studio(
+        "revert-item",
+        {"kind": "component", "branch": "main", "name": "row"},
+        HTTP_IF_MATCH=quoted(main_row.etag),
+    )
+    Then.http.status_code_is(403)
+    assert (response["Content-Type"], response.json()) == api
+    assert "HX-Trigger" not in response
+    assert stored_state() == before
     # main too: its own row of an item is the item itself, so a revert
     # deletes it (as the API's DELETE of it would), If-Match required.
     Given.http.force_authenticate(admin_login)
