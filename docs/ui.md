@@ -2538,8 +2538,8 @@ mode). The layer's stylesheet takes the root of `UIPush`
 `studio:push` (edit mode) or `studio:push-view` (view mode). Each renders
 `<div class="studio-push" data-studio-push data-studio-mode="edit|view">`
 with the push's source (`data-studio-push-source`; for a restore, "None (a
-restore of version N)"), target, state, label and result ("Version N of
-<target>", or "Not applied yet"), and, for a push with a source that is not
+restore of version N)"), target, state, label (an em dash, "—", when it has
+none) and result ("Version N of <target>", or "Not applied yet"), and, for a push with a source that is not
 yet applied (it has no `result`), an embed of
 `api_url("ui-push-previews", source)` with `?target=<target>` in the scope
 `studio studio-push`: what it will change, as the panel shows it.
@@ -2636,7 +2636,8 @@ class="studio-branch-settings" data-studio-branch-settings
 data-studio-mode="edit|view">` with T's name, context and parent. The form
 has inputs for `label`, `description` and `base` (a select of `live` and
 `pinned`) on a working T, and shows them as text on a published one (a
-published T is read-only in the studio); the view shows them all as text.
+published T is read-only in the studio); the view shows them all as text. An
+unset parent, label or description shows as an em dash ("—").
 Save is the frame's submit (`PUT`). As in the editors, a change of a field
 saves nothing (the script `studio:studio` stops the `change` of anything in
 the pane): only Save, or Enter in a text field, writes. The frame also has

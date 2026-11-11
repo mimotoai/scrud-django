@@ -569,6 +569,38 @@ def test_refused_transition_shows_server_error(studio_layer, admin_login):
 
 @pytest.mark.django_db
 @test_context
+def test_push_page_without_label_shows_a_dash(studio_layer, admin_login):
+    """A push stored without a label (or with a null one) showed the text
+    "None" as its Label on its page, in both modes: the field shows an em
+    dash, and no bare "None" is left in the record. A restore's Source keeps
+    its sentence."""
+    wip_with_changes(admin_login)
+    unlabelled = store_push("wip", "main", "")
+    null_label = store_push("wip", "main", "", label=None)
+    restore = store_push(None, "main", "", restore=1)
+    reader = assign_ui_role((), "")
+    grant(reader, {"http.GET": [UI_PUSH_TYPE_URI]}, "")
+    grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "alice")
+    grant(reader, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
+    for user, mode in ((admin_login, "edit"), (reader, "view")):
+        Given.http.force_authenticate(user)
+        for push in (unlabelled, null_label, restore):
+            page = get_page(push_page_url(reverse("ui-pushes-detail", args=[push.pk])))
+            assert page.one("data-studio-push").attrs["data-studio-mode"] == mode
+            assert text_of(page.one("data-studio-push-label")) == "\u2014"
+            record = [e for e in page.elements if "studio-push-record" in e.classes()]
+            [dl] = record
+            values = [
+                text_of(e) for e in page.elements if e.tag == "dd" and e.within(dl)
+            ]
+            assert "None" not in values, values
+        assert text_of(page.one("data-studio-push-source")) == (
+            "None (a restore of version 1)"
+        )
+
+
+@pytest.mark.django_db
+@test_context
 def test_push_page_view_mode_and_restore(studio_layer, admin_login):
     wip_with_changes(admin_login)
     proposed = store_push("wip", "main", "", label="ship it")

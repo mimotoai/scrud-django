@@ -201,7 +201,8 @@
   scrolls; Apply stays off, with the reason, until the review
   has loaded and shows no conflict, readable or not. A push's page
   (`studio:push`, or `studio:push-view` for a user who may not `PUT` it)
-  shows its source, target, state, label and result, the preview of a push
+  shows its source, target, state, label (a dash when it has none) and
+  result, the preview of a push
   not yet applied with "Preview after push" (`studio:push-after`, when the
   studio's URLs are included: a type picker, and the target as it renders
   after the push in a sandboxed frame), and a state input (`proposed`, `applied`) saved only on
