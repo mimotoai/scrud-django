@@ -1618,17 +1618,19 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
   {"kind": "component", "name": "row", "origin": "own", "from": "wip",
    "href": "/api/ui-components/12/", "etag": "\"3f…\"",
    "content": {"name": "row", "engine": "jinja2", "…": "…"},
-   "conflict": "parent", "override": null},
+   "conflict": "parent", "override": null, "reverts_to": "inherited"},
   {"kind": "component", "name": "head", "origin": "inherited", "from": "main",
    "href": "/api/ui-components/7/", "etag": "\"9a…\"", "content": {"…": "…"},
    "conflict": null,
    "override": {"method": "POST", "href": "/api/ui-components/",
                 "body": {"name": "head", "engine": "jinja2", "…": "…",
                          "branch": "wip", "rbac_context": "alice"},
-                "etag": null}},
+                "etag": null},
+   "reverts_to": null},
   {"kind": "stylesheet", "name": "studio:workbench", "applies_to": "",
    "origin": "packaged", "from": null, "href": null, "etag": "\"c0…\"",
-   "content": {"…": "…"}, "conflict": null, "override": {"…": "…"}}
+   "content": {"…": "…"}, "conflict": null, "override": {"…": "…"},
+   "reverts_to": null}
 ]}
 ```
 
@@ -1655,6 +1657,12 @@ branch shows (live, or pinned), by kind, each kind in the cascade's order:
   but the server bases an override on what the branch shows itself, so it
   would silently revert the parent's changes since), for a deletion marker,
   and when the user may not `POST` that body.
+- `reverts_to` is set on own items only: what the branch shows once its row
+  is deleted, `inherited` (an ancestor's item, as the branch shows its
+  parent) or `packaged` (an installed layer's); `null` when the branch added
+  the item and there is nothing beneath it, and when what is beneath is an
+  item the user may not `GET` (the entry reveals no more than their JSON
+  would). It is `null` for items the branch does not own.
 - A row the user may not `GET` is left out entirely, as its JSON list leaves
   it out. So is a row that rendering skips (stored with another context than
   its branch authorizes).
@@ -1999,7 +2007,7 @@ with `studio-conflict-parent` or `studio-conflict-layer` for a conflict, and
 holds:
 
 - a button with `data-studio-open`, the JSON `{"kind", "name",
-  "applies_to", "href", "override"}` (`applies_to` is `null` but for a
+  "applies_to", "href", "override", "reverts_to"}` (`applies_to` is `null` but for a
   stylesheet; `href` is the item's resource as the page's prefix serves it,
   or `null` for a packaged item and an ancestor's item a pinned view reads
   from a version);
@@ -2119,12 +2127,17 @@ data-studio-mode="edit|view">`:
   messages (Refused writes); a stale one (another tab saved first) gets
   the notice and the frame that reloads the current state, in the editor's
   scope, and the workbench's notice says why.
-- **Revert to inherited.** The frame's own Delete button is the one control
-  that deletes T's row of the item: the script relabels it "Revert to
-  inherited" (with its own confirmation). It sends `If-Match`, a stale one
-  gets the 412 reload, and on success the panes are fetched again and the
-  item opens again: now the inherited or packaged item, or, when T added it,
-  a note that it is not on the branch.
+- **Revert to inherited, or Delete.** The frame's own Delete button is the
+  one control that deletes T's row of the item. When the entry's
+  `reverts_to` is set (deleting the row shows an ancestor's or a packaged
+  item), the script relabels it "Revert to inherited", with a confirmation
+  that says the branch's own version is deleted. When it is `null` (T added
+  the item, or what is beneath is not readable by the user), it stays
+  "Delete", with a confirmation that says the item is deleted from the
+  branch with nothing inherited to show instead. Either sends `If-Match`, a
+  stale one gets the 412 reload, and on success the panes are fetched again
+  and the item opens again: the inherited or packaged item, or a note that
+  it is not on the branch.
 - **View mode** (a published T, an item T does not own, a user who may not
   `PUT` it) shows the text in a read-only `<textarea>` with no `name`: no
   form, no Save. A requested view mode also has no Delete button.

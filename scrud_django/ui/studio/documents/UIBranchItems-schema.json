@@ -52,9 +52,14 @@
           "override": {
             "$ref": "#/definitions/action",
             "description": "For an item the branch shows but does not own: the POST that creates the branch's override of it (its content without base and deleted, on the branch, in its authorizing context; the server sets base). null on a published branch, on a @pinned view, for the branch's own items, and when the user may not POST it."
+          },
+          "reverts_to": {
+            "type": ["string", "null"],
+            "enum": ["inherited", "packaged", null],
+            "description": "For an own item: what the branch shows once its row is deleted, an ancestor's item (inherited) or a packaged layer's (packaged); null when there is none the user may read (the branch added the item), and for an item the branch does not own."
           }
         },
-        "required": ["kind", "name", "origin", "from", "href", "etag", "content", "conflict", "override"]
+        "required": ["kind", "name", "origin", "from", "href", "etag", "content", "conflict", "override", "reverts_to"]
       }
     }
   },

@@ -28,6 +28,7 @@ from .steps import *  # noqa: F403, F401
 from .test_studio_live_preview import errors_of, grant_items
 from .test_studio_page import store_item
 from .test_studio_workbench import STUDIO_ROOT, Page, setup_studio, workbench_url
+from .test_ui_branch_css import make_css
 from .test_ui_branch_js import make_js
 from .test_ui_branch_types import make_branch
 from .test_ui_http import HTML, grant, html
@@ -493,3 +494,45 @@ def test_second_tab_save_gets_412_reload(studio_layer, ui_alice_login):
     assert frame.tag == "form" and frame.attrs["data-scrud-etag"] != etag
     [code] = page.having("data-studio-code")
     assert textarea_value(code) == "<i>first</i>"
+
+
+@pytest.mark.django_db
+@test_context
+def test_revert_offered_only_over_something(studio_layer, ui_alice_login, admin_login):
+    """An own item's ``reverts_to`` says what deleting T's row shows instead:
+    ``inherited`` (an ancestor's item), ``packaged`` (a layer's), or
+    ``null`` when T added the item, or what lies beneath is one the user
+    may not read. The editor labels its delete control from it."""
+    _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
+    # main's CSS "hidden" is in "", which alice may not read; alice-wip has
+    # its own.
+    make_css("hidden", "p { color: red }")
+    make_css("hidden", "p { color: blue }", branch="alice-wip", context="alice")
+    expected = {
+        ("component", "row"): "inherited",
+        ("component", "studio:page"): "packaged",
+        ("component", "legacy"): None,
+        ("css", "site"): None,
+        ("js", "tools"): None,
+        ("css", "hidden"): None,
+        # Not own: nothing to revert.
+        ("component", "head"): None,
+        ("component", "card"): None,
+        ("component", "studio:workbench"): None,
+    }
+    for user, changes in (
+        (ui_alice_login, {}),
+        (admin_login, {("css", "hidden"): "inherited"}),
+    ):
+        Given.http.force_authenticate(user)
+        When.http.get(
+            reverse("ui-branch-items-detail", args=["alice-wip"]), HTTP_ACCEPT=JSON
+        )
+        Then.http.status_code_is(200)
+        listed = {(i["kind"], i["name"]): i for i in Http.response.json()["items"]}
+        tree = workbench_entries(alice_wip)
+        for key, reverts_to in {**expected, **changes}.items():
+            assert listed[key]["reverts_to"] == reverts_to, (user, key)
+            # The tree's entry carries it, for the editor.
+            _classes, opened, _li, _page = tree[key]
+            assert opened["reverts_to"] == reverts_to, (user, key)

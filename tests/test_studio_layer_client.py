@@ -226,10 +226,16 @@ override.text = 'Override on this branch';
 // hidden <pre>, as tojson escapes it).
 const ownLi = el('li', {'class': 'studio-item studio-own'}, itemsFrame);
 const row = {kind: 'component', name: 'row', applies_to: null,
-  href: '/workbench/ui-components/8/', override: null};
+  href: '/workbench/ui-components/8/', override: null, reverts_to: 'inherited'};
 const openRow = el('button', {type: 'button', 'class': 'studio-open',
   'data-studio-open': JSON.stringify(row)}, ownLi);
 el('span', {'class': 'studio-origin'}, ownLi).text = 'own';
+// An item alice-wip added: nothing beneath it to revert to.
+const freshLi = el('li', {'class': 'studio-item studio-own'}, itemsFrame);
+const fresh = {kind: 'component', name: 'fresh', applies_to: null,
+  href: '/workbench/ui-components/9/', override: null, reverts_to: null};
+const openFresh = el('button', {type: 'button', 'class': 'studio-open',
+  'data-studio-open': JSON.stringify(fresh)}, freshLi);
 const packagedLi = el('li', {'class': 'studio-item studio-packaged'}, itemsFrame);
 const page = {kind: 'component', name: 'studio:page', applies_to: null, href: null,
   override: null};
@@ -746,6 +752,11 @@ click(openRow);
 const swapped = swapEditor();
 out.revert = [swapped.remove.text, swapped.remove.getAttribute('hx-confirm'),
   swapped.remove.getAttribute('class'), swapped.remove.getAttribute('hx-delete')];
+// An item T added: its Delete deletes it, and says so.
+click(openFresh);
+const added = swapEditor({href: '/workbench/ui-components/9/'});
+out.remove = [added.remove.text, added.remove.getAttribute('hx-confirm'),
+  added.remove.getAttribute('class'), added.remove.getAttribute('hx-delete')];
 """,
         search=BASE,
     )
@@ -780,7 +791,17 @@ out.revert = [swapped.remove.text, swapped.remove.getAttribute('hx-confirm'),
     assert out["innerHTML"] == 0
     label_text, confirm, classes, href = out["revert"]
     assert label_text == "Revert to inherited" and href == ROW_HREF
-    assert "studio-revert" in classes.split() and confirm != "Delete?"
+    assert "studio-revert" in classes.split()
+    assert confirm == (
+        "Revert to inherited? This branch's own version of the item is deleted."
+    )
+    label_text, confirm, classes, href = out["remove"]
+    assert label_text == "Delete" and href == "/workbench/ui-components/9/"
+    assert "studio-revert" not in (classes or "").split()
+    assert confirm == (
+        "Delete this item from this branch? The branch has no inherited"
+        " version of it you can read to show instead."
+    )
 
 
 def test_open_published_reopen_and_refresh():

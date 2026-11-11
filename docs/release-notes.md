@@ -156,8 +156,10 @@
   into the Editor pane, in view mode when the branch is published or does not
   own the item (an item with no URL shows its content as text). An own item's
   editor is its frame's form: Save is the frame's `PUT` with `If-Match` (a
-  stale one gets the 412 reload), and the frame's Delete button, relabelled
-  "Revert to inherited", deletes the branch's row. An item the branch does not
+  stale one gets the 412 reload), and the frame's Delete button deletes the
+  branch's row: relabelled "Revert to inherited" when the branch then shows
+  an ancestor's or a packaged item (the items entry's new `reverts_to`), else
+  left "Delete" with a confirmation that nothing is inherited. An item the branch does not
   own offers the items tree's "Override on this branch". A Django-engine
   component is shown read-only. Typing sends the editor's content to the live
   preview as a draft (300 ms after the last key; none on a published branch),

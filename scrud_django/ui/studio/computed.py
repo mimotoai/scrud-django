@@ -51,6 +51,7 @@ from scrud_django.ui.branches import (
 from scrud_django.ui.branches.effective import (
     Selection,
     chain_of,
+    parent_state,
     stored_state,
 )
 from scrud_django.ui.branches.model import branch_of, item_key
@@ -203,6 +204,7 @@ class BranchItemsViewSet(ComputedResourceViewSet):
             items = []
             for kind in ITEM_KINDS:
                 rows = readable_rows(request, kind, selection)
+                beneath = _beneath(request, kind, branch, all_branches) if rows else {}
                 for pk, etag, content in rows:
                     items.append(
                         _item(
@@ -213,6 +215,7 @@ class BranchItemsViewSet(ComputedResourceViewSet):
                             branch,
                             on,
                             conflicts,
+                            beneath,
                         )
                     )
             return {"branch": selection_value(selection), "items": items}
@@ -244,11 +247,33 @@ def _override(request, kind, key, content, selection, branch) -> dict | None:
     return _action("POST", reverse(f"{KIND_SLUGS[kind]}-list"), body)
 
 
-def _item(request, kind, row, selection, branch, on, conflicts) -> dict:
+def _beneath(request, kind, branch, all_branches) -> dict:
+    """``{item key: "inherited" | "packaged"}``: the items of `kind` that
+    `branch` would show if it had no row of its own of them (its parent's
+    effective items as it shows them, `parent_state`, the packaged layers'
+    beneath them), and that the user of `request` may read: what deleting
+    an own row reverts to. One the user may not read counts as none, so
+    that the entry reveals nothing more than the user's own JSON would."""
+    try:
+        rows = parent_state(kind, ITEM_KINDS[kind], branch, all_branches, None)
+    except BranchChainError:
+        return {}
+    found = {}
+    for pk, _etag, content in rows:
+        if not may_read_item(request, kind, pk, content):
+            continue
+        source = branch_of(content)
+        packaged = source == LAYER_BRANCH_NAME
+        on = LAYER_BRANCH if packaged else all_branches.get(source, branch)
+        found[item_key(kind, content, on)] = "packaged" if packaged else "inherited"
+    return found
+
+
+def _item(request, kind, row, selection, branch, on, conflicts, beneath) -> dict:
     """The entry of the item of `kind` stored as `row`, ``(pk, etag,
     content)`` (a row `effective_rows` gives), in the items of `branch`
     shown as `selection`; `on` are the branches by name, the layers'
-    virtual branch included."""
+    virtual branch included; `beneath` is `_beneath`'s."""
     pk, etag, content = row
     source = branch_of(content)
     key = item_key(kind, content, on.get(source, branch))
@@ -270,6 +295,7 @@ def _item(request, kind, row, selection, branch, on, conflicts) -> dict:
     item["override"] = (
         None if own else _override(request, kind, key, content, selection, branch)
     )
+    item["reverts_to"] = beneath.get(key) if own else None
     return item
 
 

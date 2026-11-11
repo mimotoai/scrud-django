@@ -99,6 +99,7 @@ def layer_sheet_item(conflict=None, override=None):
         "content": content,
         "conflict": conflict,
         "override": override,
+        "reverts_to": None,
     }
 
 
@@ -205,6 +206,7 @@ def test_branch_items_marks_own_inherited_packaged(ui_alice_login):
                 "conflict": None,
                 # An inherited item: the POST that overrides it on wip.
                 "override": override_of("ui-components", head.content),
+                "reverts_to": None,
             },
             {
                 "kind": "component",
@@ -215,8 +217,9 @@ def test_branch_items_marks_own_inherited_packaged(ui_alice_login):
                 "etag": quoted(row.etag),
                 "content": row.content,
                 "conflict": "parent",
-                # wip's own: nothing to override.
+                # wip's own: nothing to override; deleting it shows main's.
                 "override": None,
+                "reverts_to": "inherited",
             },
             layer_sheet_item(
                 override=override_of(
@@ -236,6 +239,8 @@ def test_branch_items_marks_own_inherited_packaged(ui_alice_login):
                 "content": site.content,
                 "conflict": None,
                 "override": None,
+                # wip added it: deleting it shows nothing in its place.
+                "reverts_to": None,
             },
         ],
     }
