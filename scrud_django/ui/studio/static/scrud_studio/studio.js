@@ -540,7 +540,16 @@
     var body = { kind: item.kind, branch: this.branch, name: item.name };
     if (item.kind === "stylesheet") body.applies_to = item.applies_to;
     var headers = item.etag ? { "If-Match": item.etag } : {};
-    return send(this.url.revert, body, headers, this.reported(done));
+    var reported = this.reported(done);
+    if (item.reverts_to) return send(this.url.revert, body, headers, reported);
+    // Deleted, with nothing beneath: the item is gone, so the editor is
+    // cleared with the message (the refresh that follows then has no item to
+    // reopen, which would only answer 404).
+    var self = this;
+    return send(this.url.revert, body, headers, function (response, data) {
+      reported(response, data);
+      if (response.ok) self.showMessage(done);
+    });
   };
 
   Studio.prototype.pull = function () {

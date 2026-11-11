@@ -822,8 +822,10 @@ def test_an_own_item_with_nothing_beneath_is_deleted_after_a_confirm(
     from <branch>", and asks first: from a published branch, that it is
     removed from the live site; from a working branch, from that branch.
     Declined, nothing is sent; confirmed, the revert is sent as a revert
-    is. With a packaged item beneath it is "Revert to packaged", asking
-    nothing."""
+    is, and the editor is cleared with the "Deleted" message rather than
+    reopening an item that is gone (its 404 is not shown). With a packaged
+    item beneath it is "Revert to packaged", asking nothing, and the editor
+    reopens the packaged item."""
     setup_wip(ui_alice_login)
     make_branch("shop", "alice", prefix="/shop/")
     script = r"""
@@ -838,6 +840,10 @@ def test_an_own_item_with_nothing_beneath_is_deleted_after_a_confirm(
         click(byId('studio-revert'));
         await settle();
         out.message = text('studio-message');
+        out.editor = {
+          reason: text('studio-editor-reason'), textHidden: byId('studio-editor-text').hidden,
+          revertHidden: byId('studio-revert').hidden,
+        };
         """
     saved = {"HX-Trigger": "scrud-studio-saved"}
     for branch, where in (("shop", "live site"), ("wip", "branch wip")):
@@ -849,6 +855,13 @@ def test_an_own_item_with_nothing_beneath_is_deleted_after_a_confirm(
             preview_page(branch=branch),
             [
                 route("GET", item_url("row", branch=branch), body=added),
+                # Once deleted, the item is gone: a reopen would answer 404.
+                route(
+                    "GET",
+                    item_url("row", branch=branch),
+                    404,
+                    {"title": "Not found"},
+                ),
                 route("POST", reverse("scrud-studio:revert-item"), 204, None, saved),
             ],
             script,
@@ -866,6 +879,15 @@ def test_an_own_item_with_nothing_beneath_is_deleted_after_a_confirm(
         assert revert["headers"]["If-Match"] == '"a1"'
         assert revert["body"] == {"kind": "component", "branch": branch, "name": "row"}
         assert "Deleted row" in out["message"]
+        # The editor is cleared, saying so; the item is not opened again.
+        assert out["editor"] == {
+            "reason": f"Deleted row from {branch}.",
+            "textHidden": True,
+            "revertHidden": True,
+        }
+        assert [c["url"] for c in out["calls"]].count(
+            item_url("row", branch=branch)
+        ) == 1
     # A packaged layer item beneath (on a root): "Revert to packaged", and
     # no question.
     packaged = {**item("<u>x</u>", etag='"p1"'), "from": "shop"}
@@ -885,6 +907,9 @@ def test_an_own_item_with_nothing_beneath_is_deleted_after_a_confirm(
     reverts = [c for c in out["calls"] if c["url"].endswith("revert-item")]
     assert len(reverts) == 2 and reverts[0]["headers"]["If-Match"] == '"p1"'
     assert "Reverted row to the packaged item" in out["message"]
+    # Reopened: the packaged item, in the editor.
+    assert out["editor"]["textHidden"] is False
+    assert "packaged item" in out["editor"]["reason"]
 
 
 @pytest.mark.django_db
