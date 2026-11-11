@@ -296,6 +296,22 @@ out.badTo = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/0', to: 7})
 out.notArray = JSON.stringify(U.applyArrayOp({a: {b: 1}}, {op: 'remove', pointer: '/a/b'}));
 out.badOp = rows(U.applyArrayOp(doc(), {op: 'explode', pointer: '/rules/0'}));
 out.badPointer = rows(U.applyArrayOp(doc(), {op: 'remove', pointer: 'rules/0'}));
+// with an errors array: one reason for each operation that was not applied
+const errors = (op, body) => {
+  const found = [];
+  U.applyArrayOp(body || doc(), op, found);
+  return found.length;
+};
+out.errors = {
+  remove: errors({op: 'remove', pointer: '/rules/1'}),
+  move: errors({op: 'move', pointer: '/rules/0', to: 2}),
+  badIndex: errors({op: 'remove', pointer: '/rules/9'}),
+  badTo: errors({op: 'move', pointer: '/rules/0', to: 7}),
+  noTo: errors({op: 'move', pointer: '/rules/0'}),
+  notArray: errors({op: 'remove', pointer: '/a/b'}, {a: {b: 1}}),
+  badOp: errors({op: 'explode', pointer: '/rules/0'}),
+  badPointer: errors({op: 'remove', pointer: 'rules/0'}),
+};
 console.log(JSON.stringify(out));
 """
 )
@@ -311,58 +327,100 @@ def test_apply_array_op_remove_and_move():
     for unchanged in ("badIndex", "badTo", "badOp", "badPointer"):
         assert out[unchanged] == "abc", unchanged
     assert out["notArray"] == '{"a":{"b":1}}'
+    # ... and each is reported when the caller asks
+    assert out["errors"] == {
+        "remove": 0,
+        "move": 0,
+        "badIndex": 1,
+        "badTo": 1,
+        "noTo": 1,
+        "notArray": 1,
+        "badOp": 1,
+        "badPointer": 1,
+    }
 
 
-ARRAY_OP_SCRIPT = (
+# A stub htmx whose ``trigger`` records the event it would dispatch, and
+# `request` / `encode`, which run a frame's PUT through the handlers as
+# htmx 2 does: ``htmx:configRequest`` (with the triggering event), then
+# ``htmx:beforeSend`` (with the request's xhr), then the extension's
+# ``encodeParameters`` with that xhr.
+ARRAY_OP_STUB = (
     STUB_DOM.replace(
         "const htmx = {config: {}, defineExtension() {}};",
         "const exts = {}, triggered = [];"
         "const htmx = {config: {}, defineExtension(n, e) { exts[n] = e; },"
-        " trigger(elt, name) { triggered.push({elt, name}); }};",
+        " trigger(elt, name, detail) { triggered.push({elt, name, detail}); }};",
     )
     + r"""
-const root = frame('/l/1/');
-root.attrs['data-scrud-etag'] = '"e1"';
-root.attrs['hx-put'] = '/l/1/';
-el('SCRIPT', {class: 'scrud-content'}, root,
-   {textContent: '{"rules": [{"select": "a"}, {"select": "b"}, {"select": "c"}]}'});
-const li = el('LI', {}, root);
-el('INPUT', {name: '/rules/1/select'}, li, {type: 'text', value: 'B2'});
-const op = (name, pointer, to) => {
-  const attrs = {'data-scrud-array-op': name, 'data-scrud-pointer': pointer};
-  if (to !== undefined) attrs['data-scrud-to'] = to;
-  return el('BUTTON', attrs, li);
-};
+const logged = [];
+console.error = (m) => logged.push(m);
+console.debug = () => {};
 let prevented = 0;
 const click = (target) =>
   handlers.click({target, preventDefault() { prevented++; }});
-const put = () => {
-  const detail = {elt: root, verb: 'put', headers: {}};
+// the event the last click dispatched, as htmx hands it to the request
+const clicked = () => {
+  const t = triggered[triggered.length - 1];
+  return {type: t.name, target: t.elt, detail: Object.assign({elt: t.elt}, t.detail)};
+};
+const request = (elt, triggeringEvent) => {
+  const detail = {elt, verb: 'put', headers: {}, triggeringEvent};
   handlers['htmx:configRequest']({detail, preventDefault() { detail.prevented = true; }});
+  detail.xhr = {};
+  if (!detail.prevented && handlers['htmx:beforeSend']) {
+    handlers['htmx:beforeSend']({detail: {elt, xhr: detail.xhr, requestConfig: detail}});
+  }
   return detail;
 };
-const encode = () => JSON.parse(exts['scrud-json'].encodeParameters({}, {}, root));
+const encode = (elt, sent) =>
+  JSON.parse(exts['scrud-json'].encodeParameters(sent.xhr, {}, elt));
+const after = (elt) =>
+  handlers['htmx:afterRequest']({detail: {elt, successful: true,
+    requestConfig: {verb: 'put'}}});
+const putFrame = (href, content, parent, pointer) => {
+  const f = frame(href, parent, pointer);
+  f.attrs['hx-put'] = href;
+  el('SCRIPT', {class: 'scrud-content'}, f, {textContent: JSON.stringify(content)});
+  return f;
+};
+const op = (parent, name, pointer, to) => {
+  const attrs = {'data-scrud-array-op': name, 'data-scrud-pointer': pointer};
+  if (to !== undefined) attrs['data-scrud-to'] = to;
+  return el('BUTTON', attrs, parent);
+};
+"""
+)
+
+ARRAY_OP_SCRIPT = (
+    ARRAY_OP_STUB
+    + r"""
+const root = putFrame('/l/1/', {rules: [{select: 'a'}, {select: 'b'}, {select: 'c'}]});
+root.attrs['data-scrud-etag'] = '"e1"';
+const li = el('LI', {}, root);
+const input = el('INPUT', {name: '/rules/1/select'}, li, {type: 'text', value: 'B2'});
+// an input's own change: a save with no operation
+const edited = () => ({type: 'change', target: input, detail: undefined});
 // something that is no array button does nothing
 click(el('SPAN', {}, li));
 out.idle = triggered.length;
-click(op('remove', '/rules/0'));
+click(op(li, 'remove', '/rules/0'));
 out.triggers = triggered.map((t) => [t.elt === root, t.name]);
 out.prevented = prevented;
-const sent = put();
+const sent = request(root, clicked());
 out.headers = sent.headers;
 out.sentPrevented = !!sent.prevented;
-out.body = encode().rules.map((r) => r.select);
-// the operation is spent: the next PUT is an ordinary one
-out.next = encode().rules.map((r) => r.select);
-click(op('move', '/rules/0', '2'));
-put();
-out.moved = encode().rules.map((r) => r.select);
+out.body = encode(root, sent).rules.map((r) => r.select);
+// the operation is its request's: the next PUT is an ordinary one
+out.next = encode(root, request(root, edited())).rules.map((r) => r.select);
+click(op(li, 'move', '/rules/0', '2'));
+out.moved = encode(root, request(root, clicked())).rules.map((r) => r.select);
 // a PUT that is refused (an invalid input) leaves no operation behind
-click(op('remove', '/rules/2'));
+click(op(li, 'remove', '/rules/2'));
 el('INPUT', {name: '/rules/__proto__/x'}, li, {type: 'text', value: 'z'});
-out.refused = put().prevented === true;
+out.refused = request(root, clicked()).prevented === true;
 li.children = li.children.filter((c) => c.name !== '/rules/__proto__/x');
-out.afterRefused = encode().rules.map((r) => r.select);
+out.afterRefused = encode(root, request(root, edited())).rules.map((r) => r.select);
 out.responseHandling = htmx.config.responseHandling.find((h) => new RegExp('^' + h.code + '$').test('412'));
 console.log(JSON.stringify(out));
 """
@@ -384,6 +442,117 @@ def test_array_op_sends_put_with_if_match():
     assert out["moved"] == ["B2", "c", "a"]
     assert out["refused"] is True
     assert out["afterRefused"] == ["a", "B2", "c"]
+
+
+ARRAY_OP_REQUEST_SCRIPT = (
+    ARRAY_OP_STUB
+    + r"""
+const rows = (body) => body.rules.map((r) => r.select).join('');
+const root = putFrame('/l/1/', {title: 't', rules: [{select: 'a'}, {select: 'b'}, {select: 'c'}]});
+const li = el('LI', {}, root);
+const input = el('INPUT', {name: '/title'}, li, {type: 'text', value: 't'});
+const edited = () => ({type: 'change', target: input, detail: undefined});
+
+// A save in flight when the button is clicked: its afterRequest comes
+// before the click's own request is configured. The operation is kept.
+const inFlight = request(root, edited());
+click(op(li, 'remove', '/rules/0'));
+const clickEvent = clicked();
+after(root);
+out.inFlight = rows(encode(root, request(root, clickEvent)));
+out.earlier = rows(encode(root, inFlight));
+
+// A click whose request htmx drops (hx-sync, a request in flight): never
+// configured. The next, unrelated save carries no operation.
+click(op(li, 'remove', '/rules/1'));
+out.dropped = rows(encode(root, request(root, edited())));
+
+// An operation that cannot be applied cancels its request, with the
+// misconfigured notice in the frame: never a PUT that changes nothing.
+out.bad = {};
+const bad = {
+  index: ['remove', '/rules/9'],
+  notArray: ['remove', '/title'],
+  notElement: ['remove', '/rules'],
+  pointer: ['remove', 'rules/0'],
+  to: ['move', '/rules/0', '7'],
+  noTo: ['move', '/rules/0'],
+  op: ['explode', '/rules/0'],
+};
+for (const name of Object.keys(bad)) {
+  root.children = root.children.filter((c) => c.attrs.role !== 'alert');
+  click(op(li, ...bad[name]));
+  const sent = request(root, clicked());
+  out.bad[name] = {prevented: !!sent.prevented,
+                   notice: root.children[0].attrs.role === 'alert' ? root.children[0].textContent : null};
+}
+root.children = root.children.filter((c) => c.attrs.role !== 'alert');
+
+// A button outside a frame that PUTs: logged, no request.
+const before = triggered.length, loggedBefore = logged.length;
+const loose = el('DIV', {});
+click(op(loose, 'remove', '/rules/0'));
+const viewFrame = frame('/v/1/', loose);
+click(op(viewFrame, 'remove', '/rules/0'));
+out.loose = {triggered: triggered.length - before, logged: logged.slice(loggedBefore)};
+
+// Nested frames: the inner frame's PUT carries the operation, applied to its
+// own content; the outer frame's request (cancelled by htmx:confirm) never
+// does.
+const outer = putFrame('/o/1/', {rules: [{select: 'x'}, {select: 'y'}]});
+const inner = putFrame('/i/1/', {rules: [{select: 'p'}, {select: 'q'}, {select: 'r'}]},
+                       el('DIV', {}, outer));
+click(op(inner, 'remove', '/rules/1'));
+const nested = clicked();
+out.nestedTarget = nested.target === inner;
+out.inner = rows(encode(inner, request(inner, nested)));
+out.outer = rows(encode(outer, request(outer, nested)));
+let cancelled = false;
+handlers['htmx:confirm']({detail: {elt: outer, triggeringEvent: nested},
+                          preventDefault() { cancelled = true; }});
+out.outerCancelled = cancelled;
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_array_op_rides_on_its_own_request():
+    """The operation a button asks for travels with the request its click
+    triggers (the triggering event's detail), never in a per-frame slot: a
+    save in flight cannot drop it, a dropped request cannot leave it for
+    the next save, and only the frame it was clicked in applies it."""
+    require_node()
+    out = run_node(ARRAY_OP_REQUEST_SCRIPT)
+    assert out["inFlight"] == "bc"
+    assert out["earlier"] == "abc"
+    assert out["dropped"] == "abc"
+    assert out["inner"] == "pr"
+    assert out["outer"] == "xy"
+    assert out["nestedTarget"] is True and out["outerCancelled"] is True
+
+
+def test_array_op_that_cannot_be_applied_cancels_with_a_notice():
+    require_node()
+    out = run_node(ARRAY_OP_REQUEST_SCRIPT)
+    for name, sent in out["bad"].items():
+        assert sent == {
+            "prevented": True,
+            "notice": "This action is misconfigured.",
+        }, name
+
+
+def test_array_op_button_outside_a_put_frame_is_logged():
+    require_node()
+    out = run_node(ARRAY_OP_REQUEST_SCRIPT)
+    assert out["loose"]["triggered"] == 0
+    assert (
+        out["loose"]["logged"]
+        == [
+            "scrud-ui: an array operation button outside a frame that saves"
+            " (hx-put) does nothing.",
+        ]
+        * 2
+    )
 
 
 @pytest.mark.django_db

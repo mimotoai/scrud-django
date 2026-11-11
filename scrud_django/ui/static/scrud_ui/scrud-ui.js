@@ -268,25 +268,38 @@
    * element at `op.pointer`) or "move" (the element at `op.pointer` to index
    * `op.to`, the others keeping their order). A pointer that is not an element
    * of an array, an index out of range or another operation leaves `body` as it
-   * is. Returns `body`.
+   * is, and, when `errors` (an array) is given, pushes why on it. Returns
+   * `body`.
    */
-  function applyArrayOp(body, op) {
+  function applyArrayOp(body, op, errors) {
+    function fail(reason) {
+      if (errors) errors.push(reason);
+      return body;
+    }
     var segs;
     try {
       segs = parsePointer(op.pointer);
     } catch (err) {
-      return body;
+      return fail(err.message);
     }
-    if (!segs.length || !isIndex(segs[segs.length - 1])) return body;
+    if (!segs.length || !isIndex(segs[segs.length - 1])) {
+      return fail('not an array element: ' + op.pointer);
+    }
     var array = valueAt(body, joinPointer(segs.slice(0, -1)));
     var from = Number(segs[segs.length - 1]);
-    if (!Array.isArray(array) || from >= array.length) return body;
+    if (!Array.isArray(array) || from >= array.length) {
+      return fail('not an array element: ' + op.pointer);
+    }
     if (op.op === 'remove') {
       array.splice(from, 1);
     } else if (op.op === 'move') {
       var to = String(op.to);
-      if (!isIndex(to) || Number(to) >= array.length) return body;
+      if (!isIndex(to) || Number(to) >= array.length) {
+        return fail('not an index of the array: ' + op.to);
+      }
       array.splice(Number(to), 0, array.splice(from, 1)[0]);
+    } else {
+      return fail('not an array operation: ' + op.op);
     }
     return body;
   }
@@ -537,25 +550,58 @@
     return null;
   }
 
-  // The array operation (Remove, Move up, Move down) waiting for its frame's
-  // PUT: it is applied to the body that PUT builds (`encodeParameters`), so it
-  // goes the way of every change: the frame's headers, If-Match among them.
-  var pendingOps = new WeakMap();
-
+  // An array operation (Remove, Move up, Move down) travels with the request
+  // its click triggers: in the triggered event's detail (`scrudArrayOp`), which
+  // htmx hands to that request as its triggeringEvent. It is applied to the
+  // body that PUT builds (`encodeParameters`), so it goes the way of every
+  // change: the frame's headers, If-Match among them. Another request of the
+  // frame (a save in flight, the next one) never sees it.
   document.addEventListener('click', function (evt) {
     var button =
       evt.target && evt.target.closest
         ? evt.target.closest('[data-scrud-array-op]')
         : null;
+    if (!button) return;
     var frame = frameOf(button);
-    if (!frame || !isPut(frame)) return;
+    if (!frame || !isPut(frame)) {
+      console.error(
+        'scrud-ui: an array operation button outside a frame that saves' +
+          ' (hx-put) does nothing.'
+      );
+      return;
+    }
     evt.preventDefault();
-    pendingOps.set(frame, {
-      op: button.getAttribute('data-scrud-array-op'),
-      pointer: button.getAttribute('data-scrud-pointer'),
-      to: button.getAttribute('data-scrud-to')
+    htmx.trigger(frame, 'change', {
+      scrudArrayOp: {
+        op: button.getAttribute('data-scrud-array-op'),
+        pointer: button.getAttribute('data-scrud-pointer'),
+        to: button.getAttribute('data-scrud-to')
+      }
     });
-    htmx.trigger(frame, 'change');
+  });
+
+  /**
+   * The array operation a request of `frame` carries: its triggering event's,
+   * when that event was triggered on `frame` itself (an outer frame the event
+   * bubbled to never applies an inner frame's operation); else null.
+   */
+  function arrayOpOf(frame, triggering) {
+    var detail = triggering && triggering.detail;
+    var op = detail && detail.scrudArrayOp;
+    return op && triggering.target === frame ? op : null;
+  }
+
+  // The array operation of each request, by its xhr: what encodeParameters
+  // (which is handed the xhr) applies.
+  var requestOps = new WeakMap();
+
+  document.addEventListener('htmx:beforeSend', function (evt) {
+    var detail = evt.detail || {};
+    var config = detail.requestConfig || {};
+    var elt = detail.elt;
+    if (!elt || !detail.xhr || !isPut(elt)) return;
+    var op = arrayOpOf(elt, config.triggeringEvent);
+    if (op) requestOps.set(detail.xhr, op);
   });
 
   // Innermost frame only: an event inside nested frames is acted on by the
@@ -633,16 +679,28 @@
     if (!frame) return;
     if (verb === 'put' && isPut(detail.elt)) {
       // An input that cannot be applied would be silently lost by a PUT that
-      // otherwise succeeds: send nothing and say so.
+      // otherwise succeeds: send nothing and say so. So would an array
+      // operation that cannot be applied (a button that names no element).
       clearNotice(frame);
       var content = contentOf(frame);
       var invalid = [];
-      if (content) buildBody(content, fieldsOf(frame), invalid);
+      var body = content ? buildBody(content, fieldsOf(frame), invalid) : null;
       if (invalid.length) {
-        pendingOps.delete(frame);
         evt.preventDefault();
         showNotice(frame, invalidFieldsText(invalid));
         return;
+      }
+      var op = detail.elt === frame ? arrayOpOf(frame, detail.triggeringEvent) : null;
+      if (op) {
+        var failures = [];
+        if (body) applyArrayOp(body, op, failures);
+        else failures.push('the frame has no content');
+        if (failures.length) {
+          console.error('scrud-ui: array operation not applied: ' + failures[0]);
+          evt.preventDefault();
+          showNotice(frame, MISCONFIGURED);
+          return;
+        }
       }
     }
     var etag = ifMatchTag(detail.elt, frame, requestPath(detail, verb));
@@ -664,9 +722,6 @@
     var detail = evt.detail || {};
     var config = detail.requestConfig || {};
     var verb = String(config.verb).toLowerCase();
-    // an operation whose request never reached encodeParameters must not
-    // linger for the frame's next PUT
-    if (verb === 'put' && frameOf(detail.elt)) pendingOps.delete(frameOf(detail.elt));
     if (!detail.successful || verb !== 'delete') {
       return;
     }
@@ -720,6 +775,7 @@
   document.addEventListener('htmx:sendError', failed);
 
   htmx.defineExtension('scrud-json', {
+    // htmx 2.0.4 calls it after htmx:beforeSend, with the request's xhr.
     encodeParameters: function (xhr, parameters, elt) {
       var mode = jsonMode(elt);
       if (mode === 'fixed') return fixedBody(elt) || null;
@@ -729,9 +785,9 @@
       var content = frame && contentOf(frame);
       if (!content) return null;
       var body = buildBody(content, fieldsOf(frame));
-      var op = pendingOps.get(frame);
+      var op = xhr ? requestOps.get(xhr) : undefined;
       if (op) {
-        pendingOps.delete(frame);
+        requestOps.delete(xhr);
         applyArrayOp(body, op);
       }
       return JSON.stringify(body);
