@@ -186,7 +186,13 @@ def readable_queryset(
     (`filter_by_object_checks`, given each resource's content). A list is a
     GET: a request of another method (a POST's list validators) is asked as
     its GET copy (`as_get`). Past ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``
-    it raises ``access.ConditionalListTooLarge``."""
+    it raises ``access.ConditionalListTooLarge``.
+
+    It does **not** check the list grant (``http.GET`` on the list type,
+    ``collection_type_uri_for``) or any request-level check of
+    `requirement` (``has_permission``): the DRF route asks them before it
+    lists (a 403 without the list grant). A caller must ask them first
+    (follow-up ``core-list-grant-and-request-check``)."""
     if request.method not in ("GET", "HEAD"):
         request = as_get(request)
     queryset = Resource.objects.filter(resource_type=resource_type)

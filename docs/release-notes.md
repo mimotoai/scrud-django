@@ -386,9 +386,20 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   URLs, list queries and preconditions, writes, post-save checks, reads and
   `Allow`) as functions of a plain Django request, with no import of
   `rest_framework`, `django_filters` or scoped-rbac's DRF modules (a test
-  enforces it). The DRF views are adapters that delegate to it, and every
-  status, header and body they answer is unchanged. It is the base for other
-  front ends.
+  enforces it; `scrud_django.exceptions`, which it imports, loads
+  `rest_framework.exceptions` when DRF is installed). The DRF views are
+  adapters that delegate to it for the pieces they call, and every status,
+  header and body they answer is unchanged, but for the overrides listed
+  under Upgrading. The item-level facade of `scrud_django.core.resources`
+  (`load_for_read`, `allowed_methods`, `readable_queryset`, `create`,
+  `update`, `validate_write`, `check_object`) is not called by the DRF views;
+  its tests (`tests/test_core_*`) pin it against the DRF routes. Those of its
+  functions that decide access by a requirement (`load_for_read`,
+  `object_readable`, `allowed_methods`, `check_object`, `create`, `update`)
+  raise `ImproperlyConfigured` for one that asks no grants (empty, or a
+  type's hooks only) rather than allow every requester, and
+  `validate_write` takes the type's hooks from its `requirement=` as the
+  checks that may refuse a transition. It is the base for other front ends.
 * Per-type hooks, honoured by every front end, on `json_resource_type`
   (`checks=`, `object_checks=`, `content_filter=`) and
   `computed_resource_type` (`compute=`). They can only refuse what the grants
@@ -414,6 +425,21 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   around a direct call into scrud-django must catch `ScrudException`. (The
   note under 0.12.0 that scrud errors are `APIException`s describes that
   release.)
+* `scrud_django.reverse` is scrud-django's own function, no longer DRF's
+  `rest_framework.reverse.reverse` re-exported. It has DRF's signature
+  (`viewname, args=None, kwargs=None, request=None, format=None, **extra`)
+  and gives the same URLs: through the request's DRF versioning scheme when
+  it has one (`DEFAULT_VERSIONING_CLASS`), with the `?format=` override
+  kept. Patching `rest_framework.reverse.reverse` no longer changes the URLs
+  scrud-django builds (Link headers, a list envelope's `link`, the
+  `services/` catalog).
+* `ScrudAPIException`, the `APIException` that carries a scrud error through
+  DRF, is defined once, at import, as `scrud_django.exceptions.ScrudAPIException`
+  (`None` without DRF). `ScrudException.get_full_details()` answers as
+  `APIException`'s did: `{"message": ..., "code": ...}`.
+* Names moved into `scrud_django.core` stay importable from their old
+  modules, as the same objects. The third-party and standard library names
+  those modules happened to import are not re-exported.
 * `WorkflowValidator` subclass overrides of `transition_for`, `authorize`,
   `allowed`, `allowed_on`, `authorize_without_policy` and
   `errors_hidden_unless_readable` no longer affect `__call__`, which runs the

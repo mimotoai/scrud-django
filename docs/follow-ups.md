@@ -1228,6 +1228,78 @@ path) before the ninja front end wires it up. Test: in
 `contexts_for` and call `readable_queryset`; assert it raises or agrees with
 the detail route, where today it filters by the rows.
 
+<a id="core-list-grant-and-request-check"></a>
+## core-list-grant-and-request-check: the core's list and item reads skip DRF's list grant and request check
+
+`core.lists.readable_queryset` (re-exported by `core.resources`) filters by
+the item type's `http.GET` grants and the object checks, but does not ask
+the list grant (`http.GET` on `collection_type_uri_for(type_uri)`) or any
+request-level check of the requirement (`has_permission`), which the DRF
+list route asks first (a 403 without the list grant).
+`core.resources.load_for_read` likewise runs only the object check, not the
+route's request check. A front end calling them alone would list for a user
+the DRF route refuses. Add a public `check_request(request, resource_type,
+requirement, *, list_route)` to the core and call it from both before the
+ninja front end is built. Test: in `tests/test_core_lists.py`, as a user
+granted `http.GET` on `JSON_LD` in "a" but not on its list type, GET the DRF
+list (403) and call `readable_queryset` with `[GrantsLeaf(JSON_LD)]`, which
+today returns the resource; the new check should refuse (`AccessDenied`).
+
+<a id="core-facade-parity-harness"></a>
+## core-facade-parity-harness: no harness compares the core facade with the DRF routes
+
+The DRF views do not call `core.resources`' facade (`load_for_read`,
+`allowed_methods`, `readable_queryset`, `create`, `update`, `validate_write`,
+`check_object`); only hand-written cases in `tests/test_core_*` compare it
+with the DRF routes, so a divergence outside them goes unseen. Test: a
+parametrized harness in a new `tests/test_core_parity.py` that, for every
+registered test type (hooked and workflow types included) and the user
+matrix of `tests/test_core_resources.py::users`, calls each facade function
+and the DRF route it mirrors and asserts the same outcome (status for an
+error, the same resources, the same `Allow`).
+
+<a id="core-paging-key-first"></a>
+## core-paging-key-first: the list's paging and MySQL key-first hint are still DRF's
+
+Spec §1.2 puts the list's ordering and the MySQL key-first paging (a page
+found among the keys, then its rows read by key, so that a large JSON row
+does not overflow MySQL's `sort_buffer_size`, error 1038) in the core
+(`list_queryset`). They are still in DRF's pagination class
+(`scrud_django.paginations.StandardResultsSetPagination.paginate_queryset`;
+the order is `Resource.Meta.ordering`), so a front end that pages
+`readable_queryset` itself on MySQL would sort whole rows. Move the
+key-first page into `core.lists` and have the DRF class call it. Test: in
+`tests/test_core_lists.py`, page `readable_queryset` through the new core
+function on MySQL with a row over `sort_buffer_size` (as
+`tests/test_ui_branch_large_rows.py` builds one; see `mysql-sort-buffer`);
+it should return the page in key order without error 1038.
+
+<a id="studio-computed-to-compute"></a>
+## studio-computed-to-compute: the studio's computed types still register a viewset class
+
+Spec §1.4 moves the studio's computed types to the neutral `compute=` hook,
+but `scrud_django/ui/studio/computed.py` (`studio_computed_type_urls`, line
+629) still registers each with `viewset_class=`, so a non-DRF front end gets
+no content for them. Test: in `tests/test_studio_computed.py`, assert that
+`core.types.type_options(slug).compute` is set for each slug of
+`STUDIO_COMPUTED_TYPES` (it is `None` today).
+
+<a id="core-workflow-readable-default"></a>
+## core-workflow-readable-default: `workflow_check` treats an update's stored resource as readable without `readable`
+
+`core.workflow.workflow_check` (and `core.writes.validate_write`, which
+passes `readable` through) hides a workflow error about an update from a
+requester who may not read the stored resource only when the caller passes
+`readable`; with `readable=None` the resource counts as readable, so a
+front end that forgets it reveals the stored state in the error. The DRF
+adapter always passes a callable for an update
+(`tests/test_core_guards.py::test_drf_workflow_check_is_told_whether_an_update_is_readable`).
+Making `None` mean "hide" for an update was deferred: the existing
+`tests/test_core_workflow.py::test_refused_transition` pins the readable
+default. Test: call `workflow_check` for an update with a refused transition
+and no `readable`, as a user who may not read the prior's context; it should
+raise `HiddenWorkflowTransitionError`.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

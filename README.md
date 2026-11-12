@@ -212,6 +212,33 @@ grants allow (they can only refuse, and refuse superusers too, as an
 
 Registering a slug again replaces the hooks registered for it before.
 
+To move the rule of an `IsAuthorized` subclass's `has_context_permission`
+to hooks, register it twice. As a `checks=` callable it governs writes, but
+it no longer hides reads. To hide what the subclass refused to read, add an
+`object_checks=` callable that applies the same rule to each of the
+resource's contexts (`rbac_contexts_of(obj)`, from
+`scrud_django.mixins.resource_mixin`) and combines the answers as the
+subclass did. scoped-rbac's `has_object_permission` allows when any context
+allows, so use `any` unless the subclass overrode it:
+
+```python
+from scrud_django.mixins.resource_mixin import rbac_contexts_of
+
+
+def not_archived(request, resource_type, obj, context):
+    return context != "archived"
+
+
+def readable_somewhere(request, resource_type, obj):
+    return any(
+        not_archived(request, resource_type, obj, context)
+        for context in rbac_contexts_of(obj)
+    )
+
+
+json_resource_type(..., checks=[not_archived], object_checks=[readable_somewhere])
+```
+
 Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
 `http.POST`, `http.PUT`, `http.DELETE`) and `http.GET` on its list type,
 `https://api.openteams.com/json-schema/ResourceCollection?contents_type=<type URI>`
