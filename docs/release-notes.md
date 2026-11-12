@@ -450,8 +450,12 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   back). `content_filter` makes the list filter on its query parameters; it
   is read when the routes are built, so registering a slug again swaps the
   other hooks but not an already built route's filter. `compute` supplies a
-  computed type's content without a viewset subclass. Registering a slug
-  again replaces its hooks.
+  computed type's content without a viewset subclass. A type's hooks are
+  keyed by its type IRI: registering a type again replaces its hooks (a
+  different set logs a warning on `scrud_django.core.types`), and
+  `requirement_for` takes the slug from the resource type (a different one
+  is `ImproperlyConfigured`) and imports `ROOT_URLCONF` when nothing has
+  registered, so a worker that never served a request still has the hooks.
 
 ### Upgrading
 

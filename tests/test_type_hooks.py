@@ -12,9 +12,15 @@ the hooks refuse."""
 
 import datetime
 import json
+import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -31,6 +37,7 @@ from scrud_django.core.types import (
     register_type_options,
     requirement_for,
     type_options,
+    type_options_for_slug,
 )
 from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
 from scrud_django.models import Resource
@@ -53,6 +60,7 @@ from .resource_types import (
 )
 from .steps import *  # noqa: F403, F401
 
+ROOT = Path(__file__).resolve().parent.parent
 HOOKED = HOOKED_NOTE_TYPE_URI
 HOOKED_LIST = collection_type_uri_for(HOOKED)
 ALL_METHODS = ("http.GET", "http.POST", "http.PUT", "http.DELETE")
@@ -234,7 +242,7 @@ def test_compute_hook():
 @test_context
 def test_reregistering_replaces_options():
     hooked_note_type()  # registered again, with no hooks
-    assert type_options("hooked-notes") == TypeOptions()
+    assert type_options_for_slug("hooked-notes") == TypeOptions()
     Given.http.force_authenticate(assign_role(WRITER, "a", "b"))
     post_note({"text": "allowed now", "rbac_context": "b"})
     Then.http.status_code_is(status.HTTP_201_CREATED)
@@ -243,12 +251,75 @@ def test_reregistering_replaces_options():
 
 
 def test_register_type_options_replaces_never_merges():
-    register_type_options("replaced", TypeOptions(checks=(deny_context_b,)))
-    register_type_options("replaced", TypeOptions(object_checks=(hide_secret,)))
-    assert type_options("replaced") == TypeOptions(object_checks=(hide_secret,))
-    register_type_options("replaced", TypeOptions())
-    assert type_options("replaced") == TypeOptions()
-    assert type_options("never-registered") == TypeOptions()
+    iri = "tests://Replaced"
+    register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="replaced")
+    register_type_options(
+        iri, TypeOptions(object_checks=(hide_secret,)), slug="replaced"
+    )
+    assert type_options(iri) == TypeOptions(object_checks=(hide_secret,))
+    assert type_options_for_slug("replaced") == type_options(iri)
+    register_type_options(iri, TypeOptions(), slug="replaced")
+    assert type_options(iri) == TypeOptions()
+    assert type_options("tests://never-registered") == TypeOptions()
+    assert type_options_for_slug("never-registered") == TypeOptions()
+
+
+def test_replacing_different_hooks_warns(caplog):
+    iri = "tests://Warned"
+    register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="warned")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="scrud_django.core.types"):
+        register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="warned")
+        assert caplog.records == []
+        register_type_options(
+            iri, TypeOptions(object_checks=(hide_secret,)), slug="warned"
+        )
+    (record,) = caplog.records
+    assert record.levelno == logging.WARNING
+    assert record.name == "scrud_django.core.types"
+    assert iri in record.getMessage()
+
+
+@pytest.mark.django_db
+def test_requirement_for_refuses_a_mismatched_slug():
+    hooked = get_resource_type_for("hooked-notes")
+    with pytest.raises(ImproperlyConfigured):
+        requirement_for(hooked, "todos")
+
+
+@pytest.mark.django_db
+def test_requirement_for_defaults_the_slug():
+    (_, hooks) = requirement_for(get_resource_type_for("hooked-notes"))
+    assert isinstance(hooks, HookLeaf)
+
+
+def test_hooks_load_without_the_urlconf_imported():
+    """A process that never imported the URLconf still has a type's hooks
+    once they are asked for (`ensure_hooks_loaded`)."""
+    script = """
+import sys
+import django
+from django.conf import settings
+from tests.settings import SETTINGS
+
+settings.configure(**SETTINGS)
+django.setup()
+from scrud_django.core import types
+
+assert "tests.urls" not in sys.modules
+assert not types.hooks_loaded()
+types.ensure_hooks_loaded()
+assert types.hooks_loaded()
+assert types.type_options_for_slug("hooked-notes").checks
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def refuses_leaving_b(request, resource_type, body, context):

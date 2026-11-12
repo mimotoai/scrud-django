@@ -46,7 +46,7 @@ from scrud_django.core.lists import (  # noqa: F401  (re-exported)
     list_validators_needed,
 )
 from scrud_django.core.lists import list_etag as core_list_etag
-from scrud_django.core.types import has_hooks, hook_leaf, type_options
+from scrud_django.core.types import has_hooks, hook_leaf, type_options_for_slug
 from scrud_django.core.workflow import authorizing_write
 from scrud_django.drf_requirements import (
     NotNeutral,
@@ -1204,7 +1204,7 @@ class ResourceViewMixin(
         (`check_request_hooks`), object check (`check_object_hooks`), list,
         post-save check (`_post_save_requirement`) and workflow check
         (``scrud_django.validators.narrow_of``)."""
-        if not has_hooks(type_options(self.resource_type_name)):
+        if not has_hooks(type_options_for_slug(self.resource_type_name)):
             return None
         return hook_leaf(
             self.get_resource_type(),

@@ -9,10 +9,14 @@ grants (`GrantsLeaf`) **and** its hooks (`HookLeaf`), so a hook can narrow
 what the grants allow, never allow what they refuse.
 """
 
+import importlib
+import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac import access
 
 from scrud_django.core.authz import content_of, resource_contexts
@@ -56,21 +60,71 @@ BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 _OPTIONS: dict[str, TypeOptions] = {}
-_OPTIONS_LOCK = threading.Lock()
+_SLUG_IRIS: dict[str, str] = {}
+_OPTIONS_LOCK = threading.RLock()
+_LOAD_LOCK = threading.RLock()
+_loaded = False
+
+logger = logging.getLogger(__name__)
 
 
-def register_type_options(slug: str, options: TypeOptions) -> None:
-    """Record `options` as the type `slug`'s. They **replace** any registered
-    before for it (a URLconf imported again, or a second URLconf registering
-    the slug): never merged, so no earlier hook is kept."""
+def register_type_options(type_iri: str, options: TypeOptions, *, slug: str) -> None:
+    """Record `options` as the hooks of the type `type_iri` (and remember that
+    `slug` names it). They **replace** any registered before for the IRI (a
+    URLconf imported again, or a second URLconf registering the type): never
+    merged, so no earlier hook is kept. Replacing with equal options is
+    silent; replacing different ones logs a WARNING naming the type, since a
+    dropped hook only ever allows more."""
     with _OPTIONS_LOCK:
-        _OPTIONS[slug] = options
+        previous = _OPTIONS.get(type_iri)
+        if previous is not None and previous != options:
+            logger.warning(
+                "The hooks of the type %s (slug %r) replace different ones "
+                "registered before for it.",
+                type_iri,
+                slug,
+            )
+        _OPTIONS[type_iri] = options
+        _SLUG_IRIS[slug] = type_iri
 
 
-def type_options(slug: str) -> TypeOptions:
-    """The options registered for the type `slug`; `TypeOptions()` (no
+def type_options(type_iri: str) -> TypeOptions:
+    """The options registered for the type `type_iri`; `TypeOptions()` (no
     hooks) when none are."""
-    return _OPTIONS.get(slug, TypeOptions())
+    return _OPTIONS.get(type_iri, TypeOptions())
+
+
+def type_options_for_slug(slug: str) -> TypeOptions:
+    """The options of the type registered under `slug` (`type_options` of its
+    IRI); `TypeOptions()` when the slug was never registered."""
+    type_iri = _SLUG_IRIS.get(slug)
+    return TypeOptions() if type_iri is None else type_options(type_iri)
+
+
+def hooks_loaded() -> bool:
+    """Whether any type's options have been registered in this process."""
+    return bool(_SLUG_IRIS)
+
+
+def ensure_hooks_loaded() -> None:
+    """Import ``settings.ROOT_URLCONF`` (once) when no registration has run,
+    so that a process that never served a request (a worker, a shell) has the
+    hooks its URLconf registers. Re-entrant: the URLconf's own import calls
+    `register_type_options`, and a second thread waits for the first."""
+    global _loaded
+    if _loaded or hooks_loaded():
+        return
+    with _LOAD_LOCK:
+        if _loaded or hooks_loaded():
+            return
+        _loaded = True  # set first: the import may ask for requirements
+        try:
+            urlconf = settings.ROOT_URLCONF
+            if urlconf:
+                importlib.import_module(urlconf)
+        except BaseException:
+            _loaded = False
+            raise
 
 
 def has_hooks(options: TypeOptions) -> bool:
@@ -191,20 +245,31 @@ def _as_content(obj):
 
 
 def hook_leaf(resource_type, slug: str, *, type_iri=None) -> HookLeaf | None:
-    """The `HookLeaf` of the type `slug`'s registered hooks (`type_options`),
-    or ``None`` when it has none."""
-    options = type_options(slug)
+    """The `HookLeaf` of the hooks registered for the type `slug`
+    (`type_options_for_slug`), or ``None`` when it has none."""
+    return _leaf_of(resource_type, type_options_for_slug(slug), type_iri)
+
+
+def _leaf_of(resource_type, options, type_iri=None) -> HookLeaf | None:
     if not has_hooks(options):
         return None
     return HookLeaf(resource_type, options, type_iri=type_iri)
 
 
-def requirement_for(resource_type, slug: str) -> Requirement:
-    """What `resource_type` (registered as `slug`) requires of a request and
-    an object: its grants (`GrantsLeaf` on its ``type_uri``) and, when it
-    has hooks, its `HookLeaf`."""
+def requirement_for(resource_type, slug: str | None = None) -> Requirement:
+    """What `resource_type` requires of a request and an object: its grants
+    (`GrantsLeaf` on its ``type_uri``) and, when it has hooks (found by its
+    ``type_uri``), its `HookLeaf`. `slug` defaults to ``resource_type.slug``;
+    a given one that differs is a mistake (`ImproperlyConfigured`). The hooks
+    are loaded first (`ensure_hooks_loaded`)."""
+    if slug is not None and slug != resource_type.slug:
+        raise ImproperlyConfigured(
+            f"requirement_for was given the slug {slug!r} for the type "
+            f"{resource_type.type_uri!r}, whose slug is {resource_type.slug!r}."
+        )
+    ensure_hooks_loaded()
     requirement: Requirement = [GrantsLeaf(resource_type.type_uri)]
-    leaf = hook_leaf(resource_type, slug)
+    leaf = _leaf_of(resource_type, type_options(resource_type.type_uri))
     if leaf is not None:
         requirement.append(leaf)
     return requirement

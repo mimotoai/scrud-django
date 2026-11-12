@@ -1279,25 +1279,6 @@ for them. Test: in `tests/test_studio_computed.py`, assert that
 `core.types.type_options(slug).compute` is set for each slug of
 `STUDIO_COMPUTED_TYPES` (it is `None` today).
 
-<a id="core-hooks-silently-absent"></a>
-## core-hooks-silently-absent: a type's hooks can be missing without a sign
-
-Before ninja phase 3. `type_options(slug)` returns an empty `TypeOptions`
-for a slug never registered, `requirement_for(resource_type, slug)` takes
-the slug apart from `resource_type.slug` (a mismatch gives another type's
-hooks, or none), hooks are registered only when the URLconf that calls
-`json_resource_type` is imported (a worker, or a ninja router in a module of
-its own, that never imports it gets none), and `register_type_options`
-replaces silently. Any of these drops a type's `checks` and `object_checks`,
-which only refuse, so the type then allows what they would refuse.
-Proposal: key the options by type IRI, default the slug from
-`resource_type` and assert that a given one matches, and warn on a
-replacement that changes the hooks. Test: in `tests/test_type_hooks.py`,
-call `requirement_for(get_resource_type_for("hooked-notes"), "todos")` and
-assert it raises (today it returns a requirement with no `HookLeaf`); in a
-subprocess that sets up Django without importing `tests.urls`, assert
-`type_options("hooked-notes")` is not silently empty.
-
 <a id="core-save-checked-mark-body"></a>
 ## core-save-checked-mark-body: `save_checked` trusts the workflow mark, not the body
 
