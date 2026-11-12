@@ -25,6 +25,9 @@
   "after": {
     "@id": "openteams:UIPushAfter"
   },
+  "changed": {
+    "@id": "openteams:UIPushChanged"
+  },
   "conflicts": {
     "@id": "openteams:UIBranchConflicts"
   },

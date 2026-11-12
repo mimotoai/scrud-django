@@ -331,6 +331,55 @@ def test_promote_panel_shows_changes_and_conflicts(studio_layer, admin_login):
     assert Resource.objects.filter(pk=override.pk).exists()
 
 
+def changed_field_names(review, side):
+    """The texts (name, then value) of the fields the loaded push `review`
+    marks changed on
+    `side` (``"before"`` or ``"after"``) of its first change (the row)."""
+    [row, _fresh] = [e for e in review.elements if "studio-push-change" in e.classes()]
+    [section] = [
+        e
+        for e in review.elements
+        if f"studio-push-{side}" in e.classes() and e.within(row)
+    ]
+    return [
+        text_of(e)
+        for e in review.elements
+        if "studio-push-field-changed" in e.classes() and e.within(section)
+    ]
+
+
+def marks(texts, name):
+    return any(t.startswith(name) for t in texts)
+
+
+@pytest.mark.django_db
+@test_context
+def test_review_does_not_mark_empty_values_as_changes(studio_layer, admin_login):
+    """An empty rbac_context (null, "" or none) on one side and an empty one
+    on the other is no change, however spelled; "" to a value still is."""
+    main_row, _override, wip = wip_with_changes(admin_login)
+    box = promote_boxes(get_page(workbench_url(wip)))["main"]
+    without = {k: v for k, v in main_row.content.items() if k != "rbac_context"}
+    for stored in (
+        {**main_row.content, "rbac_context": None},
+        without,
+    ):
+        Resource.objects.filter(pk=main_row.pk).update(content=stored)
+        loaded = load_review(box)
+        for side in ("before", "after"):
+            names = changed_field_names(loaded, side)
+            assert not marks(names, "rbac_context"), (stored, side, names)
+        # The review still marks what did change.
+        assert marks(changed_field_names(loaded, "after"), "template")
+    # A real change: main's row has a context, the push writes "".
+    Resource.objects.filter(pk=main_row.pk).update(
+        content={**main_row.content, "rbac_context": "other"}
+    )
+    loaded = load_review(box)
+    assert marks(changed_field_names(loaded, "before"), "rbac_context")
+    assert marks(changed_field_names(loaded, "after"), "rbac_context")
+
+
 @pytest.mark.django_db
 @test_context
 def test_promote_panel_actions_above_the_review(studio_layer, admin_login):

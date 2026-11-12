@@ -498,18 +498,43 @@ def plan_push(
 ACTIONS = {"http.POST": "create", "http.PUT": "update", "http.DELETE": "delete"}
 
 
+def _empty(value) -> bool:
+    """Whether `value` is empty: null or ``""`` (a missing field reads as
+    null). ``0`` and ``False`` are values."""
+    return value is None or value == ""
+
+
+def changed_fields(before, after) -> list[str]:
+    """The names of the fields on which the rows `before` and `after` of a
+    change differ, sorted. An empty value (null, ``""``, or a missing field)
+    equals any other empty value; a field on one side only counts when it is
+    not empty. A change with no row on one side (a create has no ``before``
+    of its own, a deletion no ``after``) differs on every field of the other
+    row."""
+    if before is None or after is None:
+        row = after if before is None else before
+        return sorted(row or {})
+    return sorted(
+        name
+        for name in before.keys() | after.keys()
+        if before.get(name) != after.get(name)
+        and not (_empty(before.get(name)) and _empty(after.get(name)))
+    )
+
+
 def push_changes(
     request, plan: PushPlan, target: str, using=None, *, all_branches=None
 ) -> tuple[list[dict], int]:
     """``(changes, unreadable)``: ``{"kind", "key", "action", "before",
-    "after"}`` of each write of `plan` (a push into branch `target`) that
+    "after", "changed"}`` of each write of `plan` (a push into branch `target`) that
     `request` may read, in order, and how many others there are. A write is
     readable when `request` may read (`may_read_item`) its ``before``, its
     ``after`` and the source's row it comes from. Its ``action`` is by its
     method (`ACTIONS`); ``before``, the target's row it updates or deletes,
     or, for a new row, the item the target shows beneath it (its parent's,
     or a packaged layer's), ``None`` where there is none; ``after``, the row
-    as written, ``None`` for a deletion."""
+    as written, ``None`` for a deletion; ``changed``, the names of the
+    fields they differ on (`changed_fields`)."""
     if all_branches is None:
         all_branches = branches(using)
     target = all_branches[target]
@@ -554,6 +579,7 @@ def push_changes(
                     "action": ACTIONS[write.method],
                     "before": before,
                     "after": write.content,
+                    "changed": changed_fields(before, write.content),
                 }
             )
     return changes, len(plan.writes) - len(changes)

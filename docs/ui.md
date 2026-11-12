@@ -1886,11 +1886,14 @@ the author applies or proposes it. It computes the same plan the push writes
    {"kind": "component", "key": ["row"], "action": "update",
     "before": {"name": "row", "template": "<b>main</b>", "rbac_context": "", "…": "…"},
     "after": {"name": "row", "template": "<i>wip</i>", "branch": "main",
-              "rbac_context": "", "base": null, "…": "…"}},
+              "rbac_context": "", "base": null, "…": "…"},
+    "changed": ["branch", "template"]},
    {"kind": "component", "key": ["fresh"], "action": "create",
-    "before": null, "after": {"name": "fresh", "…": "…"}},
+    "before": null, "after": {"name": "fresh", "…": "…"},
+    "changed": ["name", "…"]},
    {"kind": "component", "key": ["gone"], "action": "delete",
-    "before": {"name": "gone", "…": "…"}, "after": null}],
+    "before": {"name": "gone", "…": "…"}, "after": null,
+    "changed": ["name", "…"]}],
  "unreadable_changes": 1,
  "conflicts": [{"kind": "component", "key": ["row"],
                 "base": "3f…", "current": "9a…"}],
@@ -1910,6 +1913,11 @@ the author applies or proposes it. It computes the same plan the push writes
   item the target shows there now, from its parent or a packaged layer
   (`null` for none). `after` is the row exactly as the push stores it (its
   `branch`, `rbac_context` and `base` on the target); `null` for a delete.
+  `changed` lists, sorted, the names of the fields the two differ on: null,
+  `""` and a missing field are all the same (an empty `rbac_context` is not a
+  change whichever way each side spells it), while `""` to `"ctx"` and `"ctx"`
+  to missing are; for a create with no `before`, or a delete, every field of
+  the one row.
 - A write on an item the user may not `GET` (the target's row, the row as
   written, the source's row it comes from, or, for a create, the item the
   target shows there now: its `before`) is left out of `changes`;
@@ -2514,9 +2522,9 @@ is set, the conflicts (`<li class="studio-push-conflict">`, the item and
 that it changed on the target since the source's version was based on it),
 and the changes (`<li class="studio-push-change"
 data-studio-change-action="create|update|delete">`), each with the target's
-row before and after as its fields, as text (a field the push changes is
-`studio-push-field-changed`; "Nothing" before a create, "Deleted" after a
-delete). See [What a push will change](#what-a-push-will-change).
+row before and after as its fields, as text (a field in the change's
+`changed` list is `studio-push-field-changed`; "Nothing" before a create,
+"Deleted" after a delete). See [What a push will change](#what-a-push-will-change).
 
 Apply waits for the review ("Apply waits for the review to load."). Once it
 has loaded, Apply is turned on when the review has no conflict: when

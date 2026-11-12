@@ -33,9 +33,14 @@
           "after": {
             "type": ["object", "null"],
             "description": "The row as the push writes it; null for a delete."
+          },
+          "changed": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The names of the fields the before and the after differ on, sorted; null, an empty string and a missing field are all the same (empty); every field of the one row when the other is null."
           }
         },
-        "required": ["kind", "key", "action", "before", "after"]
+        "required": ["kind", "key", "action", "before", "after", "changed"]
       }
     },
     "unreadable_changes": {
