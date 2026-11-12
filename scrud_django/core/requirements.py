@@ -94,35 +94,69 @@ def as_get(request):
 # The leaf classes trusted to ask the grants (`register_grant_asking_leaf`).
 _GRANT_ASKING_LEAVES: tuple[type, ...] = ()
 
+# What a leaf's class decides about the grants: a subclass of a registered
+# class that overrides either is not trusted unless registered itself.
+_GRANT_ASKING_ATTRIBUTES = ("has_context_permission", "reads_each_context")
+
 
 def register_grant_asking_leaf(cls: type) -> type:
-    """Trust the leaves of class `cls` (its subclasses included) to ask the
-    grants: `asks_grants` counts one as asking them, and, when it says it
-    reads each context as the object is there (``reads_each_context``),
-    none are asked beside it (`asks_grants_itself`). Returns `cls`, so it
-    is usable as a class decorator. Register only a class whose
-    ``has_context_permission`` asks the grants (`GrantsLeaf`, the DRF
-    adapter's ``ViewLeaf``): a leaf of any other class, whatever it says,
-    counts as asking none and gets the grants asked beside it."""
+    """Trust the leaves of class `cls` to ask the grants: `asks_grants`
+    counts one as asking them, and, when it says it reads each context as
+    the object is there (``reads_each_context``), none are asked beside it
+    (`asks_grants_itself`). A subclass of `cls` is trusted too while it
+    overrides neither ``has_context_permission`` nor ``reads_each_context``
+    (an override, of the class or of the instance, may stop asking the
+    grants); one that overrides either is trusted only when registered
+    itself. Returns `cls`, so it is usable as a class decorator. Register
+    only a class whose ``has_context_permission`` asks the grants
+    (`GrantsLeaf`, the DRF adapter's ``ViewLeaf``): a leaf of any other
+    class, whatever it says, counts as asking none and gets the grants
+    asked beside it (but a type's hooks, `is_hook`, which ask none and
+    get none asked)."""
     global _GRANT_ASKING_LEAVES
     if cls not in _GRANT_ASKING_LEAVES:
         _GRANT_ASKING_LEAVES = (*_GRANT_ASKING_LEAVES, cls)
     return cls
 
 
+def _trusted(leaf) -> bool:
+    """Whether `leaf`'s class is trusted to ask the grants
+    (`register_grant_asking_leaf`): registered itself, or a subclass of the
+    nearest registered class in its MRO overriding neither of
+    `_GRANT_ASKING_ATTRIBUTES`, with no instance attribute of either name."""
+    instance = getattr(leaf, "__dict__", {})
+    if any(name in instance for name in _GRANT_ASKING_ATTRIBUTES):
+        return False
+    cls = type(leaf)
+    for base in cls.__mro__:
+        if base in _GRANT_ASKING_LEAVES:
+            return all(
+                getattr(cls, name, None) is getattr(base, name, None)
+                for name in _GRANT_ASKING_ATTRIBUTES
+            )
+    return False
+
+
 def asks_grants_itself(leaf) -> bool:
     """Whether `leaf` asks the grants itself, reading each context as the
-    object is there: it is of a registered class
-    (`register_grant_asking_leaf`) and says so (``reads_each_context``)."""
-    return isinstance(leaf, _GRANT_ASKING_LEAVES) and leaf.reads_each_context
+    object is there: its class is trusted to (`register_grant_asking_leaf`)
+    and it says so (``reads_each_context``)."""
+    return _trusted(leaf) and leaf.reads_each_context
+
+
+_hook_leaf_class = None
 
 
 def is_hook(leaf) -> bool:
     """Whether `leaf` is a type's hooks (`scrud_django.core.types.HookLeaf`),
     which only refuse: no grants are asked for it."""
-    from scrud_django.core.types import HookLeaf
+    global _hook_leaf_class
+    if _hook_leaf_class is None:
+        # Imported here: scrud_django.core.types imports this module.
+        from scrud_django.core.types import HookLeaf
 
-    return isinstance(leaf, HookLeaf)
+        _hook_leaf_class = HookLeaf
+    return isinstance(leaf, _hook_leaf_class)
 
 
 @register_grant_asking_leaf
@@ -231,7 +265,7 @@ def asks_grants(requirement) -> bool:
             return bool(entry.options) and all(
                 any(map(asks, _entries(option))) for option in entry.options
             )
-        return isinstance(entry, _GRANT_ASKING_LEAVES)
+        return _trusted(entry)
 
     return any(map(asks, requirement))
 

@@ -30,6 +30,7 @@ from scrud_django.core.requirements import (
     asks_grants_itself,
     grants_allow,
     is_hook,
+    register_grant_asking_leaf,
     require_grants,
 )
 from scrud_django.core.types import HookLeaf, TypeOptions, requirement_for
@@ -494,7 +495,8 @@ def test_a_leaf_of_an_unknown_class_does_not_count_as_asking_grants():
     assert asks_grants(
         [access.AnyOf([[GrantsLeaf(JSON_LD)], [SelfTrusting(), GrantsLeaf(JSON_LD)]])]
     )
-    # The leaves the core knows: GrantsLeaf (a subclass too) and HookLeaf.
+    # The leaves the core knows: GrantsLeaf (subclasses:
+    # test_a_subclass_overriding_the_grants_check_is_not_trusted) and HookLeaf.
     hook = hooks_only(json_ld())[0]
     assert asks_grants_itself(GrantsLeaf(JSON_LD))
     assert not asks_grants_itself(SelfTrusting())
@@ -601,4 +603,79 @@ def test_a_grants_nothing_flag_on_an_unknown_class_is_ignored():
     # A type's hooks ask no grants, beside them or of their own.
     assert grants_allow(
         hooks_only(resource_type), anonymous, stored.content, permission
+    )
+
+
+class NarrowingGrantsLeaf(GrantsLeaf):
+    """A `GrantsLeaf` overriding only its object check: still trusted."""
+
+    def has_object_permission(self, request, obj):
+        return super().has_object_permission(request, obj)
+
+
+class AllowingGrantsLeaf(GrantsLeaf):
+    """A `GrantsLeaf` whose ``has_context_permission`` asks no grants."""
+
+    def has_context_permission(self, request, obj, context):
+        return True
+
+
+class ClaimingGrantsLeaf(GrantsLeaf):
+    """A `GrantsLeaf` overriding ``reads_each_context`` (to what it was)."""
+
+    @property
+    def reads_each_context(self):
+        return True
+
+
+@register_grant_asking_leaf
+class RegisteredAllowingGrantsLeaf(AllowingGrantsLeaf):
+    """`AllowingGrantsLeaf`, registered: trusted, as its author asks."""
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_subclass_overriding_the_grants_check_is_not_trusted():
+    resource_type = json_ld()
+    stored = ResourceRegistration.register({"rbac_context": "a"}, "json-ld")
+    # Overriding only the object check keeps the trust.
+    narrowing = NarrowingGrantsLeaf(JSON_LD)
+    assert asks_grants_itself(narrowing)
+    require_grants([narrowing], "x")
+
+    permission = Permission("http.DELETE", JSON_LD)
+    writer = user_with((DELETER, "a"), ({"http.PUT": [JSON_LD]}, "a"))
+    for leaf in (AllowingGrantsLeaf(JSON_LD), ClaimingGrantsLeaf(JSON_LD)):
+        assert not asks_grants_itself(leaf)
+        with pytest.raises(ImproperlyConfigured, match="asks no grants"):
+            require_grants([leaf], "x")
+        # The grants are asked beside it.
+        with pytest.raises(access.AccessDenied):
+            resources.check_grants_in_each_context(
+                request_of("DELETE", AnonymousUser()),
+                stored.content,
+                [leaf],
+                permission,
+            )
+        resources.check_grants_in_each_context(
+            request_of("DELETE", writer), stored.content, [leaf], permission
+        )
+        with pytest.raises(access.AccessDenied):
+            writes.check_post_save(
+                request_of("PUT", AnonymousUser()), resource_type, stored, [leaf]
+            )
+        writes.check_post_save(request_of("PUT", writer), resource_type, stored, [leaf])
+
+    # An instance's own has_context_permission is an override too.
+    patched = GrantsLeaf(JSON_LD)
+    patched.has_context_permission = lambda request, obj, context: True
+    assert not asks_grants_itself(patched)
+    assert not asks_grants([patched])
+
+    # Registered itself, the overriding subclass is trusted.
+    registered = RegisteredAllowingGrantsLeaf(JSON_LD)
+    assert asks_grants_itself(registered)
+    require_grants([registered], "x")
+    resources.check_grants_in_each_context(
+        request_of("DELETE", AnonymousUser()), stored.content, [registered], permission
     )
