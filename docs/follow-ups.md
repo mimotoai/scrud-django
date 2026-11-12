@@ -1281,6 +1281,42 @@ published by "publish" and a user holding `may_stay_json_ld()` in "a",
 `update_locked` save of a body publishing it; assert it is refused and
 the row unchanged (today it saves).
 
+<a id="core-write-no-recheck"></a>
+## core-write-no-recheck: the facade's `create` and `update` take no `recheck`
+
+Before ninja phase 3. `scrud_django.core.writes.create` and `update` take a
+`type_iri` but no `recheck`: their post-save check is always
+`check_post_save` of the requirement they are given. A DRF view threads a
+post-save check of its own (`check_post_save_permissions`, its
+`object_for_checks`) through `save_checked(recheck=...)`; a front end that
+needs one must call `save_checked` itself, with a `recheck`, after
+`validate_write` of exactly the body its `save` writes (see
+`core-save-checked-mark-body`). Writing through `create` or `update`
+silently drops it. Test: in `tests/test_core_writes.py`, with a post-save
+check refusing a resource named as `PostSaveRefusingResourceViewSet.REFUSED`
+(`tests/urls.py`), write such a resource through `core.writes.update` given
+that check; assert it is refused and the row unchanged (today `update` has
+no parameter for it, so the front end cannot ask it there).
+
+<a id="core-viewleaf-list-request-check"></a>
+## core-viewleaf-list-request-check: a list's GET drops a wrapped `IsAuthorized` subclass's own request check
+
+On a list's GET, `core.resources.check_request` asks each leaf trusted to ask
+the grants as a `GrantsLeaf` of its list type (`_as_list_requirement`),
+beside the leaf itself only when its class's `has_permission` is not its
+registered base's (`_own_request_check`). The DRF `ViewLeaf` is registered
+and has its own `has_permission`, which calls the wrapped `IsAuthorized`'s:
+a wrapped subclass with a stricter `has_permission` is replaced by the list
+grant, and its refusal is dropped. Latent: the facade is never given a
+`ViewLeaf` (the DRF views ask their own permissions, and `requirement_for`
+builds `GrantsLeaf`s). Fix before a front end hands the facade a view's
+requirement: ask a `ViewLeaf` whose permission's class overrides
+`has_permission` beside its list grant. Test: in
+`tests/test_core_requirements.py`, `check_request` of a list's GET with a
+requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
+`has_permission` refuses, as a user holding the list grant; assert
+`AccessDenied` (today it allows).
+
 <a id="core-type-redesign"></a>
 ## core-type-redesign: the core's types before the ninja front end
 

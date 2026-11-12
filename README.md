@@ -216,7 +216,14 @@ return (`None`, `"yes"`, `1`) refuses.
   when the routes are built, so registering a slug again replaces the other
   hooks but not an already built route's filter.
 
-Hooks are keyed by the type's IRI: registering a type again replaces the hooks registered for it before (a different set logs a warning on `scrud_django.core.types`; a different slug registering the same IRI must carry the very same hook objects or gets `ImproperlyConfigured`), and `requirement_for` imports `ROOT_URLCONF` once per process, so a worker that never served a request still has them.
+Hooks are keyed by the type's IRI: registering a type again replaces the
+hooks registered for it before (a different set logs a warning on
+`scrud_django.core.types`), and `requirement_for` imports `ROOT_URLCONF`
+once per process, so a worker that never served a request still has them.
+Slugs sharing a type IRI must register the very same hook objects, or the
+second gets `ImproperlyConfigured`: use module-level functions, since
+closures a factory builds in the URLconf are new objects each time it is
+imported, and a re-import then raises.
 
 To move the rule of an `IsAuthorized` subclass's `has_context_permission`
 to hooks, register it twice. As a `checks=` callable it governs writes, but
