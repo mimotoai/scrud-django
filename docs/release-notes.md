@@ -397,9 +397,10 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   (`tests/test_core_*`, with a parity harness, `tests/test_core_parity.py`)
   pin it against the DRF routes. It asks a route's request check
   (`check_request`) before it looks anything up, as the DRF route asks its
-  permissions before `get_object()`: `readable_queryset` the list grant
-  (`http.GET` on the list type) and each entry's `has_permission` of the
-  GET, `load_for_read` the method's check (with the `body=` it is given,
+  permissions before `get_object()`: `readable_queryset` of a GET or HEAD
+  the list grant (each grants leaf asked as its list type, `http.GET` on
+  it, as DRF names the list type; a write's list validators are governed
+  by the write's own check), `load_for_read` the method's check (with the `body=` it is given,
   else as `Allow` checks a PUT, without one), and `validate_write` the
   write's check with its body, each refusing with `AccessDenied` (403):
   for a missing item and an existing one alike, and before any validation

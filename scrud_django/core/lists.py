@@ -54,6 +54,7 @@ from scrud_django.core.requirements import (
     filter_by_object_checks,
     object_check_requirement,
     readable_removal,
+    require_grants,
 )
 from scrud_django.exceptions import QueryParameterError
 from scrud_django.models import Resource, ResourceContext
@@ -187,21 +188,27 @@ def readable_queryset(
     ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`` it raises
     ``access.ConditionalListTooLarge``.
 
-    First, before it filters, the list's request check
+    First, for a GET or HEAD, before it filters, the list's request check
     (`scrud_django.core.resources.check_request` with ``list_route``): the
     list grant (``http.GET`` on the list type, ``collection_type_uri_for``)
-    and each entry's ``has_permission`` of the GET, as the DRF route asks
-    them before it lists; a refusal is ``access.AccessDenied`` (a 403), and
-    a `requirement` that asks no grants ``ImproperlyConfigured``. A list is
-    a GET: a request of another method (a POST's list validators) is asked,
-    checked included, as its GET copy (`as_get`), so a requester who may not
-    list the resources gets no validators describing them."""
+    and the other entries' ``has_permission`` of the GET (a type's hooks),
+    as the DRF route asks them before it lists; a refusal is
+    ``access.AccessDenied`` (a 403). A request of another method (a write's
+    list validators, a conditional create's) is not checked here: the
+    write's own request check governs it (`validate_write`'s), as DRF
+    evaluates a conditional create's list validators without the list
+    grant; its list is that of its GET copy (`as_get`), filtered by the
+    item grants. A `requirement` that asks no grants is
+    ``ImproperlyConfigured`` (`scrud_django.core.requirements
+    .require_grants`) whatever the method."""
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import check_request
 
-    if request.method not in ("GET", "HEAD"):
+    require_grants(requirement, "readable_queryset")
+    if request.method in ("GET", "HEAD"):
+        check_request(request, resource_type, requirement, list_route=True)
+    else:
         request = as_get(request)
-    check_request(request, resource_type, requirement, list_route=True)
     queryset = Resource.objects.filter(resource_type=resource_type)
     if using is not None:
         queryset = queryset.using(using)

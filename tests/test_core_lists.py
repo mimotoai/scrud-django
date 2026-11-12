@@ -246,10 +246,9 @@ def drf_list_status(user):
 @test_context
 def test_readable_queryset_asks_the_list_grant():
     """A user granted ``http.GET`` on JSON_LD in "a" but not on its list
-    type: the DRF list is a 403, and `readable_queryset` refuses
-    (``access.AccessDenied``) rather than list the resource in "a", for a
-    GET, a HEAD and the GET copy it asks of another method (a POST's list
-    validators). The anonymous user is refused too (DRF: 401)."""
+    type: the DRF list is a 403, and `readable_queryset` of a GET or HEAD
+    refuses (``access.AccessDenied``) rather than list the resource in "a".
+    The anonymous user is refused too (DRF: 401)."""
     from scrud_django.core.lists import readable_queryset
 
     rtype, _ = json_ld_in("a")
@@ -257,7 +256,7 @@ def test_readable_queryset_asks_the_list_grant():
     assert drf_list_status(reader).status_code == 403
     assert drf_list_status(AnonymousUser()).status_code == 401
     for user in (reader, AnonymousUser()):
-        for method in ("GET", "HEAD", "POST"):
+        for method in ("GET", "HEAD"):
             with pytest.raises(access.AccessDenied):
                 readable_queryset(
                     request_by(method, user), rtype, [GrantsLeaf(JSON_LD)]
@@ -301,6 +300,29 @@ def test_readable_queryset_asks_the_requirements_request_checks():
     )
     with pytest.raises(access.AccessDenied):
         readable_queryset(request, rtype, [GrantsLeaf(JSON_LD), RefusingRequests()])
+
+
+@pytest.mark.django_db
+@test_context
+def test_readable_queryset_of_a_write_asks_no_list_grant():
+    """A write's list validators (a conditional create's): `readable_queryset`
+    given a POST asks no list grant, the write's own request check
+    (`validate_write`'s) governing it, as DRF evaluates them without it. A
+    creator in "a" without the list grant gets the resources of its GET
+    copy, those in "a"; a requirement asking no grants is still refused."""
+    from django.core.exceptions import ImproperlyConfigured
+
+    from scrud_django.core.lists import readable_queryset
+
+    rtype, (in_a, _) = json_ld_in("a", "b")
+    creator = user_with(({"http.GET": [JSON_LD], "http.POST": [JSON_LD]}, "a"))
+    request = request_by("POST", creator)
+    listed = readable_queryset(request, rtype, [GrantsLeaf(JSON_LD)])
+    assert list(listed.values_list("pk", flat=True)) == [in_a.pk]
+    with pytest.raises(access.AccessDenied):
+        readable_queryset(request_by("GET", creator), rtype, [GrantsLeaf(JSON_LD)])
+    with pytest.raises(ImproperlyConfigured, match="asks no grants"):
+        readable_queryset(request, rtype, [])
 
 
 class RefusingRequests:

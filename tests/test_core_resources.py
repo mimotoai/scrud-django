@@ -527,6 +527,15 @@ class RefusingRequests:
         return True
 
 
+class RefusingGrantsLeaf(GrantsLeaf):
+    """A trusted leaf (a `GrantsLeaf` subclass overriding neither
+    ``has_context_permission`` nor ``reads_each_context``) whose request
+    check refuses every request."""
+
+    def has_permission(self, request, body):
+        return False
+
+
 @pytest.mark.django_db
 @test_context
 def test_load_for_read_asks_the_request_check():
@@ -668,11 +677,26 @@ def test_check_request():
             return False
         return True
 
+    list_only = user_with(({"http.GET": [JSON_LD_LIST]}, "a"))
     for method in ("GET", "HEAD"):
         assert allows("lister-a", method, list_route=True)
         assert allows("superuser", method, list_route=True)
-        # The item's grant alone does not list.
+        # The item's grant alone does not list; the list's grant alone does
+        # (each grants leaf is asked as its list type, as DRF names it on
+        # the list action), the list then filtered by the item grants.
         assert not allows("reader-a", method, list_route=True)
+        check_request(
+            request_of(method, list_only), resource_type, requirement, list_route=True
+        )
+        # A trusted leaf with a request check of its own is asked as it is
+        # beside the list grant.
+        with pytest.raises(access.AccessDenied):
+            check_request(
+                request_of(method, matrix["superuser"]),
+                resource_type,
+                [RefusingGrantsLeaf(JSON_LD)],
+                list_route=True,
+            )
         assert not allows("anonymous", method, list_route=True)
         assert not allows("conditioned", method, list_route=True)
         assert allows("reader-a", method, list_route=False)

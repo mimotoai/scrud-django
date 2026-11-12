@@ -480,6 +480,26 @@ def test_list_refusal_parity(type_slug, user_name, request):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("type_slug", TYPE_SLUGS)
+def test_list_grant_alone_parity(type_slug):
+    """A user granted the list type alone (``http.GET`` on it in "a") lists,
+    an empty list once the item grants filter it, on DRF and the facade (each
+    grants leaf is asked as its list type on the list's GET); one granted the
+    item type alone is refused (DRF 403) by both."""
+    parity = TYPES[type_slug]
+    for where in STORED_IN:
+        store(parity, where)
+    list_only = user_with(({"http.GET": [collection_type_uri_for(parity.uri)]}, "a"))
+    response = list_response(parity, list_only)
+    assert response.status_code == 200, response.content
+    assert listed_pks(response) == set()
+    assert list(facade_list(parity, list_only)) == []
+    item_only = user_with(({"http.GET": [parity.uri]}, "a"))
+    assert list_response(parity, item_only).status_code == 403
+    assert outcome_of(lambda: list(facade_list(parity, item_only))) == 403
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize("body_context", BODY_CONTEXTS, ids=str)
 @pytest.mark.parametrize("user_name", USER_NAMES)
 @pytest.mark.parametrize("type_slug", TYPE_SLUGS)

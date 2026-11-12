@@ -1228,6 +1228,27 @@ path) before the ninja front end wires it up. Test: in
 `contexts_for` and call `readable_queryset`; assert it raises or agrees with
 the detail route, where today it filters by the rows.
 
+<a id="core-options-copy-entry"></a>
+## core-options-copy-entry: the ninja front end must refuse scrudful's OPTIONS copy at entry
+
+Before ninja phase 3. `core.resources.check_request` (and so
+`load_for_read`, `readable_queryset`, `validate_write`) treats a request
+carrying scrudful's marker of a body-less OPTIONS copy
+(`access.checks_allow`: `request.method` a method, `META["REQUEST_METHOD"]`
+`"OPTIONS"`) as body-less: a PUT or POST is checked in some context, not in
+the contexts its body writes, and a type's hooks skip the body. The core
+leaves such a copy as it is, since `allowed_methods` and `load_for_read`
+build one themselves. A request that *arrives* so (middleware rewriting an
+OPTIONS's method, say from `X-HTTP-Method-Override`) must be refused where
+it enters the front end, as DRF's `initial()` refuses it
+(`access.refuse_rewritten_options`, 403; scoped-rbac's ninja error handlers
+do too). The ninja front end must call it before any core function. Test:
+in the ninja front end's tests, send an OPTIONS rewritten to a PUT whose
+body writes a context the requester may not write (the method overridden
+by middleware), as a requester who may PUT in another context; assert a
+403 before any core call, where `check_request` on that request alone
+allows it.
+
 <a id="core-paging-key-first"></a>
 ## core-paging-key-first: the list's paging and MySQL key-first hint are still DRF's
 

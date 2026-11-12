@@ -137,6 +137,21 @@ def _trusted(leaf) -> bool:
     return False
 
 
+def _own_request_check(leaf) -> bool:
+    """Whether `leaf`, of a trusted class (`_trusted`), has a request check
+    of its own: its class's ``has_permission`` is not that of the nearest
+    registered class in its MRO, or the instance was given one."""
+    if "has_permission" in getattr(leaf, "__dict__", {}):
+        return True
+    cls = type(leaf)
+    for base in cls.__mro__:
+        if base in _GRANT_ASKING_LEAVES:
+            return getattr(cls, "has_permission", None) is not getattr(
+                base, "has_permission", None
+            )
+    return True
+
+
 def asks_grants_itself(leaf) -> bool:
     """Whether `leaf` asks the grants itself, reading each context as the
     object is there: its class is trusted to (`register_grant_asking_leaf`)

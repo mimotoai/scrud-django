@@ -13,11 +13,12 @@ one they can read is ``access.AccessDenied`` (403), for the front end to
 answer as it answers access errors.
 
 The request check of a route (`check_request`: the list grant for a list's
-GET, ``has_permission`` of each entry of the requirement, a `HookLeaf`'s
-included, with the body for a write) runs before anything is looked up, as
-DRF's ``initial()`` asks the permissions before ``get_object()``:
-`load_for_read`, `readable_queryset` and `validate_write` ask it, so a
-requester refused there gets a 403 whether the item exists or not. A
+GET, else ``has_permission`` of each entry of the requirement, a
+`HookLeaf`'s included, with the body for a write) runs before anything is
+looked up, as DRF's ``initial()`` asks the permissions before
+``get_object()``: `load_for_read`, `readable_queryset` (of a GET or HEAD)
+and `validate_write` ask it, so a requester refused there gets a 403
+whether the item exists or not. A
 requirement's ``access.AnyOf`` is DRF's ``|`` of the object checks only
 beyond that: DRF's ``OR`` also asks each option's request check beside its
 object check, which the object check here does not. A DRF view keeps its
@@ -45,6 +46,8 @@ from scrud_django.core.lists import (  # noqa: F401  (re-exported)
 from scrud_django.core.requirements import (
     GrantsLeaf,
     _entries,
+    _own_request_check,
+    _trusted,
     as_get,
     asks_grants_itself,
     grants_allow,
@@ -327,6 +330,34 @@ def _request_checks_pass(request, requirement, body=None):
         return False
 
 
+def _as_list_requirement(requirement):
+    """`requirement` as a list's GET asks its request checks: each leaf
+    trusted to ask the grants (`_trusted`) as a `GrantsLeaf` of its type's
+    list type (``collection_type_uri_for``), as DRF's ``IsAuthorized``
+    names the collection type on the ``list`` action, and not its item
+    type; any other entry (a type's hooks) as it is, ``AnyOf`` options
+    included. A trusted leaf with a request check of its own
+    (`_own_request_check`) is asked as it is too, beside the list grant:
+    what it refuses beyond the grants stays refused."""
+
+    def as_list(entry):
+        if isinstance(entry, access.AnyOf):
+            return [
+                access.AnyOf(
+                    [
+                        [e for item in _entries(option) for e in as_list(item)]
+                        for option in entry.options
+                    ]
+                )
+            ]
+        if not _trusted(entry):
+            return [entry]
+        listed = GrantsLeaf(collection_type_uri_for(entry.type_iri))
+        return [listed, entry] if _own_request_check(entry) else [listed]
+
+    return [e for entry in requirement for e in as_list(entry)]
+
+
 def check_request(
     request,
     resource_type,
@@ -339,11 +370,14 @@ def check_request(
     (`list_route`) or item route, as the DRF route asks it before it looks
     anything up (``check_permissions``): ``access.AccessDenied`` unless
 
-    - for a GET or HEAD of the list, the list grant allows its GET
-      (``has_permission`` of a `GrantsLeaf` of the list type,
-      ``collection_type_uri_for``, on a GET copy, `as_get`) **and** every
-      entry of `requirement` (any option of an ``AnyOf``) allows
-      ``has_permission`` of that GET without a body;
+    - for a GET or HEAD of the list, every entry of `requirement` (any
+      option of an ``AnyOf``) as the list asks it (`_as_list_requirement`:
+      each grants leaf as a `GrantsLeaf` of its list type,
+      ``collection_type_uri_for``, not its item type, as DRF names the
+      collection type on the ``list`` action) allows ``has_permission`` of
+      a GET copy (`as_get`) without a body: the list grant. A requester
+      with the list grant and no item grant lists, an empty list once the
+      item grants filter it, as on DRF;
     - for any other request (an item's, whatever its method; a POST to the
       list, a create), every entry of `requirement` allows
       ``has_permission(request, body)``: `body` is the parsed body, whose
@@ -362,11 +396,8 @@ def check_request(
     require_grants(requirement, "check_request")
     if list_route and request.method in ("GET", "HEAD"):
         read = as_get(request)
-        list_grant = [GrantsLeaf(collection_type_uri_for(resource_type.type_uri))]
         with authorizing_write(read, covered=False):
-            allowed = _request_checks_pass(read, list_grant) and _request_checks_pass(
-                read, requirement
-            )
+            allowed = _request_checks_pass(read, _as_list_requirement(requirement))
     else:
         covered = COVERED_LIST_METHOD if list_route else COVERED_ITEM_METHOD
         with authorizing_write(request, covered=request.method == covered):
