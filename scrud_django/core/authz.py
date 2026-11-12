@@ -67,8 +67,8 @@ _MALFORMED_REPORTED = OrderedDict()
 _MALFORMED_REPORTED_MAX = 256
 _MALFORMED_REPORTED_LOCK = threading.Lock()
 
-# The attribute of a request that records that the workflow check authorized
-# its write (`_mark_workflow_authorized`).
+# The attribute of a request that records which write the workflow check
+# authorized: ``(type IRI, stored pk)`` (`_mark_workflow_authorized`).
 _WORKFLOW_AUTHORIZED = "_scrud_workflow_authorized"
 
 
@@ -124,15 +124,37 @@ def _not_checking_write():
     return _transition_state(_OUTSIDE)
 
 
-def _mark_workflow_authorized(request):
-    """Record that the workflow check authorized `request`'s write in every
-    context concerned (`_workflow_authorized`)."""
-    setattr(request, _WORKFLOW_AUTHORIZED, True)
+def _mark_workflow_authorized(request, *, type_iri: str, stored_pk: int | None):
+    """Record that the workflow check authorized `request`'s write, in every
+    context concerned, of the resource `stored_pk` (``None`` for a create)
+    named by the type `type_iri` (the type its post-save check names):
+    ``(type_iri, stored_pk)``, replacing any earlier mark
+    (`_workflow_authorized`). A save consumes it
+    (`_consume_workflow_mark`)."""
+    setattr(request, _WORKFLOW_AUTHORIZED, (type_iri, stored_pk))
 
 
-def _workflow_authorized(request):
-    """Whether the workflow check authorized `request`'s write."""
-    return getattr(request, _WORKFLOW_AUTHORIZED, False) is True
+def _workflow_authorized(request, *, type_iri: str, stored_pk: int | None) -> bool:
+    """Whether the workflow check authorized `request`'s write of the
+    resource `stored_pk` (``None`` for a create) of the type `type_iri`:
+    the mark `_mark_workflow_authorized` left is that exact tuple. A
+    `type_iri` that is not a ``str`` is never authorized."""
+    if type(type_iri) is not str:
+        return False
+    mark = getattr(request, _WORKFLOW_AUTHORIZED, None)
+    return type(mark) is tuple and mark == (type_iri, stored_pk)
+
+
+def _consume_workflow_mark(request) -> None:
+    """Remove `request`'s workflow mark (`_mark_workflow_authorized`), so
+    that one validation authorizes at most one save. It is removed from the
+    request a front end wraps too (DRF's ``Request`` reads an attribute it
+    lacks from it), so that no mark is left to read through the wrapper."""
+    for holder in (request, getattr(request, "_request", None)):
+        if holder is not None and _WORKFLOW_AUTHORIZED in getattr(
+            holder, "__dict__", {}
+        ):
+            delattr(holder, _WORKFLOW_AUTHORIZED)
 
 
 def content_of(resource):

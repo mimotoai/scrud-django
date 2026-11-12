@@ -78,14 +78,25 @@ class NoWorkflowPolicyDenied(access.AccessDenied):
     ``access.AccessDenied``'s."""
 
 
-def authorizing_write(request, *, covered: bool, authorized: bool = False):
+def authorizing_write(
+    request,
+    *,
+    covered: bool,
+    authorized: bool = False,
+    type_iri: str | None = None,
+    stored_pk: int | None = None,
+):
     """The block in which a check of `request` runs: for a write the
     workflow check covers (`covered`), with the ``scrud_workflow`` operator
     allowing (the workflow check decides the transition); with `authorized`
     (the post-save check), only once the workflow check has authorized the
-    write (`_workflow_authorized`). Anywhere else ``scrud_workflow``
-    refuses."""
-    if covered and (not authorized or _workflow_authorized(request)):
+    write of the resource `stored_pk` (``None`` for a create) of the type
+    `type_iri` (`_workflow_authorized`: never without a `type_iri`).
+    Anywhere else ``scrud_workflow`` refuses."""
+    if covered and (
+        not authorized
+        or _workflow_authorized(request, type_iri=type_iri, stored_pk=stored_pk)
+    ):
         return _checking_write()
     return _not_checking_write()
 
@@ -171,6 +182,8 @@ def workflow_check(
     contexts_after: list[str] | None = None,
     narrow: Sequence[Callable] = (),
     readable: Callable[[], bool] | None = None,
+    stored_pk: int | None = None,
+    post_save_type_iri: str | None = None,
 ) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
     """Check `request`'s write of `proposed` (the body as sent) over `prior`
     (the stored content, ``None`` for a create) of the type `type_iri`, as
@@ -190,11 +203,18 @@ def workflow_check(
       for an update (a `prior`) hides it: a caller that cannot tell fails
       closed. A create has no stored resource and ignores it.
 
-    It marks the request authorized (`_mark_workflow_authorized`) when every
-    context passes. Raises `WorkflowTransitionError` (or a subclass) for a
-    transition that is invalid or not authorized, `NoWorkflowPolicyDenied`
-    in a context without a policy, `WorkflowRequestRequired` without a
-    request where a policy applies, and ``NotImplementedError`` for a delete
+    When every context passes, it marks the request authorized
+    (`_mark_workflow_authorized`) for this one write: of the stored
+    resource `stored_pk` (``None`` for a create), named by the type
+    `post_save_type_iri` (the type the write's post-save check names; by
+    default `type_iri`). An update (a `prior`) without a `stored_pk` is not
+    marked: the post-save check of no save matches it. The save that uses
+    the mark consumes it (`scrud_django.core.writes.save_checked`).
+
+    Raises `WorkflowTransitionError` (or a subclass) for a transition that
+    is invalid or not authorized, `NoWorkflowPolicyDenied` in a context
+    without a policy, `WorkflowRequestRequired` without a request where a
+    policy applies, and ``NotImplementedError`` for a delete
     (`proposed` ``None``), which runs no workflow check (follow-up
     ``delete-no-workflow-check``)."""
     if proposed is None:
@@ -240,8 +260,13 @@ def workflow_check(
         if policy is None:
             authorize_without_policy(request, type_iri, c, proposed, narrow)
     # The post-save check lets a grant conditioned on scrud_workflow allow
-    # only a write authorized here.
-    _mark_workflow_authorized(request)
+    # only the one write authorized here: of this resource, of this type.
+    if prior is None or stored_pk is not None:
+        _mark_workflow_authorized(
+            request,
+            type_iri=type_iri if post_save_type_iri is None else post_save_type_iri,
+            stored_pk=stored_pk,
+        )
     return transitions
 
 

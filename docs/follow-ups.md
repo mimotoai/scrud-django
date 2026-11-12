@@ -1298,23 +1298,6 @@ assert it raises (today it returns a requirement with no `HookLeaf`); in a
 subprocess that sets up Django without importing `tests.urls`, assert
 `type_options("hooked-notes")` is not silently empty.
 
-<a id="core-workflow-mark-not-bound"></a>
-## core-workflow-mark-not-bound: the workflow-authorized mark is not tied to what was validated
-
-Before ninja phase 3; predates this release. `validate_write` (the workflow
-check) marks the request authorized (`_mark_workflow_authorized`,
-`core/authz.py`), and the post-save check (`save_checked`, in
-`authorizing_write(..., authorized=True)`) lets a grant conditioned on
-`scrud_workflow` allow any write on that request. The mark is not tied to
-the validated body or contexts: a facade caller that changes the body after
-validating, or writes twice on one request, saves past the `scrud_workflow`
-grants. Proposal: store the validated body and contexts with the mark and
-compare them in the post-save check, or clear the mark once a save uses it.
-Test: in `tests/test_core_writes.py`, as a user whose `http.PUT` is
-conditioned on `scrud_workflow` (`may_stay_json_ld`), `validate_write` a
-body in "a", then `update` with a different body (or `update` twice);
-assert the second write is refused (today it saves).
-
 <a id="core-type-redesign"></a>
 ## core-type-redesign: the core's types before the ninja front end
 

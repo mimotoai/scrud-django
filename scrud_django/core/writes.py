@@ -11,7 +11,10 @@ serializer validators run `validate_schema`, then the policy checks and the
 workflow check, each once), then writes it (`create`, `update`, `destroy`,
 or `save_checked` with a save of its own) inside its transaction
 (`write_transaction`; a conditional create also under
-`conditional_create_lock`). Access errors (`scoped_rbac.access.AccessError`)
+`conditional_create_lock`). `create` and `update` validate the body they
+save themselves unless the request carries the workflow check's mark for
+that write; one validation authorizes one save (`save_checked` consumes
+the mark). Access errors (`scoped_rbac.access.AccessError`)
 are raised for the front end to answer as it answers them.
 """
 
@@ -27,7 +30,12 @@ from django.db.models import ProtectedError
 from scoped_rbac import access
 from scoped_rbac.policy import Permission
 
-from scrud_django.core.authz import content_of, may_act_in_context
+from scrud_django.core.authz import (
+    _consume_workflow_mark,
+    _workflow_authorized,
+    content_of,
+    may_act_in_context,
+)
 from scrud_django.core.requirements import (
     asks_grants_itself,
     is_hook,
@@ -233,7 +241,10 @@ def validate_write(
     checks (`validate_policy_write`), then the workflow check
     (`scrud_django.core.workflow.workflow_check`, given `stored`'s content
     as its ``prior``, `prior_of`, and `narrow` and `readable` as they are).
-    Returns the transitions the workflow check authorized.
+    Returns the transitions the workflow check authorized; the request
+    then carries their mark for this one write (``(resource_type.type_uri,
+    stored.pk)``, ``None`` as the pk for a create), which the save that
+    uses it consumes (`save_checked`).
 
     `requirement` (required: the type's, `scrud_django.core.types
     .requirement_for`) gives the `narrow`: the checks of each type's hooks
@@ -243,8 +254,10 @@ def validate_write(
     A `requirement` that asks no grants (empty, or hooks only) is
     ``ImproperlyConfigured`` (`scrud_django.core.requirements.require_grants`).
 
-    `create` and `update` do not validate: call this first, with the same
-    request, inside the write's transaction."""
+    `create` and `update` call it themselves, on the body they save, unless
+    the request carries the mark of a validation of that write: call it
+    first, with the same request and body, inside the write's transaction,
+    to validate before anything else of the write runs."""
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import check_request
 
@@ -268,6 +281,7 @@ def validate_write(
         proposed=body,
         narrow=narrow,
         readable=readable,
+        stored_pk=stored.pk if stored is not None else None,
     )
 
 
@@ -404,14 +418,20 @@ def save_checked(
     before it commits: a reserved context is a 400 and the post-save check a
     403, either rolling the write back. The post-save check is `recheck`
     ``(request, obj) -> None``, by default `check_post_save` of
-    `requirement` naming the type `type_iri` (neither is read when a
-    `recheck` is given); either runs in `authorizing_write` with `covered`,
-    ``scrud_workflow`` allowing only once the workflow check has authorized
-    the write. The request was authorized by the context
-    its body names; this checks where the resource actually landed
-    (scoped-rbac's ``SaveCheck``). `instance` is the resource an update
-    replaces (``None`` for a create). Returns the saved resource as read
-    back, through `queryset` (by default `resource_type`'s resources).
+    `requirement` naming the type `type_iri` (by default `resource_type`'s
+    ``type_uri``; `requirement` is not read when a `recheck` is given);
+    either runs in `authorizing_write` with `covered`, ``scrud_workflow``
+    allowing only once the workflow check has authorized this write: the
+    request carries the mark (`_workflow_authorized`) of `type_iri` and
+    `instance`'s pk (``None`` for a create), so a front end whose
+    `recheck` names another type passes it as `type_iri`. The mark is
+    consumed (`_consume_workflow_mark`) once the save is over, however it
+    ends: one validation authorizes at most one save. The request was
+    authorized by the context its body names; this checks where the
+    resource actually landed (scoped-rbac's ``SaveCheck``). `instance` is
+    the resource an update replaces (``None`` for a create). Returns the
+    saved resource as read back, through `queryset` (by default
+    `resource_type`'s resources).
 
     A ``WorkflowPolicy``'s save is serialised (`serialize`, by default
     `serialized_policy_save`).
@@ -433,42 +453,57 @@ def save_checked(
     give no `recheck`.
 
     Raises ``access.AccessError``s for the caller to answer."""
-    if recheck is None:
-        require_grants(requirement, "save_checked")
-    saved = []
+    try:
+        if recheck is None:
+            require_grants(requirement, "save_checked")
+        if type_iri is None:
+            type_iri = resource_type.type_uri
+        stored_pk = instance.pk if instance is not None else None
+        saved = []
 
-    def recorded_save():
-        result = save()
-        saved.append(instance if result is None else result)
+        def recorded_save():
+            result = save()
+            saved.append(instance if result is None else result)
+            return result
+
+        if recheck is None:
+
+            def recheck(request, obj):
+                check_post_save(
+                    request, resource_type, obj, requirement, type_iri=type_iri
+                )
+
+        def recheck_saved(obj, _moved_to):
+            with authorizing_write(
+                request,
+                covered=covered,
+                authorized=True,
+                type_iri=type_iri,
+                stored_pk=stored_pk,
+            ):
+                recheck(request, obj)
+
+        if queryset is None:
+            queryset = Resource.objects.filter(resource_type=resource_type)
+        check = access.SaveCheck(
+            request,
+            written_contexts=lambda obj: obj.rbac_contexts,
+            recheck=recheck_saved,
+            queryset=queryset,
+        )
+        run = recorded_save
+        if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
+            run = (serialize or serialized_policy_save)(recorded_save, using)
+        with transaction.atomic(using=using):
+            if instance is None:
+                result = check.create(run, db=using)
+            else:
+                result = check.update(instance, run, db=using)
+            cache_resource_type(resource_type, *saved, result)
         return result
-
-    if recheck is None:
-
-        def recheck(request, obj):
-            check_post_save(request, resource_type, obj, requirement, type_iri=type_iri)
-
-    def recheck_saved(obj, _moved_to):
-        with authorizing_write(request, covered=covered, authorized=True):
-            recheck(request, obj)
-
-    if queryset is None:
-        queryset = Resource.objects.filter(resource_type=resource_type)
-    check = access.SaveCheck(
-        request,
-        written_contexts=lambda obj: obj.rbac_contexts,
-        recheck=recheck_saved,
-        queryset=queryset,
-    )
-    run = recorded_save
-    if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
-        run = (serialize or serialized_policy_save)(recorded_save, using)
-    with transaction.atomic(using=using):
-        if instance is None:
-            result = check.create(run, db=using)
-        else:
-            result = check.update(instance, run, db=using)
-        cache_resource_type(resource_type, *saved, result)
-    return result
+    finally:
+        # One validation authorizes at most one save, however it ends.
+        _consume_workflow_mark(request)
 
 
 @contextmanager
@@ -484,13 +519,52 @@ def creating_revision(resource_type):
         reversion.set_comment('Add Resource')
 
 
+def _validated(
+    request, resource_type, body, *, stored: Resource | None, requirement, type_iri
+) -> None:
+    """Validate `request`'s write of `body` over `stored` (``None`` for a
+    create) with `validate_write`, unless the request carries the mark of a
+    validation of this write (`_workflow_authorized` of `type_iri` and
+    `stored`'s pk): what `create` and `update` run before they save."""
+    stored_pk = stored.pk if stored is not None else None
+    if _workflow_authorized(request, type_iri=type_iri, stored_pk=stored_pk):
+        return
+    # Imported here: scrud_django.core.resources imports this module.
+    from scrud_django.core.resources import object_readable
+
+    readable = None
+    if stored is not None:
+
+        def readable():
+            return object_readable(request, resource_type, stored, requirement)
+
+    validate_write(
+        request,
+        resource_type,
+        body,
+        stored=stored,
+        readable=readable,
+        requirement=requirement,
+    )
+
+
 def create(
     request, resource_type, body, *, requirement, using: str, covered: bool = True
 ) -> Resource:
-    """Create a resource of `resource_type` whose content is `body`, already
-    validated (`validate_write`), with
+    """Create a resource of `resource_type` whose content is `body` with
     ``ResourceRegistration.register_instance`` (in `creating_revision`),
-    checked as stored (`save_checked`)."""
+    checked as stored (`save_checked`), once `body` is validated
+    (`_validated`: `validate_write`, unless the request carries the mark of
+    a validation of this create)."""
+    type_iri = resource_type.type_uri
+    _validated(
+        request,
+        resource_type,
+        body,
+        stored=None,
+        requirement=requirement,
+        type_iri=type_iri,
+    )
 
     def save():
         with creating_revision(resource_type):
@@ -506,6 +580,7 @@ def create(
         requirement=requirement,
         using=using,
         covered=covered,
+        type_iri=type_iri,
     )
 
 
@@ -519,10 +594,22 @@ def update(
     using: str,
     covered: bool = True,
 ) -> Resource:
-    """Write `body`, already validated (`validate_write`), to `instance` (read
-    with its row locked inside the caller's transaction on `using`) with
+    """Write `body` to `instance` (read with its row locked inside the
+    caller's transaction on `using`) with
     ``ResourceRegistration.update_locked``, checked as stored
-    (`save_checked`)."""
+    (`save_checked`), once `body` is validated over `instance` (`_validated`:
+    `validate_write`, whether `instance` is readable telling whether its
+    errors are hidden, unless the request carries the mark of a validation
+    of this update)."""
+    type_iri = resource_type.type_uri
+    _validated(
+        request,
+        resource_type,
+        body,
+        stored=instance,
+        requirement=requirement,
+        type_iri=type_iri,
+    )
     return save_checked(
         request,
         resource_type,
@@ -533,6 +620,7 @@ def update(
         requirement=requirement,
         using=using,
         covered=covered,
+        type_iri=type_iri,
     )
 
 

@@ -1160,13 +1160,15 @@ class ResourceViewMixin(
             and request.method in self.allowed_methods
         )
 
-    def write_checks(self, request, authorized=False):
+    def write_checks(self, request, authorized=False, stored_pk=None):
         """The block in which a check of `request` runs: for a write the
         workflow check covers (`checks_workflow`: the view's ``create`` or
         ``update`` action), with the ``scrud_workflow`` operator allowing
         (the workflow check decides the transition); with `authorized`, only
-        once the workflow check has authorized the write. Anywhere else (an
-        ``@action`` of the view included) ``scrud_workflow`` refuses.
+        once the workflow check has authorized the write of the resource
+        `stored_pk` (``None`` for a create) of the view's type
+        (``resource_type_iri_for``). Anywhere else (an ``@action`` of the
+        view included) ``scrud_workflow`` refuses.
 
         Nothing on the DRF path calls it with `authorized` but
         `recheck_saved`, itself no longer called: the post-save check runs
@@ -1175,7 +1177,11 @@ class ResourceViewMixin(
         authorized=True)``, so an override of this method does not reach it
         (nor a DELETE's every-context check of a ``WorkflowPolicy``)."""
         return authorizing_write(
-            request, covered=self.checks_workflow(request), authorized=authorized
+            request,
+            covered=self.checks_workflow(request),
+            authorized=authorized,
+            type_iri=self.resource_type_iri_for(request) if authorized else None,
+            stored_pk=stored_pk,
         )
 
     def check_object_permissions(self, request, obj):
@@ -1412,7 +1418,9 @@ class ResourceViewMixin(
         authorized the write (`write_checks`). `save_checked` no longer calls
         it: `scrud_django.core.writes.save_checked` runs
         `check_post_save_permissions` in the same block itself."""
-        with self.write_checks(self.request, authorized=True):
+        # The mark names the resource an update replaces, none for a create.
+        stored_pk = None if self.action == "create" else obj.pk
+        with self.write_checks(self.request, authorized=True, stored_pk=stored_pk):
             self.check_post_save_permissions(self.request, obj)
 
     def save_checked(self, save, instance=None):
@@ -1423,7 +1431,9 @@ class ResourceViewMixin(
         reserved context is a 400 and `check_post_save_permissions` a 403
         (run by the core inside ``authorizing_write``, covered by
         `checks_workflow`: ``scrud_workflow`` allows only once the workflow
-        check has authorized the write; `write_checks` is not called),
+        check has authorized this write, its mark naming the view's type,
+        ``resource_type_iri_for``, and `instance`'s pk, which the core
+        consumes once the save is over; `write_checks` is not called),
         either rolling the write back. The request was authorized by the context its body names; this
         checks where the resource actually landed (scoped-rbac's ``SaveCheck``).
         `instance` is the resource an update replaces (``None`` for a create).
@@ -1464,6 +1474,9 @@ class ResourceViewMixin(
                 covered=covered,
                 queryset=queryset,
                 serialize=self.serialized_policy_save,
+                # The type its check names, which the workflow check's mark
+                # names (`WorkflowValidator.post_save_type_iri`).
+                type_iri=self.resource_type_iri_for(request),
                 recheck=self.check_post_save_permissions,
             )
         except access.AccessError as exc:

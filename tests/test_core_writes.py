@@ -21,8 +21,19 @@ from scoped_rbac.models import Role, RoleAssignment
 from scrud_django.core import workflow as core_workflow
 from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.core.workflow import NoWorkflowPolicyDenied
-from scrud_django.core.writes import create, destroy, update, validate_write
-from scrud_django.exceptions import ResourceInUseError, WorkflowPolicyInvalidError
+from scrud_django.core.writes import (
+    create,
+    creating_revision,
+    destroy,
+    save_checked,
+    update,
+    validate_write,
+)
+from scrud_django.exceptions import (
+    ResourceInUseError,
+    WorkflowPolicyInvalidError,
+    WorkflowTransitionError,
+)
 from scrud_django.models import Resource
 from scrud_django.registration import (
     ResourceRegistration,
@@ -75,6 +86,18 @@ def versions():
     return Version.objects.get_for_model(Resource).count()
 
 
+def create_save(rtype, body):
+    """The save `create` makes of `body`, for `save_checked` itself."""
+
+    def save():
+        with creating_revision(rtype):
+            return ResourceRegistration.register_instance(
+                Resource(content=dict(body), resource_type=rtype)
+            )
+
+    return save
+
+
 @pytest.mark.django_db
 @test_context
 def test_create_and_post_save_denial_rolls_back():
@@ -91,17 +114,32 @@ def test_create_and_post_save_denial_rolls_back():
             using="default",
         )
     assert (Resource.objects.filter(resource_type=rtype).count(), versions()) == before
-    # The control: the same create in "a" alone is this user's to make.
+    # create validates its body, whose request check refuses it before
+    # anything is saved; the post-save check of the same save, made with
+    # no validation, refuses it once saved and rolls it back.
+    with pytest.raises(access.AccessDenied):
+        save_checked(
+            request_by("post", user),
+            rtype,
+            create_save(rtype, {"name": "x", "rbac_context": ["a", "b"]}),
+            instance=None,
+            requirement=[GrantsLeaf(PP)],
+            using="default",
+            covered=True,
+        )
+    assert (Resource.objects.filter(resource_type=rtype).count(), versions()) == before
+    # The control: the same create in "a" alone (a body the type's schema
+    # accepts, as create validates it) is this user's to make.
     created = create(
         request_by("post", user),
         rtype,
-        {"text": "x", "rbac_context": ["a"]},
+        {"name": "x", "rbac_context": "a"},
         requirement=[GrantsLeaf(PP)],
         using="default",
     )
     assert Resource.objects.get(pk=created.pk).content == {
-        "text": "x",
-        "rbac_context": ["a"],
+        "name": "x",
+        "rbac_context": "a",
     }
     assert versions() > before[1]
 
@@ -379,14 +417,15 @@ def test_update_needs_the_workflow_check_for_a_scrud_workflow_grant():
     user = user_with((may_stay_json_ld(), "a"))
     body = {"x": 2, "rbac_context": "a"}
     requirement = [GrantsLeaf(JSON_LD)]
+    # A save the workflow check did not authorize (update validates its
+    # body itself: its save is made here with no validation).
     with pytest.raises(access.AccessDenied):
-        update(
+        unvalidated_update(
             request_by("put", user),
             rtype,
             Resource.objects.get(pk=stored.pk),
             body,
-            requirement=requirement,
-            using="default",
+            requirement,
         )
     row = Resource.objects.get(pk=stored.pk)
     assert (row.content, row.etag) == (stored.content, stored.etag)
@@ -425,3 +464,168 @@ def test_update_cannot_move_a_resource_where_the_writer_may_not_write():
         {"name": "old", "rbac_context": "a"},
         stored.etag,
     )
+
+
+# One workflow validation authorizes one write: the mark it leaves on the
+# request names the type and the stored resource it validated, and the save
+# that uses it consumes it, whether it succeeds or fails.
+
+
+def store_json_ld_policy(**extra):
+    """A ``WorkflowPolicy`` for JSON-LD resources in context "a" alone (none
+    in "b"), with `extra` as its own fields."""
+    reverse("json-ld-list")
+    workflow_policy_resource_type()
+    policy = {
+        "resource_type": JSON_LD,
+        "rbac_context": "a",
+        "initial_states": {"any": "true"},
+        "states": {},
+        "transitions": {},
+    }
+    policy.update(extra)
+    ResourceRegistration.register(policy, "workflow-policies")
+
+
+def unvalidated_update(request, rtype, instance, body, requirement):
+    """`body` written to `instance` by `save_checked` itself, with no
+    validation of its own: only a workflow validation's mark lets a grant
+    conditioned on ``scrud_workflow`` allow it."""
+    return save_checked(
+        request,
+        rtype,
+        lambda: ResourceRegistration.update_locked(
+            instance, body, resource_type=rtype, using="default"
+        ),
+        instance=instance,
+        requirement=requirement,
+        using="default",
+        covered=True,
+    )
+
+
+def row_of(resource):
+    row = Resource.objects.get(pk=resource.pk)
+    return (row.content, row.etag)
+
+
+@pytest.mark.django_db
+@test_context
+def test_one_validation_authorizes_one_write():
+    store_json_ld_policy()
+    stored = ResourceRegistration.register({"x": 1, "rbac_context": "a"}, "json-ld")
+    rtype = stored.resource_type
+    # May stay in its state in "a" and "b"; "b" has no policy, so only a
+    # validation's mark would let the grant there allow a write.
+    request = request_by(
+        "put", user_with((may_stay_json_ld(), "a"), (may_stay_json_ld(), "b"))
+    )
+    requirement = [GrantsLeaf(JSON_LD)]
+    body = {"x": 2, "rbac_context": "a"}
+    row = Resource.objects.get(pk=stored.pk)
+    with mock.patch(
+        "scrud_django.core.writes.workflow_check", wraps=core_workflow.workflow_check
+    ) as workflow_check:
+        validate_write(
+            request, rtype, body, stored=row, requirement=requirement, readable=None
+        )
+        saved = update(
+            request, rtype, row, body, requirement=requirement, using="default"
+        )
+    # The update used the validation it was given: one workflow check.
+    assert workflow_check.call_count == 1
+    assert Resource.objects.get(pk=stored.pk).content == body == saved.content
+    after_first = row_of(stored)
+    # The save consumed the mark: a second save on the request is refused.
+    with pytest.raises(access.AccessDenied):
+        unvalidated_update(
+            request,
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            {"x": 3, "rbac_context": "a"},
+            requirement,
+        )
+    assert row_of(stored) == after_first
+    # A second update validates its own body: moving to "b", where no policy
+    # applies, is refused.
+    with pytest.raises(access.AccessDenied):
+        update(
+            request,
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            {"x": 3, "rbac_context": "b"},
+            requirement=requirement,
+            using="default",
+        )
+    assert row_of(stored) == after_first
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_validation_does_not_authorize_another_resource():
+    store_json_ld_policy()
+    validated = ResourceRegistration.register({"x": 1, "rbac_context": "a"}, "json-ld")
+    other = ResourceRegistration.register({"y": 1, "rbac_context": "b"}, "json-ld")
+    rtype = validated.resource_type
+    request = request_by(
+        "put", user_with((may_stay_json_ld(), "a"), (may_stay_json_ld(), "b"))
+    )
+    requirement = [GrantsLeaf(JSON_LD)]
+    validate_write(
+        request,
+        rtype,
+        {"x": 2, "rbac_context": "a"},
+        stored=Resource.objects.get(pk=validated.pk),
+        requirement=requirement,
+        readable=None,
+    )
+    before = row_of(other)
+    # The other resource's update validates its own body, which no policy
+    # in "b" lets the grant there allow.
+    with pytest.raises(access.AccessDenied):
+        update(
+            request,
+            rtype,
+            Resource.objects.get(pk=other.pk),
+            {"y": 2, "rbac_context": "b"},
+            requirement=requirement,
+            using="default",
+        )
+    assert row_of(other) == before
+    # Nor does the mark of the validated resource let a save of the other.
+    with pytest.raises(access.AccessDenied):
+        unvalidated_update(
+            request,
+            rtype,
+            Resource.objects.get(pk=other.pk),
+            {"y": 2, "rbac_context": "b"},
+            requirement,
+        )
+    assert row_of(other) == before
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_validates_the_body_it_saves():
+    store_json_ld_policy(
+        initial_states={"draft": 'state == "draft"'},
+        states={"published": 'state == "published"'},
+        transitions={"publish": {"from": "draft", "to": "published"}},
+    )
+    stored = ResourceRegistration.register(
+        {"state": "draft", "rbac_context": "a"}, "json-ld"
+    )
+    before = row_of(stored)
+    # May only stay in its state: publishing is not this user's transition.
+    request = request_by("put", user_with((may_stay_json_ld(), "a")))
+    with pytest.raises(WorkflowTransitionError) as raised:
+        update(
+            request,
+            stored.resource_type,
+            Resource.objects.get(pk=stored.pk),
+            {"state": "published", "rbac_context": "a"},
+            requirement=[GrantsLeaf(JSON_LD)],
+            using="default",
+        )
+    assert raised.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert row_of(stored) == before
