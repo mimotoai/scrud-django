@@ -163,6 +163,26 @@ class JsonSchemaInvalidError(ScrudException):
         self.title = "Invalid JSON Schema"
 
 
+class QueryParameterError(ScrudException):
+    """A list's query parameters that cannot filter it
+    (`scrud_django.core.lists.content_filtered`): ``errors`` maps each
+    offending parameter to its messages. The DRF filter answers it as DRF's
+    ``ValidationError`` of ``errors`` (code ``invalid``), a 400."""
+
+    status_code = 400
+    default_detail = "Invalid query parameters."
+    default_code = "invalid"
+
+    def __init__(self, errors):
+        super().__init__()
+        self.errors = errors
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        data["errors"] = self.errors
+        return data
+
+
 class RbacContextInvalidError(ScrudException):
     """A request body whose ``rbac_context`` cannot be stored: an empty list
     (which would put the resource in no context), or a context longer than

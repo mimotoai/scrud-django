@@ -1,9 +1,7 @@
 import functools
-import hashlib
 import inspect
 from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
-from urllib.parse import urlencode
 
 import reversion
 from django.core.exceptions import FieldError, ImproperlyConfigured, ValidationError
@@ -21,14 +19,8 @@ from scoped_rbac.conditional import lock_collection
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import AccessAPIError, drf_error, view_permission
 from scoped_rbac.rest import AccessControlledAPIView
-from scrudful._django import aware, conditional_response, precondition_headers
-from scrudful.conditional import (
-    evaluate_preconditions,
-    http_timestamp,
-    parse_etag_list,
-    parse_http_date,
-    quote_etag,
-)
+from scrudful._django import conditional_response, precondition_headers
+from scrudful.conditional import parse_etag_list
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django import ui
@@ -44,6 +36,14 @@ from scrud_django.core.bodies import (
     max_body_depth,  # noqa: F401
 )
 from scrud_django.core.bodies import check_body as core_check_body
+from scrud_django.core.lists import (  # noqa: F401  (re-exported)
+    LIST_PRECONDITIONS,
+    evaluate_list_preconditions,
+    has_list_preconditions,
+    latest,
+    list_validators_needed,
+)
+from scrud_django.core.lists import list_etag as core_list_etag
 from scrud_django.core.workflow import authorizing_write
 from scrud_django.exceptions import (
     RbacContextInvalidError,  # noqa: F401  (re-exported)
@@ -106,9 +106,6 @@ LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 TYPE_WRITE_METHODS = LOCKED_WRITE_METHODS | {"POST"}
 
 
-# The preconditions a POST to a list evaluates (`list_precondition_response`).
-LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
-
 # What a view records of the POST to its list it serves (`LockedWriteMixin`),
 # forgotten when it serves another: the list's validators read
 # (`create_list_validators`), whether the conditional create's lock is held,
@@ -122,12 +119,6 @@ _CREATE_STATE = (
 )
 
 
-def has_list_preconditions(headers):
-    """Whether `headers` (as ``precondition_headers`` gives them) carry a
-    precondition a POST to a list evaluates (`LIST_PRECONDITIONS`)."""
-    return any(headers.get(name) for name in LIST_PRECONDITIONS)
-
-
 def list_preconditions_to_evaluate(headers):
     """Whether the preconditions `headers` of a POST to a list must be
     evaluated (`LockedWriteMixin.dispatch` refuses a response that is no
@@ -139,26 +130,6 @@ def list_preconditions_to_evaluate(headers):
         return False
     if_match = parse_etag_list(headers.get("if-match") or None)
     return not (if_match == ["*"] and not headers.get("if-none-match"))
-
-
-def list_validators_needed(headers):
-    """Whether evaluating the preconditions `headers` (lower-case names, as
-    ``scrudful._django.precondition_headers`` gives them) of a POST to a list
-    needs the list's validators (RFC 9110 §13.2.2): an ``If-Match`` that names
-    entity-tags, an ``If-Unmodified-Since`` with a valid date and no
-    ``If-Match``, or an ``If-None-Match`` that names entity-tags. ``*``
-    (either field) is decided by the list existing, a malformed field is a
-    400 and an invalid date is ignored, without them."""
-    if_match = parse_etag_list(headers.get("if-match") or None)
-    if_none_match = parse_etag_list(headers.get("if-none-match") or None)
-    if if_match is None or if_none_match is None:
-        return False
-    if if_match and if_match != ["*"]:
-        return True
-    if_unmodified_since = parse_http_date(headers.get("if-unmodified-since") or None)
-    if not if_match and if_unmodified_since is not None:
-        return True
-    return bool(if_none_match) and if_none_match != ["*"]
 
 
 # The methods whose body is the resource to store.
@@ -846,20 +817,12 @@ class ListValidatorsMixin:
         else:
             items = page
             count = self.paginator.page.paginator.count
-        resource_type = self.get_resource_type()
-        parts = [
-            resource_type.pk,
-            resource_type.revision,
-            resource_type.schema_id,
-            resource_type.schema_uri,
-            resource_type.context_id,
-            resource_type.context_uri,
-            count,
-            urlencode(sorted(request.query_params.lists()), doseq=True),
-            *(f"{obj.pk}:{obj.etag}" for obj in items),
-        ]
-        digest = hashlib.sha256("\n".join(map(str, parts)).encode("utf-8"))
-        return digest.hexdigest()
+        return core_list_etag(
+            self.get_resource_type(),
+            items=items,
+            count=count,
+            query=sorted(request.query_params.lists()),
+        )
 
     def list_last_modified(self):
         """The list's Last-Modified: the newest ``modified_at`` of every
@@ -988,21 +951,14 @@ class ListValidatorsMixin:
         headers = precondition_headers(request)
         if not has_list_preconditions(headers):
             return None
-        if using is None or using == self.conditional_create_db:
-            etag, last_modified = self.create_list_validators(request)
-        elif list_validators_needed(headers):
+
+        def validators():
+            if using is None or using == self.conditional_create_db:
+                return self.create_list_validators(request)
             with self.as_list_read(request, using) as read:
-                etag, last_modified = self.list_etag(read), self.list_last_modified()
-        else:
-            etag = last_modified = None
-        result = evaluate_preconditions(
-            request.method,
-            headers,
-            etag=None if etag is None else quote_etag(etag),
-            last_modified=http_timestamp(aware(last_modified)),
-            require_precondition=False,
-            exists=True,
-        )
+                return self.list_etag(read), self.list_last_modified()
+
+        result = evaluate_list_preconditions(request.method, headers, validators)
         self._scrud_list_preconditions_evaluated = True
         if result is None:
             return None
@@ -1526,13 +1482,16 @@ class ResourceViewMixin(
         read only by a condition, or not at all, does not move it (the ETag
         follows what they see)."""
         newest = super().list_last_modified()
+        # The view's removal (`scrud_django.filters.readable_removal`), not
+        # `scrud_django.core.lists.list_last_modified`'s: it also asks that
+        # the view's RBAC filter and ``contexts_for`` be the stamped ones.
         removed = readable_removal(
             self.request,
             self,
             self.get_resource_type(),
             using=self.list_queryset().db,
         )
-        return max((t for t in (newest, removed) if t is not None), default=None)
+        return latest(newest, removed)
 
     def list(self, request):
         """The resources of the type the requester may read, a page at a time."""
