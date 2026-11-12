@@ -651,3 +651,25 @@ def test_layer_components_have_no_inline_scripts(studio_layer):
         for name, content in layer_files(kind).items():
             assert content["name"].startswith("studio:"), (kind, name)
             assert ":" not in name, (kind, name)
+
+
+def test_layer_prefix_row_stays_in_the_editor_pane(studio_layer):
+    """A prefix row (key, IRI input) was a non-wrapping flex row of inputs
+    with a ``min-width: 10rem`` floor inside a ``fieldset`` (whose
+    ``min-width`` is its content's by default), so a long IRI ran off the
+    Editor pane's right edge. The fieldset may shrink, the row wraps and its
+    inputs shrink to the pane (the other rows already wrap)."""
+    [(_name, css)] = [
+        (name, content["css"]) for name, content in layer_files("css").items()
+    ]
+    assert css_declarations(css, ".studio .studio-prefixes")["min-width"] == "0"
+    assert css_declarations(css, ".studio .studio-prefix")["flex-wrap"] == "wrap"
+    inputs = css_declarations(css, ".studio .studio-prefix .studio-field-input")
+    assert inputs["flex"] == "1 1 10rem"
+    assert inputs["min-width"] == "0"
+    assert inputs["max-width"] == "100%"
+    assert inputs["box-sizing"] == "border-box"
+    # Every field input is capped by its container; the rule rows wrap.
+    assert css_declarations(css, ".studio .studio-field-input")["max-width"] == "100%"
+    assert css_declarations(css, ".studio .studio-rule")["flex-wrap"] == "wrap"
+    assert css_declarations(css, ".studio .studio-rule-row")["flex-wrap"] == "wrap"
