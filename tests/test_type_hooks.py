@@ -412,3 +412,21 @@ def test_options_allow_is_the_grants():
     When.http.options(reverse("hooked-notes-list"))
     Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
     assert "POST" in Http.response["Allow"]
+
+
+def allow_of_note(resource):
+    When.http.options(reverse("hooked-notes-detail", args=[resource.pk]))
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    return [method.strip() for method in Http.response["Allow"].split(",")]
+
+
+@pytest.mark.django_db
+@test_context
+def test_options_of_an_item_gives_the_hooks_its_content():
+    # scrudful's OPTIONS checks the object as get_object() returns it (the
+    # Resource): the hooks get its content, as on the method's own request.
+    in_a, secret = note("in a", "a"), note("hidden", "a", secret=True)
+    Given.http.force_authenticate(assign_role(WRITER, "a"))
+    assert allow_of_note(in_a) == ["GET", "PUT", "DELETE", "OPTIONS", "HEAD"]
+    When.http.options(reverse("hooked-notes-detail", args=[secret.pk]))
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)

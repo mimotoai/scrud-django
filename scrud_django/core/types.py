@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from scoped_rbac import access
 
-from scrud_django.core.authz import resource_contexts
+from scrud_django.core.authz import content_of, resource_contexts
 from scrud_django.core.requirements import GrantsLeaf, Leaf, Requirement
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 
@@ -140,16 +140,25 @@ class HookLeaf(Leaf):
         )
 
     def has_object_permission(self, request, obj):
+        obj = _as_content(obj)
         return all(
             check(request, self.resource_type, obj)
             for check in self.options.object_checks
         )
 
     def has_context_permission(self, request, obj, context):
+        obj = _as_content(obj)
         return all(
             check(request, self.resource_type, obj, context)
             for check in self.options.checks
         )
+
+
+def _as_content(obj):
+    """`obj` as a hook is given it: a mapping (a resource's content, or a
+    body) as it is; anything else (the `Resource` scrudful's OPTIONS checks,
+    as ``get_object()`` returns it) as its content (`content_of`)."""
+    return obj if isinstance(obj, Mapping) else content_of(obj)
 
 
 def hook_leaf(resource_type, slug: str, *, type_iri=None) -> HookLeaf | None:
