@@ -15,6 +15,7 @@ import pytest
 from django.urls import reverse
 from django.utils.timezone import now
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.reverse import reverse as drf_reverse
 from rest_framework.test import APIRequestFactory, force_authenticate
@@ -280,3 +281,29 @@ def test_moved_names_import_from_their_old_modules(module):
 
         with pytest.raises(AttributeError):
             old.no_such_name  # noqa: B018
+
+
+class ObjectRefusing(BasePermission):
+    """An adopter's permission (no ``IsAuthorized``) refusing every object."""
+
+    def has_object_permission(self, request, view, obj):
+        return False
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_view_with_no_is_authorized_refuses_a_readable_object_with_403():
+    """A view whose permissions hold no ``IsAuthorized`` (so no grants to ask)
+    refusing an object answers 403, as before: with nothing asking the
+    grants, the object counts as readable (scoped-rbac's ``is_readable``)."""
+
+    class NoGrantsViewSet(ResourceViewSet):
+        permission_classes = [ObjectRefusing]
+
+    reverse("json-ld-list")
+    stored = ResourceRegistration.register({"rbac_context": "a"}, "json-ld")
+    request = APIRequestFactory().get("/", HTTP_ACCEPT="application/json")
+    force_authenticate(request, user_with(({"http.GET": [JSON_LD]}, "a")))
+    detail = NoGrantsViewSet.as_view({"get": "retrieve"}, resource_type_name="json-ld")
+    response = detail(request, slug=stored.pk)
+    assert response.status_code == 403, response.data

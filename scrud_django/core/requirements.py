@@ -19,7 +19,7 @@ import copy
 from collections.abc import Mapping
 from typing import Protocol
 
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 from django.db.models import Max, Q
 from django.http import Http404
 from scoped_rbac import access
@@ -177,6 +177,30 @@ def requirement_leaves(requirement):
                 yield from requirement_leaves(_entries(option))
         else:
             yield entry
+
+
+def asks_grants(requirement) -> bool:
+    """Whether a leaf of `requirement` (``AnyOf`` options included) asks the
+    grants: one that is not ``grants_nothing`` (a type's hooks, `HookLeaf`,
+    only refuse)."""
+    return any(
+        not getattr(leaf, "grants_nothing", False)
+        for leaf in requirement_leaves(requirement)
+    )
+
+
+def require_grants(requirement, caller: str) -> None:
+    """Raise ``ImproperlyConfigured`` unless `requirement` asks the grants
+    (`asks_grants`): an empty requirement, or one of hooks only, would
+    allow every requester, so `caller` (a public entry point of the core)
+    refuses it rather than fail open. Give it a `GrantsLeaf` of the type
+    (`scrud_django.core.types.requirement_for`)."""
+    if not asks_grants(requirement):
+        raise ImproperlyConfigured(
+            f"{caller}: the requirement {requirement!r} asks no grants, so it "
+            "would allow every requester; give it a GrantsLeaf of the type "
+            "(scrud_django.core.types.requirement_for)."
+        )
 
 
 def object_check_requirement(requirement):

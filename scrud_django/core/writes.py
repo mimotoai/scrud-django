@@ -28,7 +28,8 @@ from scoped_rbac import access
 from scoped_rbac.policy import Permission
 
 from scrud_django.core.authz import content_of, may_act_in_context
-from scrud_django.core.requirements import requirement_leaves
+from scrud_django.core.requirements import require_grants, requirement_leaves
+from scrud_django.core.types import HookLeaf
 from scrud_django.core.workflow import (
     authorizing_write,
     check_policy_is_unique,
@@ -211,8 +212,9 @@ def validate_write(
     body: Mapping,
     *,
     stored: Resource | None,
-    narrow: Sequence[Callable],
+    narrow: Sequence[Callable] | None = None,
     readable: Callable[[], bool] | None,
+    requirement=None,
 ) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
     """Validate `request`'s write of `body` (the body as sent) to
     `resource_type`, over the resource `stored` (``None`` for a create), in
@@ -221,7 +223,22 @@ def validate_write(
     checks (`validate_policy_write`), then the workflow check
     (`scrud_django.core.workflow.workflow_check`, given `stored`'s content
     as its ``prior``, `prior_of`, and `narrow` and `readable` as they are).
-    Returns the transitions the workflow check authorized."""
+    Returns the transitions the workflow check authorized.
+
+    Without `narrow`, it is the checks of each type's hooks in
+    `requirement` (each `HookLeaf`'s ``narrow``; none without a
+    requirement), so that a registered check can refuse a transition, as on
+    DRF.
+
+    `create` and `update` do not validate: call this first, with the same
+    request, inside the write's transaction."""
+    if narrow is None:
+        narrow = tuple(
+            check
+            for leaf in requirement_leaves(requirement or [])
+            if isinstance(leaf, HookLeaf)
+            for check in leaf.narrow
+        )
     validate_schema(resource_type, body)
     if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
         validate_policy_write(body, stored.pk if stored is not None else None)
@@ -385,7 +402,16 @@ def save_checked(
     transaction on `using`, so that a write outside a transaction of the
     caller's commits only once the type is cached again.
 
+    Without a `recheck`, a `requirement` that asks no grants (empty, or
+    hooks only) is ``ImproperlyConfigured`` (`require_grants`), before
+    anything is saved: its post-save check would let any write land
+    anywhere. (`check_post_save` itself takes one: a DRF view with no
+    ``IsAuthorized`` checks nothing after the save.) `create` and `update`
+    give no `recheck`.
+
     Raises ``access.AccessError``s for the caller to answer."""
+    if recheck is None:
+        require_grants(requirement, "save_checked")
     saved = []
 
     def recorded_save():

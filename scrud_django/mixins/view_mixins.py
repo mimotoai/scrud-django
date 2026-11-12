@@ -706,7 +706,8 @@ class ListValidatorsMixin:
                     if grants
                     else None
                 )
-                return core_resources.readable_content(
+                # Unguarded: a view with no IsAuthorized has no grants to ask.
+                return core_resources._readable_content(
                     read, obj, requirement, grants=grants, permission=permission
                 )
         with _not_checking_write(), checks_read_content(self):

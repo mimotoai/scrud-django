@@ -42,6 +42,7 @@ from scrud_django.core.requirements import (
     grants_allow,
     readable_by_grants,
     readable_by_object_checks,
+    require_grants,
     requirement_leaves,
 )
 from scrud_django.core.workflow import authorizing_write
@@ -103,7 +104,23 @@ def readable_content(read, content, requirement, *, grants=True, permission=None
     leaf's type; with `permission`, `grants_allow` for it instead; not asked
     without `grants`) **and** the object checks a list asks
     (`readable_by_object_checks`), with ``scrud_workflow`` refusing
-    (`_not_checking_write`): it never makes an object readable."""
+    (`_not_checking_write`): it never makes an object readable.
+
+    A `requirement` that asks no grants (empty, or hooks only) is
+    ``ImproperlyConfigured`` (`require_grants`): it would read as readable
+    by anyone."""
+    require_grants(requirement, "readable_content")
+    return _readable_content(
+        read, content, requirement, grants=grants, permission=permission
+    )
+
+
+def _readable_content(read, content, requirement, *, grants=True, permission=None):
+    """`readable_content` without its guard: the DRF views' (``ReadableMixin
+    .object_readable``), whose requirement is empty or hooks only for a view
+    with no ``IsAuthorized``, which then reads as readable, as scoped-rbac's
+    ``is_readable`` has it (a refusal by its other permissions stays a
+    403)."""
     with _not_checking_write():
         if grants:
             if permission is None:
@@ -177,7 +194,10 @@ def check_object(request, resource_type, obj: Resource, requirement, *, covered)
     (``check_object_permissions``): run with ``scrud_workflow`` allowing when
     the workflow check covers the write (`covered`, `authorizing_write`). A
     refusal of an object `object_readable` refuses is ``Http404``; of a
-    readable one, ``access.AccessDenied``."""
+    readable one, ``access.AccessDenied``. A `requirement` that asks no
+    grants (empty, or hooks only) is ``ImproperlyConfigured``
+    (`require_grants`): it would allow anyone."""
+    require_grants(requirement, "check_object")
     with authorizing_write(request, covered=covered):
         permitted = _object_permitted(
             request, resource_type, content_of(obj), requirement
@@ -217,7 +237,12 @@ def load_for_read(
 
     With `lock_using`, the row is read on that database with
     ``select_for_update()`` (call it inside a transaction there); else as
-    the router reads."""
+    the router reads.
+
+    A `requirement` that asks no grants (empty, or hooks only) is
+    ``ImproperlyConfigured`` (`require_grants`), before any lookup: it would
+    let anyone load any resource."""
+    require_grants(requirement, "load_for_read")
     queryset = Resource.objects.filter(resource_type=resource_type)
     if lock_using is not None:
         queryset = queryset.using(lock_using).select_for_update()
@@ -304,7 +329,14 @@ def allowed_methods(
     loaded: on the DRF route a requester refused every method gets ``Allow:
     OPTIONS`` whether the object exists or not (nothing is loaded then),
     which a caller that answers a missing item with a 404 before calling
-    this does not reproduce."""
+    this does not reproduce.
+
+    A `requirement` (or a given `list_requirement`) that asks no grants
+    (empty, or hooks only) is ``ImproperlyConfigured`` (`require_grants`):
+    it would list every method for anyone."""
+    require_grants(requirement, "allowed_methods")
+    if list_requirement is not None:
+        require_grants(list_requirement, "allowed_methods")
     if obj is None:
         checked = LIST_METHODS
         covered = COVERED_LIST_METHOD
