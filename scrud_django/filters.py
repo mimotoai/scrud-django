@@ -52,7 +52,11 @@ from scrud_django.drf_requirements import (  # noqa: F401  (re-exported)
     requirement_of,
 )
 from scrud_django.exceptions import QueryParameterError
-from scrud_django.models import Resource, ResourceContext  # noqa: F401
+from scrud_django.models import (  # noqa: F401
+    Resource,
+    ResourceContext,
+    ResourceRemoval,  # noqa: F401  (re-exported)
+)
 from scrud_django.permissions import (
     checks_read_content,
     condition_resource,

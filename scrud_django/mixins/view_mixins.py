@@ -81,7 +81,9 @@ from scrud_django.models.resource import (  # noqa: F401  (re-exported)
 )
 from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.permissions import (
+    _checking_write,  # noqa: F401  (re-exported)
     _not_checking_write,
+    _workflow_authorized,  # noqa: F401  (re-exported)
     checks_read_content,
     content_of,
     may_act_in_context,  # noqa: F401  (re-exported)

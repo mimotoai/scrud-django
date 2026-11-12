@@ -23,19 +23,35 @@ from scrud_django.core.writes import (  # noqa: F401  (moved; re-exported)
 )
 from scrud_django.drf_requirements import type_hook_leaf
 from scrud_django.exceptions import (
+    HiddenWorkflowTransitionError,  # noqa: F401  (re-exported)
     JsonSchemaInvalidError,  # noqa: F401  (re-exported)
     JsonValidationError,  # noqa: F401  (re-exported)
+    WorkflowPolicyInvalidError,  # noqa: F401  (re-exported)
     WorkflowTransitionError,
+)
+from scrud_django.mixins.resource_mixin import (  # noqa: F401  (re-exported)
+    rbac_contexts_of,
 )
 from scrud_django.models import ResourceType  # noqa: F401  (re-exported)
 from scrud_django.permissions import (
+    _checking_transition,  # noqa: F401  (re-exported)
+    _checking_write,  # noqa: F401  (re-exported)
+    _mark_workflow_authorized,  # noqa: F401  (re-exported)
     _not_checking_write,
+    _reading_every_context,  # noqa: F401  (re-exported)
     checks_read_content,
+    condition_resource,  # noqa: F401  (re-exported)
     content_of,
     may_read_in_context,
     reading_content,
 )
-from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
+from scrud_django.workflow import (  # noqa: F401  (re-exported)
+    WORKFLOW_POLICY_TYPE_URI,
+    WorkflowPolicy,
+    default_workflow_policy_for,
+    stored_policies_in,
+    workflow_policies_for,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -232,3 +232,51 @@ def test_scrud_reverse_is_drfs(query):
         assert scrud_django.reverse(
             name, args=args, request=request, urlconf=None
         ) == drf_reverse(name, args=args, request=request, urlconf=None)
+
+
+# The scrud-defined names each module had at df04105 that moved: each still
+# imports from there, and is the moved object itself.
+OLD_HOMES = {
+    "scrud_django.validators": {
+        "HiddenWorkflowTransitionError": "scrud_django.exceptions",
+        "WorkflowPolicyInvalidError": "scrud_django.exceptions",
+        "WorkflowPolicy": "scrud_django.workflow",
+        "default_workflow_policy_for": "scrud_django.workflow",
+        "stored_policies_in": "scrud_django.workflow",
+        "workflow_policies_for": "scrud_django.workflow",
+        "condition_resource": "scrud_django.core.authz",
+        "rbac_contexts_of": "scrud_django.mixins.resource_mixin",
+        "_checking_transition": "scrud_django.core.authz",
+        "_checking_write": "scrud_django.core.authz",
+        "_mark_workflow_authorized": "scrud_django.core.authz",
+        "_reading_every_context": "scrud_django.core.authz",
+    },
+    "scrud_django.permissions": {
+        "logger": "scrud_django.core.authz",
+        "rbac_contexts_of": "scrud_django.mixins.resource_mixin",
+    },
+    "scrud_django.mixins.view_mixins": {
+        "_checking_write": "scrud_django.core.authz",
+        "_workflow_authorized": "scrud_django.core.authz",
+    },
+    "scrud_django.filters": {"ResourceRemoval": "scrud_django.models"},
+    "scrud_django.exceptions": {"DOCUMENT_RENDERERS": "scrud_django.renderers"},
+}
+
+
+@pytest.mark.parametrize("module", sorted(OLD_HOMES))
+def test_moved_names_import_from_their_old_modules(module):
+    import importlib
+
+    old = importlib.import_module(module)
+    for name, home in OLD_HOMES[module].items():
+        assert getattr(old, name) is getattr(importlib.import_module(home), name), name
+    if module == "scrud_django.permissions":
+        from scrud_django.permissions import logger
+
+        assert logger.name == "scrud_django.permissions"
+    if module == "scrud_django.exceptions":
+        from scrud_django.exceptions import DOCUMENT_RENDERERS  # noqa: F401
+
+        with pytest.raises(AttributeError):
+            old.no_such_name  # noqa: B018

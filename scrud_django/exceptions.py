@@ -36,6 +36,17 @@ class ErrorText(_ErrorBase):
             return self
 
 
+def __getattr__(name):
+    """``DOCUMENT_RENDERERS`` (`scrud_django.renderers`), importable from here
+    as before, read on first use: the renderers import DRF, and this module
+    imports without it."""
+    if name == "DOCUMENT_RENDERERS":
+        from scrud_django.renderers import DOCUMENT_RENDERERS
+
+        return DOCUMENT_RENDERERS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def scrud_exception_handler(exc, context):
     """Scrud errors keep their own body; everything else gets scoped-rbac's
     RFC 9457 problem details."""

@@ -44,11 +44,13 @@ from scrud_django.core.authz import (  # noqa: F401
     content_of,
     current_transition,
     in_context,
+    logger,
     may_act_in_context,
     may_read_in_context,
     resource_contexts,
     with_context,
 )
+from scrud_django.mixins.resource_mixin import rbac_contexts_of  # noqa: F401
 
 
 def reads_each_context(leaf):
