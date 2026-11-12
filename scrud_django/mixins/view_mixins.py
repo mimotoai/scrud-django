@@ -17,12 +17,14 @@ from scoped_rbac import access, problems
 from scoped_rbac.conditional import lock_collection
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import AccessAPIError, drf_error, view_permission
+from scoped_rbac.policy import Permission
 from scoped_rbac.rest import AccessControlledAPIView
 from scrudful._django import conditional_response, precondition_headers
 from scrudful.conditional import parse_etag_list
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django import ui
+from scrud_django.core import resources as core_resources
 from scrud_django.core import writes as core_writes
 from scrud_django.core.bodies import (
     MARIADB_MAX_BODY_DEPTH,  # noqa: F401
@@ -45,7 +47,7 @@ from scrud_django.core.lists import (  # noqa: F401  (re-exported)
 )
 from scrud_django.core.lists import list_etag as core_list_etag
 from scrud_django.core.workflow import authorizing_write
-from scrud_django.drf_requirements import ViewLeaf
+from scrud_django.drf_requirements import NotNeutral, ViewLeaf, requirement_of
 from scrud_django.exceptions import (
     RbacContextInvalidError,  # noqa: F401  (re-exported)
     RequestBodyMissingError,  # noqa: F401  (re-exported)
@@ -672,9 +674,35 @@ class ListValidatorsMixin:
         the object checks a list asks (`readable_by_object_checks`), so that
         the detail route hides what the list leaves out. The object checks
         only narrow. A grant conditioned on ``scrud_workflow`` never makes
-        an object readable."""
+        an object readable.
+
+        The view's requirement (`requirement_of`, built as a GET of the
+        detail route has it) is asked through
+        `scrud_django.core.resources.readable_content`, the grants for
+        ``http.GET`` on the type the view names
+        (``resource_type_iri_for``); a view with none (`NotNeutral`: DRF's
+        ``~`` over an ``IsAuthorized``) asks its permissions itself."""
+        grants = isinstance(self, AccessControlledAPIView)
+        with (
+            _not_checking_write(),
+            checks_read_content(self),
+            as_detail_read(self, request) as read,
+        ):
+            try:
+                requirement = requirement_of(self)
+            except NotNeutral:
+                requirement = None
+            if requirement is not None:
+                permission = (
+                    Permission("http.GET", self.resource_type_iri_for(read))
+                    if grants
+                    else None
+                )
+                return core_resources.readable_content(
+                    read, obj, requirement, grants=grants, permission=permission
+                )
         with _not_checking_write(), checks_read_content(self):
-            if isinstance(self, AccessControlledAPIView):
+            if grants:
                 with as_detail_read(self, request) as read:
                     if not readable_by_grants(self, read, obj):
                         return False
@@ -721,10 +749,29 @@ class ListValidatorsMixin:
         ):
             return
         with checks_read_content(self):
-            if all(map(reads_each_context, reading_content(get_rbac_permissions()))):
-                return
-            if not grants_allow(self, request, obj, view_permission(request, self)):
-                self.permission_denied(request)
+            try:
+                requirement = requirement_of(self)
+            except NotNeutral:
+                requirement = None
+            if requirement is None:
+                if all(
+                    map(reads_each_context, reading_content(get_rbac_permissions()))
+                ):
+                    return
+                allowed = grants_allow(
+                    self, request, obj, view_permission(request, self)
+                )
+            else:
+                try:
+                    core_resources.check_grants_in_each_context(
+                        request, obj, requirement, view_permission(request, self)
+                    )
+                    allowed = True
+                except access.AccessDenied:
+                    allowed = False
+        if not allowed:
+            # DRF's own refusal (403, or 401 for the anonymous user).
+            self.permission_denied(request)
 
     def object_for_checks(self, obj):
         """`obj` as the detail route gives it to the object check: itself
@@ -1180,14 +1227,11 @@ class ResourceViewMixin(
         obj = get_object_or_404(
             queryset, **{self.lookup_field: self.kwargs[lookup_url_kwarg]}
         )
-        resource_type = self.get_resource_type()
-        if obj.resource_type_id == resource_type.pk:
-            # The type the view read (on the same database), not read again.
-            Resource.resource_type.field.set_cached_value(obj, resource_type)
-        if access.stored_in_reserved_context(obj):
-            # The content checked below has no rbac_context attribute for
-            # scoped-rbac's check_object_permissions to read.
-            raise Http404
+        # The type the view read (on the same database) cached on it, not
+        # read again; a 404 for one stored in a reserved context: the content
+        # checked below has no rbac_context attribute for scoped-rbac's
+        # check_object_permissions to read.
+        core_resources.found_item(self.get_resource_type(), obj)
         with checks_read_content(self):
             self.check_object_permissions(self.request, self.object_for_checks(obj))
         return obj

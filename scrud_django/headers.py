@@ -38,6 +38,12 @@ def get_link_header_for(resource_type, request):
     it on the resource's own responses: the schema (``rel="describedby"``,
     ``type="application/schema+json"``) and the JSON-LD context. A list
     envelope's ``link`` is this value."""
+    return join_links(*get_link_values_for(resource_type, request)) or ""
+
+
+def get_link_values_for(resource_type, request):
+    """The link-values of `get_link_header_for`, each its own: the schema's,
+    then the JSON-LD context's, either left out when the type has none."""
     schema_uri = get_schema_uri_for(resource_type, request)
     context_uri = get_context_uri_for(resource_type, request)
     schema_link = (
@@ -54,4 +60,4 @@ def get_link_header_for(resource_type, request):
         if context_uri
         else None
     )
-    return join_links(schema_link, context_link) or ""
+    return [link for link in (schema_link, context_link) if link]

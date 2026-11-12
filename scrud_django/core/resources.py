@@ -1,0 +1,349 @@
+"""A scrud resource without DRF: what a front end calls to serve a type's
+list and items, with a Django request, the `ResourceType` and a neutral
+requirement (`scrud_django.core.requirements`), as the DRF routes answer
+(``ResourceViewMixin``): an item's lookup and object check (`load_for_read`),
+whether it is readable (`object_readable`), its validators and Links, and
+the ``Allow`` of an OPTIONS (`allowed_methods`). The list's and the writes'
+functions are re-exported from `scrud_django.core.lists` and
+`scrud_django.core.writes`.
+
+A refusal of an object the requester cannot read is a 404 (``Http404``),
+for every method: another answer would reveal that it exists. A refusal of
+one they can read is ``access.AccessDenied`` (403), for the front end to
+answer as it answers access errors.
+
+A requirement's ``access.AnyOf`` is DRF's ``|`` of the object checks only:
+DRF's ``OR`` also asks each option's request check beside its object check,
+which a neutral front end, whose requirement is `GrantsLeaf` entries, has no
+need of. A DRF view keeps its own checks (``check_object_permissions``).
+"""
+
+import copy
+from datetime import datetime
+
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.http import Http404
+from scoped_rbac import access
+from scoped_rbac.policy import Permission
+
+from scrud_django import collection_type_uri_for
+from scrud_django.core.authz import _not_checking_write, content_of
+from scrud_django.core.lists import (  # noqa: F401  (re-exported)
+    content_filtered,
+    evaluate_list_preconditions,
+    list_etag,
+    list_last_modified,
+    readable_queryset,
+)
+from scrud_django.core.requirements import (
+    GrantsLeaf,
+    _entries,
+    as_get,
+    grants_allow,
+    readable_by_grants,
+    readable_by_object_checks,
+    requirement_leaves,
+)
+from scrud_django.core.workflow import authorizing_write
+from scrud_django.core.writes import (  # noqa: F401  (re-exported)
+    create,
+    destroy,
+    update,
+    validate_write,
+)
+from scrud_django.headers import get_link_values_for
+from scrud_django.models import Resource
+
+# The method of an item whose object check the workflow check covers: the
+# PUT of its ``update`` action (``ResourceViewMixin.checks_workflow``, whose
+# ``WORKFLOW_VIEW_ACTIONS`` also covers the list's POST, ``create``, which
+# loads no object). A PATCH (``partial_update``) and a DELETE (``destroy``)
+# are not covered, locked writes (``LOCKED_WRITE_METHODS``) though they are.
+COVERED_ITEM_METHOD = "PUT"
+
+# The method of the list the workflow check covers: the POST of ``create``.
+COVERED_LIST_METHOD = "POST"
+
+# The methods an item's and a list's routes serve whose use OPTIONS checks
+# (`allowed_methods`), in DRF's order (``APIView.allowed_methods``, from
+# ``http_method_names``): ``scrud_django.registration.resource_type_urls``.
+# HEAD is GET's answer; OPTIONS is always allowed.
+ITEM_METHODS = ("GET", "PUT", "DELETE")
+LIST_METHODS = ("GET", "POST")
+
+# The order of the methods ``Allow`` lists, as scrudful's ``allow_value``
+# orders them (its ``METHOD_KEYS``).
+ALLOW_ORDER = ("GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE")
+
+
+def _as_method(request, method):
+    """`request` itself when its method is `method`, else a shallow copy of
+    it whose method is (as `as_get` copies it)."""
+    if request.method == method:
+        return request
+    clone = copy.copy(request)
+    clone.method = method
+    return clone
+
+
+def _options_copy(request, method):
+    """A shallow copy of the OPTIONS `request` whose method is `method` and
+    whose ``META["REQUEST_METHOD"]`` is ``"OPTIONS"``: the copy on which
+    scrudful checks one method for ``Allow`` (``access.checks_allow``), whose
+    PUT or POST is checked without a body."""
+    clone = copy.copy(request)
+    clone.method = method
+    clone.META = {**request.META, "REQUEST_METHOD": "OPTIONS"}
+    return clone
+
+
+def readable_content(read, content, requirement, *, grants=True, permission=None):
+    """Whether the resource's `content` is readable by `read` (a GET of the
+    detail route): the grants (`readable_by_grants`, ``http.GET`` on each
+    leaf's type; with `permission`, `grants_allow` for it instead; not asked
+    without `grants`) **and** the object checks a list asks
+    (`readable_by_object_checks`), with ``scrud_workflow`` refusing
+    (`_not_checking_write`): it never makes an object readable."""
+    with _not_checking_write():
+        if grants:
+            if permission is None:
+                allowed = readable_by_grants(requirement, read, content)
+            else:
+                allowed = grants_allow(requirement, read, content, permission)
+            if not allowed:
+                return False
+        return readable_by_object_checks(requirement, read, content)
+
+
+def object_readable(request, resource_type, obj: Resource, requirement) -> bool:
+    """Whether `obj` (a `Resource` of `resource_type`) is readable by
+    `request`'s user, as a GET of its detail route has it, whatever the
+    request's method (`as_get`): `readable_content` of its content. Tells a
+    404 from a 403 (`load_for_read`)."""
+    return readable_content(as_get(request), content_of(obj), requirement)
+
+
+def found_item(resource_type, obj: Resource) -> Resource:
+    """`obj`, the item an item's lookup found, with `resource_type` (the
+    type the front end read) cached on it when it is of it, so it is not
+    read again; ``Http404`` for one stored in a context reserved once
+    normalised (``access.stored_in_reserved_context``), as scoped-rbac
+    answers it, before any check."""
+    if obj.resource_type_id == resource_type.pk:
+        Resource.resource_type.field.set_cached_value(obj, resource_type)
+    if access.stored_in_reserved_context(obj):
+        raise Http404
+    return obj
+
+
+def check_grants_in_each_context(request, content, requirement, permission) -> None:
+    """Refuse (``access.AccessDenied``) the resource's `content` unless the
+    grants allow `permission` on it, each context read as the resource is
+    there (`grants_allow`), when a leaf of `requirement` does not ask them so
+    itself (``reads_each_context`` is false): object checks only narrow."""
+    if all(leaf.reads_each_context for leaf in requirement_leaves(requirement)):
+        return
+    if not grants_allow(requirement, request, content, permission):
+        raise access.AccessDenied()
+
+
+def _object_permitted(request, resource_type, content, requirement):
+    """Whether `requirement` allows `request` on the resource's `content`:
+    every entry's ``has_object_permission`` (any option of an ``AnyOf``),
+    then the grants in each context (`check_grants_in_each_context`). A
+    leaf's ``PermissionDenied`` refuses; its ``Http404`` is raised."""
+    permission = Permission(
+        access.action_iri_for(request.method), resource_type.type_uri
+    )
+
+    def meets(entry):
+        if isinstance(entry, access.AnyOf):
+            return any(
+                all(meets(e) for e in _entries(option)) for option in entry.options
+            )
+        return entry.has_object_permission(request, content)
+
+    try:
+        if not all(meets(entry) for entry in requirement):
+            return False
+        check_grants_in_each_context(request, content, requirement, permission)
+    except (PermissionDenied, access.AccessDenied):
+        return False
+    return True
+
+
+def check_object(request, resource_type, obj: Resource, requirement, *, covered):
+    """The object check of `request` on `obj`, as the detail route asks it
+    (``check_object_permissions``): run with ``scrud_workflow`` allowing when
+    the workflow check covers the write (`covered`, `authorizing_write`). A
+    refusal of an object `object_readable` refuses is ``Http404``; of a
+    readable one, ``access.AccessDenied``."""
+    with authorizing_write(request, covered=covered):
+        permitted = _object_permitted(
+            request, resource_type, content_of(obj), requirement
+        )
+    if permitted:
+        return
+    if not object_readable(request, resource_type, obj, requirement):
+        raise Http404
+    raise access.AccessDenied()
+
+
+def load_for_read(
+    request,
+    resource_type,
+    pk,
+    *,
+    requirement,
+    method: str,
+    lock_using: str | None = None,
+) -> Resource:
+    """The resource `pk` of `resource_type`, looked up and checked for a
+    `method` request (every method's lookup, not only a read's), as the
+    detail route's ``get_object()`` answers it:
+
+    - missing, or a `pk` that is no key, it is ``Http404``; so is one stored
+      in a context reserved once normalised (`found_item`, which caches the
+      type on it). The lookup is not narrowed by readability, as the DRF
+      route's is not (a resource's contexts are rows, not a column, so
+      scoped-rbac's detail scope keeps it): the object check decides, which
+      no ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`` caps;
+    - the object check for `method` (`check_object`) runs with
+      ``scrud_workflow`` allowing for the PUT of the update action, which
+      the workflow check covers (`COVERED_ITEM_METHOD`), and refusing for
+      any other method;
+    - a refusal of an unreadable object is ``Http404``, of a readable one
+      ``access.AccessDenied``.
+
+    With `lock_using`, the row is read on that database with
+    ``select_for_update()`` (call it inside a transaction there); else as
+    the router reads."""
+    queryset = Resource.objects.filter(resource_type=resource_type)
+    if lock_using is not None:
+        queryset = queryset.using(lock_using).select_for_update()
+    try:
+        obj = queryset.get(pk=pk)
+    except (Resource.DoesNotExist, TypeError, ValueError, ValidationError):
+        # DRF's get_object_or_404: a pk that is no key is missing too.
+        raise Http404 from None
+    found_item(resource_type, obj)
+    check_object(
+        _as_method(request, method),
+        resource_type,
+        obj,
+        requirement,
+        covered=method == COVERED_ITEM_METHOD,
+    )
+    return obj
+
+
+def item_validators(obj: Resource) -> tuple[str, datetime]:
+    """`obj`'s ``(etag, last_modified)``: its ``etag`` (unquoted) and
+    ``modified_at``, as ``ScrudfulMeta`` gives scrudful."""
+    return (obj.etag, obj.modified_at)
+
+
+def item_links(request, resource_type) -> list[str]:
+    """The Link values of a resource of `resource_type` that ``ScrudfulMeta``
+    produces (`scrud_django.headers.get_link_values_for`): its schema
+    (``rel="describedby"``) and its JSON-LD context, each absolute against
+    `request`, either left out when the type has none."""
+    return get_link_values_for(resource_type, request)
+
+
+def _request_checks_pass(request, requirement):
+    """Whether every entry of `requirement` (any option of an ``AnyOf``)
+    allows ``has_permission(request, None)``: a request check without a
+    body. ``PermissionDenied`` refuses."""
+
+    def meets(entry):
+        if isinstance(entry, access.AnyOf):
+            return any(
+                all(meets(e) for e in _entries(option)) for option in entry.options
+            )
+        return entry.has_permission(request, None)
+
+    try:
+        return all(meets(entry) for entry in requirement)
+    except PermissionDenied:
+        return False
+
+
+def allowed_methods(
+    request,
+    resource_type,
+    obj: Resource | None,
+    requirement,
+    *,
+    list_requirement=None,
+) -> list[str]:
+    """The methods the ``Allow`` of the OPTIONS `request` lists, as the DRF
+    route's (scrudful's ``_allowed_methods`` over ``ResourceViewMixin``)
+    lists them for its requester, in its order (`ALLOW_ORDER`): of the item
+    `obj` (a `Resource` of `resource_type`, as its lookup found it), or of
+    the list for ``None``.
+
+    1. Each method the route serves (`ITEM_METHODS`, `LIST_METHODS`) is
+       checked with the request checks (``has_permission``) of `requirement`
+       on a body-less copy of `request` with that method (`_options_copy`),
+       ``scrud_workflow`` allowing for the PUT of an item and the POST of
+       the list (the workflow check covers them). They name the item's type,
+       as the DRF route's do, but for the list's GET, whose are those of
+       `list_requirement` (by default a `GrantsLeaf` of the type's list
+       type, ``collection_type_uri_for``): the DRF route names the list's
+       type for its ``list`` action only.
+    2. Only when one passed, for an item: the object is as the first method
+       that passed loads it (``Http404`` for one stored in a reserved
+       context, `found_item`), and each method that passed is checked
+       against it (`check_object`, covered as in `load_for_read`). The first
+       one's ``Http404`` (an object it cannot read) is raised: it is the
+       OPTIONS's answer, as a GET's would be. Another's refuses only it, as
+       does any ``access.AccessDenied``.
+
+    OPTIONS is always listed, and HEAD with GET. The item is given already
+    loaded: on the DRF route a requester refused every method gets ``Allow:
+    OPTIONS`` whether the object exists or not (nothing is loaded then),
+    which a caller that answers a missing item with a 404 before calling
+    this does not reproduce."""
+    if obj is None:
+        checked = LIST_METHODS
+        covered = COVERED_LIST_METHOD
+        if list_requirement is None:
+            list_requirement = [
+                GrantsLeaf(collection_type_uri_for(resource_type.type_uri))
+            ]
+        requirements = {"GET": list_requirement}
+    else:
+        checked = ITEM_METHODS
+        covered = COVERED_ITEM_METHOD
+        requirements = {}
+    copies = {method: _options_copy(request, method) for method in checked}
+    allowed = {}
+    for method in checked:
+        with authorizing_write(copies[method], covered=method == covered):
+            allowed[method] = _request_checks_pass(
+                copies[method], requirements.get(method, requirement)
+            )
+    loader = next((method for method in checked if allowed[method]), None)
+    if obj is not None and loader is not None:
+        found_item(resource_type, obj)
+        for method in checked:
+            if not allowed[method]:
+                continue
+            try:
+                check_object(
+                    copies[method],
+                    resource_type,
+                    obj,
+                    requirement,
+                    covered=method == COVERED_ITEM_METHOD,
+                )
+            except Http404:
+                if method == loader:
+                    raise
+                allowed[method] = False
+            except access.AccessDenied:
+                allowed[method] = False
+    allowed["HEAD"] = allowed["GET"]
+    allowed["OPTIONS"] = True
+    return [method for method in ALLOW_ORDER if allowed.get(method)]
