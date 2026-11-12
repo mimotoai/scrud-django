@@ -577,10 +577,13 @@ named by JSON Pointer (`name="/items/0/text"`):
 * The Delete button (shown when the user may DELETE the resource, in edit
   mode or in the view mode of a user who may not PUT it, but never under a
   requested view mode: `?ui-mode=view`, `Scrud-UI-Mode: view`, or an embed's
-  `mode="view"`) asks for confirmation and sends a `DELETE` with `If-Match`. On success (a 204) the
-  resource's frame is removed from the page, with the list item that held only
-  it, and a `scrud:deleted` event is dispatched on `document` with
-  `detail.href`, the resource's URL. A failed delete never removes the frame.
+  `mode="view"`, nor on the page of a read-only record such as an applied UI
+  push, which is rendered as a view when the request names no mode) asks for
+  confirmation and
+  sends a `DELETE` with `If-Match`. On success (a 204) the resource's frame
+  is removed from the page, with the list item that held only it, and a
+  `scrud:deleted` event is dispatched on `document` with `detail.href`, the
+  resource's URL. A failed delete never removes the frame.
   A 409 (in use) or 412 (stale) is answered with a notice and a frame that
   reloads the current state, as a stale PUT is; any other failed DELETE is not
   swapped in, and a client notice is shown in the frame instead.
@@ -1885,11 +1888,14 @@ the author applies or proposes it. It computes the same plan the push writes
    {"kind": "component", "key": ["row"], "action": "update",
     "before": {"name": "row", "template": "<b>main</b>", "rbac_context": "", "…": "…"},
     "after": {"name": "row", "template": "<i>wip</i>", "branch": "main",
-              "rbac_context": "", "base": null, "…": "…"}},
+              "rbac_context": "", "base": null, "…": "…"},
+    "changed": ["branch", "template"]},
    {"kind": "component", "key": ["fresh"], "action": "create",
-    "before": null, "after": {"name": "fresh", "…": "…"}},
+    "before": null, "after": {"name": "fresh", "…": "…"},
+    "changed": ["name", "…"]},
    {"kind": "component", "key": ["gone"], "action": "delete",
-    "before": {"name": "gone", "…": "…"}, "after": null}],
+    "before": {"name": "gone", "…": "…"}, "after": null,
+    "changed": ["name", "…"]}],
  "unreadable_changes": 1,
  "conflicts": [{"kind": "component", "key": ["row"],
                 "base": "3f…", "current": "9a…"}],
@@ -1909,6 +1915,11 @@ the author applies or proposes it. It computes the same plan the push writes
   item the target shows there now, from its parent or a packaged layer
   (`null` for none). `after` is the row exactly as the push stores it (its
   `branch`, `rbac_context` and `base` on the target); `null` for a delete.
+  `changed` lists, sorted, the names of the fields the two differ on, as
+  JSON values (`0` is not `false`): null, `""` and a missing field are all
+  the same (an empty `rbac_context` is not a change whichever way each side
+  spells it), while `""` to `"ctx"` and `"ctx"` to missing are; for a create
+  with no `before`, or a delete, every field of the one row.
 - A write on an item the user may not `GET` (the target's row, the row as
   written, the source's row it comes from, or, for a create, the item the
   target shows there now: its `before`) is left out of `changes`;
@@ -2067,12 +2078,19 @@ component `studio:workbench`, which renders:
 - a top bar with T's name, the branch picker and the Items, Editor and
   Preview toggles;
 - "Branch settings" and "New branch" (see [Branch settings](#branch-settings));
-- a notice (`data-studio-notice`, `role="alert"`, hidden until a write is
-  refused);
+- a notice (`data-studio-notice`, `role="alert"` in the error style, hidden
+  until a write is refused; shown as information, `role="status"` with
+  `data-studio-notice-level="info"` in a neutral style, for the note that an
+  item is not on the branch);
 - three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`,
-  in a row whose height the viewport bounds; each pane scrolls on its own,
-  so the strip stays near the preview however long the Items tree is;
-- a bottom strip (`<footer class="studio-strip">`).
+  in a row that takes the height the top bar and the strip leave (the
+  workbench is a flex column, `100vh` less a small reserve for the page's
+  chrome links, with a floor under which the page scrolls instead); each
+  pane scrolls on its own, so the strip stays on the first screen however
+  much the panes hold;
+- a bottom strip (`<footer class="studio-strip">`) of its natural height,
+  bounded by its own `max-height` and scrolling inside when its Promote
+  panels or the Pushes and History lists are opened.
 
 The Items pane embeds `api_url("ui-branch-items", T)` in the scope
 `studio studio-items`, which the layer renders with `studio:items`; the strip
@@ -2173,13 +2191,29 @@ and the inspector under it (see
   The script rewrites them with `history.replaceState`, and keeps every
   other parameter (`ui-scope=studio`, `ui-mode=view`, `ui-safe`), so a
   workbench URL can be shared and reloaded.
+- **The branch picker keeps the state.** The picker's links are plain
+  links (they work without the script); the script rewrites their query from
+  the current state on load, on every state change and when the picker is
+  fetched again. A switch keeps `type`, `mode`, `context`, `scope`,
+  `instance`, `item` and `pointer` (what is previewed and opened, meaningful
+  on any branch) and `ui-safe` when the page has it, and drops `pinned` (it
+  previews the branch being left at its branching point, and another branch
+  may have none (`main`, a root) or a different one).
 - **The strip with a type.** When the state has a `type` (on load, and when
   it changes), the strip is fetched again with `?type=<type>`, for its browse
   link.
 - **Opening an item.** A click on an entry sets `item` and dispatches
   `studio:open` on the workbench (`detail.open` is the entry's
   `data-studio-open`, `detail.entry` the entry), which the editor handles
-  (see [The editors](#the-editors)). The `item` in the URL opens on load.
+  (see [The editors](#the-editors)). The `item` in the URL opens on load. An
+  `item` the tree has no entry
+  for (an own item of the branch the author switched from) shows a notice in
+  the workbench, as information (`ScrudStudio.inform`: `role="status"`, the
+  neutral style) and no error, naming the item as the editor's header does
+  ("stylesheet todo (ctx) is not on this branch."), and is removed from the URL
+  so a reload does not repeat it. A refused write after it is an alert again.
+  A tree with no entries at all (its embed failed, or the user may not list
+  the items) says nothing about the branch: the `item` stays, with no notice.
 - **After a write.** After any write sent from inside the workbench
   (`htmx:afterRequest` of a non-GET) that succeeds, the items and the strip
   are fetched again (an htmx GET of `data-studio-src`, with the pane's own
@@ -2220,8 +2254,10 @@ event's `source` is the preview frame's window), `expand(pane)` (open a
 collapsed pane), `parseOpen(entry)`, `entryFor(item)` (the tree's entry for
 an `item` key, or `null`), `open(entry)` (open a tree entry, as a click on
 it does), `errorText(xhr)` (a refused request's text), `notify(text, label,
-act)` (the workbench's notice, as text, with a button `label` that calls
-`act`) and `clearNotice()`, `frameChanged(frame)` (whether a frame's inputs,
+act)` (the workbench's notice, as an alert, as text, with a button `label`
+that calls `act`), `inform(text)` (the notice as information: a status in
+the neutral style) and `clearNotice()` (hides it and makes it an alert
+again), `frameChanged(frame)` (whether a frame's inputs,
 applied as `ScrudUI.buildBody` applies them, change its content),
 `watchUnsaved(check)` (a function that says whether a script holds unsaved
 input) and `unsaved()` (the editor's frame changed, or any check says so).
@@ -2239,6 +2275,9 @@ itself (`data-studio-editor`) and, under it, the drafts the preview left out
   [Studio data as computed resources](#studio-data-as-computed-resources)),
   never built by the script. After the override (a 201) the panes are
   fetched again and the new own row opens.
+- **A component's editor** opens with a line `<engine> · mode: <mode>`; the
+  `mode` there is the component's own `mode` field (the mode it renders in),
+  not whether the editor is editable.
 - **An item with an `href`** is loaded with an htmx GET of it into the
   editor, with `Scrud-UI-Scope: studio studio-editor`. It is sent with
   `Scrud-UI-Mode: view` when T is published or the item is not T's own (its
@@ -2513,9 +2552,10 @@ is set, the conflicts (`<li class="studio-push-conflict">`, the item and
 that it changed on the target since the source's version was based on it),
 and the changes (`<li class="studio-push-change"
 data-studio-change-action="create|update|delete">`), each with the target's
-row before and after as its fields, as text (a field the push changes is
-`studio-push-field-changed`; "Nothing" before a create, "Deleted" after a
-delete). See [What a push will change](#what-a-push-will-change).
+row before and after as its fields, as text (a field in the change's
+`changed` list is `studio-push-field-changed`; "Nothing" before a create,
+"Deleted" after a delete). See
+[What a push will change](#what-a-push-will-change).
 
 Apply waits for the review ("Apply waits for the review to load."). Once it
 has loaded, Apply is turned on when the review has no conflict: when
@@ -2596,8 +2636,11 @@ push. A move the server refuses, such as one a
 workflow policy forbids (Requiring approval, under
 [Pushing and restoring](#pushing-and-restoring)), is re-rendered with the
 server's message and the submitted state ([Refused writes](#refused-writes)).
-An applied push is a record: no form, no preview. A user who may only read
-the push gets the view: no form, no Save.
+An applied push is a record: no form, no preview, no Delete button. The API
+refuses a PUT (400) and a DELETE (409) of an applied push, so when the
+request names no mode the server renders it as a view (mode `view`, in any
+scope), whoever the user is; a request may only name `view` anyway. A user who may only read a push that is not applied gets the view too: no
+form, no Save.
 
 ### History and restore
 

@@ -488,6 +488,11 @@ def _body(data, status, request, view, response):
         elif action not in ("retrieve", "update"):
             return _json(data), []
         etag = response.get("ETag") if response is not None else None
+        # A read-only record (an applied push: the API refuses a PUT and a
+        # DELETE of it) is rendered as a requested view: no form, no Delete.
+        is_record = getattr(view, "is_record", None)
+        if mode is None and is_record is not None and is_record(data):
+            mode = VIEW_MODE
         # A computed view's content is view-only, its contexts the content's
         # own when it names them (never the stored resource's decisions).
         computed = getattr(view, "computed", False)

@@ -538,3 +538,20 @@ def test_revert_offered_only_over_something(studio_layer, ui_alice_login, admin_
             # The tree's entry carries it, for the editor.
             _classes, opened, _li, _page = tree[key]
             assert opened["reverts_to"] == reverts_to, (user, key)
+
+
+@pytest.mark.django_db
+@test_context
+def test_component_header_labels_its_mode_field(studio_layer, ui_alice_login):
+    """The header's ``<engine> · <mode>`` is the component's own ``mode``
+    field, not the editor's state: an editable component of mode ``view``
+    read ``jinja2 · view`` above a live textarea. The label names the
+    field, in edit and in view mode alike."""
+    _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
+    Given.http.force_authenticate(ui_alice_login)
+    entries = workbench_entries(alice_wip)
+    _classes, opened, _li, _page = entries[("component", "card")]
+    for view in (False, True):
+        page = Page(open_editor(opened["href"], view=view))
+        [meta] = [e for e in page.elements if "studio-editor-meta" in e.classes()]
+        assert meta.text.strip() == "jinja2 · mode: view", view

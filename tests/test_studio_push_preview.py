@@ -11,6 +11,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import ITEM_KINDS, UI_BRANCH_TYPE_URI, UI_CSS_TYPE_URI
+from scrud_django.ui.branches import sync as push_sync
 from scrud_django.ui.layers import layer_item
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
@@ -68,14 +69,63 @@ def target_row(type_uri, name, branch="main"):
     return found[0] if found else None
 
 
-def change(kind, key, action, before, after):
+def change(kind, key, action, before, after, changed):
     return {
         "kind": kind,
         "key": list(key),
         "action": action,
         "before": before,
         "after": after,
+        "changed": changed,
     }
+
+
+def test_changed_fields_treats_empty_values_as_equal():
+    changed = push_sync.changed_fields
+    # null, "" and a missing key are all "empty": equal to each other.
+    assert changed({"a": 1, "rbac_context": ""}, {"a": 1, "rbac_context": None}) == []
+    assert changed({"a": 1, "rbac_context": None}, {"a": 1}) == []
+    assert changed({"a": 1}, {"a": 1, "rbac_context": ""}) == []
+    # A real change still counts: empty to a value and back, either spelling.
+    assert changed({"rbac_context": ""}, {"rbac_context": "ctx"}) == ["rbac_context"]
+    assert changed({"rbac_context": "ctx"}, {}) == ["rbac_context"]
+    assert changed({"rbac_context": "ctx"}, {"rbac_context": None}) == ["rbac_context"]
+    # 0 and False are values, not empty.
+    assert changed({"order": 0}, {"order": None}) == ["order"]
+    assert changed({"x": False}, {}) == ["x"]
+    # JSON's false and 0 (or true and 1) differ, though Python's == says not,
+    # nested too; 1 and 1.0 are the same JSON number.
+    assert changed({"x": 0}, {"x": False}) == ["x"]
+    assert changed({"x": True}, {"x": 1}) == ["x"]
+    assert changed({"x": {"y": [1]}}, {"x": {"y": [True]}}) == ["x"]
+    assert changed({"x": {"y": [1]}}, {"x": {"y": [1.0]}}) == []
+    # A field on one side only, and sorted.
+    assert changed({"b": 1, "a": 1}, {"b": 2, "c": 3}) == ["a", "b", "c"]
+    # Nothing on one side: every field of the other (a create or a delete).
+    assert changed(None, {"b": 1, "a": ""}) == ["a", "b"]
+    assert changed({"b": 1}, None) == ["b"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_push_preview_changed_marks_a_real_rbac_context_change(admin_login):
+    # Pushed into a branch in context "alice", an item of main's ("") is
+    # created there with that context: rbac_context really changes.
+    Given.http.force_authenticate(admin_login)
+    make_component("row", "<b>main</b>")
+    make_wip(admin_login, "team", context="alice")
+    make_wip(admin_login, "mine", parent="team", context="alice")
+    create(
+        "ui-components",
+        component(
+            name="row", template="<i>mine</i>", branch="mine", rbac_context="alice"
+        ),
+    )
+    [row] = preview("mine")["changes"]
+    assert (
+        row["before"]["rbac_context"] == "" and row["after"]["rbac_context"] == "alice"
+    )
+    assert "rbac_context" in row["changed"]
 
 
 @pytest.mark.django_db
@@ -101,8 +151,15 @@ def test_push_preview_matches_what_apply_push_writes(admin_login):
         "rbac_context": "",
         "base": main_row.content.get("base"),
     }
+    # ``changed``: the fields whose values differ (``branch`` is new on the
+    # after side; ``base`` is absent before and null after: the same).
     assert body["changes"][0] == change(
-        "component", ["row"], "update", main_row.content, after_row
+        "component",
+        ["row"],
+        "update",
+        main_row.content,
+        after_row,
+        ["branch", "template"],
     )
     assert [(c["key"], c["action"]) for c in body["changes"]] == [
         (["row"], "update"),
@@ -110,7 +167,7 @@ def test_push_preview_matches_what_apply_push_writes(admin_login):
         (["gone"], "delete"),
     ]
     assert body["changes"][2] == change(
-        "component", ["gone"], "delete", gone.content, None
+        "component", ["gone"], "delete", gone.content, None, sorted(gone.content)
     )
     push()
     Then.http.status_code_is(201)
@@ -148,7 +205,9 @@ def test_push_preview_shows_marker_hiding_the_parents_item(admin_login):
     assert body["target"] == "team" and body["conflicts"] == []
     # team's row is deleted, and a marker hides main's item beneath it.
     delete, marker = body["changes"]
-    assert delete == change("component", ["row"], "delete", team_row.content, None)
+    assert delete == change(
+        "component", ["row"], "delete", team_row.content, None, sorted(team_row.content)
+    )
     assert marker["action"] == "create"
     assert marker["before"] == main_row.content
     assert marker["after"]["deleted"] is True
@@ -363,7 +422,12 @@ def test_push_of_layer_override_previewed(admin_login):
         assert component_change["after"]["branch"] == "main"
         # main's override is deleted, and a marker hides the layer's item.
         assert css_delete == change(
-            "css", ["layermore:theme"], "delete", main_css.content, None
+            "css",
+            ["layermore:theme"],
+            "delete",
+            main_css.content,
+            None,
+            sorted(main_css.content),
         )
         assert css_marker["action"] == "create"
         assert css_marker["before"] == layer_css

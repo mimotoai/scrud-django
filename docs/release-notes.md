@@ -298,6 +298,9 @@
   another, hides the project's URLs or lies under the API's. A system check,
   `scrud_django_ui.W001` (a Warning), reports stored prefixes with those
   problems.
+* Each change in a `ui-push-previews` response gains `changed`: the names of
+  the fields the push changes in that row (JSON-LD term `UIPushChanged`). The
+  self-hosted studio's push review marks those fields.
 
 Behaviour for a site that creates no branch, and without the middleware, is
 unchanged. The middleware costs one query per request outside the API's URLs.
@@ -329,6 +332,24 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   unsorted and sort them in Python, and the resource list's page is found
   among the keys alone, then read by key (one more query per list page, on
   MySQL only). See `mysql-sort-buffer` in the follow-ups for what remains.
+* In the self-hosted studio, an applied push's page renders as a view, with
+  no state form and no Delete button: the API refuses a PUT (400) and a
+  DELETE (409) of an applied push, so the controls could only fail.
+* The self-hosted studio's push review no longer marks a field changed when
+  both sides are empty (null, "" and a missing key are equal). A real change,
+  such as a row's `rbac_context` moving from main's "" to the target
+  branch's context, stays marked.
+* The rule editor's prefix rows wrap inside the Editor pane instead of
+  running past it.
+* The component editor's header reads "<engine> · mode: <mode>", the
+  component's own `mode` field, instead of an unlabelled pair.
+* The branch picker keeps the workbench state (type, item, instance, mode,
+  context, scope and pointer, but not pinned) across a switch of branch. An
+  item the new branch lacks shows an informational notice ("... is not on
+  this branch.") instead of an empty editor.
+* The self-hosted studio's workbench is bounded by the viewport, so the strip
+  (Promote, Pushes, History) stays on the first screen with the editor open;
+  the panes scroll inside it.
 
 ### Upgrading
 

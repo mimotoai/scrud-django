@@ -382,10 +382,14 @@ class UIBranchVersionViewSet(ResourceViewSet):
         return super().list(request)
 
 
+def applied_content(content) -> bool:
+    """Whether push `content` is applied."""
+    return isinstance(content, Mapping) and content.get("state") == "applied"
+
+
 def applied(push) -> bool:
     """Whether the stored push `push` (a `Resource`) is applied."""
-    content = push.content
-    return isinstance(content, Mapping) and content.get("state") == "applied"
+    return applied_content(push.content)
 
 
 @scrudful_viewset
@@ -400,6 +404,9 @@ class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
 
     # Whether the write being served moves the push into ``applied``.
     applying = False
+    # An applied push is a record: it accepts neither a PUT nor a DELETE, so
+    # its HTML page is a view (no form, no Delete button).
+    is_record = staticmethod(applied_content)
     # The push as saved by the write being served (`save_checked`), and, for
     # a create, the instance the serializer created (`perform_create`), which
     # the response describes.
