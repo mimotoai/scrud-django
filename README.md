@@ -221,8 +221,8 @@ To move the rule of an `IsAuthorized` subclass's `has_context_permission`
 to hooks, register it twice. As a `checks=` callable it governs writes, but
 it no longer hides reads, and it is stricter on a resource stored in
 several contexts: the subclass allowed a PUT or DELETE that any of them
-allowed, a check must allow it in every one. To hide what the subclass refused to read, add an
-`object_checks=` callable that applies the same rule to each of the
+allowed, a check must allow it in every one. To hide what the subclass
+refused to read, add an `object_checks=` callable that applies the same rule to each of the
 resource's contexts (`rbac_contexts_of(obj)`, from
 `scrud_django.mixins.resource_mixin`) and combines the answers as the
 subclass did. scoped-rbac's `has_object_permission` allows when any context
