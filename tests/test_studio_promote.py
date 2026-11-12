@@ -516,6 +516,34 @@ def test_propose_then_apply_from_push_page(studio_layer, admin_login):
 
 @pytest.mark.django_db
 @test_context
+def test_applied_push_page_is_a_view_without_delete(studio_layer, admin_login):
+    """The API refuses a PUT and a DELETE of an applied push, so its page is
+    a view (a record) with no Delete button; a proposed push keeps both."""
+    wip_with_changes(admin_login)
+    applied = store_push("wip", "main", "", state="applied", result=1)
+    proposed = store_push("wip", "main", "", label="open")
+    done_href = reverse("ui-pushes-detail", args=[applied.pk])
+    open_href = reverse("ui-pushes-detail", args=[proposed.pk])
+    page = get_page(push_page_url(done_href))
+    assert page.one("data-studio-push").attrs["data-studio-mode"] == "view"
+    assert root_frame(page, done_href).tag == "div"
+    assert not page.having("hx-delete")
+    assert not [e for e in page.elements if e.attrs.get("name") == "/state"]
+    # Outside the studio scope too: the frame is a view.
+    plain = get_page(done_href)
+    assert not plain.having("hx-delete")
+    assert not plain.having("hx-put")
+    # A push not applied yet: the form and the Delete button.
+    page = get_page(push_page_url(open_href))
+    assert page.one("data-studio-push").attrs["data-studio-mode"] == "edit"
+    [delete] = page.having("hx-delete")
+    assert delete.attrs["hx-delete"] == open_href
+    assert [e for e in page.elements if e.attrs.get("name") == "/state"]
+    assert get_page(open_href).having("hx-delete")
+
+
+@pytest.mark.django_db
+@test_context
 def test_refused_transition_shows_server_error(studio_layer, admin_login):
     main_row, _override, _wip = wip_with_changes(admin_login)
     workflow_policy_resource_type()

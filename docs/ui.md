@@ -577,7 +577,8 @@ named by JSON Pointer (`name="/items/0/text"`):
 * The Delete button (shown when the user may DELETE the resource, in edit
   mode or in the view mode of a user who may not PUT it, but never under a
   requested view mode: `?ui-mode=view`, `Scrud-UI-Mode: view`, or an embed's
-  `mode="view"`) asks for confirmation and sends a `DELETE` with `If-Match`. On success (a 204) the
+  `mode="view"`, nor on the page of a read-only record such as an applied UI
+  push, which is rendered as a requested view) asks for confirmation and sends a `DELETE` with `If-Match`. On success (a 204) the
   resource's frame is removed from the page, with the list item that held only
   it, and a `scrud:deleted` event is dispatched on `document` with
   `detail.href`, the resource's URL. A failed delete never removes the frame.
@@ -2596,8 +2597,11 @@ push. A move the server refuses, such as one a
 workflow policy forbids (Requiring approval, under
 [Pushing and restoring](#pushing-and-restoring)), is re-rendered with the
 server's message and the submitted state ([Refused writes](#refused-writes)).
-An applied push is a record: no form, no preview. A user who may only read
-the push gets the view: no form, no Save.
+An applied push is a record: no form, no preview, no Delete button. The API
+refuses both a PUT and a DELETE of an applied push (a 409), so the server
+renders it as a requested view (mode `view`, in any scope), whoever the user
+is. A user who may only read a push that is not applied gets the view too: no
+form, no Save.
 
 ### History and restore
 
