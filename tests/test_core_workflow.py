@@ -3,6 +3,7 @@ transition under the policy of every context it concerns, asked with a plain
 Django request, a type IRI and plain JSON mappings (no ``ResourceType`` row,
 no stored ``Resource``), as an app's own models will ask it."""
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -13,6 +14,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
 
+from scrud_django.core.workflow import NoWorkflowPolicyDenied
 from scrud_django.exceptions import (
     HiddenWorkflowTransitionError,
     WorkflowTransitionError,
@@ -152,13 +154,15 @@ def test_context_without_policy():
 
     store_note_policy()
     request = put_request(user_with((may_transition("publish"), "b")))
-    with pytest.raises(access.AccessDenied):
+    with pytest.raises(access.AccessDenied) as excinfo:
         workflow_check(
             request,
             type_iri=NOTE,
             prior=dict(DRAFT, rbac_context="b"),
             proposed=dict(PUBLISHED, rbac_context="b"),
         )
+    # The type the DRF adapter maps to its 403 (drf_error).
+    assert type(excinfo.value) is NoWorkflowPolicyDenied
     assert not _workflow_authorized(request)
 
 
@@ -208,3 +212,73 @@ def test_authorizing_write_lets_scrud_workflow_allow_a_covered_write():
     with authorizing_write(request, covered=True, authorized=True):
         assert _transition.get() is _WRITE
     assert _transition.get() is _OUTSIDE
+
+
+# The DRF adapter: a stored resource whose content is JSON null is an update
+# over content in no state and in the default context (as content that is
+# not an object), never a create.
+
+JSON_LD = "http://www.w3.org/ns/json-ld#context"
+
+
+def may_transition_json_ld(*transitions):
+    """A role reading JSON-LD resources, and writing one only by one of
+    `transitions`."""
+    return {
+        "http.GET": [JSON_LD],
+        "http.PUT": {
+            JSON_LD: {
+                "condition": {
+                    "operator": "scrud_workflow",
+                    "authorized_transitions": list(transitions),
+                }
+            }
+        },
+    }
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stored_content", [{}, None], ids=["empty", "null"])
+@test_context
+def test_null_stored_content_is_checked_as_an_update(stored_content):
+    from django.db.models import JSONField, Value
+    from django.utils.http import quote_etag
+    from rest_framework import status
+
+    from scrud_django.models import Resource
+
+    reverse("json-ld-list")
+    workflow_policy_resource_type()
+    ResourceRegistration.register(
+        {
+            "resource_type": JSON_LD,
+            "rbac_context": "a",
+            "initial_states": {"any": "true"},
+            "states": {},
+            "transitions": {},
+        },
+        "workflow-policies",
+    )
+    stored = ResourceRegistration.register({"x": 1}, "json-ld")
+    Resource.objects.filter(pk=stored.pk).update(
+        content=Value(stored_content, JSONField())
+    )
+    stored.refresh_from_db()
+    assert stored.content == stored_content
+    # Only scrud_workflow-conditioned grants in "" (where no policy applies)
+    # and in "a": moving the resource out of "" is refused there.
+    Given.http.force_authenticate(
+        user_with(
+            (may_transition_json_ld("__INITIALIZE__"), ""),
+            (may_transition_json_ld("__INITIALIZE__"), "a"),
+        )
+    )
+    When.http.put(
+        reverse("json-ld-detail", args=[stored.pk]),
+        data=json.dumps({"rbac_context": "a"}),
+        content_type="application/json",
+        HTTP_IF_MATCH=quote_etag(stored.etag),
+    )
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Http.response.json()["code"] == "permission_denied"
+    assert Resource.objects.get(pk=stored.pk).content == stored_content

@@ -174,16 +174,36 @@ def rbac_permissions_of(view):
     return list(get_rbac_permissions()) if callable(get_rbac_permissions) else []
 
 
+# What the workflow check is given as the stored content of a resource whose
+# content is JSON null (``None``). ``None`` itself would mean a create to
+# `workflow_check`; this stand-in is an update over content that is not an
+# object, which the check reads as it always read null content: in the
+# default context (`rbac_contexts_of`), in no state (`WorkflowPolicy.state`),
+# and an error about it is hidden unless the stored resource is readable.
+NULL_STORED_CONTENT = ()
+
+
+def prior_of(instance):
+    """The stored content of `instance` as `workflow_check` takes it:
+    ``None`` for no instance (a create), `NULL_STORED_CONTENT` for content
+    that is JSON null, else the content."""
+    if instance is None:
+        return None
+    content = instance.content
+    return NULL_STORED_CONTENT if content is None else content
+
+
 def narrow_of(view):
     """`scrud_django.core.workflow.workflow_check`'s ``narrow`` for `view`
-    (``None``: no view): one check asking each ``IsAuthorized`` permission of
-    the view (`rbac_permissions_of`, read again each time it is asked, as
-    `reading_content` makes it read the content)
-    ``has_context_permission(request, view, body, rbac_context)``. All must
-    allow. An ``IsAuthorized`` subclass can therefore refuse a transition,
-    never grant one the policy refuses: its ``obj`` here is the request body
-    as the writer sent it (a check written for stored fields, such as an
-    owner, would read the writer's claim)."""
+    (``None``: no view): a single check that allows only when every
+    ``IsAuthorized`` permission of the view allows, each asked
+    ``has_context_permission(request, view, body, rbac_context)``. The
+    permissions are fetched anew (`rbac_permissions_of`, through
+    `reading_content`) each time the check runs. An ``IsAuthorized``
+    subclass can therefore refuse a transition, never grant one the policy
+    refuses: its ``obj`` here is the request body as the writer sent it (a
+    check written for stored fields, such as an owner, would read the
+    writer's claim)."""
 
     def narrow(request, body, rbac_context):
         return all(
@@ -238,7 +258,7 @@ class WorkflowValidator:
             core_workflow.workflow_check(
                 request,
                 type_iri=resource_type.type_uri,
-                prior=instance.content if instance is not None else None,
+                prior=prior_of(instance),
                 proposed=data,
                 narrow=narrow_of(view_of(context)),
                 readable=readable,
@@ -280,7 +300,7 @@ class WorkflowValidator:
         return core_workflow.errors_hidden_unless_readable(
             workflow_policy,
             request,
-            instance.content if instance is not None else None,
+            prior_of(instance),
             lambda: self.stored_resource_readable(request, instance, context),
         )
 
@@ -323,8 +343,9 @@ class WorkflowValidator:
     def transition_for(self, workflow_policy, data, instance, entering=False):
         """`scrud_django.core.workflow.transition_for` from the stored
         `instance` (``None`` for a create)."""
-        prior = instance.content if instance is not None else None
-        return core_workflow.transition_for(workflow_policy, data, prior, entering)
+        return core_workflow.transition_for(
+            workflow_policy, data, prior_of(instance), entering
+        )
 
     def authorize(
         self, workflow_policy, transition_data, rbac_context, context, data=None
