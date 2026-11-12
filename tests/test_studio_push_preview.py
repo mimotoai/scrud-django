@@ -93,6 +93,12 @@ def test_changed_fields_treats_empty_values_as_equal():
     # 0 and False are values, not empty.
     assert changed({"order": 0}, {"order": None}) == ["order"]
     assert changed({"x": False}, {}) == ["x"]
+    # JSON's false and 0 (or true and 1) differ, though Python's == says not,
+    # nested too; 1 and 1.0 are the same JSON number.
+    assert changed({"x": 0}, {"x": False}) == ["x"]
+    assert changed({"x": True}, {"x": 1}) == ["x"]
+    assert changed({"x": {"y": [1]}}, {"x": {"y": [True]}}) == ["x"]
+    assert changed({"x": {"y": [1]}}, {"x": {"y": [1.0]}}) == []
     # A field on one side only, and sorted.
     assert changed({"b": 1, "a": 1}, {"b": 2, "c": 3}) == ["a", "b", "c"]
     # Nothing on one side: every field of the other (a create or a delete).

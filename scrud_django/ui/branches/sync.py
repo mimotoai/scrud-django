@@ -504,20 +504,32 @@ def _empty(value) -> bool:
     return value is None or value == ""
 
 
+def _same(a, b) -> bool:
+    """Whether `a` and `b` are the same JSON value. Python's ``==`` says
+    ``0 == False`` and ``1 == True``; JSON's booleans are not numbers."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(map(_same, a, b))
+    return a == b
+
+
 def changed_fields(before, after) -> list[str]:
     """The names of the fields on which the rows `before` and `after` of a
-    change differ, sorted. An empty value (null, ``""``, or a missing field)
-    equals any other empty value; a field on one side only counts when it is
-    not empty. A change with no row on one side (a create has no ``before``
-    of its own, a deletion no ``after``) differs on every field of the other
-    row."""
+    change differ (as JSON values: ``0`` is not ``false``), sorted. An empty
+    value (null, ``""``, or a missing field) equals any other empty value; a
+    field on one side only counts when it is not empty. A change with no row
+    on one side (a create has no ``before`` of its own, a deletion no
+    ``after``) differs on every field of the other row."""
     if before is None or after is None:
         row = after if before is None else before
         return sorted(row or {})
     return sorted(
         name
         for name in before.keys() | after.keys()
-        if before.get(name) != after.get(name)
+        if not _same(before.get(name), after.get(name))
         and not (_empty(before.get(name)) and _empty(after.get(name)))
     )
 
