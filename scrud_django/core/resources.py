@@ -14,8 +14,11 @@ answer as it answers access errors.
 
 A requirement's ``access.AnyOf`` is DRF's ``|`` of the object checks only:
 DRF's ``OR`` also asks each option's request check beside its object check,
-which a neutral front end, whose requirement is `GrantsLeaf` entries, has no
-need of. A DRF view keeps its own checks (``check_object_permissions``).
+which these functions do not (but `allowed_methods`, which asks
+``has_permission`` of each option). A neutral front end asks a
+requirement's request checks itself, ``has_permission`` of each leaf, a
+`HookLeaf`'s included (a type's checks of the body). A DRF view keeps its
+own checks (``check_object_permissions``).
 """
 
 import copy
@@ -116,8 +119,8 @@ def readable_content(read, content, requirement, *, grants=True, permission=None
 
 
 def _readable_content(read, content, requirement, *, grants=True, permission=None):
-    """`readable_content` without its guard: the DRF views' (``ReadableMixin
-    .object_readable``), whose requirement is empty or hooks only for a view
+    """`readable_content` without its guard: the DRF views'
+    (``ListValidatorsMixin.object_readable``), whose requirement is empty or hooks only for a view
     with no ``IsAuthorized``, which then reads as readable, as scoped-rbac's
     ``is_readable`` has it (a refusal by its other permissions stays a
     403)."""

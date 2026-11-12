@@ -1173,12 +1173,12 @@ back with `instance=7` again.
 `scrud_django.core.writes.create` and `update` pass no `type_iri` or `recheck`
 to `save_checked`, which the DRF views thread from their own overrides
 (`resource_type_iri_for`, the post-save recheck). A front end other than DRF
-(the ninja one of phase 3) that needs either must thread them itself or call
-`save_checked` directly; with `create` and `update` it checks the saved
+(the front end of ninja phase 3) that needs either must thread them itself or
+call `save_checked` directly; with `create` and `update` it checks the saved
 resource against the resource type's own URI only. Test: in
 `tests/test_core_writes.py`, write through `core.create` a resource whose
-type's `type_iri` differs from the `ResourceType.type_uri` the checks name, and
-assert the post-save check asks the former; today it asks the latter.
+type's `type_iri` differs from the `ResourceType.type_uri` the checks name,
+and assert the post-save check asks the former; today it asks the latter.
 
 <a id="core-allowed-methods-existence-leak"></a>
 ## core-allowed-methods-existence-leak: `core.allowed_methods` takes a loaded item
@@ -1210,8 +1210,8 @@ the core's answer with DRF's `|`.
 
 `core.resources.ITEM_METHODS` (GET, PUT, DELETE) and `LIST_METHODS` (GET,
 POST) are constants, so `allowed_methods` lists them for a computed type too,
-which serves GET and HEAD only. Phase 3 should take the methods a route serves
-as an argument. Test: in `tests/test_core_resources.py`, call
+which serves GET and HEAD only. Ninja phase 3 should take the methods a route
+serves as an argument. Test: in `tests/test_core_resources.py`, call
 `allowed_methods` for a computed type's item as a user granted every method;
 assert only GET, HEAD and OPTIONS.
 
@@ -1261,26 +1261,30 @@ error, the same resources, the same `Allow`).
 <a id="core-paging-key-first"></a>
 ## core-paging-key-first: the list's paging and MySQL key-first hint are still DRF's
 
-Spec §1.2 puts the list's ordering and the MySQL key-first paging (a page
-found among the keys, then its rows read by key, so that a large JSON row
-does not overflow MySQL's `sort_buffer_size`, error 1038) in the core
-(`list_queryset`). They are still in DRF's pagination class
+The ninja front-end design
+(`docs/superpowers/specs/2026-11-11-ninja-front-end-design.md`, §1.2) puts the
+list's ordering and the MySQL key-first paging (a page found among the keys,
+then its rows read by key, so that a large JSON row does not overflow MySQL's
+`sort_buffer_size`, error 1038) in the core (`list_queryset`). They are still
+in DRF's pagination class
 (`scrud_django.paginations.StandardResultsSetPagination.paginate_queryset`;
 the order is `Resource.Meta.ordering`), so a front end that pages
-`readable_queryset` itself on MySQL would sort whole rows. Move the
-key-first page into `core.lists` and have the DRF class call it. Test: in
+`readable_queryset` itself on MySQL would sort whole rows. Move the key-first
+page into `core.lists` and have the DRF class call it. Test: in
 `tests/test_core_lists.py`, page `readable_queryset` through the new core
 function on MySQL with a row over `sort_buffer_size` (as
-`tests/test_ui_branch_large_rows.py` builds one; see `mysql-sort-buffer`);
-it should return the page in key order without error 1038.
+`tests/test_ui_branch_large_rows.py` builds one; see `mysql-sort-buffer`); it
+should return the page in key order without error 1038.
 
 <a id="studio-computed-to-compute"></a>
 ## studio-computed-to-compute: the studio's computed types still register a viewset class
 
-Spec §1.4 moves the studio's computed types to the neutral `compute=` hook,
-but `scrud_django/ui/studio/computed.py` (`studio_computed_type_urls`, line
-629) still registers each with `viewset_class=`, so a non-DRF front end gets
-no content for them. Test: in `tests/test_studio_computed.py`, assert that
+The ninja front-end design
+(`docs/superpowers/specs/2026-11-11-ninja-front-end-design.md`, §1.4) moves
+the studio's computed types to the neutral `compute=` hook, but
+`scrud_django/ui/studio/computed.py` (`studio_computed_type_urls`) still
+registers each with `viewset_class=`, so a non-DRF front end gets no content
+for them. Test: in `tests/test_studio_computed.py`, assert that
 `core.types.type_options(slug).compute` is set for each slug of
 `STUDIO_COMPUTED_TYPES` (it is `None` today).
 

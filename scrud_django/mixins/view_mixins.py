@@ -686,10 +686,14 @@ class ListValidatorsMixin:
 
         The view's requirement (`requirement_of`, built as a GET of the
         detail route has it) is asked through
-        `scrud_django.core.resources.readable_content`, the grants for
+        `scrud_django.core.resources._readable_content`, the grants for
         ``http.GET`` on the type the view names
-        (``resource_type_iri_for``); a view with none (`NotNeutral`: DRF's
-        ``~`` over an ``IsAuthorized``) asks its permissions itself."""
+        (``resource_type_iri_for``): the unguarded helper, not the guarded
+        ``readable_content``, as a view with no ``IsAuthorized`` has no
+        grants to ask (its requirement is empty, or its type's hooks only,
+        and reads as readable, as scoped-rbac's ``is_readable`` has it). A
+        view with no requirement (`NotNeutral`: DRF's ``~`` over an
+        ``IsAuthorized``) asks its permissions itself."""
         grants = isinstance(self, AccessControlledAPIView)
         with (
             _not_checking_write(),
@@ -1160,10 +1164,16 @@ class ResourceViewMixin(
         """The block in which a check of `request` runs: for a write the
         workflow check covers (`checks_workflow`: the view's ``create`` or
         ``update`` action), with the ``scrud_workflow`` operator allowing
-        (the workflow check decides the transition); with `authorized` (the
-        post-save check), only once the workflow check has authorized the
-        write. Anywhere else (an ``@action`` of the view included)
-        ``scrud_workflow`` refuses."""
+        (the workflow check decides the transition); with `authorized`, only
+        once the workflow check has authorized the write. Anywhere else (an
+        ``@action`` of the view included) ``scrud_workflow`` refuses.
+
+        Nothing on the DRF path calls it with `authorized` but
+        `recheck_saved`, itself no longer called: the post-save check runs
+        in `scrud_django.core.writes.save_checked`, inside
+        ``authorizing_write(covered=self.checks_workflow(request),
+        authorized=True)``, so an override of this method does not reach it
+        (nor a DELETE's every-context check of a ``WorkflowPolicy``)."""
         return authorizing_write(
             request, covered=self.checks_workflow(request), authorized=authorized
         )
@@ -1411,9 +1421,10 @@ class ResourceViewMixin(
         (`scrud_django.core.writes.save_checked`, given the view's queryset,
         `serialized_policy_save` and `check_post_save_permissions`): a
         reserved context is a 400 and `check_post_save_permissions` a 403
-        (run with ``scrud_workflow`` allowing only once the workflow check has
-        authorized the write, `write_checks`), either rolling the write
-        back. The request was authorized by the context its body names; this
+        (run by the core inside ``authorizing_write``, covered by
+        `checks_workflow`: ``scrud_workflow`` allows only once the workflow
+        check has authorized the write; `write_checks` is not called),
+        either rolling the write back. The request was authorized by the context its body names; this
         checks where the resource actually landed (scoped-rbac's ``SaveCheck``).
         `instance` is the resource an update replaces (``None`` for a create).
         Returns the saved resource as read back.

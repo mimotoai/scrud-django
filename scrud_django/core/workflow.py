@@ -95,7 +95,8 @@ def check_policy_is_unique(content, pk=None):
     `content` (of the resource `pk`, ``None`` for a create) when another
     stored policy for its type applies in one of its contexts. Run by
     `validate_policy_write`, and again after the save under
-    `lock_workflow_policy_type` (``ResourceViewMixin.save_checked``), so that
+    `lock_workflow_policy_type`
+    (`scrud_django.core.writes.serialized_policy_save`), so that
     of two concurrent writes the second is refused."""
     resource_type = content.get("resource_type")
     contexts = rbac_contexts_of(content)

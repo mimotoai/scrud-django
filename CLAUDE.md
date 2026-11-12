@@ -34,13 +34,17 @@ for the pieces they call (requirements and grants, the workflow check, body
 checks, list queries and validators, the save and post-save checks, URLs)
 and map its `ScrudException`s and access errors to DRF's
 (`exceptions.as_drf`, `drf_error`). The facade in `core/resources.py`
-(`load_for_read`, `allowed_methods`, `readable_queryset`, `create`, `update`,
-`validate_write`, `check_object`) is not called by DRF; only the
-`tests/test_core_*` modules pin it. Its functions that decide access by a
-requirement (`load_for_read`, `object_readable`, `allowed_methods`,
-`check_object`, `create`, `update`, `destroy`) refuse one that asks no grants
-(`ImproperlyConfigured`). Put new domain logic in `core`, not in a view;
-per-type hooks are `core.types.TypeOptions`.
+(`load_for_read`, `object_readable`, `readable_content`, `allowed_methods`,
+`check_object`, `readable_queryset`, `validate_write`, `create`, `update`,
+`destroy`) is not called by DRF (which calls the unguarded
+`_readable_content` and `found_item`); only the `tests/test_core_*` modules
+pin it. Its functions that decide access by a requirement (`load_for_read`,
+`object_readable`, `readable_content`, `allowed_methods`, `check_object`,
+`create`, `update`, `destroy` without a `check`, and `core.writes`'
+`save_checked` without a `recheck`) refuse one that asks no grants
+(`ImproperlyConfigured`), an `AnyOf` with an option of hooks only included.
+Put new domain logic in `core`, not in a view; per-type hooks are
+`core.types.TypeOptions`.
 
 ## Commands
 

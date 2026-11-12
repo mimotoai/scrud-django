@@ -391,13 +391,17 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   adapters that delegate to it for the pieces they call, and every status,
   header and body they answer is unchanged, but for the overrides listed
   under Upgrading. The item-level facade of `scrud_django.core.resources`
-  (`load_for_read`, `allowed_methods`, `readable_queryset`, `create`,
-  `update`, `validate_write`, `check_object`) is not called by the DRF views;
-  its tests (`tests/test_core_*`) pin it against the DRF routes. Those of its
+  (`load_for_read`, `object_readable`, `readable_content`,
+  `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
+  `create`, `update`, `destroy`) is not called by the DRF views; its tests
+  (`tests/test_core_*`) pin it against the DRF routes. Those of its
   functions that decide access by a requirement (`load_for_read`,
-  `object_readable`, `allowed_methods`, `check_object`, `create`, `update`,
-  `destroy`) raise `ImproperlyConfigured` for one that asks no grants
-  (empty, or a type's hooks only) rather than allow every requester, and
+  `object_readable`, `readable_content`, `allowed_methods`, `check_object`,
+  `create`, `update`, `destroy` without a `check`, and
+  `scrud_django.core.writes.save_checked` without a `recheck`) raise
+  `ImproperlyConfigured` for one that asks no grants (empty, a type's hooks
+  only, or an `AnyOf` with an option of hooks only) rather than allow every
+  requester, and
   `validate_write` requires a `requirement=`, whose type's hooks are the
   checks that may refuse a transition. The workflow check hides an update's
   workflow error unless its caller says the stored resource is readable

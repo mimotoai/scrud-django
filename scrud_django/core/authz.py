@@ -73,8 +73,8 @@ _WORKFLOW_AUTHORIZED = "_scrud_workflow_authorized"
 
 
 def current_transition():
-    """The name of the workflow transition the ``WorkflowValidator`` is
-    authorizing (``"__INITIALIZE__"`` for a creation, ``"__SAME_STATE__"`` for
+    """The name of the workflow transition the workflow check
+    (`scrud_django.core.workflow.workflow_check`) is authorizing (``"__INITIALIZE__"`` for a creation, ``"__SAME_STATE__"`` for
     an update that stays in its state, else the policy's name for it), while
     it asks the request's policy and the view's ``IsAuthorized`` permissions
     (``has_context_permission``) about it; ``None`` anywhere else: outside
@@ -240,13 +240,14 @@ def authorized_transitions(resource, configuration):
       ``authorized_transitions``, and denies every other one, including where
       no workflow policy applies (there is no transition), so a grant
       conditioned on it allows no write there.
-    - In the other checks of a POST or PUT that the workflow check covers (a
-      scrud resource viewset's ``create`` or ``update`` action,
-      ``ResourceViewMixin.checks_workflow``: its request check, a PUT's object
+    - It allows in the other checks of a write the workflow check covers
+      (``authorizing_write``'s ``covered``; on DRF,
+      ``ResourceViewMixin.checks_workflow``: a scrud resource viewset's
+      ``create`` or ``update`` action): its request check, a PUT's object
       check, and the post-save check of a write the workflow check
-      authorized) it allows: the
-      transition is only known to the `WorkflowValidator`, which authorizes it
-      in every context of the write; otherwise the workflow validation would
+      authorized. The transition is only known to the workflow check
+      (`scrud_django.core.workflow.workflow_check`), which authorizes it in
+      every context of the write; otherwise the workflow validation would
       run twice.
     - Anywhere else it denies: a GET or HEAD (detail or list), a DELETE, a
       write the workflow check does not cover (e.g. a POST ``@action`` of a

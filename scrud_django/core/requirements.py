@@ -199,9 +199,10 @@ def asks_grants(requirement) -> bool:
 
 def require_grants(requirement, caller: str) -> None:
     """Raise ``ImproperlyConfigured`` unless `requirement` asks the grants
-    (`asks_grants`): an empty requirement, or one of hooks only, would
-    allow every requester, so `caller` (a public entry point of the core)
-    refuses it rather than fail open. Give it a `GrantsLeaf` of the type
+    (`asks_grants`): an empty requirement, one of hooks only, or one whose
+    ``AnyOf`` has an option of hooks only, would allow every requester, so
+    `caller` (a public entry point of the core) refuses it rather than fail
+    open. Give it a `GrantsLeaf` of the type
     (`scrud_django.core.types.requirement_for`)."""
     if not asks_grants(requirement):
         raise ImproperlyConfigured(

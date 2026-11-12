@@ -124,8 +124,10 @@ def drf_errors(func):
 class ScrudException(Exception):
     """A scrud error. It is neutral: no DRF. Its ``detail`` is a message
     carrying the class's ``default_code`` (`ErrorText`), so that any exception
-    handler can render it and read its code. DRF's views wrap it in an
-    ``APIException`` (`as_drf`) before any handler sees it. The RFC 7807 body
+    handler can render it and read its code. scrud's DRF views wrap it in an
+    ``APIException`` (`as_drf`, through ``ScrudErrorsMixin``; a function view
+    through `drf_errors`) before a handler sees it; `scrud_exception_handler`
+    accepts either. The RFC 7807 body
     `scrud_exception_handler` sends is `response_data`, which may say more."""
 
     status_code = 500
