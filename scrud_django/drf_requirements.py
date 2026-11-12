@@ -1,7 +1,9 @@
 """A DRF view's permissions as a neutral requirement
 (`scrud_django.core.requirements`): each ``IsAuthorized`` of
 ``view.rbac_requirement()`` becomes a `ViewLeaf`, keeping DRF's ``|`` as
-``access.AnyOf``. DRF's ``~`` over an ``IsAuthorized`` has no neutral form
+``access.AnyOf``, and the hooks registered for the view's type
+(`type_hook_leaf`, a `scrud_django.core.types.HookLeaf`) are required beside
+them. DRF's ``~`` over an ``IsAuthorized`` has no neutral form
 (`NotNeutral`): such a view keeps its view-based path in
 `scrud_django.filters`."""
 
@@ -16,6 +18,7 @@ from scoped_rbac import access
 from scoped_rbac.permissions import IsAuthorized
 
 from scrud_django.core.requirements import _entries, requirement_leaves
+from scrud_django.core.types import HookLeaf
 from scrud_django.permissions import (
     _leaves,
     checks_read_content,
@@ -175,16 +178,34 @@ class ViewLeaf:
         return self._leaf().has_context_permission(request, self.view, obj, context)
 
 
+def type_hook_leaf(view):
+    """The `HookLeaf` of the hooks registered for `view`'s type
+    (``view.type_hooks()``, ``ResourceViewMixin``'s), or ``None`` for none
+    (or a view without ``type_hooks``)."""
+    type_hooks = getattr(view, "type_hooks", None)
+    return type_hooks() if callable(type_hooks) else None
+
+
+def hook_leaves(view):
+    """`type_hook_leaf` of `view` as a requirement's entries: ``[]`` for
+    none."""
+    leaf = type_hook_leaf(view)
+    return [] if leaf is None else [leaf]
+
+
 def leaves_of(requirement, view):
     """`requirement` (``IsAuthorized`` permissions of `view` and
     ``access.AnyOf`` alternatives, as ``rbac_requirement`` gives them) with
-    each permission as its `ViewLeaf`; each ``AnyOf`` option is a list."""
+    each permission as its `ViewLeaf`; each ``AnyOf`` option is a list. A
+    `HookLeaf` (`hook_leaves`) is kept as it is."""
 
     def leaf(entry):
         if isinstance(entry, access.AnyOf):
             return access.AnyOf(
                 [[leaf(e) for e in _entries(option)] for option in entry.options]
             )
+        if isinstance(entry, HookLeaf):
+            return entry
         return ViewLeaf(entry, view)
 
     return [leaf(entry) for entry in requirement]
@@ -192,13 +213,15 @@ def leaves_of(requirement, view):
 
 def permissions_of(requirement):
     """`requirement` (`leaves_of`'s) with each `ViewLeaf` as its
-    permission."""
+    permission; a `HookLeaf` is kept as it is."""
 
     def permission(entry):
         if isinstance(entry, access.AnyOf):
             return access.AnyOf(
                 [[permission(e) for e in _entries(option)] for option in entry.options]
             )
+        if isinstance(entry, HookLeaf):
+            return entry
         return entry.permission
 
     return [permission(entry) for entry in requirement]
@@ -227,7 +250,8 @@ def requirement_of(view):
     (`leaves_of`). Raises `NotNeutral` when DRF's ``~`` wraps an
     ``IsAuthorized`` among them: ``rbac_requirement`` leaves out exactly
     those, so a view whose ``_rbac_permissions()`` (every ``IsAuthorized``)
-    holds more than its requirement has one under ``~``."""
+    holds more than its requirement has one under ``~``. The hooks
+    registered for the view's type follow them (`hook_leaves`)."""
     rbac_requirement = getattr(view, "rbac_requirement", None)
     if callable(rbac_requirement):
         requirement = list(rbac_requirement())
@@ -241,4 +265,4 @@ def requirement_of(view):
         if any(map(_negates_is_authorized, permissions)):
             raise NotNeutral(f"{type(view).__name__}: ~ over an IsAuthorized")
         requirement = [p for p in permissions if isinstance(p, IsAuthorized)]
-    return leaves_of(requirement, view)
+    return leaves_of(requirement, view) + hook_leaves(view)

@@ -46,8 +46,14 @@ from scrud_django.core.lists import (  # noqa: F401  (re-exported)
     list_validators_needed,
 )
 from scrud_django.core.lists import list_etag as core_list_etag
+from scrud_django.core.types import has_hooks, hook_leaf, type_options
 from scrud_django.core.workflow import authorizing_write
-from scrud_django.drf_requirements import NotNeutral, ViewLeaf, requirement_of
+from scrud_django.drf_requirements import (
+    NotNeutral,
+    ViewLeaf,
+    hook_leaves,
+    requirement_of,
+)
 from scrud_django.exceptions import (
     RbacContextInvalidError,  # noqa: F401  (re-exported)
     RequestBodyMissingError,  # noqa: F401  (re-exported)
@@ -725,10 +731,25 @@ class ListValidatorsMixin:
         try:
             super().check_object_permissions(request, obj)
             self.check_grants_in_each_context(request, obj)
+            self.check_object_hooks(request, obj)
         except (PermissionDenied, NotAuthenticated):
             if not self.object_readable(request, obj):
                 raise Http404 from None
             raise
+
+    def type_hooks(self):
+        """The `scrud_django.core.types.HookLeaf` of the hooks registered for
+        the view's type, or ``None`` for none (`ResourceViewMixin`'s)."""
+        return None
+
+    def check_object_hooks(self, request, obj):
+        """Refuse (``permission_denied``) `obj` (the object as the object
+        check gets it) unless the object checks registered for the view's
+        type (`type_hooks`) allow it. They only narrow: the view's own
+        checks ran first."""
+        hooks = self.type_hooks()
+        if hooks is not None and not hooks.has_object_permission(request, obj):
+            self.permission_denied(request)
 
     def check_grants_in_each_context(self, request, obj):
         """Refuse (``permission_denied``) the resource `obj` (its content)
@@ -1167,6 +1188,37 @@ class ResourceViewMixin(
         with self.write_checks(request):
             super().check_object_permissions(request, obj)
 
+    def type_hooks(self):
+        """The `scrud_django.core.types.HookLeaf` of the ``checks`` and
+        ``object_checks`` registered for the view's type
+        (``resource_type_name``; ``registration.json_resource_type``),
+        naming the type as the view's permissions do
+        (``resource_type_iri``), or ``None`` when it has none (the type is
+        then not read). It takes part in the view's requirement
+        (`scrud_django.drf_requirements.requirement_of`), its request check
+        (`check_request_hooks`), object check (`check_object_hooks`), list,
+        post-save check (`_post_save_requirement`) and workflow check
+        (``scrud_django.validators.narrow_of``)."""
+        if not has_hooks(type_options(self.resource_type_name)):
+            return None
+        return hook_leaf(
+            self.get_resource_type(),
+            self.resource_type_name,
+            type_iri=getattr(self, "resource_type_iri", None),
+        )
+
+    def check_request_hooks(self, request):
+        """Refuse (``permission_denied``) a PUT or POST the view serves
+        unless the checks registered for its type (`type_hooks`) allow it in
+        each context its body writes. They only narrow: the view's own
+        checks ran first."""
+        hooks = self.type_hooks()
+        if hooks is None or request.method not in self.allowed_methods:
+            return
+        body = request.data if request.method in ("PUT", "POST") else None
+        if not hooks.has_permission(request, body):
+            self.permission_denied(request)
+
     def get_resource_type(self):
         """The view's resource type, read once per request and database (the
         filter, the serializer, the validators, the Links and the write all
@@ -1314,11 +1366,12 @@ class ResourceViewMixin(
         """`get_post_save_permissions`, each reading the content
         (`reading_content`), as the requirement
         `scrud_django.core.writes.check_post_save` checks a saved resource
-        against: every one must allow it."""
+        against: every one must allow it, and so must the hooks registered
+        for the view's type (`type_hooks`)."""
         return [
             _PostSaveLeaf(permission, self)
             for permission in reading_content(self.get_post_save_permissions())
-        ]
+        ] + hook_leaves(self)
 
     def check_every_context_of_policy(self, request, instance):
         """For a ``WorkflowPolicy``, deny (403) an update or delete unless the
@@ -1527,6 +1580,7 @@ class ResourceViewMixin(
                 check_body(request, self)
             with self.write_checks(request):
                 super().check_permissions(request)
+            self.check_request_hooks(request)
         except ScrudException as exc:
             # DRF's browsable API calls this outside ``dispatch`` and
             # catches ``APIException``s only.

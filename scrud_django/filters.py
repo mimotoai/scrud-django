@@ -45,6 +45,7 @@ from scrud_django.drf_requirements import (  # noqa: F401  (re-exported)
     NotNeutral,
     as_detail_read,
     as_detail_route,
+    hook_leaves,
     leaves_of,
     overrides_object_checks,
     permissions_of,
@@ -183,7 +184,8 @@ def object_check_requirement(view):
 
 def _view_object_check_requirement(view):
     """`object_check_requirement` of a view with no neutral requirement
-    (`NotNeutral`)."""
+    (`NotNeutral`), with the hooks registered for its type beside it
+    (`hook_leaves`)."""
     rbac_requirement = getattr(view, "rbac_requirement", None)
     if callable(rbac_requirement):
         requirement = list(rbac_requirement())
@@ -191,9 +193,10 @@ def _view_object_check_requirement(view):
         permissions = getattr(view, "get_permissions", None)
         permissions = permissions() if callable(permissions) else []
         requirement = [p for p in permissions if isinstance(p, IsAuthorized)]
+    hooks = hook_leaves(view)
     if any(map(overrides_object_checks, _requirement_leaves(requirement))):
-        return requirement
-    return None
+        return requirement + hooks
+    return hooks or None
 
 
 def meets_object_checks(requirement, request, view, check):

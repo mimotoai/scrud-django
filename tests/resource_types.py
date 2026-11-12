@@ -100,3 +100,94 @@ def json_resource_types():
             viewset_class=TodoSummaryViewSet,
         ),
     ]
+
+
+HOOKED_NOTE_TYPE_URI = "tests://HookedNote"
+SUMMARY_TYPE_URI = "tests://Summary"
+
+HOOKED_NOTE_SCHEMA = {
+    "$id": HOOKED_NOTE_TYPE_URI,
+    "$schema": "http://json-schema.org/draft-04/schema",
+    "title": "Hooked note",
+    "description": "A note whose type declares hooks at registration.",
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "secret": {"type": "boolean"},
+        "rbac_context": {"type": "string"},
+    },
+}
+
+HOOKED_NOTE_CONTEXT = {
+    "ex": "http://example.org/hooked#",
+    "openteams": "http://api.openteams.com/json-ld/",
+    "@type": "http://example.org/hooked#HookedNote",
+    "rbac_context": {"@id": "openteams:RBACContext"},
+    "text": {"@id": "ex:text"},
+    "secret": {"@id": "ex:secret"},
+}
+
+SUMMARY_SCHEMA = {
+    "$id": SUMMARY_TYPE_URI,
+    "$schema": "http://json-schema.org/draft-04/schema",
+    "title": "Summary",
+    "description": "Computed by the type's registered compute hook.",
+    "type": "object",
+    "properties": {"key": {"type": "string"}, "user": {"type": "string"}},
+}
+
+SUMMARY_CONTEXT = {
+    "ex": "http://example.org/summary#",
+    "@type": "http://example.org/summary#Summary",
+    "key": {"@id": "ex:key"},
+    "user": {"@id": "ex:user"},
+}
+
+
+def deny_context_b(request, resource_type, body, context):
+    """A type's check: nothing is written in the context "b"."""
+    return context != "b"
+
+
+def hide_secret(request, resource_type, obj):
+    """A type's object check: a note marked ``secret`` is refused."""
+    return obj.get("secret") is not True
+
+
+def summarize(request, key):
+    """A computed type's ``compute``: the key and who asked."""
+    return {"key": key, "user": request.user.get_username()}
+
+
+def hooked_note_type(**hooks):
+    """The routes of ``hooked-notes``, registered with `hooks` (the
+    registration's ``checks``, ``object_checks``, ``content_filter``)."""
+    return registration.json_resource_type(
+        resource_type_uri=HOOKED_NOTE_TYPE_URI,
+        revision="1",
+        slug="hooked-notes",
+        schema_func=lambda: HOOKED_NOTE_SCHEMA,
+        context_func=lambda: HOOKED_NOTE_CONTEXT,
+        **hooks,
+    )
+
+
+def hooked_resource_types():
+    """The types registered with per-type hooks (`tests.test_type_hooks`):
+    ``hooked-notes`` (a check refusing the context "b", an object check
+    hiding secret notes, and the content filter) and the computed
+    ``summaries`` (a ``compute`` hook, no viewset class)."""
+    return [
+        hooked_note_type(
+            checks=(deny_context_b,),
+            object_checks=(hide_secret,),
+            content_filter=True,
+        ),
+        registration.computed_resource_type(
+            resource_type_uri=SUMMARY_TYPE_URI,
+            slug="summaries",
+            schema_func=lambda: SUMMARY_SCHEMA,
+            context_func=lambda: SUMMARY_CONTEXT,
+            compute=summarize,
+        ),
+    ]

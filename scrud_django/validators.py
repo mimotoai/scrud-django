@@ -21,6 +21,7 @@ from scrud_django.core.writes import (  # noqa: F401  (moved; re-exported)
     compile_json_schema,
     refuse_remote_ref,
 )
+from scrud_django.drf_requirements import type_hook_leaf
 from scrud_django.exceptions import (
     JsonSchemaInvalidError,  # noqa: F401  (re-exported)
     JsonValidationError,  # noqa: F401  (re-exported)
@@ -57,7 +58,9 @@ def narrow_of(view):
     subclass can therefore refuse a transition, never grant one the policy
     refuses: its ``obj`` here is the request body as the writer sent it (a
     check written for stored fields, such as an owner, would read the
-    writer's claim)."""
+    writer's claim). The checks registered for the view's type
+    (`scrud_django.drf_requirements.type_hook_leaf`) follow it, each its own
+    narrow check, ``check(request, resource_type, body, rbac_context)``."""
 
     def narrow(request, body, rbac_context):
         return all(
@@ -65,7 +68,8 @@ def narrow_of(view):
             for leaf in reading_content(rbac_permissions_of(view))
         )
 
-    return (narrow,)
+    hooks = type_hook_leaf(view)
+    return (narrow,) if hooks is None else (narrow, *hooks.narrow)
 
 
 def view_of(context):

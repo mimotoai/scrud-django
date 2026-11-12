@@ -28,7 +28,7 @@ from scrud_django.permissions import current_transition
 from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
 
 from .models import Note
-from .resource_types import json_resource_types
+from .resource_types import hooked_resource_types, json_resource_types
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -37,6 +37,8 @@ urlpatterns = [
     path("", include(hsr_urls())),
 ]
 urlpatterns.extend(registration.resource_types(*json_resource_types()))
+# The types registered with per-type hooks (tests.test_type_hooks).
+urlpatterns.extend(registration.resource_types(*hooked_resource_types()))
 
 # The partner profiles list again, served by ResourceViewSetGenericFilter, whose
 # list filters on query parameters.
@@ -1069,6 +1071,44 @@ urlpatterns.extend(
                 resource_type_name="json-ld",
             ),
             name="denying-json-ld-detail",
+        ),
+    ]
+)
+
+
+class RefusingIsAuthorized(IsAuthorized):
+    """Refuses everything: under DRF's ``~`` it allows everything, and leaves
+    its view with no neutral requirement (``NotNeutral``)."""
+
+    def has_permission(self, request, view):
+        return False
+
+    def has_object_permission(self, request, view, obj):
+        return False
+
+
+class NotNeutralResourceViewSet(ResourceViewSet):
+    permission_classes = [IsAuthorized & ~RefusingIsAuthorized]
+
+
+# The hooked notes (tests.test_type_hooks) read by a view with no neutral
+# requirement: the type's hooks apply on its view-based path too.
+urlpatterns.extend(
+    [
+        path(
+            "not-neutral/hooked-notes/",
+            NotNeutralResourceViewSet.as_view(
+                {"get": "list", "head": "list"}, resource_type_name="hooked-notes"
+            ),
+            name="not-neutral-hooked-notes-list",
+        ),
+        path(
+            "not-neutral/hooked-notes/<slug>/",
+            NotNeutralResourceViewSet.as_view(
+                {"get": "retrieve", "head": "retrieve"},
+                resource_type_name="hooked-notes",
+            ),
+            name="not-neutral-hooked-notes-detail",
         ),
     ]
 )
