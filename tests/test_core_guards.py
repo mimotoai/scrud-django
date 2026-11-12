@@ -121,48 +121,54 @@ def test_asks_grants():
         "check_object",
     ],
 )
+@pytest.mark.parametrize("requester", ["anonymous", "superuser"])
 @test_context
-def test_reads_refuse_a_requirement_asking_no_grants(call, kind):
+def test_reads_refuse_a_requirement_asking_no_grants(call, kind, requester):
+    # A superuser, whom the grants allow everything, is refused too: the
+    # guard raises, not a refusal by the grants.
     resource_type = json_ld()
     stored = ResourceRegistration.register({"rbac_context": "a"}, "json-ld")
     requirement = no_grants(resource_type)[kind]
-    anonymous = AnonymousUser()
+    if requester == "superuser":
+        user = user_with(superuser=True)
+    else:
+        user = AnonymousUser()
     calls = {
         "load_for_read": lambda: resources.load_for_read(
-            request_of("GET", anonymous),
+            request_of("GET", user),
             resource_type,
             stored.pk,
             requirement=requirement,
             method="GET",
         ),
         "load_for_read (missing)": lambda: resources.load_for_read(
-            request_of("PUT", anonymous),
+            request_of("PUT", user),
             resource_type,
             stored.pk + 1000,
             requirement=requirement,
             method="PUT",
         ),
         "allowed_methods (item)": lambda: resources.allowed_methods(
-            request_of("OPTIONS", anonymous), resource_type, stored, requirement
+            request_of("OPTIONS", user), resource_type, stored, requirement
         ),
         "allowed_methods (list)": lambda: resources.allowed_methods(
-            request_of("OPTIONS", anonymous), resource_type, None, requirement
+            request_of("OPTIONS", user), resource_type, None, requirement
         ),
         "allowed_methods (list requirement)": lambda: resources.allowed_methods(
-            request_of("OPTIONS", anonymous),
+            request_of("OPTIONS", user),
             resource_type,
             None,
             [GrantsLeaf(JSON_LD)],
             list_requirement=requirement,
         ),
         "readable_content": lambda: resources.readable_content(
-            request_of("GET", anonymous), stored.content, requirement
+            request_of("GET", user), stored.content, requirement
         ),
         "object_readable": lambda: resources.object_readable(
-            request_of("GET", anonymous), resource_type, stored, requirement
+            request_of("GET", user), resource_type, stored, requirement
         ),
         "check_object": lambda: resources.check_object(
-            request_of("GET", anonymous),
+            request_of("GET", user),
             resource_type,
             stored,
             requirement,

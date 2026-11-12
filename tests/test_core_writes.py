@@ -339,3 +339,89 @@ def test_drf_post_save_check_is_the_views_own(admin_login):  # noqa: F811
     put_profile("post-save-refusing", stored, {"name": refused, "rbac_context": "a"})
     Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
     assert Resource.objects.get(pk=stored.pk).content["name"] == "x"
+
+
+def may_stay_json_ld():
+    """A role reading JSON-LD resources, and updating one only by a
+    transition that stays in its state."""
+    return {
+        "http.GET": [JSON_LD],
+        "http.PUT": {
+            JSON_LD: {
+                "condition": {
+                    "operator": "scrud_workflow",
+                    "authorized_transitions": ["__SAME_STATE__"],
+                }
+            }
+        },
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_needs_the_workflow_check_for_a_scrud_workflow_grant():
+    # The post-save check lets a grant conditioned on scrud_workflow allow
+    # only a write the workflow check authorized on the same request.
+    reverse("json-ld-list")
+    workflow_policy_resource_type()
+    ResourceRegistration.register(
+        {
+            "resource_type": JSON_LD,
+            "rbac_context": "a",
+            "initial_states": {"any": "true"},
+            "states": {},
+            "transitions": {},
+        },
+        "workflow-policies",
+    )
+    stored = ResourceRegistration.register({"x": 1, "rbac_context": "a"}, "json-ld")
+    rtype = stored.resource_type
+    user = user_with((may_stay_json_ld(), "a"))
+    body = {"x": 2, "rbac_context": "a"}
+    requirement = [GrantsLeaf(JSON_LD)]
+    with pytest.raises(access.AccessDenied):
+        update(
+            request_by("put", user),
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            body,
+            requirement=requirement,
+            using="default",
+        )
+    row = Resource.objects.get(pk=stored.pk)
+    assert (row.content, row.etag) == (stored.content, stored.etag)
+    request = request_by("put", user)
+    validate_write(
+        request,
+        rtype,
+        body,
+        stored=row,
+        requirement=requirement,
+        readable=lambda: True,
+    )
+    saved = update(request, rtype, row, body, requirement=requirement, using="default")
+    assert Resource.objects.get(pk=stored.pk).content == body == saved.content
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_cannot_move_a_resource_where_the_writer_may_not_write():
+    rtype = profiles_type()
+    stored = ResourceRegistration.register(
+        {"name": "old", "rbac_context": "a"}, "partner-profiles"
+    )
+    writer = user_with(({"http.GET": [PP], "http.PUT": [PP]}, "a"))
+    with pytest.raises(access.AccessDenied):
+        update(
+            request_by("put", writer),
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            {"name": "moved", "rbac_context": "b"},
+            requirement=[GrantsLeaf(PP)],
+            using="default",
+        )
+    row = Resource.objects.get(pk=stored.pk)
+    assert (row.content, row.etag) == (
+        {"name": "old", "rbac_context": "a"},
+        stored.etag,
+    )

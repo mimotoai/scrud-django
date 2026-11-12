@@ -572,3 +572,55 @@ def test_facade_check_refuses_writes_from_a_stored_context():
         "OPTIONS",
         "HEAD",
     ]
+
+
+@pytest.mark.django_db
+def test_facade_honours_a_types_hooks():
+    from django.http import Http404
+    from django.test import RequestFactory
+    from scoped_rbac import access
+
+    from scrud_django.core import resources
+
+    hooked = get_resource_type_for("hooked-notes")
+    requirement = requirement_for(hooked, "hooked-notes")
+    secret, shown = note("hidden", "a", secret=True), note("shown", "a")
+    writer = assign_role(WRITER, "a", "b")
+
+    def request_of(method):
+        request = getattr(RequestFactory(), method.lower())("/")
+        request.user = writer
+        return request
+
+    # The object check hides a secret note, whatever the grants allow.
+    for method in ("GET", "PUT", "DELETE"):
+        with pytest.raises(Http404):
+            resources.load_for_read(
+                request_of(method),
+                hooked,
+                secret.pk,
+                requirement=requirement,
+                method=method,
+            )
+    listed = resources.readable_queryset(request_of("GET"), hooked, requirement)
+    assert list(listed.values_list("pk", flat=True)) == [shown.pk]
+    # The post-save check asks the checks where the note landed: "b" is
+    # refused, and the create rolled back.
+    before = Resource.objects.count()
+    with pytest.raises(access.AccessDenied):
+        resources.create(
+            request_of("POST"),
+            hooked,
+            {"text": "refused", "rbac_context": "b"},
+            requirement=requirement,
+            using="default",
+        )
+    assert Resource.objects.count() == before
+    created = resources.create(
+        request_of("POST"),
+        hooked,
+        {"text": "allowed", "rbac_context": "a"},
+        requirement=requirement,
+        using="default",
+    )
+    assert Resource.objects.get(pk=created.pk).content["text"] == "allowed"
