@@ -10,11 +10,15 @@ any write in the context "b" (`deny_context_b`), hides a note marked
 hooks only refuse: the users below hold grants that would allow everything
 the hooks refuse."""
 
+import datetime
 import json
 
 import pytest
+from django.conf import settings
+from django.test import override_settings
 from django.urls import reverse
-from django.utils.http import quote_etag
+from django.utils import timezone
+from django.utils.http import parse_http_date, quote_etag
 from rest_framework import status
 from safetydance_django.test import *  # noqa: F403, F401
 
@@ -40,6 +44,7 @@ from scrud_django.views import ResourceViewSet
 from .fixtures import assign_role
 from .rbac_defaults import TYPE_URI_LIST_PARTNER_PROFILES, TYPE_URI_PARTNER_PROFILES
 from .resource_types import (
+    CHECKED_NOTE_TYPE_URI,
     HOOKED_NOTE_TYPE_URI,
     deny_context_b,
     hide_secret,
@@ -53,6 +58,8 @@ HOOKED_LIST = collection_type_uri_for(HOOKED)
 ALL_METHODS = ("http.GET", "http.POST", "http.PUT", "http.DELETE")
 WRITER = {method: [HOOKED, HOOKED_LIST] for method in ALL_METHODS}
 READER = {"http.GET": [HOOKED, HOOKED_LIST]}
+CHECKED = CHECKED_NOTE_TYPE_URI
+CHECKED_READER = {"http.GET": [CHECKED, collection_type_uri_for(CHECKED)]}
 PP_READER = {"http.GET": [TYPE_URI_PARTNER_PROFILES, TYPE_URI_LIST_PARTNER_PROFILES]}
 JSON = "application/json"
 WORKFLOW_ERROR = "http://api.openteams.com/http-problem/workflow-transition-invalid"
@@ -284,3 +291,124 @@ def test_requirement_for():
     (only,) = requirement_for(todos, "todos")
     assert isinstance(only, GrantsLeaf)
     assert ResourceContentFilter not in ResourceViewSet.filter_backends
+
+
+@pytest.mark.django_db
+@test_context
+def test_checks_alone_leave_lists_to_the_grants():
+    # checks= govern writes: a type registered with them alone lists as a
+    # hookless type does (by SQL, not object by object: no cap) and keeps
+    # its removal stamps in the list's Last-Modified.
+    an_hour_ago = timezone.now() - datetime.timedelta(hours=1)
+    notes = [
+        ResourceRegistration.register(
+            {"text": text, "rbac_context": "a"}, "checked-notes"
+        )
+        for text in ("one", "two", "three")
+    ]
+    Resource.objects.filter(pk__in=[n.pk for n in notes]).update(
+        modified_at=an_hour_ago
+    )
+    capped = dict(settings.SCOPED_RBAC, CONDITIONAL_LIST_MAX_ROWS=1)
+    with override_settings(SCOPED_RBAC=capped):
+        Given.http.force_authenticate(assign_role(CHECKED_READER, "a"))
+        When.http.get(reverse("checked-notes-list"))
+        assert listed_texts() == ["one", "three", "two"]
+        before = Http.response["Last-Modified"]
+        ResourceRegistration.delete("checked-notes", str(notes[0].pk))
+        When.http.get(reverse("checked-notes-list"), HTTP_IF_MODIFIED_SINCE=before)
+        assert listed_texts() == ["three", "two"]
+        newest = parse_http_date(Http.response["Last-Modified"])
+        assert newest > parse_http_date(before)
+
+
+@pytest.mark.django_db
+@test_context
+def test_checks_still_refuse_saving_in_a_context():
+    # The post-save check asks the type's checks in each context the saved
+    # resource is in (has_context_permission), whatever the object checks.
+    from rest_framework.test import APIRequestFactory
+    from scoped_rbac import access
+
+    from scrud_django.core.writes import check_post_save
+
+    checked = get_resource_type_for("checked-notes")
+    (_, hooks) = requirement_for(checked, "checked-notes")
+    assert not hooks.overrides_object_checks
+    request = APIRequestFactory().post("/")
+    request.user = assign_role({"http.POST": [CHECKED]}, "a", "b")
+    in_b = Resource(resource_type=checked, content={"text": "x", "rbac_context": "b"})
+    in_a = Resource(resource_type=checked, content={"text": "x", "rbac_context": "a"})
+    check_post_save(request, checked, in_a, requirement_for(checked, "checked-notes"))
+    with pytest.raises(access.AccessDenied):
+        check_post_save(
+            request, checked, in_b, requirement_for(checked, "checked-notes")
+        )
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_array_body_is_answered_as_for_a_hookless_type():
+    Given.http.force_authenticate(assign_role(WRITER, "a", "b"))
+    post_note([{"text": "listed", "rbac_context": "a"}])
+    hooked = Http.response.status_code
+    hooked_note_type()  # registered again, with no hooks
+    post_note([{"text": "listed", "rbac_context": "a"}])
+    assert Http.response.status_code == hooked != 500, Http.response.content
+
+
+@pytest.mark.django_db
+@test_context
+def test_object_check_hides_from_delete():
+    secret = note("hidden", "a", secret=True)
+    Given.http.force_authenticate(assign_role(WRITER, "a"))
+    When.http.delete(
+        reverse("hooked-notes-detail", args=[secret.pk]),
+        HTTP_IF_MATCH=quote_etag(secret.etag),
+    )
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+    assert Resource.objects.filter(pk=secret.pk).exists()
+
+
+def reads_text(request, resource_type, body, context):
+    """A check that reads the body's fields."""
+    return body.get("text") != "refused"
+
+
+@pytest.mark.django_db
+def test_hook_leaf_request_check_and_grants():
+    from django.test import RequestFactory
+    from scoped_rbac.policy import Permission
+
+    from scrud_django.core.requirements import grants_allow
+
+    hooked = get_resource_type_for("hooked-notes")
+    hooks = HookLeaf(hooked, TypeOptions(checks=(reads_text, deny_context_b)))
+    factory = RequestFactory()
+    post, patch = factory.post("/"), factory.patch("/")
+    for request in (post, patch):
+        request.user = assign_role(WRITER, "a", "b")
+        assert hooks.has_permission(request, {"text": "x", "rbac_context": "a"})
+        assert not hooks.has_permission(request, {"text": "x", "rbac_context": "b"})
+        assert not hooks.has_permission(request, {"text": "refused"})
+        # A body that is no object is left to the body's validation.
+        assert hooks.has_permission(request, [{"text": "refused"}])
+    # It grants nothing, and asks no grants: a user with none is refused
+    # by the grants leaf beside it alone.
+    nobody = factory.get("/")
+    nobody.user = assign_role({}, "a")
+    content = {"text": "x", "rbac_context": "a"}
+    permission = Permission("http.GET", HOOKED)
+    assert grants_allow([hooks], nobody, content, permission)
+    assert not grants_allow([GrantsLeaf(HOOKED), hooks], nobody, content, permission)
+
+
+@pytest.mark.django_db
+@test_context
+def test_options_allow_is_the_grants():
+    # scrudful's body-less copies of an OPTIONS (access.checks_allow) are not
+    # given to the hooks: Allow names what the grants allow.
+    Given.http.force_authenticate(assign_role(WRITER, "a"))
+    When.http.options(reverse("hooked-notes-list"))
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert "POST" in Http.response["Allow"]

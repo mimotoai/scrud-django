@@ -172,12 +172,33 @@ def hooked_note_type(**hooks):
     )
 
 
+CHECKED_NOTE_TYPE_URI = "tests://CheckedNote"
+
+CHECKED_NOTE_SCHEMA = dict(
+    HOOKED_NOTE_SCHEMA,
+    **{"$id": CHECKED_NOTE_TYPE_URI, "title": "Checked note"},
+)
+
+CHECKED_NOTE_CONTEXT = dict(
+    HOOKED_NOTE_CONTEXT, **{"@type": "http://example.org/hooked#CheckedNote"}
+)
+
+
 def hooked_resource_types():
     """The types registered with per-type hooks (`tests.test_type_hooks`):
     ``hooked-notes`` (a check refusing the context "b", an object check
     hiding secret notes, and the content filter) and the computed
-    ``summaries`` (a ``compute`` hook, no viewset class)."""
+    ``summaries`` (a ``compute`` hook, no viewset class); ``checked-notes``
+    has the check only."""
     return [
+        registration.json_resource_type(
+            resource_type_uri=CHECKED_NOTE_TYPE_URI,
+            revision="1",
+            slug="checked-notes",
+            schema_func=lambda: CHECKED_NOTE_SCHEMA,
+            context_func=lambda: CHECKED_NOTE_CONTEXT,
+            checks=(deny_context_b,),
+        ),
         hooked_note_type(
             checks=(deny_context_b,),
             object_checks=(hide_secret,),

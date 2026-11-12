@@ -821,15 +821,20 @@ def json_resource_type(
     of `context_resource, context_path, context_uri`.
 
     Its hooks (`scrud_django.core.types.TypeOptions`), honoured by every front
-    end, can only refuse what the grants allow:
+    end, can only refuse what the grants allow, superusers' included (as an
+    ``IsAuthorized`` subclass refuses them):
 
     - `checks`: callables ``(request, resource_type, body, context) -> bool``,
-      asked of a write in each context it writes, of a saved resource in
-      each of its contexts and of a workflow transition in each context it is
-      authorized in;
+      which govern writes: asked of a write in each context it writes, of a
+      saved resource in each of its contexts and of a workflow transition in
+      each context it is authorized in. They never hide a read: a type that
+      wants both registers both;
     - `object_checks`: callables ``(request, resource_type, obj) -> bool``,
-      asked of a resource's content wherever its object is checked; a
-      refused read hides it (404);
+      which govern reads and objects: asked of a resource's content wherever
+      its object is checked (the detail route of every method, each listed
+      resource, the saved resource). A refused one is hidden (404), and
+      writing a resource they would hide is refused (403, after the save,
+      which is rolled back);
     - `content_filter`: the list filters on its query parameters (on DRF,
       ``ResourceContentFilter`` among the type's view's ``filter_backends``,
       `content_filtered_viewset`).

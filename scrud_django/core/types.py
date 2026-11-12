@@ -10,7 +10,7 @@ what the grants allow, never allow what they refuse.
 """
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from scoped_rbac import access
@@ -44,6 +44,10 @@ class TypeOptions:
     compute: Callable | None = None
 
 
+# The methods whose body the request check reads (the scrud views' own
+# ``BODY_METHODS``).
+BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
 _OPTIONS: dict[str, TypeOptions] = {}
 _OPTIONS_LOCK = threading.Lock()
 
@@ -72,20 +76,29 @@ class HookLeaf(Leaf):
     """The `Leaf` of a type's ``checks`` and ``object_checks`` (`options`),
     each called with `resource_type`:
 
-    - ``has_permission``: a PUT or POST (not scrudful's body-less copy of an
-      OPTIONS, ``access.checks_allow``) must be allowed by every check in
-      each context its body writes (`rbac_contexts_of`); any other request
-      is;
+    - ``has_permission``: a POST, PUT or PATCH (`BODY_METHODS`; not
+      scrudful's body-less copy of an OPTIONS, ``access.checks_allow``)
+      whose body is a JSON object must be allowed by every check in each
+      context it writes (`rbac_contexts_of`); any other request is (a body
+      that is no object is left to the body's validation, as for a type
+      without hooks);
     - ``has_object_permission``: every object check;
     - ``has_context_permission``: every check.
 
-    It grants nothing, so there are no grants to ask beside it
-    (``reads_each_context`` is true): the requirement it is in holds the
-    grants (`GrantsLeaf`, or a DRF view's own permissions). It reads a
-    resource's contexts from its content (`resource_contexts`), and names
-    `type_iri` (by default the type's ``type_uri``)."""
+    ``checks`` govern writes (the request check, the post-save check, which
+    asks ``has_context_permission`` in each context of the saved resource
+    whatever ``overrides_object_checks`` says, and a workflow transition's
+    ``narrow``); ``object_checks`` govern reads and objects: only they
+    make a list check its objects one by one (``overrides_object_checks``).
+
+    It grants nothing (``grants_nothing``), so no grants are asked for it,
+    and none beside it (``reads_each_context`` is true): the requirement it
+    is in holds the grants (`GrantsLeaf`, or a DRF view's own permissions).
+    It reads a resource's contexts from its content (`resource_contexts`),
+    and names `type_iri` (by default the type's ``type_uri``)."""
 
     reads_each_context = True
+    grants_nothing = True
 
     def __init__(self, resource_type, options: TypeOptions, *, type_iri=None):
         self.resource_type = resource_type
@@ -97,7 +110,7 @@ class HookLeaf(Leaf):
 
     @property
     def overrides_object_checks(self):
-        return bool(self.options.object_checks or self.options.checks)
+        return bool(self.options.object_checks)
 
     @property
     def narrow(self):
@@ -116,9 +129,11 @@ class HookLeaf(Leaf):
         return resource_contexts(obj)
 
     def has_permission(self, request, body):
-        if request.method not in ("PUT", "POST") or access.checks_allow(request):
+        if request.method not in BODY_METHODS or access.checks_allow(request):
             return True
         content = access.contexts_body(body)
+        if not isinstance(content, Mapping):
+            return True
         return all(
             self.has_context_permission(request, content, context)
             for context in rbac_contexts_of(content)

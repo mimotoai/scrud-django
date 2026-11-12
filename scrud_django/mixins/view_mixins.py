@@ -1208,14 +1208,17 @@ class ResourceViewMixin(
         )
 
     def check_request_hooks(self, request):
-        """Refuse (``permission_denied``) a PUT or POST the view serves
-        unless the checks registered for its type (`type_hooks`) allow it in
-        each context its body writes. They only narrow: the view's own
-        checks ran first."""
-        hooks = self.type_hooks()
-        if hooks is None or request.method not in self.allowed_methods:
+        """Refuse (``permission_denied``) a POST, PUT or PATCH the view
+        serves (not scrudful's body-less copy of an OPTIONS,
+        ``access.checks_allow``) unless the checks registered for its type
+        (`type_hooks`) allow it in each context its body writes. They only
+        narrow: the view's own checks ran first."""
+        if request.method not in self.allowed_methods or access.checks_allow(request):
             return
-        body = request.data if request.method in ("PUT", "POST") else None
+        hooks = self.type_hooks()
+        if hooks is None:
+            return
+        body = request.data if request.method in BODY_METHODS else None
         if not hooks.has_permission(request, body):
             self.permission_denied(request)
 

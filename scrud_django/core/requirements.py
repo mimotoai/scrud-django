@@ -217,6 +217,9 @@ def _grants_meet(requirement, request, obj, permission_of):
     def meets(entry):
         if isinstance(entry, access.AnyOf):
             return any(all(map(meets, _entries(option))) for option in entry.options)
+        if getattr(entry, "grants_nothing", False):
+            # A leaf that only refuses (a type's hooks): no grants to ask.
+            return True
         return reads(entry)
 
     return all(map(meets, requirement))
