@@ -770,26 +770,12 @@ class ListValidatorsMixin:
         ):
             return
         with checks_read_content(self):
-            try:
-                requirement = requirement_of(self)
-            except NotNeutral:
-                requirement = None
-            if requirement is None:
-                if all(
-                    map(reads_each_context, reading_content(get_rbac_permissions()))
-                ):
-                    return
-                allowed = grants_allow(
-                    self, request, obj, view_permission(request, self)
-                )
-            else:
-                try:
-                    core_resources.check_grants_in_each_context(
-                        request, obj, requirement, view_permission(request, self)
-                    )
-                    allowed = True
-                except access.AccessDenied:
-                    allowed = False
+            # Whether to ask is the view's ``get_rbac_permissions``' call (an
+            # override may add or drop a leaf); what is asked is its
+            # requirement's grants (`grants_allow`, the core's).
+            if all(map(reads_each_context, reading_content(get_rbac_permissions()))):
+                return
+            allowed = grants_allow(self, request, obj, view_permission(request, self))
         if not allowed:
             # DRF's own refusal (403, or 401 for the anonymous user).
             self.permission_denied(request)

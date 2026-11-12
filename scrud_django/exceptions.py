@@ -1,9 +1,24 @@
 from django.urls import NoReverseMatch, reverse
 
-try:  # DRF's own class when it is installed, so that ``isinstance`` holds.
+try:  # DRF's own classes when it is installed, so that ``isinstance`` holds.
+    from rest_framework.exceptions import APIException as _APIException
     from rest_framework.exceptions import ErrorDetail as _ErrorBase
+
+    class ScrudAPIException(_APIException):
+        """The ``APIException`` that carries a scrud error (`as_drf`) through
+        DRF's views and exception handlers, as ``.scrud``. Defined once, at
+        import; ``None`` when DRF is not installed."""
+
+        def __init__(self, scrud):
+            self.scrud = scrud
+            self.status_code = scrud.status_code
+            self.default_detail = scrud.default_detail
+            self.default_code = scrud.default_code
+            super().__init__(detail=scrud.detail, code=scrud.default_code)
+
 except ImportError:  # scrud imports without DRF
     _ErrorBase = str
+    ScrudAPIException = None
 
 
 class ErrorText(_ErrorBase):
@@ -29,7 +44,7 @@ def scrud_exception_handler(exc, context):
 
     from scrud_django.renderers import DOCUMENT_RENDERERS
 
-    if isinstance(exc, _drf_scrud_class()):
+    if isinstance(exc, ScrudAPIException):
         exc = exc.scrud
     if not isinstance(exc, ScrudException):
         return scoped_rbac_exception_handler(exc, context)
@@ -50,34 +65,12 @@ def scrud_exception_handler(exc, context):
     return response
 
 
-_SCRUD_API_EXCEPTION = None
-
-
-def _drf_scrud_class():
-    """``ScrudAPIException``: the ``APIException`` that carries a scrud error
-    through DRF's views and exception handlers. Defined on first use, so that
-    this module imports without DRF."""
-    global _SCRUD_API_EXCEPTION
-    if _SCRUD_API_EXCEPTION is None:
-        from rest_framework.exceptions import APIException
-
-        class ScrudAPIException(APIException):
-            def __init__(self, scrud):
-                self.scrud = scrud
-                self.status_code = scrud.status_code
-                self.default_detail = scrud.default_detail
-                self.default_code = scrud.default_code
-                super().__init__(detail=scrud.detail, code=scrud.default_code)
-
-        _SCRUD_API_EXCEPTION = ScrudAPIException
-    return _SCRUD_API_EXCEPTION
-
-
 def as_drf(exc):
     """`exc` (a `ScrudException`) as the ``APIException`` DRF's views and
     handlers know: its status code, its detail (an ``ErrorDetail`` of the
-    message and the error's ``default_code``), and `exc` itself as ``.scrud``."""
-    return _drf_scrud_class()(exc)
+    message and the error's ``default_code``), and `exc` itself as ``.scrud``
+    (`ScrudAPIException`)."""
+    return ScrudAPIException(exc)
 
 
 def drf_errors(func):
@@ -117,6 +110,11 @@ class ScrudException(Exception):
 
     def get_codes(self):
         return self.detail.code
+
+    def get_full_details(self):
+        """The message and its code, as DRF's ``APIException`` gives them for
+        a message: ``{"message": ..., "code": ...}``."""
+        return {"message": self.detail, "code": self.detail.code}
 
     def response_data(self, context):
         """Return RFC 7807 response data"""

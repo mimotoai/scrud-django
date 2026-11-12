@@ -354,3 +354,36 @@ def test_scrud_error_is_not_api_exception():
     assert wrapped.detail.code == "json_invalid"
     assert wrapped.status_code == 400
     assert wrapped.scrud is error
+
+
+def test_scrud_error_full_details_are_drfs():
+    # A scrud error answers ``get_full_details`` as it did as an
+    # ``APIException``: its message and its code.
+    from scrud_django.exceptions import as_drf
+
+    error = JsonValidationError(
+        fastjsonschema.JsonSchemaValueException(
+            "data must be object", value=5, name="data", rule="type"
+        )
+    )
+    details = error.get_full_details()
+    assert details == {"message": "data must be object", "code": "json_invalid"}
+    assert details == as_drf(error).get_full_details()
+    assert isinstance(details["message"], ErrorDetail)
+    assert details["message"].code == "json_invalid"
+
+
+def test_drf_wrapper_class_is_defined_once_at_import():
+    # ``as_drf`` wraps every scrud error in the one ``ScrudAPIException``,
+    # defined when the module is imported, not on first use.
+    from rest_framework.exceptions import APIException
+
+    from scrud_django import exceptions
+
+    assert issubclass(exceptions.ScrudAPIException, APIException)
+    first = exceptions.as_drf(WorkflowPolicyInvalidError("first"))
+    second = exceptions.as_drf(
+        JsonValidationError(fastjsonschema.JsonSchemaValueException("x"))
+    )
+    assert type(first) is type(second) is exceptions.ScrudAPIException
+    assert not hasattr(exceptions, "_drf_scrud_class")
