@@ -2248,6 +2248,9 @@ itself (`data-studio-editor`) and, under it, the drafts the preview left out
   [Studio data as computed resources](#studio-data-as-computed-resources)),
   never built by the script. After the override (a 201) the panes are
   fetched again and the new own row opens.
+- **A component's editor** opens with a line `<engine> · mode: <mode>`; the
+  `mode` there is the component's own `mode` field (the mode it renders in),
+  not whether the editor is editable.
 - **An item with an `href`** is loaded with an htmx GET of it into the
   editor, with `Scrud-UI-Scope: studio studio-editor`. It is sent with
   `Scrud-UI-Mode: view` when T is published or the item is not T's own (its
