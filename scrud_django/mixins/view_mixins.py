@@ -32,12 +32,16 @@ from scrudful.conditional import (
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django import ui
+from scrud_django.core.bodies import (
+    MARIADB_MAX_BODY_DEPTH,  # noqa: F401
+    MAX_BODY_DEPTH,  # noqa: F401
+    body_depth,  # noqa: F401
+    body_has_nul,  # noqa: F401
+    max_body_depth,  # noqa: F401
+)
+from scrud_django.core.bodies import check_body as core_check_body
 from scrud_django.core.workflow import authorizing_write
 from scrud_django.exceptions import (
-    RbacContextInvalidError,
-    RequestBodyMissingError,
-    RequestBodyNulError,
-    RequestBodyTooDeepError,
     ResourceInUseError,
     ScrudException,
     as_drf,
@@ -52,9 +56,7 @@ from scrud_django.filters import (
     readable_removal,
 )
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
-from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
-from scrud_django.models.resource import MAX_CONTEXT_BYTES, context_fits
 from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.permissions import (
     _not_checking_write,
@@ -158,122 +160,19 @@ BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 WORKFLOW_VIEW_ACTIONS = {"create": "POST", "update": "PUT"}
 
 
-def check_body_present(request, view=None):
-    """Raise `RequestBodyMissingError` (400) for a POST, PUT or PATCH that
-    `view` serves (one it does not is left to its 405) whose body DRF does not
-    read: an empty one, or one without a ``Content-Length`` (0 or absent, as
-    for a chunked body). DRF reads it as ``{}``: a POST would store an empty
-    resource, a PUT wipe the stored content. A body that is not JSON is left
-    to the parser (415, or 400)."""
+def check_body(request, view=None):
+    """Check the body of a POST, PUT or PATCH that `view` serves (one it does
+    not is left to its 405) with `scrud_django.core.bodies.check_body`. The
+    body is *present* when DRF reads one: not an empty one, nor one without a
+    ``Content-Length`` (0 or absent, as for a chunked body), which DRF would
+    read as ``{}``. A body that is not JSON is left to the parser (415, or
+    400)."""
     if request.method not in BODY_METHODS:
         return
     if view is not None and request.method not in view.allowed_methods:
         return
-    if request.stream is None:
-        raise RequestBodyMissingError()
-
-
-# The deepest a POST, PUT or PATCH body may be nested (objects and arrays,
-# the outermost one counted): far deeper than resources need, far below what
-# Python code walking it recursively can follow (about 800 levels), and as
-# deep as MySQL's JSON type stores.
-MAX_BODY_DEPTH = 100
-
-# The deepest MariaDB stores a resource's content: its JSON column's
-# ``JSON_VALID`` check refuses a document nested 32 levels or more.
-MARIADB_MAX_BODY_DEPTH = 31
-
-
-def max_body_depth():
-    """The deepest a body may be nested: `MAX_BODY_DEPTH`, or
-    `MARIADB_MAX_BODY_DEPTH` when resources are written to MariaDB
-    (``router.db_for_write(Resource)``), which could not store a deeper one
-    (a 500)."""
-    from django.db import connections
-
-    connection = connections[router.db_for_write(Resource)]
-    if connection.vendor == "mysql" and connection.mysql_is_mariadb:
-        return MARIADB_MAX_BODY_DEPTH
-    return MAX_BODY_DEPTH
-
-
-def body_depth(data, limit=None):
-    """How deeply `data` (a parsed JSON body) nests objects and arrays (0 for
-    a scalar), counted without recursion; past `limit`, ``limit + 1``."""
-    deepest, stack = 0, [(data, 1)]
-    while stack:
-        node, depth = stack.pop()
-        if isinstance(node, Mapping):
-            items = node.values()
-        elif isinstance(node, (list, tuple)):
-            items = node
-        else:
-            continue
-        deepest = max(deepest, depth)
-        if limit is not None and deepest > limit:
-            return deepest
-        stack.extend((item, depth + 1) for item in items)
-    return deepest
-
-
-def check_body_depth(request):
-    """Raise `RequestBodyTooDeepError` (400) for a POST, PUT or PATCH body
-    nested deeper than `max_body_depth`."""
-    if request.method not in BODY_METHODS:
-        return
-    limit = max_body_depth()
-    if body_depth(request.data, limit) > limit:
-        raise RequestBodyTooDeepError(limit)
-
-
-def body_has_nul(data):
-    """Whether a string of `data` (a parsed JSON body), a key or a value at
-    any depth, holds a NUL character; walked without recursion."""
-    stack = [data]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, str):
-            if "\x00" in node:
-                return True
-        elif isinstance(node, Mapping):
-            stack.extend(node.keys())
-            stack.extend(node.values())
-        elif isinstance(node, (list, tuple)):
-            stack.extend(node)
-    return False
-
-
-def check_body_nul(request):
-    """Raise `RequestBodyNulError` (400) for a POST, PUT or PATCH body with a
-    NUL character in any string (`body_has_nul`): PostgreSQL's ``jsonb``
-    cannot hold one, so it is refused on every database alike."""
-    if request.method not in BODY_METHODS:
-        return
-    if body_has_nul(request.data):
-        raise RequestBodyNulError()
-
-
-def check_written_contexts(request):
-    """Raise `RbacContextInvalidError` (400) when a POST, PUT or PATCH body's
-    ``rbac_context`` is an empty list, which would store the resource in no
-    context (only a superuser could read it; a server-side
-    ``ResourceRegistration`` may still store one), or names a context longer
-    than its rows hold (`context_fits`: 2048 bytes of UTF-8)."""
-    if request.method not in ("POST", "PUT", "PATCH"):
-        return
-    data = request.data
-    if not isinstance(data, Mapping):
-        return
-    context = data.get("rbac_context")
-    if isinstance(context, (list, tuple)) and not context:
-        raise RbacContextInvalidError(
-            "rbac_context must name at least one context; leave it out (or give "
-            '"") for the default context.'
-        )
-    if not all(context_fits(c) for c in rbac_contexts_of(data)):
-        raise RbacContextInvalidError(
-            f"An rbac_context may be at most {MAX_CONTEXT_BYTES} bytes long in UTF-8."
-        )
+    present = request.stream is not None
+    core_check_body(request.data if present else None, present=present)
 
 
 @contextmanager
@@ -1541,13 +1440,12 @@ class ResourceViewMixin(
         return Response(serializer.data)
 
     def check_permissions(self, request):
-        """Refuse an empty body (`check_body_present`) and a body whose
-        ``rbac_context`` cannot be stored (`check_written_contexts`), with
-        400, before scoped-rbac's request check (which would authorize an
-        empty body as ``{}`` and refuse an empty context list with 403 for
-        everyone), a body nested deeper than `max_body_depth`
-        (`check_body_depth`) and one with a NUL character in a string
-        (`check_body_nul`): they depend on the body alone. scoped-rbac's
+        """Refuse an empty body, a body whose ``rbac_context`` cannot be
+        stored, one nested deeper than `max_body_depth` and one with a NUL
+        character in a string (`check_body`), with 400, before scoped-rbac's
+        request check (which would authorize an empty body as ``{}`` and
+        refuse an empty context list with 403 for everyone): they depend on
+        the body alone. scoped-rbac's
         request check then reads the body itself (``request.data``). A method
         the view does not serve skips the body checks (its body is not
         parsed), so that it gets its 405 whatever its body, as scoped-rbac's
@@ -1561,10 +1459,7 @@ class ResourceViewMixin(
             if request.method in self.allowed_methods and not access.checks_allow(
                 request
             ):
-                check_body_present(request, self)
-                check_body_depth(request)
-                check_body_nul(request)
-                check_written_contexts(request)
+                check_body(request, self)
             with self.write_checks(request):
                 super().check_permissions(request)
         except ScrudException as exc:

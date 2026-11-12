@@ -1,5 +1,6 @@
-from rest_framework.reverse import reverse
 from scrudful.utils import join_links, link_content
+
+from scrud_django.core.urls import absolute_reverse
 
 
 def get_schema_uri_for(resource_type, request):
@@ -7,7 +8,7 @@ def get_schema_uri_for(resource_type, request):
     # prefer a local version to a remote version
     if resource_type.schema:
         schema = resource_type.schema
-        uri = reverse(
+        uri = absolute_reverse(
             schema.resource_type.route_name_detail(),
             args=[schema.id],
             request=request,
@@ -22,7 +23,7 @@ def get_context_uri_for(resource_type, request):
     # prefer a local version to a remote version
     if resource_type.context:
         context = resource_type.context
-        uri = reverse(
+        uri = absolute_reverse(
             context.resource_type.route_name_detail(),
             args=[context.id],
             request=request,
