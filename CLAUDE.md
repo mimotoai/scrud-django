@@ -20,6 +20,17 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
   under DRF's `AllowAny` default; keep it that way (`tests/test_authz.py`).
 - The combined exception handler is `scrud_django.exceptions.scrud_exception_handler`.
 
+## Architecture
+
+Domain logic (authorization requirements, workflow checks, bodies, URLs, list
+queries, writes, reads) lives in `scrud_django/core/`, which is framework
+neutral: it takes a plain Django request and imports nothing from
+`rest_framework`, `django_filters`, `scrudful.rest_framework` or scoped-rbac's
+DRF modules (`tests/test_core_imports.py` holds the deny list). The DRF views
+and mixins are adapters that delegate to it and map its `ScrudException`s and
+access errors to DRF's (`exceptions.as_drf`, `drf_error`). Put new domain
+logic in `core`, not in a view; per-type hooks are `core.types.TypeOptions`.
+
 ## Commands
 
 Python 3.13 is pinned in `.python-version`; CI covers 3.11-3.13, not 3.14 (the

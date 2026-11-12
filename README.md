@@ -192,6 +192,26 @@ list that filters on its query parameters (`?text=...`; with `scrud_django.ui`
 installed, its URL parameters `ui-branch`, `ui-branch-confirm`, `ui-scope`,
 `ui-mode` and `ui-safe` are not filters).
 
+Hooks on `json_resource_type`, honoured by every front end, narrow what the
+grants allow (they can only refuse, and refuse superusers too, as an
+`IsAuthorized` subclass does):
+
+- `checks`: callables `(request, resource_type, body, context) -> bool` that
+  govern **writes**: asked of a write in each context it writes, of the saved
+  resource in each of its contexts, and of a workflow transition in each
+  context it is authorized in. They never hide a read, and a type with only
+  `checks` lists by SQL; a type that wants both registers both.
+- `object_checks`: callables `(request, resource_type, obj) -> bool` that
+  govern **reads and objects**, asked of a resource's content wherever the
+  object is checked (the detail route of every method, each listed
+  resource). A refused resource is hidden (404). A write of a resource they
+  would hide is refused too (403, after the save, which is rolled back).
+- `content_filter=True`: the list filters on its query parameters. It is read
+  when the routes are built, so registering a slug again replaces the other
+  hooks but not an already built route's filter.
+
+Registering a slug again replaces the hooks registered for it before.
+
 Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
 `http.POST`, `http.PUT`, `http.DELETE`) and `http.GET` on its list type,
 `https://api.openteams.com/json-schema/ResourceCollection?contents_type=<type URI>`
@@ -433,6 +453,12 @@ user and applies no authorization of its own to the content: `compute` must ask
 the same checks the stored resources' views do. The type is registered, so a
 published branch's prefix claims its slug, and HTML negotiation renders it
 through the UI cascade as view-only content.
+
+Instead of subclassing, pass `compute=` to `computed_resource_type`: a
+callable `(request, key) -> Mapping` (raise `Http404` or `PermissionDenied`)
+that supplies the content for the default `ComputedResourceViewSet`. One of
+`compute=` and `viewset_class=` is needed; registering a slug again replaces
+its `compute`.
 
 ### Search (optional)
 

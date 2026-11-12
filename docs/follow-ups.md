@@ -1167,6 +1167,67 @@ template typed for `/items/0` of one instance is restored in the form for
 `/items/0`; assert it has the default template, and that the typed one comes
 back with `instance=7` again.
 
+<a id="core-write-no-type-iri-recheck"></a>
+## core-write-no-type-iri-recheck: `core.create` and `core.update` take no `type_iri` or `recheck`
+
+`scrud_django.core.writes.create` and `update` pass no `type_iri` or `recheck`
+to `save_checked`, which the DRF views thread from their own overrides
+(`resource_type_iri_for`, the post-save recheck). A front end other than DRF
+(the ninja one of phase 3) that needs either must thread them itself or call
+`save_checked` directly; with `create` and `update` it checks the saved
+resource against the resource type's own URI only. Test: in
+`tests/test_core_writes.py`, write through `core.create` a resource whose
+type's `type_iri` differs from the `ResourceType.type_uri` the checks name, and
+assert the post-save check asks the former; today it asks the latter.
+
+<a id="core-allowed-methods-existence-leak"></a>
+## core-allowed-methods-existence-leak: `core.allowed_methods` takes a loaded item
+
+`core.resources.allowed_methods` is given the item already loaded, so a front
+end that answers a missing item with a 404 before calling it tells a requester
+refused every method that the object does not exist. On the DRF route that
+requester gets `Allow: OPTIONS` for a missing and an existing object alike.
+The ninja front end must run the request-level step (`has_permission` of each
+method, as step 1 of `allowed_methods` does) before its lookup. Test: in
+`tests/test_core_resources.py`, OPTIONS the detail URL of a missing key as a
+user granted nothing on the type; assert 200 with `Allow: OPTIONS`, not 404,
+through the ninja route once it exists (the DRF route passes today).
+
+<a id="core-anyof-object-check-only"></a>
+## core-anyof-object-check-only: the core treats an `AnyOf` as an object check only
+
+For a DRF `|` of `IsAuthorized` subclasses, the core's neutral requirement
+(`AnyOf`) is satisfied through any option's object check, but DRF's `|` also
+asks each option's request check first. The two answer alike on the
+permissions in the suite (`tests/test_core_requirements.py`); an option whose
+request check refuses and whose object check allows would differ. Test: in
+`tests/test_core_requirements.py`, compose an option that refuses at the
+request level and allows on the object with one that allows both, and compare
+the core's answer with DRF's `|`.
+
+<a id="core-method-sets-hard-coded"></a>
+## core-method-sets-hard-coded: `ITEM_METHODS` and `LIST_METHODS` are fixed
+
+`core.resources.ITEM_METHODS` (GET, PUT, DELETE) and `LIST_METHODS` (GET,
+POST) are constants, so `allowed_methods` lists them for a computed type too,
+which serves GET and HEAD only. Phase 3 should take the methods a route serves
+as an argument. Test: in `tests/test_core_resources.py`, call
+`allowed_methods` for a computed type's item as a user granted every method;
+assert only GET, HEAD and OPTIONS.
+
+<a id="core-readable-queryset-stored-contexts"></a>
+## core-readable-queryset-stored-contexts: `readable_queryset` assumes leaves read stored contexts
+
+`core.lists.readable_queryset` and `list_last_modified` rely on a documented,
+unenforced precondition: no leaf of the requirement has a custom
+`contexts_for`, so every leaf reads a resource's stored contexts (the
+`ResourceContext` rows). A requirement with one would be filtered by the rows
+and not by what its `contexts_for` says. Add a guard (an error or the per-object
+path) before the ninja front end wires it up. Test: in
+`tests/test_core_lists.py`, build a requirement whose leaf overrides
+`contexts_for` and call `readable_queryset`; assert it raises or agrees with
+the detail route, where today it filters by the rows.
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>
