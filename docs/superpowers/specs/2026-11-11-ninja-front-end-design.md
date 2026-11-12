@@ -1,7 +1,7 @@
 # django-ninja front end — design
 
 Date: 2026-11-11
-Status: draft; awaiting builder check and owner approval
+Status: builder-checked; awaiting owner approval
 Builds on:
 - scrudful 0.10.1's `scrudful.ninja` (`ScrudfulRouter`, `scrudful`,
   `scrudful_create`, `scrudful_list`);
@@ -91,7 +91,8 @@ Each phase has its own implementation plan and its own merge requests.
   - A model API whose workflow check can be bypassed by an endpoint that forgot it.
 
   Each of these is worse than not shipping. The core must make the safe path the
-  easy one.
+  easy one: the toolkit's documented routes always include the check.
+  Unchecked saves are logged for now; whether to refuse them is issue #56.
 - **Editing upstream from this repo.** Changes scoped-rbac or scrudful need are
   made in their own repos and released there. Per CLAUDE.md, scrud-django only
   works around and records them.
@@ -270,13 +271,25 @@ A module `scrud_django.core.workflow` **(call)**:
   - `object_checks=`: callables `(request, rtype, obj) -> bool`;
   - `content_filter=True`: today's `ResourceViewSetGenericFilter`.
 - **Choosing between them (call):** on DRF, a type registered with
-  `viewset_class=` keeps that viewset. On ninja, `viewset_class=` is refused with
-  `ImproperlyConfigured` naming the neutral hooks.
+  `viewset_class=` keeps that viewset. The neutral `TypeSpec` (§3.1) has no
+  `viewset_class`, so ninja never sees one.
+- **Computed types (call):** a neutral `compute=` callable `(request, key) ->
+  content` on `computed_resource_type_spec`. `ComputedResourceViewSet.compute`
+  becomes a thin DRF adapter over the same callable. The studio's computed types
+  move to `compute=`.
+- **The UI and DRF-only authorization (call, fail closed).** UI pages read
+  through the core, never the viewset. So in DRF mode, the UI refuses to serve a
+  type registered with a custom `viewset_class` or with `IsAuthorized`
+  subclasses (a 404 page, and a `scrud_django.ui` system check warning naming
+  the type), unless the type also declares the neutral `checks=` and
+  `object_checks=`, or `ui_authorization="core"` to say the core's checks are
+  complete for it. The UI never shows more than the API, at the cost of making
+  such apps opt in.
 
 ## Phase 2 — the UI, separated from the API
 
-**Breaking (owner).** It ships in the same breaking release as phase 3
-**(call)**, so apps migrate once.
+**Breaking (owner).** It ships in the same release as phase 3, 0.16.0
+**(owner)**, so apps migrate once.
 
 ### 2.1 The API is JSON only
 - Resource routes stop negotiating `text/html`.
@@ -372,13 +385,30 @@ These are all re-tested at the new URLs:
 - **URLconfs:**
   - `scrud_django.urls` is the ninja API **(owner)**.
   - `scrud_django.drf.urls` is today's DRF URLconf, unchanged.
-- **Registration.** `registration.resource_types(...)` and
-  `json_resource_type(...)` return front-end-neutral route specs.
-  - `include()`'d under `scrud_django.urls`, they become ninja routers on the
-    same `NinjaAPI`.
-  - Under `scrud_django.drf.urls`, they become viewsets.
-  - The app chooses the front end by which URLconf it includes, not per type
-    **(call)**.
+- **Registration (call).** The front end is chosen per project, not per type,
+  by how the app builds its URLconf:
+  - **The registration API splits in two.**
+    - `registration.json_resource_type_spec(...)` and
+      `computed_resource_type_spec(...)` return a neutral `TypeSpec`. It holds
+      the arguments of today's functions, minus `viewset_class`.
+    - The existing `json_resource_type(...)`, `computed_resource_type(...)` and
+      `resource_types(...)` keep returning DRF `path()`s, unchanged, as the DRF
+      adapter's API. DRF apps' URLconfs keep working as they are.
+  - **ninja apps own one `NinjaAPI`, built by scrud.** The app writes
+    `api = scrud_django.ninja.api(types=[json_resource_type_spec(...), ...])`,
+    then `path("api/", api.urls)`.
+    - The factory adds the built-in types, scoped-rbac's role routes, `services/`
+      and the collection schema and context views. It calls
+      `install_error_handlers` before binding any router.
+    - It returns the `NinjaAPI`, so the app can `add_router` its own routers
+      (for example its own models, §3.4) before `api.urls` is read.
+  - **`scrud_django.urls` becomes `api(types=[]).urls`**, for apps with no types
+    of their own. An app with types replaces the include with its own `api(...)`.
+    Two scrud `NinjaAPI`s in one project need distinct `urls_namespace`s.
+  - **`scrud_django.drf.urls`** is today's `scrud_django.urls`.
+  - **Slug registry.** Registration, which runs at URLconf import on either
+    front end, also records each slug in a process-wide registry. The UI at `/`
+    claims the slugs in that registry.
 
 ### 3.2 The API
 - **One `NinjaAPI`** **(call)**, built by `scrud_django.ninja.api()`:
@@ -409,11 +439,19 @@ These are all re-tested at the new URLs:
 - **The type is looked up per request by slug,** as DRF does. Deferred
   registration (`register_or_defer`) works as today: routers are built at
   URLconf import, and types are read when requests arrive.
-- **The list envelope gains `first` and `last` on both front ends (call).**
-  Adding keys is backward compatible, and it makes scrud's envelope equal to
-  scrudful's ninja envelope, so ninja can use `scrudful_list` as is. The DRF
-  paginator adds the same two links. The MySQL key-first paging stays a core
-  concern under both.
+- **The list envelope matches scrudful's on both front ends (call).**
+  - The DRF paginator adds `first` and `last`.
+  - Its `previous` for page 1 becomes `?page=1` (scrudful's `page_envelope`)
+    instead of DRF's URL without `page`. This changes an existing DRF answer, so
+    it is listed under **Breaking changes**.
+  - The MySQL key-first paging stays a core concern under both.
+- **The list ETag (call).** scrud's `list_etag` hashes the page's items and the
+  query parameters, but `scrudful_list` calls `list_etag_func` with the queryset
+  only. The plan is to propose upstream that `list_etag_func` and
+  `list_last_modified_func` may take `(request, queryset, page)` (§3.5).
+  - Until that lands, scrud's ninja list wraps `scrudful_list`'s handler and
+    passes the request's page through a request attribute.
+  - The parity corpus pins the ETags either way.
 - **Authentication:**
   - Users come from scoped-rbac's `resolve_user`: `SCOPED_RBAC["NINJA_USER"]`,
     else `request.auth`, else the session user. Unsafe methods are CSRF-checked
@@ -453,10 +491,30 @@ This is for an app's own Django models, served through ninja **(owner)**:
   checks (§3.5). The documented form is then
   `crud_router(..., checks=[workflow_check(...)])`. Until then the docs show the
   hand-written router built from the blocks.
-- **Fail-closed guard (call):** a model IRI that has any workflow policy and is
-  saved through `save_checked` without the request having been marked
-  workflow-authorized raises. This is the same rule `recheck_saved` applies to
-  scrud resources. Forgetting the check is an error, not an open door.
+- **Saves that skip the check are logged, not refused, for now (owner).** A
+  governed model saved without the workflow check (an endpoint that forgot it,
+  the admin, the shell, a management command) logs the same warning a scrud
+  `Resource` logs today (`ResourceMixin.save`, logger `scrud_django.workflow`).
+  - The rule for both resources and own models is to be researched together in
+    issue #56 **(owner)**.
+  - Within a request that did run the check, the post-save recheck still
+    requires the request to be marked workflow-authorized, as `recheck_saved`
+    does for resources.
+- **Transitions fire scrud's signals and workflow actions (owner).** An
+  authorized write of an own model sends `scrud_post_save` and runs the
+  `SCRUD_WORKFLOW_ACTIONS` entries for its IRI on commit, as a resource write
+  does. A delete sends `scrud_post_delete`.
+  - **Arguments.** `sender` is the model class and `instance` the model
+    object. `resource_type_uri` is the model's IRI. `using` is the write's
+    database. `transitions`, `transition_data` and `transition_error` are
+    computed from `state_of`, as for resources.
+  - **Where they are sent (call).** The toolkit sends them from its save wrapper,
+    not from a model mixin, so that apps' models need no scrud base class.
+    `scrud_signals` and its action runner (`WorkflowActionCall`) move to the
+    neutral core, and nothing in them may assume a `Resource`.
+  - **#20.** The workflow-action payload (actor, prior content, actions keyed
+    by transition; #20, high priority) is designed against this neutral signal,
+    so resources and models get it together.
 - **Examples:** a worked example lives in `demo/` (a model with a two-state
   workflow) and in the docs.
 
@@ -474,8 +532,8 @@ pins the release.
    wrapped `before`/`load` hooks answer scrudful's OPTIONS copies correctly.
 4. **Stale docs:** `docs/ninja.rst` still says ninja 1.7.0–1.7.1 and `<1.8`.
 
-If scrudful needs a change (for example an envelope hook, if `first`/`last` is
-rejected), it goes the same way in scrudful's repo.
+In scrudful's repo, the same way: `scrudful_list`'s list validator functions may
+take the request and the page (§3.2).
 
 ## Testing
 
@@ -500,8 +558,12 @@ rejected), it goes the same way in scrudful's repo.
     both front ends mounted at once, the same exchanges replayed on fresh data,
     and responses compared exactly apart from §3.3.
   - **Toolkit tests:** a model with a workflow, served by a hand-written router
-    and, once available, by `crud_router`. They cover allowed and refused
-    transitions, the fail-closed guard, and OPTIONS `Allow`.
+    and, once available, by `crud_router`. They cover:
+    - allowed and refused transitions;
+    - the warning for an unchecked save;
+    - `scrud_post_save`/`scrud_post_delete` and the workflow actions firing on
+      commit, and not on rollback;
+    - OPTIONS `Allow`.
   - **CI:** all four databases, as today.
 - **CI** gains a job running the suite with only the base dependencies (no
   `drf` extra) for the ninja path.
@@ -514,13 +576,26 @@ rejected), it goes the same way in scrudful's repo.
   Prefixes serve UI only.
 - The `scrud_django.views` and `scrud_django.exceptions.scrud_exception_handler`
   import paths are deprecated aliases.
-- The list envelope gains `first` and `last` (additive).
+- The list envelope gains `first` and `last`, and page 1's `previous` link
+  carries `?page=1`.
+- On DRF, the UI refuses types with DRF-only authorization unless they declare
+  the neutral hooks (§1.4).
+- ninja apps with their own types build their API with
+  `scrud_django.ninja.api(types=[...])` instead of `include()`ing
+  `registration.resource_types(...)`.
 - On ninja, customization is through the neutral hooks, not `IsAuthorized`
   subclasses or `viewset_class=`.
 
-**Versioning (call):** one minor bump (0.x), with release notes and a migration
-section in `README.md`. When it releases is the owner's decision: 0.16.0 is
-held on `develop`, and releases go `develop` → `main`.
+**Versioning (owner): fold it into 0.16.0.**
+- 0.16.0 is the unreleased version held on `develop`, and it already holds the
+  UI components work.
+- All three phases merge to `develop` with no version bump, and 0.16.0's release
+  notes gain these breaking changes and a migration section in `README.md`.
+- The release stays the owner's decision, through a `develop` → `main` merge
+  request.
+- **Until phase 3 is merged, `develop` must not be released (call),** because
+  phase 2 alone would ship the UI split without ninja. The phase 2 merge request
+  says so.
 
 ## Left to the builder
 
