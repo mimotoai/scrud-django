@@ -74,8 +74,9 @@ _WORKFLOW_AUTHORIZED = "_scrud_workflow_authorized"
 
 def current_transition():
     """The name of the workflow transition the workflow check
-    (`scrud_django.core.workflow.workflow_check`) is authorizing (``"__INITIALIZE__"`` for a creation, ``"__SAME_STATE__"`` for
-    an update that stays in its state, else the policy's name for it), while
+    (`scrud_django.core.workflow.workflow_check`) is authorizing
+    (``"__INITIALIZE__"`` for a creation, ``"__SAME_STATE__"`` for an update
+    that stays in its state, else the policy's name for it), while
     it asks the request's policy and the view's ``IsAuthorized`` permissions
     (``has_context_permission``) about it; ``None`` anywhere else: outside
     the workflow check (the request, object and post-save checks), and in its

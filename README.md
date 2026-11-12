@@ -198,12 +198,14 @@ grants allow (they can only refuse, and refuse superusers too, as an
 
 - `checks`: callables `(request, resource_type, body, context) -> bool` that
   govern **writes**: asked of a write in each context it writes, of the
-  stored resource of a PUT, PATCH or DELETE in each of its contexts (so a
-  resource in a refused context can be neither deleted nor moved out of it:
-  403), of the saved resource in each of its contexts, and of a workflow
-  transition in each context it is authorized in. They never hide a read,
-  and a type with only `checks` lists by SQL; a type that wants both
-  registers both.
+  stored resource of a PUT, PATCH or DELETE in each of its contexts, of the
+  saved resource in each of its contexts, and of a workflow transition in
+  each context it is authorized in. Unlike an `IsAuthorized` subclass, whose
+  object check allows a PUT or DELETE when any context the resource is
+  stored in allows it, `checks` must allow in every one: a resource in
+  `["a", "b"]` whose check refuses `"b"` can be neither updated (not even
+  moved to `"a"`) nor deleted (403). They never hide a read, and a type with
+  only `checks` lists by SQL; a type that wants both registers both.
 - `object_checks`: callables `(request, resource_type, obj) -> bool` that
   govern **reads and objects**, asked of a resource's content wherever the
   object is checked (the detail route of every method, each listed
@@ -217,7 +219,9 @@ Registering a slug again replaces the hooks registered for it before.
 
 To move the rule of an `IsAuthorized` subclass's `has_context_permission`
 to hooks, register it twice. As a `checks=` callable it governs writes, but
-it no longer hides reads. To hide what the subclass refused to read, add an
+it no longer hides reads, and it is stricter on a resource stored in
+several contexts: the subclass allowed a PUT or DELETE that any of them
+allowed, a check must allow it in every one. To hide what the subclass refused to read, add an
 `object_checks=` callable that applies the same rule to each of the
 resource's contexts (`rbac_contexts_of(obj)`, from
 `scrud_django.mixins.resource_mixin`) and combines the answers as the

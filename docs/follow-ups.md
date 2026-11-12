@@ -1386,6 +1386,16 @@ Before ninja phase 3.
   Test: in `tests/test_type_hooks.py`, POST `{"rbac_context": []}` with a
   check that refuses everything; assert the hook refuses it (today the body
   checks answer it, so the hook is never what refuses).
+- `HookLeaf._as_content` (`core/types.py`) gives the hooks any object that
+  is not a mapping as `content_of(obj)`, which is `{}` for anything without
+  a mapping `content`: an `object_for_checks` of a view of your own that
+  returns neither a mapping nor a `Resource` reaches the hooks as `{}`,
+  whose contexts read as the default context `""`, so `checks` are asked in
+  `""` rather than where the object is. Raise for such an object instead.
+  Test: in `tests/test_type_hooks.py`, a hooked view whose
+  `object_for_checks` returns a plain object with `rbac_context = "b"`;
+  assert a DELETE is refused by `deny_context_b` (today it is asked in
+  `""` and allowed).
 
 # Decided
 
