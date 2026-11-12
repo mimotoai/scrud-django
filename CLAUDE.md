@@ -38,7 +38,7 @@ and map its `ScrudException`s and access errors to DRF's
 `validate_write`, `check_object`) is not called by DRF; only the
 `tests/test_core_*` modules pin it. Its functions that decide access by a
 requirement (`load_for_read`, `object_readable`, `allowed_methods`,
-`check_object`, `create`, `update`) refuse one that asks no grants
+`check_object`, `create`, `update`, `destroy`) refuse one that asks no grants
 (`ImproperlyConfigured`). Put new domain logic in `core`, not in a view;
 per-type hooks are `core.types.TypeOptions`.
 

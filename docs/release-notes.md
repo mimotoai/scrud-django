@@ -395,8 +395,8 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   `update`, `validate_write`, `check_object`) is not called by the DRF views;
   its tests (`tests/test_core_*`) pin it against the DRF routes. Those of its
   functions that decide access by a requirement (`load_for_read`,
-  `object_readable`, `allowed_methods`, `check_object`, `create`, `update`)
-  raise `ImproperlyConfigured` for one that asks no grants (empty, or a
+  `object_readable`, `allowed_methods`, `check_object`, `create`, `update`,
+  `destroy`) raise `ImproperlyConfigured` for one that asks no grants (empty, or a
   type's hooks only) rather than allow every requester, and
   `validate_write` takes the type's hooks from its `requirement=` as the
   checks that may refuse a transition. The workflow check hides an update's

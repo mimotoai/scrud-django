@@ -531,7 +531,19 @@ def destroy(
     (`check_every_context_of_policy`, given `requirement`, `covered`,
     `type_iri` and `check`). One that a resource type uses (its schema,
     context or indexing policy) is kept: `ResourceInUseError` (409). No
-    workflow check runs (follow-up ``delete-no-workflow-check``)."""
+    workflow check runs (follow-up ``delete-no-workflow-check``).
+
+    It runs no object check: a caller loads `instance` through
+    `scrud_django.core.resources.load_for_read` with ``method="DELETE"``
+    first (DRF's ``get_object()``), which asks it.
+
+    Without a `check`, a `requirement` that asks no grants (empty, or hooks
+    only) is ``ImproperlyConfigured`` (`require_grants`), before anything is
+    deleted, as in `save_checked`: its every-context check of a
+    ``WorkflowPolicy`` would allow anyone. (DRF's ``destroy`` passes the
+    view's own check.)"""
+    if check is None:
+        require_grants(requirement, "destroy")
     check_every_context_of_policy(
         request,
         instance,

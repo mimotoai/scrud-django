@@ -18,6 +18,7 @@ from django.test import RequestFactory
 from django.urls import reverse
 from django.utils.timezone import now
 from safetydance_django.test import *  # noqa: F403, F401
+from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.core import resources, writes
@@ -30,6 +31,7 @@ from scrud_django.registration import (
     get_resource_type_for,
     workflow_policy_resource_type,
 )
+from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
 
 from .factories import UserFactory
 from .steps import *  # noqa: F403, F401
@@ -184,6 +186,14 @@ def test_writes_refuse_a_requirement_asking_no_grants():
                 using="default",
             )
         with pytest.raises(ImproperlyConfigured, match="asks no grants"):
+            writes.destroy(
+                request_of("DELETE", superuser),
+                resource_type,
+                Resource.objects.get(pk=stored.pk),
+                requirement=requirement,
+                using="default",
+            )
+        with pytest.raises(ImproperlyConfigured, match="asks no grants"):
             writes.save_checked(
                 request_of("POST", superuser),
                 resource_type,
@@ -219,6 +229,47 @@ def test_the_drf_paths_stay_unguarded():
     )
     assert rechecked == [saved.pk]
     writes.check_post_save(request_of("PUT", AnonymousUser()), resource_type, saved, [])
+
+
+@pytest.mark.django_db
+@test_context
+def test_destroy_refuses_a_policy_in_a_context_not_granted():
+    """`destroy` of a ``WorkflowPolicy`` asks its requirement in every
+    context the policy applies to: a DELETE granted in "a" only does not
+    delete one stored in ["a", "b"]."""
+    json_ld()
+    policy_type = workflow_policy_resource_type()
+    policy = ResourceRegistration.register(
+        {
+            "resource_type": JSON_LD,
+            "rbac_context": ["a", "b"],
+            "initial_states": {"any": "true"},
+            "states": {},
+            "transitions": {},
+        },
+        "workflow-policies",
+    )
+    requirement = [GrantsLeaf(WORKFLOW_POLICY_TYPE_URI)]
+    grant = {"http.DELETE": [WORKFLOW_POLICY_TYPE_URI]}
+    in_a = user_with((grant, "a"))
+    with pytest.raises(access.AccessDenied):
+        writes.destroy(
+            request_of("DELETE", in_a),
+            policy_type,
+            Resource.objects.get(pk=policy.pk),
+            requirement=requirement,
+            using="default",
+        )
+    assert Resource.objects.filter(pk=policy.pk).exists()
+    in_both = user_with((grant, "a"), (grant, "b"))
+    writes.destroy(
+        request_of("DELETE", in_both),
+        policy_type,
+        Resource.objects.get(pk=policy.pk),
+        requirement=requirement,
+        using="default",
+    )
+    assert not Resource.objects.filter(pk=policy.pk).exists()
 
 
 def may_initialize(method):
