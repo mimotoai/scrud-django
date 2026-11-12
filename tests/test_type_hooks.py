@@ -251,18 +251,31 @@ def test_register_type_options_replaces_never_merges():
     assert type_options("never-registered") == TypeOptions()
 
 
+def refuses_leaving_b(request, resource_type, body, context):
+    """A check that reads the body: in the context "b", a body must stay in
+    "b"."""
+    return context != "b" or body.get("rbac_context") == "b"
+
+
 @pytest.mark.django_db
 @test_context
 def test_check_narrows_workflow_transition():
-    # Moving a note out of "b" writes only "a" (the request and post-save
-    # checks allow it), but the transition is authorized in "b" too, under
-    # its policy: the type's checks narrow it there.
     workflow_policy_resource_type()
     ResourceRegistration.register(
         dict(PERMISSIVE_POLICY, rbac_context="b"), "workflow-policies"
     )
     in_b, other = note("in b", "b"), note("other", "b")
     Given.http.force_authenticate(assign_role(WRITER, "a", "b"))
+    # Moving a note out of "b" acts in "b", where it is stored: the object
+    # check refuses it there (deny_context_b) before the body is validated.
+    put_note(in_b, {"text": "out", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    in_b.refresh_from_db()
+    assert in_b.content == {"text": "in b", "rbac_context": "b"}
+    # A check reading the body allows the note as stored in "b" (the object
+    # check) and the body in "a" (the request check), but the transition is
+    # authorized in "b" too, under its policy: the check narrows it there.
+    hooked_note_type(checks=(refuses_leaving_b,))
     put_note(in_b, {"text": "out", "rbac_context": "a"})
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
     assert Http.response.json()["type"] == WORKFLOW_ERROR
@@ -414,10 +427,55 @@ def test_options_allow_is_the_grants():
     assert "POST" in Http.response["Allow"]
 
 
+def delete_note(resource):
+    When.http.delete(
+        reverse("hooked-notes-detail", args=[resource.pk]),
+        HTTP_IF_MATCH=quote_etag(resource.etag),
+    )
+
+
 def allow_of_note(resource):
     When.http.options(reverse("hooked-notes-detail", args=[resource.pk]))
     Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
     return [method.strip() for method in Http.response["Allow"].split(",")]
+
+
+@pytest.mark.django_db
+@test_context
+def test_check_refuses_deleting_from_a_stored_context():
+    # The object check of a DELETE asks the checks in each context the note
+    # is stored in: the writer's grants allow it in "b", the check refuses.
+    in_b = note("in b", "b")
+    Given.http.force_authenticate(assign_role(WRITER, "a", "b"))
+    delete_note(in_b)
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.filter(pk=in_b.pk).exists()
+    in_a = note("in a", "a")
+    delete_note(in_a)
+    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    assert not Resource.objects.filter(pk=in_a.pk).exists()
+
+
+@pytest.mark.django_db
+@test_context
+def test_check_refuses_moving_out_of_a_stored_context():
+    # The body writes only "a" (the request check allows it), but the note
+    # is stored in "b": the object check of the PUT refuses it there.
+    in_b = note("in b", "b")
+    Given.http.force_authenticate(assign_role(WRITER, "a", "b"))
+    put_note(in_b, {"text": "moved", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    in_b.refresh_from_db()
+    assert in_b.content == {"text": "in b", "rbac_context": "b"}
+    # A PUT staying in "a" of a note stored in "a" is allowed.
+    in_a = note("in a", "a")
+    put_note(in_a, {"text": "edited", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_200_OK)
+    in_a.refresh_from_db()
+    assert in_a.content == {"text": "edited", "rbac_context": "a"}
+    # Reading the note in "b" is governed by the object checks alone.
+    When.http.get(reverse("hooked-notes-detail", args=[in_b.pk]))
+    Then.http.status_code_is(status.HTTP_200_OK)
 
 
 @pytest.mark.django_db
@@ -430,3 +488,87 @@ def test_options_of_an_item_gives_the_hooks_its_content():
     assert allow_of_note(in_a) == ["GET", "PUT", "DELETE", "OPTIONS", "HEAD"]
     When.http.options(reverse("hooked-notes-detail", args=[secret.pk]))
     Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+
+
+@pytest.mark.django_db
+@test_context
+def test_options_allow_drops_the_writes_the_checks_refuse():
+    # Allow names what the object check allows: no PUT or DELETE of a note
+    # stored in "b", consistent with their 403.
+    in_a, in_b = note("in a", "a"), note("in b", "b")
+    Given.http.force_authenticate(assign_role(WRITER, "a", "b"))
+    assert allow_of_note(in_a) == ["GET", "PUT", "DELETE", "OPTIONS", "HEAD"]
+    assert allow_of_note(in_b) == ["GET", "OPTIONS", "HEAD"]
+
+
+@pytest.mark.django_db
+def test_facade_check_refuses_writes_from_a_stored_context():
+    from django.test import RequestFactory
+    from scoped_rbac import access
+
+    from scrud_django.core import resources
+
+    hooked = get_resource_type_for("hooked-notes")
+    requirement = requirement_for(hooked, "hooked-notes")
+    in_a, in_b = note("in a", "a"), note("in b", "b")
+    writer = assign_role(WRITER, "a", "b")
+
+    def request_of(method):
+        request = getattr(RequestFactory(), method.lower())("/")
+        request.user = writer
+        return request
+
+    hooks = requirement[1]
+    for method in ("PUT", "PATCH", "DELETE"):
+        assert not hooks.has_object_permission(request_of(method), in_b.content)
+        assert hooks.has_object_permission(request_of(method), in_a.content)
+    for method in ("GET", "HEAD", "OPTIONS"):
+        assert hooks.has_object_permission(request_of(method), in_b.content)
+    for method in ("PUT", "DELETE"):
+        # Readable (a GET is allowed): a 403, not a 404.
+        with pytest.raises(access.AccessDenied):
+            resources.check_object(
+                request_of(method), hooked, in_b, requirement, covered=False
+            )
+        resources.check_object(
+            request_of(method), hooked, in_a, requirement, covered=False
+        )
+    for method in ("PUT", "DELETE"):
+        with pytest.raises(access.AccessDenied):
+            resources.load_for_read(
+                request_of(method),
+                hooked,
+                in_b.pk,
+                requirement=requirement,
+                method=method,
+            )
+        assert (
+            resources.load_for_read(
+                request_of(method),
+                hooked,
+                in_a.pk,
+                requirement=requirement,
+                method=method,
+            )
+            == in_a
+        )
+    assert (
+        resources.load_for_read(
+            request_of("GET"), hooked, in_b.pk, requirement=requirement, method="GET"
+        )
+        == in_b
+    )
+    assert resources.object_readable(request_of("DELETE"), hooked, in_b, requirement)
+    options = request_of("OPTIONS")
+    assert resources.allowed_methods(options, hooked, in_b, requirement) == [
+        "GET",
+        "OPTIONS",
+        "HEAD",
+    ]
+    assert resources.allowed_methods(options, hooked, in_a, requirement) == [
+        "GET",
+        "PUT",
+        "DELETE",
+        "OPTIONS",
+        "HEAD",
+    ]

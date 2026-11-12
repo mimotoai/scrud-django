@@ -26,9 +26,12 @@ class TypeOptions:
 
     - ``checks``: ``(request, resource_type, body: Mapping, context: str) ->
       bool``, each asked of a write in each context it writes (the request
-      check), of a saved resource in each of its contexts (the post-save
-      check) and of a workflow transition in each context it is authorized
-      in (``narrow``): the counterpart of ``has_context_permission``;
+      check), of the stored resource of a PUT, PATCH or DELETE in each of its
+      contexts (the object check: a write acts where the resource is, so a
+      refused context can be neither deleted from nor moved out of), of a
+      saved resource in each of its contexts (the post-save check) and of a
+      workflow transition in each context it is authorized in (``narrow``):
+      the counterpart of ``has_context_permission``;
     - ``object_checks``: ``(request, resource_type, obj: Mapping) -> bool``,
       each asked of a resource's content wherever its object is checked (the
       detail route, a list, the post-save check): the counterpart of
@@ -47,6 +50,10 @@ class TypeOptions:
 # The methods whose body the request check reads (the scrud views' own
 # ``BODY_METHODS``).
 BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+# The methods that write nothing (DRF's ``SAFE_METHODS``): their object
+# check asks the object checks alone.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 _OPTIONS: dict[str, TypeOptions] = {}
 _OPTIONS_LOCK = threading.Lock()
@@ -82,10 +89,21 @@ class HookLeaf(Leaf):
       context it writes (`rbac_contexts_of`); any other request is (a body
       that is no object is left to the body's validation, as for a type
       without hooks);
-    - ``has_object_permission``: every object check;
+    - ``has_object_permission``: every object check and, for a request
+      whose method is not a safe one (`SAFE_METHODS`: a PUT, PATCH or
+      DELETE, or any method it cannot tell), every check in **each** context
+      the object is stored in (``contexts_for``), so that a write refused
+      in a context can neither delete a resource stored there nor move it
+      out (a refused write of a readable resource stays a 403: the
+      readability check asks a GET); a GET, HEAD or OPTIONS asks the object
+      checks alone;
     - ``has_context_permission``: every check.
 
-    ``checks`` govern writes (the request check, the post-save check, which
+    A hook is given a mapping (a resource's content, a body) as it is, and
+    anything else (the `Resource` scrudful's OPTIONS checks) as its content.
+
+    ``checks`` govern writes (the request check, the object check of a PUT,
+    PATCH or DELETE in each stored context, the post-save check, which
     asks ``has_context_permission`` in each context of the saved resource
     whatever ``overrides_object_checks`` says, and a workflow transition's
     ``narrow``); ``object_checks`` govern reads and objects: only they
@@ -141,9 +159,19 @@ class HookLeaf(Leaf):
 
     def has_object_permission(self, request, obj):
         obj = _as_content(obj)
-        return all(
+        if not all(
             check(request, self.resource_type, obj)
             for check in self.options.object_checks
+        ):
+            return False
+        if getattr(request, "method", None) in SAFE_METHODS:
+            return True
+        # A write (PUT, PATCH, DELETE) acts in the contexts the resource is
+        # stored in: every check must allow it in each of them, as an
+        # IsAuthorized asks its has_context_permission there.
+        return all(
+            self.has_context_permission(request, obj, context)
+            for context in self.contexts_for(obj)
         )
 
     def has_context_permission(self, request, obj, context):

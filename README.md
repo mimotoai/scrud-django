@@ -197,10 +197,13 @@ grants allow (they can only refuse, and refuse superusers too, as an
 `IsAuthorized` subclass does):
 
 - `checks`: callables `(request, resource_type, body, context) -> bool` that
-  govern **writes**: asked of a write in each context it writes, of the saved
-  resource in each of its contexts, and of a workflow transition in each
-  context it is authorized in. They never hide a read, and a type with only
-  `checks` lists by SQL; a type that wants both registers both.
+  govern **writes**: asked of a write in each context it writes, of the
+  stored resource of a PUT, PATCH or DELETE in each of its contexts (so a
+  resource in a refused context can be neither deleted nor moved out of it:
+  403), of the saved resource in each of its contexts, and of a workflow
+  transition in each context it is authorized in. They never hide a read,
+  and a type with only `checks` lists by SQL; a type that wants both
+  registers both.
 - `object_checks`: callables `(request, resource_type, obj) -> bool` that
   govern **reads and objects**, asked of a resource's content wherever the
   object is checked (the detail route of every method, each listed

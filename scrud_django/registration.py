@@ -825,10 +825,12 @@ def json_resource_type(
     ``IsAuthorized`` subclass refuses them):
 
     - `checks`: callables ``(request, resource_type, body, context) -> bool``,
-      which govern writes: asked of a write in each context it writes, of a
-      saved resource in each of its contexts and of a workflow transition in
-      each context it is authorized in. They never hide a read: a type that
-      wants both registers both;
+      which govern writes: asked of a write in each context it writes, of
+      the stored resource of a PUT, PATCH or DELETE in each of its contexts
+      (a resource in a refused context is neither deleted nor moved out of
+      it: 403), of a saved resource in each of its contexts and of a
+      workflow transition in each context it is authorized in. They never
+      hide a read: a type that wants both registers both;
     - `object_checks`: callables ``(request, resource_type, obj) -> bool``,
       which govern reads and objects: asked of a resource's content wherever
       its object is checked (the detail route of every method, each listed

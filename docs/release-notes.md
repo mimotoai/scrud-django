@@ -407,8 +407,11 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   `computed_resource_type` (`compute=`). They can only refuse what the grants
   allow, and refuse superusers too (as an `IsAuthorized` subclass does).
   `checks` govern writes only: asked of a write in each context it writes, of
-  the saved resource in each of its contexts and of a workflow transition in
-  each context it is authorized in; a type with only `checks` lists by SQL.
+  the stored resource of a PUT, PATCH or DELETE in each of its contexts (a
+  resource in a refused context can be neither deleted nor moved out of it:
+  403, and `Allow` leaves those methods out), of the saved resource in each
+  of its contexts and of a workflow transition in each context it is
+  authorized in; a type with only `checks` lists by SQL.
   `object_checks` govern reads and objects (the detail route of every method,
   each listed resource); a refused resource is hidden (404), and a write of a
   resource they would hide is refused (403 after the save, which is rolled
