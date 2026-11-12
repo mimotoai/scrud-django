@@ -532,8 +532,10 @@ def test_one_validation_authorizes_one_write():
         saved = update(
             request, rtype, row, body, requirement=requirement, using="default"
         )
-    # The update used the validation it was given: one workflow check.
-    assert workflow_check.call_count == 1
+    # The update validated the body it saves itself: a second workflow
+    # check, of that body.
+    assert workflow_check.call_count == 2
+    assert workflow_check.call_args.kwargs["proposed"] == body
     assert Resource.objects.get(pk=stored.pk).content == body == saved.content
     after_first = row_of(stored)
     # The save consumed the mark: a second save on the request is refused.
@@ -629,3 +631,84 @@ def test_update_validates_the_body_it_saves():
         )
     assert raised.value.status_code == status.HTTP_400_BAD_REQUEST
     assert row_of(stored) == before
+
+
+def store_draft_policy():
+    """A JSON-LD policy in "a" where a draft is published by "publish"."""
+    store_json_ld_policy(
+        initial_states={"draft": 'state == "draft"'},
+        states={"published": 'state == "published"'},
+        transitions={"publish": {"from": "draft", "to": "published"}},
+    )
+
+
+DRAFT_EDITED = {"state": "draft", "text": "edited", "rbac_context": "a"}
+PUBLISHED_NOTE = {"state": "published", "rbac_context": "a"}
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_validates_its_body_not_the_one_validated_before():
+    store_draft_policy()
+    stored = ResourceRegistration.register(
+        {"state": "draft", "rbac_context": "a"}, "json-ld"
+    )
+    before = row_of(stored)
+    rtype = stored.resource_type
+    requirement = [GrantsLeaf(JSON_LD)]
+    request = request_by("put", user_with((may_stay_json_ld(), "a")))
+    row = Resource.objects.get(pk=stored.pk)
+    # A body that stays a draft is this user's to write...
+    validate_write(
+        request,
+        rtype,
+        DRAFT_EDITED,
+        stored=row,
+        requirement=requirement,
+        readable=None,
+    )
+    # ...which does not let the update save another, publishing it.
+    with pytest.raises(WorkflowTransitionError) as raised:
+        update(
+            request,
+            rtype,
+            row,
+            PUBLISHED_NOTE,
+            requirement=requirement,
+            using="default",
+        )
+    assert raised.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert row_of(stored) == before
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_second_update_validates_its_own_body():
+    store_draft_policy()
+    stored = ResourceRegistration.register(
+        {"state": "draft", "rbac_context": "a"}, "json-ld"
+    )
+    rtype = stored.resource_type
+    requirement = [GrantsLeaf(JSON_LD)]
+    request = request_by("put", user_with((may_stay_json_ld(), "a")))
+    update(
+        request,
+        rtype,
+        Resource.objects.get(pk=stored.pk),
+        DRAFT_EDITED,
+        requirement=requirement,
+        using="default",
+    )
+    after_first = row_of(stored)
+    assert after_first[0] == DRAFT_EDITED
+    with pytest.raises(WorkflowTransitionError) as raised:
+        update(
+            request,
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            PUBLISHED_NOTE,
+            requirement=requirement,
+            using="default",
+        )
+    assert raised.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert row_of(stored) == after_first

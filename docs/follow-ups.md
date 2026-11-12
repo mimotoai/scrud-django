@@ -1298,6 +1298,27 @@ assert it raises (today it returns a requirement with no `HookLeaf`); in a
 subprocess that sets up Django without importing `tests.urls`, assert
 `type_options("hooked-notes")` is not silently empty.
 
+<a id="core-save-checked-mark-body"></a>
+## core-save-checked-mark-body: `save_checked` trusts the workflow mark, not the body
+
+Before ninja phase 3. The workflow check (`validate_write`) marks the
+request authorized for one write, `(type IRI, stored pk)`
+(`_mark_workflow_authorized`, `core/authz.py`), and `save_checked`'s
+post-save check lets a grant conditioned on `scrud_workflow` allow that
+one save, consuming the mark. The mark names the write, not the body:
+a caller of `save_checked` itself that validates body A and saves body B
+of the same resource passes the `scrud_workflow` grants with B. The
+facade's `create` and `update` always validate the body they save, so
+front ends must write through them (or validate exactly the body their
+own `save` writes). Proposal: carry a fingerprint of the validated body
+(and its contexts) in the mark and compare it with what `save` wrote, or
+make `save_checked` take the body and validate it itself. Test: in
+`tests/test_core_writes.py`, with a JSON-LD policy in "a" where a draft is
+published by "publish" and a user holding `may_stay_json_ld()` in "a",
+`validate_write` a body that stays a draft, then `save_checked` an
+`update_locked` save of a body publishing it; assert it is refused and
+the row unchanged (today it saves).
+
 <a id="core-type-redesign"></a>
 ## core-type-redesign: the core's types before the ninja front end
 

@@ -422,15 +422,15 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   `validate_write` requires a `requirement=`, whose type's hooks are the
   checks that may refuse a transition. The workflow check hides an update's
   workflow error unless its caller says the stored resource is readable
-  (`readable=`). The facade's `create` and `update` validate the body they
-  save themselves (`validate_write`, an update's errors hidden unless the
-  stored resource is readable), unless the request carries the workflow
-  check's mark for that write. One validation authorizes one write: the
-  mark names the type the post-save check names and the resource written
-  (none for a create), and the save that uses it consumes it, whether it
-  succeeds or fails, so a grant conditioned on `scrud_workflow` allows
-  neither a second save on the request nor a save of another resource. It
-  is the base for other front ends.
+  (`readable=`). The facade's `create` and `update` always validate the
+  body they save themselves (`validate_write`, an update's errors hidden
+  unless the stored resource is readable). One validation authorizes one
+  write: the workflow check's mark names the type the post-save check
+  names and the resource written (none for a create), and the save that
+  uses it consumes it, whether it succeeds or fails, so a grant
+  conditioned on `scrud_workflow` allows neither a second save on the
+  request nor a save of another resource. It is the base for other front
+  ends.
 * Per-type hooks, honoured by every front end, on `json_resource_type`
   (`checks=`, `object_checks=`, `content_filter=`) and
   `computed_resource_type` (`compute=`). They can only refuse what the grants
