@@ -2187,13 +2187,24 @@ and the inspector under it (see
   The script rewrites them with `history.replaceState`, and keeps every
   other parameter (`ui-scope=studio`, `ui-mode=view`, `ui-safe`), so a
   workbench URL can be shared and reloaded.
+- **The branch picker keeps the state.** The picker's links are plain
+  links (they work without the script); the script rewrites their query from
+  the current state on load, on every state change and when the picker is
+  fetched again. A switch keeps `type`, `mode`, `context`, `scope`,
+  `instance`, `item` and `pointer` (what is previewed and opened, meaningful
+  on any branch) and `ui-safe` when the page has it, and drops `pinned` (a
+  version number of the branch being left).
 - **The strip with a type.** When the state has a `type` (on load, and when
   it changes), the strip is fetched again with `?type=<type>`, for its browse
   link.
 - **Opening an item.** A click on an entry sets `item` and dispatches
   `studio:open` on the workbench (`detail.open` is the entry's
   `data-studio-open`, `detail.entry` the entry), which the editor handles
-  (see [The editors](#the-editors)). The `item` in the URL opens on load.
+  (see [The editors](#the-editors)). The `item` in the URL opens on load. An
+  `item` the tree has no entry
+  for (an own item of the branch the author switched from) shows a notice in
+  the workbench ("<kind> <name> is not on this branch.", `ScrudStudio.notify`),
+  no error, and is removed from the URL so a reload does not repeat it.
 - **After a write.** After any write sent from inside the workbench
   (`htmx:afterRequest` of a non-GET) that succeeds, the items and the strip
   are fetched again (an htmx GET of `data-studio-src`, with the pane's own

@@ -943,6 +943,81 @@ out.swapped = marks(pickerEntries);
     }
 
 
+def test_branch_picker_links_keep_the_workbench_state():
+    """Switching branch keeps what is previewed and opened (type, mode,
+    context, scope, instance, item, pointer) and drops `pinned` (a version
+    number of the old branch). The links stay plain links; studio.js
+    rewrites their query on load, on state changes and when the picker is
+    fetched again."""
+    out = scenario(
+        r"""
+const query = (link) => Object.fromEntries(new URLSearchParams(
+  link.getAttribute('href').split('?')[1]));
+const hrefs = () => Object.fromEntries(Object.entries(pickerEntries)
+  .map(([name, e]) => [name, e.link ? e.link.getAttribute('href') : null]));
+out.load = Object.fromEntries(Object.entries(pickerEntries)
+  .map(([name, e]) => [name, e.link ? query(e.link) : null]));
+out.path = pickerEntries.studio.link.getAttribute('href').split('?')[0];
+S.setState({type: 'notes', item: null, pinned: '4'});
+out.changed = query(pickerEntries.studio.link);
+pickerEntries = renderPicker(['main', 'alice-wip', 'zed']);
+out.fresh = hrefs().zed;
+fire(branchesEmbed, 'htmx:afterSwap', {target: branchesEmbed});
+out.swapped = query(pickerEntries.zed.link);
+out.url = location.search;
+""",
+        picker=["main", "alice-wip", "studio"],
+        search=BASE + "&ui-safe=1&type=todo-lists&instance=12&item=component%3Ahead"
+        "&pointer=%2Fa&mode=edit&context=p&scope=row&pinned=3",
+    )
+    kept = {
+        "ui-scope": "studio",
+        "ui-mode": "view",
+        "ui-safe": "1",
+        "type": "todo-lists",
+        "instance": "12",
+        "item": "component:head",
+        "pointer": "/a",
+        "mode": "edit",
+        "context": "p",
+        "scope": "row",
+    }
+    assert out["load"] == {"main": None, "alice-wip": kept, "studio": kept}
+    assert "pinned" not in out["load"]["studio"]
+    assert out["path"] == "/workbench/ui-branches/studio/"
+    # A new type: the links follow (pinned still not carried).
+    assert out["changed"]["type"] == "notes"
+    assert "item" not in out["changed"] and "pinned" not in out["changed"]
+    assert out["changed"]["instance"] == "12"
+    # The server's fresh links are plain; the refetch carries the state again.
+    assert out["fresh"] == "/workbench/ui-branches/zed/" + BASE
+    assert out["swapped"]["type"] == "notes"
+    assert out["swapped"]["instance"] == "12" and out["swapped"]["ui-safe"] == "1"
+    assert "pinned" in out["url"]
+
+
+def test_unknown_item_on_load_shows_a_notice():
+    """An `item` the branch's tree lacks (an own item of the branch the
+    author came from) is a notice on load, not an error, and goes from the URL."""
+    out = scenario(
+        r"""
+out.notice = [notice.textContent, notice.hasAttribute('hidden')];
+out.state = state();
+out.ajax = out.ajax.filter((a) => a.target === 'editor');
+""",
+        search=BASE + "&type=todo-lists&item=component%3Agone",
+    )
+    assert out["notice"] == ["component gone is not on this branch.", False]
+    assert "item" not in out["state"] and out["state"]["type"] == "todo-lists"
+    assert out["ajax"] == []
+    # A known item gives no notice.
+    out = scenario(
+        "out.notice = [notice.textContent, notice.hasAttribute('hidden')];",
+        search=BASE + "&item=component%3Ahead",
+    )
+    assert out["notice"] == ["", True]
+
+
 def test_preview_needs_type_and_endpoints():
     script = r"""
 reset();
