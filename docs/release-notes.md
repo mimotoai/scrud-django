@@ -396,9 +396,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   its tests (`tests/test_core_*`) pin it against the DRF routes. Those of its
   functions that decide access by a requirement (`load_for_read`,
   `object_readable`, `allowed_methods`, `check_object`, `create`, `update`,
-  `destroy`) raise `ImproperlyConfigured` for one that asks no grants (empty, or a
-  type's hooks only) rather than allow every requester, and
-  `validate_write` takes the type's hooks from its `requirement=` as the
+  `destroy`) raise `ImproperlyConfigured` for one that asks no grants
+  (empty, or a type's hooks only) rather than allow every requester, and
+  `validate_write` requires a `requirement=`, whose type's hooks are the
   checks that may refuse a transition. The workflow check hides an update's
   workflow error unless its caller says the stored resource is readable
   (`readable=`). It is the base for other front ends.

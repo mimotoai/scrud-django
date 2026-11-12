@@ -212,9 +212,9 @@ def validate_write(
     body: Mapping,
     *,
     stored: Resource | None,
+    requirement,
     narrow: Sequence[Callable] | None = None,
     readable: Callable[[], bool] | None,
-    requirement=None,
 ) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
     """Validate `request`'s write of `body` (the body as sent) to
     `resource_type`, over the resource `stored` (``None`` for a create), in
@@ -225,17 +225,17 @@ def validate_write(
     as its ``prior``, `prior_of`, and `narrow` and `readable` as they are).
     Returns the transitions the workflow check authorized.
 
-    Without `narrow`, it is the checks of each type's hooks in
-    `requirement` (each `HookLeaf`'s ``narrow``; none without a
-    requirement), so that a registered check can refuse a transition, as on
-    DRF.
+    `requirement` (required: the type's, `scrud_django.core.types
+    .requirement_for`) gives the `narrow`: the checks of each type's hooks
+    in it (each `HookLeaf`'s ``narrow``), so that a registered check can
+    refuse a transition, as on DRF. A given `narrow` replaces them.
 
     `create` and `update` do not validate: call this first, with the same
     request, inside the write's transaction."""
     if narrow is None:
         narrow = tuple(
             check
-            for leaf in requirement_leaves(requirement or [])
+            for leaf in requirement_leaves(requirement)
             if isinstance(leaf, HookLeaf)
             for check in leaf.narrow
         )

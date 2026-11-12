@@ -23,7 +23,7 @@ from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.core import resources, writes
 from scrud_django.core.requirements import GrantsLeaf, asks_grants
-from scrud_django.core.types import HookLeaf, TypeOptions
+from scrud_django.core.types import HookLeaf, TypeOptions, requirement_for
 from scrud_django.exceptions import WorkflowTransitionError
 from scrud_django.models import Resource
 from scrud_django.registration import (
@@ -342,8 +342,56 @@ def test_validate_write_narrows_by_the_requirements_hooks():
     ((context, _, transition),) = validate(requirement=[GrantsLeaf(JSON_LD)])
     assert (context, transition.transition) == ("a", "__INITIALIZE__")
     validate(requirement=[GrantsLeaf(JSON_LD), hooks], narrow=())
-    validate()
     assert len(asked) == 1
+    # The requirement is required: without it no hook could be asked.
+    with pytest.raises(TypeError, match="requirement"):
+        validate()
+    assert len(asked) == 1
+
+
+@pytest.mark.django_db
+@test_context
+def test_validate_write_asks_a_registered_types_checks():
+    """`validate_write` given the type's requirement (`requirement_for`)
+    asks its registered checks of each transition: ``hooked-notes``'s
+    `deny_context_b` refuses one in "b", which its grants alone allow."""
+    from .resource_types import HOOKED_NOTE_TYPE_URI, hooked_resource_types
+
+    reverse("hooked-notes-list")
+    hooked_resource_types()
+    hooked = get_resource_type_for("hooked-notes")
+    workflow_policy_resource_type()
+    for context in ("a", "b"):
+        ResourceRegistration.register(
+            {
+                "resource_type": HOOKED_NOTE_TYPE_URI,
+                "rbac_context": context,
+                "initial_states": {"any": "true"},
+                "states": {},
+                "transitions": {},
+            },
+            "workflow-policies",
+        )
+    grant = {"http.POST": [HOOKED_NOTE_TYPE_URI]}
+    writer = user_with((grant, "a"), (grant, "b"))
+
+    def validate(body, requirement):
+        return writes.validate_write(
+            request_of("POST", writer),
+            hooked,
+            body,
+            stored=None,
+            readable=None,
+            requirement=requirement,
+        )
+
+    requirement = requirement_for(hooked, "hooked-notes")
+    ((context, _, _),) = validate({"text": "x", "rbac_context": "a"}, requirement)
+    assert context == "a"
+    with pytest.raises(WorkflowTransitionError):
+        validate({"text": "x", "rbac_context": "b"}, requirement)
+    # The grants alone allow it: the type's check refused it.
+    validate({"text": "x", "rbac_context": "b"}, [GrantsLeaf(HOOKED_NOTE_TYPE_URI)])
 
 
 @pytest.mark.django_db

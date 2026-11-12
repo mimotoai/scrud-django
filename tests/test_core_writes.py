@@ -235,7 +235,7 @@ def test_validate_write_checks_null_stored_content_as_an_update(stored_content):
             stored.resource_type,
             {"rbac_context": "a"},
             stored=stored,
-            narrow=(),
+            requirement=[GrantsLeaf(JSON_LD)],
             readable=None,
         )
 
@@ -256,7 +256,12 @@ def test_validate_write_checks_a_workflow_policy():
     request = request_by("post", UserFactory(is_staff=True, is_superuser=True))
     with pytest.raises(WorkflowPolicyInvalidError, match="already exists in context"):
         validate_write(
-            request, policy_type, dict(policy), stored=None, narrow=(), readable=None
+            request,
+            policy_type,
+            dict(policy),
+            stored=None,
+            requirement=[GrantsLeaf(policy_type.type_uri)],
+            readable=None,
         )
 
 
