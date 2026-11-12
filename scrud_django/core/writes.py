@@ -227,6 +227,7 @@ def validate_write(
     requirement,
     narrow: Sequence[Callable] | None = None,
     readable: Callable[[], bool] | None,
+    type_iri: str | None = None,
 ) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
     """Validate `request`'s write of `body` (the body as sent) to
     `resource_type`, over the resource `stored` (``None`` for a create).
@@ -250,9 +251,11 @@ def validate_write(
     (`scrud_django.core.workflow.workflow_check`, given `stored`'s content
     as its ``prior``, `prior_of`, and `narrow` and `readable` as they are).
     Returns the transitions the workflow check authorized; the request
-    then carries their mark for this one write (``(resource_type.type_uri,
+    then carries their mark for this one write (``(type_iri,
     stored.pk)``, ``None`` as the pk for a create), which the save that
-    uses it consumes (`save_checked`).
+    uses it consumes (`save_checked`). `type_iri` is the type the write's
+    post-save check names (by default `resource_type`'s ``type_uri``): the
+    save must be given the same one, or its check does not find the mark.
 
     `requirement` (required: the type's, `scrud_django.core.types
     .requirement_for`) gives the `narrow`: the checks of each type's hooks
@@ -308,6 +311,7 @@ def validate_write(
         narrow=narrow,
         readable=readable,
         stored_pk=stored.pk if stored is not None else None,
+        post_save_type_iri=type_iri,
     )
 
 
@@ -549,7 +553,15 @@ def creating_revision(resource_type):
         reversion.set_comment('Add Resource')
 
 
-def _validated(request, resource_type, body, *, stored: Resource | None, requirement):
+def _validated(
+    request,
+    resource_type,
+    body,
+    *,
+    stored: Resource | None,
+    requirement,
+    type_iri: str,
+):
     """Validate `request`'s write of `body` over `stored` (``None`` for a
     create) with `validate_write`, whether `stored` is readable
     (`object_readable`) telling whether its errors are hidden: what
@@ -570,19 +582,36 @@ def _validated(request, resource_type, body, *, stored: Resource | None, require
         stored=stored,
         readable=readable,
         requirement=requirement,
+        type_iri=type_iri,
     )
 
 
 def create(
-    request, resource_type, body, *, requirement, using: str, covered: bool = True
+    request,
+    resource_type,
+    body,
+    *,
+    requirement,
+    using: str,
+    covered: bool = True,
+    type_iri: str | None = None,
 ) -> Resource:
     """Create a resource of `resource_type` whose content is `body` with
     ``ResourceRegistration.register_instance`` (in `creating_revision`),
     checked as stored (`save_checked`), once `body` itself is validated
-    (`_validated`: `validate_write`, always)."""
+    (`_validated`: `validate_write`, always). `type_iri` is the type the
+    post-save check names (by default `resource_type`'s ``type_uri``)."""
     # One type IRI for the workflow check's mark and the post-save check.
-    type_iri = resource_type.type_uri
-    _validated(request, resource_type, body, stored=None, requirement=requirement)
+    if type_iri is None:
+        type_iri = resource_type.type_uri
+    _validated(
+        request,
+        resource_type,
+        body,
+        stored=None,
+        requirement=requirement,
+        type_iri=type_iri,
+    )
 
     def save():
         with creating_revision(resource_type):
@@ -611,16 +640,26 @@ def update(
     requirement,
     using: str,
     covered: bool = True,
+    type_iri: str | None = None,
 ) -> Resource:
     """Write `body` to `instance` (read with its row locked inside the
     caller's transaction on `using`) with
     ``ResourceRegistration.update_locked``, checked as stored
     (`save_checked`), once `body` itself is validated over `instance`
     (`_validated`: `validate_write`, always, whether `instance` is readable
-    telling whether its errors are hidden)."""
+    telling whether its errors are hidden). `type_iri` is the type the
+    post-save check names (by default `resource_type`'s ``type_uri``)."""
     # One type IRI for the workflow check's mark and the post-save check.
-    type_iri = resource_type.type_uri
-    _validated(request, resource_type, body, stored=instance, requirement=requirement)
+    if type_iri is None:
+        type_iri = resource_type.type_uri
+    _validated(
+        request,
+        resource_type,
+        body,
+        stored=instance,
+        requirement=requirement,
+        type_iri=type_iri,
+    )
     return save_checked(
         request,
         resource_type,

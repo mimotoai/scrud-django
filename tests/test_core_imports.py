@@ -81,3 +81,22 @@ def test_core_modules_import_no_drf():
                 if any(name == d or name.startswith(d + ".") for d in DENIED):
                     offenders.append(f"{path.relative_to(ROOT)}: {name}")
     assert not offenders
+
+
+def test_error_text_equality_compares_the_code_without_drf():
+    script = (
+        SCRIPT
+        + """
+from scrud_django.exceptions import ErrorText
+
+assert ErrorText("x", "a") != ErrorText("x", "b")
+assert not (ErrorText("x", "a") == ErrorText("x", "b"))
+assert ErrorText("x", "a") == ErrorText("x", "a")
+assert ErrorText("x", "a") == "x"
+assert hash(ErrorText("x", "a")) == hash("x")
+"""
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr

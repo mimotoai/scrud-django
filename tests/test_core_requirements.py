@@ -579,3 +579,25 @@ def test_anyof_option_request_check_of_a_put_reads_its_body():
             )
             == stored
         )
+
+
+@pytest.mark.django_db
+@test_context
+def test_not_neutral_compares_the_permissions_not_their_count():
+    from scrud_django.drf_requirements import NotNeutral, requirement_of
+
+    required, hidden = IsAuthorized(), IsAuthorized()
+
+    class OffsetView:
+        """A view whose requirement repeats a permission while another one
+        (under a ``~``) is left out: as many leaves as permissions, but not
+        the same ones."""
+
+        def rbac_requirement(self):
+            return [required, required]
+
+        def _rbac_permissions(self):
+            return [required, hidden]
+
+    with pytest.raises(NotNeutral):
+        requirement_of(OffsetView())

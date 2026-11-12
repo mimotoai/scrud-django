@@ -1167,19 +1167,6 @@ template typed for `/items/0` of one instance is restored in the form for
 `/items/0`; assert it has the default template, and that the typed one comes
 back with `instance=7` again.
 
-<a id="core-write-no-type-iri-recheck"></a>
-## core-write-no-type-iri-recheck: `core.create` and `core.update` take no `type_iri` or `recheck`
-
-`scrud_django.core.writes.create` and `update` pass no `type_iri` or `recheck`
-to `save_checked`, which the DRF views thread from their own overrides
-(`resource_type_iri_for`, the post-save recheck). A front end other than DRF
-(the front end of ninja phase 3) that needs either must thread them itself or
-call `save_checked` directly; with `create` and `update` it checks the saved
-resource against the resource type's own URI only. Test: in
-`tests/test_core_writes.py`, write through `core.create` a resource whose
-type's `type_iri` differs from the `ResourceType.type_uri` the checks name,
-and assert the post-save check asks the former; today it asks the latter.
-
 <a id="core-allowed-methods-existence-leak"></a>
 ## core-allowed-methods-existence-leak: `core.allowed_methods` takes a loaded item
 
@@ -1314,40 +1301,6 @@ Before ninja phase 3. The core's types leave invariants to their callers:
 Test: type-checking (`mypy` or `pyright`) of `scrud_django/core/` with the
 new types, and in `tests/test_core_workflow.py` a create and an update over
 null content through the new inputs, each checked as itself.
-
-<a id="core-small-semantics"></a>
-## core-small-semantics: small semantic gaps in the core
-
-Before ninja phase 3.
-
-- `ErrorText` equality differs with and without DRF: DRF's `ErrorDetail`
-  compares `code` too, the `str` fallback does not. Test: in a no-DRF
-  subprocess (as `tests/test_core_imports.py` runs one), assert
-  `ErrorText("x", "a") != ErrorText("x", "b")`.
-- Any truthy hook return counts as allow (`"no"` allows): compare `is True`,
-  or document it. Test: in `tests/test_type_hooks.py`, a check returning
-  `"no"`; assert the write is refused.
-- `NotNeutral` is detected by counting permissions, not by comparing them:
-  compare the objects. Test: in `tests/test_core_requirements.py`, a view
-  whose `~` permission is offset by an extra one; assert `NotNeutral`.
-- `readable_content(grants=False)` is public and used by nothing: make it
-  private or test it. Test: in `tests/test_core_resources.py`, assert it
-  asks the object checks alone.
-- `HookLeaf.has_permission` allows a body with `rbac_context: []` (it asks
-  the checks in no context): refuse it, or ask them in the default one.
-  Test: in `tests/test_type_hooks.py`, POST `{"rbac_context": []}` with a
-  check that refuses everything; assert the hook refuses it (today the body
-  checks answer it, so the hook is never what refuses).
-- `HookLeaf._as_content` (`core/types.py`) gives the hooks any object that
-  is not a mapping as `content_of(obj)`, which is `{}` for anything without
-  a mapping `content`: an `object_for_checks` of a view of your own that
-  returns neither a mapping nor a `Resource` reaches the hooks as `{}`,
-  whose contexts read as the default context `""`, so `checks` are asked in
-  `""` rather than where the object is. Raise for such an object instead.
-  Test: in `tests/test_type_hooks.py`, a hooked view whose
-  `object_for_checks` returns a plain object with `rbac_context = "b"`;
-  assert a DELETE is refused by `deny_context_b` (today it is asked in
-  `""` and allowed).
 
 # Decided
 

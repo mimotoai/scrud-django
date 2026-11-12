@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac import access
+from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.core.authz import content_of, resource_contexts
 from scrud_django.core.requirements import (
@@ -27,6 +28,7 @@ from scrud_django.core.requirements import (
     register_stored_contexts_leaf,
 )
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
+from scrud_django.models import Resource
 
 
 @dataclass(frozen=True)
@@ -237,7 +239,9 @@ class HookLeaf(Leaf):
     - ``has_context_permission``: every check.
 
     A hook is given a mapping (a resource's content, a body) as it is, and
-    anything else (the `Resource` scrudful's OPTIONS checks) as its content.
+    a `Resource` (scrudful's OPTIONS checks) as its content; any other
+    object is a ``TypeError``. A hook allows by returning ``True``: any
+    other return (``None``, ``"no"``, ``1``) refuses.
 
     ``checks`` govern writes (the request check, the object check of a PUT,
     PATCH or DELETE in each stored context, the post-save check, which
@@ -274,7 +278,7 @@ class HookLeaf(Leaf):
 
         def narrowing(check):
             def narrow(request, body, context):
-                return check(request, self.resource_type, body, context)
+                return check(request, self.resource_type, body, context) is True
 
             return narrow
 
@@ -289,15 +293,18 @@ class HookLeaf(Leaf):
         content = access.contexts_body(body)
         if not isinstance(content, Mapping):
             return True
+        # A body naming no context (``rbac_context: []``) is written in the
+        # default one, as scoped-rbac authorizes it; never in none.
+        contexts = rbac_contexts_of(content) or [DEFAULT_CONTEXT]
         return all(
             self.has_context_permission(request, content, context)
-            for context in rbac_contexts_of(content)
+            for context in contexts
         )
 
     def has_object_permission(self, request, obj):
         obj = _as_content(obj)
         if not all(
-            check(request, self.resource_type, obj)
+            check(request, self.resource_type, obj) is True
             for check in self.options.object_checks
         ):
             return False
@@ -315,7 +322,7 @@ class HookLeaf(Leaf):
     def has_context_permission(self, request, obj, context):
         obj = _as_content(obj)
         return all(
-            check(request, self.resource_type, obj, context)
+            check(request, self.resource_type, obj, context) is True
             for check in self.options.checks
         )
 
@@ -323,8 +330,17 @@ class HookLeaf(Leaf):
 def _as_content(obj):
     """`obj` as a hook is given it: a mapping (a resource's content, or a
     body) as it is; anything else (the `Resource` scrudful's OPTIONS checks,
-    as ``get_object()`` returns it) as its content (`content_of`)."""
-    return obj if isinstance(obj, Mapping) else content_of(obj)
+    as ``get_object()`` returns it) as its content (`content_of`); any other
+    object is a ``TypeError``: its content would read as ``{}``, and its
+    contexts as the default one, so the checks would be asked where the
+    object is not."""
+    if isinstance(obj, Mapping):
+        return obj
+    if isinstance(obj, Resource):
+        return content_of(obj)
+    raise TypeError(
+        f"A hook is given a mapping or a Resource, not {type(obj).__name__}."
+    )
 
 
 def hook_leaf(resource_type, slug: str, *, type_iri=None) -> HookLeaf | None:

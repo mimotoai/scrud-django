@@ -194,7 +194,8 @@ installed, its URL parameters `ui-branch`, `ui-branch-confirm`, `ui-scope`,
 
 Hooks on `json_resource_type`, honoured by every front end, narrow what the
 grants allow (they can only refuse, and refuse superusers too, as an
-`IsAuthorized` subclass does):
+`IsAuthorized` subclass does). A hook must return `True` to allow: any other
+return (`None`, `"yes"`, `1`) refuses.
 
 - `checks`: callables `(request, resource_type, body, context) -> bool` that
   govern **writes**: asked of a write in each context it writes, of the

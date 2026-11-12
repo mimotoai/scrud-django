@@ -50,6 +50,19 @@ class ErrorText(_ErrorBase):
             self.code = code
             return self
 
+        def __eq__(self, other):
+            # As DRF's ErrorDetail: the code is part of the value.
+            result = super().__eq__(other)
+            if result is NotImplemented or not result:
+                return result
+            return getattr(other, "code", self.code) == self.code
+
+        def __ne__(self, other):
+            result = self.__eq__(other)
+            return result if result is NotImplemented else not result
+
+        __hash__ = str.__hash__
+
 
 def __getattr__(name):
     """``DOCUMENT_RENDERERS`` (`scrud_django.renderers`), importable from here

@@ -789,3 +789,29 @@ def test_validate_write_asks_the_request_check_first():
             requirement=[GrantsLeaf(JSON_LD), RefusingRequests()],
             readable=lambda: True,
         )
+
+
+@pytest.mark.django_db
+@test_context
+def test_readable_content_takes_no_grants_flag_and_the_private_one_asks_object_checks():
+    from scrud_django.core import resources
+    from scrud_django.core.types import requirement_for
+
+    from .resource_types import hooked_resource_types
+
+    reverse("hooked-notes-list")
+    hooked_resource_types()
+    # The hooks alone: with no grants leaf, nothing is asked but the object
+    # checks (the public function refuses such a requirement).
+    requirement = requirement_for(
+        get_resource_type_for("hooked-notes"), "hooked-notes"
+    )[1:]
+    nobody = user_with()  # holds no grants at all
+    read = request_of("GET", nobody)
+    with pytest.raises(TypeError):
+        resources.readable_content(read, {}, requirement, grants=False)
+    # The object checks alone allow what is not secret and refuse what is.
+    assert resources._readable_content(read, {"text": "x"}, requirement, grants=False)
+    assert not resources._readable_content(
+        read, {"text": "x", "secret": True}, requirement, grants=False
+    )

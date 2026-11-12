@@ -271,6 +271,27 @@ def _negates_is_authorized(permission):
     return False
 
 
+@contextmanager
+def _fixed_permissions(view):
+    """`view` with ``get_permissions()`` returning the same permission
+    objects for the block (those it makes on entry)."""
+    get_permissions = getattr(view, "get_permissions", None)
+    if not callable(get_permissions):
+        yield
+        return
+    fixed = list(get_permissions())
+    missing = object()
+    previous = view.__dict__.get("get_permissions", missing)
+    view.get_permissions = lambda: list(fixed)
+    try:
+        yield
+    finally:
+        if previous is missing:
+            del view.get_permissions
+        else:
+            view.get_permissions = previous
+
+
 def requirement_of(view):
     """`view`'s requirement: ``view.rbac_requirement()`` (scoped-rbac's
     ``AccessControlledAPIView``), or for a view without one each
@@ -278,14 +299,19 @@ def requirement_of(view):
     (`leaves_of`). Raises `NotNeutral` when DRF's ``~`` wraps an
     ``IsAuthorized`` among them: ``rbac_requirement`` leaves out exactly
     those, so a view whose ``_rbac_permissions()`` (every ``IsAuthorized``)
-    holds more than its requirement has one under ``~``. The hooks
+    holds a permission that is not one of its requirement's leaves has one
+    under ``~`` (compared as objects, not counted). The hooks
     registered for the view's type follow them (`hook_leaves`)."""
     rbac_requirement = getattr(view, "rbac_requirement", None)
     if callable(rbac_requirement):
-        requirement = list(rbac_requirement())
-        rbac_permissions = getattr(view, "_rbac_permissions", None)
-        every = rbac_permissions() if callable(rbac_permissions) else ()
-        if len(list(requirement_leaves(requirement))) < len(every):
+        # ``get_permissions()`` builds its permissions afresh on each call:
+        # both reads below must see the same objects to compare them.
+        with _fixed_permissions(view):
+            requirement = list(rbac_requirement())
+            rbac_permissions = getattr(view, "_rbac_permissions", None)
+            every = rbac_permissions() if callable(rbac_permissions) else ()
+        required = {id(leaf) for leaf in requirement_leaves(requirement)}
+        if any(id(permission) not in required for permission in every):
             raise NotNeutral(f"{type(view).__name__}: ~ over an IsAuthorized")
     else:
         permissions = getattr(view, "get_permissions", None)

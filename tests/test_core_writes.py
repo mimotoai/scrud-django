@@ -22,6 +22,7 @@ from scrud_django.core import workflow as core_workflow
 from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.core.workflow import NoWorkflowPolicyDenied
 from scrud_django.core.writes import (
+    check_post_save,
     create,
     creating_revision,
     destroy,
@@ -773,3 +774,89 @@ def test_update_asks_each_anyof_option_with_its_body():
         requirement=requirement,
         readable=lambda: True,
     )
+
+
+OTHER_IRI = "tests://OtherIri"
+
+
+def may_post_json_ld_in_workflow():
+    """A role reading and creating JSON-LD resources only through a
+    transition the workflow check authorized."""
+    return {
+        "http.GET": [JSON_LD],
+        "http.POST": {
+            JSON_LD: {
+                "condition": {
+                    "operator": "scrud_workflow",
+                    "authorized_transitions": ["__INITIALIZE__"],
+                }
+            }
+        },
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_with_another_type_iri_keeps_the_workflow_mark():
+    # The workflow check marks the write by the IRI the post-save check
+    # names: a type_iri other than the type's own still finds its mark.
+    store_json_ld_policy()
+    stored = ResourceRegistration.register({"x": 1, "rbac_context": "a"}, "json-ld")
+    rtype = stored.resource_type
+    request = request_by("put", user_with((may_stay_json_ld(), "a")))
+    body = {"x": 2, "rbac_context": "a"}
+    with mock.patch(
+        "scrud_django.core.writes.check_post_save", wraps=check_post_save
+    ) as post_save:
+        saved = update(
+            request,
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            body,
+            requirement=[GrantsLeaf(JSON_LD)],
+            using="default",
+            type_iri=OTHER_IRI,
+        )
+    assert Resource.objects.get(pk=stored.pk).content == body == saved.content
+    assert post_save.call_args.kwargs["type_iri"] == OTHER_IRI
+
+
+@pytest.mark.django_db
+@test_context
+def test_create_with_another_type_iri_keeps_the_workflow_mark():
+    store_json_ld_policy()
+    rtype = get_resource_type_for("json-ld")
+    request = request_by("post", user_with((may_post_json_ld_in_workflow(), "a")))
+    body = {"x": 1, "rbac_context": "a"}
+    with mock.patch(
+        "scrud_django.core.writes.check_post_save", wraps=check_post_save
+    ) as post_save:
+        created = create(
+            request,
+            rtype,
+            body,
+            requirement=[GrantsLeaf(JSON_LD)],
+            using="default",
+            type_iri=OTHER_IRI,
+        )
+    assert Resource.objects.get(pk=created.pk).content == body
+    assert post_save.call_args.kwargs["type_iri"] == OTHER_IRI
+
+
+@pytest.mark.django_db
+@test_context
+def test_create_and_update_name_the_types_own_iri_by_default():
+    store_json_ld_policy()
+    rtype = get_resource_type_for("json-ld")
+    request = request_by("post", user_with((may_post_json_ld_in_workflow(), "a")))
+    with mock.patch(
+        "scrud_django.core.writes.check_post_save", wraps=check_post_save
+    ) as post_save:
+        create(
+            request,
+            rtype,
+            {"x": 1, "rbac_context": "a"},
+            requirement=[GrantsLeaf(JSON_LD)],
+            using="default",
+        )
+    assert post_save.call_args.kwargs["type_iri"] == JSON_LD

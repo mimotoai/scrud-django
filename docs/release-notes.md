@@ -369,6 +369,18 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ## 0.16.0
 
+### Fixed
+
+* Hooks (`checks`, `object_checks`) allow only by returning `True`; any other
+  return value refuses (a truthy `"no"` used to allow). `core.create` and
+  `core.update` take `type_iri`, which names the post-save check and the
+  workflow mark; the hooks of a body with `rbac_context: []` are asked in the
+  default context; a hook given an object that is neither a mapping nor a
+  `Resource` raises `TypeError`; `ErrorText` without DRF compares `code` as
+  `ErrorDetail` does; the view-based `~` detection compares permission
+  objects, not their count; `core.resources.readable_content` no longer
+  takes `grants`.
+
 ### Added
 
 * `scrud_django.ui`, an optional app (add it to `INSTALLED_APPS` and install

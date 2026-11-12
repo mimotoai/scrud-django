@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
-from django.test import override_settings
+from django.test import RequestFactory, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import parse_http_date, quote_etag
@@ -832,3 +832,76 @@ def test_check_must_allow_in_every_stored_context():
     delete_note(both)
     Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
     assert Resource.objects.filter(pk=both.pk).exists()
+
+
+def says_no(request, resource_type, body, context):
+    return "no"
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_truthy_non_bool_hook_refuses():
+    # A hook allows by returning True: "no" (truthy) refuses, in a check
+    # and in an object check.
+    hooked_note_type(checks=(says_no,))
+    Given.http.force_authenticate(assign_role(WRITER, "a"))
+    before = Resource.objects.count()
+    post_note({"text": "x", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.count() == before
+    hooked_note_type(object_checks=(lambda request, resource_type, obj: "yes",))
+    stored = note("n", "a")
+    When.http.get(reverse("hooked-notes-detail", args=[stored.pk]))
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+
+
+@pytest.mark.django_db
+def test_a_truthy_non_bool_hook_refuses_a_workflow_transition():
+    hooked = get_resource_type_for("hooked-notes")
+    leaf = HookLeaf(hooked, TypeOptions(checks=(says_no,)))
+    assert [narrow(None, {}, "") for narrow in leaf.narrow] == [False]
+    for result in (None, 1, "no", [True]):
+        leaf = HookLeaf(
+            hooked,
+            TypeOptions(checks=(lambda request, rt, body, ctx, r=result: r,)),
+        )
+        assert leaf.narrow[0](None, {}, "") is False
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_body_with_no_context_is_asked_in_the_default_one():
+    # rbac_context [] names no context; the checks are asked in "" (never
+    # in none, which would allow it whatever they say).
+    asked = []
+
+    def deny_everything(request, resource_type, body, context):
+        asked.append(context)
+        return False
+
+    hooked = get_resource_type_for("hooked-notes")
+    leaf = HookLeaf(hooked, TypeOptions(checks=(deny_everything,)))
+    request = RequestFactory().post("/")
+    request.user = assign_role(WRITER, "a")
+    assert not leaf.has_permission(request, {"rbac_context": []})
+    assert asked == [""]
+    # (Over HTTP scoped-rbac answers such a body 400 before any hook.)
+
+
+@pytest.mark.django_db
+def test_a_hook_is_given_a_mapping_or_a_resource_only():
+    class Plain:
+        rbac_context = "b"
+
+    hooked = get_resource_type_for("hooked-notes")
+    leaf = HookLeaf(hooked, TypeOptions(checks=(deny_context_b,)))
+    request = RequestFactory().delete("/")
+    request.user = assign_role(WRITER, "a", "b")
+    with pytest.raises(TypeError, match="Plain"):
+        leaf.has_object_permission(request, Plain())
+    with pytest.raises(TypeError, match="Plain"):
+        leaf.has_context_permission(request, Plain(), "b")
+    # A Resource and a mapping are given as their content.
+    stored = note("in b", "b")
+    assert not leaf.has_object_permission(request, stored)
+    assert not leaf.has_object_permission(request, dict(stored.content))

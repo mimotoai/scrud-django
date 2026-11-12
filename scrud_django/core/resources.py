@@ -116,11 +116,10 @@ def _options_copy(request, method):
     return clone
 
 
-def readable_content(read, content, requirement, *, grants=True, permission=None):
+def readable_content(read, content, requirement, *, permission=None):
     """Whether the resource's `content` is readable by `read` (a GET of the
     detail route): the grants (`readable_by_grants`, ``http.GET`` on each
-    leaf's type; with `permission`, `grants_allow` for it instead; not asked
-    without `grants`) **and** the object checks a list asks
+    leaf's type; with `permission`, `grants_allow` for it instead) **and** the object checks a list asks
     (`readable_by_object_checks`, each ``AnyOf`` option asking its request
     checks of `read` first, as DRF's ``|`` answers a GET), with
     ``scrud_workflow`` refusing (`_not_checking_write`): it never makes an
@@ -134,7 +133,6 @@ def readable_content(read, content, requirement, *, grants=True, permission=None
         read,
         content,
         requirement,
-        grants=grants,
         permission=permission,
         request_checks=True,
     )
