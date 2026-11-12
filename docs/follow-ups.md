@@ -5,6 +5,52 @@ kept by a decision, each saying what was decided and why. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
 
+<a id="studio-push-list-delete"></a>
+## studio-push-list-delete: an HTML list of pushes shows an applied push with a Delete button
+
+An HTML list of `ui-pushes/` (`render_collection` in `render.py`) renders an
+applied push with the edit form and a Delete button (the API's 409 protects
+it); the `is_record` hook is applied only to a detail frame. Test: in
+`tests/test_studio_promote.py`, GET `ui-pushes/` as HTML for a user who may
+DELETE pushes, with an applied push stored; the item should have no
+`hx-delete`, and has one today.
+
+<a id="studio-branch-tools-squeeze"></a>
+## studio-branch-tools-squeeze: opening the branch tools pushes the strip off the first screen
+
+Opening Branch settings or New branch (above the panes) squeezes the panes to
+their 14rem floor, and the page scrolls so the strip leaves the first screen.
+At viewport heights up to about 700px the strip is one scroll away anyway, and
+the 3.5rem chrome reserve in `.studio .studio-workbench` is a constant (wrapped
+chrome links at narrow widths add overflow). Test: a browser layout check at
+1440x900 with Branch settings open; the document height should not exceed the
+viewport.
+
+<a id="studio-push-review-bookkeeping"></a>
+## studio-push-review-bookkeeping: the review marks bookkeeping fields as changes
+
+The push review marks `branch`, `base` and `rbac_context` as changed on every
+create over an inherited row. They are real differences in the stored row but
+bookkeeping the author did not change; consider de-emphasizing them. Test:
+render the review of `alice-wip`'s `todo` override into `testing-admin` and
+assert those fields are styled as bookkeeping, not as changes.
+
+<a id="studio-promote-nested-scroll"></a>
+## studio-promote-nested-scroll: a long review scrolls in two nested containers
+
+The promote panel has its own bounded scroll and sits inside the strip, which
+is bounded at 40vh with its own scroll, so a long review scrolls in two nested
+containers. Test: a browser check that scrolling the review never scrolls
+Apply out of view.
+
+<a id="studio-client-picker-hrefs"></a>
+## studio-client-picker-hrefs: the client tests build the picker links by hand
+
+The node client tests' branch picker links are built in the harness, not taken
+from the server-rendered picker (`tests/test_studio_workbench.py` pins the
+server's shape separately), so the two can drift apart. Test: build the client
+fixture from `studio:branch-picker` rendered by the server.
+
 <a id="studio-push-page-embeds-twice"></a>
 ## studio-push-page-embeds-twice: a push's page embeds the push preview twice
 
