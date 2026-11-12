@@ -1193,6 +1193,25 @@ method, as step 1 of `allowed_methods` does) before its lookup. Test: in
 user granted nothing on the type; assert 200 with `Allow: OPTIONS`, not 404,
 through the ninja route once it exists (the DRF route passes today).
 
+<a id="drf-anyof-list-object-check-only"></a>
+## drf-anyof-list-object-check-only: the DRF list and readability ask a `|` option's object check alone
+
+On a DRF view whose permissions compose `IsAuthorized` subclasses with `|`,
+the detail route asks each operand's request check before its object check
+(DRF's `OR.has_object_permission`), but `scrud_django.filters`
+(`meets_object_checks`, `readable_by_object_checks`,
+`filter_by_object_checks`) asks the object checks alone. So the list shows
+an object that its own detail GET refuses, and a refusal of an object the
+requester cannot GET is a 403 rather than a 404. The facade
+(`scrud_django.core`) already pairs the two (`request_checks=True`); the DRF
+views keep `develop`'s answers until this is decided. Test: in
+`tests/test_core_requirements.py`, with a view whose permission is
+`RequestRefusingIsAuthorized | ObjectRefusingIsAuthorized`, list json-ld as
+a reader in "a" with a resource stored in "a"; the list includes the
+resource, and its detail GET answers 403. It should leave the resource out
+and answer 404, as the facade does
+(`test_anyof_option_refused_at_request_level_is_not_satisfied`).
+
 <a id="core-method-sets-hard-coded"></a>
 ## core-method-sets-hard-coded: `ITEM_METHODS` and `LIST_METHODS` are fixed
 

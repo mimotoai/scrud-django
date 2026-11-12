@@ -493,17 +493,33 @@ def test_anyof_option_refused_at_request_level_is_not_satisfied():
     assert routed == drf
 
     refusing = [access.AnyOf([[first], [object_refusing_leaf(JSON_LD)]])]
-    assert core_status(
-        lambda: resources.check_object(request, rtype, stored, refusing, covered=False)
-    ) in (403, 404)
-    assert core_status(
-        lambda: resources.load_for_read(
-            request, rtype, stored.pk, requirement=refusing, method="GET"
+    # A pinned divergence, stricter on the facade (follow-up
+    # drf-anyof-list-object-check-only): its readability asks each option's
+    # request check, as DRF's own detail GET (|) does, so the object is
+    # unreadable and its refusal a 404; DRF's readability asks the object
+    # checks alone (the first option's allows), so DRF answers 403.
+    assert (
+        core_status(
+            lambda: resources.check_object(
+                request, rtype, stored, refusing, covered=False
+            )
         )
-    ) in (403, 404)
-    assert drf_detail_status(
-        RequestRefusingIsAuthorized | ObjectRefusingIsAuthorized, reader, stored.pk
-    ) in (403, 404)
+        == 404
+    )
+    assert (
+        core_status(
+            lambda: resources.load_for_read(
+                request, rtype, stored.pk, requirement=refusing, method="GET"
+            )
+        )
+        == 404
+    )
+    assert (
+        drf_detail_status(
+            RequestRefusingIsAuthorized | ObjectRefusingIsAuthorized, reader, stored.pk
+        )
+        == 403
+    )
     assert not resources.readable_queryset(request, rtype, refusing).exists()
     # DRF's own path is unchanged: its object checks ask no request check.
     assert meets_object_checks(refusing, request, content_of(stored))

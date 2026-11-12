@@ -234,8 +234,17 @@ def validate_write(
     (`scrud_django.core.resources.check_request`: of the list's POST for a
     create, of the item's route for an update), whose refusal is
     ``access.AccessDenied`` (403), as the DRF route asks ``has_permission``
-    with the body before anything else validates it. Then, in the order
-    DRF's serializer validators check it: its JSON Schema
+    with the body before anything else validates it. For an update whose
+    `requirement` has an ``access.AnyOf``, then the object check of
+    `stored` with the body (`scrud_django.core.resources.check_object`
+    given `body`, ``scrud_workflow`` allowing for the PUT the workflow check
+    covers): DRF's ``|`` pairs each option's request check, reading the
+    body, with that option's object check, which a ``load_for_read`` given
+    no body could not (it asks whether the requester may PUT in some
+    context); a refusal is ``access.AccessDenied``, or ``Http404`` for a
+    resource the requester cannot read. Without an ``AnyOf`` the object
+    check asks no request check, so the body changes nothing there. Then,
+    in the order DRF's serializer validators check it: its JSON Schema
     (`validate_schema`), then, for a ``WorkflowPolicy``, the policy's own
     checks (`validate_policy_write`), then the workflow check
     (`scrud_django.core.workflow.workflow_check`, given `stored`'s content
@@ -259,11 +268,28 @@ def validate_write(
     itself calls it first, with the same request and body, inside the
     write's transaction."""
     # Imported here: scrud_django.core.resources imports this module.
-    from scrud_django.core.resources import check_request
+    from scrud_django.core.resources import (
+        COVERED_ITEM_METHOD,
+        check_object,
+        check_request,
+    )
 
     check_request(
         request, resource_type, requirement, list_route=stored is None, body=body
     )
+    if stored is not None and any(
+        isinstance(entry, access.AnyOf) for entry in requirement
+    ):
+        # DRF's | pairs an option's request check (with the body) with its
+        # object check: a body-less load_for_read could not.
+        check_object(
+            request,
+            resource_type,
+            stored,
+            requirement,
+            covered=request.method == COVERED_ITEM_METHOD,
+            body=body,
+        )
     if narrow is None:
         narrow = tuple(
             check

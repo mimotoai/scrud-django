@@ -375,7 +375,9 @@ def option_allows_request(option, request, body=None) -> bool:
     """Whether every entry of the ``AnyOf`` option `option` allows
     ``has_permission(request, body)`` (an ``AnyOf`` among them: any of its
     options), as DRF's ``|`` asks an operand's request check
-    (``OR.has_object_permission``)."""
+    (``OR.has_object_permission``). `meets_object_checks` asks it without a
+    body: its facade callers (a list, readability) always ask it of a GET or
+    HEAD (a GET copy, `as_get`, for a write's), which has none."""
 
     def allows(entry):
         if isinstance(entry, access.AnyOf):

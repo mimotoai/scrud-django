@@ -433,7 +433,10 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   facade's (DRF's `|`) allows an object only when each of its entries
   allows the request (`has_permission`) and then the object, as DRF's `|`
   asks them (`check_object`, and the object checks of `readable_content`
-  and `readable_queryset`; the DRF views' own are unchanged).
+  and `readable_queryset`; the DRF views' own are unchanged), and
+  `validate_write` of an update with an `AnyOf` asks the object check again
+  with the body, so a resource loaded without its body cannot be moved
+  where only another option's request check allows.
   `readable_queryset` and `list_last_modified`, which filter by a
   resource's stored contexts, raise `ImproperlyConfigured` for a
   requirement with a leaf that may read others: one whose `contexts_for`

@@ -712,3 +712,64 @@ def test_a_second_update_validates_its_own_body():
         )
     assert raised.value.status_code == status.HTTP_400_BAD_REQUEST
     assert row_of(stored) == after_first
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_asks_each_anyof_option_with_its_body():
+    """DRF's ``|`` pairs each option's request check, with the body, with
+    that option's object check. A requirement ``AnyOf([[GrantsLeaf(PP)],
+    [GrantsLeaf(OTHER)]])``, a writer who may PUT PP in "a" and OTHER in
+    "b", a resource in "a": loaded body-less for a PUT (`load_for_read`), it
+    passes (the first option may PUT in some context and on the object), but
+    its update with a body moving it to "b" is refused before anything is
+    validated or saved: the first option's request check refuses the body,
+    and the second's object check the resource in "a". Nothing is saved."""
+    from scrud_django.core.resources import load_for_read
+
+    other = "tests://Other"
+    rtype = profiles_type()
+    stored = ResourceRegistration.register(
+        {"name": "old", "rbac_context": "a"}, "partner-profiles"
+    )
+    writer = user_with(
+        ({"http.GET": [PP], "http.PUT": [PP]}, "a"),
+        ({"http.PUT": [other]}, "b"),
+    )
+    requirement = [access.AnyOf([[GrantsLeaf(PP)], [GrantsLeaf(other)]])]
+    request = request_by("put", writer)
+    body = {"name": "moved", "rbac_context": "b"}
+    loaded = load_for_read(
+        request, rtype, stored.pk, requirement=requirement, method="PUT"
+    )
+    validated = []
+    with mock.patch(
+        "scrud_django.core.writes.validate_schema",
+        side_effect=lambda *args, **kwargs: validated.append(args),
+    ):
+        with pytest.raises(access.AccessDenied):
+            update(
+                request, rtype, loaded, body, requirement=requirement, using="default"
+            )
+    assert validated == []
+    row = Resource.objects.get(pk=stored.pk)
+    assert (row.content, row.etag) == (
+        {"name": "old", "rbac_context": "a"},
+        stored.etag,
+    )
+    # Given the body, `load_for_read` pairs them itself.
+    with pytest.raises(access.AccessDenied):
+        load_for_read(
+            request, rtype, stored.pk, requirement=requirement, method="PUT", body=body
+        )
+    # A body keeping it in "a" passes the first option's pair. (The save
+    # would then be refused by the post-save check, which asks every option
+    # in each context the saved resource is in.)
+    validate_write(
+        request,
+        rtype,
+        {"name": "kept", "rbac_context": "a"},
+        stored=loaded,
+        requirement=requirement,
+        readable=lambda: True,
+    )

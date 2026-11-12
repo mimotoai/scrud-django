@@ -209,7 +209,11 @@ def _object_permitted(request, resource_type, content, requirement, *, body=None
     An option's request check reads `body` (the parsed body of a PUT or
     POST, as the route's request check, `check_request`, reads it); without
     one, a PUT or POST is checked as ``Allow`` checks it (`_options_copy`),
-    as `load_for_read` checks it given none. A leaf's ``PermissionDenied``
+    as `load_for_read` checks it given none: whether the requester may write
+    in some context, which does not pair an option's request check of the
+    body with its object check as DRF's ``|`` does, so a write loaded
+    without its body is paired again by `validate_write` (`update`), given
+    the body. A leaf's ``PermissionDenied``
     refuses; its ``Http404`` is raised, as is any other access error of a
     request check (a body naming a reserved context, 400)."""
     permission = Permission(
@@ -289,7 +293,9 @@ def load_for_read(
       it (`allowed_methods`, on a body-less copy, `_options_copy`): whether
       the requester may PUT in some context; the body's contexts are then
       the caller's to check (`validate_write` asks them, then the post-save
-      check);
+      check), and so is pairing an ``AnyOf`` option's request check of the
+      body with its object check, as DRF's ``|`` does (`validate_write`
+      asks the object check again with the body, `check_object`);
     - missing, or a `pk` that is no key, it is ``Http404``; so is one stored
       in a context reserved once normalised (`found_item`, which caches the
       type on it). The lookup is not narrowed by readability, as the DRF
