@@ -2077,8 +2077,10 @@ component `studio:workbench`, which renders:
 - a top bar with T's name, the branch picker and the Items, Editor and
   Preview toggles;
 - "Branch settings" and "New branch" (see [Branch settings](#branch-settings));
-- a notice (`data-studio-notice`, `role="alert"`, hidden until a write is
-  refused);
+- a notice (`data-studio-notice`, `role="alert"` in the error style, hidden
+  until a write is refused; shown as information, `role="status"` with
+  `data-studio-notice-level="info"` in a neutral style, for the note that an
+  item is not on the branch);
 - three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`,
   in a row that takes the height the top bar and the strip leave (the
   workbench is a flex column, `100vh` less a small reserve for the page's
@@ -2205,8 +2207,10 @@ and the inspector under it (see
   (see [The editors](#the-editors)). The `item` in the URL opens on load. An
   `item` the tree has no entry
   for (an own item of the branch the author switched from) shows a notice in
-  the workbench ("<kind> <name> is not on this branch.", `ScrudStudio.notify`),
-  no error, and is removed from the URL so a reload does not repeat it.
+  the workbench, as information (`ScrudStudio.inform`: `role="status"`, the
+  neutral style) and no error, naming the item as the editor's header does
+  ("stylesheet todo (ctx) is not on this branch."), and is removed from the URL
+  so a reload does not repeat it. A refused write after it is an alert again.
 - **After a write.** After any write sent from inside the workbench
   (`htmx:afterRequest` of a non-GET) that succeeds, the items and the strip
   are fetched again (an htmx GET of `data-studio-src`, with the pane's own
@@ -2247,8 +2251,10 @@ event's `source` is the preview frame's window), `expand(pane)` (open a
 collapsed pane), `parseOpen(entry)`, `entryFor(item)` (the tree's entry for
 an `item` key, or `null`), `open(entry)` (open a tree entry, as a click on
 it does), `errorText(xhr)` (a refused request's text), `notify(text, label,
-act)` (the workbench's notice, as text, with a button `label` that calls
-`act`) and `clearNotice()`, `frameChanged(frame)` (whether a frame's inputs,
+act)` (the workbench's notice, as an alert, as text, with a button `label`
+that calls `act`), `inform(text)` (the notice as information: a status in
+the neutral style) and `clearNotice()` (hides it and makes it an alert
+again), `frameChanged(frame)` (whether a frame's inputs,
 applied as `ScrudUI.buildBody` applies them, change its content),
 `watchUnsaved(check)` (a function that says whether a script holds unsaved
 input) and `unsaved()` (the editor's frame changed, or any check says so).

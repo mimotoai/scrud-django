@@ -997,12 +997,71 @@ out.url = location.search;
     assert "pinned" in out["url"]
 
 
+def test_a_refused_write_after_the_item_notice_is_an_alert_again():
+    """The not-on-this-branch notice is a status (info level); a refused
+    write after it is the alert again, in the error style, and clearing the
+    notice resets it."""
+    out = scenario(
+        r"""
+const role = () => [notice.getAttribute('role'),
+  notice.getAttribute('data-studio-notice-level')];
+out.info = [notice.textContent, role()];
+const html = '<div class="scrud-notice scrud-notice-error" role="alert">'
+  + 'You may not override this.</div>';
+fire(override, 'htmx:afterRequest', {elt: override, successful: false,
+  requestConfig: {verb: 'post'},
+  xhr: {status: 403, responseText: html, getResponseHeader: () => 'text/html'}});
+out.refused = [notice.textContent, role()];
+S.inform('Again.');
+out.again = role();
+S.clearNotice();
+out.cleared = [notice.hasAttribute('hidden'), role()];
+""",
+        search=BASE + "&type=todo-lists&item=component%3Agone",
+    )
+    assert out["info"] == ["component gone is not on this branch.", ["status", "info"]]
+    assert out["refused"] == [
+        "Refused (HTTP 403): You may not override this.",
+        ["alert", None],
+    ]
+    assert out["again"] == ["status", "info"]
+    assert out["cleared"] == [True, ["alert", None]]
+
+
+def test_item_notice_spells_a_context_stylesheet_like_the_editor_header():
+    """A stylesheet item key carries `@<applies_to>` (with a `:` of its
+    own): the picker links carry it encoded, and the notice names it as
+    the editor header does ("stylesheet todo (ex:Ctx)"), not as the key.
+    The load drops the unknown item from the state, so the links are read
+    after setting it again."""
+    out = scenario(
+        r"""
+out.notice = notice.textContent;
+S.setState({item: 'stylesheet:todo@ex:Ctx'});
+out.links = Object.fromEntries(Object.entries(pickerEntries)
+  .map(([name, e]) => [name, e.link ? e.link.getAttribute('href') : null]));
+""",
+        picker=["main", "alice-wip", "studio"],
+        search=BASE + "&type=todo-lists&item=stylesheet%3Atodo%40ex%3ACtx",
+    )
+    assert out["notice"] == "stylesheet todo (ex:Ctx) is not on this branch."
+    # The links carry such a key (once the item is in the state): it round-trips.
+    from urllib.parse import parse_qs, urlsplit
+
+    for name in ("alice-wip", "studio"):
+        query = parse_qs(urlsplit(out["links"][name]).query)
+        assert query["item"] == ["stylesheet:todo@ex:Ctx"], out["links"][name]
+    assert "item%3Dstylesheet" not in out["links"]["studio"]
+    assert "item=stylesheet%3Atodo%40ex%3ACtx" in out["links"]["studio"]
+
+
 def test_unknown_item_on_load_shows_a_notice():
     """An `item` the branch's tree lacks (an own item of the branch the
     author came from) is a notice on load, not an error, and goes from the URL."""
     out = scenario(
         r"""
 out.notice = [notice.textContent, notice.hasAttribute('hidden')];
+out.role = [notice.getAttribute('role'), notice.getAttribute('data-studio-notice-level')];
 out.state = state();
 out.ajax = out.ajax.filter((a) => a.target === 'editor');
 """,
@@ -1011,6 +1070,8 @@ out.ajax = out.ajax.filter((a) => a.target === 'editor');
     assert out["notice"] == ["component gone is not on this branch.", False]
     assert "item" not in out["state"] and out["state"]["type"] == "todo-lists"
     assert out["ajax"] == []
+    # It is information, not an error: a status, in the info level.
+    assert out["role"] == ["status", "info"]
     # A known item gives no notice.
     out = scenario(
         "out.notice = [notice.textContent, notice.hasAttribute('hidden')];",
