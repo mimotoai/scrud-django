@@ -1,42 +1,31 @@
 import copy
 import logging
 from collections.abc import Mapping
-from contextlib import contextmanager
 
 import fastjsonschema
 from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac import access
-from scoped_rbac.permissions import drf_error, http_action_iri_for, policy_for
-from scoped_rbac.policy import Permission
+from scoped_rbac.permissions import drf_error
 
+from scrud_django.core import workflow as core_workflow
+from scrud_django.core.workflow import (  # noqa: F401  (moved; re-exported)
+    check_policy_is_unique,
+    plain_body,
+)
 from scrud_django.exceptions import (
-    HiddenWorkflowTransitionError,
     JsonSchemaInvalidError,
     JsonValidationError,
-    WorkflowPolicyInvalidError,
     WorkflowTransitionError,
 )
-from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import ResourceType
 from scrud_django.permissions import (
-    _checking_transition,
-    _checking_write,
-    _mark_workflow_authorized,
     _not_checking_write,
-    _reading_every_context,
     checks_read_content,
-    condition_resource,
     content_of,
     may_read_in_context,
     reading_content,
 )
-from scrud_django.workflow import (
-    WORKFLOW_POLICY_TYPE_URI,
-    WorkflowPolicy,
-    default_workflow_policy_for,
-    stored_policies_in,
-    workflow_policies_for,
-)
+from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
 
 logger = logging.getLogger(__name__)
 
@@ -177,25 +166,6 @@ class JsonValidator:
         return validator.validate
 
 
-def check_policy_is_unique(content, pk=None):
-    """Refuse (`WorkflowPolicyInvalidError`, 400) the ``WorkflowPolicy``
-    `content` (of the resource `pk`, ``None`` for a create) when another
-    stored policy for its type applies in one of its contexts. Run by
-    `WorkflowValidator.validate_policy`, and again after the save under
-    `lock_workflow_policy_type` (``ResourceViewMixin.save_checked``), so that
-    of two concurrent writes the second is refused."""
-    resource_type = content.get("resource_type")
-    contexts = rbac_contexts_of(content)
-    stored = stored_policies_in(resource_type, contexts)
-    for rbac_context in contexts:
-        others = [policy for policy in stored[rbac_context] if policy.pk != pk]
-        if others:
-            raise WorkflowPolicyInvalidError(
-                f"A WorkflowPolicy for {resource_type!r} already exists in "
-                f"context {rbac_context!r}; update or delete it instead."
-            )
-
-
 def rbac_permissions_of(view):
     """The ``IsAuthorized`` (or subclass) permissions of `view` (nested ones
     included: ``ResourceViewMixin.get_rbac_permissions``), or ``[]`` for no
@@ -204,34 +174,42 @@ def rbac_permissions_of(view):
     return list(get_rbac_permissions()) if callable(get_rbac_permissions) else []
 
 
+def narrow_of(view):
+    """`scrud_django.core.workflow.workflow_check`'s ``narrow`` for `view`
+    (``None``: no view): one check asking each ``IsAuthorized`` permission of
+    the view (`rbac_permissions_of`, read again each time it is asked, as
+    `reading_content` makes it read the content)
+    ``has_context_permission(request, view, body, rbac_context)``. All must
+    allow. An ``IsAuthorized`` subclass can therefore refuse a transition,
+    never grant one the policy refuses: its ``obj`` here is the request body
+    as the writer sent it (a check written for stored fields, such as an
+    owner, would read the writer's claim)."""
+
+    def narrow(request, body, rbac_context):
+        return all(
+            leaf.has_context_permission(request, view, body, rbac_context)
+            for leaf in reading_content(rbac_permissions_of(view))
+        )
+
+    return (narrow,)
+
+
+def view_of(context):
+    """The view of the serializer `context`, or ``None``."""
+    return getattr(context, "context", {}).get("view")
+
+
 class WorkflowValidator:
     """Checks a create or update of a resource against the workflow policy of
-    every context concerned (`workflow_policy_for`: the context's stored policy,
-    else the settings default).
-
-    The contexts are those the new content names (`rbac_contexts_of`) and, for
-    an update, those the stored resource is in as well, so that moving a
-    resource out of a context is checked under that context's policy too. In
-    each of them that has a policy, a create must be a valid initial state and
-    an update a valid transition, and the user must be authorized for the
-    transition (``scrud_django.permissions.current_transition``, which the
-    ``scrud_workflow`` operator reads) in that context. A context an update
-    moves the resource into (one the body names and the stored resource is
-    not in) is checked as a create there: the body
-    must be a valid initial state and the user authorized for
-    ``__INITIALIZE__`` by the request's method (``http.PUT``, not
-    ``http.POST``). All of them must pass. A resource in no context is checked under
-    the settings default, and only a superuser may make its transition, as
-    scoped-rbac's object checks allow. In a context where no policy applies, a
-    grant conditioned on ``scrud_workflow`` allows nothing
-    (`authorize_without_policy`: 403). Operators and the view's permission
-    classes read the body as sent, a ``dict``; a CEL condition reads it with
-    the context checked as its ``rbac_context``
-    (``scrud_django.permissions.condition_resource``).
-
-    An error under a stored policy the requester may not read, or about a
-    stored resource they may not read, names neither the policy nor its
-    states (`errors_hidden_unless_readable`).
+    every context concerned: the DRF adapter of
+    `scrud_django.core.workflow.workflow_check`, which describes the check.
+    It gives the check the body as sent (`body_of`), the stored content of
+    the serializer's ``instance`` (``None`` for a create), the view's
+    ``IsAuthorized`` permissions as its ``narrow`` (`narrow_of`; without a
+    view, a serializer used outside the views, the policy alone decides),
+    and whether the stored resource is readable (`stored_resource_readable`).
+    A refusal in a context without a policy is DRF's 403
+    (``scoped_rbac.permissions.drf_error``).
 
     A ``WorkflowPolicy`` resource is itself checked when it is written
     (`validate_policy`): a policy that fails those checks, names a context that
@@ -249,46 +227,27 @@ class WorkflowValidator:
         data = self.body_of(data, context)
         if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
             self.validate_policy(data, instance)
-        stored_contexts = (
-            rbac_contexts_of(instance.content) if instance is not None else []
-        )
-        contexts = list(dict.fromkeys(stored_contexts + rbac_contexts_of(data)))
-        if contexts:
-            policies = list(workflow_policies_for(resource_type, contexts))
-        else:
-            policies = [(None, default_workflow_policy_for(resource_type))]
-        # The request is needed only where a policy applies; without one (a
-        # serializer used outside a request) there is no user whose grants a
-        # context without a policy could condition.
         request = context.context.get("request")
-        if request is None and any(p is not None for _, p in policies):
+        readable = None
+        if instance is not None:
+
+            def readable():
+                return self.stored_resource_readable(request, instance, context)
+
+        try:
+            core_workflow.workflow_check(
+                request,
+                type_iri=resource_type.type_uri,
+                prior=instance.content if instance is not None else None,
+                proposed=data,
+                narrow=narrow_of(view_of(context)),
+                readable=readable,
+            )
+        except core_workflow.WorkflowRequestRequired:
             self.request_of(context)
-        transitions = []
-        for c, policy in policies:
-            if policy is None:
-                continue
-            # A context the resource enters (not one it is stored in) has
-            # no prior state there: the write creates it there.
-            entering = instance is not None and c is not None
-            entering = entering and c not in stored_contexts
-            with self.errors_hidden_unless_readable(policy, request, instance, context):
-                transitions.append(
-                    (
-                        c,
-                        policy,
-                        self.transition_for(policy, data, instance, entering),
-                    )
-                )
-        for c, policy, transition_data in transitions:
-            with self.errors_hidden_unless_readable(policy, request, instance, context):
-                self.authorize(policy, transition_data, c, context, data)
-        if request is not None:
-            for c, policy in policies:
-                if policy is None:
-                    self.authorize_without_policy(c, context, data)
-            # The post-save check lets a grant conditioned on scrud_workflow
-            # allow only a write authorized here.
-            _mark_workflow_authorized(request)
+            raise
+        except core_workflow.NoWorkflowPolicyDenied as exc:
+            raise drf_error(exc, request) from exc
         return data
 
     @staticmethod
@@ -312,41 +271,18 @@ class WorkflowValidator:
             )
         return request
 
-    @contextmanager
     def errors_hidden_unless_readable(
         self, workflow_policy, request, instance=None, context=None
     ):
-        """A workflow error becomes a `HiddenWorkflowTransitionError`, which
-        names neither the policy nor any state (the same status, ``type`` and
-        ``title``), when the requester may not read what it would reveal:
-
-        - a stored policy they may not read (``http.GET`` on
-          ``WorkflowPolicy`` in none of its contexts): the resource may be in
-          a context of someone else's;
-        - for an update, the stored resource `instance`, when they may not
-          read it (`stored_resource_readable`): the error's prior state, its
-          message and which error it is all tell the stored state, which a
-          grant to write (one conditioned on ``scrud_workflow``, say) does
-          not let them read.
-
-        Other errors (under readable policies and settings defaults, for a
-        create, or for a reader of the resource) are unchanged."""
-        try:
-            yield
-        except WorkflowTransitionError as e:
-            stored = workflow_policy.resource
-            if stored is not None and not may_read_in_context(
-                request,
-                WORKFLOW_POLICY_TYPE_URI,
-                content_of(stored),
-                stored.rbac_contexts,
-            ):
-                raise HiddenWorkflowTransitionError() from e
-            if instance is not None and not self.stored_resource_readable(
-                request, instance, context
-            ):
-                raise HiddenWorkflowTransitionError() from e
-            raise
+        """`scrud_django.core.workflow.errors_hidden_unless_readable` for the
+        stored resource `instance` (``None`` for a create), as
+        `stored_resource_readable` reads it."""
+        return core_workflow.errors_hidden_unless_readable(
+            workflow_policy,
+            request,
+            instance.content if instance is not None else None,
+            lambda: self.stored_resource_readable(request, instance, context),
+        )
 
     @staticmethod
     def stored_resource_readable(request, instance, context=None):
@@ -377,32 +313,18 @@ class WorkflowValidator:
             )
 
     def validate_policy(self, data, instance):
-        """Refuse (`WorkflowPolicyInvalidError`, 400, with the reason as its
-        ``detail``) a ``WorkflowPolicy`` write `data` (replacing `instance`,
-        ``None`` for a create) that fails `WorkflowPolicy`'s checks, whose
-        ``rbac_context`` is present but not a string (a policy is in exactly
-        one context), or that would be a second stored policy for its type in
-        its context."""
-        if "rbac_context" in data and not isinstance(data["rbac_context"], str):
-            raise WorkflowPolicyInvalidError(
-                "A WorkflowPolicy's rbac_context must be a string (one context), "
-                f"not {data['rbac_context']!r}."
-            )
-        try:
-            WorkflowPolicy(data)
-        except ImproperlyConfigured as e:
-            raise WorkflowPolicyInvalidError(str(e)) from e
-        check_policy_is_unique(data, instance.pk if instance is not None else None)
+        """`scrud_django.core.workflow.validate_policy_write` of the
+        ``WorkflowPolicy`` write `data` replacing `instance` (``None`` for a
+        create)."""
+        core_workflow.validate_policy_write(
+            data, instance.pk if instance is not None else None
+        )
 
     def transition_for(self, workflow_policy, data, instance, entering=False):
-        """The `TransitionData` of writing `data` under `workflow_policy`: a
-        create's ``__INITIALIZE__`` (`data` must be an initial state) when
-        there is no stored `instance`, or when the write moves the resource
-        into this context (`entering`); else the transition from the stored
-        content."""
-        if instance is None or entering:
-            return workflow_policy.initial_transition(data)
-        return workflow_policy.determine_transition(data, instance.content)
+        """`scrud_django.core.workflow.transition_for` from the stored
+        `instance` (``None`` for a create)."""
+        prior = instance.content if instance is not None else None
+        return core_workflow.transition_for(workflow_policy, data, prior, entering)
 
     def authorize(
         self, workflow_policy, transition_data, rbac_context, context, data=None
@@ -418,13 +340,8 @@ class WorkflowValidator:
             )
 
     def authorize_without_policy(self, rbac_context, context, data):
-        """Where no workflow policy applies there is no transition: a grant
-        conditioned on ``scrud_workflow`` allows nothing there (it is asked
-        with no transition, ``None``), and the write is refused with 403
-        (``PermissionDenied``) when such a grant is the reason it would
-        otherwise be allowed. Where the user holds no grant at all, or an
-        unconditional or CEL one, the object and post-save checks decide, as
-        before."""
+        """`scrud_django.core.workflow.authorize_without_policy`, its refusal
+        DRF's 403 (``PermissionDenied``)."""
         if self.allowed(context, rbac_context, None, data):
             return
         if not self.allowed(context, rbac_context, data=data, transition_check=False):
@@ -434,71 +351,23 @@ class WorkflowValidator:
     def allowed(
         self, context, rbac_context, transition=None, data=None, transition_check=True
     ):
-        """Whether the request's action on the type is allowed in `rbac_context`
-        (``None``: no context, superusers only, as scoped-rbac's object checks)
-        for `transition`: the ``scrud_workflow`` operator, and any permission
-        class, reads it as `current_transition` (set only while this check
-        asks), and every operator reads the body `data` as sent, a ``dict``
-        (``{}`` for a body that is not a JSON object); a CEL condition reads
-        it with `rbac_context` as its ``rbac_context`` (`condition_resource`),
-        as scoped-rbac's request check reads each value of a list. Without `transition_check`, on the body
-        alone, as the write's request and post-save checks ask it
-        (``scrud_workflow`` allows there).
-
-        The request's policy must allow it, and, with a view in the
-        serializer context (the scrud views'), so must each of the view's
-        ``IsAuthorized`` permissions (`rbac_permissions_of`):
-        ``has_context_permission(request, view, body, rbac_context)``. An
-        ``IsAuthorized`` subclass can therefore refuse a transition, never
-        grant one the policy refuses: its ``obj`` here is the request body as
-        the writer sent it (a check written for stored fields, such as an
-        owner, would read the writer's claim). Without a view (a serializer
-        used outside the views), the policy alone decides."""
-        request = self.request_of(context)
-        permission = Permission(
-            http_action_iri_for(request), context.resource_type.type_uri
+        """`scrud_django.core.workflow.allowed` for the request and type of
+        the serializer `context`, narrowed by its view's ``IsAuthorized``
+        permissions (`narrow_of`)."""
+        return core_workflow.allowed(
+            self.request_of(context),
+            context.resource_type.type_uri,
+            rbac_context,
+            transition,
+            data,
+            narrow_of(view_of(context)),
+            transition_check,
         )
-        body = plain_body(data)
-        if not transition_check:
-            with _checking_write():
-                return self.allowed_on(request, permission, rbac_context, body, context)
-        with _checking_transition(transition):
-            return self.allowed_on(request, permission, rbac_context, body, context)
 
     @staticmethod
     def allowed_on(request, permission, rbac_context, body, context):
-        """`allowed`'s decision for `body` in `rbac_context`: the policy's,
-        narrowed by each ``IsAuthorized`` of the view."""
-        if rbac_context is None:
-            return access.may_act_on(request, permission, body, [])
-        # A CEL condition reads the body as it is in `rbac_context`, with that
-        # context as its rbac_context (condition_resource with every=True),
-        # whether the write keeps the resource there, moves it in, or moves it
-        # out; an operator gets the body as sent.
-        if not policy_for(request).should_allow(
-            permission,
-            rbac_context,
-            resource=condition_resource(body, rbac_context, every=True),
-        ):
-            return False
-        # The view's IsAuthorized permissions may refuse what the policy
-        # allows, never allow what it refuses: here `body` is the request
-        # body, which the writer chose. Those keeping scoped-rbac's
-        # has_context_permission read it as the policy did just above.
-        view = getattr(context, "context", {}).get("view")
-        with _reading_every_context():
-            return all(
-                leaf.has_context_permission(request, view, body, rbac_context)
-                for leaf in reading_content(rbac_permissions_of(view))
-            )
-
-
-def plain_body(data):
-    """`data` (a parsed body) as the workflow check gives it to operators and
-    permission classes: itself when it is a ``dict``, a ``dict`` copy of a
-    mapping of another type, ``{}`` for a body that is not a JSON object."""
-    if type(data) is dict:
-        return data
-    if isinstance(data, Mapping):
-        return dict(data)
-    return {}
+        """`scrud_django.core.workflow.allowed_on`, narrowed by each
+        ``IsAuthorized`` of the serializer `context`'s view."""
+        return core_workflow.allowed_on(
+            request, permission, rbac_context, body, narrow_of(view_of(context))
+        )

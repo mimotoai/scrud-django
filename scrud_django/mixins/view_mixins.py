@@ -32,6 +32,7 @@ from scrudful.conditional import (
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django import ui
+from scrud_django.core.workflow import authorizing_write
 from scrud_django.exceptions import (
     RbacContextInvalidError,
     RequestBodyMissingError,
@@ -56,9 +57,7 @@ from scrud_django.models import Resource
 from scrud_django.models.resource import MAX_CONTEXT_BYTES, context_fits
 from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.permissions import (
-    _checking_write,
     _not_checking_write,
-    _workflow_authorized,
     checks_read_content,
     content_of,
     may_act_in_context,
@@ -1190,11 +1189,9 @@ class ResourceViewMixin(
         post-save check), only once the workflow check has authorized the
         write. Anywhere else (an ``@action`` of the view included)
         ``scrud_workflow`` refuses."""
-        if self.checks_workflow(request) and (
-            not authorized or _workflow_authorized(request)
-        ):
-            return _checking_write()
-        return _not_checking_write()
+        return authorizing_write(
+            request, covered=self.checks_workflow(request), authorized=authorized
+        )
 
     def check_object_permissions(self, request, obj):
         """DRF's object check, with ``scrud_workflow`` allowing for a PUT the
