@@ -901,22 +901,6 @@ until the page is reloaded. Test: in `tests/test_studio_layer_client.py`
 (node), answer the strip's refresh with a 403 and assert the endpoints are
 kept (or a notice shown) and the next `submitPreview` sends.
 
-<a id="studio-preview-htmx-indicator-style"></a>
-## studio-preview-htmx-indicator-style: htmx's indicator style is blocked in the live preview
-
-The live preview's `Content-Security-Policy` allows styles by nonce only
-(`style-src 'self' 'nonce-<n>'`), and htmx 2.0.4, which the preview's page
-loads, inserts its `.htmx-indicator` style element on load without one. The
-browser blocks it and logs a CSP error in the console on every preview load
-(the acceptance run saw one per preview), and an `.htmx-indicator` in a
-previewed component is not hidden as it is on the real page. Nothing else
-breaks. Suggested fix: the preview's page sets
-`<meta name="htmx-config" content='{"includeIndicatorStyles": false}'>` and
-links the indicator rules from a static file, or htmx's `inlineStyleNonce`
-config carries the response's nonce. Test: in
-`tests/test_studio_live_preview.py`, render a live preview and assert the page
-configures htmx without inline indicator styles (or with the nonce).
-
 <a id="studio-push-review-layers-branch"></a>
 ## studio-push-review-layers-branch: the push review shows `branch @layers` before a create over a packaged item
 
@@ -929,18 +913,6 @@ included: an internal name the author never chose, where the review's
 `tests/test_studio_promote.py`, render the review (scope
 `studio studio-push`) of a push that overrides a layer item and assert its
 "Before" says packaged and does not show `@layers`.
-
-<a id="studio-order-text-input"></a>
-## studio-order-text-input: Order is a text input for a stylesheet stored without `order`
-
-The rule editor's `studio:field` renders `order` as `<input type="number"
-step="1">` only when the node's schema says `integer`. For a stylesheet stored
-without an `order` (as the demo's are; it defaults to 0), the field is a text
-input, empty, while the view mode shows 0, so the input neither shows the
-value in effect nor restricts it to a number. Test: in
-`tests/test_studio_rule_editor.py`, open the editor of a stylesheet stored
-without `order` and assert the Order input has `type="number"` (and shows
-0, or a placeholder of 0).
 
 <a id="studio-client-notice-unstyled"></a>
 ## studio-client-notice-unstyled: client notices are unstyled in the studio

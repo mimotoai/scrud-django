@@ -465,6 +465,49 @@ def test_branch_settings_panel_saves_fields(studio_layer, admin_login):
     assert "Work in progress" in page.one("data-studio-branch-settings").text
 
 
+def branch_facts(page):
+    """``{term: text}`` of the branch settings' facts list."""
+    [facts] = [e for e in page.elements if "studio-branch-facts" in e.classes()]
+    shown = [e for e in page.elements if e.tag in ("dt", "dd") and e.within(facts)]
+    return {
+        text_of(term): text_of(value)
+        for term, value in zip(shown[::2], shown[1::2], strict=True)
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_branch_settings_without_optional_fields_show_a_dash(studio_layer, admin_login):
+    """A branch's unset parent, label and description showed the text
+    "None" in its settings: they show an em dash, in the view twin and in
+    the form's text of a published branch (main, which has no parent)."""
+    make_wip(admin_login)
+    wip = stored_branch("wip")
+    assert not wip.content.get("label") and not wip.content.get("description")
+    reader = assign_ui_role((), "")
+    grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
+    grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI]}, "")
+    Given.http.force_authenticate(reader)
+    page = load_settings(wip)
+    assert page.one("data-studio-branch-settings").attrs["data-studio-mode"] == "view"
+    facts = branch_facts(page)
+    assert facts["Parent"] == "main"
+    assert facts["Label"] == "\u2014" and facts["Description"] == "\u2014"
+    main = stored_branch("main")
+    assert not main.content.get("parent")
+    page = load_settings(main)
+    facts = branch_facts(page)
+    assert facts["Parent"] == "\u2014" and facts["Label"] == "\u2014"
+    assert facts["Description"] == "\u2014"
+    Given.http.force_authenticate(admin_login)
+    page = load_settings(main)
+    assert page.one("data-studio-branch-settings").attrs["data-studio-mode"] == "edit"
+    facts = branch_facts(page)
+    assert facts["Parent"] == "\u2014" and facts["Label"] == "\u2014"
+    assert facts["Description"] == "\u2014"
+    assert "None" not in facts.values()
+
+
 @pytest.mark.django_db
 @test_context
 def test_prefix_input_only_with_site_grant(studio_layer, ui_alice_login):

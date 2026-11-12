@@ -1411,7 +1411,12 @@ The response is the preview document: the frame rendered as `preview`
 renders it (no write attributes, each node in a `<scrud-node
 data-pointer>`), the branch's CSS in `<style>` elements and its JS in
 `<script>` elements, inlined, `scrud_studio/preview.css`, htmx and
-`scrud-ui.js` as a page has them, and `scrud_studio/preview-bridge.js`. The
+`scrud-ui.js` as a page has them, and `scrud_studio/preview-bridge.js`. htmx
+would insert its `.htmx-indicator` rules as a `<style>` without the nonce,
+which the policy below blocks: the document turns that off with
+`<meta name="htmx-config" content='{"includeIndicatorStyles": false}'>` and
+links the same rules from `scrud_studio/htmx-indicator.css` instead (a page
+outside the preview is unchanged). The
 drafts left out are listed in
 `<script type="application/json" id="scrud-preview-errors">` as
 `[{"kind", "name", "messages"}]`, where `messages` are what the save would
@@ -1504,7 +1509,11 @@ tries them. `outcome` is `wins`; for a rule below the winner, the first part
 of its rank that is lower than the winner's: `fewer scopes`, `less specific
 term` (a later term of the node) or `lower cascade rank`; for a rule above the
 winner, or when there is none, `missing component` or `wrong mode`. A rule the
-user may not read says why it lost too. `winner` is an
+user may not read says why it lost too. The cascade never tries a rule below
+the winner, so it reports why it ranks lower even when its component could
+not serve the mode: an edit-mode rule moved before the view rule it used to
+follow (so that it now ranks below it) is `lower cascade rank` in view mode,
+where it was `wrong mode`. `winner` is an
 index into `rules`, or `null` with `fallback` naming the built-in component
 (`scrud:json` for a node that renders as JSON whatever the rules). A rule the
 user may not read has only `readable: false`, `rank` and `outcome`. Errors:
@@ -2060,7 +2069,9 @@ component `studio:workbench`, which renders:
 - "Branch settings" and "New branch" (see [Branch settings](#branch-settings));
 - a notice (`data-studio-notice`, `role="alert"`, hidden until a write is
   refused);
-- three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`;
+- three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`,
+  in a row whose height the viewport bounds; each pane scrolls on its own,
+  so the strip stays near the preview however long the Items tree is;
 - a bottom strip (`<footer class="studio-strip">`).
 
 The Items pane embeds `api_url("ui-branch-items", T)` in the scope
@@ -2098,8 +2109,15 @@ on load and whenever the picker is fetched again. The *Studio* link (see
 [Ways out](#ways-out)) lands on the studio root's workbench; the picker takes
 the author on to a working branch's.
 
-**Items** (`studio:items`) are a tree by kind (components, stylesheets, CSS,
-JS). Each entry is an `<li class="studio-item studio-own|studio-inherited|studio-packaged">`,
+**Items** (`studio:items`) are a tree by kind, a `<section class="studio-kind"
+data-studio-kind="<kind>">` each headed "Components", "Stylesheets", "CSS" or
+"JavaScript". A
+kind lists the branch's own and inherited items first; its packaged items
+follow in a `<details class="studio-packaged-group" data-studio-packaged>`,
+collapsed, whose summary counts them ("Packaged (N)"), so that the layer's
+items do not bury the branch's own. When the script fetches the tree again
+(after a write), a group the author had opened is opened again in the new
+tree (its `open` attribute); the others stay collapsed. Each entry is an `<li class="studio-item studio-own|studio-inherited|studio-packaged">`,
 with `studio-conflict-parent` or `studio-conflict-layer` for a conflict, and
 holds:
 
@@ -2309,7 +2327,10 @@ data-studio-applies-to="<applies_to>">`:
 - **Edit mode.** The editor is the stylesheet's own frame, a `<form>`. The
   `name` is shown, not an input. `applies_to` and `order` are inputs
   (`studio:field`: a labelled `<input>` named by the node's pointer, with
-  its messages from a refused write beside it); each prefix is a row of its
+  its messages from a refused write beside it). A stylesheet stored without
+  `order` gets an empty number input with the default, `0`, as its
+  placeholder (the view shows `0`): left empty, it is untouched over the
+  missing value, so Save writes no `order`; each prefix is a row of its
   key, as text, and its IRI, an input named `/prefixes/<key>` (the key
   escaped as a JSON Pointer token). One more row adds a prefix: its key and
   IRI inputs have no name until the author types a key, when the script
@@ -2405,8 +2426,17 @@ pointer, its terms and scope chain, the verdict (the winning component and
 the rule that chose it, a rule the user can't read, or the built-in
 fallback), and every rule that matched, best first, as `<outcome>:
 <selector> -> <component> (stylesheet <name>[ on <branch>][, applies to
-<context>])`, or `<outcome>: a rule you can't read (rank [...])`. A refused
-request shows the server's text (a problem's `title` and `detail`).
+<context>])`, or `<outcome>: a rule you can't read (rank [...])`. The outcome
+of a rule below the winner (one after `winner` in `rules`; none when
+`winner` is `null`) reads `<outcome> (below the winner, not tried)`: it says
+why the rule ranks lower, not whether it would serve the mode. A refused
+request shows the server's text (a problem's `title` and `detail`). When a
+write from the workbench succeeds (an action such as an override, Pull, Apply
+or Propose, or a save in the editor), the script `studio:studio` fetches the
+items, the strip and the preview again and dispatches `studio:written` on the
+workbench; the selected node, if there is one, is then explained again, so the
+verdict follows the write without a reload (an answer to an earlier request
+is dropped, as above).
 
 Under it, on a working branch T (none at all on a published T):
 
@@ -2427,7 +2457,8 @@ Under it, on a working branch T (none at all on a published T):
   `csrf-token` meta tag, `Scrud-UI-Safe` on a safe page) with `branch` (T),
   `slug`, the preview's `mode`, `scope`, `context` and `instance`, the
   `pointer`, and the form's `match`, `inside_type`, `where`, `applies_to`
-  and `template`. On 201 it says whether the new rule wins for the node, and
+  and `template`. On 201 it says whether the new rule wins for the node (if
+  not, its outcome, annotated as in the list when it is below the winner), and
   the items, the strip, the preview and the explanation are fetched again; a
   refusal shows the server's text under the form. When the form has closed
   meanwhile (another node selected, a control changed), the answer goes to
@@ -2448,20 +2479,23 @@ entry of T's `actions.promote` (the parent first, then the ancestors in
 data-studio-promote="<target>" data-studio-promote-src="<path>">` holding the
 opener (`data-studio-promote-open`, `aria-expanded`) and its panel
 (`data-studio-promote-panel`, hidden). `data-studio-promote-src` is T's push
-preview, `in_mount(api_url("ui-push-previews", T))`. The panel holds:
+preview, `in_mount(api_url("ui-push-previews", T))`. The panel scrolls
+within a bounded height and holds, in this order:
 
+- its actions (`<div class="studio-promote-actions">`, which stays at the
+  top of the panel while the review scrolls under it): "Preview after push"
+  (`data-studio-after-push`), then Apply and Propose: the entry's `apply` and
+  `propose` actions, as the strip's other
+  [fixed-body](#writes-from-the-browser) buttons (`hx-post` of `ui-pushes`
+  with the body the server gave, `hx-swap="none"`), labelled "Apply to
+  <target>" and "Propose to <target>", each only when offered. Apply is
+  rendered `disabled`. A user who may read the branches but not push gets
+  "Preview after push" and the review alone;
+- a reason (`data-studio-promote-reason`) and a note
+  (`data-studio-promote-note`), hidden, for the script's text;
 - the review (`data-studio-promote-review`), empty at render: the push
   preview is not embedded (embeds are limited), but loaded when the panel
-  opens, each time it opens;
-- "Preview after push" (`data-studio-after-push`);
-- Apply and Propose: the entry's `apply` and `propose` actions, as the
-  strip's other [fixed-body](#writes-from-the-browser) buttons (`hx-post` of
-  `ui-pushes` with the body the server gave, `hx-swap="none"`), labelled
-  "Apply to <target>" and "Propose to <target>", each only when offered. Apply
-  is rendered `disabled`. A user who may read the branches but not push gets
-  the review alone;
-- a reason (`data-studio-promote-reason`) and a note
-  (`data-studio-promote-note`), hidden, for the script's text.
+  opens, each time it opens.
 
 The script `studio:promote` (the layer's fourth JS item) opens and closes a
 panel on its opener and loads the review: an htmx GET of
@@ -2514,8 +2548,8 @@ mode). The layer's stylesheet takes the root of `UIPush`
 `studio:push` (edit mode) or `studio:push-view` (view mode). Each renders
 `<div class="studio-push" data-studio-push data-studio-mode="edit|view">`
 with the push's source (`data-studio-push-source`; for a restore, "None (a
-restore of version N)"), target, state, label and result ("Version N of
-<target>", or "Not applied yet"), and, for a push with a source that is not
+restore of version N)"), target, state, label (an em dash, "—", when it has
+none) and result ("Version N of <target>", or "Not applied yet"), and, for a push with a source that is not
 yet applied (it has no `result`), an embed of
 `api_url("ui-push-previews", source)` with `?target=<target>` in the scope
 `studio studio-push`: what it will change, as the panel shows it.
@@ -2612,7 +2646,8 @@ class="studio-branch-settings" data-studio-branch-settings
 data-studio-mode="edit|view">` with T's name, context and parent. The form
 has inputs for `label`, `description` and `base` (a select of `live` and
 `pinned`) on a working T, and shows them as text on a published one (a
-published T is read-only in the studio); the view shows them all as text.
+published T is read-only in the studio); the view shows them all as text. An
+unset parent, label or description shows as an em dash ("—").
 Save is the frame's submit (`PUT`). As in the editors, a change of a field
 saves nothing (the script `studio:studio` stops the `change` of anything in
 the pane): only Save, or Enter in a text field, writes. The frame also has

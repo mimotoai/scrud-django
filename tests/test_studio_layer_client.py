@@ -748,6 +748,63 @@ out.cleared = [notice.textContent, notice.hasAttribute('hidden'), out.ajax.lengt
     assert out["cleared"] == ["", True, 2]
 
 
+def test_open_packaged_groups_stay_open_after_a_refresh():
+    """A "Packaged (N)" group the author opened closed again whenever the
+    items pane was fetched again (after any write): the kinds whose group
+    is open are noted before the refresh, and their groups in the new tree
+    get ``open`` again (an attribute, never markup). A group that was
+    closed stays closed."""
+    out = scenario(
+        r"""
+// The tree as studio:items renders it: a section per kind, its packaged
+// group collapsed.
+function renderTree(open) {
+  while (itemsFrame.firstChild) itemsFrame.removeChild(itemsFrame.firstChild);
+  const groups = {};
+  for (const kind of ['component', 'stylesheet', 'css', 'js']) {
+    const section = el('section', {'class': 'studio-kind', 'data-studio-kind': kind},
+      itemsFrame);
+    const attrs = {'class': 'studio-packaged-group', 'data-studio-packaged': ''};
+    if (open.includes(kind)) attrs.open = '';
+    groups[kind] = el('details', attrs, section);
+    el('summary', {}, groups[kind]).text = 'Packaged (1)';
+  }
+  return groups;
+}
+const opened = (groups) => Object.keys(groups).filter((k) => groups[k].hasAttribute('open'));
+const ok = (elt) => fire(elt, 'htmx:afterRequest', {
+  elt, successful: true, requestConfig: {verb: 'post'}, xhr: {status: 201}});
+let groups = renderTree([]);
+// The author opens two groups; a write (Pull) succeeds.
+groups.component.setAttribute('open', '');
+groups.js.setAttribute('open', '');
+reset();
+ok(pull);
+out.refreshed = out.ajax.map((a) => a.target);
+// The new tree swaps in, every group collapsed as the server renders it.
+groups = renderTree([]);
+fire(items, 'htmx:afterSwap', {target: items});
+out.after = opened(groups);
+// Closed again by the author: the next refresh leaves it closed.
+groups.component.removeAttribute('open');
+ok(pull);
+groups = renderTree([]);
+fire(items, 'htmx:afterSwap', {target: items});
+out.again = opened(groups);
+// A swap of the items pane with no refresh of ours keeps the server's.
+groups = renderTree(['css']);
+fire(items, 'htmx:afterSwap', {target: items});
+out.unasked = opened(groups);
+""",
+        search=BASE,
+    )
+    assert out["refreshed"] == ["items", "status"]
+    assert out["after"] == ["component", "js"]
+    assert out["again"] == ["js"]
+    assert out["unasked"] == ["css"]
+    assert out["innerHTML"] == 0
+
+
 def test_stale_write_refreshes_items_and_strip():
     """A write refused 412 (a stale ETag) or 409 shows the server's text and
     fetches the items and the strip again, so the next try sends their new
@@ -2083,13 +2140,157 @@ out.shown = texts(explainBox);
                 " (stylesheet s on alice-wip)",
                 [],
             ],
+            # A rule below the winner says it was never tried (its outcome
+            # is why it ranks lower, not that its mode was checked).
             [
                 "li",
-                "less specific term: object -> scrud:object (stylesheet studio)",
+                "less specific term (below the winner, not tried):"
+                " object -> scrud:object (stylesheet studio)",
                 [],
             ],
         ],
     ]
+
+
+def test_rules_below_the_winner_say_they_were_not_tried():
+    """After Move up put ``row ex:TodoItem -> todo-row-edit`` before
+    ``-> todo-row``, the edit-mode rule ranks below the view winner and
+    `explain` reports why it ranks lower ("lower cascade rank"), as
+    documented: the cascade never tries a rule below the winner, so its mode
+    is not checked. The inspector says so, rather than leaving it to read as
+    the reason the rule did not apply; a rule above the winner, which was
+    tried, keeps its outcome as it is."""
+    edit_row = {
+        "readable": True,
+        "rank": [1, 0, 2, 0, 0, 3],
+        "outcome": "lower cascade rank",
+        "selector": "row http://example.org/todo#TodoItem",
+        "component": "todo-row-edit",
+        "stylesheet": "todo",
+        "branch": "main",
+        "applies_to": "",
+    }
+    explained = {
+        **EXPLAINED,
+        "rules": [*EXPLAINED["rules"][:2], edit_row, EXPLAINED["rules"][2]],
+    }
+    # What is below the winner is its position in `rules` (after
+    # `winner`), not the outcome's words: with no winner nothing is, and an
+    # outcome the inspector does not know is annotated by position too.
+    no_winner = {
+        **EXPLAINED,
+        "pointer": "/items/1",
+        "winner": None,
+        "fallback": "scrud:object",
+        "rules": [
+            {**EXPLAINED["rules"][1], "outcome": "wrong mode"},
+            {**EXPLAINED["rules"][2], "outcome": "lower cascade rank"},
+        ],
+    }
+    newer = {
+        **EXPLAINED,
+        "pointer": "/items/2",
+        "winner": 0,
+        "rules": [
+            EXPLAINED["rules"][1],
+            {"readable": False, "rank": [0, 0, 1], "outcome": "a newer reason"},
+        ],
+    }
+    out = inspector_scenario(
+        r"""
+const listed = () => texts(explainBox).filter((row) => row[0] === 'ol')[0][2]
+  .map((li) => li[1]);
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+out.rules = listed();
+select('/items/1', SAMPLE);
+await respond(200, NO_WINNER);
+out.noWinner = listed();
+select('/items/2', SAMPLE);
+await respond(200, NEWER);
+out.newer = listed();
+""".replace("SAMPLE", repr(SAMPLE_HREF))
+        .replace("EXPLAINED", json.dumps(explained))
+        .replace("NO_WINNER", json.dumps(no_winner))
+        .replace("NEWER", json.dumps(newer)),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["rules"] == [
+        "missing component: a rule you can't read (rank [3,1,0,2])",
+        "wins: ex:TodoItem -> row (stylesheet s on alice-wip)",
+        "lower cascade rank (below the winner, not tried):"
+        " row http://example.org/todo#TodoItem -> todo-row-edit"
+        " (stylesheet todo on main)",
+        "less specific term (below the winner, not tried):"
+        " object -> scrud:object (stylesheet studio)",
+    ]
+    assert out["noWinner"] == [
+        "wrong mode: ex:TodoItem -> row (stylesheet s on alice-wip)",
+        "lower cascade rank: object -> scrud:object (stylesheet studio)",
+    ]
+    assert out["newer"] == [
+        "wins: ex:TodoItem -> row (stylesheet s on alice-wip)",
+        "a newer reason (below the winner, not tried):"
+        " a rule you can't read (rank [0,0,1])",
+    ]
+
+
+def test_new_rule_result_says_where_its_rule_ranks():
+    """Create's answer, when the new rule does not win, names its outcome
+    with the same annotation as the explanation's list: a rule below the
+    winner (by position) was not tried; one above it was, and keeps its
+    outcome as it is."""
+    made = "todo-lists-items-view"
+    mine = {
+        "readable": True,
+        "rank": [1, 0, 2, 5, 0],
+        "selector": "http://example.org/todo#TodoItem",
+        "component": made,
+        "stylesheet": "studio",
+        "branch": "alice-wip",
+        "applies_to": "",
+    }
+    winner = {**EXPLAINED["rules"][1], "selector": "row ex:TodoItem"}
+
+    def answer(rules, index):
+        return {
+            "written": [{"kind": "component", "name": made}],
+            "wins": False,
+            "explanation": {**EXPLAINED, "winner": index, "rules": rules},
+        }
+
+    below = answer([winner, {**mine, "outcome": "lower cascade rank"}], 0)
+    above = answer([{**mine, "outcome": "wrong mode"}, winner], 1)
+    out = inspector_scenario(
+        r"""
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+click(button('New rule for this node'));
+await respond(200, OPTIONS);
+const result = () => texts(newRule).slice(-1)[0][1];
+click(button('Create'));
+await respond(201, BELOW);
+out.below = result();
+await respond(200, EXPLAINED);
+click(button('Create'));
+await respond(201, ABOVE);
+out.above = result();
+""".replace("SAMPLE", repr(SAMPLE_HREF))
+        .replace("EXPLAINED", json.dumps(EXPLAINED))
+        .replace("OPTIONS", json.dumps(OPTIONS))
+        .replace("BELOW", json.dumps(below))
+        .replace("ABOVE", json.dumps(above)),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["below"] == (
+        "Created todo-lists-items-view. Its rule does not win for this node"
+        " (lower cascade rank, below the winner, not tried): it loses to"
+        " row ex:TodoItem -> row."
+    )
+    assert out["above"] == (
+        "Created todo-lists-items-view. Its rule does not win for this node"
+        " (wrong mode): it loses to row ex:TodoItem -> row."
+    )
 
 
 def test_explanation_refused_and_fallback_shown_as_text():
@@ -2126,6 +2327,81 @@ out.stale = texts(explainBox);
     labels = [c[1] for c in fallback[-1][2]]
     assert fallback[-1][0] == "div" and labels == ["New rule for this node"]
     assert all(row[1] != "Node /a" for row in out["stale"])
+
+
+AFTER_WIN = {**EXPLAINED["rules"][1], "branch": "testing-admin"}
+
+
+def test_explanation_fetched_again_after_a_write():
+    """After an override and after a promote, the inspector still named the
+    old winner's branch until a reload: a successful write from the
+    workbench (the one that fetches the items, the strip and the preview
+    again) asks `explain` again for the selected node. Nothing is asked
+    with no node selected, after a refused write or a GET, and an answer to
+    the explain the write superseded is dropped."""
+    out = inspector_scenario(
+        r"""
+const ok = (elt, verb) => fire(elt, 'htmx:afterRequest', {
+  elt, successful: true, requestConfig: {verb}, xhr: {status: 200}});
+// Nothing selected: a write asks nothing.
+ok(override, 'post');
+out.unselected = fetched();
+select('/items/0', SAMPLE);
+await respond(200, EXPLAINED);
+reset();
+out.fetches = [];
+// The override succeeds: the node is explained again.
+ok(override, 'post');
+out.afterWrite = [fetched(), texts(explainBox)[0]];
+await respond(200, AFTER);
+out.rendered = texts(explainBox);
+out.fetches = [];
+// A GET, and a refused write, ask nothing.
+ok(pull, 'get');
+fire(pull, 'htmx:afterRequest', {elt: pull, successful: false,
+  requestConfig: {verb: 'put'}, xhr: {status: 403, responseText: '',
+  getResponseHeader: () => null}});
+out.ignored = fetched();
+// A write while an explain is in flight: the older answer is dropped.
+select('/items/1', SAMPLE);
+ok(pull, 'put');
+out.both = fetched();
+await respond(200, Object.assign({}, EXPLAINED, {pointer: '/stale'}));
+out.stale = texts(explainBox)[0];
+await respond(200, Object.assign({}, AFTER, {pointer: '/items/1'}));
+out.fresh = texts(explainBox)[0];
+""".replace("SAMPLE", repr(SAMPLE_HREF))
+        .replace("EXPLAINED", json.dumps(EXPLAINED))
+        .replace(
+            "AFTER",
+            json.dumps(
+                {
+                    **EXPLAINED,
+                    "rules": [EXPLAINED["rules"][0], AFTER_WIN, EXPLAINED["rules"][2]],
+                }
+            ),
+        ),
+        search=BASE + "&type=todo-lists",
+    )
+    assert out["unselected"] == []
+    urls, first = out["afterWrite"]
+    [url] = urls
+    assert query_of(url, EXPLAIN_PATH) == explain_query("/items/0")
+    assert first == ["p", "Explaining /items/0...", []]
+    verdict = [row for row in out["rendered"] if "chosen by" in row[1]]
+    assert verdict == [
+        [
+            "p",
+            "Component row, chosen by ex:TodoItem (stylesheet s on testing-admin).",
+            [],
+        ]
+    ]
+    assert out["ignored"] == []
+    selected, again = out["both"]
+    assert query_of(selected, EXPLAIN_PATH) == explain_query("/items/1")
+    assert query_of(again, EXPLAIN_PATH) == explain_query("/items/1")
+    assert out["stale"] == ["p", "Explaining /items/1...", []]
+    assert out["fresh"] == ["p", "Node /items/1", []]
 
 
 def test_edit_this_component_opens_the_tree_entry():
@@ -3855,3 +4131,109 @@ out.post = out.fetches[out.fetches.length - 1];
     assert {"kind": "component", "name": offered["name"]} in made["written"]
     explained = explain(branch="alice-wip", pointer="/items/0")
     assert explained["rules"][explained["winner"]]["component"] == offered["name"]
+
+
+# argv[1]: scrud-ui.js; argv[2]: the frame's content (JSON); stdin: its
+# inputs ({name, type, value}). Prints the body Save sends (buildBody onto
+# the content) and whether the frame counts as changed.
+SAVE_BODY_HARNESS = r"""
+const vm = require('vm');
+const ui = vm.createContext({window: {}, console});
+vm.runInContext(process.argv[1], ui);
+const content = JSON.parse(process.argv[2]);
+let input = '';
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  const bad = [];
+  const body = ui.window.ScrudUI.buildBody(content, JSON.parse(input), bad);
+  console.log(JSON.stringify({body, bad,
+    changed: JSON.stringify(body) !== JSON.stringify(content)}));
+});
+"""
+
+
+def save_body(content, inputs):
+    """The body the frame's Save builds from `content` and `inputs` (the
+    rendered ``name``d inputs as ``{name, type, value}``), through the real
+    ``ScrudUI.buildBody``."""
+    require_node()
+    done = subprocess.run(
+        ["node", "-e", SAVE_BODY_HARNESS, SCRUD_UI_JS.read_text(), json.dumps(content)],
+        input=json.dumps(inputs),
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@pytest.mark.django_db
+@test_context
+def test_order_shows_its_default_and_saves_nothing_untouched(
+    studio_layer, ui_alice_login, settings
+):
+    """A stylesheet stored without ``order`` (the demo's) showed 0 in view
+    mode but an empty Order input in edit mode. The input shows the default,
+    0, as its placeholder (the schema's ``default``): its value stays empty,
+    which the runtime's untouched rule reads as the missing value, so
+    opening the editor is no change and Save writes no ``order: 0``; a value
+    typed in it is saved."""
+    from .test_studio_editors import (
+        content_of,
+        open_editor,
+        root_frame,
+        workbench_entries,
+    )
+    from .test_studio_page import store_item
+    from .test_studio_workbench import Page, setup_studio
+
+    settings.ROOT_URLCONF = "tests.mounted_urls"
+    _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
+    sheet = store_item(
+        "ui-stylesheets",
+        "alice-wip",
+        "alice",
+        name="plain",
+        applies_to="",
+        prefixes={},
+        rules=[{"select": "string", "component": "scrud:string"}],
+    )
+    assert "order" not in sheet.content
+    Given.http.force_authenticate(ui_alice_login)
+    classes, opened, _li, _page = workbench_entries(alice_wip)[("stylesheet", "plain")]
+    assert "studio-own" in classes
+    href = opened["href"]
+    page = Page(open_editor(href))
+    frame = root_frame(page, href)
+    stored = content_of(page, frame)
+    assert "order" not in stored
+    [order] = [e for e in page.elements if e.attrs.get("name") == "/order"]
+    assert order.tag == "input" and order.attrs["type"] == "number"
+    assert order.attrs.get("value", "") == ""
+    assert order.attrs["placeholder"] == "0"
+    # View mode shows the same default.
+    view = Page(open_editor(href, view=True))
+    shown = [e for e in view.elements if e.tag in ("dt", "dd")]
+    [at] = [n for n, e in enumerate(shown) if e.tag == "dt" and e.text == "Order"]
+    assert shown[at + 1].tag == "dd" and shown[at + 1].text == "0"
+    inputs = [
+        {
+            "name": e.attrs["name"],
+            "type": e.attrs.get("type", "text"),
+            "value": e.attrs.get("value", ""),
+        }
+        for e in page.elements
+        if e.tag == "input"
+        and "name" in e.attrs
+        and e.within(frame)
+        and e.attrs.get("type") not in ("hidden", "submit")
+    ]
+    assert "/order" in [i["name"] for i in inputs]
+    # Untouched: Save sends the content as stored, and nothing is unsaved.
+    untouched = save_body(stored, inputs)
+    assert untouched["bad"] == [] and untouched["changed"] is False
+    assert "order" not in untouched["body"]
+    # A typed order is saved.
+    typed = [{**i, "value": "5"} if i["name"] == "/order" else i for i in inputs]
+    saved = save_body(stored, typed)
+    assert saved["changed"] is True and saved["body"]["order"] == 5

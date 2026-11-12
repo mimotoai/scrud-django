@@ -102,7 +102,9 @@
   the element's own `data-scrud-etag` (an empty one sends none).
 * Studio additions in `scrud_django.ui.studio`: a live preview that renders
   unsaved drafts of items layered over a branch, marks the nodes a rule
-  wins or loses, and runs in an opaque-origin sandbox; and computed studio
+  wins or loses, and runs in an opaque-origin sandbox (htmx's indicator
+  rules come from a static file there, since its CSP allows no inline style
+  without the nonce); and computed studio
   data, `ui-branch-items/<branch>/`, `ui-branch-status/<branch>/`,
   `ui-type-catalog/all/`, `ui-selectable-branches/mine/` and
   `ui-push-previews/<source>/?target=<name>` (what a push would change,
@@ -146,7 +148,9 @@
   it), Items, Editor and Preview panes (Items
   and Editor collapse to rails, remembered per viewer in `localStorage`), the
   branch's items as a tree (`studio:items`: own, inherited and packaged
-  items, conflicts, "Override on this branch"), a strip (`studio:status`:
+  items, the packaged ones in a collapsed "Packaged (N)" group per kind,
+  conflicts, "Override on this branch"; the panes scroll on their own within
+  a viewport-bounded row), a strip (`studio:status`:
   chain, counts, Pull, promote panels, pushes, history, the browse link) and
   a live preview in a sandboxed frame. The workbench's state (type, item,
   node, preview controls) is in the URL's query, so a link reproduces the
@@ -165,7 +169,8 @@
   draft (300 ms after the last key; none on a published branch), and the
   drafts the preview leaves out are listed under the editor, as text.
 * The rule editor: a stylesheet opens as its fields (`name` read-only,
-  `applies_to`, `order`, `prefixes` as key/value rows, with one new prefix at
+  `applies_to`, `order` (its default, 0, as the placeholder when it is
+  unset), `prefixes` as key/value rows, with one new prefix at
   a time) and its rules as rows of selector -> component inputs, each with
   Remove, Move up and Move down (they save at once) and an append row; every
   field is an input named by its JSON Pointer, saved only by Save, and a
@@ -182,7 +187,9 @@
   preview again; and an inspector that explains the node clicked in the
   preview (from the preview's own window only) as text, with the preview's
   parameters and the exact pointer, and names the embedded resource a click
-  inside one was in rather than explaining it. On a working branch it offers
+  inside one was in rather than explaining it, and explains the node again
+  after a successful write from the workbench (a rule below the winner is
+  shown as not tried). On a working branch it offers
   "Edit this component" and "New rule for this node" (the bootstrap studio's
   form, posted to `new-component` as JSON with the CSRF token; off while
   pinned).
@@ -192,10 +199,12 @@
   `studio studio-push`): the changes, each with its item before and after,
   the conflicts, and those on items the user can't read, counted. "Preview
   after push" shows the target with the branch pushed. Apply and Propose are
-  the entry's own actions; Apply stays off, with the reason, until the review
+  the entry's own actions, above the review and kept in view while it
+  scrolls; Apply stays off, with the reason, until the review
   has loaded and shows no conflict, readable or not. A push's page
   (`studio:push`, or `studio:push-view` for a user who may not `PUT` it)
-  shows its source, target, state, label and result, the preview of a push
+  shows its source, target, state, label (a dash when it has none) and
+  result, the preview of a push
   not yet applied with "Preview after push" (`studio:push-after`, when the
   studio's URLs are included: a type picker, and the target as it renders
   after the push in a sandboxed frame), and a state input (`proposed`, `applied`) saved only on

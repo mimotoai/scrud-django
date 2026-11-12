@@ -151,6 +151,70 @@ def test_layer_code_min_height_is_the_editors_only(studio_layer):
     assert "data-studio-pane" not in template
 
 
+def css_declarations(css, selector):
+    """``{property: value}`` of every flat rule of `css` whose selector list
+    has `selector`, merged in order."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    found = {}
+    for prelude, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        if selector not in [part.strip() for part in prelude.split(",")]:
+            continue
+        for declaration in body.split(";"):
+            if ":" in declaration:
+                name, value = declaration.split(":", 1)
+                found[name.strip()] = value.strip()
+    return found
+
+
+def test_layer_panes_scroll_within_the_viewport(studio_layer):
+    """The panes row has a height bounded by the viewport and each pane
+    scrolls on its own, so a long Items tree no longer pushes the strip
+    (Promote, Pushes, History) far below the preview; the packaged group's
+    summary is styled under ``.studio``."""
+    [(_name, css)] = [
+        (name, content["css"]) for name, content in layer_files("css").items()
+    ]
+    panes = css_declarations(css, ".studio .studio-panes")
+    assert "vh" in panes["max-height"]
+    assert css_declarations(css, ".studio .studio-pane")["overflow"] == "auto"
+    summary = css_declarations(css, ".studio .studio-packaged-group > summary")
+    assert summary["cursor"] == "pointer"
+
+
+def test_layer_preview_leaves_room_for_the_inspector(studio_layer):
+    """The preview frame's height (it was ``min-height: 60vh``) sits in a
+    pane the viewport bounds (``.studio-panes``' max-height): on a 900px-tall
+    viewport it left the inspector at the pane's bottom edge. The frame is
+    ``min(<a>vh, calc(100vh - <b>rem))`` tall, so that at 900px the pane keeps
+    at least 16rem (its padding and title, the preview controls, and the
+    inspector's title and first lines) below and above the frame."""
+    [(_name, css)] = [
+        (name, content["css"]) for name, content in layer_files("css").items()
+    ]
+    rem, viewport = 16, 900
+    panes = re.fullmatch(
+        r"calc\(100vh - ([0-9.]+)rem\)",
+        css_declarations(css, ".studio .studio-panes")["max-height"],
+    )
+    frame = re.fullmatch(
+        r"min\(([0-9.]+)vh, calc\(100vh - ([0-9.]+)rem\)\)",
+        css_declarations(css, ".studio .studio-preview")["min-height"],
+    )
+    assert panes and frame
+    pane = viewport - float(panes.group(1)) * rem
+    height = min(
+        float(frame.group(1)) * viewport / 100,
+        viewport - float(frame.group(2)) * rem,
+    )
+    assert pane - height >= 16 * rem, (pane, height)
+    # A tall viewport still gets a tall frame.
+    tall = 1400
+    assert (
+        min(float(frame.group(1)) * tall / 100, tall - float(frame.group(2)) * rem)
+        >= 600
+    )
+
+
 @pytest.mark.django_db
 def test_layer_installed_with_studio_app(studio_layer):
     assert STUDIO_LAYER in installed_layers()

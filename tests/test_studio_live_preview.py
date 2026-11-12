@@ -28,6 +28,7 @@ from scrud_django.ui.branches import (
     UI_CSS_TYPE_URI,
     UI_JS_TYPE_URI,
 )
+from scrud_django.ui.renderer import STATIC_HTMX
 from scrud_django.ui.studio import views
 from scrud_django.ui.studio.live_preview import MAX_DRAFTS
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
@@ -569,6 +570,39 @@ def test_match_markers_agree_with_resolve_component(case, admin_login):
 
 @pytest.mark.django_db
 @test_context
+def test_edit_rule_moved_up_reports_its_rank(admin_login):
+    """The recorded tour's Move up: with ``-> row-edit`` after ``-> row``
+    (the same selector) it ranks above the view winner and loses as the
+    wrong mode; moved before it, it ranks below the winner and reports the
+    first rank part lower than the winner's, ``lower cascade rank``, as
+    `explain` documents for a rule below the winner (the cascade never
+    tries it, so its mode is not checked). The live preview's marker says
+    the same as `explain` in both orders."""
+    make_component("row", "<b>{{ value.text }}</b>")
+    make_component("row-edit", "<u>{{ value.text }}</u>", mode="edit")
+    sheet = make_stylesheet("s", [("ex:TodoItem", "row"), ("ex:TodoItem", "row-edit")])
+    Given.http.force_authenticate(admin_login)
+    edit_after = {"stylesheet": "s", "applies_to": "", "index": 1}
+    found = nodes(live(branch="main", mode="view", mark=edit_after))["/items/0"]
+    assert found == ("loses", "wrong mode")
+    assert found == expected_marks("/items/0", edit_after, "view", [])
+    # Move up: row-edit first.
+    sheet.content["rules"].reverse()
+    sheet.save()
+    edit_first = {"stylesheet": "s", "applies_to": "", "index": 0}
+    found = nodes(live(branch="main", mode="view", mark=edit_first))["/items/0"]
+    assert found == ("loses", "lower cascade rank")
+    assert found == expected_marks("/items/0", edit_first, "view", [])
+    # row still wins in view mode either way.
+    row = {"stylesheet": "s", "applies_to": "", "index": 1}
+    assert nodes(live(branch="main", mode="view", mark=row))["/items/0"] == (
+        "wins",
+        "wins",
+    )
+
+
+@pytest.mark.django_db
+@test_context
 def test_mark_on_a_draft_rule(ui_alice_login):
     main_row()
     wip_for(ui_alice_login)
@@ -658,6 +692,57 @@ def test_preview_csp_is_opaque_and_nonce_only(ui_alice_login):
         "sandbox allow-scripts; default-src 'none';"
     )
     assert Http.response["X-Frame-Options"] == "SAMEORIGIN"
+
+
+@pytest.mark.django_db
+@test_context
+def test_preview_configures_htmx_without_inline_indicator_styles(
+    ui_alice_login, todo_list, todo_reader_login
+):
+    """htmx inserts its ``.htmx-indicator`` rules as a ``<style>`` without a
+    nonce, which the preview's CSP blocks (a console error on every preview
+    load, and indicators not hidden). The preview's page turns that off with
+    htmx's ``htmx-config`` meta element, before htmx loads, and links the
+    same rules from a static file, which ``style-src 'self'`` allows. A
+    real page is unchanged: htmx inserts its style there as before."""
+    from django.contrib.staticfiles import finders
+
+    main_row()
+    wip_for(ui_alice_login)
+    page = live()
+    head = page.split("</head>")[0]
+    metas = re.findall(r"<meta name=\"htmx-config\" content='([^']*)'>", head)
+    assert len(metas) == 1
+    config = json.loads(metas[0])
+    assert config == {"includeIndicatorStyles": False}
+    assert page.index('name="htmx-config"') < page.index(STATIC_HTMX)
+    indicator = "/static/scrud_studio/htmx-indicator.css"
+    assert f'<link rel="stylesheet" href="{indicator}">' in head
+    path = finders.find("scrud_studio/htmx-indicator.css")
+    assert path, "the indicator stylesheet is a static file"
+    with open(path, encoding="utf-8") as found:
+        css = re.sub(r"\s+", " ", re.sub(r"/\*.*?\*/", "", found.read(), flags=re.S))
+    # htmx 2's own rules, with its default class names.
+    assert ".htmx-indicator { opacity: 0; }" in css
+    assert (
+        ".htmx-request .htmx-indicator, .htmx-request.htmx-indicator"
+        " { opacity: 1; transition: opacity 200ms ease-in; }"
+    ) in css
+    # No inline style without the nonce is added to the head.
+    nonce = re.search(r"'nonce-([^']+)'", Http.response["Content-Security-Policy"])
+    assert all(
+        tag == f'<style nonce="{nonce.group(1)}">'
+        for tag in re.findall(r"<style[^>]*>", page)
+    )
+    # A real page: no htmx-config, no indicator stylesheet.
+    Given.http.force_authenticate(todo_reader_login)
+    When.http.get(
+        reverse("todo-lists-detail", args=[todo_list.pk]), HTTP_ACCEPT="text/html"
+    )
+    Then.http.status_code_is(200)
+    real = html()
+    assert STATIC_HTMX in real
+    assert "htmx-config" not in real and "htmx-indicator.css" not in real
 
 
 @pytest.mark.django_db
