@@ -1,4 +1,17 @@
+from django.core.exceptions import ImproperlyConfigured
 from django.urls import NoReverseMatch, reverse
+
+
+def _drf_is_absent(error: ImportError) -> bool:
+    """Whether `error` says DRF itself is not installed: a
+    ``ModuleNotFoundError`` for ``rest_framework`` or one of its modules.
+    Any other import error (a DRF that fails to import, a dependency of it
+    missing) is not."""
+    name = getattr(error, "name", None) or ""
+    return isinstance(error, ModuleNotFoundError) and (
+        name == "rest_framework" or name.startswith("rest_framework.")
+    )
+
 
 try:  # DRF's own classes when it is installed, so that ``isinstance`` holds.
     from rest_framework.exceptions import APIException as _APIException
@@ -16,7 +29,9 @@ try:  # DRF's own classes when it is installed, so that ``isinstance`` holds.
             self.default_code = scrud.default_code
             super().__init__(detail=scrud.detail, code=scrud.default_code)
 
-except ImportError:  # scrud imports without DRF
+except ImportError as error:  # scrud imports without DRF
+    if not _drf_is_absent(error):
+        raise
     _ErrorBase = str
     ScrudAPIException = None
 
@@ -80,7 +95,13 @@ def as_drf(exc):
     """`exc` (a `ScrudException`) as the ``APIException`` DRF's views and
     handlers know: its status code, its detail (an ``ErrorDetail`` of the
     message and the error's ``default_code``), and `exc` itself as ``.scrud``
-    (`ScrudAPIException`)."""
+    (`ScrudAPIException`). Without DRF installed there is none:
+    ``ImproperlyConfigured``."""
+    if ScrudAPIException is None:
+        raise ImproperlyConfigured(
+            "scrud_django.exceptions.as_drf needs Django REST framework, which "
+            "is not installed: a scrud error is a ScrudException without it."
+        )
     return ScrudAPIException(exc)
 
 

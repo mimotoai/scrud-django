@@ -387,3 +387,61 @@ def test_drf_wrapper_class_is_defined_once_at_import():
     )
     assert type(first) is type(second) is exceptions.ScrudAPIException
     assert not hasattr(exceptions, "_drf_scrud_class")
+
+
+def test_as_drf_without_drf_is_improperly_configured():
+    from unittest import mock
+
+    from django.core.exceptions import ImproperlyConfigured
+
+    from scrud_django import exceptions
+
+    with mock.patch.object(exceptions, "ScrudAPIException", None):
+        with pytest.raises(ImproperlyConfigured, match="Django REST framework"):
+            exceptions.as_drf(WorkflowPolicyInvalidError("x"))
+
+
+IMPORT_WITH = """
+import importlib.abc, sys
+
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name == "rest_framework" or name.startswith("rest_framework."):
+            raise {error}
+        return None
+
+sys.meta_path.insert(0, Blocker())
+import scrud_django.exceptions as exceptions
+print(exceptions.ScrudAPIException is None)
+"""
+
+
+@pytest.mark.parametrize(
+    "error, falls_back",
+    [
+        ('ModuleNotFoundError("absent", name="rest_framework")', True),
+        ('ModuleNotFoundError("absent", name=name)', True),
+        ('ModuleNotFoundError("absent", name="rest_framework_extra")', False),
+        ('ModuleNotFoundError("absent", name="yaml")', False),
+        ('ImportError("broken", name=name)', False),
+    ],
+)
+def test_only_drf_being_absent_selects_the_no_drf_branch(error, falls_back):
+    # Another import error (a DRF that fails to import, or a dependency of
+    # it missing) is raised, not taken for DRF being absent.
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [sys.executable, "-c", IMPORT_WITH.format(error=error)],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+    )
+    if falls_back:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "True"
+    else:
+        assert result.returncode != 0
+        assert "absent" in result.stderr or "broken" in result.stderr
