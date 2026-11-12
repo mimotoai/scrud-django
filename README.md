@@ -215,7 +215,7 @@ grants allow (they can only refuse, and refuse superusers too, as an
   when the routes are built, so registering a slug again replaces the other
   hooks but not an already built route's filter.
 
-Hooks are keyed by the type's IRI: registering a type again replaces the hooks registered for it before (a different set logs a warning on `scrud_django.core.types`), and `requirement_for` imports `ROOT_URLCONF` when no type has registered, so a worker that never served a request still has them.
+Hooks are keyed by the type's IRI: registering a type again replaces the hooks registered for it before (a different set logs a warning on `scrud_django.core.types`; a different slug registering the same IRI must carry equal hooks or gets `ImproperlyConfigured`), and `requirement_for` imports `ROOT_URLCONF` once per process, so a worker that never served a request still has them.
 
 To move the rule of an `IsAuthorized` subclass's `has_context_permission`
 to hooks, register it twice. As a `checks=` callable it governs writes, but

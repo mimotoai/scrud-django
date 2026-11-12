@@ -61,31 +61,62 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 _OPTIONS: dict[str, TypeOptions] = {}
 _SLUG_IRIS: dict[str, str] = {}
+_IRI_SLUGS: dict[str, str] = {}
 _OPTIONS_LOCK = threading.RLock()
-_LOAD_LOCK = threading.RLock()
+_LOAD_LOCK = threading.Lock()
 _loaded = False
+_loading_thread: int | None = None
 
 logger = logging.getLogger(__name__)
 
 
+def _name_of(hook) -> str:
+    return (
+        f"{getattr(hook, '__module__', '')}.{getattr(hook, '__qualname__', repr(hook))}"
+    )
+
+
+def _hook_names(options: TypeOptions) -> tuple:
+    """`options` by the hooks' qualified names: a URLconf imported again
+    builds new closures, which are the same hooks."""
+    return (
+        tuple(_name_of(c) for c in options.checks),
+        tuple(_name_of(c) for c in options.object_checks),
+        options.content_filter,
+        None if options.compute is None else _name_of(options.compute),
+    )
+
+
 def register_type_options(type_iri: str, options: TypeOptions, *, slug: str) -> None:
-    """Record `options` as the hooks of the type `type_iri` (and remember that
-    `slug` names it). They **replace** any registered before for the IRI (a
-    URLconf imported again, or a second URLconf registering the type): never
-    merged, so no earlier hook is kept. Replacing with equal options is
-    silent; replacing different ones logs a WARNING naming the type, since a
-    dropped hook only ever allows more."""
+    """Record `options` as the hooks of the type `type_iri`, registered as
+    `slug`. The same slug registering again **replaces** them (a URLconf
+    imported again): never merged, so no earlier hook is kept, and a WARNING
+    names the type when the hook set changed (hooks compared by qualified
+    name). A different slug registering an IRI already registered must carry
+    equal options (`ImproperlyConfigured` naming both slugs otherwise): its
+    options would replace the other slug's, and a dropped hook only ever
+    allows more."""
     with _OPTIONS_LOCK:
         previous = _OPTIONS.get(type_iri)
-        if previous is not None and previous != options:
-            logger.warning(
-                "The hooks of the type %s (slug %r) replace different ones "
-                "registered before for it.",
-                type_iri,
-                slug,
-            )
+        owner = _IRI_SLUGS.get(type_iri)
+        if previous is not None:
+            same = _hook_names(previous) == _hook_names(options)
+            if owner != slug and not same:
+                raise ImproperlyConfigured(
+                    f"The slugs {owner!r} and {slug!r} both register the type "
+                    f"{type_iri!r} with different hooks: register equal "
+                    "options, or give each its own type IRI."
+                )
+            if owner == slug and not same:
+                logger.warning(
+                    "The hooks of the type %s (slug %r) replace different "
+                    "ones registered before for it.",
+                    type_iri,
+                    slug,
+                )
         _OPTIONS[type_iri] = options
         _SLUG_IRIS[slug] = type_iri
+        _IRI_SLUGS[type_iri] = slug
 
 
 def type_options(type_iri: str) -> TypeOptions:
@@ -107,24 +138,27 @@ def hooks_loaded() -> bool:
 
 
 def ensure_hooks_loaded() -> None:
-    """Import ``settings.ROOT_URLCONF`` (once) when no registration has run,
-    so that a process that never served a request (a worker, a shell) has the
-    hooks its URLconf registers. Re-entrant: the URLconf's own import calls
-    `register_type_options`, and a second thread waits for the first."""
-    global _loaded
-    if _loaded or hooks_loaded():
+    """Import ``settings.ROOT_URLCONF`` once per process, so that a process
+    that never served a request (a worker, a shell) has the hooks its
+    URLconf registers; with no ROOT_URLCONF set there is nothing to import.
+    A second thread waits until the first has finished; a call from the
+    importing thread (the URLconf's own import may ask for requirements)
+    returns at once; a failed import raises and is tried again by the next
+    call."""
+    global _loaded, _loading_thread
+    if _loaded or _loading_thread == threading.get_ident():
         return
     with _LOAD_LOCK:
-        if _loaded or hooks_loaded():
+        if _loaded:
             return
-        _loaded = True  # set first: the import may ask for requirements
+        _loading_thread = threading.get_ident()
         try:
-            urlconf = settings.ROOT_URLCONF
+            urlconf = getattr(settings, "ROOT_URLCONF", None)
             if urlconf:
                 importlib.import_module(urlconf)
-        except BaseException:
-            _loaded = False
-            raise
+            _loaded = True
+        finally:
+            _loading_thread = None
 
 
 def has_hooks(options: TypeOptions) -> bool:

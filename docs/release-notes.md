@@ -452,10 +452,11 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   other hooks but not an already built route's filter. `compute` supplies a
   computed type's content without a viewset subclass. A type's hooks are
   keyed by its type IRI: registering a type again replaces its hooks (a
-  different set logs a warning on `scrud_django.core.types`), and
+  different set logs a warning on `scrud_django.core.types`; another slug
+  registering the same IRI must carry equal hooks, else
+  `ImproperlyConfigured`), and
   `requirement_for` takes the slug from the resource type (a different one
-  is `ImproperlyConfigured`) and imports `ROOT_URLCONF` when nothing has
-  registered, so a worker that never served a request still has the hooks.
+  is `ImproperlyConfigured`) and imports `ROOT_URLCONF` once per process, so a worker that never served a request still has the hooks.
 
 ### Upgrading
 

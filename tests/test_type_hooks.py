@@ -240,8 +240,10 @@ def test_compute_hook():
 
 @pytest.mark.django_db
 @test_context
-def test_reregistering_replaces_options():
-    hooked_note_type()  # registered again, with no hooks
+def test_reregistering_replaces_options(caplog):
+    with caplog.at_level(logging.WARNING, logger="scrud_django.core.types"):
+        hooked_note_type()  # registered again, with no hooks
+    assert [r.name for r in caplog.records] == ["scrud_django.core.types"]
     assert type_options_for_slug("hooked-notes") == TypeOptions()
     Given.http.force_authenticate(assign_role(WRITER, "a", "b"))
     post_note({"text": "allowed now", "rbac_context": "b"})
@@ -278,6 +280,111 @@ def test_replacing_different_hooks_warns(caplog):
     assert record.levelno == logging.WARNING
     assert record.name == "scrud_django.core.types"
     assert iri in record.getMessage()
+
+
+def _closure_check():
+    def check(request, resource_type, body, context):
+        return True
+
+    return check
+
+
+def test_two_slugs_one_iri_need_equal_options():
+    iri = "tests://Shared"
+    register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="one")
+    with pytest.raises(ImproperlyConfigured, match="one.*two.*tests://Shared"):
+        register_type_options(iri, TypeOptions(), slug="two")
+    assert type_options(iri) == TypeOptions(checks=(deny_context_b,))
+    register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="two")
+    assert type_options_for_slug("two") == type_options_for_slug("one")
+
+
+def test_same_slug_reimport_with_equivalent_closures_is_silent(caplog):
+    iri = "tests://Reimported"
+    with caplog.at_level(logging.WARNING, logger="scrud_django.core.types"):
+        register_type_options(
+            iri, TypeOptions(checks=(_closure_check(),)), slug="reimported"
+        )
+        register_type_options(
+            iri, TypeOptions(checks=(_closure_check(),)), slug="reimported"
+        )
+        assert caplog.records == []
+        register_type_options(
+            iri, TypeOptions(checks=(deny_context_b,)), slug="reimported"
+        )
+    assert len(caplog.records) == 1
+
+
+@pytest.fixture
+def fresh_loader(monkeypatch):
+    from scrud_django.core import types
+
+    monkeypatch.setattr(types, "_loaded", False)
+    return types
+
+
+def test_ensure_hooks_loaded_waits_for_the_first_import(fresh_loader, monkeypatch):
+    import importlib
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    imports = []
+
+    def slow_import(name):
+        imports.append(name)
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(importlib, "import_module", slow_import)
+    done = []
+    first = threading.Thread(
+        target=lambda: (fresh_loader.ensure_hooks_loaded(), done.append(1))
+    )
+    second = threading.Thread(
+        target=lambda: (fresh_loader.ensure_hooks_loaded(), done.append(2))
+    )
+    first.start()
+    assert started.wait(5)
+    second.start()
+    second.join(0.3)
+    assert second.is_alive() and done == []
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert sorted(done) == [1, 2]
+    assert imports == [settings.ROOT_URLCONF]
+
+
+def test_ensure_hooks_loaded_is_reentrant(fresh_loader, monkeypatch):
+    import importlib
+
+    calls = []
+
+    def reentrant_import(name):
+        fresh_loader.ensure_hooks_loaded()  # the URLconf asks for a requirement
+        calls.append(name)
+
+    monkeypatch.setattr(importlib, "import_module", reentrant_import)
+    fresh_loader.ensure_hooks_loaded()
+    fresh_loader.ensure_hooks_loaded()
+    assert calls == [settings.ROOT_URLCONF]
+
+
+def test_ensure_hooks_loaded_retries_a_failed_import(fresh_loader, monkeypatch):
+    import importlib
+
+    attempts = []
+
+    def flaky_import(name):
+        attempts.append(name)
+        if len(attempts) == 1:
+            raise RuntimeError("database down")
+
+    monkeypatch.setattr(importlib, "import_module", flaky_import)
+    with pytest.raises(RuntimeError):
+        fresh_loader.ensure_hooks_loaded()
+    fresh_loader.ensure_hooks_loaded()
+    assert len(attempts) == 2
 
 
 @pytest.mark.django_db
