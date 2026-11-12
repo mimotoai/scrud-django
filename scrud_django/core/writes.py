@@ -28,7 +28,12 @@ from scoped_rbac import access
 from scoped_rbac.policy import Permission
 
 from scrud_django.core.authz import content_of, may_act_in_context
-from scrud_django.core.requirements import require_grants, requirement_leaves
+from scrud_django.core.requirements import (
+    asks_grants_itself,
+    is_hook,
+    require_grants,
+    requirement_leaves,
+)
 from scrud_django.core.types import HookLeaf
 from scrud_django.core.workflow import (
     authorizing_write,
@@ -273,9 +278,12 @@ def check_post_save(
     (by default its content, `content_of`): its ``has_object_permission``
     must allow it (superusers only for a resource in no usable context), and
     its ``has_context_permission`` must allow it in each context its
-    ``contexts_for`` names; for a leaf that does not read each context as
-    the resource is there (``reads_each_context``), the grants must too,
-    each context read so (`may_act_in_context`)."""
+    ``contexts_for`` names; for a leaf that does not ask the grants itself,
+    each context read as the resource is there (`asks_grants_itself`: of a
+    trusted class, ``reads_each_context`` true), the grants must too, each
+    context read so (`may_act_in_context`), unless it is a type's hooks
+    (`is_hook`). A leaf of any other class gets them asked, whatever it
+    says."""
     check = content_of(obj) if content is None else content
     if type_iri is None:
         type_iri = resource_type.type_uri
@@ -285,10 +293,11 @@ def check_post_save(
         allowed = leaf.has_object_permission(request, check) and all(
             leaf.has_context_permission(request, check, context) for context in contexts
         )
-        if allowed and not leaf.reads_each_context:
+        if allowed and not (asks_grants_itself(leaf) or is_hook(leaf)):
             # Its own has_context_permission (and its super() call) read
-            # the content as stored: the grants are asked too, each
-            # context as the resource is there. Object checks only narrow.
+            # the content as stored, or its class is not trusted to ask
+            # the grants: they are asked too, each context as the resource
+            # is there. Object checks only narrow.
             allowed = all(
                 may_act_in_context(request, permission, check, [context])
                 for context in contexts

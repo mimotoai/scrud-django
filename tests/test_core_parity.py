@@ -35,6 +35,12 @@ from scoped_rbac.permissions import drf_error
 
 from scrud_django import collection_type_uri_for
 from scrud_django.core.lists import readable_queryset
+from scrud_django.core.requirements import (
+    asks_grants,
+    asks_grants_itself,
+    is_hook,
+    requirement_leaves,
+)
 from scrud_django.core.resources import allowed_methods, load_for_read, object_readable
 from scrud_django.core.types import requirement_for
 from scrud_django.core.writes import update, validate_write
@@ -596,3 +602,17 @@ def test_workflow_note_publish_is_allowed_by_both():
         ).status_code
         == 400
     )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("type_slug", TYPE_SLUGS)
+def test_requirement_for_leaves_are_trusted_to_ask_the_grants(type_slug):
+    """Every leaf of `requirement_for` is a `GrantsLeaf` (asking the grants
+    itself) or a type's hooks: the core asks no grants beside them, so the
+    cases above answer as they did before it trusted leaves by class
+    (`register_grant_asking_leaf`)."""
+    parity = TYPES[type_slug]
+    requirement = requirement_for(resource_type_of(parity), parity.slug)
+    assert asks_grants(requirement)
+    for leaf in requirement_leaves(requirement):
+        assert asks_grants_itself(leaf) or is_hook(leaf), leaf

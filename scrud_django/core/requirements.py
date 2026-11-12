@@ -52,7 +52,9 @@ class Leaf(Protocol):
     - ``type_iri``: the item type it authorizes;
     - ``reads_each_context``: whether its own ``has_context_permission``
       asks the grants reading each context as the object is there; when
-      not, a caller asks the grants beside it;
+      not, a caller asks the grants beside it. Only a leaf of a trusted
+      class (`register_grant_asking_leaf`) is taken at its word: beside any
+      other (but a type's hooks, `is_hook`) the grants are asked anyway;
     - ``overrides_object_checks``: whether its object checks may refuse what
       the grants allow (a list then asks them object by object);
     - ``contexts_for(obj)``: the contexts it reads `obj` (a resource's
@@ -89,6 +91,41 @@ def as_get(request):
     return read
 
 
+# The leaf classes trusted to ask the grants (`register_grant_asking_leaf`).
+_GRANT_ASKING_LEAVES: tuple[type, ...] = ()
+
+
+def register_grant_asking_leaf(cls: type) -> type:
+    """Trust the leaves of class `cls` (its subclasses included) to ask the
+    grants: `asks_grants` counts one as asking them, and, when it says it
+    reads each context as the object is there (``reads_each_context``),
+    none are asked beside it (`asks_grants_itself`). Returns `cls`, so it
+    is usable as a class decorator. Register only a class whose
+    ``has_context_permission`` asks the grants (`GrantsLeaf`, the DRF
+    adapter's ``ViewLeaf``): a leaf of any other class, whatever it says,
+    counts as asking none and gets the grants asked beside it."""
+    global _GRANT_ASKING_LEAVES
+    if cls not in _GRANT_ASKING_LEAVES:
+        _GRANT_ASKING_LEAVES = (*_GRANT_ASKING_LEAVES, cls)
+    return cls
+
+
+def asks_grants_itself(leaf) -> bool:
+    """Whether `leaf` asks the grants itself, reading each context as the
+    object is there: it is of a registered class
+    (`register_grant_asking_leaf`) and says so (``reads_each_context``)."""
+    return isinstance(leaf, _GRANT_ASKING_LEAVES) and leaf.reads_each_context
+
+
+def is_hook(leaf) -> bool:
+    """Whether `leaf` is a type's hooks (`scrud_django.core.types.HookLeaf`),
+    which only refuse: no grants are asked for it."""
+    from scrud_django.core.types import HookLeaf
+
+    return isinstance(leaf, HookLeaf)
+
+
+@register_grant_asking_leaf
 class GrantsLeaf:
     """scoped-rbac's default ``IsAuthorized`` answers for `type_iri`, as a
     scrud resource view gives them: the request's action
@@ -181,8 +218,10 @@ def requirement_leaves(requirement):
 
 def asks_grants(requirement) -> bool:
     """Whether `requirement` asks the grants of every request it allows:
-    some entry of it does. A leaf asks them unless it is ``grants_nothing``
-    (a type's hooks, `HookLeaf`, only refuse); an ``AnyOf`` asks them only
+    some entry of it does. A leaf asks them only when its class is trusted
+    to (`register_grant_asking_leaf`: `GrantsLeaf`, the DRF ``ViewLeaf``);
+    a type's hooks (`HookLeaf`) only refuse, and a leaf of any other class
+    counts as asking none, whatever it says. An ``AnyOf`` asks them only
     when it has options and **every** option does (an option of hooks alone
     would allow what the grants refuse, and an ``AnyOf`` of none has no leaf
     to check a write after its save)."""
@@ -192,7 +231,7 @@ def asks_grants(requirement) -> bool:
             return bool(entry.options) and all(
                 any(map(asks, _entries(option))) for option in entry.options
             )
-        return not getattr(entry, "grants_nothing", False)
+        return isinstance(entry, _GRANT_ASKING_LEAVES)
 
     return any(map(asks, requirement))
 
@@ -250,7 +289,7 @@ def _grants_meet(requirement, request, obj, permission_of):
     def meets(entry):
         if isinstance(entry, access.AnyOf):
             return any(all(map(meets, _entries(option))) for option in entry.options)
-        if getattr(entry, "grants_nothing", False):
+        if is_hook(entry):
             # A leaf that only refuses (a type's hooks): no grants to ask.
             return True
         return reads(entry)

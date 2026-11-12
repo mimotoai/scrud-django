@@ -401,7 +401,11 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   `scrud_django.core.writes.save_checked` without a `recheck`) raise
   `ImproperlyConfigured` for one that asks no grants (empty, a type's hooks
   only, or an `AnyOf` with an option of hooks only) rather than allow every
-  requester, and
+  requester. Only a leaf of a trusted class (`GrantsLeaf`, the DRF
+  adapter's `ViewLeaf`, or one registered with
+  `scrud_django.core.requirements.register_grant_asking_leaf`) counts as
+  asking the grants; beside a leaf of any other class the core asks them
+  itself, whatever that leaf's `reads_each_context` says. And
   `validate_write` requires a `requirement=`, whose type's hooks are the
   checks that may refuse a transition. The workflow check hides an update's
   workflow error unless its caller says the stored resource is readable

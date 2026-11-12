@@ -42,7 +42,9 @@ from scrud_django.core.requirements import (
     GrantsLeaf,
     _entries,
     as_get,
+    asks_grants_itself,
     grants_allow,
+    is_hook,
     readable_by_grants,
     readable_by_object_checks,
     require_grants,
@@ -159,9 +161,15 @@ def found_item(resource_type, obj: Resource) -> Resource:
 def check_grants_in_each_context(request, content, requirement, permission) -> None:
     """Refuse (``access.AccessDenied``) the resource's `content` unless the
     grants allow `permission` on it, each context read as the resource is
-    there (`grants_allow`), when a leaf of `requirement` does not ask them so
-    itself (``reads_each_context`` is false): object checks only narrow."""
-    if all(leaf.reads_each_context for leaf in requirement_leaves(requirement)):
+    there (`grants_allow`), unless every leaf of `requirement` asks them so
+    itself (`asks_grants_itself`: a leaf of a trusted class whose
+    ``reads_each_context`` is true) or is a type's hooks (`is_hook`). Object
+    checks only narrow; a leaf of any other class gets the grants asked
+    beside it, whatever it says."""
+    if all(
+        asks_grants_itself(leaf) or is_hook(leaf)
+        for leaf in requirement_leaves(requirement)
+    ):
         return
     if not grants_allow(requirement, request, content, permission):
         raise access.AccessDenied()

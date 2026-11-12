@@ -43,6 +43,9 @@ pin it. Its functions that decide access by a requirement (`load_for_read`,
 `create`, `update`, `destroy` without a `check`, and `core.writes`'
 `save_checked` without a `recheck`) refuse one that asks no grants
 (`ImproperlyConfigured`), an `AnyOf` with an option of hooks only included.
+The core trusts only `GrantsLeaf` and the DRF `ViewLeaf` to ask the grants
+(any other leaf gets them asked beside it and counts as asking none);
+register another leaf class with `core.requirements.register_grant_asking_leaf`.
 Put new domain logic in `core`, not in a view; per-type hooks are
 `core.types.TypeOptions`.
 

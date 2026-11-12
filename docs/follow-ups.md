@@ -1275,24 +1275,6 @@ for them. Test: in `tests/test_studio_computed.py`, assert that
 `core.types.type_options(slug).compute` is set for each slug of
 `STUDIO_COMPUTED_TYPES` (it is `None` today).
 
-<a id="core-leaf-self-declared-grants"></a>
-## core-leaf-self-declared-grants: the core trusts a leaf to say it asks the grants
-
-Before ninja phase 3. The core takes a leaf's word for whether it asks the
-grants: `check_grants_in_each_context` (`core/resources.py`) asks them beside
-the leaves only when one says `reads_each_context = False`, and
-`asks_grants` (`require_grants`) counts any leaf without `grants_nothing` as
-asking them. A third-party leaf that sets `reads_each_context = True` (or
-leaves `grants_nothing` unset) and never asks the grants in its own
-`has_context_permission` would authorize every requester through
-`load_for_read`, `check_object` and the post-save check. Proposal: a closed
-set of grant-asking leaf types (`GrantsLeaf`, the DRF adapter's `ViewLeaf`),
-and the grants asked beside any other leaf whatever it declares. Test: in
-`tests/test_core_guards.py`, a leaf class with `reads_each_context = True`
-whose `has_object_permission` and `has_context_permission` return `True`;
-assert `load_for_read(..., requirement=[leaf], method="DELETE")` by a user
-with no grants is refused (today it returns the resource).
-
 <a id="core-hooks-silently-absent"></a>
 ## core-hooks-silently-absent: a type's hooks can be missing without a sign
 

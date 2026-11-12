@@ -17,7 +17,11 @@ from rest_framework.request import clone_request
 from scoped_rbac import access
 from scoped_rbac.permissions import IsAuthorized
 
-from scrud_django.core.requirements import _entries, requirement_leaves
+from scrud_django.core.requirements import (
+    _entries,
+    register_grant_asking_leaf,
+    requirement_leaves,
+)
 from scrud_django.core.types import HookLeaf
 from scrud_django.permissions import (
     _leaves,
@@ -101,6 +105,7 @@ def as_detail_read(view, request):
             view.request = previous
 
 
+@register_grant_asking_leaf
 class ViewLeaf:
     """The `Leaf` of the ``IsAuthorized`` `permission` of DRF view `view`:
     each check is the permission's, given `view`. Its checks read a
@@ -118,7 +123,11 @@ class ViewLeaf:
     with the view as its detail route has it (`as_detail_route`) and
     `request` as its ``request``, restored after. DRF's refusals
     (``PermissionDenied``, ``NotAuthenticated``; ``NotFound``) are raised as
-    Django's (``PermissionDenied``; ``Http404``)."""
+    Django's (``PermissionDenied``; ``Http404``).
+
+    The core trusts it to ask the grants (`register_grant_asking_leaf`):
+    an ``IsAuthorized``'s checks do, and its ``reads_each_context`` says
+    whether they read each context as the resource is there."""
 
     def __init__(self, permission, view):
         self.permission = permission

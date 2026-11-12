@@ -109,14 +109,14 @@ class HookLeaf(Leaf):
     ``narrow``); ``object_checks`` govern reads and objects: only they
     make a list check its objects one by one (``overrides_object_checks``).
 
-    It grants nothing (``grants_nothing``), so no grants are asked for it,
-    and none beside it (``reads_each_context`` is true): the requirement it
-    is in holds the grants (`GrantsLeaf`, or a DRF view's own permissions).
+    It grants nothing, so no grants are asked for it, and none beside it
+    (the core knows it by its class, `scrud_django.core.requirements.is_hook`):
+    the requirement it is in holds the grants (`GrantsLeaf`, or a DRF view's
+    own permissions).
     It reads a resource's contexts from its content (`resource_contexts`),
     and names `type_iri` (by default the type's ``type_uri``)."""
 
     reads_each_context = True
-    grants_nothing = True
 
     def __init__(self, resource_type, options: TypeOptions, *, type_iri=None):
         self.resource_type = resource_type
