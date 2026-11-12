@@ -2079,9 +2079,14 @@ component `studio:workbench`, which renders:
 - a notice (`data-studio-notice`, `role="alert"`, hidden until a write is
   refused);
 - three panes, `<section class="studio-pane" data-studio-pane="items|editor|preview">`,
-  in a row whose height the viewport bounds; each pane scrolls on its own,
-  so the strip stays near the preview however long the Items tree is;
-- a bottom strip (`<footer class="studio-strip">`).
+  in a row that takes the height the top bar and the strip leave (the
+  workbench is a flex column, `100vh` less a small reserve for the page's
+  chrome links, with a floor under which the page scrolls instead); each
+  pane scrolls on its own, so the strip stays on the first screen however
+  much the panes hold;
+- a bottom strip (`<footer class="studio-strip">`) of its natural height,
+  bounded by its own `max-height` and scrolling inside when its Promote
+  panels or the Pushes and History lists are opened.
 
 The Items pane embeds `api_url("ui-branch-items", T)` in the scope
 `studio studio-items`, which the layer renders with `studio:items`; the strip

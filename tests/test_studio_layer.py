@@ -167,52 +167,73 @@ def css_declarations(css, selector):
 
 
 def test_layer_panes_scroll_within_the_viewport(studio_layer):
-    """The panes row has a height bounded by the viewport and each pane
-    scrolls on its own, so a long Items tree no longer pushes the strip
-    (Promote, Pushes, History) far below the preview; the packaged group's
-    summary is styled under ``.studio``."""
+    """The workbench is a viewport-bounded flex column: its own height is
+    ``100vh`` less the page chrome (with a floor, below which the page
+    scrolls), the panes row takes the space the top bar and the strip leave
+    (``flex: 1 1 0; min-height: 0``-style, with a floor) and each pane scrolls
+    on its own, so the strip (Promote, Pushes, History) stays on the first
+    screen however much the panes hold. The strip keeps its natural height,
+    bounded by its own ``max-height`` and scrolling when its panels open.
+    (MR !14 bounded the panes row with ``max-height: calc(100vh - 9rem)``,
+    which ignored the chrome, the top bar and the strip's ~150px.) The packaged
+    group's summary is styled under ``.studio``."""
     [(_name, css)] = [
         (name, content["css"]) for name, content in layer_files("css").items()
     ]
+    workbench = css_declarations(css, ".studio .studio-workbench")
+    assert workbench["display"] == "flex"
+    assert workbench["flex-direction"] == "column"
+    assert re.fullmatch(r"calc\(100vh - [0-9.]+rem\)", workbench["height"])
+    assert workbench["min-height"].endswith("rem")
     panes = css_declarations(css, ".studio .studio-panes")
-    assert "vh" in panes["max-height"]
+    assert panes["display"] == "flex"
+    assert panes["flex"] == "1 1 0"
+    assert panes["min-height"].endswith("rem")  # a floor: the page scrolls
+    assert "max-height" not in panes  # the row's height is the flex remainder
+    strip = css_declarations(css, ".studio .studio-strip")
+    assert strip["flex"] == "0 0 auto"
+    assert "vh" in strip["max-height"]
+    assert strip["overflow"] == "auto"
     assert css_declarations(css, ".studio .studio-pane")["overflow"] == "auto"
     summary = css_declarations(css, ".studio .studio-packaged-group > summary")
     assert summary["cursor"] == "pointer"
 
 
 def test_layer_preview_leaves_room_for_the_inspector(studio_layer):
-    """The preview frame's height (it was ``min-height: 60vh``) sits in a
-    pane the viewport bounds (``.studio-panes``' max-height): on a 900px-tall
-    viewport it left the inspector at the pane's bottom edge. The frame is
-    ``min(<a>vh, calc(100vh - <b>rem))`` tall, so that at 900px the pane keeps
-    at least 16rem (its padding and title, the preview controls, and the
-    inspector's title and first lines) below and above the frame."""
+    """The preview frame sits in a pane the workbench's layout bounds: at
+    900px tall the panes row is the workbench (``100vh`` less the chrome
+    reserve) less the top bar and branch tools (~70px), the strip (~150px)
+    and the gaps (~25px), as measured at 1440x900. The frame is
+    ``max(<f>rem, calc(<a>vh - <b>rem))`` tall, so that the pane keeps at
+    least 16rem (its padding and title, the preview controls, and the
+    inspector's title and first lines) below and above the frame; a tall
+    viewport still gets a tall frame."""
     [(_name, css)] = [
         (name, content["css"]) for name, content in layer_files("css").items()
     ]
-    rem, viewport = 16, 900
-    panes = re.fullmatch(
+    rem = 16
+    overhead = 70 + 150 + 25
+    workbench = re.fullmatch(
         r"calc\(100vh - ([0-9.]+)rem\)",
-        css_declarations(css, ".studio .studio-panes")["max-height"],
+        css_declarations(css, ".studio .studio-workbench")["height"],
     )
     frame = re.fullmatch(
-        r"min\(([0-9.]+)vh, calc\(100vh - ([0-9.]+)rem\)\)",
+        r"max\(([0-9.]+)rem, calc\(([0-9.]+)vh - ([0-9.]+)rem\)\)",
         css_declarations(css, ".studio .studio-preview")["min-height"],
     )
-    assert panes and frame
-    pane = viewport - float(panes.group(1)) * rem
-    height = min(
-        float(frame.group(1)) * viewport / 100,
-        viewport - float(frame.group(2)) * rem,
-    )
+    assert workbench and frame
+
+    def sizes(viewport):
+        pane = viewport - float(workbench.group(1)) * rem - overhead
+        height = max(
+            float(frame.group(1)) * rem,
+            float(frame.group(2)) * viewport / 100 - float(frame.group(3)) * rem,
+        )
+        return pane, height
+
+    pane, height = sizes(900)
     assert pane - height >= 16 * rem, (pane, height)
-    # A tall viewport still gets a tall frame.
-    tall = 1400
-    assert (
-        min(float(frame.group(1)) * tall / 100, tall - float(frame.group(2)) * rem)
-        >= 600
-    )
+    assert sizes(1400)[1] >= 600
 
 
 @pytest.mark.django_db
