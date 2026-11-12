@@ -445,7 +445,10 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   the request, so one that fails leaves none for a save to use. A type's
   hooks are asked in a route's request check after the other entries and
   where `scrud_workflow` refuses, as the DRF route asks them
-  (`check_request_hooks`) once its own request check is over. A front end
+  (`check_request_hooks`) once its own request check is over, and so are
+  those of an `AnyOf` option where the option's request check is paired
+  with its object check (`check_object`, so `validate_write`): the two
+  answer alike. A front end
   runs `scrud_django.core.bodies.check_body` on a write's body before the
   facade, as DRF answers a malformed body 400 before any 403.
   `readable_queryset` and `list_last_modified`, which filter by a
@@ -454,8 +457,22 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   is not its class's (`GrantsLeaf`, a type's hooks, the DRF `ViewLeaf`
   whose permission keeps scoped-rbac's), or of any other class unless
   registered with
-  `scrud_django.core.requirements.register_stored_contexts_leaf`. It is
-  the base for other front ends.
+  `scrud_django.core.requirements.register_stored_contexts_leaf`. A
+  requirement is a `scrud_django.core.requirements.Requirement`, frozen,
+  whose `AnyOf` is the core's own (frozen, each option a tuple; one of no
+  option, or with an empty option, is a `ValueError`):
+  `Requirement.of(entries)` converts scoped-rbac's `access.AnyOf` and
+  raises `ImproperlyConfigured` for one that asks no grants, and
+  `core.types.requirement_for` returns one. Every facade entry point
+  (`load_for_read`, `check_object`, `allowed_methods`, `readable_queryset`,
+  `list_last_modified`, `check_request`, `readable_content`,
+  `validate_write`, `create`, `update`, `destroy`, `save_checked` without a
+  `recheck`) takes a `Requirement` or its entries, through
+  `Requirement.of`: `list_last_modified` now refuses one that asks no
+  grants too. `scrud_django.drf_requirements.requirement_of` returns one
+  built `Requirement.unchecked` (a DRF view with no `IsAuthorized` asks no
+  grants and is still served); `core.requirements.to_scoped_rbac` gives an
+  `AnyOf` back as scoped-rbac's. It is the base for other front ends.
 * Per-type hooks, honoured by every front end, on `json_resource_type`
   (`checks=`, `object_checks=`, `content_filter=`) and
   `computed_resource_type` (`compute=`). They can only refuse what the grants
@@ -541,8 +558,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   resource (`(type IRI, pk)`, none for a create), and that save consumes
   it. A grant conditioned on `scrud_workflow` now gets 403 for a view
   subclass that saves twice per validation, that calls `save_checked`
-  without `instance=` on an update, or whose `resource_type_iri_for`
-  differs between the validation and the save.
+  without `instance=` on an update, whose `resource_type_iri_for`
+  differs between the validation and the save, or that validates several
+  resources before saving them (two serializers, a `many=True` create).
 
 Behaviour without `scrud_django.ui` in `INSTALLED_APPS` is unchanged.
 

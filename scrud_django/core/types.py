@@ -367,8 +367,8 @@ def requirement_for(resource_type, slug: str | None = None) -> Requirement:
             f"{resource_type.type_uri!r}, whose slug is {resource_type.slug!r}."
         )
     ensure_hooks_loaded()
-    requirement: Requirement = [GrantsLeaf(resource_type.type_uri)]
+    entries: list[Leaf] = [GrantsLeaf(resource_type.type_uri)]
     leaf = _leaf_of(resource_type, type_options(resource_type.type_uri))
     if leaf is not None:
-        requirement.append(leaf)
-    return requirement
+        entries.append(leaf)
+    return Requirement.of(entries, caller="requirement_for")

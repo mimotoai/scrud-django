@@ -46,10 +46,13 @@ list's GET each grants leaf as its list type, else each leaf's
 as DRF's `initial()` does. Its functions that decide access by a
 requirement (`check_request`, `load_for_read`, `object_readable`,
 `readable_content`, `allowed_methods`, `check_object`, `readable_queryset`,
-`validate_write`, `create`, `update`, `destroy` without a `check`, and
-`core.writes`' `save_checked` without a `recheck`) refuse one that asks no
-grants (`ImproperlyConfigured`), an `AnyOf` with an option of hooks only
-included.
+`validate_write`, `create`, `update`, `destroy` without a `check`,
+`list_last_modified`, and `core.writes`' `save_checked` without a
+`recheck`) take it through `core.requirements.Requirement.of` (a frozen
+`Requirement`, whose `AnyOf` is the core's own, scoped-rbac's converted),
+which refuses one that asks no grants (`ImproperlyConfigured`), an `AnyOf`
+with an option of hooks only included; the DRF adapter's `requirement_of`
+builds one `Requirement.unchecked`.
 The core trusts only `GrantsLeaf` and the DRF `ViewLeaf` (and a subclass
 overriding neither `has_context_permission` nor `reads_each_context`) to ask
 the grants: any other leaf but a type's hooks (`HookLeaf`, which count as

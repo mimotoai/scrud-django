@@ -21,7 +21,7 @@ the body for a write) runs before anything is looked up, as DRF's
 requester refused there gets a 403 whether the item exists or not. A front
 end runs `scrud_django.core.bodies.check_body` on a write's body before any
 of them, as DRF answers a malformed body 400 before any 403. Beyond that,
-a requirement's ``access.AnyOf`` is DRF's ``|``: an option allows an object
+a requirement's `AnyOf` is DRF's ``|``: an option allows an object
 only when each of its entries allows the request (``has_permission``) and
 then the object, as DRF's ``OR.has_object_permission`` asks them
 (`_object_permitted`; and the object checks of `readable_content` and
@@ -31,7 +31,7 @@ readability ask an option's object checks alone.
 """
 
 import copy
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -49,8 +49,9 @@ from scrud_django.core.lists import (  # noqa: F401  (re-exported)
     readable_queryset,
 )
 from scrud_django.core.requirements import (
+    AnyOf,
     GrantsLeaf,
-    _entries,
+    Requirement,
     _own_request_check,
     _trusted,
     as_get,
@@ -60,7 +61,6 @@ from scrud_django.core.requirements import (
     option_allows_request,
     readable_by_grants,
     readable_by_object_checks,
-    require_grants,
     requirement_leaves,
 )
 from scrud_django.core.types import BODY_METHODS, HookLeaf
@@ -118,7 +118,9 @@ def _options_copy(request, method):
     return clone
 
 
-def readable_content(read, content, requirement, *, permission=None):
+def readable_content(
+    read, content, requirement: Requirement | Sequence, *, permission=None
+):
     """Whether the resource's `content` is readable by `read` (a GET of the
     detail route): the grants (`readable_by_grants`, ``http.GET`` on each
     leaf's type; with `permission`, `grants_allow` for it instead) **and**
@@ -127,10 +129,10 @@ def readable_content(read, content, requirement, *, permission=None):
     ``|`` answers a GET), with ``scrud_workflow`` refusing
     (`_not_checking_write`): it never makes an object readable.
 
-    A `requirement` that asks no grants (empty, or hooks only) is
-    ``ImproperlyConfigured`` (`require_grants`): it would read as readable
-    by anyone."""
-    require_grants(requirement, "readable_content")
+    `requirement` is taken through `Requirement.of`: one that asks no
+    grants (empty, or hooks only) is ``ImproperlyConfigured``: it would read
+    as readable by anyone."""
+    requirement = Requirement.of(requirement, caller="readable_content")
     return _readable_content(
         read,
         content,
@@ -162,7 +164,9 @@ def _readable_content(
         )
 
 
-def object_readable(request, resource_type, obj: Resource, requirement) -> bool:
+def object_readable(
+    request, resource_type, obj: Resource, requirement: Requirement | Sequence
+) -> bool:
     """Whether `obj` (a `Resource` of `resource_type`) is readable by
     `request`'s user, as a GET of its detail route has it, whatever the
     request's method (`as_get`): `readable_content` of its content. Tells a
@@ -225,10 +229,10 @@ def _object_permitted(request, resource_type, content, requirement, *, body=None
         asked = request
 
     def meets(entry):
-        if isinstance(entry, access.AnyOf):
+        if isinstance(entry, AnyOf):
             return any(
                 option_allows_request(option, asked, body)
-                and all(meets(e) for e in _entries(option))
+                and all(meets(e) for e in option)
                 for option in entry.options
             )
         return entry.has_object_permission(request, content)
@@ -246,7 +250,7 @@ def check_object(
     request,
     resource_type,
     obj: Resource,
-    requirement,
+    requirement: Requirement | Sequence,
     *,
     covered,
     body: Mapping | None = None,
@@ -256,14 +260,15 @@ def check_object(
     the workflow check covers the write (`covered`, `authorizing_write`). An
     ``AnyOf`` option asks its request checks first, with `body`
     (`_object_permitted`). A refusal of an object `object_readable` refuses
-    is ``Http404``; of a readable one, ``access.AccessDenied``. A
-    `requirement` that asks no grants (empty, or hooks only) is
-    ``ImproperlyConfigured`` (`require_grants`): it would allow anyone.
+    is ``Http404``; of a readable one, ``access.AccessDenied``.
+    `requirement` is taken through `Requirement.of`: one that asks no
+    grants (empty, or hooks only) is ``ImproperlyConfigured``: it would
+    allow anyone.
 
     It asks no top-level request check (DRF's ``check_permissions``): a
     caller runs `check_request` first, as `load_for_read` and
     `validate_write` do."""
-    require_grants(requirement, "check_object")
+    requirement = Requirement.of(requirement, caller="check_object")
     with authorizing_write(request, covered=covered):
         permitted = _object_permitted(
             request, resource_type, content_of(obj), requirement, body=body
@@ -280,7 +285,7 @@ def load_for_read(
     resource_type,
     pk,
     *,
-    requirement,
+    requirement: Requirement | Sequence,
     method: str,
     lock_using: str | None = None,
     body: Mapping | None = None,
@@ -319,10 +324,10 @@ def load_for_read(
     ``select_for_update()`` (call it inside a transaction there); else as
     the router reads.
 
-    A `requirement` that asks no grants (empty, or hooks only) is
-    ``ImproperlyConfigured`` (`require_grants`), before any lookup: it would
-    let anyone load any resource."""
-    require_grants(requirement, "load_for_read")
+    `requirement` is taken through `Requirement.of`: one that asks no
+    grants (empty, or hooks only) is ``ImproperlyConfigured``, before any
+    lookup: it would let anyone load any resource."""
+    requirement = Requirement.of(requirement, caller="load_for_read")
     if body is None and method in BODY_METHODS:
         checked = _options_copy(request, method)
     else:
@@ -375,10 +380,8 @@ def _request_checks_pass(request, requirement, body=None):
     run in ``write_checks``, is over."""
 
     def meets(entry):
-        if isinstance(entry, access.AnyOf):
-            return any(
-                all(meets(e) for e in _entries(option)) for option in entry.options
-            )
+        if isinstance(entry, AnyOf):
+            return any(all(meets(e) for e in option) for option in entry.options)
         if isinstance(entry, HookLeaf):
             with _not_checking_write():
                 return entry.has_permission(request, body)
@@ -403,13 +406,13 @@ def _as_list_requirement(requirement):
     what it refuses beyond the grants stays refused."""
 
     def as_list(entry):
-        if isinstance(entry, access.AnyOf):
+        if isinstance(entry, AnyOf):
             return [
-                access.AnyOf(
-                    [
-                        [e for item in _entries(option) for e in as_list(item)]
+                AnyOf(
+                    tuple(
+                        tuple(e for item in option for e in as_list(item))
                         for option in entry.options
-                    ]
+                    )
                 )
             ]
         if not _trusted(entry):
@@ -417,13 +420,16 @@ def _as_list_requirement(requirement):
         listed = GrantsLeaf(collection_type_uri_for(entry.type_iri))
         return [listed, entry] if _own_request_check(entry) else [listed]
 
-    return [e for entry in requirement for e in as_list(entry)]
+    # Derived from a checked requirement: each trusted leaf stays one.
+    return Requirement.unchecked(
+        [e for entry in Requirement.unchecked(requirement) for e in as_list(entry)]
+    )
 
 
 def check_request(
     request,
     resource_type,
-    requirement,
+    requirement: Requirement | Sequence,
     *,
     list_route: bool,
     body: Mapping | None = None,
@@ -460,9 +466,10 @@ def check_request(
     ``PermissionDenied`` refuses; another access error (a body naming a
     reserved context, 400) is raised.
 
-    A `requirement` that asks no grants (empty, or hooks only) is
-    ``ImproperlyConfigured`` (`require_grants`): it would allow anyone."""
-    require_grants(requirement, "check_request")
+    `requirement` is taken through `Requirement.of`: one that asks no
+    grants (empty, or hooks only) is ``ImproperlyConfigured``: it would
+    allow anyone."""
+    requirement = Requirement.of(requirement, caller="check_request")
     if list_route and request.method in ("GET", "HEAD"):
         read = as_get(request)
         with authorizing_write(read, covered=False):
@@ -479,9 +486,9 @@ def allowed_methods(
     request,
     resource_type,
     obj: Resource | None,
-    requirement,
+    requirement: Requirement | Sequence,
     *,
-    list_requirement=None,
+    list_requirement: Requirement | Sequence | None = None,
 ) -> list[str]:
     """The methods the ``Allow`` of the OPTIONS `request` lists, as the DRF
     route's (scrudful's ``_allowed_methods`` over ``ResourceViewMixin``)
@@ -512,19 +519,20 @@ def allowed_methods(
     which a caller that answers a missing item with a 404 before calling
     this does not reproduce.
 
-    A `requirement` (or a given `list_requirement`) that asks no grants
-    (empty, or hooks only) is ``ImproperlyConfigured`` (`require_grants`):
-    it would list every method for anyone."""
-    require_grants(requirement, "allowed_methods")
+    `requirement` (and a given `list_requirement`) is taken through
+    `Requirement.of`: one that asks no grants (empty, or hooks only) is
+    ``ImproperlyConfigured``: it would list every method for anyone."""
+    requirement = Requirement.of(requirement, caller="allowed_methods")
     if list_requirement is not None:
-        require_grants(list_requirement, "allowed_methods")
+        list_requirement = Requirement.of(list_requirement, caller="allowed_methods")
     if obj is None:
         checked = LIST_METHODS
         covered = COVERED_LIST_METHOD
         if list_requirement is None:
-            list_requirement = [
-                GrantsLeaf(collection_type_uri_for(resource_type.type_uri))
-            ]
+            list_requirement = Requirement.of(
+                [GrantsLeaf(collection_type_uri_for(resource_type.type_uri))],
+                caller="allowed_methods",
+            )
         requirements = {"GET": list_requirement}
     else:
         checked = ITEM_METHODS

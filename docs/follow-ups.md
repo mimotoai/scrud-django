@@ -1322,9 +1322,6 @@ requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
 
 Before ninja phase 3. The core's types leave invariants to their callers:
 
-- a requirement is a plain list built anywhere, with scoped-rbac's
-  `AnyOf`: build a validated, frozen `Requirement` once (with the core's
-  own frozen `AnyOf`, converted to scoped-rbac's in the DRF adapter);
 - `workflow_check` takes `prior=None` for both a create and no stored
   content (`NULL_STORED_CONTENT` is a tuple against a `Mapping`
   annotation): take distinct create and update inputs;

@@ -52,13 +52,13 @@ from scrudful.conditional import (
 from scrud_django.core.authz import condition_resource, content_of
 from scrud_django.core.requirements import (
     CANDIDATE_CHUNK_SIZE,
+    Requirement,
     _plainly_reserved,
     _usable,
     as_get,
     filter_by_object_checks,
     object_check_requirement,
     readable_removal,
-    require_grants,
     require_stored_contexts,
 )
 from scrud_django.exceptions import QueryParameterError
@@ -182,7 +182,11 @@ def _conditionally_allowed(candidates, request, policy, permission, scope, conte
 
 
 def readable_queryset(
-    request, resource_type, requirement, *, using: str | None = None
+    request,
+    resource_type,
+    requirement: Requirement | Sequence,
+    *,
+    using: str | None = None,
 ) -> QuerySet[Resource]:
     """The resources of `resource_type` `request`'s user may list, read on
     database `using` (``None``: as the router reads), in today's order: the
@@ -203,10 +207,10 @@ def readable_queryset(
     write's own request check governs it (`validate_write`'s), as DRF
     evaluates a conditional create's list validators without the list
     grant; its list is that of its GET copy (`as_get`), filtered by the
-    item grants. A `requirement` that asks no grants
-    (`scrud_django.core.requirements.require_grants`), or with a leaf that
-    may read contexts other than a resource's stored ones
-    (`scrud_django.core.requirements.require_stored_contexts`), is
+    item grants. A `requirement` (taken through
+    `scrud_django.core.requirements.Requirement.of`) that asks no grants,
+    or with a leaf that may read contexts other than a resource's stored
+    ones (`scrud_django.core.requirements.require_stored_contexts`), is
     ``ImproperlyConfigured`` whatever the method or the requester.
 
     The object checks ask, for each ``AnyOf`` option, its request checks
@@ -214,7 +218,7 @@ def readable_queryset(
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import check_request
 
-    require_grants(requirement, "readable_queryset")
+    requirement = Requirement.of(requirement, caller="readable_queryset")
     require_stored_contexts(requirement, "readable_queryset")
     if request.method in ("GET", "HEAD"):
         check_request(request, resource_type, requirement, list_route=True)
@@ -292,16 +296,21 @@ def latest(*times):
     return max((t for t in times if t is not None), default=None)
 
 
-def list_last_modified(request, resource_type, queryset, requirement):
+def list_last_modified(
+    request, resource_type, queryset, requirement: Requirement | Sequence
+):
     """The list's Last-Modified: the newest ``modified_at`` of `queryset`
     (`readable_queryset`'s), or the newest time a resource left a context in
     which the requester may list every resource
     (`scrud_django.core.requirements.readable_removal` of `requirement`, read
     on the queryset's database), whichever is later; ``None`` for neither.
     The leaves must read a resource's contexts as stored (the module's
-    note): the stamps are of those contexts. A `requirement` with a leaf
-    that may read others is ``ImproperlyConfigured``
-    (`scrud_django.core.requirements.require_stored_contexts`)."""
+    note): the stamps are of those contexts. `requirement` is taken through
+    `scrud_django.core.requirements.Requirement.of`: one that asks no
+    grants, or with a leaf that may read others
+    (`scrud_django.core.requirements.require_stored_contexts`), is
+    ``ImproperlyConfigured``."""
+    requirement = Requirement.of(requirement, caller="list_last_modified")
     require_stored_contexts(requirement, "list_last_modified")
     newest = queryset.aggregate(newest=Max("modified_at"))["newest"]
     removed = readable_removal(request, requirement, resource_type, queryset.db)

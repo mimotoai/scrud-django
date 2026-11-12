@@ -113,7 +113,9 @@ def test_asks_grants():
     assert asks_grants([access.AnyOf([grants, [GrantsLeaf("other")]])])
     assert asks_grants([access.AnyOf([GrantsLeaf(JSON_LD), grants])])
     assert asks_grants([*grants, access.AnyOf([grants, hooks_only(resource_type)])])
-    assert not asks_grants([access.AnyOf([])])
+    # An AnyOf of no option is refused outright (the core's AnyOf).
+    with pytest.raises(ValueError):
+        asks_grants([access.AnyOf([])])
     for requirement in no_grants(resource_type).values():
         assert not asks_grants(requirement)
 
@@ -786,3 +788,58 @@ def test_a_hook_subclass_overriding_a_check_is_no_hook(name, where):
     # Still no leaf asking the grants: alone, it is refused.
     with pytest.raises(ImproperlyConfigured, match="asks no grants"):
         require_grants([leaf], "x")
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_anyof_options_hooks_ask_their_request_check_outside_the_write():
+    """A type's hooks in an ``AnyOf`` option ask their request check
+    (``has_permission``) outside the write's checks (``scrud_workflow``
+    refusing there), wherever the facade asks it: in the route's request
+    check (`check_request`) and in pairing the option with its object check
+    (`check_object`, and so `validate_write`), as the DRF route asks hooks
+    once its ``write_checks`` is over. A hook refusing its request check
+    inside the write's checks answers the same through both."""
+    from scrud_django.core.authz import _OUTSIDE, _checking_write, _transition
+
+    resource_type = json_ld()
+    stored = ResourceRegistration.register({"rbac_context": "a"}, "json-ld")
+    body = {"rbac_context": "a", "via": "request"}
+
+    def outside_only(request, rtype, content, context):
+        # Its request check (of the body) refuses inside the write's
+        # checks; its object check (of the stored resource) allows.
+        return content.get("via") != "request" or _transition.get() is _OUTSIDE
+
+    hook = HookLeaf(resource_type, TypeOptions(checks=(outside_only,)))
+    writer = user_with(
+        ({"http.GET": [JSON_LD], "http.PUT": [JSON_LD]}, "a"),
+    )
+    request = request_of("PUT", writer)
+    # The hook does refuse inside the write's checks.
+    assert hook.has_permission(request, body)
+    with _checking_write():
+        assert not hook.has_permission(request, body)
+
+    requirement = [
+        access.AnyOf([[GrantsLeaf("tests://Other")], [GrantsLeaf(JSON_LD), hook]])
+    ]
+    resources.check_request(
+        request, resource_type, requirement, list_route=False, body=body
+    )
+    resources.check_object(
+        request,
+        resource_type,
+        Resource.objects.get(pk=stored.pk),
+        requirement,
+        covered=True,
+        body=body,
+    )
+    writes.validate_write(
+        request,
+        resource_type,
+        body,
+        stored=Resource.objects.get(pk=stored.pk),
+        requirement=requirement,
+        readable=None,
+    )

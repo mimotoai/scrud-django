@@ -307,7 +307,7 @@ def test_view_leaf_composed_permissions():
 @pytest.mark.django_db
 @test_context
 def test_object_check_requirement_of_composed_views():
-    from scrud_django.core.requirements import object_check_requirement
+    from scrud_django.core.requirements import AnyOf, object_check_requirement
     from scrud_django.drf_requirements import ViewLeaf, requirement_of
 
     views = composed_views()
@@ -321,7 +321,8 @@ def test_object_check_requirement_of_composed_views():
         assert (object_check_requirement(requirement) is not None) is narrows, name
         assert (filters.object_check_requirement(views[name]) is not None) is narrows
     (entry,) = requirement_of(views["or"])
-    assert isinstance(entry, access.AnyOf)
+    # The core's own AnyOf (scoped-rbac's converted), each option a tuple.
+    assert isinstance(entry, AnyOf)
     assert [[type(leaf) for leaf in option] for option in entry.options] == [
         [ViewLeaf],
         [ViewLeaf],
@@ -344,7 +345,7 @@ def test_not_permission_is_not_neutral():
         with pytest.raises(NotNeutral):
             requirement_of(resource_view(permission))
     # A ~ over no IsAuthorized is neutral: it requires nothing of RBAC.
-    assert requirement_of(resource_view(~IsAuthenticated)) == []
+    assert requirement_of(resource_view(~IsAuthenticated)).entries == ()
     # The view-based functions keep DRF's path for such a view: without a
     # requirement, any IsAuthorized under ~ reading the object decides.
     content = content_of(store({"rbac_context": "a"}))
@@ -601,3 +602,141 @@ def test_not_neutral_compares_the_permissions_not_their_count():
 
     with pytest.raises(NotNeutral):
         requirement_of(OffsetView())
+
+
+@pytest.mark.django_db
+@test_context
+def test_requirement_of_normalises_scoped_rbac_anyof():
+    """`Requirement.of` takes scoped-rbac's ``access.AnyOf`` (an option a
+    leaf, or a list of entries, an ``access.AnyOf`` among them) as the
+    core's own frozen `AnyOf`, each option a tuple of its entries (the same
+    leaf objects); a `Requirement` is returned as it is."""
+    from scrud_django.core.requirements import AnyOf, GrantsLeaf, Requirement
+    from scrud_django.core.types import HookLeaf, TypeOptions
+    from scrud_django.registration import get_resource_type_for
+
+    reverse("json-ld-list")
+    hook = HookLeaf(get_resource_type_for("json-ld"), TypeOptions())
+    first, second = GrantsLeaf(JSON_LD), GrantsLeaf(OTHER)
+    requirement = Requirement.of([access.AnyOf([first, [second, hook]])])
+    assert isinstance(requirement, Requirement)
+    (entry,) = requirement.entries
+    assert isinstance(entry, AnyOf)
+    assert entry == AnyOf(((first,), (second, hook)))
+    assert [[id(leaf) for leaf in option] for option in entry.options] == [
+        [id(first)],
+        [id(second), id(hook)],
+    ]
+    assert list(requirement) == [entry]
+    assert Requirement.of(requirement) is requirement
+    # A nested access.AnyOf (DRF's (A | B) | C) is the core's too.
+    third = GrantsLeaf(JSON_LD)
+    nested = Requirement.of(
+        [access.AnyOf([[access.AnyOf([[first], [second]])], [third]])]
+    )
+    ((inner,), (last,)) = nested.entries[0].options
+    assert inner == AnyOf(((first,), (second,)))
+    assert last is third
+    # unchecked converts the same way, without the grants check.
+    assert Requirement.unchecked([access.AnyOf([first, [second, hook]])]) == (
+        requirement
+    )
+    # The core's AnyOf back as scoped-rbac's, for a scoped-rbac call.
+    from scrud_django.core.requirements import to_scoped_rbac
+
+    back = to_scoped_rbac(entry)
+    assert isinstance(back, access.AnyOf)
+    assert back.options == [[first], [second, hook]]
+
+
+@pytest.mark.django_db
+@test_context
+def test_requirement_of_refuses_no_grants():
+    """A requirement that asks no grants (empty, a type's hooks only) is
+    ``ImproperlyConfigured`` from `Requirement.of`, also given as a
+    `Requirement` built `unchecked`; `unchecked` takes it."""
+    from django.core.exceptions import ImproperlyConfigured
+
+    from scrud_django.core.requirements import Requirement
+    from scrud_django.core.types import HookLeaf, TypeOptions
+    from scrud_django.registration import get_resource_type_for
+
+    reverse("json-ld-list")
+    hook = HookLeaf(get_resource_type_for("json-ld"), TypeOptions())
+    for entries in ([], [hook]):
+        with pytest.raises(ImproperlyConfigured, match="asks no grants"):
+            Requirement.of(entries)
+        unchecked = Requirement.unchecked(entries)
+        assert unchecked.entries == tuple(entries)
+        with pytest.raises(ImproperlyConfigured, match="asks no grants"):
+            Requirement.of(unchecked)
+
+
+def test_anyof_refuses_empty():
+    from scrud_django.core.requirements import AnyOf, GrantsLeaf
+
+    with pytest.raises(ValueError):
+        AnyOf.of()
+    with pytest.raises(ValueError):
+        AnyOf.of([])
+    with pytest.raises(ValueError):
+        AnyOf.of([GrantsLeaf(JSON_LD)], [])
+    with pytest.raises(ValueError):
+        AnyOf(())
+
+
+def test_requirement_is_frozen():
+    import dataclasses
+
+    from scrud_django.core.requirements import AnyOf, GrantsLeaf, Requirement
+
+    requirement = Requirement.of([GrantsLeaf(JSON_LD)])
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        requirement.entries = ()
+    any_of = AnyOf.of([GrantsLeaf(JSON_LD)])
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        any_of.options = ()
+    # Entries and options are tuples, whatever they were given as.
+    assert isinstance(requirement.entries, tuple)
+    assert all(isinstance(option, tuple) for option in any_of.options)
+
+
+@pytest.mark.django_db
+@test_context
+def test_drf_view_without_isauthorized_still_served():
+    """A DRF view with no ``IsAuthorized`` (here ``IsAuthenticated`` only)
+    asks no grants: its requirement (`requirement_of`) is built
+    `Requirement.unchecked`, which the facade would refuse, so it is still
+    served as on ``develop``: its detail route and its list answer a reader
+    in "a" (its lookup filtered by RBAC, as scoped-rbac's queryset is)."""
+    from django.core.exceptions import ImproperlyConfigured
+    from rest_framework.test import force_authenticate
+
+    from scrud_django.core.requirements import Requirement
+    from scrud_django.drf_requirements import requirement_of
+    from scrud_django.views import ResourceViewSet
+
+    in_a = store({"rbac_context": "a"})
+    in_b = store({"rbac_context": "b"})
+    requirement = requirement_of(resource_view(IsAuthenticated))
+    assert isinstance(requirement, Requirement)
+    assert requirement.entries == ()
+    with pytest.raises(ImproperlyConfigured, match="asks no grants"):
+        Requirement.of(requirement)
+
+    reader = user_with(({"http.GET": [JSON_LD]}, "a"))
+    assert drf_detail_status(IsAuthenticated, reader, in_a.pk) == 200
+    assert drf_detail_status(IsAuthenticated, reader, in_b.pk) == 404
+    assert drf_detail_status(IsAuthenticated, user_with(), in_a.pk) == 404
+    assert drf_detail_status(IsAuthorized, user_with(), in_a.pk) == 403
+
+    class Plain(ResourceViewSet):
+        permission_classes = [IsAuthenticated]
+
+    request = APIRequestFactory().get("/", HTTP_ACCEPT="application/json")
+    force_authenticate(request, reader)
+    response = Plain.as_view({"get": "list"}, resource_type_name="json-ld")(request)
+    response.render()
+    assert response.status_code == 200
+    listed = json.loads(response.content)["content"]
+    assert [item["content"] for item in listed] == [{"rbac_context": "a"}]
