@@ -399,7 +399,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   raise `ImproperlyConfigured` for one that asks no grants (empty, or a
   type's hooks only) rather than allow every requester, and
   `validate_write` takes the type's hooks from its `requirement=` as the
-  checks that may refuse a transition. It is the base for other front ends.
+  checks that may refuse a transition. The workflow check hides an update's
+  workflow error unless its caller says the stored resource is readable
+  (`readable=`). It is the base for other front ends.
 * Per-type hooks, honoured by every front end, on `json_resource_type`
   (`checks=`, `object_checks=`, `content_filter=`) and
   `computed_resource_type` (`compute=`). They can only refuse what the grants

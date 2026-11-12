@@ -1284,22 +1284,6 @@ no content for them. Test: in `tests/test_studio_computed.py`, assert that
 `core.types.type_options(slug).compute` is set for each slug of
 `STUDIO_COMPUTED_TYPES` (it is `None` today).
 
-<a id="core-workflow-readable-default"></a>
-## core-workflow-readable-default: `workflow_check` treats an update's stored resource as readable without `readable`
-
-`core.workflow.workflow_check` (and `core.writes.validate_write`, which
-passes `readable` through) hides a workflow error about an update from a
-requester who may not read the stored resource only when the caller passes
-`readable`; with `readable=None` the resource counts as readable, so a
-front end that forgets it reveals the stored state in the error. The DRF
-adapter always passes a callable for an update
-(`tests/test_core_guards.py::test_drf_workflow_check_is_told_whether_an_update_is_readable`).
-Making `None` mean "hide" for an update was deferred: the existing
-`tests/test_core_workflow.py::test_refused_transition` pins the readable
-default. Test: call `workflow_check` for an update with a refused transition
-and no `readable`, as a user who may not read the prior's context; it should
-raise `HiddenWorkflowTransitionError`.
-
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

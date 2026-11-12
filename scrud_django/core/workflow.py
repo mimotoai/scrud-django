@@ -185,8 +185,9 @@ def workflow_check(
       each is asked, while the transition is being authorized, with the body
       as sent (`plain_body`) and the context.
     - `readable` says whether the requester may read the stored resource; an
-      error about an update of one they may not read is hidden. ``None``:
-      it is treated as readable.
+      error about an update of one they may not read is hidden. ``None``
+      for an update (a `prior`) hides it: a caller that cannot tell fails
+      closed. A create has no stored resource and ignores it.
 
     It marks the request authorized (`_mark_workflow_authorized`) when every
     context passes. Raises `WorkflowTransitionError` (or a subclass) for a
@@ -215,6 +216,10 @@ def workflow_check(
         if any(p is not None for _, p in policies):
             raise WorkflowRequestRequired()
         return []
+    if prior is not None and readable is None:
+        # Not told whether the stored resource is readable: hide what an
+        # error would reveal of it.
+        readable = _unreadable
     transitions = []
     for c, policy in policies:
         if policy is None:
@@ -237,6 +242,12 @@ def workflow_check(
     # only a write authorized here.
     _mark_workflow_authorized(request)
     return transitions
+
+
+def _unreadable():
+    """`workflow_check`'s ``readable`` for an update whose caller gave
+    none."""
+    return False
 
 
 @contextmanager

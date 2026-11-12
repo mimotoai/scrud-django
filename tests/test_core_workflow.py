@@ -123,9 +123,8 @@ def test_refused_transition():
     store_note_policy()
     request = put_request(user_with((may_transition("retract"), "a")))
     with pytest.raises(WorkflowTransitionError) as excinfo:
-        publish(request)
-    # Not hidden: the requester reads the policy, and the stored note is
-    # treated as readable (no `readable`).
+        publish(request, readable=lambda: True)
+    # Not hidden: the requester reads the policy and the stored note.
     assert type(excinfo.value) is WorkflowTransitionError
     assert excinfo.value.status_code == 400
     assert (excinfo.value.prior_state, excinfo.value.proposed_state) == (
@@ -282,3 +281,25 @@ def test_null_stored_content_is_checked_as_an_update(stored_content):
     Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
     assert Http.response.json()["code"] == "permission_denied"
     assert Resource.objects.get(pk=stored.pk).content == stored_content
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_update_without_readable_hides_its_errors():
+    # A caller that does not say whether the stored resource is readable
+    # (`readable=None`) gets an update's workflow error hidden: it fails
+    # closed. A create (no prior) has no stored state to hide.
+    from scrud_django.core.workflow import workflow_check
+
+    store_note_policy()
+    request = put_request(user_with((may_transition("retract"), "a")))
+    with pytest.raises(HiddenWorkflowTransitionError) as excinfo:
+        publish(request)
+    assert (excinfo.value.prior_state, excinfo.value.proposed_state) == (None, None)
+    assert not _workflow_authorized(request)
+
+    creator = put_request(user_with((may_transition("retract"), "a")))
+    with pytest.raises(WorkflowTransitionError) as excinfo:
+        workflow_check(creator, type_iri=NOTE, prior=None, proposed=DRAFT)
+    assert type(excinfo.value) is WorkflowTransitionError
+    assert excinfo.value.proposed_state == "draft"
