@@ -391,13 +391,23 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   adapters that delegate to it for the pieces they call, and every status,
   header and body they answer is unchanged, but for the overrides listed
   under Upgrading. The item-level facade of `scrud_django.core.resources`
-  (`load_for_read`, `object_readable`, `readable_content`,
+  (`check_request`, `load_for_read`, `object_readable`, `readable_content`,
   `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
   `create`, `update`, `destroy`) is not called by the DRF views; its tests
-  (`tests/test_core_*`) pin it against the DRF routes. Those of its
-  functions that decide access by a requirement (`load_for_read`,
-  `object_readable`, `readable_content`, `allowed_methods`, `check_object`,
-  `create`, `update`, `destroy` without a `check`, and
+  (`tests/test_core_*`, with a parity harness, `tests/test_core_parity.py`)
+  pin it against the DRF routes. It asks a route's request check
+  (`check_request`) before it looks anything up, as the DRF route asks its
+  permissions before `get_object()`: `readable_queryset` the list grant
+  (`http.GET` on the list type) and each entry's `has_permission` of the
+  GET, `load_for_read` the method's check (with the `body=` it is given,
+  else as `Allow` checks a PUT, without one), and `validate_write` the
+  write's check with its body, each refusing with `AccessDenied` (403):
+  for a missing item and an existing one alike, and before any validation
+  of the body. Those of its functions that decide access by a requirement
+  (`check_request`, `load_for_read`, `object_readable`,
+  `readable_content`, `allowed_methods`, `check_object`,
+  `readable_queryset`, `validate_write`, `create`, `update`, `destroy`
+  without a `check`, and
   `scrud_django.core.writes.save_checked` without a `recheck`) raise
   `ImproperlyConfigured` for one that asks no grants (empty, a type's hooks
   only, or an `AnyOf` with an option of hooks only) rather than allow every

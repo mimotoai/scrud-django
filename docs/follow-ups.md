@@ -1228,23 +1228,6 @@ path) before the ninja front end wires it up. Test: in
 `contexts_for` and call `readable_queryset`; assert it raises or agrees with
 the detail route, where today it filters by the rows.
 
-<a id="core-list-grant-and-request-check"></a>
-## core-list-grant-and-request-check: the core's list and item reads skip DRF's list grant and request check
-
-`core.lists.readable_queryset` (re-exported by `core.resources`) filters by
-the item type's `http.GET` grants and the object checks, but does not ask
-the list grant (`http.GET` on `collection_type_uri_for(type_uri)`) or any
-request-level check of the requirement (`has_permission`), which the DRF
-list route asks first (a 403 without the list grant).
-`core.resources.load_for_read` likewise runs only the object check, not the
-route's request check. A front end calling them alone would list for a user
-the DRF route refuses. Add a public `check_request(request, resource_type,
-requirement, *, list_route)` to the core and call it from both before the
-ninja front end is built. Test: in `tests/test_core_lists.py`, as a user
-granted `http.GET` on `JSON_LD` in "a" but not on its list type, GET the DRF
-list (403) and call `readable_queryset` with `[GrantsLeaf(JSON_LD)]`, which
-today returns the resource; the new check should refuse (`AccessDenied`).
-
 <a id="core-paging-key-first"></a>
 ## core-paging-key-first: the list's paging and MySQL key-first hint are still DRF's
 

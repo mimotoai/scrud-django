@@ -222,8 +222,13 @@ def validate_write(
     readable: Callable[[], bool] | None,
 ) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
     """Validate `request`'s write of `body` (the body as sent) to
-    `resource_type`, over the resource `stored` (``None`` for a create), in
-    the order DRF's serializer validators check it: its JSON Schema
+    `resource_type`, over the resource `stored` (``None`` for a create).
+    First the request check of the write with its body
+    (`scrud_django.core.resources.check_request`: of the list's POST for a
+    create, of the item's route for an update), whose refusal is
+    ``access.AccessDenied`` (403), as the DRF route asks ``has_permission``
+    with the body before anything else validates it. Then, in the order
+    DRF's serializer validators check it: its JSON Schema
     (`validate_schema`), then, for a ``WorkflowPolicy``, the policy's own
     checks (`validate_policy_write`), then the workflow check
     (`scrud_django.core.workflow.workflow_check`, given `stored`'s content
@@ -235,8 +240,17 @@ def validate_write(
     in it (each `HookLeaf`'s ``narrow``), so that a registered check can
     refuse a transition, as on DRF. A given `narrow` replaces them.
 
+    A `requirement` that asks no grants (empty, or hooks only) is
+    ``ImproperlyConfigured`` (`scrud_django.core.requirements.require_grants`).
+
     `create` and `update` do not validate: call this first, with the same
     request, inside the write's transaction."""
+    # Imported here: scrud_django.core.resources imports this module.
+    from scrud_django.core.resources import check_request
+
+    check_request(
+        request, resource_type, requirement, list_route=stored is None, body=body
+    )
     if narrow is None:
         narrow = tuple(
             check

@@ -12,16 +12,20 @@ for every method: another answer would reveal that it exists. A refusal of
 one they can read is ``access.AccessDenied`` (403), for the front end to
 answer as it answers access errors.
 
-A requirement's ``access.AnyOf`` is DRF's ``|`` of the object checks only:
-DRF's ``OR`` also asks each option's request check beside its object check,
-which these functions do not (but `allowed_methods`, which asks
-``has_permission`` of each option). A neutral front end asks a
-requirement's request checks itself, ``has_permission`` of each leaf, a
-`HookLeaf`'s included (a type's checks of the body). A DRF view keeps its
-own checks (``check_object_permissions``).
+The request check of a route (`check_request`: the list grant for a list's
+GET, ``has_permission`` of each entry of the requirement, a `HookLeaf`'s
+included, with the body for a write) runs before anything is looked up, as
+DRF's ``initial()`` asks the permissions before ``get_object()``:
+`load_for_read`, `readable_queryset` and `validate_write` ask it, so a
+requester refused there gets a 403 whether the item exists or not. A
+requirement's ``access.AnyOf`` is DRF's ``|`` of the object checks only
+beyond that: DRF's ``OR`` also asks each option's request check beside its
+object check, which the object check here does not. A DRF view keeps its
+own checks (``check_permissions``, ``check_object_permissions``).
 """
 
 import copy
+from collections.abc import Mapping
 from datetime import datetime
 
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -50,6 +54,7 @@ from scrud_django.core.requirements import (
     require_grants,
     requirement_leaves,
 )
+from scrud_django.core.types import BODY_METHODS
 from scrud_django.core.workflow import authorizing_write
 from scrud_django.core.writes import (  # noqa: F401  (re-exported)
     create,
@@ -93,10 +98,11 @@ def _as_method(request, method):
 
 
 def _options_copy(request, method):
-    """A shallow copy of the OPTIONS `request` whose method is `method` and
-    whose ``META["REQUEST_METHOD"]`` is ``"OPTIONS"``: the copy on which
-    scrudful checks one method for ``Allow`` (``access.checks_allow``), whose
-    PUT or POST is checked without a body."""
+    """A shallow copy of `request` whose method is `method` and whose
+    ``META["REQUEST_METHOD"]`` is ``"OPTIONS"``: the copy on which scrudful
+    checks one method of an OPTIONS for ``Allow`` (``access.checks_allow``),
+    whose PUT or POST is checked without a body (`allowed_methods`; and
+    `load_for_read` given no body)."""
     clone = copy.copy(request)
     clone.method = method
     clone.META = {**request.META, "REQUEST_METHOD": "OPTIONS"}
@@ -228,11 +234,21 @@ def load_for_read(
     requirement,
     method: str,
     lock_using: str | None = None,
+    body: Mapping | None = None,
 ) -> Resource:
     """The resource `pk` of `resource_type`, looked up and checked for a
     `method` request (every method's lookup, not only a read's), as the
-    detail route's ``get_object()`` answers it:
+    detail route answers it (``initial()``, then ``get_object()``):
 
+    - first, before any lookup, the request check of the item's route for
+      `method` (`check_request`), with `body`, the parsed body of a PUT (or
+      of any method `BODY_METHODS` names): its refusal is
+      ``access.AccessDenied`` whether `pk` exists or not, so that it tells
+      nothing of it. Without a `body` a PUT is checked as ``Allow`` checks
+      it (`allowed_methods`, on a body-less copy, `_options_copy`): whether
+      the requester may PUT in some context; the body's contexts are then
+      the caller's to check (`validate_write` asks them, then the post-save
+      check);
     - missing, or a `pk` that is no key, it is ``Http404``; so is one stored
       in a context reserved once normalised (`found_item`, which caches the
       type on it). The lookup is not narrowed by readability, as the DRF
@@ -254,6 +270,11 @@ def load_for_read(
     ``ImproperlyConfigured`` (`require_grants`), before any lookup: it would
     let anyone load any resource."""
     require_grants(requirement, "load_for_read")
+    if body is None and method in BODY_METHODS:
+        checked = _options_copy(request, method)
+    else:
+        checked = _as_method(request, method)
+    check_request(checked, resource_type, requirement, list_route=False, body=body)
     queryset = Resource.objects.filter(resource_type=resource_type)
     if lock_using is not None:
         queryset = queryset.using(lock_using).select_for_update()
@@ -287,22 +308,71 @@ def item_links(request, resource_type) -> list[str]:
     return get_link_values_for(resource_type, request)
 
 
-def _request_checks_pass(request, requirement):
+def _request_checks_pass(request, requirement, body=None):
     """Whether every entry of `requirement` (any option of an ``AnyOf``)
-    allows ``has_permission(request, None)``: a request check without a
-    body. ``PermissionDenied`` refuses."""
+    allows ``has_permission(request, body)`` (`body` ``None``: a request
+    check without a body). ``PermissionDenied`` refuses; any other error (an
+    access error of the body, a 400) is raised."""
 
     def meets(entry):
         if isinstance(entry, access.AnyOf):
             return any(
                 all(meets(e) for e in _entries(option)) for option in entry.options
             )
-        return entry.has_permission(request, None)
+        return entry.has_permission(request, body)
 
     try:
         return all(meets(entry) for entry in requirement)
     except PermissionDenied:
         return False
+
+
+def check_request(
+    request,
+    resource_type,
+    requirement,
+    *,
+    list_route: bool,
+    body: Mapping | None = None,
+) -> None:
+    """The request check of `request` on `resource_type`'s list
+    (`list_route`) or item route, as the DRF route asks it before it looks
+    anything up (``check_permissions``): ``access.AccessDenied`` unless
+
+    - for a GET or HEAD of the list, the list grant allows its GET
+      (``has_permission`` of a `GrantsLeaf` of the list type,
+      ``collection_type_uri_for``, on a GET copy, `as_get`) **and** every
+      entry of `requirement` (any option of an ``AnyOf``) allows
+      ``has_permission`` of that GET without a body;
+    - for any other request (an item's, whatever its method; a POST to the
+      list, a create), every entry of `requirement` allows
+      ``has_permission(request, body)``: `body` is the parsed body, whose
+      contexts a PUT or POST is checked in (``None`` is checked as a body
+      that writes none, in the default context ``""``, unless `request` is
+      the body-less copy ``Allow`` checks, ``access.checks_allow``).
+
+    It runs with ``scrud_workflow`` allowing for the writes the workflow
+    check covers (a POST to the list, `COVERED_LIST_METHOD`, and an item's
+    PUT, `COVERED_ITEM_METHOD`) and refusing for any other, as the DRF
+    route's ``write_checks``. A leaf's ``PermissionDenied`` refuses; another
+    access error (a body naming a reserved context, 400) is raised.
+
+    A `requirement` that asks no grants (empty, or hooks only) is
+    ``ImproperlyConfigured`` (`require_grants`): it would allow anyone."""
+    require_grants(requirement, "check_request")
+    if list_route and request.method in ("GET", "HEAD"):
+        read = as_get(request)
+        list_grant = [GrantsLeaf(collection_type_uri_for(resource_type.type_uri))]
+        with authorizing_write(read, covered=False):
+            allowed = _request_checks_pass(read, list_grant) and _request_checks_pass(
+                read, requirement
+            )
+    else:
+        covered = COVERED_LIST_METHOD if list_route else COVERED_ITEM_METHOD
+        with authorizing_write(request, covered=request.method == covered):
+            allowed = _request_checks_pass(request, requirement, body)
+    if not allowed:
+        raise access.AccessDenied()
 
 
 def allowed_methods(

@@ -67,20 +67,8 @@ STORED_IN = ["a", "b", ["a", "b"], SECRET]
 BODY_CONTEXTS = ["", "a", "b", ["a", "b"]]
 _METHODS = ("GET", "POST", "PUT", "DELETE")
 
-LIST_GRANT_GAP = "core-list-grant-and-request-check: Task 3"
-ITEM_REQUEST_GAP = (
-    "core-list-grant-and-request-check: Task 3 (load_for_read asks only the "
-    "object check; DRF's request check refuses first)"
-)
-BODY_REQUEST_GAP = (
-    "the facade runs no request check of the body's contexts: DRF refuses "
-    "(403) a write the body's contexts are not granted before validating it; "
-    "validate_write answers its own error (400) or the object's 404"
-)
-FAIL_OPEN_REASON = (
-    "facade allows what DRF refuses: core-list-grant-and-request-check: "
-    "Task 3 check_request"
-)
+GAP_REASON = "a pinned divergence of the facade from the DRF route"
+FAIL_OPEN_REASON = "facade allows what DRF refuses"
 
 
 @dataclass(frozen=True)
@@ -319,68 +307,13 @@ def cells(test, slugs, users, wheres, pair):
     }
 
 
-ALL = TYPE_SLUGS
+# The divergences pinned today, each case's ``(facade outcome, DRF status)``
+# pair (`cells` builds them): none. The request check (the list grant, and
+# ``has_permission`` with the body's contexts for a write), which the DRF
+# route asks before it looks the object up, is the facade's too
+# (`scrud_django.core.resources.check_request`).
 GAPS = {}
 FAIL_OPEN_GAPS = {}
-# The DRF route asks the method's request check (``has_permission``, with the
-# body's contexts for a write) before it looks the object up; the facade does
-# not. Each entry is the ``(facade outcome, DRF status)`` pair it shows.
-for slugs, users_, wheres in [
-    (ALL, ["anonymous"], STORED_IN),
-    (ALL, ["conditioned"], ["a", SECRET]),
-]:
-    GAPS |= cells("read", slugs, users_, wheres, (404, 403))
-FAIL_OPEN_GAPS |= cells("read", ALL, ["conditioned"], ["b", ["a", "b"]], (200, 403))
-GAPS |= cells("delete", ALL, ["anonymous"], STORED_IN, (404, 403))
-GAPS |= cells("delete", ALL, ["conditioned"], ["a", SECRET], (404, 403))
-for user in (
-    "reader-a",
-    "writer-a",
-    "lister-a",
-    "workflow-a",
-    "publisher-a",
-    "retracter-a",
-):
-    GAPS |= cells(
-        "delete", [s for s in ALL if s != "hooked-notes"], [user], ["b"], (404, 403)
-    )
-    GAPS |= cells("delete", ["hooked-notes"], [user], ["b", SECRET], (404, 403))
-# A user with no list grant: the facade lists (200), DRF refuses.
-FAIL_OPEN_GAPS |= cells(
-    "list",
-    ALL,
-    [name for name in USER_NAMES if name not in {"superuser", "lister-a", "writer-ab"}],
-    [None],
-    (200, 403),
-)
-# A write: DRF refuses (403) a body whose contexts are not granted before it
-# validates it; the facade answers the object's 404 or its own 400.
-GAPS |= cells("write", ALL, ["anonymous", "conditioned"], BODY_CONTEXTS, (404, 403))
-GAPS |= cells(
-    "write",
-    ["hooked-notes"],
-    ["superuser", "writer-a", "workflow-a", "writer-ab", "publisher-a", "retracter-a"],
-    [["a", "b"]],
-    (400, 403),
-)
-GAPS |= cells(
-    "write",
-    ["workflow-notes"],
-    ["writer-a", "publisher-a", "workflow-a", "retracter-a"],
-    [["a", "b"]],
-    (400, 403),
-)
-GAPS |= cells(
-    "write",
-    ["todos"],
-    ["writer-a", "publisher-a", "workflow-a", "retracter-a"],
-    ["", "b", ["a", "b"]],
-    (400, 403),
-)
-GAPS |= cells("write", ["todos"], ["writer-ab"], [""], (400, 403))
-GAPS |= cells(
-    "write", ["workflow-notes"], ["retracter-a", "workflow-a"], ["", "b"], (400, 403)
-)
 
 
 def check_parity(request, case, facade, drf):
@@ -390,11 +323,7 @@ def check_parity(request, case, facade, drf):
     if pinned is None:
         assert facade == drf, (facade, drf)
         return
-    reason = {"list": LIST_GRANT_GAP, "write": BODY_REQUEST_GAP}.get(
-        case[0], ITEM_REQUEST_GAP
-    )
-    if case in FAIL_OPEN_GAPS:
-        reason = f"{FAIL_OPEN_REASON}; {reason}"
+    reason = FAIL_OPEN_REASON if case in FAIL_OPEN_GAPS else GAP_REASON
     request.applymarker(
         pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason)
     )
@@ -416,6 +345,33 @@ def test_item_read_parity(type_slug, user_name, stored_in, request):
     check_parity(
         request, ("read", type_slug, user_name, key_of(stored_in)), facade, drf
     )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("user_name", USER_NAMES)
+@pytest.mark.parametrize("type_slug", TYPE_SLUGS)
+def test_missing_item_read_parity(type_slug, user_name):
+    """A GET of a key no resource has: the DRF route asks the request check
+    before it looks the object up (``initial()``, then ``get_object()``), so
+    a requester refused there gets a 403 (401 for the anonymous) and any
+    other a 404, whether the key exists or not; so does `load_for_read`."""
+    parity = TYPES[type_slug]
+    user = users_for(parity.uri)[user_name]
+    missing = store(parity, "a").pk + 1000
+    url = reverse(f"{parity.slug}-detail", args=[missing])
+    drf = drf_authz_status(client_of(user).get(url, HTTP_ACCEPT=JSON))
+    facade = outcome_of(
+        lambda: load_for_read(
+            request_of("GET", user),
+            resource_type_of(parity),
+            missing,
+            requirement=requirement_for(resource_type_of(parity), parity.slug),
+            method="GET",
+        )
+    )
+    assert facade == drf, (facade, drf)
+    expected = 403 if user_name in ("anonymous", "conditioned") else 404
+    assert drf == expected, drf
 
 
 @pytest.mark.django_db
@@ -511,8 +467,8 @@ def test_list_parity(type_slug, user_name):
 @pytest.mark.django_db
 @pytest.mark.parametrize("type_slug, user_name", list_cases(listed=False))
 def test_list_refusal_parity(type_slug, user_name, request):
-    """The DRF list is refused (no list grant); the facade's `readable_queryset`
-    does not ask it yet, so it does not raise."""
+    """The DRF list is refused (no list grant: 403, or 401 for the
+    anonymous); so is the facade's `readable_queryset` (``AccessDenied``)."""
     parity = TYPES[type_slug]
     user = users_for(parity.uri)[user_name]
     for where in STORED_IN:

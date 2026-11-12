@@ -183,18 +183,25 @@ def readable_queryset(
     RBAC filter (`filter_readable_resources`, ``http.GET`` on the type's
     ``type_uri``), then, when a leaf of `requirement` overrides its object
     checks (`object_check_requirement`), those checks, object by object
-    (`filter_by_object_checks`, given each resource's content). A list is a
-    GET: a request of another method (a POST's list validators) is asked as
-    its GET copy (`as_get`). Past ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``
-    it raises ``access.ConditionalListTooLarge``.
+    (`filter_by_object_checks`, given each resource's content). Past
+    ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]`` it raises
+    ``access.ConditionalListTooLarge``.
 
-    It does **not** check the list grant (``http.GET`` on the list type,
-    ``collection_type_uri_for``) or any request-level check of
-    `requirement` (``has_permission``): the DRF route asks them before it
-    lists (a 403 without the list grant). A caller must ask them first
-    (follow-up ``core-list-grant-and-request-check``)."""
+    First, before it filters, the list's request check
+    (`scrud_django.core.resources.check_request` with ``list_route``): the
+    list grant (``http.GET`` on the list type, ``collection_type_uri_for``)
+    and each entry's ``has_permission`` of the GET, as the DRF route asks
+    them before it lists; a refusal is ``access.AccessDenied`` (a 403), and
+    a `requirement` that asks no grants ``ImproperlyConfigured``. A list is
+    a GET: a request of another method (a POST's list validators) is asked,
+    checked included, as its GET copy (`as_get`), so a requester who may not
+    list the resources gets no validators describing them."""
+    # Imported here: scrud_django.core.resources imports this module.
+    from scrud_django.core.resources import check_request
+
     if request.method not in ("GET", "HEAD"):
         request = as_get(request)
+    check_request(request, resource_type, requirement, list_route=True)
     queryset = Resource.objects.filter(resource_type=resource_type)
     if using is not None:
         queryset = queryset.using(using)

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from django.conf import settings
+from django.contrib.auth.models import AnonymousUser
 from django.http import QueryDict
 from django.test import RequestFactory, override_settings
 from django.urls import reverse
@@ -18,6 +19,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
 
+from scrud_django import collection_type_uri_for
 from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.exceptions import ScrudException
 from scrud_django.filters import ui_parameters
@@ -211,3 +213,112 @@ def test_evaluate_list_preconditions_reads_validators_only_when_needed():
     stale = evaluate_list_preconditions("POST", {"if-match": '"old"'}, validators)
     assert stale.status == 412
     assert calls == [1, 1]
+
+
+JSON_LD = "http://www.w3.org/ns/json-ld#context"
+JSON_LD_LIST = collection_type_uri_for(JSON_LD)
+
+
+def json_ld_in(*contexts):
+    """A JSON-LD resource in each of `contexts`, and the type."""
+    reverse("json-ld-list")  # importing tests.urls registers the types
+    stored = [
+        ResourceRegistration.register({"rbac_context": context}, "json-ld")
+        for context in contexts
+    ]
+    return get_resource_type_for("json-ld"), stored
+
+
+def request_by(method, user):
+    request = getattr(RequestFactory(), method.lower())("/")
+    request.user = user
+    return request
+
+
+def drf_list_status(user):
+    client = APIClient()
+    if user.is_authenticated:
+        client.force_authenticate(user)
+    return client.get(reverse("json-ld-list"), HTTP_ACCEPT="application/json")
+
+
+@pytest.mark.django_db
+@test_context
+def test_readable_queryset_asks_the_list_grant():
+    """A user granted ``http.GET`` on JSON_LD in "a" but not on its list
+    type: the DRF list is a 403, and `readable_queryset` refuses
+    (``access.AccessDenied``) rather than list the resource in "a", for a
+    GET, a HEAD and the GET copy it asks of another method (a POST's list
+    validators). The anonymous user is refused too (DRF: 401)."""
+    from scrud_django.core.lists import readable_queryset
+
+    rtype, _ = json_ld_in("a")
+    reader = user_with(({"http.GET": [JSON_LD]}, "a"))
+    assert drf_list_status(reader).status_code == 403
+    assert drf_list_status(AnonymousUser()).status_code == 401
+    for user in (reader, AnonymousUser()):
+        for method in ("GET", "HEAD", "POST"):
+            with pytest.raises(access.AccessDenied):
+                readable_queryset(
+                    request_by(method, user), rtype, [GrantsLeaf(JSON_LD)]
+                )
+
+
+@pytest.mark.django_db
+@test_context
+def test_readable_queryset_lists_for_the_lister():
+    """ "lister-a" (``http.GET`` on JSON_LD and its list type in "a") gets
+    the resource in "a" only, as the DRF list."""
+    from scrud_django.core.lists import readable_queryset
+
+    rtype, (in_a, _, _) = json_ld_in("a", "b", ["b", "c"])
+    lister = user_with(({"http.GET": [JSON_LD, JSON_LD_LIST]}, "a"))
+    response = drf_list_status(lister)
+    assert response.status_code == 200, response.content
+    assert [entry["content"] for entry in response.json()["content"]] == [in_a.content]
+    for method in ("GET", "HEAD"):
+        listed = readable_queryset(
+            request_by(method, lister), rtype, [GrantsLeaf(JSON_LD)]
+        )
+        assert list(listed.values_list("pk", flat=True)) == [in_a.pk]
+
+
+@pytest.mark.django_db
+@test_context
+def test_readable_queryset_asks_the_requirements_request_checks():
+    """Beside the list grant, each entry of the requirement must allow the
+    list's GET (``has_permission``): a leaf refusing it refuses the list,
+    whatever the grants allow, a superuser's included."""
+    from scrud_django.core.lists import readable_queryset
+
+    rtype, (in_a,) = json_ld_in("a")
+    superuser = UserFactory(is_staff=True, is_superuser=True)
+    request = request_by("GET", superuser)
+    assert (
+        readable_queryset(request, rtype, [GrantsLeaf(JSON_LD)])
+        .filter(pk=in_a.pk)
+        .exists()
+    )
+    with pytest.raises(access.AccessDenied):
+        readable_queryset(request, rtype, [GrantsLeaf(JSON_LD), RefusingRequests()])
+
+
+class RefusingRequests:
+    """A leaf (of an untrusted class) whose request check refuses every
+    request and whose object check allows every object."""
+
+    type_iri = JSON_LD
+    reads_each_context = False
+    overrides_object_checks = False
+
+    def contexts_for(self, obj):
+        return [obj.get("rbac_context", "")]
+
+    def has_permission(self, request, body):
+        return False
+
+    def has_object_permission(self, request, obj):
+        return True
+
+    def has_context_permission(self, request, obj, context):
+        return True

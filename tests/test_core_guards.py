@@ -24,6 +24,7 @@ from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.policy import Permission
 
 from scrud_django.core import resources, writes
+from scrud_django.core.authz import current_transition
 from scrud_django.core.requirements import (
     GrantsLeaf,
     asks_grants,
@@ -130,6 +131,9 @@ def test_asks_grants():
         "readable_content",
         "object_readable",
         "check_object",
+        "check_request (item)",
+        "check_request (list)",
+        "readable_queryset",
     ],
 )
 @pytest.mark.parametrize("requester", ["anonymous", "superuser"])
@@ -185,6 +189,15 @@ def test_reads_refuse_a_requirement_asking_no_grants(call, kind, requester):
             requirement,
             covered=False,
         ),
+        "check_request (item)": lambda: resources.check_request(
+            request_of("GET", user), resource_type, requirement, list_route=False
+        ),
+        "check_request (list)": lambda: resources.check_request(
+            request_of("GET", user), resource_type, requirement, list_route=True
+        ),
+        "readable_queryset": lambda: resources.readable_queryset(
+            request_of("GET", user), resource_type, requirement
+        ),
     }
     with pytest.raises(ImproperlyConfigured, match="asks no grants"):
         calls[call]()
@@ -223,6 +236,16 @@ def test_writes_refuse_a_requirement_asking_no_grants():
                 requirement=requirement,
                 using="default",
             )
+        for stored_resource, method in ((None, "POST"), (stored, "PUT")):
+            with pytest.raises(ImproperlyConfigured, match="asks no grants"):
+                writes.validate_write(
+                    request_of(method, superuser),
+                    resource_type,
+                    {"rbac_context": "a"},
+                    stored=stored_resource,
+                    requirement=requirement,
+                    readable=lambda: True,
+                )
         with pytest.raises(ImproperlyConfigured, match="asks no grants"):
             writes.save_checked(
                 request_of("POST", superuser),
@@ -334,6 +357,11 @@ def test_validate_write_narrows_by_the_requirements_hooks():
     asked = []
 
     def refusing(request, rtype, body, context):
+        # The request check (`check_request`, run first) asks the hooks too:
+        # this one refuses only a transition, so that the narrow is what
+        # refuses here.
+        if current_transition() is None:
+            return True
         asked.append((rtype, body, context))
         return False
 
@@ -364,14 +392,21 @@ def test_validate_write_narrows_by_the_requirements_hooks():
     with pytest.raises(TypeError, match="requirement"):
         validate()
     assert len(asked) == 1
+    # A hook refusing the body's context refuses it at the request check,
+    # before the workflow check (DRF's 403).
+    refuses_a = HookLeaf(resource_type, TypeOptions(checks=(lambda *args: False,)))
+    with pytest.raises(access.AccessDenied):
+        validate(requirement=[GrantsLeaf(JSON_LD), refuses_a], narrow=())
 
 
 @pytest.mark.django_db
 @test_context
 def test_validate_write_asks_a_registered_types_checks():
     """`validate_write` given the type's requirement (`requirement_for`)
-    asks its registered checks of each transition: ``hooked-notes``'s
-    `deny_context_b` refuses one in "b", which its grants alone allow."""
+    asks its registered checks: ``hooked-notes``'s `deny_context_b` refuses
+    a write in "b", which its grants alone allow, at the request check
+    (``access.AccessDenied``, DRF's 403), which asks them of the body's
+    contexts before the workflow check asks them of each transition."""
     from .resource_types import HOOKED_NOTE_TYPE_URI, hooked_resource_types
 
     reverse("hooked-notes-list")
@@ -405,7 +440,7 @@ def test_validate_write_asks_a_registered_types_checks():
     requirement = requirement_for(hooked, "hooked-notes")
     ((context, _, _),) = validate({"text": "x", "rbac_context": "a"}, requirement)
     assert context == "a"
-    with pytest.raises(WorkflowTransitionError):
+    with pytest.raises(access.AccessDenied):
         validate({"text": "x", "rbac_context": "b"}, requirement)
     # The grants alone allow it: the type's check refused it.
     validate({"text": "x", "rbac_context": "b"}, [GrantsLeaf(HOOKED_NOTE_TYPE_URI)])
