@@ -167,8 +167,9 @@ class HookLeaf(Leaf):
         if getattr(request, "method", None) in SAFE_METHODS:
             return True
         # A write (PUT, PATCH, DELETE) acts in the contexts the resource is
-        # stored in: every check must allow it in each of them, as an
-        # IsAuthorized asks its has_context_permission there.
+        # stored in: every check must allow it in each of them (all, where
+        # an IsAuthorized's has_object_permission takes any: a refused
+        # context refuses the write whatever the resource's other ones).
         return all(
             self.has_context_permission(request, obj, context)
             for context in self.contexts_for(obj)
