@@ -322,3 +322,35 @@ def test_scrud_handler_body_for_a_resource_a_type_uses():
     assert body["used_by"] == [{"resource_type": "tests://ToDo", "as": "schema"}]
     assert "tests://ToDo" in body["detail"]
     assert Resource.objects.filter(pk=schema.pk).exists()
+
+
+@pytest.mark.django_db
+def test_scrud_error_under_drf_default_handler():
+    # An adopter's own DRF handler renders a scrud error: the body is the one
+    # recorded before scrud errors stopped being ``APIException``s.
+    reverse("todos-list")
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    with with_handler("rest_framework.views.exception_handler"):
+        response = client_for(admin).post(
+            reverse("todos-list"), dict(NOT_STARTED, title=5), format="json"
+        )
+    assert response.status_code == 400
+    assert response.content == b'{"detail":"data.title must be string"}'
+
+
+def test_scrud_error_is_not_api_exception():
+    from rest_framework.exceptions import APIException
+
+    from scrud_django.exceptions import as_drf
+
+    error = JsonValidationError(
+        fastjsonschema.JsonSchemaValueException(
+            "data must be object", value=5, name="data", rule="type"
+        )
+    )
+    assert not isinstance(error, APIException)
+    wrapped = as_drf(error)
+    assert isinstance(wrapped, APIException)
+    assert wrapped.detail.code == "json_invalid"
+    assert wrapped.status_code == 400
+    assert wrapped.scrud is error

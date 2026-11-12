@@ -55,7 +55,7 @@ from rest_framework.exceptions import (
 from rest_framework.renderers import BaseRenderer, BrowsableAPIRenderer
 from rest_framework.response import Response
 
-from scrud_django.exceptions import UIHeaderInvalidError
+from scrud_django.exceptions import ScrudException, UIHeaderInvalidError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.permissions import content_of
 from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messages
@@ -434,7 +434,12 @@ def load_stored(view, request, response) -> None:
             obj = view.get_object()
     except _LOOKUP_REFUSALS:
         return
-    except (APIException, DatabaseError, transaction.TransactionManagementError):
+    except (
+        APIException,
+        ScrudException,
+        DatabaseError,
+        transaction.TransactionManagementError,
+    ):
         logger.warning(
             "scrud-ui: looking up %s for a refused PUT failed",
             getattr(request, "path", "?"),

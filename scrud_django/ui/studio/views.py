@@ -23,6 +23,7 @@ from rest_framework.response import Response
 from scrud_django.exceptions import (
     UIBranchUnavailableError,
     UIStudioContextUnavailableError,
+    drf_errors,
 )
 from scrud_django.models import ResourceType
 from scrud_django.registration import get_resource_type_for
@@ -85,6 +86,7 @@ def registered_types(q: str = "") -> list[dict]:
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@drf_errors
 def types(request):
     """The type browser, filtered by ``?q=``. An htmx request (``HX-Request``)
     gets the list alone."""
@@ -105,6 +107,7 @@ def _registered_type(slug) -> dict:
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@drf_errors
 def type_page(request, slug):
     """The studio page of type `slug`: the branch picker and preview
     controls (`page.page_context`, from the query), the sandboxed preview,
@@ -116,6 +119,7 @@ def type_page(request, slug):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@drf_errors
 def strip(request, slug):
     """The branch strip of ``?branch=`` (a branch name; default ``main``)
     on the page of type `slug`, alone: the page refreshes it after a save.
@@ -136,6 +140,7 @@ def strip(request, slug):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def item(request):
     """The item ``{kind, name, applies_to?}`` (query parameters) as the
     branch ``?branch=`` (a branch name; default ``main``) shows it live, for
@@ -186,6 +191,7 @@ def _data_context(request, params=None) -> str:
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def sample(request, slug):
     """The sample instance of type `slug` as JSON, in the data context
     ``?context=`` (its ``rbac_context``; default ``""``; `_data_context`)."""
@@ -217,6 +223,7 @@ def _sandboxed(view):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def preview(request, slug):
     """A page for the studio's preview iframe: type `slug`'s sample, or with
     ``?instance=<pk>`` that instance (read through its resource view with
@@ -292,6 +299,7 @@ def _live_sandboxed(view):
 @permission_classes([IsAuthenticated])
 @parser_classes([FormParser])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def live_preview(request):
     """The live preview (`studio.live_preview`): a form-encoded POST, so
     that a ``<form target=...>`` can submit it into a frame with the CSRF
@@ -317,6 +325,7 @@ def live_preview(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def explain(request, slug):
     """The inspector's explanation (`studio.explain.explain`) of the node at
     ``?pointer=`` (a JSON Pointer; default ``""``, the resource) of what
@@ -430,6 +439,7 @@ def _body(request) -> dict:
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def save_item(request):
     """Save an item on a working branch (`writes.save_item`)."""
     return writes.save_item(request, _body(request))
@@ -439,6 +449,7 @@ def save_item(request):
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def revert_item(request):
     """Drop a branch's own row of an item, a published branch's too
     (`writes.revert_item`)."""
@@ -449,6 +460,7 @@ def revert_item(request):
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def pull(request):
     """Pull a working branch (`writes.pull`)."""
     return writes.pull(request, _body(request))
@@ -458,6 +470,7 @@ def pull(request):
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def push(request):
     """Push a working branch, to its parent by default (`writes.push`)."""
     return writes.push(request, _body(request))
@@ -466,6 +479,7 @@ def push(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def new_component_options(request, slug):
     """The options of "new component for this node"
     (`studio.new_component.options`) for the node at ``?pointer=`` (default
@@ -485,6 +499,7 @@ def new_component_options(request, slug):
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser])
 @renderer_classes([JSONRenderer])
+@drf_errors
 def new_component(request):
     """ "New component for this node" (`studio.new_component.create`): the
     body names the working ``branch`` (refused before anything is

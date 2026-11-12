@@ -5,8 +5,10 @@ SCRUD-Django - Semantic Create, Read, Update and Delete Django application.
 import hashlib
 import json
 from importlib.metadata import PackageNotFoundError, version
+from urllib import parse
 
-from rest_framework.reverse import reverse
+from django.conf import settings
+from django.urls import reverse as django_reverse
 
 try:
     __version__ = version("scrud-django")
@@ -14,6 +16,24 @@ except PackageNotFoundError:
     # Imported from a source tree that is not installed (e.g. a checkout on
     # PYTHONPATH): there is no distribution metadata to read the version from.
     __version__ = "0+unknown"
+
+
+def reverse(viewname, args=None, kwargs=None, request=None):
+    """``django.urls.reverse``, absolute when given a `request`: what DRF's
+    ``reverse`` gives with no versioning scheme, the request's format override
+    query parameter (``?format=``) kept."""
+    url = django_reverse(viewname, args=args, kwargs=kwargs)
+    if not request:
+        return url
+    url = request.build_absolute_uri(url)
+    param = getattr(settings, "REST_FRAMEWORK", {}).get("URL_FORMAT_OVERRIDE", "format")
+    if param and param in request.GET:
+        scheme, netloc, path, query, fragment = parse.urlsplit(url)
+        params = parse.parse_qs(query, keep_blank_values=True)
+        params[param] = [request.GET[param]]
+        query = parse.urlencode(sorted(params.items()), doseq=True)
+        url = parse.urlunsplit((scheme, netloc, path, query, fragment))
+    return url
 
 
 class ScrudServices:

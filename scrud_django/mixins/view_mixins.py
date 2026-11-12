@@ -38,6 +38,8 @@ from scrud_django.exceptions import (
     RequestBodyNulError,
     RequestBodyTooDeepError,
     ResourceInUseError,
+    ScrudException,
+    as_drf,
 )
 from scrud_django.filters import (
     as_detail_read,
@@ -441,6 +443,18 @@ def gate_uniform_errors(cls):
                 value._scrud_error = value.__dict__.get("error")
                 value._scrud_error_body_func = value.__dict__.get("error_body_func")
                 value.__class__ = UniformErrorsViewFunc
+
+
+class ScrudErrorsMixin:
+    """Hand a scrud error (neutral, not an ``APIException``) to DRF's
+    exception handling wrapped (`scrud_django.exceptions.as_drf`), so that any
+    handler, scrud's or an adopter's own, answers it with its status and
+    detail."""
+
+    def handle_exception(self, exc):
+        if isinstance(exc, ScrudException):
+            exc = as_drf(exc)
+        return super().handle_exception(exc)
 
 
 class UniformErrorsMixin:
@@ -1068,7 +1082,9 @@ class ReadableMixin:
         return self.object_readable(request, obj)
 
 
-class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin):
+class ResourceViewMixin(
+    ScrudErrorsMixin, UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
+):
     queryset = Resource.objects.all()
     serializer_class = ResourceSerializer
     pagination_class = StandardResultsSetPagination
@@ -1544,13 +1560,20 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         PUT there without a body, and the copy is no write to refuse. A
         request that *arrives* so is refused before it gets here
         (`LockedWriteMixin.initial`)."""
-        if request.method in self.allowed_methods and not access.checks_allow(request):
-            check_body_present(request, self)
-            check_body_depth(request)
-            check_body_nul(request)
-            check_written_contexts(request)
-        with self.write_checks(request):
-            super().check_permissions(request)
+        try:
+            if request.method in self.allowed_methods and not access.checks_allow(
+                request
+            ):
+                check_body_present(request, self)
+                check_body_depth(request)
+                check_body_nul(request)
+                check_written_contexts(request)
+            with self.write_checks(request):
+                super().check_permissions(request)
+        except ScrudException as exc:
+            # DRF's browsable API calls this outside ``dispatch`` and
+            # catches ``APIException``s only.
+            raise as_drf(exc) from exc
 
     def list_last_modified(self):
         """The list's Last-Modified: the newest ``modified_at`` of every
@@ -1582,7 +1605,9 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         return Response(serializer.data)
 
 
-class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin):
+class GenericViewMixin(
+    ScrudErrorsMixin, UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
+):
     """SCRUD views over a model of your own (decorate with ``scrudful_viewset``).
 
     Subclasses provide DRF's ``get_queryset()``, not a ``get_instance``:

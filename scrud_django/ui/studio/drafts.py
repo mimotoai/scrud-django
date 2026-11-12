@@ -18,6 +18,7 @@ from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.http import Http404
 from rest_framework.exceptions import APIException
 
+from scrud_django.exceptions import ScrudException
 from scrud_django.ui.branches import ITEM_KINDS
 from scrud_django.ui.branches.effective import Draft, using_drafts
 from scrud_django.ui.branches.model import Branch, branch_of, item_key
@@ -88,7 +89,7 @@ def validate_draft(request, branch: Branch, draft: Draft) -> list[str]:
         body = internal.data
         view.validate_content(body, instance=instance)
         view.get_serializer(data=body, instance=instance).is_valid(raise_exception=True)
-    except APIException as error:
+    except (APIException, ScrudException) as error:
         if error.status_code >= 500:
             # No answer about the draft: a check that broke.
             logger.error(

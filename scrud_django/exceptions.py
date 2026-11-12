@@ -1,17 +1,39 @@
 from django.urls import NoReverseMatch, reverse
-from rest_framework.exceptions import APIException
-from rest_framework.views import exception_handler as drf_exception_handler
-from scoped_rbac.rest import exception_handler as scoped_rbac_exception_handler
 
-from scrud_django.renderers import DOCUMENT_RENDERERS
+try:  # DRF's own class when it is installed, so that ``isinstance`` holds.
+    from rest_framework.exceptions import ErrorDetail as _ErrorBase
+except ImportError:  # scrud imports without DRF
+    _ErrorBase = str
+
+
+class ErrorText(_ErrorBase):
+    """A message with the ``code`` of the error that carries it: the type of a
+    scrud error's ``detail``. DRF's ``ErrorDetail`` when DRF is installed, a
+    ``str`` with a ``code`` otherwise."""
+
+    code = None
+
+    if _ErrorBase is str:
+
+        def __new__(cls, string, code=None):
+            self = super().__new__(cls, string)
+            self.code = code
+            return self
 
 
 def scrud_exception_handler(exc, context):
     """Scrud errors keep their own body; everything else gets scoped-rbac's
     RFC 9457 problem details."""
+    from rest_framework.views import exception_handler as drf_exception_handler
+    from scoped_rbac.rest import exception_handler as scoped_rbac_exception_handler
+
+    from scrud_django.renderers import DOCUMENT_RENDERERS
+
+    if isinstance(exc, _drf_scrud_class()):
+        exc = exc.scrud
     if not isinstance(exc, ScrudException):
         return scoped_rbac_exception_handler(exc, context)
-    response = drf_exception_handler(exc, context)
+    response = drf_exception_handler(as_drf(exc), context)
     response.data = exc.response_data(context)
     response.data["status"] = response.status_code
     try:
@@ -28,15 +50,73 @@ def scrud_exception_handler(exc, context):
     return response
 
 
-class ScrudException(APIException):
-    """A scrud error. Its ``detail`` is always an ``ErrorDetail`` (a message
-    with the class's ``default_code``), as DRF's ``APIException`` makes it, so
-    any exception handler (DRF's, scoped-rbac's, scrud's) can render it and read
-    its code. The RFC 7807 body `scrud_exception_handler` sends is
-    `response_data`, which may say more."""
+_SCRUD_API_EXCEPTION = None
+
+
+def _drf_scrud_class():
+    """``ScrudAPIException``: the ``APIException`` that carries a scrud error
+    through DRF's views and exception handlers. Defined on first use, so that
+    this module imports without DRF."""
+    global _SCRUD_API_EXCEPTION
+    if _SCRUD_API_EXCEPTION is None:
+        from rest_framework.exceptions import APIException
+
+        class ScrudAPIException(APIException):
+            def __init__(self, scrud):
+                self.scrud = scrud
+                self.status_code = scrud.status_code
+                self.default_detail = scrud.default_detail
+                self.default_code = scrud.default_code
+                super().__init__(detail=scrud.detail, code=scrud.default_code)
+
+        _SCRUD_API_EXCEPTION = ScrudAPIException
+    return _SCRUD_API_EXCEPTION
+
+
+def as_drf(exc):
+    """`exc` (a `ScrudException`) as the ``APIException`` DRF's views and
+    handlers know: its status code, its detail (an ``ErrorDetail`` of the
+    message and the error's ``default_code``), and `exc` itself as ``.scrud``."""
+    return _drf_scrud_class()(exc)
+
+
+def drf_errors(func):
+    """Decorate a DRF function view (``@api_view``) so that a `ScrudException`
+    it raises reaches DRF's handlers as `as_drf` of it. Apply it below
+    ``@api_view``."""
+    import functools
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except ScrudException as exc:
+            raise as_drf(exc) from exc
+
+    return wrapper
+
+
+class ScrudException(Exception):
+    """A scrud error. It is neutral: no DRF. Its ``detail`` is a message
+    carrying the class's ``default_code`` (`ErrorText`), so that any exception
+    handler can render it and read its code. DRF's views wrap it in an
+    ``APIException`` (`as_drf`) before any handler sees it. The RFC 7807 body
+    `scrud_exception_handler` sends is `response_data`, which may say more."""
+
+    status_code = 500
+    default_detail = "A server error occurred."
+    default_code = "error"
 
     def __init__(self, message=None):
-        super().__init__(detail=message)
+        if message is None:
+            message = self.default_detail
+        self.detail = ErrorText(str(message), self.default_code)
+
+    def __str__(self):
+        return str(self.detail)
+
+    def get_codes(self):
+        return self.detail.code
 
     def response_data(self, context):
         """Return RFC 7807 response data"""

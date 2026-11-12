@@ -6,7 +6,18 @@ from django.core.exceptions import ImproperlyConfigured
 from django.core.signals import setting_changed
 from django.dispatch import receiver
 from django.utils.module_loading import import_string
-from rest_framework.settings import import_from_string
+
+
+def import_from_string(value, setting_name):
+    """``import_string``, failing as DRF's ``import_from_string`` does."""
+    try:
+        return import_string(value)
+    except ImportError as e:
+        raise ImportError(
+            f"Could not import '{value}' for API setting '{setting_name}'. "
+            f"{e.__class__.__name__}: {e}."
+        ) from e
+
 
 DEFAULTS = {"DEFAULT_WORKFLOW_POLICIES": {}}
 
