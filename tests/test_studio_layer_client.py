@@ -945,8 +945,9 @@ out.swapped = marks(pickerEntries);
 
 def test_branch_picker_links_keep_the_workbench_state():
     """Switching branch keeps what is previewed and opened (type, mode,
-    context, scope, instance, item, pointer) and drops `pinned` (a version
-    number of the old branch). The links stay plain links; studio.js
+    context, scope, instance, item, pointer) and drops `pinned` (the flag
+    that previews the old branch at its branching point, which another
+    branch may not have). The links stay plain links; studio.js
     rewrites their query on load, on state changes and when the picker is
     fetched again."""
     out = scenario(
@@ -958,7 +959,7 @@ const hrefs = () => Object.fromEntries(Object.entries(pickerEntries)
 out.load = Object.fromEntries(Object.entries(pickerEntries)
   .map(([name, e]) => [name, e.link ? query(e.link) : null]));
 out.path = pickerEntries.studio.link.getAttribute('href').split('?')[0];
-S.setState({type: 'notes', item: null, pinned: '4'});
+S.setState({type: 'notes', item: null, pinned: '1'});
 out.changed = query(pickerEntries.studio.link);
 pickerEntries = renderPicker(['main', 'alice-wip', 'zed']);
 out.fresh = hrefs().zed;
@@ -968,7 +969,7 @@ out.url = location.search;
 """,
         picker=["main", "alice-wip", "studio"],
         search=BASE + "&ui-safe=1&type=todo-lists&instance=12&item=component%3Ahead"
-        "&pointer=%2Fa&mode=edit&context=p&scope=row&pinned=3",
+        "&pointer=%2Fa&mode=edit&context=p&scope=row&pinned=true",
     )
     kept = {
         "ui-scope": "studio",

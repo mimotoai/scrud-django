@@ -578,10 +578,11 @@ named by JSON Pointer (`name="/items/0/text"`):
   mode or in the view mode of a user who may not PUT it, but never under a
   requested view mode: `?ui-mode=view`, `Scrud-UI-Mode: view`, or an embed's
   `mode="view"`, nor on the page of a read-only record such as an applied UI
-  push, which is rendered as a requested view) asks for confirmation and sends a `DELETE` with `If-Match`. On success (a 204) the
-  resource's frame is removed from the page, with the list item that held only
-  it, and a `scrud:deleted` event is dispatched on `document` with
-  `detail.href`, the resource's URL. A failed delete never removes the frame.
+  push, which is rendered as a requested view) asks for confirmation and
+  sends a `DELETE` with `If-Match`. On success (a 204) the resource's frame
+  is removed from the page, with the list item that held only it, and a
+  `scrud:deleted` event is dispatched on `document` with `detail.href`, the
+  resource's URL. A failed delete never removes the frame.
   A 409 (in use) or 412 (stale) is answered with a notice and a frame that
   reloads the current state, as a stale PUT is; any other failed DELETE is not
   swapped in, and a client notice is shown in the frame instead.
@@ -2192,8 +2193,9 @@ and the inspector under it (see
   the current state on load, on every state change and when the picker is
   fetched again. A switch keeps `type`, `mode`, `context`, `scope`,
   `instance`, `item` and `pointer` (what is previewed and opened, meaningful
-  on any branch) and `ui-safe` when the page has it, and drops `pinned` (a
-  version number of the branch being left).
+  on any branch) and `ui-safe` when the page has it, and drops `pinned` (it
+  previews the branch being left at its branching point, and another branch
+  may have none (`main`, a root) or a different one).
 - **The strip with a type.** When the state has a `type` (on load, and when
   it changes), the strip is fetched again with `?type=<type>`, for its browse
   link.
@@ -2543,7 +2545,8 @@ and the changes (`<li class="studio-push-change"
 data-studio-change-action="create|update|delete">`), each with the target's
 row before and after as its fields, as text (a field in the change's
 `changed` list is `studio-push-field-changed`; "Nothing" before a create,
-"Deleted" after a delete). See [What a push will change](#what-a-push-will-change).
+"Deleted" after a delete). See
+[What a push will change](#what-a-push-will-change).
 
 Apply waits for the review ("Apply waits for the review to load."). Once it
 has loaded, Apply is turned on when the review has no conflict: when
@@ -2625,7 +2628,7 @@ workflow policy forbids (Requiring approval, under
 [Pushing and restoring](#pushing-and-restoring)), is re-rendered with the
 server's message and the submitted state ([Refused writes](#refused-writes)).
 An applied push is a record: no form, no preview, no Delete button. The API
-refuses both a PUT and a DELETE of an applied push (a 409), so the server
+refuses a PUT (400) and a DELETE (409) of an applied push, so the server
 renders it as a requested view (mode `view`, in any scope), whoever the user
 is. A user who may only read a push that is not applied gets the view too: no
 form, no Save.
