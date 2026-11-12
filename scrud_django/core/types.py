@@ -61,7 +61,7 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 _OPTIONS: dict[str, TypeOptions] = {}
 _SLUG_IRIS: dict[str, str] = {}
-_IRI_SLUGS: dict[str, str] = {}
+_IRI_SLUGS: dict[str, set[str]] = {}
 _OPTIONS_LOCK = threading.RLock()
 _LOAD_LOCK = threading.Lock()
 _loaded = False
@@ -69,54 +69,97 @@ _loading_thread: int | None = None
 
 logger = logging.getLogger(__name__)
 
+_EMPTY = object()
 
-def _name_of(hook) -> str:
+
+def _cells(hook):
+    cells = []
+    for cell in getattr(hook, "__closure__", None) or ():
+        try:
+            cells.append(cell.cell_contents)
+        except ValueError:
+            cells.append(_EMPTY)
+    return cells
+
+
+def _same_hook_values(old, new) -> bool:
+    """Whether two hooks are one by name and by the values they close over
+    and default to (a URLconf imported again builds new, equal closures)."""
+    if old is new:
+        return True
+    try:
+        return (
+            getattr(old, "__module__", None) == getattr(new, "__module__", None)
+            and getattr(old, "__qualname__", None) == getattr(new, "__qualname__", None)
+            and getattr(old, "__qualname__", None) is not None
+            and _cells(old) == _cells(new)
+            and getattr(old, "__defaults__", None) == getattr(new, "__defaults__", None)
+            and getattr(old, "__kwdefaults__", None)
+            == getattr(new, "__kwdefaults__", None)
+        )
+    except Exception:  # an exotic __eq__: not the same
+        return False
+
+
+def _same_hooks(old: TypeOptions, new: TypeOptions, *, same) -> bool:
+    def pairs(a, b):
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b, strict=True))
+
     return (
-        f"{getattr(hook, '__module__', '')}.{getattr(hook, '__qualname__', repr(hook))}"
+        pairs(old.checks, new.checks)
+        and pairs(old.object_checks, new.object_checks)
+        and old.content_filter == new.content_filter
+        and (
+            old.compute is new.compute
+            if old.compute is None or new.compute is None
+            else same(old.compute, new.compute)
+        )
     )
 
 
-def _hook_names(options: TypeOptions) -> tuple:
-    """`options` by the hooks' qualified names: a URLconf imported again
-    builds new closures, which are the same hooks."""
-    return (
-        tuple(_name_of(c) for c in options.checks),
-        tuple(_name_of(c) for c in options.object_checks),
-        options.content_filter,
-        None if options.compute is None else _name_of(options.compute),
-    )
+def _identical(x, y) -> bool:
+    return x is y
 
 
 def register_type_options(type_iri: str, options: TypeOptions, *, slug: str) -> None:
     """Record `options` as the hooks of the type `type_iri`, registered as
     `slug`. The same slug registering again **replaces** them (a URLconf
-    imported again): never merged, so no earlier hook is kept, and a WARNING
-    names the type when the hook set changed (hooks compared by qualified
-    name). A different slug registering an IRI already registered must carry
-    equal options (`ImproperlyConfigured` naming both slugs otherwise): its
-    options would replace the other slug's, and a dropped hook only ever
-    allows more."""
+    imported again): never merged, and a WARNING names the type unless every
+    hook is the same by name and by the values it closes over or defaults to.
+    A different slug registering an IRI already registered must carry the very
+    same hooks (the same objects; `ImproperlyConfigured` naming both slugs
+    otherwise): its options would replace the other slug's, and a dropped
+    hook only ever allows more. A slug that registers under another IRI
+    releases its old one."""
     with _OPTIONS_LOCK:
         previous = _OPTIONS.get(type_iri)
-        owner = _IRI_SLUGS.get(type_iri)
+        others = _IRI_SLUGS.get(type_iri, set()) - {slug}
         if previous is not None:
-            same = _hook_names(previous) == _hook_names(options)
-            if owner != slug and not same:
+            if others and not _same_hooks(previous, options, same=_identical):
                 raise ImproperlyConfigured(
-                    f"The slugs {owner!r} and {slug!r} both register the type "
-                    f"{type_iri!r} with different hooks: register equal "
-                    "options, or give each its own type IRI."
+                    f"The slugs {sorted(others)} and {slug!r} both register "
+                    f"the type {type_iri!r} with different hooks: register "
+                    "the same hooks, or give each its own type IRI."
                 )
-            if owner == slug and not same:
+            if not others and not _same_hooks(
+                previous, options, same=_same_hook_values
+            ):
                 logger.warning(
                     "The hooks of the type %s (slug %r) replace different "
                     "ones registered before for it.",
                     type_iri,
                     slug,
                 )
+        old_iri = _SLUG_IRIS.get(slug)
+        if old_iri is not None and old_iri != type_iri:
+            slugs = _IRI_SLUGS.get(old_iri, set())
+            slugs.discard(slug)
+            if not slugs:
+                _IRI_SLUGS.pop(old_iri, None)
+                _OPTIONS.pop(old_iri, None)
         _OPTIONS[type_iri] = options
         _SLUG_IRIS[slug] = type_iri
-        _IRI_SLUGS[type_iri] = slug
+        _IRI_SLUGS.setdefault(type_iri, set()).add(slug)
 
 
 def type_options(type_iri: str) -> TypeOptions:

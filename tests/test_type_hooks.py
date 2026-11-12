@@ -282,14 +282,14 @@ def test_replacing_different_hooks_warns(caplog):
     assert iri in record.getMessage()
 
 
-def _closure_check():
+def deny(label):
     def check(request, resource_type, body, context):
-        return True
+        return label == "never"
 
     return check
 
 
-def test_two_slugs_one_iri_need_equal_options():
+def test_two_slugs_one_iri_need_the_same_hooks():
     iri = "tests://Shared"
     register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="one")
     with pytest.raises(ImproperlyConfigured, match="one.*two.*tests://Shared"):
@@ -299,20 +299,30 @@ def test_two_slugs_one_iri_need_equal_options():
     assert type_options_for_slug("two") == type_options_for_slug("one")
 
 
-def test_same_slug_reimport_with_equivalent_closures_is_silent(caplog):
+def test_two_slugs_one_iri_refuse_closures_of_different_values():
+    iri = "tests://SharedClosures"
+    register_type_options(iri, TypeOptions(checks=(deny("a"),)), slug="one")
+    with pytest.raises(ImproperlyConfigured):
+        register_type_options(iri, TypeOptions(checks=(deny("a"),)), slug="two")
+    with pytest.raises(ImproperlyConfigured):
+        register_type_options(iri, TypeOptions(checks=(deny("b"),)), slug="two")
+
+
+def test_same_slug_reimport_is_silent_only_for_equal_closures(caplog):
     iri = "tests://Reimported"
     with caplog.at_level(logging.WARNING, logger="scrud_django.core.types"):
-        register_type_options(
-            iri, TypeOptions(checks=(_closure_check(),)), slug="reimported"
-        )
-        register_type_options(
-            iri, TypeOptions(checks=(_closure_check(),)), slug="reimported"
-        )
+        register_type_options(iri, TypeOptions(checks=(deny("a"),)), slug="reimported")
+        register_type_options(iri, TypeOptions(checks=(deny("a"),)), slug="reimported")
         assert caplog.records == []
-        register_type_options(
-            iri, TypeOptions(checks=(deny_context_b,)), slug="reimported"
-        )
+        register_type_options(iri, TypeOptions(checks=(deny("b"),)), slug="reimported")
     assert len(caplog.records) == 1
+
+
+def test_a_slug_moving_iri_releases_the_old_one():
+    register_type_options("tests://Old", TypeOptions(checks=(deny("a"),)), slug="mover")
+    register_type_options("tests://New", TypeOptions(), slug="mover")
+    assert type_options("tests://Old") == TypeOptions()
+    register_type_options("tests://Old", TypeOptions(), slug="other")  # not shared
 
 
 @pytest.fixture
