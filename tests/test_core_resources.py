@@ -443,3 +443,52 @@ def test_drf_views_keep_their_refusals_and_their_not_path():
         assert view.object_readable(drf, content) is readable
         assert "get_permissions" not in view.__dict__
         assert view.request is drf and view.action == "retrieve"
+
+
+@pytest.mark.django_db
+@test_context
+def test_hooks_checks_must_allow_in_every_stored_context():
+    """A type's ``checks`` must allow a PUT or DELETE in each context the
+    resource is stored in (not any, as an ``IsAuthorized``'s object check):
+    a hooked note in ["a", "b"] whose check refuses "b" is refused (403, it
+    is readable) for a writer granted in both."""
+    from scrud_django.core.resources import check_object, load_for_read
+    from scrud_django.core.types import requirement_for
+
+    from .fixtures import assign_role
+    from .resource_types import HOOKED_NOTE_TYPE_URI, hooked_resource_types
+
+    reverse("hooked-notes-list")
+    hooked_resource_types()
+    hooked = get_resource_type_for("hooked-notes")
+    requirement = requirement_for(hooked, "hooked-notes")
+    both = ResourceRegistration.register(
+        {"text": "in both", "rbac_context": ["a", "b"]}, "hooked-notes"
+    )
+    grants = [HOOKED_NOTE_TYPE_URI, collection_type_uri_for(HOOKED_NOTE_TYPE_URI)]
+    writer = assign_role(
+        {m: grants for m in ("http.GET", "http.PUT", "http.DELETE")}, "a", "b"
+    )
+    for method in ("PUT", "DELETE"):
+        with pytest.raises(access.AccessDenied):
+            check_object(
+                request_of(method, writer), hooked, both, requirement, covered=False
+            )
+        with pytest.raises(access.AccessDenied):
+            load_for_read(
+                request_of(method, writer),
+                hooked,
+                both.pk,
+                requirement=requirement,
+                method=method,
+            )
+    assert (
+        load_for_read(
+            request_of("GET", writer),
+            hooked,
+            both.pk,
+            requirement=requirement,
+            method="GET",
+        )
+        == both
+    )

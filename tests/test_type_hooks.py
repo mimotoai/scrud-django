@@ -624,3 +624,23 @@ def test_facade_honours_a_types_hooks():
         using="default",
     )
     assert Resource.objects.get(pk=created.pk).content["text"] == "allowed"
+
+
+@pytest.mark.django_db
+@test_context
+def test_check_must_allow_in_every_stored_context():
+    # Unlike an IsAuthorized subclass (any stored context allowing
+    # suffices), checks= must allow in each one: a note in ["a", "b"] can be
+    # neither moved to "a" nor deleted.
+    both = note("in both", ["a", "b"])
+    Given.http.force_authenticate(assign_role(WRITER, "a", "b"))
+    put_note(both, {"text": "moved", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    row = Resource.objects.get(pk=both.pk)
+    assert (row.content, row.etag) == (
+        {"text": "in both", "rbac_context": ["a", "b"]},
+        both.etag,
+    )
+    delete_note(both)
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.filter(pk=both.pk).exists()
