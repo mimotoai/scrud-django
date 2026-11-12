@@ -1288,6 +1288,105 @@ for them. Test: in `tests/test_studio_computed.py`, assert that
 `core.types.type_options(slug).compute` is set for each slug of
 `STUDIO_COMPUTED_TYPES` (it is `None` today).
 
+<a id="core-leaf-self-declared-grants"></a>
+## core-leaf-self-declared-grants: the core trusts a leaf to say it asks the grants
+
+Before ninja phase 3. The core takes a leaf's word for whether it asks the
+grants: `check_grants_in_each_context` (`core/resources.py`) asks them beside
+the leaves only when one says `reads_each_context = False`, and
+`asks_grants` (`require_grants`) counts any leaf without `grants_nothing` as
+asking them. A third-party leaf that sets `reads_each_context = True` (or
+leaves `grants_nothing` unset) and never asks the grants in its own
+`has_context_permission` would authorize every requester through
+`load_for_read`, `check_object` and the post-save check. Proposal: a closed
+set of grant-asking leaf types (`GrantsLeaf`, the DRF adapter's `ViewLeaf`),
+and the grants asked beside any other leaf whatever it declares. Test: in
+`tests/test_core_guards.py`, a leaf class with `reads_each_context = True`
+whose `has_object_permission` and `has_context_permission` return `True`;
+assert `load_for_read(..., requirement=[leaf], method="DELETE")` by a user
+with no grants is refused (today it returns the resource).
+
+<a id="core-hooks-silently-absent"></a>
+## core-hooks-silently-absent: a type's hooks can be missing without a sign
+
+Before ninja phase 3. `type_options(slug)` returns an empty `TypeOptions`
+for a slug never registered, `requirement_for(resource_type, slug)` takes
+the slug apart from `resource_type.slug` (a mismatch gives another type's
+hooks, or none), hooks are registered only when the URLconf that calls
+`json_resource_type` is imported (a worker, or a ninja router in a module of
+its own, that never imports it gets none), and `register_type_options`
+replaces silently. Any of these drops a type's `checks` and `object_checks`,
+which only refuse, so the type then allows what they would refuse.
+Proposal: key the options by type IRI, default the slug from
+`resource_type` and assert that a given one matches, and warn on a
+replacement that changes the hooks. Test: in `tests/test_type_hooks.py`,
+call `requirement_for(get_resource_type_for("hooked-notes"), "todos")` and
+assert it raises (today it returns a requirement with no `HookLeaf`); in a
+subprocess that sets up Django without importing `tests.urls`, assert
+`type_options("hooked-notes")` is not silently empty.
+
+<a id="core-workflow-mark-not-bound"></a>
+## core-workflow-mark-not-bound: the workflow-authorized mark is not tied to what was validated
+
+Before ninja phase 3; predates this release. `validate_write` (the workflow
+check) marks the request authorized (`_mark_workflow_authorized`,
+`core/authz.py`), and the post-save check (`save_checked`, in
+`authorizing_write(..., authorized=True)`) lets a grant conditioned on
+`scrud_workflow` allow any write on that request. The mark is not tied to
+the validated body or contexts: a facade caller that changes the body after
+validating, or writes twice on one request, saves past the `scrud_workflow`
+grants. Proposal: store the validated body and contexts with the mark and
+compare them in the post-save check, or clear the mark once a save uses it.
+Test: in `tests/test_core_writes.py`, as a user whose `http.PUT` is
+conditioned on `scrud_workflow` (`may_stay_json_ld`), `validate_write` a
+body in "a", then `update` with a different body (or `update` twice);
+assert the second write is refused (today it saves).
+
+<a id="core-type-redesign"></a>
+## core-type-redesign: the core's types before the ninja front end
+
+Before ninja phase 3. The core's types leave invariants to their callers:
+
+- a requirement is a plain list built anywhere, with scoped-rbac's
+  `AnyOf`: build a validated, frozen `Requirement` once (with the core's
+  own frozen `AnyOf`, converted to scoped-rbac's in the DRF adapter);
+- `workflow_check` takes `prior=None` for both a create and no stored
+  content (`NULL_STORED_CONTENT` is a tuple against a `Mapping`
+  annotation): take distinct create and update inputs;
+- `TypeOptions` keeps whatever sequences it is given: convert them to
+  tuples, with typed `Protocol`s for the hooks;
+- `ScrudException` should declare `type`, `title` and `instance` as class
+  attributes;
+- `ViewLeaf` reads its view's `type_iri` on each use: read it once.
+
+Test: type-checking (`mypy` or `pyright`) of `scrud_django/core/` with the
+new types, and in `tests/test_core_workflow.py` a create and an update over
+null content through the new inputs, each checked as itself.
+
+<a id="core-small-semantics"></a>
+## core-small-semantics: small semantic gaps in the core
+
+Before ninja phase 3.
+
+- `ErrorText` equality differs with and without DRF: DRF's `ErrorDetail`
+  compares `code` too, the `str` fallback does not. Test: in a no-DRF
+  subprocess (as `tests/test_core_imports.py` runs one), assert
+  `ErrorText("x", "a") != ErrorText("x", "b")`.
+- Any truthy hook return counts as allow (`"no"` allows): compare `is True`,
+  or document it. Test: in `tests/test_type_hooks.py`, a check returning
+  `"no"`; assert the write is refused.
+- `NotNeutral` is detected by counting permissions, not by comparing them:
+  compare the objects. Test: in `tests/test_core_requirements.py`, a view
+  whose `~` permission is offset by an extra one; assert `NotNeutral`.
+- `readable_content(grants=False)` is public and used by nothing: make it
+  private or test it. Test: in `tests/test_core_resources.py`, assert it
+  asks the object checks alone.
+- `HookLeaf.has_permission` allows a body with `rbac_context: []` (it asks
+  the checks in no context): refuse it, or ask them in the default one.
+  Test: in `tests/test_type_hooks.py`, POST `{"rbac_context": []}` with a
+  check that refuses everything; assert the hook refuses it (today the body
+  checks answer it, so the hook is never what refuses).
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>
