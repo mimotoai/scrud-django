@@ -8,6 +8,7 @@ from unittest import mock
 from uuid import uuid4
 
 import pytest
+from django.http import Http404
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils.http import quote_etag
@@ -19,6 +20,7 @@ from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.core import workflow as core_workflow
+from scrud_django.core.authz import _workflow_authorized
 from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.core.workflow import NoWorkflowPolicyDenied
 from scrud_django.core.writes import (
@@ -467,6 +469,55 @@ def test_update_cannot_move_a_resource_where_the_writer_may_not_write():
     )
 
 
+@pytest.mark.django_db
+@test_context
+def test_update_checks_the_stored_object_without_a_load():
+    """A caller that looks the instance up itself (no `load_for_read`) and
+    calls `update` gets the object check of the stored resource, as DRF's
+    ``get_object()`` asks it: a writer granted only in "b" cannot move a
+    resource out of "a", which they may neither read nor write (404)."""
+    rtype = profiles_type()
+    stored = ResourceRegistration.register(
+        {"name": "old", "rbac_context": "a"}, "partner-profiles"
+    )
+    writer = user_with(({"http.GET": [PP], "http.PUT": [PP]}, "b"))
+    body = {"name": "moved", "rbac_context": "b"}
+    with pytest.raises(Http404):
+        update(
+            request_by("put", writer),
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            body,
+            requirement=[GrantsLeaf(PP)],
+            using="default",
+        )
+    assert row_of(stored) == ({"name": "old", "rbac_context": "a"}, stored.etag)
+    # validate_write alone asks it too, before anything else validates.
+    with pytest.raises(Http404):
+        validate_write(
+            request_by("put", writer),
+            rtype,
+            body,
+            stored=Resource.objects.get(pk=stored.pk),
+            requirement=[GrantsLeaf(PP)],
+            readable=None,
+        )
+    # Readable in "a" but not writable there: a 403.
+    reader = user_with(
+        ({"http.GET": [PP]}, "a"), ({"http.GET": [PP], "http.PUT": [PP]}, "b")
+    )
+    with pytest.raises(access.AccessDenied):
+        update(
+            request_by("put", reader),
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            body,
+            requirement=[GrantsLeaf(PP)],
+            using="default",
+        )
+    assert row_of(stored) == ({"name": "old", "rbac_context": "a"}, stored.etag)
+
+
 # One workflow validation authorizes one write: the mark it leaves on the
 # request names the type and the stored resource it validated, and the save
 # that uses it consumes it, whether it succeeds or fails.
@@ -539,7 +590,10 @@ def test_one_validation_authorizes_one_write():
     assert workflow_check.call_args.kwargs["proposed"] == body
     assert Resource.objects.get(pk=stored.pk).content == body == saved.content
     after_first = row_of(stored)
-    # The save consumed the mark: a second save on the request is refused.
+    # The update's own validation marked the write again, and its save
+    # consumed that mark: a save after it, with no validation, is refused.
+    # (`test_save_checked_consumes_the_mark` pins it at the save_checked
+    # level, with no update re-validating.)
     with pytest.raises(access.AccessDenied):
         unvalidated_update(
             request,
@@ -605,6 +659,90 @@ def test_a_validation_does_not_authorize_another_resource():
             requirement,
         )
     assert row_of(other) == before
+
+
+@pytest.mark.django_db
+@test_context
+def test_save_checked_consumes_the_mark():
+    """A validation's mark authorizes one `save_checked`: the save after it,
+    on the same request with no validation in between, is refused."""
+    store_json_ld_policy()
+    stored = ResourceRegistration.register({"x": 1, "rbac_context": "a"}, "json-ld")
+    rtype = stored.resource_type
+    request = request_by("put", user_with((may_stay_json_ld(), "a")))
+    requirement = [GrantsLeaf(JSON_LD)]
+    body = {"x": 2, "rbac_context": "a"}
+    row = Resource.objects.get(pk=stored.pk)
+    validate_write(
+        request, rtype, body, stored=row, requirement=requirement, readable=None
+    )
+    unvalidated_update(request, rtype, row, body, requirement)
+    assert row_of(stored)[0] == body
+    assert not _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
+    after_first = row_of(stored)
+    with pytest.raises(access.AccessDenied):
+        unvalidated_update(
+            request,
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            {"x": 3, "rbac_context": "a"},
+            requirement,
+        )
+    assert row_of(stored) == after_first
+
+
+class SaveFailed(Exception):
+    pass
+
+
+def failing_save():
+    raise SaveFailed()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("failure", ["post-save", "save-raises"])
+@test_context
+def test_a_failed_save_checked_consumes_the_mark(failure):
+    """However `save_checked` ends, the mark is gone: a save refused by the
+    post-save check, or one that raises, leaves none for another save."""
+    store_json_ld_policy()
+    stored = ResourceRegistration.register({"x": 1, "rbac_context": "a"}, "json-ld")
+    before = row_of(stored)
+    rtype = stored.resource_type
+    request = request_by("put", user_with((may_stay_json_ld(), "a")))
+    requirement = [GrantsLeaf(JSON_LD)]
+    body = {"x": 2, "rbac_context": "a"}
+    row = Resource.objects.get(pk=stored.pk)
+    validate_write(
+        request, rtype, body, stored=row, requirement=requirement, readable=None
+    )
+    assert _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
+    if failure == "post-save":
+        # A body other than the one validated, landing in "b", where the
+        # user holds no grant: the post-save check refuses it.
+        with pytest.raises(access.AccessDenied):
+            unvalidated_update(
+                request, rtype, row, {"x": 2, "rbac_context": "b"}, requirement
+            )
+    else:
+        with pytest.raises(SaveFailed):
+            save_checked(
+                request,
+                rtype,
+                failing_save,
+                instance=row,
+                requirement=requirement,
+                using="default",
+                covered=True,
+            )
+    assert not _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
+    assert row_of(stored) == before
+    # The body validated is not saved on the strength of that validation.
+    with pytest.raises(access.AccessDenied):
+        unvalidated_update(
+            request, rtype, Resource.objects.get(pk=stored.pk), body, requirement
+        )
+    assert row_of(stored) == before
 
 
 @pytest.mark.django_db
@@ -713,6 +851,46 @@ def test_a_second_update_validates_its_own_body():
         )
     assert raised.value.status_code == status.HTTP_400_BAD_REQUEST
     assert row_of(stored) == after_first
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "refused, error",
+    [
+        # Refused by the workflow check: not this user's transition.
+        (PUBLISHED_NOTE, WorkflowTransitionError),
+        # Refused by the request check, before anything else is asked.
+        ({"state": "draft", "rbac_context": "b"}, access.AccessDenied),
+    ],
+    ids=["workflow", "request-check"],
+)
+@test_context
+def test_a_failed_validation_leaves_no_earlier_mark(refused, error):
+    """A validation that fails clears the mark an earlier one left on the
+    request: no save after it is authorized by the earlier validation."""
+    store_draft_policy()
+    stored = ResourceRegistration.register(
+        {"state": "draft", "rbac_context": "a"}, "json-ld"
+    )
+    before = row_of(stored)
+    rtype = stored.resource_type
+    requirement = [GrantsLeaf(JSON_LD)]
+    request = request_by("put", user_with((may_stay_json_ld(), "a")))
+    row = Resource.objects.get(pk=stored.pk)
+    validate_write(
+        request, rtype, DRAFT_EDITED, stored=row, requirement=requirement, readable=None
+    )
+    assert _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
+    with pytest.raises(error):
+        validate_write(
+            request, rtype, refused, stored=row, requirement=requirement, readable=None
+        )
+    assert not _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
+    # The grant is conditioned on scrud_workflow: with no mark, the save of
+    # the body validated first is refused.
+    with pytest.raises(access.AccessDenied):
+        unvalidated_update(request, rtype, row, DRAFT_EDITED, requirement)
+    assert row_of(stored) == before
 
 
 @pytest.mark.django_db
@@ -860,3 +1038,18 @@ def test_create_and_update_name_the_types_own_iri_by_default():
             using="default",
         )
     assert post_save.call_args.kwargs["type_iri"] == JSON_LD
+    stored = ResourceRegistration.register({"x": 1, "rbac_context": "a"}, "json-ld")
+    body = {"x": 2, "rbac_context": "a"}
+    with mock.patch(
+        "scrud_django.core.writes.check_post_save", wraps=check_post_save
+    ) as post_save:
+        saved = update(
+            request_by("put", user_with((may_stay_json_ld(), "a"))),
+            rtype,
+            Resource.objects.get(pk=stored.pk),
+            body,
+            requirement=[GrantsLeaf(JSON_LD)],
+            using="default",
+        )
+    assert post_save.call_args.kwargs["type_iri"] == JSON_LD
+    assert Resource.objects.get(pk=stored.pk).content == body == saved.content

@@ -905,3 +905,78 @@ def test_a_hook_is_given_a_mapping_or_a_resource_only():
     stored = note("in b", "b")
     assert not leaf.has_object_permission(request, stored)
     assert not leaf.has_object_permission(request, dict(stored.content))
+
+
+EXTRA = "tests://Extra"
+
+
+def asks_extra_grant(request, resource_type, body, context):
+    """A check that asks a grant of its own: the request's method on
+    `EXTRA` in `context`."""
+    from scoped_rbac import access
+    from scoped_rbac.policy import Permission
+
+    permission = Permission(access.action_iri_for(request.method), EXTRA)
+    return access.policy_for(request).should_allow(permission, context)
+
+
+def extra_grant(conditioned):
+    """A role writing `EXTRA`, only through the workflow check when
+    `conditioned` (a grant ``scrud_workflow`` conditions)."""
+    grant = (
+        {
+            EXTRA: {
+                "condition": {
+                    "operator": "scrud_workflow",
+                    "authorized_transitions": ["__INITIALIZE__", "__SAME_STATE__"],
+                }
+            }
+        }
+        if conditioned
+        else [EXTRA]
+    )
+    return {"http.POST": grant, "http.PUT": grant}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("conditioned", [True, False], ids=["workflow", "plain"])
+@test_context
+def test_hooks_request_check_runs_outside_the_write_checks(conditioned):
+    """DRF asks a type's hooks' request check (``check_request_hooks``)
+    after its own, outside ``write_checks``: there ``scrud_workflow``
+    refuses, so a hook that asks a grant conditioned on it is refused, a
+    403. The facade's `check_request` asks them outside
+    ``authorizing_write`` too, for a POST to the list and an item's PUT.
+    With an unconditioned grant both allow."""
+    from scoped_rbac import access
+
+    from scrud_django.core.resources import check_request
+
+    from .test_core_resources import user_with
+
+    hooked_note_type(checks=(asks_extra_grant,))
+    hooked = get_resource_type_for("hooked-notes")
+    requirement = requirement_for(hooked, "hooked-notes")
+    user = user_with((WRITER, "a"), (extra_grant(conditioned), "a"))
+    stored = note("n", "a")
+    body = {"text": "x", "rbac_context": "a"}
+    expected = status.HTTP_403_FORBIDDEN if conditioned else None
+    Given.http.force_authenticate(user)
+    post_note(body)
+    Then.http.status_code_is(expected or status.HTTP_201_CREATED)
+    put_note(stored, body)
+    Then.http.status_code_is(expected or status.HTTP_200_OK)
+    for method, list_route in (("post", True), ("put", False)):
+        request = getattr(RequestFactory(), method)("/")
+        request.user = user
+
+        def asked(request=request, list_route=list_route):
+            check_request(
+                request, hooked, requirement, list_route=list_route, body=body
+            )
+
+        if conditioned:
+            with pytest.raises(access.AccessDenied):
+                asked()
+        else:
+            asked()

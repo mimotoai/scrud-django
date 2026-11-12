@@ -714,3 +714,75 @@ def test_a_subclass_overriding_the_grants_check_is_not_trusted():
     resources.check_grants_in_each_context(
         request_of("DELETE", AnonymousUser()), stored.content, [registered], permission
     )
+
+
+class NarrowingHookLeaf(HookLeaf):
+    """A `HookLeaf` subclass overriding nothing the core reads: still a
+    type's hooks."""
+
+    def __repr__(self):
+        return f"NarrowingHookLeaf({self.type_iri!r})"
+
+
+def hook_subclass_overriding(name):
+    """A `HookLeaf` subclass overriding `name` with an allowing method."""
+
+    def allowing_method(self, *args):
+        return True
+
+    def contexts_for(self, obj):
+        return ["a"]
+
+    method = contexts_for if name == "contexts_for" else allowing_method
+    return type(f"Overriding_{name}", (HookLeaf,), {name: method})
+
+
+HOOK_METHODS = (
+    "contexts_for",
+    "has_permission",
+    "has_object_permission",
+    "has_context_permission",
+)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("name", HOOK_METHODS)
+@pytest.mark.parametrize("where", ["class", "instance"])
+@test_context
+def test_a_hook_subclass_overriding_a_check_is_no_hook(name, where):
+    """`is_hook` follows the rule `_trusted` follows for grants leaves: a
+    `HookLeaf` subclass (or instance) overriding ``contexts_for`` or a
+    ``has_*`` check may allow what a type's hooks would not, so it is not
+    exempt from the grants: they are asked beside it, as beside any leaf of
+    an unknown class."""
+    resource_type = json_ld()
+    stored = ResourceRegistration.register({"rbac_context": "a"}, "json-ld")
+    options = TypeOptions(checks=(allowing,), object_checks=(allowing,))
+    assert is_hook(NarrowingHookLeaf(resource_type, options))
+    if where == "class":
+        leaf = hook_subclass_overriding(name)(resource_type, options)
+    else:
+        leaf = HookLeaf(resource_type, options)
+        allowing_method = getattr(hook_subclass_overriding(name), name)
+        setattr(leaf, name, allowing_method.__get__(leaf))
+    assert not is_hook(leaf)
+    permission = Permission("http.DELETE", JSON_LD)
+    anonymous = request_of("DELETE", AnonymousUser())
+    # The grants are asked beside it.
+    assert not grants_allow([leaf], anonymous, stored.content, permission)
+    with pytest.raises(access.AccessDenied):
+        resources.check_grants_in_each_context(
+            anonymous, stored.content, [leaf], permission
+        )
+    with pytest.raises(access.AccessDenied):
+        writes.check_post_save(
+            request_of("PUT", AnonymousUser()), resource_type, stored, [leaf]
+        )
+    writer = user_with((DELETER, "a"), ({"http.PUT": [JSON_LD]}, "a"))
+    assert grants_allow(
+        [leaf], request_of("DELETE", writer), stored.content, permission
+    )
+    writes.check_post_save(request_of("PUT", writer), resource_type, stored, [leaf])
+    # Still no leaf asking the grants: alone, it is refused.
+    with pytest.raises(ImproperlyConfigured, match="asks no grants"):
+        require_grants([leaf], "x")

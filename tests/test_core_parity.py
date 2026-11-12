@@ -43,7 +43,7 @@ from scrud_django.core.requirements import (
 )
 from scrud_django.core.resources import allowed_methods, load_for_read, object_readable
 from scrud_django.core.types import requirement_for
-from scrud_django.core.writes import update, validate_write
+from scrud_django.core.writes import create, update, validate_write
 from scrud_django.exceptions import ScrudException
 from scrud_django.registration import (
     ResourceRegistration,
@@ -536,6 +536,49 @@ def test_write_parity(type_slug, user_name, body_context, request):
     check_parity(
         request,
         ("write", type_slug, user_name, key_of(body_context)),
+        facade,
+        drf_authz_status(response),
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("body_context", BODY_CONTEXTS, ids=str)
+@pytest.mark.parametrize("user_name", USER_NAMES)
+@pytest.mark.parametrize("type_slug", TYPE_SLUGS)
+def test_create_parity(type_slug, user_name, body_context, request):
+    """A POST to the list of a resource stored as `body_context`'s content
+    (an initial state under each type's policy): the DRF route's status
+    against the facade's `validate_write` (``stored=None``), then
+    `create`."""
+    parity = TYPES[type_slug]
+    user = users_for(parity.uri)[user_name]
+    resource_type = resource_type_of(parity)
+    requirement = requirement_for(resource_type, parity.slug)
+    body = parity.content(body_context)
+
+    def facade_post():
+        post = request_of("POST", user)
+        validate_write(
+            post,
+            resource_type,
+            body,
+            stored=None,
+            requirement=requirement,
+            readable=None,
+        )
+        create(post, resource_type, body, requirement=requirement, using="default")
+
+    with transaction.atomic():
+        facade = outcome_class(outcome_of(facade_post))
+        transaction.set_rollback(True)
+    with transaction.atomic():
+        response = client_of(user).post(
+            reverse(f"{parity.slug}-list"), body, format="json"
+        )
+        transaction.set_rollback(True)
+    check_parity(
+        request,
+        ("create", type_slug, user_name, key_of(body_context)),
         facade,
         drf_authz_status(response),
     )

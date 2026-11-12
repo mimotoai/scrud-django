@@ -231,23 +231,31 @@ def validate_write(
 ) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
     """Validate `request`'s write of `body` (the body as sent) to
     `resource_type`, over the resource `stored` (``None`` for a create).
-    First the request check of the write with its body
-    (`scrud_django.core.resources.check_request`: of the list's POST for a
-    create, of the item's route for an update), whose refusal is
-    ``access.AccessDenied`` (403), as the DRF route asks ``has_permission``
-    with the body before anything else validates it. For an update whose
-    `requirement` has an ``access.AnyOf``, then the object check of
-    `stored` with the body (`scrud_django.core.resources.check_object`
-    given `body`, ``scrud_workflow`` allowing for the PUT the workflow check
-    covers): DRF's ``|`` pairs each option's request check, reading the
-    body, with that option's object check, which a ``load_for_read`` given
-    no body could not (it asks whether the requester may PUT in some
-    context); a refusal is ``access.AccessDenied``, or ``Http404`` for a
-    resource the requester cannot read. Without an ``AnyOf`` the object
-    check asks no request check, so the body changes nothing there. Then,
-    in the order DRF's serializer validators check it: its JSON Schema
-    (`validate_schema`), then, for a ``WorkflowPolicy``, the policy's own
-    checks (`validate_policy_write`), then the workflow check
+
+    The front end runs `scrud_django.core.bodies.check_body` on the body
+    first: DRF answers a malformed body (empty, too deep, with a NUL, an
+    ``rbac_context`` that cannot be stored) 400 before any 403.
+
+    First, any mark an earlier validation left on the request is removed
+    (`_consume_workflow_mark`): this validation replaces it, and one that
+    fails leaves none for a save to use. Then the request check of the
+    write with its body (`scrud_django.core.resources.check_request`: of
+    the list's POST for a create, of the item's route for an update), whose
+    refusal is ``access.AccessDenied`` (403), as the DRF route asks
+    ``has_permission`` with the body before anything else validates it.
+    For an update, then the object check of `stored` with the body
+    (`scrud_django.core.resources.check_object` given `body`,
+    ``scrud_workflow`` allowing for the PUT the workflow check covers), as
+    DRF's ``get_object()`` asks it: a caller that looked `stored` up itself
+    (no `load_for_read`) is checked all the same, so a writer cannot move a
+    resource out of a context where they may not write it; and DRF's ``|``
+    pairs each option's request check, reading the body, with that option's
+    object check, which a ``load_for_read`` given no body could not (it
+    asks whether the requester may PUT in some context). A refusal is
+    ``access.AccessDenied``, or ``Http404`` for a resource the requester
+    cannot read. Then, in the order DRF's serializer validators check it:
+    its JSON Schema (`validate_schema`), then, for a ``WorkflowPolicy``, the
+    policy's own checks (`validate_policy_write`), then the workflow check
     (`scrud_django.core.workflow.workflow_check`, given `stored`'s content
     as its ``prior``, `prior_of`, and `narrow` and `readable` as they are).
     Returns the transitions the workflow check authorized; the request
@@ -266,10 +274,10 @@ def validate_write(
     ``ImproperlyConfigured`` (`scrud_django.core.requirements.require_grants`).
 
     `create` and `update` always call it themselves, on the body they save
-    (a caller that called it first gets the workflow check run twice, with
-    no effect but the mark). A front end that saves with `save_checked`
-    itself calls it first, with the same request and body, inside the
-    write's transaction."""
+    (a caller that called it first gets the workflow check, and an update's
+    object check, run twice, with no effect but the mark). A front end that
+    saves with `save_checked` itself calls it first, with the same request
+    and body, inside the write's transaction."""
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import (
         COVERED_ITEM_METHOD,
@@ -277,14 +285,17 @@ def validate_write(
         check_request,
     )
 
+    # Whatever an earlier validation on the request authorized, this one
+    # replaces it: refused, it leaves no mark for a save to use.
+    _consume_workflow_mark(request)
     check_request(
         request, resource_type, requirement, list_route=stored is None, body=body
     )
-    if stored is not None and any(
-        isinstance(entry, access.AnyOf) for entry in requirement
-    ):
-        # DRF's | pairs an option's request check (with the body) with its
-        # object check: a body-less load_for_read could not.
+    if stored is not None:
+        # DRF's get_object() asks the object check of the stored resource:
+        # a caller that looked it up itself must not skip it. With the body,
+        # as DRF's | pairs an option's request check (with the body) with
+        # its object check, which a body-less load_for_read could not.
         check_object(
             request,
             resource_type,
@@ -600,7 +611,11 @@ def create(
     ``ResourceRegistration.register_instance`` (in `creating_revision`),
     checked as stored (`save_checked`), once `body` itself is validated
     (`_validated`: `validate_write`, always). `type_iri` is the type the
-    post-save check names (by default `resource_type`'s ``type_uri``)."""
+    post-save check names (by default `resource_type`'s ``type_uri``).
+
+    It takes no ``recheck``: its post-save check is `requirement`'s
+    (`check_post_save`). A front end needing a post-save check of its own
+    saves with `save_checked` itself (follow-up ``core-write-no-recheck``)."""
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
         type_iri = resource_type.type_uri
@@ -647,8 +662,15 @@ def update(
     ``ResourceRegistration.update_locked``, checked as stored
     (`save_checked`), once `body` itself is validated over `instance`
     (`_validated`: `validate_write`, always, whether `instance` is readable
-    telling whether its errors are hidden). `type_iri` is the type the
-    post-save check names (by default `resource_type`'s ``type_uri``)."""
+    telling whether its errors are hidden). That validation asks the
+    object check of `instance` with `body` (`check_object`), as DRF's
+    ``get_object()`` does, whether or not the caller loaded it with
+    `scrud_django.core.resources.load_for_read`. `type_iri` is the type the
+    post-save check names (by default `resource_type`'s ``type_uri``).
+
+    It takes no ``recheck``: its post-save check is `requirement`'s
+    (`check_post_save`). A front end needing a post-save check of its own
+    saves with `save_checked` itself (follow-up ``core-write-no-recheck``)."""
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
         type_iri = resource_type.type_uri

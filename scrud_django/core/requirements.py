@@ -161,17 +161,40 @@ def asks_grants_itself(leaf) -> bool:
 
 _hook_leaf_class = None
 
+# What decides that a type's hooks only refuse: a subclass of ``HookLeaf``
+# (or an instance) overriding one of them is no type's hooks (`is_hook`).
+_HOOK_ATTRIBUTES = (
+    "contexts_for",
+    "has_permission",
+    "has_object_permission",
+    "has_context_permission",
+)
+
 
 def is_hook(leaf) -> bool:
     """Whether `leaf` is a type's hooks (`scrud_django.core.types.HookLeaf`),
-    which only refuse: no grants are asked for it."""
+    which only refuse: no grants are asked for it. A subclass of it is too
+    while it overrides none of `_HOOK_ATTRIBUTES` (``contexts_for`` and the
+    ``has_*`` checks) and the instance was given none of them, as
+    `_trusted` has it for a grants leaf: one that does may allow what a
+    type's hooks would not, and is a leaf of an unknown class (the grants
+    are asked beside it)."""
     global _hook_leaf_class
     if _hook_leaf_class is None:
         # Imported here: scrud_django.core.types imports this module.
         from scrud_django.core.types import HookLeaf
 
         _hook_leaf_class = HookLeaf
-    return isinstance(leaf, _hook_leaf_class)
+    if not isinstance(leaf, _hook_leaf_class):
+        return False
+    instance = getattr(leaf, "__dict__", {})
+    if any(name in instance for name in _HOOK_ATTRIBUTES):
+        return False
+    cls = type(leaf)
+    return all(
+        getattr(cls, name) is getattr(_hook_leaf_class, name)
+        for name in _HOOK_ATTRIBUTES
+    )
 
 
 # The leaf classes whose ``contexts_for`` reads a resource's stored contexts

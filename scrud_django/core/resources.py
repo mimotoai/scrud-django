@@ -14,18 +14,20 @@ answer as it answers access errors.
 
 The request check of a route (`check_request`: the list grant for a list's
 GET, else ``has_permission`` of each entry of the requirement, a
-`HookLeaf`'s included, with the body for a write) runs before anything is
-looked up, as DRF's ``initial()`` asks the permissions before
-``get_object()``: `load_for_read`, `readable_queryset` (of a GET or HEAD)
-and `validate_write` ask it, so a requester refused there gets a 403
-whether the item exists or not. Beyond that, a requirement's
-``access.AnyOf`` is DRF's ``|``: an option allows an object only when each
-of its entries allows the request (``has_permission``) and then the object,
-as DRF's ``OR.has_object_permission`` asks them (`_object_permitted`; and
-the object checks of `readable_content` and `readable_queryset`). A DRF
-view keeps its own checks (``check_permissions``,
-``check_object_permissions``), and its list and readability ask an
-option's object checks alone.
+`HookLeaf`'s included, after the others and outside the write's checks, with
+the body for a write) runs before anything is looked up, as DRF's
+``initial()`` asks the permissions before ``get_object()``: `load_for_read`,
+`readable_queryset` (of a GET or HEAD) and `validate_write` ask it, so a
+requester refused there gets a 403 whether the item exists or not. A front
+end runs `scrud_django.core.bodies.check_body` on a write's body before any
+of them, as DRF answers a malformed body 400 before any 403. Beyond that,
+a requirement's ``access.AnyOf`` is DRF's ``|``: an option allows an object
+only when each of its entries allows the request (``has_permission``) and
+then the object, as DRF's ``OR.has_object_permission`` asks them
+(`_object_permitted`; and the object checks of `readable_content` and
+`readable_queryset`). A DRF view keeps its own checks
+(``check_permissions``, ``check_object_permissions``), and its list and
+readability ask an option's object checks alone.
 """
 
 import copy
@@ -61,7 +63,7 @@ from scrud_django.core.requirements import (
     require_grants,
     requirement_leaves,
 )
-from scrud_django.core.types import BODY_METHODS
+from scrud_django.core.types import BODY_METHODS, HookLeaf
 from scrud_django.core.workflow import authorizing_write
 from scrud_django.core.writes import (  # noqa: F401  (re-exported)
     create,
@@ -119,11 +121,11 @@ def _options_copy(request, method):
 def readable_content(read, content, requirement, *, permission=None):
     """Whether the resource's `content` is readable by `read` (a GET of the
     detail route): the grants (`readable_by_grants`, ``http.GET`` on each
-    leaf's type; with `permission`, `grants_allow` for it instead) **and** the object checks a list asks
-    (`readable_by_object_checks`, each ``AnyOf`` option asking its request
-    checks of `read` first, as DRF's ``|`` answers a GET), with
-    ``scrud_workflow`` refusing (`_not_checking_write`): it never makes an
-    object readable.
+    leaf's type; with `permission`, `grants_allow` for it instead) **and**
+    the object checks a list asks (`readable_by_object_checks`, each
+    ``AnyOf`` option asking its request checks of `read` first, as DRF's
+    ``|`` answers a GET), with ``scrud_workflow`` refusing
+    (`_not_checking_write`): it never makes an object readable.
 
     A `requirement` that asks no grants (empty, or hooks only) is
     ``ImproperlyConfigured`` (`require_grants`): it would read as readable
@@ -142,11 +144,11 @@ def _readable_content(
     read, content, requirement, *, grants=True, permission=None, request_checks=False
 ):
     """`readable_content` without its guard: the DRF views'
-    (``ListValidatorsMixin.object_readable``), whose requirement is empty or hooks only for a view
-    with no ``IsAuthorized``, which then reads as readable, as scoped-rbac's
-    ``is_readable`` has it (a refusal by its other permissions stays a
-    403). Their object checks ask no request check (`request_checks`, the
-    facade's)."""
+    (``ListValidatorsMixin.object_readable``), whose requirement is empty or
+    hooks only for a view with no ``IsAuthorized``, which then reads as
+    readable, as scoped-rbac's ``is_readable`` has it (a refusal by its
+    other permissions stays a 403). Their object checks ask no request
+    check (`request_checks`, the facade's)."""
     with _not_checking_write():
         if grants:
             if permission is None:
@@ -256,7 +258,11 @@ def check_object(
     (`_object_permitted`). A refusal of an object `object_readable` refuses
     is ``Http404``; of a readable one, ``access.AccessDenied``. A
     `requirement` that asks no grants (empty, or hooks only) is
-    ``ImproperlyConfigured`` (`require_grants`): it would allow anyone."""
+    ``ImproperlyConfigured`` (`require_grants`): it would allow anyone.
+
+    It asks no top-level request check (DRF's ``check_permissions``): a
+    caller runs `check_request` first, as `load_for_read` and
+    `validate_write` do."""
     require_grants(requirement, "check_object")
     with authorizing_write(request, covered=covered):
         permitted = _object_permitted(
@@ -281,7 +287,9 @@ def load_for_read(
 ) -> Resource:
     """The resource `pk` of `resource_type`, looked up and checked for a
     `method` request (every method's lookup, not only a read's), as the
-    detail route answers it (``initial()``, then ``get_object()``):
+    detail route answers it (``initial()``, then ``get_object()``). A front
+    end given a body runs `scrud_django.core.bodies.check_body` on it
+    first, as DRF answers a malformed body 400 before any 403:
 
     - first, before any lookup, the request check of the item's route for
       `method` (`check_request`), with `body`, the parsed body of a PUT (or
@@ -358,17 +366,28 @@ def _request_checks_pass(request, requirement, body=None):
     """Whether every entry of `requirement` (any option of an ``AnyOf``)
     allows ``has_permission(request, body)`` (`body` ``None``: a request
     check without a body). ``PermissionDenied`` refuses; any other error (an
-    access error of the body, a 400) is raised."""
+    access error of the body, a 400) is raised.
+
+    A type's hooks (a `HookLeaf`, of any subclass) are asked after the other
+    entries, and outside the block the caller runs it in
+    (`_not_checking_write`: ``scrud_workflow`` refuses there), as the DRF
+    route asks them (``check_request_hooks``) once its own request check,
+    run in ``write_checks``, is over."""
 
     def meets(entry):
         if isinstance(entry, access.AnyOf):
             return any(
                 all(meets(e) for e in _entries(option)) for option in entry.options
             )
+        if isinstance(entry, HookLeaf):
+            with _not_checking_write():
+                return entry.has_permission(request, body)
         return entry.has_permission(request, body)
 
+    hooks = [entry for entry in requirement if isinstance(entry, HookLeaf)]
+    others = [entry for entry in requirement if not isinstance(entry, HookLeaf)]
     try:
-        return all(meets(entry) for entry in requirement)
+        return all(meets(entry) for entry in others + hooks)
     except PermissionDenied:
         return False
 
@@ -428,11 +447,18 @@ def check_request(
       that writes none, in the default context ``""``, unless `request` is
       the body-less copy ``Allow`` checks, ``access.checks_allow``).
 
+    The front end runs `scrud_django.core.bodies.check_body` on a write's
+    body first: DRF answers a malformed body 400 before any 403.
+
     It runs with ``scrud_workflow`` allowing for the writes the workflow
     check covers (a POST to the list, `COVERED_LIST_METHOD`, and an item's
     PUT, `COVERED_ITEM_METHOD`) and refusing for any other, as the DRF
-    route's ``write_checks``. A leaf's ``PermissionDenied`` refuses; another
-    access error (a body naming a reserved context, 400) is raised.
+    route's ``write_checks``; but a type's hooks (each `HookLeaf`) are asked
+    after the other entries and outside that block, where it refuses, as
+    the DRF route asks them (``check_request_hooks``) once its
+    ``write_checks`` is over (`_request_checks_pass`). A leaf's
+    ``PermissionDenied`` refuses; another access error (a body naming a
+    reserved context, 400) is raised.
 
     A `requirement` that asks no grants (empty, or hooks only) is
     ``ImproperlyConfigured`` (`require_grants`): it would allow anyone."""

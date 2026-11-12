@@ -53,9 +53,10 @@ included.
 The core trusts only `GrantsLeaf` and the DRF `ViewLeaf` (and a subclass
 overriding neither `has_context_permission` nor `reads_each_context`) to ask
 the grants: any other leaf but a type's hooks (`HookLeaf`, which count as
-asking none and get none asked beside them) gets them asked beside it and
-counts as asking none; register another leaf class, or an overriding
-subclass, with `core.requirements.register_grant_asking_leaf`.
+asking none and get none asked beside them; a subclass or instance
+overriding `contexts_for` or a `has_*` check is no hook) gets them asked
+beside it and counts as asking none; register another leaf class, or an
+overriding subclass, with `core.requirements.register_grant_asking_leaf`.
 `readable_queryset` and `list_last_modified` filter by a resource's stored
 contexts, so they refuse (`ImproperlyConfigured`) a leaf that may read
 others (a `contexts_for` of its own, or a class not registered with
