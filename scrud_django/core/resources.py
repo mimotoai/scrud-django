@@ -18,11 +18,14 @@ GET, else ``has_permission`` of each entry of the requirement, a
 looked up, as DRF's ``initial()`` asks the permissions before
 ``get_object()``: `load_for_read`, `readable_queryset` (of a GET or HEAD)
 and `validate_write` ask it, so a requester refused there gets a 403
-whether the item exists or not. A
-requirement's ``access.AnyOf`` is DRF's ``|`` of the object checks only
-beyond that: DRF's ``OR`` also asks each option's request check beside its
-object check, which the object check here does not. A DRF view keeps its
-own checks (``check_permissions``, ``check_object_permissions``).
+whether the item exists or not. Beyond that, a requirement's
+``access.AnyOf`` is DRF's ``|``: an option allows an object only when each
+of its entries allows the request (``has_permission``) and then the object,
+as DRF's ``OR.has_object_permission`` asks them (`_object_permitted`; and
+the object checks of `readable_content` and `readable_queryset`). A DRF
+view keeps its own checks (``check_permissions``,
+``check_object_permissions``), and its list and readability ask an
+option's object checks alone.
 """
 
 import copy
@@ -52,6 +55,7 @@ from scrud_django.core.requirements import (
     asks_grants_itself,
     grants_allow,
     is_hook,
+    option_allows_request,
     readable_by_grants,
     readable_by_object_checks,
     require_grants,
@@ -117,24 +121,34 @@ def readable_content(read, content, requirement, *, grants=True, permission=None
     detail route): the grants (`readable_by_grants`, ``http.GET`` on each
     leaf's type; with `permission`, `grants_allow` for it instead; not asked
     without `grants`) **and** the object checks a list asks
-    (`readable_by_object_checks`), with ``scrud_workflow`` refusing
-    (`_not_checking_write`): it never makes an object readable.
+    (`readable_by_object_checks`, each ``AnyOf`` option asking its request
+    checks of `read` first, as DRF's ``|`` answers a GET), with
+    ``scrud_workflow`` refusing (`_not_checking_write`): it never makes an
+    object readable.
 
     A `requirement` that asks no grants (empty, or hooks only) is
     ``ImproperlyConfigured`` (`require_grants`): it would read as readable
     by anyone."""
     require_grants(requirement, "readable_content")
     return _readable_content(
-        read, content, requirement, grants=grants, permission=permission
+        read,
+        content,
+        requirement,
+        grants=grants,
+        permission=permission,
+        request_checks=True,
     )
 
 
-def _readable_content(read, content, requirement, *, grants=True, permission=None):
+def _readable_content(
+    read, content, requirement, *, grants=True, permission=None, request_checks=False
+):
     """`readable_content` without its guard: the DRF views'
     (``ListValidatorsMixin.object_readable``), whose requirement is empty or hooks only for a view
     with no ``IsAuthorized``, which then reads as readable, as scoped-rbac's
     ``is_readable`` has it (a refusal by its other permissions stays a
-    403)."""
+    403). Their object checks ask no request check (`request_checks`, the
+    facade's)."""
     with _not_checking_write():
         if grants:
             if permission is None:
@@ -143,7 +157,9 @@ def _readable_content(read, content, requirement, *, grants=True, permission=Non
                 allowed = grants_allow(requirement, read, content, permission)
             if not allowed:
                 return False
-        return readable_by_object_checks(requirement, read, content)
+        return readable_by_object_checks(
+            requirement, read, content, request_checks=request_checks
+        )
 
 
 def object_readable(request, resource_type, obj: Resource, requirement) -> bool:
@@ -184,19 +200,32 @@ def check_grants_in_each_context(request, content, requirement, permission) -> N
         raise access.AccessDenied()
 
 
-def _object_permitted(request, resource_type, content, requirement):
+def _object_permitted(request, resource_type, content, requirement, *, body=None):
     """Whether `requirement` allows `request` on the resource's `content`:
-    every entry's ``has_object_permission`` (any option of an ``AnyOf``),
-    then the grants in each context (`check_grants_in_each_context`). A
-    leaf's ``PermissionDenied`` refuses; its ``Http404`` is raised."""
+    every entry's ``has_object_permission``, an ``AnyOf`` allowing through
+    any option each of whose entries allows the request first
+    (``has_permission``, `option_allows_request`), as DRF's ``|`` asks
+    them; then the grants in each context (`check_grants_in_each_context`).
+    An option's request check reads `body` (the parsed body of a PUT or
+    POST, as the route's request check, `check_request`, reads it); without
+    one, a PUT or POST is checked as ``Allow`` checks it (`_options_copy`),
+    as `load_for_read` checks it given none. A leaf's ``PermissionDenied``
+    refuses; its ``Http404`` is raised, as is any other access error of a
+    request check (a body naming a reserved context, 400)."""
     permission = Permission(
         access.action_iri_for(request.method), resource_type.type_uri
     )
+    if body is None and request.method in BODY_METHODS:
+        asked = _options_copy(request, request.method)
+    else:
+        asked = request
 
     def meets(entry):
         if isinstance(entry, access.AnyOf):
             return any(
-                all(meets(e) for e in _entries(option)) for option in entry.options
+                option_allows_request(option, asked, body)
+                and all(meets(e) for e in _entries(option))
+                for option in entry.options
             )
         return entry.has_object_permission(request, content)
 
@@ -209,18 +238,27 @@ def _object_permitted(request, resource_type, content, requirement):
     return True
 
 
-def check_object(request, resource_type, obj: Resource, requirement, *, covered):
+def check_object(
+    request,
+    resource_type,
+    obj: Resource,
+    requirement,
+    *,
+    covered,
+    body: Mapping | None = None,
+):
     """The object check of `request` on `obj`, as the detail route asks it
     (``check_object_permissions``): run with ``scrud_workflow`` allowing when
-    the workflow check covers the write (`covered`, `authorizing_write`). A
-    refusal of an object `object_readable` refuses is ``Http404``; of a
-    readable one, ``access.AccessDenied``. A `requirement` that asks no
-    grants (empty, or hooks only) is ``ImproperlyConfigured``
-    (`require_grants`): it would allow anyone."""
+    the workflow check covers the write (`covered`, `authorizing_write`). An
+    ``AnyOf`` option asks its request checks first, with `body`
+    (`_object_permitted`). A refusal of an object `object_readable` refuses
+    is ``Http404``; of a readable one, ``access.AccessDenied``. A
+    `requirement` that asks no grants (empty, or hooks only) is
+    ``ImproperlyConfigured`` (`require_grants`): it would allow anyone."""
     require_grants(requirement, "check_object")
     with authorizing_write(request, covered=covered):
         permitted = _object_permitted(
-            request, resource_type, content_of(obj), requirement
+            request, resource_type, content_of(obj), requirement, body=body
         )
     if permitted:
         return
@@ -293,6 +331,7 @@ def load_for_read(
         obj,
         requirement,
         covered=method == COVERED_ITEM_METHOD,
+        body=body,
     )
     return obj
 

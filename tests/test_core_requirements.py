@@ -22,7 +22,7 @@ from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.permissions import IsAuthorized
 
-from scrud_django import filters
+from scrud_django import collection_type_uri_for, filters
 from scrud_django.models import Resource
 from scrud_django.permissions import (
     _not_checking_write,
@@ -357,3 +357,209 @@ def test_not_permission_is_not_neutral():
         view = resource_view(~IsAuthorized, request=drf)
         with checks_read_content(view), filters.as_detail_read(view, drf) as read:
             assert filters.readable_by_grants(view, read, content) is readable
+
+
+OTHER = "tests://Other"
+
+
+class RequestRefusingIsAuthorized(IsAuthorized):
+    """An ``IsAuthorized`` whose request check refuses every request; its
+    object check is ``IsAuthorized``'s."""
+
+    def has_permission(self, request, view):
+        return False
+
+
+class LackedIsAuthorized(IsAuthorized):
+    """An ``IsAuthorized`` as a grant the requester lacks answers: it refuses
+    the request and every object."""
+
+    def has_permission(self, request, view):
+        return False
+
+    def has_object_permission(self, request, view, obj):
+        return False
+
+
+class ObjectRefusingIsAuthorized(IsAuthorized):
+    """An ``IsAuthorized`` whose object check refuses every object; its
+    request check is ``IsAuthorized``'s."""
+
+    def has_object_permission(self, request, view, obj):
+        return False
+
+
+def request_refusing_leaf(type_iri):
+    """A trusted leaf (a `GrantsLeaf` subclass) refusing every request, its
+    object check the grants'."""
+    from scrud_django.core.requirements import GrantsLeaf
+
+    class RequestRefusingLeaf(GrantsLeaf):
+        def has_permission(self, request, body):
+            return False
+
+    return RequestRefusingLeaf(type_iri)
+
+
+def object_refusing_leaf(type_iri):
+    """A trusted leaf (a `GrantsLeaf` subclass) refusing every object, its
+    request check the grants'."""
+    from scrud_django.core.requirements import GrantsLeaf
+
+    class ObjectRefusingLeaf(GrantsLeaf):
+        overrides_object_checks = True
+
+        def has_object_permission(self, request, obj):
+            return False
+
+    return ObjectRefusingLeaf(type_iri)
+
+
+def drf_detail_status(permission, user, pk, method="GET"):
+    """The status of a `method` of json-ld's detail route `pk` on a view
+    whose permission is `permission` (DRF's composition), for `user`."""
+    from rest_framework.test import force_authenticate
+
+    from scrud_django.views import ResourceViewSet
+
+    class Composed(ResourceViewSet):
+        permission_classes = [permission]
+
+    factory = getattr(APIRequestFactory(), method.lower())
+    request = factory("/", HTTP_ACCEPT="application/json")
+    force_authenticate(request, user)
+    detail = Composed.as_view(
+        {"get": "retrieve", "delete": "destroy"}, resource_type_name="json-ld"
+    )
+    return detail(request, slug=pk).status_code
+
+
+def core_status(call):
+    """The status the facade's refusal by `call` maps to (``None`` for
+    none)."""
+    from django.http import Http404
+
+    try:
+        call()
+    except Http404:
+        return 404
+    except access.AccessDenied:
+        return 403
+    return None
+
+
+@pytest.mark.django_db
+@test_context
+def test_anyof_option_refused_at_request_level_is_not_satisfied():
+    """An ``AnyOf`` option is satisfied only when each of its entries allows
+    the request (``has_permission``) and then the object, as DRF's ``|``
+    asks ``op.has_permission`` before ``op.has_object_permission``: an
+    option whose request check refuses does not allow the object, whatever
+    its object check says. The first option here refuses the request and
+    allows the object; the second is a grant the reader lacks: the facade
+    refuses the object (`check_object`) and its route (`load_for_read`)
+    with the status DRF's ``|`` of the equivalent ``IsAuthorized``
+    subclasses gives. With a second option allowing the request and
+    refusing the object, both refuse too, and the facade's list leaves the
+    object out."""
+    from scrud_django.core import resources
+    from scrud_django.core.requirements import GrantsLeaf, meets_object_checks
+    from scrud_django.registration import get_resource_type_for
+
+    stored = store({"rbac_context": "a"})
+    rtype = get_resource_type_for("json-ld")
+    reads = {"http.GET": [JSON_LD, collection_type_uri_for(JSON_LD)]}
+    reader = user_with((reads, "a"))
+    request = get_request(reader)
+    first = request_refusing_leaf(JSON_LD)
+    # The first option's object check alone allows the object.
+    assert first.has_object_permission(request, content_of(stored))
+
+    lacked = [access.AnyOf([[first], [GrantsLeaf(OTHER)]])]
+    checked = core_status(
+        lambda: resources.check_object(request, rtype, stored, lacked, covered=False)
+    )
+    assert checked in (403, 404)
+    drf = drf_detail_status(
+        RequestRefusingIsAuthorized | LackedIsAuthorized, reader, stored.pk
+    )
+    assert drf == 403
+    assert checked == drf
+    routed = core_status(
+        lambda: resources.load_for_read(
+            request, rtype, stored.pk, requirement=lacked, method="GET"
+        )
+    )
+    assert routed == drf
+
+    refusing = [access.AnyOf([[first], [object_refusing_leaf(JSON_LD)]])]
+    assert core_status(
+        lambda: resources.check_object(request, rtype, stored, refusing, covered=False)
+    ) in (403, 404)
+    assert core_status(
+        lambda: resources.load_for_read(
+            request, rtype, stored.pk, requirement=refusing, method="GET"
+        )
+    ) in (403, 404)
+    assert drf_detail_status(
+        RequestRefusingIsAuthorized | ObjectRefusingIsAuthorized, reader, stored.pk
+    ) in (403, 404)
+    assert not resources.readable_queryset(request, rtype, refusing).exists()
+    # DRF's own path is unchanged: its object checks ask no request check.
+    assert meets_object_checks(refusing, request, content_of(stored))
+    # An option allowing both still allows the object.
+    allowing = [access.AnyOf([[first], [GrantsLeaf(JSON_LD)]])]
+    resources.check_object(request, rtype, stored, allowing, covered=False)
+    assert (
+        resources.load_for_read(
+            request, rtype, stored.pk, requirement=allowing, method="GET"
+        )
+        == stored
+    )
+    assert list(
+        resources.readable_queryset(request, rtype, allowing).values_list(
+            "pk", flat=True
+        )
+    ) == [stored.pk]
+
+
+@pytest.mark.django_db
+@test_context
+def test_anyof_option_request_check_of_a_put_reads_its_body():
+    """An ``AnyOf`` option's request check of a PUT reads the body
+    `load_for_read` (or `check_object`) is given, as DRF's ``|`` reads
+    ``request.data``: a writer in "a" may PUT a body writing "a", not one
+    writing "b"; without a body it is the check ``Allow`` asks, whether the
+    writer may PUT in some context."""
+    from scrud_django.core import resources
+    from scrud_django.core.requirements import GrantsLeaf
+    from scrud_django.registration import get_resource_type_for
+
+    stored = store({"rbac_context": "a"})
+    rtype = get_resource_type_for("json-ld")
+    writer = users()["writer-a"]
+    request = RequestFactory().put("/")
+    request.user = writer
+    requirement = [access.AnyOf([[GrantsLeaf(OTHER)], [GrantsLeaf(JSON_LD)]])]
+
+    def check(**kwargs):
+        resources.check_object(
+            request, rtype, stored, requirement, covered=True, **kwargs
+        )
+
+    check(body={"rbac_context": "a"})
+    check()
+    with pytest.raises(access.AccessDenied):
+        check(body={"rbac_context": "b"})
+    for body in ({"rbac_context": "a"}, None):
+        assert (
+            resources.load_for_read(
+                request,
+                rtype,
+                stored.pk,
+                requirement=requirement,
+                method="PUT",
+                body=body,
+            )
+            == stored
+        )

@@ -20,7 +20,12 @@ from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac import access
 
 from scrud_django.core.authz import content_of, resource_contexts
-from scrud_django.core.requirements import GrantsLeaf, Leaf, Requirement
+from scrud_django.core.requirements import (
+    GrantsLeaf,
+    Leaf,
+    Requirement,
+    register_stored_contexts_leaf,
+)
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 
 
@@ -210,6 +215,7 @@ def has_hooks(options: TypeOptions) -> bool:
     return bool(options.checks or options.object_checks)
 
 
+@register_stored_contexts_leaf
 class HookLeaf(Leaf):
     """The `Leaf` of a type's ``checks`` and ``object_checks`` (`options`),
     each called with `resource_type`:

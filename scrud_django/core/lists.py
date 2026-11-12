@@ -7,7 +7,11 @@ routes answer them (`scrud_django.filters.ResourceRbacFilter`,
 
 A requirement's leaves must read a resource's contexts as they are stored
 (their ``ResourceContext`` rows, which the SQL filter and the removal stamps
-read), as `scrud_django.core.requirements.GrantsLeaf` does: a front end whose
+read), as `scrud_django.core.requirements.GrantsLeaf` does:
+`readable_queryset` and `list_last_modified` refuse (``ImproperlyConfigured``,
+`scrud_django.core.requirements.require_stored_contexts`) a requirement with
+a leaf that may read others (a ``contexts_for`` of its own, or a class not
+registered with ``register_stored_contexts_leaf``). A front end whose
 permissions read other contexts keeps a path of its own, as the DRF views
 do for an ``IsAuthorized`` that overrides ``contexts_for``.
 """
@@ -55,6 +59,7 @@ from scrud_django.core.requirements import (
     object_check_requirement,
     readable_removal,
     require_grants,
+    require_stored_contexts,
 )
 from scrud_django.exceptions import QueryParameterError
 from scrud_django.models import Resource, ResourceContext
@@ -198,13 +203,19 @@ def readable_queryset(
     write's own request check governs it (`validate_write`'s), as DRF
     evaluates a conditional create's list validators without the list
     grant; its list is that of its GET copy (`as_get`), filtered by the
-    item grants. A `requirement` that asks no grants is
-    ``ImproperlyConfigured`` (`scrud_django.core.requirements
-    .require_grants`) whatever the method."""
+    item grants. A `requirement` that asks no grants
+    (`scrud_django.core.requirements.require_grants`), or with a leaf that
+    may read contexts other than a resource's stored ones
+    (`scrud_django.core.requirements.require_stored_contexts`), is
+    ``ImproperlyConfigured`` whatever the method or the requester.
+
+    The object checks ask, for each ``AnyOf`` option, its request checks
+    first (``request_checks``), as DRF's ``|`` answers the detail route."""
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import check_request
 
     require_grants(requirement, "readable_queryset")
+    require_stored_contexts(requirement, "readable_queryset")
     if request.method in ("GET", "HEAD"):
         check_request(request, resource_type, requirement, list_route=True)
     else:
@@ -216,7 +227,9 @@ def readable_queryset(
     queryset = filter_readable_resources(queryset, request, permission)
     narrowing = object_check_requirement(requirement)
     if narrowing is not None:
-        queryset = filter_by_object_checks(queryset, request, narrowing, content_of)
+        queryset = filter_by_object_checks(
+            queryset, request, narrowing, content_of, request_checks=True
+        )
     return queryset
 
 
@@ -286,7 +299,10 @@ def list_last_modified(request, resource_type, queryset, requirement):
     (`scrud_django.core.requirements.readable_removal` of `requirement`, read
     on the queryset's database), whichever is later; ``None`` for neither.
     The leaves must read a resource's contexts as stored (the module's
-    note): the stamps are of those contexts."""
+    note): the stamps are of those contexts. A `requirement` with a leaf
+    that may read others is ``ImproperlyConfigured``
+    (`scrud_django.core.requirements.require_stored_contexts`)."""
+    require_stored_contexts(requirement, "list_last_modified")
     newest = queryset.aggregate(newest=Max("modified_at"))["newest"]
     removed = readable_removal(request, requirement, resource_type, queryset.db)
     return latest(newest, removed)

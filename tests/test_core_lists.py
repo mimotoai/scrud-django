@@ -299,7 +299,7 @@ def test_readable_queryset_asks_the_requirements_request_checks():
         .exists()
     )
     with pytest.raises(access.AccessDenied):
-        readable_queryset(request, rtype, [GrantsLeaf(JSON_LD), RefusingRequests()])
+        readable_queryset(request, rtype, [GrantsLeaf(JSON_LD), RefusingGrantsLeaf()])
 
 
 @pytest.mark.django_db
@@ -344,3 +344,86 @@ class RefusingRequests:
 
     def has_context_permission(self, request, obj, context):
         return True
+
+
+class RefusingGrantsLeaf(GrantsLeaf):
+    """A trusted leaf (a `GrantsLeaf` subclass overriding neither
+    ``has_context_permission`` nor ``contexts_for``) whose request check
+    refuses every request."""
+
+    def __init__(self, type_iri=JSON_LD):
+        super().__init__(type_iri)
+
+    def has_permission(self, request, body):
+        return False
+
+
+class OwnContexts(GrantsLeaf):
+    """A `GrantsLeaf` reading contexts of its own, not a resource's stored
+    ones."""
+
+    def contexts_for(self, obj):
+        return ["a"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_readable_queryset_refuses_a_leaf_with_its_own_contexts():
+    """The SQL filter and the removal stamps read a resource's stored
+    contexts (its ``ResourceContext`` rows): `readable_queryset` and
+    `list_last_modified` refuse (``ImproperlyConfigured``), whatever the
+    method or the requester, a requirement with a leaf that may read others,
+    an ``AnyOf`` option's included: a `GrantsLeaf` subclass overriding
+    ``contexts_for``, a leaf given one of its own, a leaf of a class that is
+    neither a `GrantsLeaf`, a type's hooks (`HookLeaf`) nor a DRF view's
+    (`ViewLeaf`), and a `ViewLeaf` whose permission overrides
+    ``contexts_for``. A subclass keeping its base's ``contexts_for`` lists."""
+    from django.core.exceptions import ImproperlyConfigured
+
+    from scrud_django.core.lists import list_last_modified, readable_queryset
+    from scrud_django.core.types import HookLeaf, TypeOptions
+    from scrud_django.drf_requirements import requirement_of
+    from scrud_django.views import ResourceViewSet
+
+    from .urls import TeamIsAuthorized
+
+    in_a = profile("in-a", "a")
+    rtype = get_resource_type_for("partner-profiles")
+    given = GrantsLeaf(PP)
+    given.contexts_for = lambda obj: ["a"]
+    team_view = ResourceViewSet(resource_type_name="partner-profiles")
+    team_view.permission_classes = [TeamIsAuthorized]
+    team_view.action = "list"
+    plain_view = ResourceViewSet(resource_type_name="partner-profiles")
+    plain_view.action = "list"
+    custom = {
+        "subclass": [OwnContexts(PP)],
+        "instance": [given],
+        "other class": [GrantsLeaf(PP), RefusingRequests()],
+        "AnyOf option": [access.AnyOf([[GrantsLeaf(PP)], [OwnContexts(PP)]])],
+        "view leaf": requirement_of(team_view),
+    }
+    queryset = Resource.objects.filter(resource_type=rtype)
+    superuser = UserFactory(is_staff=True, is_superuser=True)
+    for user in (superuser, user_with((PP_READER, "a")), AnonymousUser()):
+        for method in ("GET", "HEAD", "POST"):
+            request = request_by(method, user)
+            plain_view.request = team_view.request = request
+            for requirement in custom.values():
+                with pytest.raises(ImproperlyConfigured, match="contexts"):
+                    readable_queryset(request, rtype, requirement)
+                with pytest.raises(ImproperlyConfigured, match="contexts"):
+                    list_last_modified(request, rtype, queryset, requirement)
+    request = request_by("GET", user_with((PP_READER, "a")))
+    plain_view.request = request
+    hooks = HookLeaf(rtype, TypeOptions())
+    for requirement in (
+        [RefusingLeaf(PP, "elsewhere"), hooks],
+        [access.AnyOf([[GrantsLeaf(PP)], [RefusingLeaf(PP, "x")]])],
+        requirement_of(plain_view),
+    ):
+        listed = readable_queryset(request, rtype, requirement)
+        assert list(listed.values_list("pk", flat=True)) == [in_a.pk]
+        assert list_last_modified(request, rtype, listed, requirement) == (
+            in_a.modified_at
+        )

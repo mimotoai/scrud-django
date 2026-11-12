@@ -1193,18 +1193,6 @@ method, as step 1 of `allowed_methods` does) before its lookup. Test: in
 user granted nothing on the type; assert 200 with `Allow: OPTIONS`, not 404,
 through the ninja route once it exists (the DRF route passes today).
 
-<a id="core-anyof-object-check-only"></a>
-## core-anyof-object-check-only: the core treats an `AnyOf` as an object check only
-
-For a DRF `|` of `IsAuthorized` subclasses, the core's neutral requirement
-(`AnyOf`) is satisfied through any option's object check, but DRF's `|` also
-asks each option's request check first. The two answer alike on the
-permissions in the suite (`tests/test_core_requirements.py`); an option whose
-request check refuses and whose object check allows would differ. Test: in
-`tests/test_core_requirements.py`, compose an option that refuses at the
-request level and allows on the object with one that allows both, and compare
-the core's answer with DRF's `|`.
-
 <a id="core-method-sets-hard-coded"></a>
 ## core-method-sets-hard-coded: `ITEM_METHODS` and `LIST_METHODS` are fixed
 
@@ -1214,19 +1202,6 @@ which serves GET and HEAD only. Ninja phase 3 should take the methods a route
 serves as an argument. Test: in `tests/test_core_resources.py`, call
 `allowed_methods` for a computed type's item as a user granted every method;
 assert only GET, HEAD and OPTIONS.
-
-<a id="core-readable-queryset-stored-contexts"></a>
-## core-readable-queryset-stored-contexts: `readable_queryset` assumes leaves read stored contexts
-
-`core.lists.readable_queryset` and `list_last_modified` rely on a documented,
-unenforced precondition: no leaf of the requirement has a custom
-`contexts_for`, so every leaf reads a resource's stored contexts (the
-`ResourceContext` rows). A requirement with one would be filtered by the rows
-and not by what its `contexts_for` says. Add a guard (an error or the per-object
-path) before the ninja front end wires it up. Test: in
-`tests/test_core_lists.py`, build a requirement whose leaf overrides
-`contexts_for` and call `readable_queryset`; assert it raises or agrees with
-the detail route, where today it filters by the rows.
 
 <a id="core-options-copy-entry"></a>
 ## core-options-copy-entry: the ninja front end must refuse scrudful's OPTIONS copy at entry

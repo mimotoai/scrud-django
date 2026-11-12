@@ -429,8 +429,19 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   names and the resource written (none for a create), and the save that
   uses it consumes it, whether it succeeds or fails, so a grant
   conditioned on `scrud_workflow` allows neither a second save on the
-  request nor a save of another resource. It is the base for other front
-  ends.
+  request nor a save of another resource. An `AnyOf` option of the
+  facade's (DRF's `|`) allows an object only when each of its entries
+  allows the request (`has_permission`) and then the object, as DRF's `|`
+  asks them (`check_object`, and the object checks of `readable_content`
+  and `readable_queryset`; the DRF views' own are unchanged).
+  `readable_queryset` and `list_last_modified`, which filter by a
+  resource's stored contexts, raise `ImproperlyConfigured` for a
+  requirement with a leaf that may read others: one whose `contexts_for`
+  is not its class's (`GrantsLeaf`, a type's hooks, the DRF `ViewLeaf`
+  whose permission keeps scoped-rbac's), or of any other class unless
+  registered with
+  `scrud_django.core.requirements.register_stored_contexts_leaf`. It is
+  the base for other front ends.
 * Per-type hooks, honoured by every front end, on `json_resource_type`
   (`checks=`, `object_checks=`, `content_filter=`) and
   `computed_resource_type` (`compute=`). They can only refuse what the grants

@@ -56,6 +56,13 @@ the grants: any other leaf but a type's hooks (`HookLeaf`, which count as
 asking none and get none asked beside them) gets them asked beside it and
 counts as asking none; register another leaf class, or an overriding
 subclass, with `core.requirements.register_grant_asking_leaf`.
+`readable_queryset` and `list_last_modified` filter by a resource's stored
+contexts, so they refuse (`ImproperlyConfigured`) a leaf that may read
+others (a `contexts_for` of its own, or a class not registered with
+`core.requirements.register_stored_contexts_leaf`). The facade's `AnyOf`
+options ask their request checks before their object checks, as DRF's `|`
+does; the DRF views' list and readability (`meets_object_checks` without
+`request_checks`) keep asking object checks alone.
 Put new domain logic in `core`, not in a view; per-type hooks are
 `core.types.TypeOptions`.
 

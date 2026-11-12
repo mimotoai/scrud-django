@@ -15,11 +15,13 @@ from rest_framework.exceptions import NotAuthenticated, NotFound, PermissionDeni
 from rest_framework.permissions import AND, NOT, OR
 from rest_framework.request import clone_request
 from scoped_rbac import access
-from scoped_rbac.permissions import IsAuthorized
+from scoped_rbac.permissions import IsAuthorized, custom_contexts_for
 
+from scrud_django.core.authz import resource_contexts
 from scrud_django.core.requirements import (
     _entries,
     register_grant_asking_leaf,
+    register_stored_contexts_leaf,
     requirement_leaves,
 )
 from scrud_django.core.types import HookLeaf
@@ -105,6 +107,18 @@ def as_detail_read(view, request):
             view.request = previous
 
 
+def _permission_reads_stored_contexts(leaf):
+    """Whether the permission of the `ViewLeaf` `leaf` reads a resource's
+    stored contexts: its class keeps scoped-rbac's ``contexts_for``
+    (``custom_contexts_for``), and the instance was given none but the
+    content's (`resource_contexts`, as `reading_content` gives it)."""
+    permission = leaf.permission
+    if custom_contexts_for(permission) is not None:
+        return False
+    given = getattr(permission, "__dict__", {}).get("contexts_for")
+    return given is None or given is resource_contexts
+
+
 @register_grant_asking_leaf
 class ViewLeaf:
     """The `Leaf` of the ``IsAuthorized`` `permission` of DRF view `view`:
@@ -185,6 +199,11 @@ class ViewLeaf:
 
     def has_context_permission(self, request, obj, context):
         return self._leaf().has_context_permission(request, self.view, obj, context)
+
+
+# Its contexts are its permission's: stored ones only while the permission
+# keeps them.
+register_stored_contexts_leaf(ViewLeaf, _permission_reads_stored_contexts)
 
 
 def type_hook_leaf(view):
