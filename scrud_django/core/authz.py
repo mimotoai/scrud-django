@@ -43,6 +43,22 @@ _WRITE = object()
 _transition = ContextVar("scrud_django_transition", default=_OUTSIDE)
 
 
+# True while the workflow check asks the view's permissions about a context:
+# a condition there reads the body with that context as its rbac_context
+# whatever contexts the body names (`with_context`), the contexts an update
+# moves the resource out of included (`condition_resource`).
+_every_context = ContextVar("scrud_django_every_context", default=False)
+
+
+@contextmanager
+def _reading_every_context():
+    token = _every_context.set(True)
+    try:
+        yield
+    finally:
+        _every_context.reset(token)
+
+
 # The malformed ``authorized_transitions`` values already logged (their
 # ``repr``), most recent last, at most `_MALFORMED_REPORTED_MAX` of them: each
 # is logged once per process, not on every evaluation (a list evaluates a

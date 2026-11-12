@@ -18,7 +18,6 @@ stored (or the body as sent).
 """
 
 from contextlib import contextmanager
-from contextvars import ContextVar
 
 from rest_framework.permissions import AND, NOT, OR
 from scoped_rbac.permissions import IsAuthorized, custom_contexts_for
@@ -32,8 +31,10 @@ from scrud_django.core.authz import (  # noqa: F401
     _WRITE,
     _checking_transition,
     _checking_write,
+    _every_context,
     _mark_workflow_authorized,
     _not_checking_write,
+    _reading_every_context,
     _report_malformed,
     _transition,
     _transition_state,
@@ -49,12 +50,6 @@ from scrud_django.core.authz import (  # noqa: F401
     with_context,
 )
 
-# True while the workflow check asks the view's permissions about a context:
-# a condition there reads the body with that context as its rbac_context
-# whatever contexts the body names (`with_context`), the contexts an update
-# moves the resource out of included (`condition_resource`).
-_every_context = ContextVar("scrud_django_every_context", default=False)
-
 
 def reads_each_context(leaf):
     """Whether the ``IsAuthorized`` `leaf` asks the grants reading each
@@ -63,15 +58,6 @@ def reads_each_context(leaf):
     ``has_context_permission``). One with a ``has_context_permission`` of its
     own does not: the scrud views then ask the grants so beside it."""
     return getattr(vars(leaf).get("has_context_permission"), "_scrud_in_context", False)
-
-
-@contextmanager
-def _reading_every_context():
-    token = _every_context.set(True)
-    try:
-        yield
-    finally:
-        _every_context.reset(token)
 
 
 def _reads_in_context(leaf):

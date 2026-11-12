@@ -6,14 +6,12 @@ them in SQL. `ResourceContentFilter` filters a list on query parameters.
 """
 
 import re
-from contextlib import contextmanager
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.db.models import (
     BooleanField,
     Case,
     Exists,
-    Max,
     OuterRef,
     Q,
     Value,
@@ -28,7 +26,6 @@ from rest_framework.exceptions import (
     ValidationError,
 )
 from rest_framework.filters import BaseFilterBackend
-from rest_framework.request import clone_request
 from rest_framework.settings import api_settings
 from scoped_rbac import access
 from scoped_rbac.conf import conditional_list_max_rows
@@ -42,7 +39,22 @@ from scoped_rbac.permissions import (
 from scoped_rbac.policy import Permission
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
-from scrud_django.models import Resource, ResourceContext, ResourceRemoval
+from scrud_django.core import requirements as core
+from scrud_django.core.requirements import (  # noqa: F401  (re-exported)
+    CANDIDATE_CHUNK_SIZE,
+    _plainly_reserved,
+    _usable,
+)
+from scrud_django.drf_requirements import (  # noqa: F401  (re-exported)
+    NotNeutral,
+    as_detail_read,
+    as_detail_route,
+    leaves_of,
+    overrides_object_checks,
+    permissions_of,
+    requirement_of,
+)
+from scrud_django.models import Resource, ResourceContext
 from scrud_django.permissions import (
     checks_read_content,
     condition_resource,
@@ -61,10 +73,6 @@ REFUSALS = (
     DjangoPermissionDenied,
 )
 
-# Rows fetched per chunk while conditional candidates are evaluated one by one,
-# as scoped-rbac's ``access._CANDIDATE_CHUNK_SIZE``.
-CANDIDATE_CHUNK_SIZE = 2000
-
 
 def _rows(*conditions, **filters):
     """``Exists`` of a `ResourceContext` row of the outer resource matching
@@ -72,21 +80,6 @@ def _rows(*conditions, **filters):
     return Exists(
         ResourceContext.objects.filter(*conditions, resource=OuterRef("pk"), **filters)
     )
-
-
-def _plainly_reserved():
-    """Contexts reserved in their plain form (``__``-prefixed, or ``*``), the
-    form SQL can match, as ``scoped_rbac.access.exclude_reserved`` matches
-    them. A context reserved only once normalised (e.g. ``"\\u200b__x"``) is
-    matched by `access.is_reserved_context` in Python only; the API refuses to
-    store one."""
-    return Q(rbac_context__startswith="__") | Q(rbac_context="*")
-
-
-def _usable(contexts):
-    """`contexts` (a policy's, from ``list_scope``) without reserved ones: an
-    object's reserved context grants nothing (``access.usable_contexts``)."""
-    return {c for c in contexts if not access.is_reserved_context(c)}
 
 
 def _not_stored_in_reserved_context(queryset):
@@ -271,17 +264,6 @@ def filter_readable_resources_per_object(queryset, request, permission, contexts
     return queryset.filter(pk__in=allowed_pks)
 
 
-def overrides_object_checks(permission):
-    """Whether `permission` (an ``IsAuthorized``) overrides
-    ``has_object_permission`` or ``has_context_permission``: its object check
-    may then refuse what the grants allow, which the SQL filter cannot see."""
-    cls = type(permission)
-    return (
-        cls.has_object_permission is not IsAuthorized.has_object_permission
-        or cls.has_context_permission is not IsAuthorized.has_context_permission
-    )
-
-
 def _requirement_leaves(requirement):
     for entry in requirement:
         if isinstance(entry, access.AnyOf):
@@ -301,7 +283,19 @@ def object_check_requirement(view):
     ``has_context_permission`` (`overrides_object_checks`); else ``None``,
     and the list is decided by the grants (and ``contexts_for``) alone. A
     view without ``rbac_requirement`` requires each of its ``IsAuthorized``
-    permissions."""
+    permissions. `scrud_django.core.requirements.object_check_requirement`
+    of its requirement (`requirement_of`), as the view's permissions."""
+    try:
+        requirement = requirement_of(view)
+    except NotNeutral:
+        return _view_object_check_requirement(view)
+    narrowing = core.object_check_requirement(requirement)
+    return None if narrowing is None else permissions_of(narrowing)
+
+
+def _view_object_check_requirement(view):
+    """`object_check_requirement` of a view with no neutral requirement
+    (`NotNeutral`)."""
     rbac_requirement = getattr(view, "rbac_requirement", None)
     if callable(rbac_requirement):
         requirement = list(rbac_requirement())
@@ -314,65 +308,14 @@ def object_check_requirement(view):
     return None
 
 
-@contextmanager
-def as_detail_route(view):
-    """`view` as its detail route has it while the block runs: its
-    ``action`` is ``"retrieve"``, so that ``resource_type_iri_for`` (and so
-    ``IsAuthorized``'s object check) names the item type, not the list type."""
-    missing = object()
-    previous = view.__dict__.get("action", missing)
-    view.action = "retrieve"
-    try:
-        yield view
-    finally:
-        if previous is missing:
-            del view.action
-        else:
-            view.action = previous
-
-
-@contextmanager
-def as_detail_read(view, request):
-    """`view` as a GET of its detail route has it while the block runs, for
-    asking whether an object is readable whatever the request's method: its
-    ``action`` is ``"retrieve"`` (`as_detail_route`) and its ``request`` a
-    copy of `request` whose method is GET (DRF's ``clone_request``), which the
-    block gets. The view's own ``request`` is restored when it ends."""
-    read = clone_request(request, "GET")
-    missing = object()
-    previous = view.__dict__.get("request", missing)
-    view.request = read
-    try:
-        with as_detail_route(view):
-            yield read
-    finally:
-        if previous is missing:
-            del view.request
-        else:
-            view.request = previous
-
-
 def meets_object_checks(requirement, request, view, check):
     """Whether every entry of `requirement` (`object_check_requirement`; any
     option of an ``access.AnyOf`` suffices) allows
     ``has_object_permission(request, view, check)``; one that raises a
-    refusal (`REFUSALS`) refuses `check` only."""
-
-    def meets(entry):
-        if isinstance(entry, access.AnyOf):
-            return any(
-                all(meets(e) for e in option)
-                if isinstance(option, (list, tuple))
-                else meets(option)
-                for option in entry.options
-            )
-        try:
-            return entry.has_object_permission(request, view, check)
-        except REFUSALS:
-            # Raised for this object, the detail route refuses it alone.
-            return False
-
-    return all(meets(entry) for entry in requirement)
+    refusal (`REFUSALS`) refuses `check` only: the neutral
+    `scrud_django.core.requirements.meets_object_checks` of the permissions
+    as `view`'s leaves (`scrud_django.drf_requirements.ViewLeaf`)."""
+    return core.meets_object_checks(leaves_of(requirement, view), request, check)
 
 
 def grants_allow(view, request, obj, permission):
@@ -383,7 +326,20 @@ def grants_allow(view, request, obj, permission):
     ``access.AnyOf`` alternatives included) for `permission`, except that
     each context is read with the object as it is in that context
     (`condition_resource`), as the object check reads it. Call it with the
-    view's permissions reading the content (`checks_read_content`)."""
+    view's permissions reading the content (`checks_read_content`). The
+    neutral `scrud_django.core.requirements.grants_allow` of its requirement
+    (`requirement_of`), except for a view with none (`NotNeutral`)."""
+    try:
+        requirement = requirement_of(view)
+    except NotNeutral:
+        return _view_grants_allow(view, request, obj, permission)
+    return core.grants_allow(requirement, request, obj, permission)
+
+
+def _view_grants_allow(view, request, obj, permission):
+    """`grants_allow` of a view with no neutral requirement (`NotNeutral`):
+    without a requirement (only ``~IsAuthorized``), any ``IsAuthorized``
+    reading the object allows it, as ``is_readable`` has it."""
 
     def reads(leaf):
         return may_act_in_context(request, permission, obj, leaf.contexts_for(obj))
@@ -417,13 +373,19 @@ def readable_by_object_checks(view, request, check):
     (`as_detail_read`), each ``IsAuthorized`` of it reading a resource's
     contexts from its content. True when the view has no such requirement
     (its grants decide alone). They can only refuse: the grants are asked
-    apart (``is_readable``)."""
+    apart (``is_readable``). The neutral
+    `scrud_django.core.requirements.readable_by_object_checks` of its
+    requirement (`requirement_of`), as a GET of the detail route builds it."""
     with as_detail_read(view, request) as read, checks_read_content(view):
-        requirement = object_check_requirement(view)
-        if requirement is None:
-            return True
-        reading_content(_requirement_leaves(requirement))
-        return meets_object_checks(requirement, read, view, check)
+        try:
+            requirement = requirement_of(view)
+        except NotNeutral:
+            requirement = _view_object_check_requirement(view)
+            if requirement is None:
+                return True
+            reading_content(_requirement_leaves(requirement))
+            return meets_object_checks(requirement, read, view, check)
+        return core.readable_by_object_checks(requirement, read, check)
 
 
 def filter_by_object_checks(queryset, request, view, requirement, object_for_checks):
@@ -439,28 +401,19 @@ def filter_by_object_checks(queryset, request, view, requirement, object_for_che
     `checks_read_content`). An object stored in a context reserved once
     normalised is left out (its detail route is a 404). Every object examined
     counts against ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``: past it,
-    ``access.ConditionalListTooLarge``."""
+    ``access.ConditionalListTooLarge``. The neutral
+    `scrud_django.core.requirements.filter_by_object_checks` of the
+    permissions as `view`'s leaves."""
 
     # Each permission reads a resource's contexts from the content
     # (`reading_content`), whatever the view's get_permissions() built, and
     # so do those an object check asks view.get_permissions() for, as on the
     # detail route (`checks_read_content`).
     reading_content(_requirement_leaves(requirement))
-    max_rows = conditional_list_max_rows()
-    allowed_pks = []
-    bounded = queryset.order_by()[: max_rows + 1]
     with as_detail_route(view), checks_read_content(view):
-        for count, obj in enumerate(
-            bounded.iterator(chunk_size=CANDIDATE_CHUNK_SIZE), start=1
-        ):
-            if count > max_rows:
-                raise access.ConditionalListTooLarge()
-            if access.stored_in_reserved_context(obj):
-                continue
-            check = object_for_checks(obj)
-            if meets_object_checks(requirement, request, view, check):
-                allowed_pks.append(obj.pk)
-    return queryset.filter(pk__in=allowed_pks)
+        return core.filter_by_object_checks(
+            queryset, request, leaves_of(requirement, view), object_for_checks
+        )
 
 
 def readable_removal(request, view, resource_type, using=None):
@@ -477,7 +430,9 @@ def readable_removal(request, view, resource_type, using=None):
     the stamped ones), or with one that overrides ``has_object_permission``
     or ``has_context_permission`` (`object_check_requirement`: it may refuse
     the resource that left), there is none. Read on database `using` (the
-    list's)."""
+    list's). The neutral `scrud_django.core.requirements.readable_removal`
+    of its requirement (`requirement_of`) once the view's filters and
+    ``contexts_for`` are its stamped contexts'."""
     backends = getattr(view, "filter_backends", ())
     if not any(
         isinstance(backend, type) and issubclass(backend, ResourceRbacFilter)
@@ -486,20 +441,15 @@ def readable_removal(request, view, resource_type, using=None):
         return None
     if access.non_default_contexts_for(RbacFilter.contexts_for(view)) is not None:
         return None
-    if object_check_requirement(view) is not None:
-        return None
-    stamps = ResourceRemoval.objects.filter(resource_type=resource_type)
-    if using is not None:
-        stamps = stamps.using(using)
-    user = access.request_user(request)
-    if user is None or not user.is_superuser:
-        permission = Permission("http.GET", view.resource_type_iri)
-        scope = policy_for(request).list_scope(permission, exclude=(SOME_CONTEXT,))
-        if scope.unrestricted:
-            stamps = stamps.exclude(_plainly_reserved())
-        else:
-            stamps = stamps.filter(rbac_context__in=_usable(scope.outright))
-    return stamps.aggregate(newest=Max("removed_at"))["newest"]
+    try:
+        requirement = requirement_of(view)
+    except NotNeutral:
+        if _view_object_check_requirement(view) is not None:
+            return None
+        requirement = []
+    return core.readable_removal(
+        request, requirement, resource_type, using, type_iri=view.resource_type_iri
+    )
 
 
 class ResourceRbacFilter(RbacFilter):
