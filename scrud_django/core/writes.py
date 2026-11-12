@@ -235,25 +235,34 @@ def validate_write(
     )
 
 
-def check_post_save(request, resource_type, obj: Resource, requirement) -> None:
+def check_post_save(
+    request,
+    resource_type,
+    obj: Resource,
+    requirement,
+    *,
+    type_iri: str | None = None,
+    content: Mapping | None = None,
+) -> None:
     """Deny (``access.AccessDenied``) unless the request's action (POST for a
-    create, PUT for an update) on `resource_type` is allowed in **every**
-    context the saved `obj` is in, for each leaf of `requirement` (``AnyOf``
-    alternatives included: each must allow). ``rbac_contexts`` is any-of for
-    reads: a write may land the resource only where the writer may write,
-    in each of those contexts.
+    create, PUT for an update) on the type `type_iri` (by default
+    `resource_type`'s ``type_uri``; a front end passes the type it names
+    the resource by) is allowed in **every** context the saved `obj` is in,
+    for each leaf of `requirement` (``AnyOf`` alternatives included: each
+    must allow). ``rbac_contexts`` is any-of for reads: a write may land the
+    resource only where the writer may write, in each of those contexts.
 
-    Each leaf is given the saved resource's content (`content_of`), as an
-    object check is: its ``has_object_permission`` must allow it (superusers
-    only for a resource in no usable context), and its
-    ``has_context_permission`` must allow it in each context its
+    Each leaf is given `content`, the saved resource as object checks get it
+    (by default its content, `content_of`): its ``has_object_permission``
+    must allow it (superusers only for a resource in no usable context), and
+    its ``has_context_permission`` must allow it in each context its
     ``contexts_for`` names; for a leaf that does not read each context as
     the resource is there (``reads_each_context``), the grants must too,
     each context read so (`may_act_in_context`)."""
-    check = content_of(obj)
-    permission = Permission(
-        access.action_iri_for(request.method), resource_type.type_uri
-    )
+    check = content_of(obj) if content is None else content
+    if type_iri is None:
+        type_iri = resource_type.type_uri
+    permission = Permission(access.action_iri_for(request.method), type_iri)
     for leaf in requirement_leaves(requirement):
         contexts = access.usable_contexts(leaf.contexts_for(check))
         allowed = leaf.has_object_permission(request, check) and all(
@@ -272,18 +281,40 @@ def check_post_save(request, resource_type, obj: Resource, requirement) -> None:
 
 
 def check_every_context_of_policy(
-    request, instance: Resource, requirement, *, covered: bool
+    request,
+    instance: Resource,
+    requirement,
+    *,
+    covered: bool,
+    type_iri: str | None = None,
+    check: Callable | None = None,
 ) -> None:
     """For a ``WorkflowPolicy`` `instance`, deny (``access.AccessDenied``)
     an update or delete unless the request's action is allowed in **every**
-    context the stored policy applies to (`check_post_save`, in
-    `authorizing_write` with `covered`): it governs each of them. The object
-    check is any-of; a policy written through the API has one context, but
-    one stored with a list (before 0.12.0, or server-side) has several."""
+    context the stored policy applies to: it governs each of them. The
+    object check is any-of; a policy written through the API has one
+    context, but one stored with a list (before 0.12.0, or server-side) has
+    several.
+
+    The check is `check` ``(request, instance) -> None``, by default
+    `check_post_save` of `requirement` naming the type `type_iri` (neither
+    is read when a `check` is given); either runs in `authorizing_write`
+    with `covered`."""
     if instance.resource_type.type_uri != WORKFLOW_POLICY_TYPE_URI:
         return
+    if check is None:
+
+        def check(request, instance):
+            check_post_save(
+                request,
+                instance.resource_type,
+                instance,
+                requirement,
+                type_iri=type_iri,
+            )
+
     with authorizing_write(request, covered=covered):
-        check_post_save(request, instance.resource_type, instance, requirement)
+        check(request, instance)
 
 
 def serialized_policy_save(save, using: str, *, lock=None):
@@ -325,13 +356,18 @@ def save_checked(
     covered: bool,
     queryset=None,
     serialize=None,
+    type_iri: str | None = None,
+    recheck: Callable | None = None,
 ) -> Resource:
     """Run `save` (which returns the saved resource, or ``None`` for
     `instance`) in a transaction on `using` and check the resource as stored
-    before it commits: a reserved context is a 400 and `check_post_save` (of
-    `requirement`, in `authorizing_write` with `covered`, ``scrud_workflow``
-    allowing only once the workflow check has authorized the write) a 403,
-    either rolling the write back. The request was authorized by the context
+    before it commits: a reserved context is a 400 and the post-save check a
+    403, either rolling the write back. The post-save check is `recheck`
+    ``(request, obj) -> None``, by default `check_post_save` of
+    `requirement` naming the type `type_iri` (neither is read when a
+    `recheck` is given); either runs in `authorizing_write` with `covered`,
+    ``scrud_workflow`` allowing only once the workflow check has authorized
+    the write. The request was authorized by the context
     its body names; this checks where the resource actually landed
     (scoped-rbac's ``SaveCheck``). `instance` is the resource an update
     replaces (``None`` for a create). Returns the saved resource as read
@@ -357,16 +393,21 @@ def save_checked(
         saved.append(instance if result is None else result)
         return result
 
-    def recheck(obj, _moved_to):
+    if recheck is None:
+
+        def recheck(request, obj):
+            check_post_save(request, resource_type, obj, requirement, type_iri=type_iri)
+
+    def recheck_saved(obj, _moved_to):
         with authorizing_write(request, covered=covered, authorized=True):
-            check_post_save(request, resource_type, obj, requirement)
+            recheck(request, obj)
 
     if queryset is None:
         queryset = Resource.objects.filter(resource_type=resource_type)
     check = access.SaveCheck(
         request,
         written_contexts=lambda obj: obj.rbac_contexts,
-        recheck=recheck,
+        recheck=recheck_saved,
         queryset=queryset,
     )
     run = recorded_save
@@ -453,15 +494,26 @@ def destroy(
     *,
     requirement,
     using: str,
+    # A DELETE is no write the workflow check covers: scrud_workflow refuses.
     covered: bool = False,
+    type_iri: str | None = None,
+    check: Callable | None = None,
 ) -> None:
     """Delete `instance` (read with its row locked inside the caller's
     transaction on `using`) with ``ResourceRegistration.delete_locked``,
     once a ``WorkflowPolicy`` is allowed in every context it applies to
-    (`check_every_context_of_policy`). One that a resource type uses (its
-    schema, context or indexing policy) is kept: `ResourceInUseError` (409).
-    No workflow check runs (follow-up ``delete-no-workflow-check``)."""
-    check_every_context_of_policy(request, instance, requirement, covered=covered)
+    (`check_every_context_of_policy`, given `requirement`, `covered`,
+    `type_iri` and `check`). One that a resource type uses (its schema,
+    context or indexing policy) is kept: `ResourceInUseError` (409). No
+    workflow check runs (follow-up ``delete-no-workflow-check``)."""
+    check_every_context_of_policy(
+        request,
+        instance,
+        requirement,
+        covered=covered,
+        type_iri=type_iri,
+        check=check,
+    )
     try:
         ResourceRegistration.delete_locked(
             instance, resource_type=resource_type, using=using

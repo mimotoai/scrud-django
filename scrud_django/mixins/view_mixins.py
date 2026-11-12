@@ -1245,8 +1245,9 @@ class ResourceViewMixin(
 
         It asks each permission itself (`_post_save_requirement`), so that an
         ``IsAuthorized`` subclass's overrides apply, giving it the saved
-        resource's content (`content_of`), as the detail route's object check
-        does: its ``has_object_permission``
+        resource's content (`object_for_checks`), as the detail route's object
+        check does, the request's action named on the view's type
+        (``resource_type_iri_for``): its ``has_object_permission``
         must allow it (as scoped-rbac's own post-save check asks; superusers
         only for a resource in no usable context), and its
         ``has_context_permission`` must allow it in each context its
@@ -1254,8 +1255,15 @@ class ResourceViewMixin(
         ``has_context_permission`` of its own, so must the grants, each
         context read as the resource is there (`may_act_in_context`):
         `scrud_django.core.writes.check_post_save`."""
+        check = self.object_for_checks(obj)
+        type_iri = self.resource_type_iri_for(request)
         core_writes.check_post_save(
-            request, self.get_resource_type(), obj, self._post_save_requirement()
+            request,
+            self.get_resource_type(),
+            obj,
+            self._post_save_requirement(),
+            type_iri=type_iri,
+            content=check,
         )
 
     def _post_save_requirement(self):
@@ -1280,8 +1288,9 @@ class ResourceViewMixin(
             core_writes.check_every_context_of_policy(
                 request,
                 instance,
-                self._post_save_requirement(),
+                None,  # The view's own check asks the view's permissions.
                 covered=self.checks_workflow(request),
+                check=self.check_post_save_permissions,
             )
         except access.AccessError as exc:
             raise drf_error(exc, request) from exc
@@ -1301,18 +1310,21 @@ class ResourceViewMixin(
     def recheck_saved(self, obj):
         """`check_post_save_permissions` of the saved `obj`, with
         ``scrud_workflow`` allowing only once the workflow check has
-        authorized the write (`write_checks`)."""
+        authorized the write (`write_checks`). `save_checked` no longer calls
+        it: `scrud_django.core.writes.save_checked` runs
+        `check_post_save_permissions` in the same block itself."""
         with self.write_checks(self.request, authorized=True):
             self.check_post_save_permissions(self.request, obj)
 
     def save_checked(self, save, instance=None):
         """Run `save` (which returns the saved resource) in a transaction and
         check the resource as stored before it commits
-        (`scrud_django.core.writes.save_checked`, given the view's queryset
-        and `serialized_policy_save`): a reserved context is a 400 and the
-        post-save check (`check_post_save_permissions`' check, with
-        ``scrud_workflow`` allowing as `recheck_saved` lets it) a 403, either
-        rolling the write back. The request was authorized by the context its body names; this
+        (`scrud_django.core.writes.save_checked`, given the view's queryset,
+        `serialized_policy_save` and `check_post_save_permissions`): a
+        reserved context is a 400 and `check_post_save_permissions` a 403
+        (run with ``scrud_workflow`` allowing only once the workflow check has
+        authorized the write, `write_checks`), either rolling the write
+        back. The request was authorized by the context its body names; this
         checks where the resource actually landed (scoped-rbac's ``SaveCheck``).
         `instance` is the resource an update replaces (``None`` for a create).
         Returns the saved resource as read back.
@@ -1339,7 +1351,6 @@ class ResourceViewMixin(
         # the un-hinted write alias, as there (instance-hint routing of
         # scrud_django's models is not supported for the API).
         db = self.locked_write_db or write_db()
-        requirement = self._post_save_requirement()
         covered = self.checks_workflow(request)
         try:
             return core_writes.save_checked(
@@ -1347,11 +1358,13 @@ class ResourceViewMixin(
                 resource_type,
                 save,
                 instance=instance,
-                requirement=requirement,
+                # The view's own check asks the view's permissions.
+                requirement=None,
                 using=db,
                 covered=covered,
                 queryset=queryset,
                 serialize=self.serialized_policy_save,
+                recheck=self.check_post_save_permissions,
             )
         except access.AccessError as exc:
             raise drf_error(exc, request) from exc
@@ -1431,9 +1444,11 @@ class ResourceViewMixin(
                 request,
                 self.get_resource_type(),
                 instance,
-                requirement=self._post_save_requirement(),
+                # The view's own check asks the view's permissions.
+                requirement=None,
                 using=self.locked_write_db or write_db(),
                 covered=self.checks_workflow(request),
+                check=self.check_post_save_permissions,
             )
         except access.AccessError as exc:
             raise drf_error(exc, request) from exc

@@ -90,6 +90,80 @@ urlpatterns.extend(
 )
 
 
+class OtherIriResourceViewSet(ResourceViewSet):
+    """The partner profiles again, named by the view as another type
+    (``resource_type_iri_for``), authorized by ContextDenyingIsAuthorized:
+    its own ``has_context_permission`` makes the post-save check ask the
+    grants beside it, for the type the view names."""
+
+    OTHER_IRI = "tests://PartnerProfilesElsewhere"
+
+    permission_classes = [ContextDenyingIsAuthorized]
+
+    def resource_type_iri_for(self, request):
+        return self.OTHER_IRI
+
+
+class ViewCheckedIsAuthorized(IsAuthorized):
+    """Refuses an object its view's ``object_for_checks`` did not mark."""
+
+    def has_object_permission(self, request, view, obj):
+        if not obj.get(ObjectForChecksResourceViewSet.MARK):
+            return False
+        return super().has_object_permission(request, view, obj)
+
+
+class ObjectForChecksResourceViewSet(ResourceViewSet):
+    """The partner profiles again, whose object checks get the content
+    marked by the view's own ``object_for_checks``."""
+
+    MARK = "checked_by_view"
+
+    permission_classes = [ViewCheckedIsAuthorized]
+
+    def object_for_checks(self, obj):
+        return dict(super().object_for_checks(obj), **{self.MARK: True})
+
+
+class PostSaveRefusingResourceViewSet(ResourceViewSet):
+    """The partner profiles again, whose own post-save check refuses a
+    resource saved with the name `REFUSED`."""
+
+    REFUSED = "refused after saving"
+
+    def check_post_save_permissions(self, request, obj):
+        if obj.content.get("name") == self.REFUSED:
+            raise access.AccessDenied()
+        super().check_post_save_permissions(request, obj)
+
+
+for prefix, viewset in (
+    ("other-iri", OtherIriResourceViewSet),
+    ("object-for-checks", ObjectForChecksResourceViewSet),
+    ("post-save-refusing", PostSaveRefusingResourceViewSet),
+):
+    urlpatterns.extend(
+        [
+            path(
+                f"{prefix}/partner-profiles/",
+                viewset.as_view(
+                    {"get": "list", "head": "list", "post": "create"},
+                    resource_type_name="partner-profiles",
+                ),
+                name=f"{prefix}-partner-profiles-list",
+            ),
+            path(
+                f"{prefix}/partner-profiles/<slug>/",
+                viewset.as_view(
+                    {"get": "retrieve", "put": "update", "delete": "destroy"},
+                    resource_type_name="partner-profiles",
+                ),
+                name=f"{prefix}-partner-profiles-detail",
+            ),
+        ]
+    )
+
+
 class LockedDenyingIsAuthorized(IsAuthorized):
     """An adopter's ``IsAuthorized`` that overrides ``has_object_permission``
     (DRF's object-level hook) to refuse a resource whose content has

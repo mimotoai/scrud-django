@@ -13,16 +13,22 @@ from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
 from rest_framework import status
+from reversion.models import Version
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.core import workflow as core_workflow
 from scrud_django.core.requirements import GrantsLeaf
-from scrud_django.core.writes import create, destroy, update
-from scrud_django.exceptions import ResourceInUseError
+from scrud_django.core.workflow import NoWorkflowPolicyDenied
+from scrud_django.core.writes import create, destroy, update, validate_write
+from scrud_django.exceptions import ResourceInUseError, WorkflowPolicyInvalidError
 from scrud_django.models import Resource
-from scrud_django.registration import ResourceRegistration, get_resource_type_for
+from scrud_django.registration import (
+    ResourceRegistration,
+    get_resource_type_for,
+    workflow_policy_resource_type,
+)
 
 from .factories import UserFactory
 from .fixtures import admin_login  # noqa: F401
@@ -65,21 +71,39 @@ def profiles_type():
     return get_resource_type_for("partner-profiles")
 
 
+def versions():
+    return Version.objects.get_for_model(Resource).count()
+
+
 @pytest.mark.django_db
 @test_context
 def test_create_and_post_save_denial_rolls_back():
     rtype = profiles_type()
-    before = Resource.objects.filter(resource_type=rtype).count()
-    request = request_by("post", user_with(({"http.POST": [PP]}, "a")))
+    assert rtype.uses_reversion
+    user = user_with(({"http.POST": [PP]}, "a"))
+    before = (Resource.objects.filter(resource_type=rtype).count(), versions())
     with pytest.raises(access.AccessDenied):
         create(
-            request,
+            request_by("post", user),
             rtype,
             {"text": "x", "rbac_context": ["a", "b"]},
             requirement=[GrantsLeaf(PP)],
             using="default",
         )
-    assert Resource.objects.filter(resource_type=rtype).count() == before
+    assert (Resource.objects.filter(resource_type=rtype).count(), versions()) == before
+    # The control: the same create in "a" alone is this user's to make.
+    created = create(
+        request_by("post", user),
+        rtype,
+        {"text": "x", "rbac_context": ["a"]},
+        requirement=[GrantsLeaf(PP)],
+        using="default",
+    )
+    assert Resource.objects.get(pk=created.pk).content == {
+        "text": "x",
+        "rbac_context": ["a"],
+    }
+    assert versions() > before[1]
 
 
 @pytest.mark.django_db
@@ -151,3 +175,162 @@ def test_workflow_evaluated_once(admin_login):  # noqa: F811
         Then.http.status_code_is(status.HTTP_200_OK)
     assert allowed_on.call_count == 1, allowed_on.call_args_list
     assert allowed_on.call_args.args[2] == ""
+
+
+# validate_write builds the workflow check's prior as the DRF adapter does: a
+# stored resource whose content is JSON null is an update over content in no
+# state and in the default context, never a create.
+
+JSON_LD = "http://www.w3.org/ns/json-ld#context"
+
+
+def may_initialize_json_ld():
+    """A role writing a JSON-LD resource only by ``__INITIALIZE__``."""
+    return {
+        "http.GET": [JSON_LD],
+        "http.PUT": {
+            JSON_LD: {
+                "condition": {
+                    "operator": "scrud_workflow",
+                    "authorized_transitions": ["__INITIALIZE__"],
+                }
+            }
+        },
+    }
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stored_content", [{}, None], ids=["empty", "null"])
+@test_context
+def test_validate_write_checks_null_stored_content_as_an_update(stored_content):
+    from django.db.models import JSONField, Value
+
+    reverse("json-ld-list")
+    workflow_policy_resource_type()
+    ResourceRegistration.register(
+        {
+            "resource_type": JSON_LD,
+            "rbac_context": "a",
+            "initial_states": {"any": "true"},
+            "states": {},
+            "transitions": {},
+        },
+        "workflow-policies",
+    )
+    stored = ResourceRegistration.register({"x": 1}, "json-ld")
+    Resource.objects.filter(pk=stored.pk).update(
+        content=Value(stored_content, JSONField())
+    )
+    stored = Resource.objects.get(pk=stored.pk)
+    assert stored.content == stored_content
+    # Only scrud_workflow-conditioned grants in "" (where no policy applies)
+    # and in "a": moving the resource out of "" is refused there.
+    request = request_by(
+        "put",
+        user_with((may_initialize_json_ld(), ""), (may_initialize_json_ld(), "a")),
+    )
+    with pytest.raises(NoWorkflowPolicyDenied):
+        validate_write(
+            request,
+            stored.resource_type,
+            {"rbac_context": "a"},
+            stored=stored,
+            narrow=(),
+            readable=None,
+        )
+
+
+@pytest.mark.django_db
+@test_context
+def test_validate_write_checks_a_workflow_policy():
+    reverse("todos-list")
+    policy_type = workflow_policy_resource_type()
+    policy = {
+        "resource_type": "tests://ToDo",
+        "rbac_context": "p",
+        "initial_states": {"any": "true"},
+        "states": {},
+        "transitions": {},
+    }
+    ResourceRegistration.register(dict(policy), "workflow-policies")
+    request = request_by("post", UserFactory(is_staff=True, is_superuser=True))
+    with pytest.raises(WorkflowPolicyInvalidError, match="already exists in context"):
+        validate_write(
+            request, policy_type, dict(policy), stored=None, narrow=(), readable=None
+        )
+
+
+# The DRF routes' post-save check is the view's: it names the type as the
+# view does (resource_type_iri_for), and a view's own
+# check_post_save_permissions and object_for_checks take effect.
+
+
+def latest_profile():
+    return (
+        Resource.objects.filter(resource_type=profiles_type()).order_by("-pk").first()
+    )
+
+
+def post_profile(prefix, body):
+    When.http.post(
+        reverse(f"{prefix}-partner-profiles-list"),
+        data=json.dumps(body),
+        content_type="application/json",
+    )
+
+
+def put_profile(prefix, stored, body):
+    When.http.put(
+        reverse(f"{prefix}-partner-profiles-detail", args=[stored.pk]),
+        data=json.dumps(body),
+        content_type="application/json",
+        HTTP_IF_MATCH=quote_etag(stored.etag),
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_drf_post_save_check_names_the_type_as_the_view_does():
+    from .urls import OtherIriResourceViewSet
+
+    profiles_type()
+    # Grants only on the type the view names, none on the stored type: its
+    # IsAuthorized has its own has_context_permission, so the post-save check
+    # asks the grants beside it, for the type the view names.
+    other = OtherIriResourceViewSet.OTHER_IRI
+    Given.http.force_authenticate(user_with(({"http.POST": [other]}, "a")))
+    post_profile("other-iri", {"name": "x", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+
+
+@pytest.mark.django_db
+@test_context
+def test_drf_post_save_check_gets_the_views_object_for_checks(admin_login):  # noqa: F811
+    profiles_type()
+    Given.http.force_authenticate(admin_login)
+    post_profile("object-for-checks", {"name": "x", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    stored = latest_profile()
+    put_profile("object-for-checks", stored, {"name": "y", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_200_OK)
+    assert Resource.objects.get(pk=stored.pk).content["name"] == "y"
+
+
+@pytest.mark.django_db
+@test_context
+def test_drf_post_save_check_is_the_views_own(admin_login):  # noqa: F811
+    from .urls import PostSaveRefusingResourceViewSet
+
+    refused = PostSaveRefusingResourceViewSet.REFUSED
+    rtype = profiles_type()
+    before = Resource.objects.filter(resource_type=rtype).count()
+    Given.http.force_authenticate(admin_login)
+    post_profile("post-save-refusing", {"name": refused, "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.filter(resource_type=rtype).count() == before
+    post_profile("post-save-refusing", {"name": "x", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_201_CREATED)
+    stored = latest_profile()
+    put_profile("post-save-refusing", stored, {"name": refused, "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.get(pk=stored.pk).content["name"] == "x"
