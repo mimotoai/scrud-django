@@ -1,23 +1,32 @@
-import copy
 import logging
 from collections.abc import Mapping
 
-import fastjsonschema
 from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac import access
 from scoped_rbac.permissions import drf_error
 
 from scrud_django.core import workflow as core_workflow
 from scrud_django.core.workflow import (  # noqa: F401  (moved; re-exported)
+    NULL_STORED_CONTENT,
     check_policy_is_unique,
     plain_body,
+    prior_of,
+)
+from scrud_django.core.writes import (  # noqa: F401  (moved; re-exported)
+    JSON_SCHEMA_TYPE_URIS,
+    JsonValidator,
+    RefusedRemoteRef,
+    RefuseEveryScheme,
+    ValidatorEntry,
+    compile_json_schema,
+    refuse_remote_ref,
 )
 from scrud_django.exceptions import (
-    JsonSchemaInvalidError,
-    JsonValidationError,
+    JsonSchemaInvalidError,  # noqa: F401  (re-exported)
+    JsonValidationError,  # noqa: F401  (re-exported)
     WorkflowTransitionError,
 )
-from scrud_django.models import ResourceType
+from scrud_django.models import ResourceType  # noqa: F401  (re-exported)
 from scrud_django.permissions import (
     _not_checking_write,
     checks_read_content,
@@ -30,167 +39,12 @@ from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
 logger = logging.getLogger(__name__)
 
 
-class ValidatorEntry:
-    def __init__(self, resource_type: ResourceType, validate: callable):
-        self.type_uri = resource_type.type_uri
-        self.revision = resource_type.revision
-        self.etag = resource_type.schema.etag
-        self.modified_at = resource_type.schema.modified_at
-        self.validate = validate
-
-    def matches(self, resource_type: ResourceType):
-        return (
-            self.type_uri == resource_type.type_uri
-            and self.revision == resource_type.revision
-            and self.etag == resource_type.schema.etag
-            and self.modified_at == resource_type.schema.modified_at
-        )
-
-
-JSON_SCHEMA_TYPE_URIS = (
-    "http://json-schema.org/draft-04/schema",
-    "http://json-schema.org/draft-06/schema",
-    "http://json-schema.org/draft-07/schema",
-)
-
-
-class RefusedRemoteRef(fastjsonschema.JsonSchemaDefinitionException):
-    pass
-
-
-def refuse_remote_ref(uri):
-    raise RefusedRemoteRef(
-        f"$ref {uri!r} is not allowed: a $ref must point into the schema itself "
-        "(start with '#')."
-    )
-
-
-class RefuseEveryScheme(dict):
-    """fastjsonschema's ``handlers``: it fetches a ``$ref`` outside the schema
-    with the handler for its URI scheme, else with ``urlopen``. This mapping has
-    a handler for every scheme (``http``, ``file``, none...), which refuses."""
-
-    def __contains__(self, scheme):
-        return True
-
-    def __getitem__(self, scheme):
-        return refuse_remote_ref
-
-    def get(self, scheme, default=None):
-        return refuse_remote_ref
-
-
-def compile_json_schema(content):
-    """Compile JSON Schema `content` with fastjsonschema, resolving ``$ref`` only
-    within it. Raises ``JsonSchemaInvalidError`` if it does not compile, a
-    ``$ref`` to anything else (a URL, a file, another document) included. The
-    content is not changed. The validator applies no ``default``
-    (``use_default=False``): it validates the data as it is, and leaves it as
-    it is."""
-    content = copy.deepcopy(content)
-    if isinstance(content, dict):
-        content.pop("$id", None)
-    try:
-        return fastjsonschema.compile(
-            content, handlers=RefuseEveryScheme(), use_default=False
-        )
-    except Exception as e:
-        raise JsonSchemaInvalidError(f"The JSON Schema does not compile: {e}") from e
-
-
-class JsonValidator:
-    """Validates a body against its type's JSON Schema. A body written to a
-    JSON Schema type is itself a schema, and must compile
-    (`compile_json_schema`). A stored schema that does not compile fails
-    closed: every write of its type is refused with ``JsonSchemaInvalidError``
-    (400).
-
-    JSON Schema ``default`` values are not applied: the validator is compiled
-    with ``use_default=False`` (`compile_json_schema`), so it validates `data`,
-    the body that is stored, exactly as it was sent (a default can neither
-    make it valid, for example through ``if``/``then``, nor be stored), and
-    leaves it unchanged."""
-
-    requires_context = True
-
-    def __init__(self):
-        self.validators = {}
-
-    def __call__(self, data, context):
-        if context.resource_type.type_uri in JSON_SCHEMA_TYPE_URIS:
-            compile_json_schema(data)
-        validate = self.validator_for(context.resource_type)
-        validate(data)
-        return data
-
-    def is_json_schema(self, schema):
-        return (
-            schema is not None
-            and schema.resource_type.type_uri in JSON_SCHEMA_TYPE_URIS
-        )
-
-    def validator_for(self, resource_type):
-        schema = resource_type.schema
-        if not self.is_json_schema(schema):
-            return lambda r: r
-        validator = self.validators.get(resource_type.type_uri, None)
-        if validator is None or not validator.matches(resource_type):
-            try:
-                validation_func = compile_json_schema(schema.content)
-            except JsonSchemaInvalidError as error:
-                # The writer of a resource may not be the schema's author: the
-                # reason is logged, not sent.
-                logger.error(
-                    "The JSON Schema of %s does not compile, so its writes are "
-                    "refused: %s",
-                    resource_type.type_uri,
-                    error.detail,
-                )
-
-                def validate(content):
-                    raise JsonSchemaInvalidError(
-                        "The JSON Schema of this resource type does not compile, "
-                        "so it cannot be validated."
-                    )
-
-            else:
-
-                def validate(content):
-                    try:
-                        return validation_func(content)
-                    except fastjsonschema.JsonSchemaException as e:
-                        raise JsonValidationError(e) from e
-
-            validator = ValidatorEntry(resource_type, validate)
-            self.validators[resource_type.type_uri] = validator
-        return validator.validate
-
-
 def rbac_permissions_of(view):
     """The ``IsAuthorized`` (or subclass) permissions of `view` (nested ones
     included: ``ResourceViewMixin.get_rbac_permissions``), or ``[]`` for no
     view or one without them."""
     get_rbac_permissions = getattr(view, "get_rbac_permissions", None)
     return list(get_rbac_permissions()) if callable(get_rbac_permissions) else []
-
-
-# What the workflow check is given as the stored content of a resource whose
-# content is JSON null (``None``). ``None`` itself would mean a create to
-# `workflow_check`; this stand-in is an update over content that is not an
-# object, which the check reads as it always read null content: in the
-# default context (`rbac_contexts_of`), in no state (`WorkflowPolicy.state`),
-# and an error about it is hidden unless the stored resource is readable.
-NULL_STORED_CONTENT = ()
-
-
-def prior_of(instance):
-    """The stored content of `instance` as `workflow_check` takes it:
-    ``None`` for no instance (a create), `NULL_STORED_CONTENT` for content
-    that is JSON null, else the content."""
-    if instance is None:
-        return None
-    content = instance.content
-    return NULL_STORED_CONTENT if content is None else content
 
 
 def narrow_of(view):

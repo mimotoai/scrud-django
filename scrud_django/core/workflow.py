@@ -128,6 +128,27 @@ def validate_policy_write(body: Mapping, stored_pk: int | None) -> None:
     check_policy_is_unique(body, stored_pk)
 
 
+# What `workflow_check` is given as the stored content (`prior`) of a
+# resource whose content is JSON null (``None``). ``None`` itself would mean a
+# create; this stand-in is an update over content that is not an object,
+# which the check reads as it always read null content: in the default
+# context (`rbac_contexts_of`), in no state (`WorkflowPolicy.state`), and an
+# error about it is hidden unless the stored resource is readable.
+NULL_STORED_CONTENT = ()
+
+
+def prior_of(instance):
+    """The stored content of `instance` (a ``Resource``) as `workflow_check`
+    takes it (`prior`): ``None`` for no instance (a create),
+    `NULL_STORED_CONTENT` for content that is JSON null, else the content.
+    Never pass ``instance.content`` itself: null content would be checked as
+    a create."""
+    if instance is None:
+        return None
+    content = instance.content
+    return NULL_STORED_CONTENT if content is None else content
+
+
 def plain_body(data):
     """`data` (a parsed body) as the workflow check gives it to operators and
     `narrow` checks: itself when it is a ``dict``, a ``dict`` copy of a
