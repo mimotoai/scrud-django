@@ -425,11 +425,15 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 * `ScrudException` and its subclasses are no longer DRF `APIException`s (they
   are neutral, `scrud_django.exceptions`). The DRF views wrap them
-  (`scrud_django.exceptions.as_drf`), so HTTP answers are unchanged, including
-  under an adopter's own `EXCEPTION_HANDLER`. Code that catches `APIException`
-  around a direct call into scrud-django must catch `ScrudException`. (The
-  note under 0.12.0 that scrud errors are `APIException`s describes that
-  release.)
+  (`scrud_django.exceptions.as_drf`), so the status and body of every answer
+  are unchanged, including under an adopter's own `EXCEPTION_HANDLER`. That
+  handler now receives a `scrud_django.exceptions.ScrudAPIException` for a
+  scrud error, with the original on `.scrud`: one that branches on
+  `isinstance(exc, WorkflowTransitionError)` (or any scrud class) must check
+  `exc.scrud` instead (`scrud_exception_handler` accepts either). Code that
+  catches `APIException` around a direct call into scrud-django must catch
+  `ScrudException`. (The note under 0.12.0 that scrud errors are
+  `APIException`s describes that release.)
 * `scrud_django.reverse` is scrud-django's own function, no longer DRF's
   `rest_framework.reverse.reverse` re-exported. It has DRF's signature
   (`viewname, args=None, kwargs=None, request=None, format=None, **extra`)
@@ -451,9 +455,12 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   core's workflow check once.
 * The internal view helpers `recheck_saved`, `cache_resource_type` and
   `check_every_context_of_policy` (on DELETE) are no longer called by the
-  save and destroy paths, so overriding them no longer takes effect. Overrides
-  of `check_post_save_permissions`, `object_for_checks` and
-  `resource_type_iri_for` still do.
+  save and destroy paths, so overriding them no longer takes effect. Nor does
+  an override of `write_checks` affect the post-save check or a DELETE's
+  every-context check of a `WorkflowPolicy`: the core runs them in
+  `authorizing_write(covered=self.checks_workflow(...))` itself. Overrides
+  of `checks_workflow`, `check_post_save_permissions`, `object_for_checks`
+  and `resource_type_iri_for` still take effect.
 
 Behaviour without `scrud_django.ui` in `INSTALLED_APPS` is unchanged.
 
