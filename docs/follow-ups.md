@@ -1245,19 +1245,6 @@ granted `http.GET` on `JSON_LD` in "a" but not on its list type, GET the DRF
 list (403) and call `readable_queryset` with `[GrantsLeaf(JSON_LD)]`, which
 today returns the resource; the new check should refuse (`AccessDenied`).
 
-<a id="core-facade-parity-harness"></a>
-## core-facade-parity-harness: no harness compares the core facade with the DRF routes
-
-The DRF views do not call `core.resources`' facade (`load_for_read`,
-`allowed_methods`, `readable_queryset`, `create`, `update`, `validate_write`,
-`check_object`); only hand-written cases in `tests/test_core_*` compare it
-with the DRF routes, so a divergence outside them goes unseen. Test: a
-parametrized harness in a new `tests/test_core_parity.py` that, for every
-registered test type (hooked and workflow types included) and the user
-matrix of `tests/test_core_resources.py::users`, calls each facade function
-and the DRF route it mirrors and asserts the same outcome (status for an
-error, the same resources, the same `Allow`).
-
 <a id="core-paging-key-first"></a>
 ## core-paging-key-first: the list's paging and MySQL key-first hint are still DRF's
 
