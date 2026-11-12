@@ -281,6 +281,11 @@ const openPage = el('button', {type: 'button', 'class': 'studio-open',
   'data-studio-open': JSON.stringify(page)}, packagedLi);
 const pre = el('pre', {'data-studio-content': '', hidden: ''}, packagedLi);
 pre.text = '{\n  "name": "studio:page",\n  "template": "\\u003cmain\\u003e"\n}';
+// opts.empty_items: the tree came back with no entries (the embed failed,
+// or the user may not list the items).
+if (opts.empty_items) {
+  while (itemsFrame.firstChild) itemsFrame.removeChild(itemsFrame.firstChild);
+}
 const editorHead = el('div', {'class': 'studio-editor-head',
   'data-studio-editor-head': '', hidden: ''}, panes.editor);
 const editor = el('div', {'class': 'studio-pane-body', 'data-studio-editor': ''},
@@ -1053,6 +1058,22 @@ out.links = Object.fromEntries(Object.entries(pickerEntries)
         assert query["item"] == ["stylesheet:todo@ex:Ctx"], out["links"][name]
     assert "item%3Dstylesheet" not in out["links"]["studio"]
     assert "item=stylesheet%3Atodo%40ex%3ACtx" in out["links"]["studio"]
+
+
+def test_an_empty_tree_on_load_keeps_the_item():
+    """A tree with no entries at all (its embed failed, or the user may not
+    list the items) says nothing about the branch: the `item` stays in the
+    URL, so a reload can still open it, and no not-on-this-branch notice."""
+    out = scenario(
+        r"""
+out.notice = notice.hasAttribute('hidden');
+out.state = state();
+""",
+        search=BASE + "&type=todo-lists&item=component%3Agone",
+        empty_items=True,
+    )
+    assert out["notice"] is True
+    assert out["state"]["item"] == "component:gone"
 
 
 def test_unknown_item_on_load_shows_a_notice():
