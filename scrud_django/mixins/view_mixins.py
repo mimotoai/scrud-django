@@ -37,11 +37,19 @@ from scrud_django.core.bodies import (
     MAX_BODY_DEPTH,  # noqa: F401
     body_depth,  # noqa: F401
     body_has_nul,  # noqa: F401
+    check_contexts,
+    check_depth,
+    check_nul,
+    check_present,
     max_body_depth,  # noqa: F401
 )
 from scrud_django.core.bodies import check_body as core_check_body
 from scrud_django.core.workflow import authorizing_write
 from scrud_django.exceptions import (
+    RbacContextInvalidError,  # noqa: F401  (re-exported)
+    RequestBodyMissingError,  # noqa: F401  (re-exported)
+    RequestBodyNulError,  # noqa: F401  (re-exported)
+    RequestBodyTooDeepError,  # noqa: F401  (re-exported)
     ResourceInUseError,
     ScrudException,
     as_drf,
@@ -56,7 +64,12 @@ from scrud_django.filters import (
     readable_removal,
 )
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
+from scrud_django.mixins.resource_mixin import rbac_contexts_of  # noqa: F401  (re-exported)
 from scrud_django.models import Resource
+from scrud_django.models.resource import (  # noqa: F401  (re-exported)
+    MAX_CONTEXT_BYTES,
+    context_fits,
+)
 from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.permissions import (
     _not_checking_write,
@@ -158,6 +171,42 @@ BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 # Not to be confused with ``SCRUD_WORKFLOW_ACTIONS``, the workflow actions
 # run after a write.
 WORKFLOW_VIEW_ACTIONS = {"create": "POST", "update": "PUT"}
+
+
+def check_body_present(request, view=None):
+    """Raise `RequestBodyMissingError` (400) for a POST, PUT or PATCH that
+    `view` serves (one it does not is left to its 405) whose body DRF does not
+    read: an empty one, or one without a ``Content-Length`` (0 or absent, as
+    for a chunked body). DRF reads it as ``{}``: a POST would store an empty
+    resource, a PUT wipe the stored content. A body that is not JSON is left
+    to the parser (415, or 400)."""
+    if request.method not in BODY_METHODS:
+        return
+    if view is not None and request.method not in view.allowed_methods:
+        return
+    check_present(request.stream is not None)
+
+
+def check_body_depth(request):
+    """Raise `RequestBodyTooDeepError` (400) for a POST, PUT or PATCH body
+    nested deeper than `max_body_depth`."""
+    if request.method in BODY_METHODS:
+        check_depth(request.data)
+
+
+def check_body_nul(request):
+    """Raise `RequestBodyNulError` (400) for a POST, PUT or PATCH body with a
+    NUL character in any string (`body_has_nul`)."""
+    if request.method in BODY_METHODS:
+        check_nul(request.data)
+
+
+def check_written_contexts(request):
+    """Raise `RbacContextInvalidError` (400) when a POST, PUT or PATCH body's
+    ``rbac_context`` is an empty list or names a context longer than its rows
+    hold (`context_fits`: 2048 bytes of UTF-8)."""
+    if request.method in BODY_METHODS:
+        check_contexts(request.data)
 
 
 def check_body(request, view=None):

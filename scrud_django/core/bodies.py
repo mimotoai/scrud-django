@@ -5,7 +5,7 @@ request passes the parsed body in."""
 
 from collections.abc import Mapping
 
-from django.db import router
+from django.db import connections, router
 
 from scrud_django.exceptions import (
     RbacContextInvalidError,
@@ -32,8 +32,6 @@ def max_body_depth():
     `MARIADB_MAX_BODY_DEPTH` when resources are written to MariaDB
     (``router.db_for_write(Resource)``), which could not store a deeper one
     (a 500)."""
-    from django.db import connections
-
     connection = connections[router.db_for_write(Resource)]
     if connection.vendor == "mysql" and connection.mysql_is_mariadb:
         return MARIADB_MAX_BODY_DEPTH
@@ -76,31 +74,37 @@ def body_has_nul(data):
     return False
 
 
-def check_body(body, *, present):
-    """Check the `body` of a POST, PUT or PATCH (parsed JSON), in order:
-
-    - `RequestBodyMissingError` (400) when it is not `present`: an empty one,
-      or one without a ``Content-Length``. A framework that reads it as ``{}``
-      would store an empty resource (a POST) or wipe the stored content (a
-      PUT).
-    - `RequestBodyTooDeepError` (400) when nested deeper than
-      `max_body_depth`.
-    - `RequestBodyNulError` (400) for a NUL character in any string
-      (`body_has_nul`): PostgreSQL's ``jsonb`` cannot hold one, so it is
-      refused on every database alike.
-    - `RbacContextInvalidError` (400) when its ``rbac_context`` is an empty
-      list, which would store the resource in no context (only a superuser
-      could read it; a server-side ``ResourceRegistration`` may still store
-      one), or names a context longer than its rows hold (`context_fits`:
-      `MAX_CONTEXT_BYTES` of UTF-8).
-    """
+def check_present(present):
+    """Raise `RequestBodyMissingError` (400) when the body is not `present`:
+    an empty one, or one without a ``Content-Length``. A framework that reads
+    it as ``{}`` would store an empty resource (a POST) or wipe the stored
+    content (a PUT)."""
     if not present:
         raise RequestBodyMissingError()
+
+
+def check_depth(body):
+    """Raise `RequestBodyTooDeepError` (400) for a `body` nested deeper than
+    `max_body_depth`."""
     limit = max_body_depth()
     if body_depth(body, limit) > limit:
         raise RequestBodyTooDeepError(limit)
+
+
+def check_nul(body):
+    """Raise `RequestBodyNulError` (400) for a `body` with a NUL character in
+    any string (`body_has_nul`): PostgreSQL's ``jsonb`` cannot hold one, so it
+    is refused on every database alike."""
     if body_has_nul(body):
         raise RequestBodyNulError()
+
+
+def check_contexts(body):
+    """Raise `RbacContextInvalidError` (400) when a `body`'s ``rbac_context``
+    is an empty list, which would store the resource in no context (only a
+    superuser could read it; a server-side ``ResourceRegistration`` may still
+    store one), or names a context longer than its rows hold (`context_fits`:
+    `MAX_CONTEXT_BYTES` of UTF-8)."""
     if not isinstance(body, Mapping):
         return
     context = body.get("rbac_context")
@@ -113,3 +117,12 @@ def check_body(body, *, present):
         raise RbacContextInvalidError(
             f"An rbac_context may be at most {MAX_CONTEXT_BYTES} bytes long in UTF-8."
         )
+
+
+def check_body(body, *, present):
+    """Check the `body` of a POST, PUT or PATCH (parsed JSON), in order:
+    `check_present`, `check_depth`, `check_nul`, `check_contexts`."""
+    check_present(present)
+    check_depth(body)
+    check_nul(body)
+    check_contexts(body)

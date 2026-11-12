@@ -6,7 +6,7 @@ import pytest
 from django.test import RequestFactory
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django.core.bodies import check_body, max_body_depth
+from scrud_django.core.bodies import check_body, check_nul, max_body_depth
 from scrud_django.core.urls import absolute_reverse
 from scrud_django.exceptions import (
     RbacContextInvalidError,
@@ -30,6 +30,9 @@ def nested(depth):
 def test_check_body_order():
     too_deep_with_nul = nested(max_body_depth() + 1)
     too_deep_with_nul[0].append("a\x00b")
+    # The NUL alone would be refused, but the depth is checked first.
+    with pytest.raises(RequestBodyNulError):
+        check_nul(too_deep_with_nul)
     with pytest.raises(RequestBodyTooDeepError):
         check_body(too_deep_with_nul, present=True)
     with pytest.raises(RequestBodyNulError):
@@ -63,3 +66,28 @@ def test_absolute_reverse_matches_drf():
     assert absolute_reverse("collections-json-schema", args=["notes"]) == drf_reverse(
         "collections-json-schema", args=["notes"]
     )
+
+
+def test_view_mixins_keeps_its_public_names():
+    from scrud_django.mixins import view_mixins
+
+    for name in (
+        "check_body_present",
+        "check_body_depth",
+        "check_body_nul",
+        "check_written_contexts",
+        "RbacContextInvalidError",
+        "RequestBodyMissingError",
+        "RequestBodyNulError",
+        "RequestBodyTooDeepError",
+        "rbac_contexts_of",
+        "context_fits",
+        "MAX_CONTEXT_BYTES",
+        "BODY_METHODS",
+        "MAX_BODY_DEPTH",
+        "MARIADB_MAX_BODY_DEPTH",
+        "body_depth",
+        "body_has_nul",
+        "max_body_depth",
+    ):
+        assert hasattr(view_mixins, name), name
