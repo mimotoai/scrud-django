@@ -170,13 +170,15 @@ def test_layer_panes_scroll_within_the_viewport(studio_layer):
     """The workbench is a viewport-bounded flex column: its own height is
     ``100vh`` less the page chrome (with a floor, below which the page
     scrolls), the panes row takes the space the top bar and the strip leave
-    (``flex: 1 1 0; min-height: 0``-style, with a floor) and each pane scrolls
+    (``flex: 1 1 0`` with a ``min-height`` floor of 14rem) and each pane scrolls
     on its own, so the strip (Promote, Pushes, History) stays on the first
     screen however much the panes hold. The strip keeps its natural height,
     bounded by its own ``max-height`` and scrolling when its panels open.
     (MR !14 bounded the panes row with ``max-height: calc(100vh - 9rem)``,
     which ignored the chrome, the top bar and the strip's ~150px.) The packaged
-    group's summary is styled under ``.studio``."""
+    group's summary is styled under ``.studio``. These assertions pin the
+    rules; the layout itself is checked in a browser at 1440x900 (see
+    ``studio-branch-tools-squeeze`` in docs/follow-ups.md for what is not)."""
     [(_name, css)] = [
         (name, content["css"]) for name, content in layer_files("css").items()
     ]

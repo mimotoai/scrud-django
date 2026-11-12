@@ -22,16 +22,21 @@ Opening Branch settings or New branch (above the panes) squeezes the panes to
 their 14rem floor, and the page scrolls so the strip leaves the first screen.
 At viewport heights up to about 700px the strip is one scroll away anyway, and
 the 3.5rem chrome reserve in `.studio .studio-workbench` is a constant (wrapped
-chrome links at narrow widths add overflow). Test: a browser layout check at
+chrome links at narrow widths add overflow, and so do the branch banner the
+page shows when its branch is not the published one and the safe-mode notice;
+sizing the workbench from the space left, say with the page body as a flex
+column, would fix all three). Test: a browser layout check at
 1440x900 with Branch settings open; the document height should not exceed the
 viewport.
 
 <a id="studio-push-review-bookkeeping"></a>
 ## studio-push-review-bookkeeping: the review marks bookkeeping fields as changes
 
-The push review marks `branch`, `base` and `rbac_context` as changed on every
-create over an inherited row. They are real differences in the stored row but
-bookkeeping the author did not change; consider de-emphasizing them. Test:
+A create over an inherited row sets the target's `branch`, and its `base` and
+`rbac_context` where they differ from the inherited row's (main's `""` context
+against the target's own, say), and the push review marks them as changed.
+They are real differences in the stored row but bookkeeping the author did not
+change; consider de-emphasizing them. Test:
 render the review of `alice-wip`'s `todo` override into `testing-admin` and
 assert those fields are styled as bookkeeping, not as changes.
 

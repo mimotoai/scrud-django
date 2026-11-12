@@ -578,7 +578,8 @@ named by JSON Pointer (`name="/items/0/text"`):
   mode or in the view mode of a user who may not PUT it, but never under a
   requested view mode: `?ui-mode=view`, `Scrud-UI-Mode: view`, or an embed's
   `mode="view"`, nor on the page of a read-only record such as an applied UI
-  push, which is rendered as a requested view) asks for confirmation and
+  push, which is rendered as a view when the request names no mode) asks for
+  confirmation and
   sends a `DELETE` with `If-Match`. On success (a 204) the resource's frame
   is removed from the page, with the list item that held only it, and a
   `scrud:deleted` event is dispatched on `document` with `detail.href`, the
@@ -1914,11 +1915,11 @@ the author applies or proposes it. It computes the same plan the push writes
   item the target shows there now, from its parent or a packaged layer
   (`null` for none). `after` is the row exactly as the push stores it (its
   `branch`, `rbac_context` and `base` on the target); `null` for a delete.
-  `changed` lists, sorted, the names of the fields the two differ on: null,
-  `""` and a missing field are all the same (an empty `rbac_context` is not a
-  change whichever way each side spells it), while `""` to `"ctx"` and `"ctx"`
-  to missing are; for a create with no `before`, or a delete, every field of
-  the one row.
+  `changed` lists, sorted, the names of the fields the two differ on, as
+  JSON values (`0` is not `false`): null, `""` and a missing field are all
+  the same (an empty `rbac_context` is not a change whichever way each side
+  spells it), while `""` to `"ctx"` and `"ctx"` to missing are; for a create
+  with no `before`, or a delete, every field of the one row.
 - A write on an item the user may not `GET` (the target's row, the row as
   written, the source's row it comes from, or, for a create, the item the
   target shows there now: its `before`) is left out of `changes`;
@@ -2211,6 +2212,8 @@ and the inspector under it (see
   neutral style) and no error, naming the item as the editor's header does
   ("stylesheet todo (ctx) is not on this branch."), and is removed from the URL
   so a reload does not repeat it. A refused write after it is an alert again.
+  A tree with no entries at all (its embed failed, or the user may not list
+  the items) says nothing about the branch: the `item` stays, with no notice.
 - **After a write.** After any write sent from inside the workbench
   (`htmx:afterRequest` of a non-GET) that succeeds, the items and the strip
   are fetched again (an htmx GET of `data-studio-src`, with the pane's own
@@ -2634,9 +2637,9 @@ workflow policy forbids (Requiring approval, under
 [Pushing and restoring](#pushing-and-restoring)), is re-rendered with the
 server's message and the submitted state ([Refused writes](#refused-writes)).
 An applied push is a record: no form, no preview, no Delete button. The API
-refuses a PUT (400) and a DELETE (409) of an applied push, so the server
-renders it as a requested view (mode `view`, in any scope), whoever the user
-is. A user who may only read a push that is not applied gets the view too: no
+refuses a PUT (400) and a DELETE (409) of an applied push, so when the
+request names no mode the server renders it as a view (mode `view`, in any
+scope), whoever the user is; a request may only name `view` anyway. A user who may only read a push that is not applied gets the view too: no
 form, no Save.
 
 ### History and restore
