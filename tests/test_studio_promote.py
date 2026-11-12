@@ -333,8 +333,8 @@ def test_promote_panel_shows_changes_and_conflicts(studio_layer, admin_login):
 
 def changed_field_names(review, side):
     """The texts (name, then value) of the fields the loaded push `review`
-    marks changed on
-    `side` (``"before"`` or ``"after"``) of its first change (the row)."""
+    marks changed on `side` (``"before"`` or ``"after"``) of its first change
+    (the row)."""
     [row, _fresh] = [e for e in review.elements if "studio-push-change" in e.classes()]
     [section] = [
         e
@@ -349,6 +349,7 @@ def changed_field_names(review, side):
 
 
 def marks(texts, name):
+    """Whether any of the field `texts` is the field `name`'s."""
     return any(t.startswith(name) for t in texts)
 
 
@@ -364,7 +365,8 @@ def test_review_does_not_mark_empty_values_as_changes(studio_layer, admin_login)
         {**main_row.content, "rbac_context": None},
         without,
     ):
-        Resource.objects.filter(pk=main_row.pk).update(content=stored)
+        main_row.content = stored
+        main_row.save()
         loaded = load_review(box)
         for side in ("before", "after"):
             names = changed_field_names(loaded, side)
@@ -372,9 +374,8 @@ def test_review_does_not_mark_empty_values_as_changes(studio_layer, admin_login)
         # The review still marks what did change.
         assert marks(changed_field_names(loaded, "after"), "template")
     # A real change: main's row has a context, the push writes "".
-    Resource.objects.filter(pk=main_row.pk).update(
-        content={**main_row.content, "rbac_context": "other"}
-    )
+    main_row.content = {**main_row.content, "rbac_context": "other"}
+    main_row.save()
     loaded = load_review(box)
     assert marks(changed_field_names(loaded, "before"), "rbac_context")
     assert marks(changed_field_names(loaded, "after"), "rbac_context")
@@ -561,6 +562,8 @@ def test_propose_then_apply_from_push_page(studio_layer, admin_login):
     # Nor a preview of the target after it.
     assert not page.having("data-studio-push-after")
     assert not [e for e in page.elements if e.tag in ("template", "iframe")]
+    # The update's response is rendered as a view: no Delete button either.
+    assert not page.having("hx-delete")
 
 
 @pytest.mark.django_db

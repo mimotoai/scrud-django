@@ -80,8 +80,6 @@ def change(kind, key, action, before, after, changed):
     }
 
 
-@pytest.mark.django_db
-@test_context
 def test_changed_fields_treats_empty_values_as_equal():
     changed = push_sync.changed_fields
     # null, "" and a missing key are all "empty": equal to each other.
