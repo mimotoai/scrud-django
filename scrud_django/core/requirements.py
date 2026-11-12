@@ -180,13 +180,21 @@ def requirement_leaves(requirement):
 
 
 def asks_grants(requirement) -> bool:
-    """Whether a leaf of `requirement` (``AnyOf`` options included) asks the
-    grants: one that is not ``grants_nothing`` (a type's hooks, `HookLeaf`,
-    only refuse)."""
-    return any(
-        not getattr(leaf, "grants_nothing", False)
-        for leaf in requirement_leaves(requirement)
-    )
+    """Whether `requirement` asks the grants of every request it allows:
+    some entry of it does. A leaf asks them unless it is ``grants_nothing``
+    (a type's hooks, `HookLeaf`, only refuse); an ``AnyOf`` asks them only
+    when it has options and **every** option does (an option of hooks alone
+    would allow what the grants refuse, and an ``AnyOf`` of none has no leaf
+    to check a write after its save)."""
+
+    def asks(entry):
+        if isinstance(entry, access.AnyOf):
+            return bool(entry.options) and all(
+                any(map(asks, _entries(option))) for option in entry.options
+            )
+        return not getattr(entry, "grants_nothing", False)
+
+    return any(map(asks, requirement))
 
 
 def require_grants(requirement, caller: str) -> None:

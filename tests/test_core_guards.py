@@ -80,7 +80,14 @@ def hooks_only(resource_type):
 
 
 def no_grants(resource_type):
-    return {"empty": [], "hooks-only": hooks_only(resource_type)}
+    return {
+        "empty": [],
+        "hooks-only": hooks_only(resource_type),
+        # An option of hooks alone would allow what the grants refuse.
+        "anyof-hook-option": [
+            access.AnyOf([[GrantsLeaf(JSON_LD)], hooks_only(resource_type)])
+        ],
+    }
 
 
 @pytest.mark.django_db
@@ -89,12 +96,18 @@ def test_asks_grants():
     resource_type = json_ld()
     assert asks_grants([GrantsLeaf(JSON_LD)])
     assert asks_grants([GrantsLeaf(JSON_LD), *hooks_only(resource_type)])
+    # An AnyOf asks the grants when every option does.
+    grants = [GrantsLeaf(JSON_LD)]
+    assert asks_grants([access.AnyOf([grants, [GrantsLeaf("other")]])])
+    assert asks_grants([access.AnyOf([GrantsLeaf(JSON_LD), grants])])
+    assert asks_grants([*grants, access.AnyOf([grants, hooks_only(resource_type)])])
+    assert not asks_grants([access.AnyOf([])])
     for requirement in no_grants(resource_type).values():
         assert not asks_grants(requirement)
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("kind", ["empty", "hooks-only"])
+@pytest.mark.parametrize("kind", ["empty", "hooks-only", "anyof-hook-option"])
 @pytest.mark.parametrize(
     "call",
     [
