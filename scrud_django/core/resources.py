@@ -673,8 +673,9 @@ def allowed_methods_for(
        is: nothing is looked up, so the answer tells nothing of whether the
        item exists, as on the DRF route, which loads nothing then;
     3. else the item is looked up as `load_for_read` looks it up (``Http404``
-       for a missing key or one that is no key), and `allowed_methods`
-       answers with it (``Http404`` for one stored in a reserved context or
+       for a missing key or one that is no key), and step 2 of
+       `allowed_methods` answers with it, without asking the request checks
+       of step 1 again (``Http404`` for one stored in a reserved context or
        hidden from the first method allowed).
 
     For the list (`pk` ``None``) it is `allowed_methods` without an item.
