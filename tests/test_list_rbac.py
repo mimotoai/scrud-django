@@ -479,6 +479,7 @@ def test_filtered_list_parameters_are_keys_not_lookups():
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
 
 
+# DRF-only: a DRF viewset's filter backends; ninja lists through the core alone.
 @pytest.mark.django_db
 def test_resource_rows_are_never_listed_through_an_unfiltered_backend():
     # A ResourceViewMixin viewset without an RBAC filter backend is refused

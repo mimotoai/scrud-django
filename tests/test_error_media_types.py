@@ -94,7 +94,8 @@ def test_errors_keep_their_native_shape_with_uniform_errors_off(front_end):
     assert responses[412].json() == {"detail": "Precondition failed."}
 
 
-# DRF-only: ninja's services/ is a 500 here (follow-up services-unrouted-types).
+# DRF-only: ninja's services/ raises NoReverseMatch here (the test client re-raises
+# it), for the UI types it does not route (follow-up services-unrouted-types).
 @pytest.mark.django_db
 def test_the_service_lists_conditional_400_follows_uniform_errors():
     # services/ is a scrudful function view: its malformed-precondition 400

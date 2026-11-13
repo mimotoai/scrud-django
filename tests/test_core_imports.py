@@ -24,7 +24,16 @@ DENIED = (
 SCRIPT = """
 import importlib.abc, pkgutil, sys
 
-BLOCKED = ("rest_framework", "django_filters", "scrudful.rest_framework", "scoped_rbac.rest")
+BLOCKED = (
+    "rest_framework",
+    "django_filters",
+    "scrudful.rest_framework",
+    "scoped_rbac.rest",
+    "ninja",
+    "pydantic",
+    "scoped_rbac.ninja",
+    "scrudful.ninja",
+)
 
 class Blocker(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path=None, target=None):

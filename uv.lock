@@ -1296,6 +1296,7 @@ dependencies = [
 
 [package.optional-dependencies]
 ninja = [
+    { name = "django-ninja" },
     { name = "django-scoped-rbac", extra = ["ninja"] },
     { name = "scrudful", extra = ["ninja"] },
 ]
@@ -1335,6 +1336,7 @@ requires-dist = [
     { name = "django", specifier = ">=5.2,<6.0" },
     { name = "django-filter", specifier = ">=25.1" },
     { name = "django-haystack", marker = "extra == 'search'", specifier = ">=3.3" },
+    { name = "django-ninja", marker = "extra == 'ninja'", specifier = ">=1.7.0,<1.7.4" },
     { name = "django-reversion", specifier = ">=5.1" },
     { name = "django-scoped-rbac", extras = ["drf"], specifier = ">=0.12.1,<0.13" },
     { name = "django-scoped-rbac", extras = ["ninja"], marker = "extra == 'ninja'", specifier = ">=0.12.1,<0.13" },
