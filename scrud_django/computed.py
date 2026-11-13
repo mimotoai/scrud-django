@@ -7,40 +7,21 @@ subclass of `ComputedResourceViewSet` implements it;
 `scrud_django.registration.computed_resource_type` registers the type and
 routes ``<slug>/<key>/`` (no list route)."""
 
-import hashlib
-import json
 from collections.abc import Mapping
 
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.utils.encoders import JSONEncoder
 from scoped_rbac.rest import RbacJSONParser
 
+from scrud_django.core.computed import (  # noqa: F401 (computed_etag moved there)
+    computed_answer,
+    computed_etag,
+    computed_link,
+    not_modified,
+)
 from scrud_django.core.types import type_options_for_slug
-from scrud_django.mixins.view_mixins import ResourceViewMixin, ScrudfulMeta
-
-
-def computed_etag(content) -> str:
-    """The strong ETag of `content`: the SHA-256 of its canonical JSON."""
-    canonical = json.dumps(
-        content,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        cls=JSONEncoder,
-    )
-    return '"' + hashlib.sha256(canonical.encode()).hexdigest() + '"'
-
-
-def _matches(header: str, etag: str) -> bool:
-    """Whether an ``If-None-Match`` header names `etag` (weak comparison) or
-    is ``*``."""
-    for candidate in header.split(","):
-        candidate = candidate.strip()
-        if candidate == "*" or candidate.removeprefix("W/") == etag:
-            return True
-    return False
+from scrud_django.mixins.view_mixins import ResourceViewMixin
 
 
 class ComputedResourceViewSet(ResourceViewMixin, viewsets.ViewSet):
@@ -66,32 +47,14 @@ class ComputedResourceViewSet(ResourceViewMixin, viewsets.ViewSet):
         return compute(request, key)
 
     def retrieve(self, request, slug: str) -> Response:
-        content = self.compute(request, slug)
-        if not isinstance(content, Mapping):
-            raise TypeError(
-                f"{type(self).__name__}.compute returned a "
-                f"{type(content).__name__}, not a mapping."
-            )
-        etag = computed_etag(content)
+        # The answer is the core's (`scrud_django.core.computed`), which the
+        # ninja computed route gives too.
+        content, etag = computed_answer(request, None, slug, compute=self.compute)
         headers = {"ETag": etag}
-        if _matches(request.headers.get("If-None-Match", ""), etag):
+        if not_modified(request, etag):
             return Response(status=304, headers=headers)
-        links = [
-            f'<{url}>; rel="{rel}"; type="{media_type}"'
-            for url, rel, media_type in (
-                (
-                    ScrudfulMeta.schema_link_or_func(self, request),
-                    "describedby",
-                    "application/schema+json",
-                ),
-                (
-                    ScrudfulMeta.context_link_or_func(self, request),
-                    "http://www.w3.org/ns/json-ld#context",
-                    "application/ld+json",
-                ),
-            )
-            if url
-        ]
-        if links:
-            headers["Link"] = ", ".join(links)
+        resource_type = self.get_resource_type() if self.resource_type_name else None
+        link = computed_link(request, resource_type)
+        if link:
+            headers["Link"] = link
         return Response(content, headers=headers)

@@ -8,12 +8,14 @@ import json
 from contextlib import contextmanager
 
 import pytest
+from django.conf import settings
 from django.contrib.auth.models import AnonymousUser, User
 from django.http import HttpResponse
 from django.test import Client, RequestFactory, override_settings
 from django.urls import path, resolve
 from django.utils.http import quote_etag
 from ninja import Router
+from ninja.errors import AuthenticationError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 
@@ -229,6 +231,31 @@ def test_entry_resolves_the_user_with_the_session_csrf_check():
 
     assert response.status_code == 403, response.content
     assert "CSRF Failed" in response.json()["detail"]
+    row.refresh_from_db()
+    assert row.first_name == "before"
+
+
+def _refusing_credentials(request):
+    """A ``SCOPED_RBAC["NINJA_USER"]`` hook refusing the request's credentials
+    (ninja's ``AuthenticationError``, not an access error)."""
+    raise AuthenticationError()
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+def test_entry_answers_a_hook_refusing_the_credentials(method):
+    # As DRF answers the authentication it runs failing: a 401, before the
+    # operation runs, not an error escaping the API.
+    row = User.objects.create(username="row", first_name="before")
+    url = {
+        "GET": "/ninja/errors/query/",
+        "PUT": f"/ninja/write-then-answer/{row.pk}/200/",
+    }[method]
+    refusing = {**settings.SCOPED_RBAC, "NINJA_USER": _refusing_credentials}
+    with override_settings(SCOPED_RBAC=refusing):
+        response = Client().generic(method, url)
+
+    assert response.status_code == 401, response.content
+    assert response.json()["code"] == "not_authenticated"
     row.refresh_from_db()
     assert row.first_name == "before"
 

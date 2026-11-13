@@ -13,10 +13,13 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.http import HttpResponse
 from django.test import override_settings
+from django.urls import Resolver404, resolve
 from django.utils.http import http_date, quote_etag
+from ninja.errors import AuthenticationError
 from scoped_rbac.models import Role, RoleAssignment
 
-from scrud_django import collection_type_uri_for, registration
+from scrud_django import ScrudServices, collection_type_uri_for, registration
+from scrud_django.computed import computed_etag
 from scrud_django.core.lists import list_etag
 from scrud_django.models import Resource, ResourceType
 
@@ -195,7 +198,14 @@ def test_hooked_types_are_served_alike_on_a_processs_first_parity_call():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="Task 8")
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "The catalog's ETag hashes its absolute URLs, which name the serving "
+        "mount, and the UI's types are served on DRF only (R3): see "
+        "test_services_differ_only_where_the_serving_mount_does."
+    ),
+)
 def test_services_match():
     drf, ninja = parity(Case("services", "GET", "{mount}services/"))
 
@@ -1508,6 +1518,363 @@ def test_options_resolves_the_user_as_other_methods_do(client):
         assert (response.status_code, response["Allow"]) == (204, every)
 
 
+# A computed type (``summaries``, computed by its registered ``compute``): its
+# item route only, open to an authenticated requester (DRF's
+# ``IsAuthenticated``), answered with the content's ETag and the type's
+# schema and context Links; every other method a 405 (after authentication).
+
+COMPUTED = "{mount}summaries/k1/"
+
+
+def _computed_etag(keys):
+    """The headers of a request carrying `If-None-Match` with the ETag of
+    ``summaries/k1/`` as the user the setup logged in (the last) gets it."""
+    user = User.objects.latest("pk")
+    return {"If-None-Match": computed_etag({"key": "k1", "user": user.get_username()})}
+
+
+def _admin(client):
+    _user(client, superuser=True)
+    return {}
+
+
+def _no_grants(client):
+    _user(client)
+    return {}
+
+
+COMPUTED_CASES = [
+    (Case("computed-get-admin", "GET", COMPUTED, _admin), 200),
+    (Case("computed-get-no-grants", "GET", COMPUTED, _no_grants), 200),
+    (Case("computed-get-anonymous", "GET", COMPUTED), 401),
+    (
+        Case(
+            "computed-get-json",
+            "GET",
+            COMPUTED,
+            _admin,
+            headers={"Accept": "application/json"},
+        ),
+        200,
+    ),
+    (Case("computed-head", "HEAD", COMPUTED, _admin), 200),
+    (
+        Case("computed-if-none-match", "GET", COMPUTED, _admin, headers=_computed_etag),
+        304,
+    ),
+    (
+        Case(
+            "computed-head-if-none-match",
+            "HEAD",
+            COMPUTED,
+            _admin,
+            headers=_computed_etag,
+        ),
+        304,
+    ),
+    (
+        Case(
+            "computed-if-none-match-other",
+            "GET",
+            COMPUTED,
+            _admin,
+            headers={"If-None-Match": '"other"'},
+        ),
+        200,
+    ),
+    (
+        Case(
+            "computed-if-none-match-star",
+            "GET",
+            COMPUTED,
+            _admin,
+            headers={"If-None-Match": "*"},
+        ),
+        304,
+    ),
+    (Case("computed-options", "OPTIONS", COMPUTED, _admin), 200),
+    (Case("computed-options-anonymous", "OPTIONS", COMPUTED), 401),
+    (Case("preflight-computed", "OPTIONS", COMPUTED, _admin, headers=PREFLIGHT), 200),
+    (Case("preflight-computed-anonymous", "OPTIONS", COMPUTED, headers=PREFLIGHT), 401),
+    *(
+        (Case(f"computed-{method.lower()}", method, COMPUTED, _admin, body={}), 405)
+        for method in ("POST", "PUT", "PATCH", "DELETE")
+    ),
+    (Case("computed-put-anonymous", "PUT", COMPUTED, body={}), 401),
+    (Case("computed-delete-anonymous", "DELETE", COMPUTED), 401),
+]
+
+
+@pytest.mark.parametrize(
+    "case, status",
+    [pytest.param(case, status, id=case.id) for case, status in COMPUTED_CASES],
+)
+def test_computed_routes_answer_alike(case, status):
+    drf, ninja = parity(case)
+
+    assert drf.status == status, drf
+    assert drf == ninja
+
+
+def test_computed_links_name_the_documents_of_the_serving_mount():
+    drf, ninja = parity(Case("computed-links", "GET", COMPUTED, _admin))
+
+    assert drf == ninja
+    rtype = registration.get_resource_type_for("summaries")
+    assert split_links(ninja.headers["Link"]) == [
+        f"<http://testserver{{mount}}json-schema/{rtype.schema.pk}/>; "
+        'rel="describedby"; type="application/schema+json"',
+        f"<http://testserver{{mount}}json-ld/{rtype.context.pk}/>; "
+        'rel="http://www.w3.org/ns/json-ld#context"; type="application/ld+json"',
+    ]
+
+
+# The service catalog (``services/``): GET (HEAD is DRF's api_view's 405),
+# OPTIONS, open to everyone. The catalog lists each type's list URL, on the
+# serving mount.
+
+SERVICES = "{mount}services/"
+
+SERVICES_CASES = [
+    (Case("services-options", "OPTIONS", SERVICES), 204),
+    (Case("services-options-admin", "OPTIONS", SERVICES, _admin), 204),
+    (Case("preflight-services", "OPTIONS", SERVICES, headers=PREFLIGHT), 204),
+    (
+        Case(
+            "services-malformed-if-none-match",
+            "GET",
+            SERVICES,
+            headers={"If-None-Match": "other"},
+        ),
+        400,
+    ),
+    *(
+        (Case(f"services-{method.lower()}", method, SERVICES, body={}), 405)
+        for method in ("POST", "PUT", "PATCH", "DELETE")
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case, status",
+    [pytest.param(case, status, id=case.id) for case, status in SERVICES_CASES],
+)
+def test_services_routes_answer_alike(case, status):
+    drf, ninja = parity(case)
+
+    assert drf.status == status, drf
+    assert drf == ninja
+
+
+def _ninja_serves(url):
+    """Whether `url` (a normalized list URL of the catalog) is served by the
+    ninja API."""
+    path = url.removeprefix("http://testserver").replace("{mount}", MOUNTS["ninja"])
+    try:
+        return resolve(path).namespace == "scrud-ninja"
+    except Resolver404:
+        return False
+
+
+def _catalog(exchange, front_end):
+    """The catalog `exchange` (a normalized ``services/`` GET) served, its
+    URLs on `front_end`'s mount again, in order."""
+    return [
+        (type_uri, url.replace("{mount}", MOUNTS[front_end]))
+        for type_uri, url in json.loads(exchange.body).items()
+    ]
+
+
+def test_services_differ_only_where_the_serving_mount_does():
+    """What `test_services_match` cannot assert yet: the two catalogs, each
+    on its own mount, are alike but for what names that mount. Each lists
+    every type, in the same order; a type both front ends serve on the
+    serving mount (and so alike once normalized); one ninja does not serve
+    (the UI's, R3) at the URL serving it (DRF's). Their ETags are each a
+    hash of the catalog served (`ScrudServices.etag_of`): they differ as the
+    URLs do. Every other header is alike."""
+    drf, ninja = parity(Case("services", "GET", SERVICES))
+
+    assert drf.status == ninja.status == 200, drf
+    drf_catalog, ninja_catalog = _catalog(drf, "drf"), _catalog(ninja, "ninja")
+    assert [uri for uri, _ in drf_catalog] == [uri for uri, _ in ninja_catalog]
+    normalized_drf = json.loads(drf.body)
+    unserved = 0
+    for (type_uri, drf_url), (_, ninja_url) in zip(
+        drf_catalog, ninja_catalog, strict=True
+    ):
+        if _ninja_serves(normalized_drf[type_uri]):
+            assert ninja_url == drf_url.replace(MOUNTS["drf"], MOUNTS["ninja"])
+        else:
+            unserved += 1
+            assert ninja_url == drf_url, type_uri
+    assert 0 < unserved < len(drf_catalog)
+    for exchange, catalog in ((drf, drf_catalog), (ninja, ninja_catalog)):
+        assert exchange.headers["ETag"] == quote_etag(
+            ScrudServices.etag_of(dict(catalog))
+        )
+    differing = {"ETag", "Content-Length"}
+    assert {k: v for k, v in drf.headers.items() if k not in differing} == {
+        k: v for k, v in ninja.headers.items() if k not in differing
+    }
+
+
+def test_services_if_none_match_answers_alike(client):
+    """A GET naming the catalog's ETag (each front end's own) is a 304, alike
+    on both but for that ETag (`test_services_differ_only_where_the_serving_mount_does`);
+    one naming any (``*``) too."""
+    serve_both()
+    answers = {}
+    for mount in MOUNTS.values():
+        url = SERVICES.replace("{mount}", mount)
+        etag = client.get(url)["ETag"]
+        for name, header in (("own", etag), ("any", "*")):
+            response = client.get(url, headers={"If-None-Match": header})
+            exchange = normalized(response, mount, {})
+            assert exchange.status == 304, exchange
+            assert exchange.headers.pop("ETag") == etag
+            answers.setdefault(name, []).append(exchange)
+
+    for drf, ninja in answers.values():
+        assert drf == ninja
+
+
+def _head_of(client, mount, path):
+    """A HEAD of `path` on `mount`, normalized, its Content-Length dropped (it
+    counts a body the HEAD leaves out), and that Content-Length."""
+    response = client.head(path.replace("{mount}", mount))
+    length = response.get("Content-Length")
+    if length is not None:
+        del response["Content-Length"]
+    return normalized(response, mount, {}), length
+
+
+def test_services_head_is_refused_alike(client):
+    # DRF's api_view serves only the methods it lists: not HEAD.
+    serve_both()
+    drf, ninja = (_head_of(client, mount, SERVICES) for mount in MOUNTS.values())
+
+    assert drf[0].status == 405, drf
+    assert drf == ninja
+
+
+# The role routes (scoped-rbac's own: ``roles/``, ``role-assignments/``,
+# ``user-rbac-policy/``), served by both front ends at the mount's root.
+
+ROLE_CASES = [
+    (Case("roles-get-admin", "GET", "{mount}roles/", _admin), 200),
+    (Case("roles-get-anonymous", "GET", "{mount}roles/"), 401),
+    (
+        Case("role-assignments-get-admin", "GET", "{mount}role-assignments/", _admin),
+        200,
+    ),
+    (
+        Case("user-rbac-policy-get-admin", "GET", "{mount}user-rbac-policy/", _admin),
+        200,
+    ),
+]
+
+#: Where scoped-rbac serves its schemas and contexts in `tests.parity_urls`:
+#: ``scoped_rbac.semantic_urls``, included once (``scrud_django.urls``, under
+#: the DRF mount), which both front ends link to.
+SEMANTIC = f"http://testserver{MOUNTS['drf']}semantic/"
+
+
+def _semantic_links_of_the_drf_mount(exchange):
+    """`exchange` (a ninja one) with its Links to scoped-rbac's semantic
+    documents (`SEMANTIC`) normalized as the DRF exchange's are: both front
+    ends link to the one place serving them, which the harness normalizes
+    on the DRF mount only."""
+    if "Link" not in exchange.headers:
+        return exchange
+    link = exchange.headers["Link"].replace(
+        SEMANTIC, "http://testserver{mount}semantic/"
+    )
+    return Exchange(exchange.status, {**exchange.headers, "Link": link}, exchange.body)
+
+
+@pytest.mark.parametrize(
+    "case, status",
+    [pytest.param(case, status, id=case.id) for case, status in ROLE_CASES],
+)
+def test_role_routes_answer_alike(case, status):
+    drf, ninja = parity(case)
+
+    assert drf.status == status, drf
+    assert drf == _semantic_links_of_the_drf_mount(ninja)
+
+
+def test_computed_and_services_vary_on_accept_alike(client):
+    serve_both()
+    admin = _user(client, superuser=True)
+    etag = computed_etag({"key": "k1", "user": admin.get_username()})
+    json_body = {"data": "{}", "content_type": "application/json"}
+    asked = {
+        "computed-get": _varies(client, "GET", COMPUTED),
+        "computed-head": _varies(client, "HEAD", COMPUTED),
+        "computed-get-json": _varies(
+            client, "GET", COMPUTED, headers={"Accept": "application/json"}
+        ),
+        "computed-not-modified": _varies(
+            client, "GET", COMPUTED, headers={"If-None-Match": etag}
+        ),
+        "computed-options": _varies(client, "OPTIONS", COMPUTED),
+        "computed-put": _varies(client, "PUT", COMPUTED, **json_body),
+        "services-get": _varies(client, "GET", SERVICES),
+        "services-not-modified": _varies(
+            client, "GET", SERVICES, headers={"If-None-Match": "*"}
+        ),
+        "services-malformed": _varies(
+            client, "GET", SERVICES, headers={"If-None-Match": "x"}
+        ),
+        "services-options": _varies(client, "OPTIONS", SERVICES),
+        "services-post": _varies(client, "POST", SERVICES, **json_body),
+        "services-head": _varies(client, "HEAD", SERVICES),
+    }
+    client.logout()
+    asked["computed-anonymous"] = _varies(client, "GET", COMPUTED)
+    asked["computed-put-anonymous"] = _varies(client, "PUT", COMPUTED, **json_body)
+
+    for name, varies in asked.items():
+        assert varies["drf"] == varies["ninja"], (name, varies)
+
+
+def _refusing_hook(request):
+    """A ``SCOPED_RBAC["NINJA_USER"]`` hook refusing the request's credentials."""
+    raise AuthenticationError()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "{mount}partner-profiles/",
+        "{mount}collections-json-schema/partner-profiles/",
+        "{mount}collections-json-ld/partner-profiles/",
+        COMPUTED,
+        SERVICES,
+    ],
+)
+def test_options_refuses_a_requester_failing_authentication(client, path):
+    """Every ninja OPTIONS resolves its requester
+    (``scoped_rbac.ninja.resolve_user``), as DRF authenticates every OPTIONS:
+    a ``NINJA_USER`` hook refusing the credentials refuses it (401), as DRF
+    refuses credentials its authentication fails."""
+    serve_both()
+    url = path.replace("{mount}", MOUNTS["ninja"])
+    assert client.options(url).status_code in (200, 204, 401)
+    refusing = {**settings.SCOPED_RBAC, "NINJA_USER": _refusing_hook}
+    with override_settings(SCOPED_RBAC=refusing):
+        response = client.options(url)
+
+    assert response.status_code == 401, response.content
+    assert response.json()["code"] == "not_authenticated", response.content
+    drf = client.options(
+        path.replace("{mount}", MOUNTS["drf"]),
+        headers={"Authorization": "Basic bm86bm8="},
+    )
+    assert drf.status_code == 401, drf.content
+
+
 # Uniform errors off (SCOPED_RBAC["UNIFORM_ERRORS"]) for a request: each front
 # end reads it per request, so an API built with it on answers natively.
 
@@ -1607,6 +1974,24 @@ UNIFORM_CASES = [
             "post-if-match-malformed",
             "collections-json-schema-unknown",
             "collections-json-ld-unknown",
+        }
+    ),
+    *(
+        case
+        for case in _options_cases()
+        if case.id in {"put-collections-json-schema", "delete-collections-json-ld"}
+    ),
+    *(
+        case
+        for case, _ in [*COMPUTED_CASES, *SERVICES_CASES]
+        if case.id
+        in {
+            "computed-get-anonymous",
+            "computed-options-anonymous",
+            "computed-put",
+            "computed-put-anonymous",
+            "services-malformed-if-none-match",
+            "services-post",
         }
     ),
 ]

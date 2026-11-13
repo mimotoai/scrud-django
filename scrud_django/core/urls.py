@@ -28,3 +28,26 @@ def absolute_reverse(name, *, args=(), kwargs=None, request=None, namespace=None
         except NoReverseMatch:
             pass
     return reverse(name, args=args or None, kwargs=kwargs, request=request)
+
+
+def first_absolute_reverse(
+    names, *, args=(), kwargs=None, request=None, namespace=None
+):
+    """`absolute_reverse` of the first of `names` the serving namespace (the
+    request's, else `namespace`) has, else of the first reversible globally:
+    a route two front ends name differently (DRF's ``role-list``,
+    scoped-rbac's ninja ``scoped-rbac-role-list``) points at the API that
+    served the request. ``NoReverseMatch`` when none reverses (or there is
+    none)."""
+    names = tuple(names)
+    match = getattr(request, "resolver_match", None)
+    serving = getattr(match, "namespace", "") or namespace
+    candidates = [f"{serving}:{name}" for name in names] if serving else []
+    candidates.extend(names)
+    error = NoReverseMatch(f"None of {names!r} is a route.")
+    for candidate in candidates:
+        try:
+            return reverse(candidate, args=args or None, kwargs=kwargs, request=request)
+        except NoReverseMatch as exc:
+            error = exc
+    raise error

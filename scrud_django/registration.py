@@ -1138,6 +1138,30 @@ def computed_urls(slug, viewset_class):
     return [path(f'{slug}/<str:slug>/', detail, name=name)]
 
 
+#: The route name prefixes of scoped-rbac's lists, by model: DRF's
+#: (``scoped_rbac.urls``), then its ninja router's (``scoped_rbac.ninja.api``).
+ROLE_LIST_ROUTES = {
+    "Role": ("role", "scoped-rbac-role"),
+    "RoleAssignment": ("roleassignment", "scoped-rbac-roleassignment"),
+}
+
+
+def register_role_services():
+    """Add scoped-rbac's roles and role assignments to the service catalog
+    (by their collection type URIs), each on the front end serving the
+    request (`ROLE_LIST_ROUTES`): ``scrud_django.urls`` and the ninja API
+    (``scrud_django.ninja.api``), which mount them, both call it."""
+    from scoped_rbac.models import Role, RoleAssignment
+
+    from scrud_django import collection_type_uri_for
+
+    for model in (Role, RoleAssignment):
+        services.add_service(
+            collection_type_uri_for(model.resource_type.iri),
+            ROLE_LIST_ROUTES[model.__name__],
+        )
+
+
 def built_in_type_specs():
     """The `TypeSpec`s of the built-in resource types: JSON Schema and JSON-LD
     context documents, indexing policies and workflow policies. Each

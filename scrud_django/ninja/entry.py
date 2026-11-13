@@ -36,8 +36,10 @@ def entry(run):
 
     A real OPTIONS passes straight through: scrud's OPTIONS operations
     resolve the user themselves, once they know it is no CORS preflight
-    (``scrud_django.ninja.routers``). A refusal is answered by the
-    operation's API (``api.on_exception``). Operations are sync
+    (``scrud_django.ninja.routers``). A refusal (or what a
+    ``SCOPED_RBAC["NINJA_USER"]`` hook raises: ninja's
+    ``AuthenticationError`` is a 401) is answered by the operation's API
+    (``api.on_exception``). Operations are sync
     (``TypeError`` for an async one)."""
     if inspect.iscoroutinefunction(run):
         raise TypeError("scrud's ninja entry checks serve sync operations only.")
@@ -49,7 +51,9 @@ def entry(run):
         try:
             access.refuse_rewritten_options(request)
             resolve_user(request)
-        except access.AccessError as exc:
+        except Exception as exc:
+            # An access error, or what a ``NINJA_USER`` hook raises (ninja's
+            # ``AuthenticationError``: 401), as the operation would answer it.
             return _api_of(run).on_exception(request, exc)
         if not _in_write_transaction(request):
             return run(request, *args, **kwargs)

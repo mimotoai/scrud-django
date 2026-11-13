@@ -3,9 +3,11 @@
 from collections.abc import Sequence
 
 import ninja
+from scoped_rbac.ninja.api import router as scoped_rbac_router
 from scrudful.ninja import ScrudfulRouter
 
-from scrud_django.ninja import errors, routers
+from scrud_django import registration
+from scrud_django.ninja import computed, errors, routers, services
 from scrud_django.registration import TypeSpec, built_in_type_specs
 
 
@@ -19,20 +21,33 @@ def api(
     """A ``NinjaAPI`` serving scrud's resource types: the built-in ones (JSON
     Schema and JSON-LD documents, indexing and workflow policies) unless
     `built_ins` is false, and each of `types`, every one registered first
-    (`TypeSpec.register`), and the collection documents their lists link to
-    (`routers.collections_router`). Its URL names are under `urls_namespace`; the
-    rest of `ninja_kwargs` go to ``NinjaAPI``, but ``auth`` (``TypeError``):
-    scrud authenticates every request itself
-    (`scrud_django.ninja.entry.entry`), as scoped-rbac decides, so that an
-    anonymous request gets the anonymous user's grants and a hidden item is
-    a 404 rather than ninja's 401.
+    (`TypeSpec.register`): a stored type's list and item routes
+    (`routers.type_router`), a computed type's item route
+    (`computed.computed_router`). Also the service catalog (``services/``,
+    `services.services_router`), scoped-rbac's own routes (``roles/``,
+    ``role-assignments/``, ``user-rbac-policy/``, with the roles in the
+    catalog, ``registration.register_role_services``), and the collection
+    documents the lists link to (`routers.collections_router`). Its URL names
+    are under `urls_namespace`; the rest of `ninja_kwargs` go to
+    ``NinjaAPI``, but ``auth`` (``TypeError``): scrud authenticates every
+    request itself (`scrud_django.ninja.entry.entry`), as scoped-rbac
+    decides, so that an anonymous request gets the anonymous user's grants
+    and a hidden item is a 404 rather than ninja's 401.
+
+    The ``ScrudfulRouter``s are mounted first, before any path that could
+    shadow their HTTP Schema Resource routes (``/_hsr/``).
 
     Its errors are answered as on DRF (`errors.install`), as uniform errors
-    are for each request (`errors.answer_natively_when_off`), its type
-    routes vary on ``Accept`` as DRF's (`routers.vary_on_accept`), and the
-    collection documents' routes give DRF's ``Allow``
-    (`routers.as_drf_api_views`). More routers may be added before its
-    ``urls`` are read."""
+    are for each request (`errors.answer_natively_when_off`); the routes of
+    DRF views negotiating among several renderers vary on ``Accept`` as
+    theirs (`routers.vary_on_accept`); the computed routes refuse the
+    anonymous before their 405 (`computed.refuse_the_anonymous`); the
+    plain routers' 405 is DRF's whatever uniform errors are
+    (`routers.method_not_allowed_as_drf`); and the
+    collection documents', the computed routes' and the catalog's answers
+    give DRF's ``Allow`` (`routers.as_drf_api_views`,
+    `services.as_drf_api_view_function`). More routers may be added before
+    its ``urls`` are read."""
     if "auth" in ninja_kwargs:
         raise TypeError(
             "scrud_django.ninja.api() takes no auth: scrud resolves the user of "
@@ -42,22 +57,49 @@ def api(
         urls_namespace=urls_namespace, default_router=ScrudfulRouter(), **ninja_kwargs
     )
     specs = [*(built_in_type_specs() if built_ins else ()), *types]
-    url_names = []
+    type_routes = []
+    computed_routes = []
     for spec in specs:
         spec.register()
-        # A computed type's route is not served yet. Each router is built
-        # afresh for each API: ninja mounts a router on one API only.
+    # Each router is built afresh for each API: ninja mounts a router on one
+    # API only. The ScrudfulRouters first (scrudful: a path mounted before
+    # one of their HSR routes must not shadow it).
+    for spec in specs:
         if spec.kind == "json":
             scrud_api.add_router(
                 f"{spec.slug}/",
                 routers.type_router(spec, urls_namespace=urls_namespace),
             )
-            url_names.extend((f"{spec.slug}-list", f"{spec.slug}-detail"))
-    # The documents the lists' Links name, after the type routers.
+            type_routes.extend((f"{spec.slug}-list", f"{spec.slug}-detail"))
+    scrud_api.add_router("services/", services.services_router())
+    scrud_api.add_router("", scoped_rbac_router())
+    registration.register_role_services()
+    for spec in specs:
+        if spec.kind == "computed":
+            scrud_api.add_router(
+                f"{spec.slug}/",
+                computed.computed_router(spec, urls_namespace=urls_namespace),
+            )
+            computed_routes.append(f"{spec.slug}-detail")
+    # The documents the lists' Links name.
     scrud_api.add_router("", routers.collections_router())
-    url_names.extend(routers.COLLECTION_ROUTES)
     errors.install(scrud_api)
+    computed.refuse_the_anonymous(scrud_api, computed_routes)
+    routers.method_not_allowed_as_drf(
+        scrud_api, [*routers.COLLECTION_ROUTES, *computed_routes]
+    )
     errors.answer_natively_when_off(scrud_api)
-    routers.vary_on_accept(scrud_api, url_names)
-    routers.as_drf_api_views(scrud_api, routers.COLLECTION_ROUTES)
+    routers.vary_on_accept(
+        scrud_api,
+        [
+            *type_routes,
+            *computed_routes,
+            *routers.COLLECTION_ROUTES,
+            services.SERVICES_ROUTE,
+        ],
+    )
+    routers.as_drf_api_views(scrud_api, [*routers.COLLECTION_ROUTES, *computed_routes])
+    services.as_drf_api_view_function(
+        scrud_api, [services.SERVICES_ROUTE], services.SERVICES_METHODS
+    )
     return scrud_api

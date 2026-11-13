@@ -8,7 +8,7 @@ from contextlib import ExitStack, contextmanager
 
 from django.core.exceptions import PermissionDenied
 from django.core.paginator import InvalidPage
-from django.http import Http404, HttpResponse
+from django.http import Http404, HttpResponse, HttpResponseNotAllowed
 from django.utils.cache import patch_vary_headers
 from django.utils.translation import gettext
 from ninja import Router
@@ -324,7 +324,9 @@ def _document_options(name):
     ``SimpleMetadata`` of its view (`COLLECTION_OPTIONS`, with DRF's
     default renderers and parsers), a 200 written as DRF writes it (the
     serving API's renderer, ``application/json``), whatever the slug, a
-    CORS preflight's too, as the DRF view answers them."""
+    CORS preflight's too, as the DRF view answers them, once the requester
+    is resolved (`resolve_user`, which `entry` leaves to this operation:
+    DRF authenticates every request)."""
     metadata = {
         **COLLECTION_OPTIONS[name],
         "renders": list(DRF_RENDERS),
@@ -332,6 +334,9 @@ def _document_options(name):
     }
 
     def collection_document_options(request, slug: str):
+        # `entry` leaves a real OPTIONS to the operation: the DRF view
+        # authenticates it as any other (a CORS preflight included).
+        resolve_user(request)
         return _serving_api(request).create_response(request, metadata, status=200)
 
     return collection_document_options
@@ -354,6 +359,29 @@ def _as_drf_api_view(view):
         response["Allow"] = COLLECTION_ALLOW
         if response.has_header("Access-Control-Expose-Headers"):
             del response["Access-Control-Expose-Headers"]
+        return response
+
+    return answered
+
+
+def method_not_allowed_as_drf(api, url_names) -> None:
+    """Have `api`'s URL patterns named in `url_names` (those of plain ninja
+    routers: the collection documents', the computed types') answer ninja's
+    own 405 (a method no operation of the path serves) through `api`'s
+    handlers, as an ``HttpError(405)``, when scoped-rbac's handlers left it
+    as ninja's (they do while uniform errors are off): problem details,
+    which `scrud_django.ninja.errors.answer_natively_when_off` answers as
+    DRF's native 405 then. Call it before ``answer_natively_when_off``,
+    before ``api.urls`` is read."""
+    _wrap_patterns(api, url_names, functools.partial(_method_not_allowed, api))
+
+
+def _method_not_allowed(api, view):
+    @functools.wraps(view)
+    def answered(request, *args, **kwargs):
+        response = view(request, *args, **kwargs)
+        if isinstance(response, HttpResponseNotAllowed):
+            return api.on_exception(request, HttpError(405, "Method not allowed"))
         return response
 
     return answered
