@@ -63,10 +63,36 @@ def test_a_ninja_user_hook_maps_basic_credentials(item):
     with override_settings(SCOPED_RBAC=HOOKED):
         read = client.get(f"{NINJA}partner-profiles/{item.pk}/", headers=_basic())
         assert read.status_code == 200, read.content
-        # Not a session user: no CSRF token is needed.
+        # A Basic-only client has no session: no CSRF token is needed.
         written = _put(client, item, **_basic())
         assert written.status_code == 200, written.content
     assert Resource.objects.get(pk=item.pk).content["name"] == "y"
+
+
+def _session_client():
+    client = Client(enforce_csrf_checks=True)
+    client.force_login(User.objects.get(username="boss"))
+    return client
+
+
+def test_a_session_user_stays_that_user_with_the_hook_set(item):
+    with override_settings(SCOPED_RBAC=HOOKED):
+        read = _session_client().get(f"{NINJA}partner-profiles/{item.pk}/")
+    assert read.status_code == 200, read.content
+
+
+def test_a_session_users_write_is_csrf_checked_with_the_hook_set(item):
+    with override_settings(SCOPED_RBAC=HOOKED):
+        written = _put(_session_client(), item)
+    assert written.status_code == 403, written.content
+    assert b"CSRF Failed" in written.content
+
+
+def test_a_session_cookie_with_basic_credentials_is_csrf_checked(item):
+    with override_settings(SCOPED_RBAC=HOOKED):
+        written = _put(_session_client(), item, **_basic())
+    assert written.status_code == 403, written.content
+    assert b"CSRF Failed" in written.content
 
 
 @pytest.mark.parametrize("credentials", [_basic(password="wrong"), _basic("nobody")])

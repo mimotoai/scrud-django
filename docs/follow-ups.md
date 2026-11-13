@@ -1525,6 +1525,18 @@ Test: `tests/test_ninja_auth.py` pins today's answers (Basic alone is
 anonymous; the hook maps it); the hook would add a case where DRF's Basic
 authentication alone gives the item GET a 200 on ninja.
 
+<a id="scoped-rbac-ninja-user-hook-csrf-doc"></a>
+## scoped-rbac-ninja-user-hook-csrf-doc: the `ninja_user_hook` docstring says a hook's user skips the CSRF check
+
+scoped-rbac's `conf.ninja_user_hook` docstring says a user a `NINJA_USER` hook
+gives skips the CSRF check. That is not true for the session's user: a hook
+that returns the request's session user (as the README's Basic hook does for a
+request with no Basic header) is CSRF-checked on an unsafe method, and so is a
+request with a session cookie whose Basic credentials resolve to that same
+user. Only a hook's user who is not the session's authenticated user skips it.
+This is an upstream docs proposal (scoped-rbac is not edited here); the README
+states the behaviour. Test: `tests/test_ninja_auth.py` (the session-user cases).
+
 <a id="ninja-atomic-requests-rollback"></a>
 ## ninja-atomic-requests-rollback: ninja's error handlers do not mark an `ATOMIC_REQUESTS` transaction for rollback
 

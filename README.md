@@ -100,7 +100,7 @@ urlpatterns = [
       header = request.headers.get("Authorization", "")
       scheme, _, credentials = header.partition(" ")
       if scheme.lower() != "basic":
-          return None
+          return getattr(request, "user", None)
       try:
           username, _, password = base64.b64decode(credentials).decode().partition(":")
       except (binascii.Error, UnicodeDecodeError):
@@ -115,8 +115,14 @@ urlpatterns = [
   SCOPED_RBAC = {..., "NINJA_USER": "myapp.auth.basic_user"}
   ```
 
-  A user a hook gives is not a session user, so a write needs no CSRF token
-  (a session user's unsafe request is CSRF-checked). See
+  A hook replaces the session lookup; it does not add to it. With a hook set,
+  only its result is the user, so a request without Basic credentials must get
+  the session's user from the hook itself (the example returns
+  `request.user`), or a logged-in session user becomes anonymous. A hook's
+  user who is also the request's session user is CSRF-checked on an unsafe
+  request, whether or not Basic credentials came with the cookie. A
+  Basic-only client has no session cookie, so a write needs no token. Send
+  Basic credentials only over TLS. See
   `ninja-drf-authenticators` in the follow-ups.
 * A computed type's `compute(request, key)` receives a plain Django
   `HttpRequest` on ninja (a DRF `Request` on DRF): read `request.GET` and

@@ -9,7 +9,7 @@ def basic_user(request):
     header = request.headers.get("Authorization", "")
     scheme, _, credentials = header.partition(" ")
     if scheme.lower() != "basic":
-        return None
+        return getattr(request, "user", None)
     try:
         username, _, password = base64.b64decode(credentials).decode().partition(":")
     except (binascii.Error, UnicodeDecodeError):
