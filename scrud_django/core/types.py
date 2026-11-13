@@ -12,8 +12,9 @@ what the grants allow, never allow what they refuse.
 import importlib
 import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Protocol
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -29,6 +30,26 @@ from scrud_django.core.requirements import (
 )
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
+
+
+class Check(Protocol):
+    """A request or post-save check: allows a write in `context` only by
+    returning ``True``."""
+
+    def __call__(self, request, resource_type, body: Mapping, context: str) -> bool: ...
+
+
+class ObjectCheck(Protocol):
+    """An object check: allows a resource's content only by returning
+    ``True``."""
+
+    def __call__(self, request, resource_type, obj: Mapping) -> bool: ...
+
+
+class Compute(Protocol):
+    """A computed type's content for `key`."""
+
+    def __call__(self, request, key: str) -> Mapping: ...
 
 
 @dataclass(frozen=True)
@@ -52,10 +73,20 @@ class TypeOptions:
     - ``compute``: ``(request, key: str) -> Mapping``, a computed type's
       content for `key`."""
 
-    checks: tuple[Callable, ...] = ()
-    object_checks: tuple[Callable, ...] = ()
+    checks: tuple[Check, ...] = ()
+    object_checks: tuple[ObjectCheck, ...] = ()
     content_filter: bool = False
-    compute: Callable | None = None
+    compute: Compute | None = None
+
+    def __post_init__(self):
+        # Any sequence given is kept as a tuple of the same hook objects
+        # (their identity is how registrations are compared).
+        for name in ("checks", "object_checks"):
+            hooks = tuple(getattr(self, name))
+            for hook in hooks:
+                if not callable(hook):
+                    raise TypeError(f"TypeOptions.{name}: {hook!r} is not callable")
+            object.__setattr__(self, name, hooks)
 
 
 # The methods whose body the request check reads (the scrud views' own

@@ -146,6 +146,11 @@ class ScrudException(Exception):
     status_code = 500
     default_detail = "A server error occurred."
     default_code = "error"
+    # The RFC 7807 members a subclass says more with; one left ``None`` is
+    # left out of `response_data`.
+    type: str | None = None
+    title: str | None = None
+    instance: str | None = None
 
     def __init__(self, message=None):
         if message is None:
@@ -167,8 +172,8 @@ class ScrudException(Exception):
         """Return RFC 7807 response data"""
         data = {}
         for property_name in ["type", "title", "detail", "instance"]:
-            if hasattr(self, property_name):
-                value = getattr(self, property_name)
+            value = getattr(self, property_name)
+            if value is not None:
                 data[property_name] = str(value) if isinstance(value, str) else value
         return data
 

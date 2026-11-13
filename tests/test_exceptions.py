@@ -445,3 +445,19 @@ def test_only_drf_being_absent_selects_the_no_drf_branch(error, falls_back):
     else:
         assert result.returncode != 0
         assert "absent" in result.stderr or "broken" in result.stderr
+
+
+def test_a_bare_scrud_exception_renders_only_the_members_it_sets():
+    from scrud_django.exceptions import ScrudException
+
+    class Bare(ScrudException):
+        status_code = 418
+
+    class Titled(Bare):
+        title = "Titled"
+
+    assert Bare("nope").response_data({}) == {"detail": "nope"}
+    assert Titled("nope").response_data({}) == {"title": "Titled", "detail": "nope"}
+    assert ScrudException.type is None
+    assert ScrudException.title is None
+    assert ScrudException.instance is None

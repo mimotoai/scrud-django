@@ -1317,20 +1317,6 @@ requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
 `has_permission` refuses, as a user holding the list grant; assert
 `AccessDenied` (today it allows).
 
-<a id="core-type-redesign"></a>
-## core-type-redesign: the core's types before the ninja front end
-
-Before ninja phase 3. The core's types leave invariants to their callers:
-
-- `TypeOptions` keeps whatever sequences it is given: convert them to
-  tuples, with typed `Protocol`s for the hooks;
-- `ScrudException` should declare `type`, `title` and `instance` as class
-  attributes;
-- `ViewLeaf` reads its view's `type_iri` on each use: read it once.
-
-Test: type-checking (`mypy` or `pyright`) of `scrud_django/core/` with the
-new types.
-
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

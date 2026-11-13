@@ -9,6 +9,7 @@ them. DRF's ``~`` over an ``IsAuthorized`` has no neutral form
 `scrud_django.filters`."""
 
 from contextlib import contextmanager, nullcontext
+from functools import cached_property
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.http import Http404
@@ -159,9 +160,14 @@ class ViewLeaf:
             self._reads_content = True
         return self.permission
 
-    @property
+    @cached_property
     def type_iri(self):
-        return self.view.resource_type_iri
+        """The view's type IRI, read once (on first use: a view that names
+        no type, or cannot yet, is not asked at construction), as its detail
+        route has the view, so that a later change of its ``action`` does not
+        change it."""
+        with as_detail_route(self.view):
+            return self.view.resource_type_iri
 
     @property
     def reads_each_context(self):

@@ -980,3 +980,19 @@ def test_hooks_request_check_runs_outside_the_write_checks(conditioned):
                 asked()
         else:
             asked()
+
+
+def test_type_options_keep_sequences_as_tuples_of_the_same_hooks():
+    options = TypeOptions(checks=[deny_context_b], object_checks=[hide_secret])
+    assert options.checks == (deny_context_b,)
+    assert options.object_checks == (hide_secret,)
+    assert options.checks[0] is deny_context_b
+    assert options == TypeOptions(
+        checks=(deny_context_b,), object_checks=(hide_secret,)
+    )
+
+
+@pytest.mark.parametrize("field", ["checks", "object_checks"])
+def test_type_options_refuse_a_hook_that_is_not_callable(field):
+    with pytest.raises(TypeError, match=field):
+        TypeOptions(**{field: [1]})

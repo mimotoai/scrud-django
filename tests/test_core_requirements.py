@@ -740,3 +740,21 @@ def test_drf_view_without_isauthorized_still_served():
     assert response.status_code == 200
     listed = json.loads(response.content)["content"]
     assert [item["content"] for item in listed] == [{"rbac_context": "a"}]
+
+
+def test_view_leaf_reads_its_views_type_iri_once():
+    from scrud_django.drf_requirements import ViewLeaf
+
+    class ListView:
+        action = "list"
+
+        @property
+        def resource_type_iri(self):
+            return "tests://Item" if self.action == "retrieve" else "tests://List"
+
+    view = ListView()
+    leaf = ViewLeaf(object(), view)
+    assert leaf.type_iri == "tests://Item"
+    view.action = "list"
+    assert leaf.type_iri == "tests://Item"
+    assert view.action == "list"
