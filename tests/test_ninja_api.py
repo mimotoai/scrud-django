@@ -21,7 +21,7 @@ from rest_framework.permissions import AllowAny
 
 import scrud_django.ninja
 from scrud_django import registration
-from scrud_django.core import resources, writes
+from scrud_django.core import lists, resources, writes
 from scrud_django.core.lists import list_etag
 from scrud_django.core.types import requirement_for
 from scrud_django.exceptions import (
@@ -30,6 +30,7 @@ from scrud_django.exceptions import (
     ResourceInUseError,
     drf_errors,
 )
+from scrud_django.mixins.view_mixins import ListValidatorsMixin
 from scrud_django.models import Resource, ResourceType
 from scrud_django.ninja.entry import entry
 
@@ -343,8 +344,16 @@ def _list_etag_header(name):
 @pytest.mark.parametrize(
     "headers, status, events",
     [
-        (lambda: _list_etag_header("If-Match"), 201, ["enter", "save", "exit"]),
-        (lambda: {"If-None-Match": '"other"'}, 201, ["enter", "save", "exit"]),
+        (
+            lambda: _list_etag_header("If-Match"),
+            201,
+            ["enter", "evaluate", "save", "exit"],
+        ),
+        (
+            lambda: {"If-None-Match": '"other"'},
+            201,
+            ["enter", "evaluate", "save", "exit"],
+        ),
         # ``If-None-Match: *`` needs no validator: it fails on the list
         # existing, which it always does (core.lists.list_validators_needed),
         # so no lock is taken, as on DRF (LockedWriteMixin.is_conditional_create).
@@ -357,8 +366,9 @@ def test_conditional_create_holds_the_type_lock(
     monkeypatch, front_end, headers, status, events
 ):
     """A POST to the list whose preconditions need the list's validators
-    enters the type's conditional-create lock (core.writes) once, and saves
-    while it holds it; one that needs none takes no lock."""
+    enters the type's conditional-create lock (core.writes) once, reads the
+    list's validators to evaluate them, then saves, while it holds it; one
+    that needs none takes no lock and reads no validators."""
     serve_both()
     registration.ResourceRegistration.register(
         {"name": "x", "rbac_context": "a"}, "partner-profiles"
@@ -380,6 +390,30 @@ def test_conditional_create_holds_the_type_lock(
         seen.append("save")
         return register_instance(resource)
 
+    # The list's validators, read to evaluate the preconditions: on DRF by
+    # the view (once a request, cached), on ninja by the core.
+    if front_end == "drf":
+        drf_validators = ListValidatorsMixin.create_list_validators
+
+        def recording_drf_validators(view, request):
+            # Read once, when a precondition needs them: (None, None) else.
+            cached = "_scrud_create_validators" in view.__dict__
+            validators = drf_validators(view, request)
+            if not cached and validators != (None, None):
+                seen.append("evaluate")
+            return validators
+
+        monkeypatch.setattr(
+            ListValidatorsMixin, "create_list_validators", recording_drf_validators
+        )
+    else:
+        core_validators = lists.create_list_validators
+
+        def recording_core_validators(*args, **kwargs):
+            seen.append("evaluate")
+            return core_validators(*args, **kwargs)
+
+        monkeypatch.setattr(lists, "create_list_validators", recording_core_validators)
     monkeypatch.setattr(writes, "conditional_create_lock", recording_lock)
     monkeypatch.setattr(
         registration.ResourceRegistration,
