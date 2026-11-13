@@ -108,9 +108,8 @@ def building_with_uniform_errors_on():
     lazily, on the first request, so in a threaded server the API's build
     can overlap other first requests (mostly middleware: Python's per-module
     import lock makes URL resolution wait for the URLconf import); importing
-    the URLconf at start-up (e.g. a WSGI
-    warm-up) avoids that.
-    Swaps are serialized (`_SWAP_LOCK`)."""
+    the URLconf at start-up (e.g. a WSGI warm-up) avoids that. Swaps are
+    serialized (`_SWAP_LOCK`)."""
     with _SWAP_LOCK:
         saved = conf.RESOLVED_SETTINGS
         conf.RESOLVED_SETTINGS = conf.Settings(
