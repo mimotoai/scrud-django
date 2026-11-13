@@ -1169,3 +1169,19 @@ def test_create_and_update_name_the_types_own_iri_by_default():
         )
     assert post_save.call_args.kwargs["type_iri"] == JSON_LD
     assert Resource.objects.get(pk=stored.pk).content == body == saved.content
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_refuses_a_missing_instance_before_validating():
+    rtype = profiles_type()
+    request = request_by("put", UserFactory(is_staff=True, is_superuser=True))
+    with pytest.raises(TypeError, match="instance"):
+        update(
+            request,
+            rtype,
+            None,
+            {"name": "new", "rbac_context": "a"},
+            requirement=[GrantsLeaf(PP)],
+            using="default",
+        )

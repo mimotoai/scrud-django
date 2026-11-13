@@ -844,3 +844,50 @@ def test_an_anyof_options_hooks_ask_their_request_check_outside_the_write():
         requirement=requirement,
         readable=lambda: False,
     )
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_anyof_options_hook_refusing_outside_the_write_still_refuses():
+    """A type's hook nested in an ``AnyOf`` option that refuses when asked
+    outside the write's checks refuses through `check_request`,
+    `check_object` and `validate_write` alike (the option has no other way
+    in: the writer holds no grant for the other option)."""
+    from scrud_django.core.authz import _OUTSIDE, _transition
+
+    resource_type = json_ld()
+    stored = ResourceRegistration.register({"rbac_context": "a"}, "json-ld")
+    body = {"rbac_context": "a"}
+
+    def inside_only(request, rtype, content, context):
+        return _transition.get() is not _OUTSIDE
+
+    hook = HookLeaf(resource_type, TypeOptions(checks=(inside_only,)))
+    writer = user_with(({"http.GET": [JSON_LD], "http.PUT": [JSON_LD]}, "a"))
+    request = request_of("PUT", writer)
+    assert not hook.has_permission(request, body)
+    requirement = [
+        access.AnyOf([[GrantsLeaf("tests://Other")], [GrantsLeaf(JSON_LD), hook]])
+    ]
+    with pytest.raises(access.AccessDenied):
+        resources.check_request(
+            request, resource_type, requirement, list_route=False, body=body
+        )
+    with pytest.raises(access.AccessDenied):
+        resources.check_object(
+            request,
+            resource_type,
+            Resource.objects.get(pk=stored.pk),
+            requirement,
+            covered=True,
+            body=body,
+        )
+    with pytest.raises(access.AccessDenied):
+        writes.validate_write(
+            request,
+            resource_type,
+            body,
+            stored=Resource.objects.get(pk=stored.pk),
+            requirement=requirement,
+            readable=lambda: False,
+        )

@@ -709,7 +709,10 @@ def update(
     saves with `save_checked` itself (follow-up ``core-write-no-recheck``).
 
     `requirement` is taken through `Requirement.of` (once any earlier mark
-    is removed, as `validate_write` removes it)."""
+    is removed, as `validate_write` removes it). A ``None`` `instance` is a
+    ``TypeError``, before anything is validated."""
+    if instance is None:
+        raise TypeError("update needs the stored instance to write to, not None")
     _consume_workflow_mark(request)
     requirement = Requirement.of(requirement, caller="update")
     # One type IRI for the workflow check's mark and the post-save check.

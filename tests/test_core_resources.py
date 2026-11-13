@@ -857,3 +857,26 @@ def test_allowed_methods_of_a_computed_item():
         methods=("GET", "PUT"),
     ) == ["GET", "PUT", "OPTIONS", "HEAD"]
     hooked_resource_types()  # the options as registered, for later tests
+
+
+@pytest.mark.django_db
+@test_context
+def test_allowed_methods_do_not_depend_on_the_methods_order_or_case():
+    from scrud_django.core.resources import allowed_methods
+
+    resource_type = json_ld()
+    note = store("a")
+    user = users()["superuser"]
+    request = request_of("OPTIONS", user)
+    answers = [
+        allowed_methods(
+            request, resource_type, note, [GrantsLeaf(JSON_LD)], methods=methods
+        )
+        for methods in (
+            ["GET", "PUT"],
+            ["put", "get"],
+            ["Put", "GET", "get"],
+        )
+    ]
+    assert answers[0] == ["GET", "PUT", "OPTIONS", "HEAD"]
+    assert answers[1] == answers[2] == answers[0]

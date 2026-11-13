@@ -288,7 +288,15 @@ def list_queryset(
     `ignored` (`content_filtered`, the pagination parameters, the format
     override and the UI's, the caller's; a `QueryParameterError` for a
     parameter that cannot be a content key), ordered by
-    ``Resource.Meta.ordering``. Page it with `page_of`."""
+    ``Resource.Meta.ordering``. Page it with `page_of`.
+
+    It lists for a GET or HEAD only: any other method of `request` is a
+    ``ValueError`` (`readable_queryset` asks the list grant for those two
+    alone, so a list served for another method would skip it)."""
+    if request.method not in ("GET", "HEAD"):
+        raise ValueError(
+            f"list_queryset lists for a GET or HEAD, not a {request.method}"
+        )
     queryset = readable_queryset(request, resource_type, requirement, using=using)
     if type_options(resource_type.type_uri).content_filter:
         queryset = content_filtered(queryset, params, ignored=ignored)

@@ -525,6 +525,10 @@ def allowed_methods(
        OPTIONS's answer, as a GET's would be. Another's refuses only it, as
        does any ``access.AccessDenied``.
 
+    `methods` are upper-cased and checked in `ALLOW_ORDER` (a method not
+    in it after those, in the order given), so the answer does not depend on
+    the caller's order or case.
+
     OPTIONS is always listed, and HEAD with GET. The item is given already
     loaded: on the DRF route a requester refused every method gets ``Allow:
     OPTIONS`` whether the object exists or not (nothing is loaded then),
@@ -537,10 +541,15 @@ def allowed_methods(
     requirement = Requirement.of(requirement, caller="allowed_methods")
     if list_requirement is not None:
         list_requirement = Requirement.of(list_requirement, caller="allowed_methods")
-    checked = tuple(
+    given = (
         methods
         if methods is not None
         else served_methods(resource_type, item=obj is not None)
+    )
+    upper = dict.fromkeys(method.upper() for method in given)
+    checked = tuple(
+        [method for method in ALLOW_ORDER if method in upper]
+        + [method for method in upper if method not in ALLOW_ORDER]
     )
     if obj is None:
         covered = COVERED_LIST_METHOD

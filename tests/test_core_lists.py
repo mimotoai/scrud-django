@@ -269,6 +269,34 @@ def test_readable_queryset_asks_the_list_grant():
 
 @pytest.mark.django_db
 @test_context
+def test_list_queryset_lists_for_a_get_or_head_only():
+    """A user holding only the item grant is refused the list's GET, and a
+    POST or OPTIONS is a ``ValueError`` (the list grant is asked for a GET or
+    HEAD alone, so it would be skipped)."""
+    from scrud_django.core.lists import list_queryset
+
+    rtype, _ = json_ld_in("a")
+    reader = user_with(({"http.GET": [JSON_LD]}, "a"))
+    for method in ("GET", "HEAD"):
+        with pytest.raises(access.AccessDenied):
+            list_queryset(
+                request_by(method, reader),
+                rtype,
+                QueryDict(),
+                requirement=[GrantsLeaf(JSON_LD)],
+            )
+    for method in ("POST", "OPTIONS"):
+        with pytest.raises(ValueError, match=method):
+            list_queryset(
+                request_by(method, reader),
+                rtype,
+                QueryDict(),
+                requirement=[GrantsLeaf(JSON_LD)],
+            )
+
+
+@pytest.mark.django_db
+@test_context
 def test_readable_queryset_lists_for_the_lister():
     """ "lister-a" (``http.GET`` on JSON_LD and its list type in "a") gets
     the resource in "a" only, as the DRF list."""
