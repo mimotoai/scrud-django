@@ -231,6 +231,7 @@ def validate_write(
     narrow: Sequence[Callable] | None = None,
     readable: Callable[[], bool] | None,
     type_iri: str | None = None,
+    covered: bool | None = None,
 ) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
     """Validate `request`'s write of `body` (the body as sent) to
     `resource_type`, over the resource `stored` (``None`` for a create).
@@ -256,9 +257,14 @@ def validate_write(
     object check, which a ``load_for_read`` given no body could not (it
     asks whether the requester may PUT in some context). A refusal is
     ``access.AccessDenied``, or ``Http404`` for a resource the requester
-    cannot read. Then a body that is not a JSON object (a list, a string,
-    a number) is refused (`RequestBodyNotAnObjectError`, 400), as DRF's
-    serializer refuses it. Then, in the order DRF's serializer validators
+    cannot read. For an update of a ``WorkflowPolicy``, then its
+    every-context check (`check_every_context_of_policy`: the write allowed
+    in every context the stored policy applies to, ``access.AccessDenied``
+    otherwise), as DRF's ``update`` asks it after ``get_object()``, with
+    `covered` (by default, as the object check, whether the request is the
+    PUT the workflow check covers). Then a body that is not a JSON object
+    (a list, a string, a number) is refused (`RequestBodyNotAnObjectError`,
+    400), as DRF's serializer refuses it. Then, in the order DRF's serializer validators
     check it:
     its JSON Schema (`validate_schema`), then, for a ``WorkflowPolicy``, the
     policy's own checks (`validate_policy_write`), then the workflow check
@@ -315,13 +321,22 @@ def validate_write(
         # a caller that looked it up itself must not skip it. With the body,
         # as DRF's | pairs an option's request check (with the body) with
         # its object check, which a body-less load_for_read could not.
+        covered_item = request.method == COVERED_ITEM_METHOD
         check_object(
             request,
             resource_type,
             stored,
             requirement,
-            covered=request.method == COVERED_ITEM_METHOD,
+            covered=covered_item,
             body=body,
+        )
+        # DRF's update asks it after get_object(), before the serializer.
+        check_every_context_of_policy(
+            request,
+            stored,
+            requirement,
+            covered=covered_item if covered is None else covered,
+            type_iri=type_iri,
         )
     # DRF's serializer refuses a body that is not a JSON object (400) once
     # the request and object checks have passed, before it validates.
@@ -603,11 +618,12 @@ def _validated(
     stored: Resource | None,
     requirement,
     type_iri: str,
+    covered: bool | None = None,
 ):
     """Validate `request`'s write of `body` over `stored` (``None`` for a
-    create) with `validate_write`, whether `stored` is readable
-    (`object_readable`) telling whether its errors are hidden: what
-    `create` and `update` run on the body they save, always."""
+    create) with `validate_write` (given `covered`), whether `stored` is
+    readable (`object_readable`) telling whether its errors are hidden:
+    what `create` and `update` run on the body they save, always."""
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import object_readable
 
@@ -625,6 +641,7 @@ def _validated(
         readable=readable,
         requirement=requirement,
         type_iri=type_iri,
+        covered=covered,
     )
 
 
@@ -708,9 +725,10 @@ def update(
     (`check_post_save`). A front end needing a post-save check of its own
     saves with `save_checked` itself (follow-up ``core-write-no-recheck``).
 
-    A ``WorkflowPolicy`` must first be allowed in every context it applies
-    to (`check_every_context_of_policy`, with `requirement`, `covered` and
-    `type_iri`), before its body is validated, as DRF's ``update`` asks it.
+    The validation asks a ``WorkflowPolicy``'s every-context check
+    (`check_every_context_of_policy`, with `covered`) once the object check
+    passed and before the body is validated, as DRF's ``update`` asks it
+    after ``get_object()``.
 
     `requirement` is taken through `Requirement.of` (once any earlier mark
     is removed, as `validate_write` removes it). A ``None`` `instance` is a
@@ -722,9 +740,6 @@ def update(
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
         type_iri = resource_type.type_uri
-    check_every_context_of_policy(
-        request, instance, requirement, covered=covered, type_iri=type_iri
-    )
     _validated(
         request,
         resource_type,
@@ -732,6 +747,7 @@ def update(
         stored=instance,
         requirement=requirement,
         type_iri=type_iri,
+        covered=covered,
     )
     return save_checked(
         request,

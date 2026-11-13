@@ -1191,8 +1191,9 @@ def test_update_refuses_a_missing_instance_before_validating():
 @test_context
 def test_update_of_a_policy_needs_the_write_in_every_context_it_applies_to():
     # A WorkflowPolicy stored in ["a", "b"] (server-side) governs both: as
-    # DRF's update, update refuses a writer of "a" alone before validating
-    # the body, though the body moves the policy to "a" only.
+    # DRF's update, update refuses a writer of "a" alone once the object
+    # check passed and before validating the body, though the body moves the
+    # policy to "a" only.
     policy_type = workflow_policy_resource_type()
     WP = policy_type.type_uri
     policy = {
@@ -1206,7 +1207,7 @@ def test_update_of_a_policy_needs_the_write_in_every_context_it_applies_to():
     )
     writer = user_with(({"http.GET": [WP], "http.PUT": [WP]}, "a"))
     with (
-        mock.patch("scrud_django.core.writes._validated") as validated,
+        mock.patch("scrud_django.core.writes.validate_schema") as validated,
         pytest.raises(access.AccessDenied),
     ):
         update(
@@ -1232,3 +1233,57 @@ def test_update_of_a_policy_needs_the_write_in_every_context_it_applies_to():
         using="default",
     )
     assert saved.content["rbac_context"] == "a"
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_of_a_hidden_policy_without_a_load_is_404():
+    """The object check of a stored ``WorkflowPolicy`` runs before its
+    every-context check, as DRF's ``get_object()`` runs before it: a
+    writer granted only in "b" gets 404 for a policy in "a" they may not
+    read, not the every-context check's 403."""
+    policy_type = workflow_policy_resource_type()
+    WP = policy_type.type_uri
+    policy = {
+        "resource_type": "tests://ToDo",
+        "initial_states": {"any": "true"},
+        "states": {},
+        "transitions": {},
+    }
+    stored = ResourceRegistration.register(
+        dict(policy, rbac_context="a"), "workflow-policies"
+    )
+    writer = user_with(({"http.GET": [WP], "http.PUT": [WP]}, "b"))
+    body = dict(policy, rbac_context="b")
+    with pytest.raises(Http404):
+        update(
+            request_by("put", writer),
+            policy_type,
+            Resource.objects.get(pk=stored.pk),
+            body,
+            requirement=[GrantsLeaf(WP)],
+            using="default",
+        )
+    with pytest.raises(Http404):
+        validate_write(
+            request_by("put", writer),
+            policy_type,
+            body,
+            stored=Resource.objects.get(pk=stored.pk),
+            requirement=[GrantsLeaf(WP)],
+            readable=lambda: False,
+        )
+    # Readable in "a" but not writable there: a 403.
+    reader = user_with(
+        ({"http.GET": [WP]}, "a"), ({"http.GET": [WP], "http.PUT": [WP]}, "b")
+    )
+    with pytest.raises(access.AccessDenied):
+        update(
+            request_by("put", reader),
+            policy_type,
+            Resource.objects.get(pk=stored.pk),
+            body,
+            requirement=[GrantsLeaf(WP)],
+            using="default",
+        )
+    assert row_of(stored) == (dict(policy, rbac_context="a"), stored.etag)
