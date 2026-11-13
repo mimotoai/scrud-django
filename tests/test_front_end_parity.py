@@ -12,7 +12,7 @@ import pytest
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.http import HttpResponse
-from django.test import override_settings
+from django.test import Client, override_settings
 from django.urls import Resolver404, resolve
 from django.utils.http import http_date, quote_etag
 from ninja.errors import AuthenticationError
@@ -23,6 +23,7 @@ from scrud_django.computed import computed_etag
 from scrud_django.core.lists import list_etag
 from scrud_django.models import Resource, ResourceType
 
+from . import front_ends
 from .front_ends import (
     HSR,
     MOUNTS,
@@ -2359,21 +2360,25 @@ NOT_ACCEPTABLE_CASES = [
 ]
 
 # The cases DRF answers 406.
-NOT_ACCEPTED = {
-    case.id
-    for case in NOT_ACCEPTABLE_CASES
-    if case.id.startswith("xml-")
-    and case.id not in {"xml-item-preflight", "xml-services-preflight"}
-} | {
-    f"accept-{name}-{kind}"
-    for name in ("empty", "image-any")
-    for kind in ("document", "collection", "item")
-} | {
-    # The format's renderer does not serve what the Accept asks.
-    "format-xml-json-collection",
-    # A plain type's item has no schema renderer.
-    "accept-document-with-a-parameter-item",
-}
+NOT_ACCEPTED = (
+    {
+        case.id
+        for case in NOT_ACCEPTABLE_CASES
+        if case.id.startswith("xml-")
+        and case.id not in {"xml-item-preflight", "xml-services-preflight"}
+    }
+    | {
+        f"accept-{name}-{kind}"
+        for name in ("empty", "image-any")
+        for kind in ("document", "collection", "item")
+    }
+    | {
+        # The format's renderer does not serve what the Accept asks.
+        "format-xml-json-collection",
+        # A plain type's item has no schema renderer.
+        "accept-document-with-a-parameter-item",
+    }
+)
 
 
 @pytest.mark.parametrize("uniform", [True, False], ids=["uniform", "native"])
@@ -2408,3 +2413,35 @@ def test_negotiation_refusals_vary_on_accept_alike(client):
     ):
         varies = _varies(client, method, path, headers=XML)
         assert varies["drf"] == varies["ninja"], (method, path, varies)
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        (method, "{mount}" + path)
+        for method in ("POST", "PUT")
+        for path in (
+            "collections-json-schema/partner-profiles/",
+            "collections-json-ld/partner-profiles/",
+            "services/",
+            "summaries/k1/",
+        )
+    ],
+)
+def test_csrf_refusals_answer_alike(method, path):
+    # A session user's unsafe request without a CSRF token, on the routes
+    # whose answers carry their DRF view's Allow: refused (403) before the
+    # 405, with that Allow (follow-up ninja-allow-of-entry-refusals).
+    serve_both()
+    client = Client(enforce_csrf_checks=True)
+    _user(client, superuser=True)
+
+    drf, ninja = (
+        front_ends.exchange(client, front_end, method, path, body={})
+        for front_end in MOUNTS
+    )
+
+    assert drf.status == 403, drf
+    assert "CSRF Failed" in drf.body, drf
+    assert drf.headers.get("Allow"), drf
+    assert drf == ninja

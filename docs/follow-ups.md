@@ -1289,29 +1289,42 @@ routes answer 500 (`NoReverseMatch`). 3A documents the
 a superuser; assert 200 (a 500 without the include).
 
 <a id="ninja-uniform-errors-per-front-end"></a>
-## ninja-uniform-errors-per-front-end: the ninja routers read `UNIFORM_ERRORS` when they are built
+## ninja-uniform-errors-per-front-end: an API built with uniform errors off keeps scoped-rbac's errors native
 
-The ninja routers read `SCOPED_RBAC["UNIFORM_ERRORS"]["ninja"]` once, when
-the API is built (as scoped-rbac does); DRF reads `"drf"` for each request.
-If the setting changes while the process runs (tests with
-`override_settings` do), or differs between the front ends, scrudful's
-400, 412 and 428 bodies on ninja keep the value at build time. Test: build
-the API, switch `UNIFORM_ERRORS` with `override_settings`, send a request
-that is refused 412, and compare it with the DRF route's answer; they
-differ today.
+scrud's own errors, scrudful's 400, 412 and 428, the 406 and every error
+scoped-rbac's handlers answered as problem details follow
+`SCOPED_RBAC["UNIFORM_ERRORS"]` for each request
+(`errors.answer_natively_when_off`, pinned by
+`tests/test_front_end_parity.py::test_errors_follow_uniform_errors_per_request_alike`
+for an API built with them on). But scoped-rbac's `install_error_handlers`
+reads the setting once, when the API is built: built with uniform errors
+off, it registers only its native access-error handler, so turning them on
+later leaves its errors native, where DRF answers problem details (an
+anonymous GET of an item is a 401 `{"detail":"Unauthorized"}`, served as
+`application/problem+json`; a PATCH a 405 `{"detail":"Method not
+allowed"}`). Test: build `api(types=[partner profiles])` under
+`override_settings(UNIFORM_ERRORS=False)` in a URLconf of its own, then,
+with uniform errors on, GET an item anonymously; assert a 401 problem
+(`"code": "not_authenticated"`); it is native today.
 
 <a id="ninja-hsr-link-targets"></a>
-## ninja-hsr-link-targets: the HTTP Schema Resource of a ninja route may link the DRF routes
+## ninja-hsr-link-targets: an API included under an outer namespace cannot describe its links
 
-scrudful calls the link function with `(None, None)` when it builds a
-route's HTTP Schema Resource, so `item_link_targets(None, ...)` reverses the
-plain route names, which are DRF's when both front ends are mounted. On a
-ninja-only URLconf they are ninja's and the links resolve (pinned by
-`tests/test_ninja_routers.py::test_a_ninja_only_apis_list_links_and_hsr_resolve_within_it`);
-with both mounted a ninja HSR can name the DRF schema and context routes,
-which answer alike. The parity harness masks HSR targets. Test: mount both
-front ends, GET a ninja item's HSR, and assert its links start with the ninja
-prefix; they start with the DRF prefix when the DRF routes were reversed first.
+scrudful builds a route's HTTP Schema Resource without a request (its link
+functions are called with `(None, None)`), and the ninja routers reverse
+those links within the API's own `urls_namespace` first
+(`namespace=urls_namespace`, `core.urls.absolute_reverse`), so a ninja HSR
+names the ninja routes when both front ends are mounted (pinned by
+`tests/test_front_end_parity.py::test_each_front_ends_hsr_links_to_its_own_routes`).
+An API included under an outer namespace
+(`path("v1/", include(([path("api/", api.urls)], "v1")))`) is reversed as
+`v1:<urls_namespace>:<name>`, which the describing code does not know: the
+plain name is tried next, so the HSR names the DRF routes when they are
+mounted, and fails without them (ninja's `ConfigError` from
+`NoReverseMatch: 'json-schema-detail'`, a 500), though the item's own
+`Link`s (reversed with the request) resolve. Test: that URLconf with a
+ninja-only API; GET an item (200), then its HSR link; assert a 200 whose
+links start with `/v1/api/`; it raises today.
 
 <a id="ninja-collection-options-drf-defaults"></a>
 ## ninja-collection-options-drf-defaults: the collection documents' OPTIONS body copies DRF's defaults
@@ -1322,22 +1335,31 @@ classes, and the name and description DRF's `VIEW_NAME_FUNCTION` and
 `VIEW_DESCRIPTION_FUNCTION` give those views. A project that sets
 `REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"]`, `DEFAULT_PARSER_CLASSES` or
 those functions gets a different DRF body than ninja's. The ninja OPTIONS
-also ignores `Accept` (DRF renders HTML for `text/html` and answers 406 for
-a type it cannot give), and is throttled as any ninja operation is by the
+answers JSON where DRF renders HTML for `text/html` (its 406 for a type it
+cannot give is DRF's, `scrud_django.ninja.negotiation`), and is throttled as any ninja operation is by the
 API's throttles (scrudful's automatic OPTIONS runs none; `api()` sets none).
 Test: with `DEFAULT_PARSER_CLASSES` set to JSON only, OPTIONS
 `collections-json-schema/partner-profiles/` on both front ends and compare
 the bodies; they differ today.
 
 <a id="ninja-allow-of-entry-refusals"></a>
-## ninja-allow-of-entry-refusals: refusals made at entry carry no DRF `Allow`
+## ninja-allow-of-entry-refusals: a rewritten OPTIONS is refused unlike DRF on some routes
 
-The collection documents', computed types' and catalog's answers give DRF's
-`Allow` (`routers.as_drf_api_views`), but a response `entry` short-circuits
-(a CSRF 403, a rewritten OPTIONS) is made outside that wrapper and has none,
-and the `Allow` of a 405 from a plain POST or PUT on the collection routes
-was not compared. Test: a CSRF-refused POST to a collection document on each
-front end, comparing headers; or PUT to it (405).
+A CSRF-refused POST or PUT to the collection documents, `services/` and the
+computed routes answers alike on both front ends, DRF's `Allow` included
+(`tests/test_front_end_parity.py::test_csrf_refusals_answer_alike`). What
+remains is an OPTIONS whose `request.method` a middleware rewrote
+(`tests.middleware.MethodOverrideMiddleware`, `X-HTTP-Method-Override:
+PUT`): ninja refuses it on every route (403, 401 for the anonymous;
+scoped-rbac's URL-pattern refusal), but DRF's collection documents and
+`services/` refuse nothing (their views are no `AccessControlledAPIView`)
+and answer the rewritten method's 405; and on the type routes, where both
+refuse it, ninja's refusal lacks the HTTP Schema Resource link and the
+`Allow` in `Access-Control-Expose-Headers` that DRF's carries. Test: with
+that middleware, OPTIONS `collections-json-schema/partner-profiles/`,
+`services/` and `partner-profiles/` with the override on each front end
+(the parity harness's `exchange`), and compare; they differ today (405 and
+403, and the Links).
 
 <a id="ninja-put-reload"></a>
 ## ninja-put-reload: a ninja PUT's validators come from the written row, with no second check
