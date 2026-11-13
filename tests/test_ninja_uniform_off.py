@@ -6,7 +6,6 @@ project's setting) or turned on afterwards, as the API built with them on
 
 import json
 import threading
-import time
 
 import ninja
 import pytest
@@ -222,9 +221,13 @@ def test_builds_on_two_threads_leave_uniform_errors_as_configured():
     # meanwhile (it waits for a's block to end), then leaves its block after
     # a's: unserialized, b would restore the settings a swapped in, on for
     # good.
-    a_inside, release_a, release_b = (threading.Event() for _ in range(3))
+    a_inside, b_about_to_swap, release_a, release_b = (
+        threading.Event() for _ in range(4)
+    )
 
-    def build(entered, release):
+    def build(entered, release, about_to_swap=None):
+        if about_to_swap is not None:
+            about_to_swap.set()
         with errors.building_with_uniform_errors_on():
             if entered is not None:
                 entered.set()
@@ -233,11 +236,11 @@ def test_builds_on_two_threads_leave_uniform_errors_as_configured():
     off = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=False)
     with override_settings(SCOPED_RBAC=off):
         a = threading.Thread(target=build, args=(a_inside, release_a))
-        b = threading.Thread(target=build, args=(None, release_b))
+        b = threading.Thread(target=build, args=(None, release_b, b_about_to_swap))
         a.start()
         assert a_inside.wait(5)
         b.start()
-        time.sleep(0.1)
+        assert b_about_to_swap.wait(5)
         release_a.set()
         a.join(5)
         release_b.set()

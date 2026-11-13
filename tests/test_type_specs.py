@@ -469,7 +469,9 @@ def test_a_computed_spec_with_only_compute_is_valid():
     assert _computed_spec().options.compute is not None
 
 
-@pytest.mark.parametrize("which", ["json-schema", "json-ld"])
+@pytest.mark.parametrize(
+    "which", [spec.slug for spec in registration.built_in_type_specs()]
+)
 def test_a_spec_that_is_not_a_built_in_cannot_use_a_built_in_identity(which):
     built_in = {s.slug: s for s in registration.built_in_type_specs()}[which]
     plain = dict(

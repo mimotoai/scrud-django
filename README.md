@@ -122,10 +122,13 @@ urlpatterns = [
   `request.user`), or a logged-in session user becomes anonymous. A hook's
   user who is also the request's session user is CSRF-checked on an unsafe
   request, whether or not Basic credentials came with the cookie. A
-  Basic-only client has no session cookie, so a write needs no token. When
-  the session belongs to user A and the Basic credentials to user B, the hook
-  gives B and no CSRF check applies (B is not the session's user); that is
-  safe because a cross-site form cannot set `Authorization`. Send Basic
+  Basic-only client has no session cookie, so a write needs no token (the
+  same caveat as below applies). When the session belongs to user A and the
+  Basic credentials to user B, the hook gives B and no CSRF check applies (B
+  is not the session's user). The hook's Basic user is not CSRF-checked,
+  exactly as DRF's `BasicAuthentication` (also CSRF-exempt) is not: a
+  browser re-sends cached HTTP Basic credentials on a cross-site request, so
+  Basic credentials suit non-browser API clients, not browsers. Send Basic
   credentials only over TLS. See
   `ninja-drf-authenticators` in the follow-ups.
 * A computed type's `compute(request, key)` receives a plain Django

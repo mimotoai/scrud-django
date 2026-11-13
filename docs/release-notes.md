@@ -411,7 +411,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   keyword only and no `indexing_policy_resource` (see
   `json-resource-type-indexing-policy` in the follow-ups).
   `ResourceTypeRegistration(build_urls=False, viewset_class=...)` raises
-  `TypeError`; `core.lists.ListPage` refuses a size or number below 1 or a
+  `TypeError`, and so does
+  `ResourceTypeRegistration(build_urls=False).register_urls()` (it was
+  `AttributeError`); `core.lists.ListPage` refuses a size or number below 1 or a
   negative count; `core.urls.first_absolute_reverse` refuses a bare route
   name given as a string.
 * `scrud_django.ninja.api()` refuses, before registering anything
@@ -637,8 +639,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   build a `TypeSpec`, which refuses (`ImproperlyConfigured`) what could never
   have worked: an empty or non-string slug or IRI, a slug or IRI of a
   built-in type (JSON Schema, JSON-LD, indexing and workflow policies) on a
-  type that is not one, and a computed type's `checks`, `object_checks` or
-  `content_filter`. `json_resource_type` also raises `TypeError` for a
+  type that is not one. A hand-built `TypeSpec` (the ninja and neutral API;
+  `computed_resource_type` takes none of these) also refuses a computed
+  type's `checks`, `object_checks` or `content_filter`. `json_resource_type` also raises `TypeError` for a
   `schema_func`, `context_func` or `indexing_policy_func` that is not
   callable, when it is called rather than when the type registers. The
   slug's shape is not checked on DRF (a slug with a dot still registers);
