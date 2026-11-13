@@ -14,13 +14,14 @@ from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
 from rest_framework import status
+from rest_framework.test import APIClient
 from reversion.models import Version
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.core import workflow as core_workflow
-from scrud_django.core.authz import _workflow_authorized
+from scrud_django.core.authz import _WORKFLOW_AUTHORIZED, _workflow_authorized
 from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.core.workflow import NoWorkflowPolicyDenied
 from scrud_django.core.writes import (
@@ -33,6 +34,7 @@ from scrud_django.core.writes import (
     validate_write,
 )
 from scrud_django.exceptions import (
+    RequestBodyNotAnObjectError,
     ResourceInUseError,
     WorkflowPolicyInvalidError,
     WorkflowTransitionError,
@@ -951,6 +953,60 @@ def test_validate_write_of_an_update_needs_readable():
             readable=None,
         )
     assert not _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
+
+
+@pytest.mark.django_db
+@test_context
+def test_validate_write_refuses_a_body_that_is_not_an_object():
+    """A body that is not a JSON object (a type without a schema accepts
+    any) is refused as DRF's serializer refuses it: a 400 with the same
+    body, after the request and object checks, and no mark is left."""
+    stored = ResourceRegistration.register({"x": 1}, "json-ld")
+    rtype = stored.resource_type
+    before = Resource.objects.count()
+    requirement = [GrantsLeaf(JSON_LD)]
+    superuser = UserFactory(is_staff=True, is_superuser=True)
+    for body in ([], [{"x": 2}], "x", 5):
+        for row in (None, Resource.objects.get(pk=stored.pk)):
+            request = request_by("put" if row else "post", superuser)
+            with pytest.raises(RequestBodyNotAnObjectError) as raised:
+                validate_write(
+                    request,
+                    rtype,
+                    body,
+                    stored=row,
+                    requirement=requirement,
+                    readable=lambda: True,
+                )
+            assert raised.value.status_code == 400
+            assert not hasattr(request, _WORKFLOW_AUTHORIZED)
+    # The request check comes first: a requester who may not write is a 403.
+    with pytest.raises(access.AccessDenied):
+        validate_write(
+            request_by("post", UserFactory()),
+            rtype,
+            [],
+            stored=None,
+            requirement=requirement,
+            readable=None,
+        )
+    # The body DRF answers.
+    with pytest.raises(RequestBodyNotAnObjectError) as raised:
+        create(
+            request_by("post", superuser),
+            rtype,
+            [],
+            requirement=requirement,
+            using="default",
+        )
+    client = APIClient()
+    client.force_authenticate(superuser)
+    response = client.post(reverse("json-ld-list"), [], format="json")
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    expected = response.json()
+    assert dict(raised.value.response_data(None), status=400) == expected
+    assert Resource.objects.count() == before
+    assert Resource.objects.get(pk=stored.pk).content == {"x": 1}
 
 
 @pytest.mark.django_db

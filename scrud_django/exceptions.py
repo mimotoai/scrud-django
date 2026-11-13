@@ -712,6 +712,23 @@ class RequestBodyNulError(ScrudException):
         self.title = "NUL character in request body"
 
 
+class RequestBodyNotAnObjectError(ScrudException):
+    """A POST or PUT body that is not a JSON object (a list, a string, a
+    number): a resource is one. Its body is the 400 the DRF routes answer
+    for one (their serializer's ``ValidationError``, as scoped-rbac renders
+    it): ``scoped_rbac.problems.validation_problem`` of a non-field
+    ``invalid`` error, code ``invalid``."""
+
+    status_code = 400
+    default_detail = "Invalid input."
+    default_code = "invalid"
+
+    def response_data(self, context):
+        from scoped_rbac.problems import validation_problem
+
+        return validation_problem({"": [("invalid", None)]})
+
+
 class ResourceInUseError(ScrudException):
     """A DELETE of a resource that a resource type uses as its JSON Schema,
     JSON-LD context or indexing policy (``on_delete=PROTECT``): 409 Conflict,

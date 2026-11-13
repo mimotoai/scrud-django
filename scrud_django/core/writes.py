@@ -54,6 +54,7 @@ from scrud_django.core.workflow import (
 from scrud_django.exceptions import (
     JsonSchemaInvalidError,
     JsonValidationError,
+    RequestBodyNotAnObjectError,
     ResourceInUseError,
 )
 from scrud_django.models import Resource, ResourceType
@@ -255,7 +256,10 @@ def validate_write(
     object check, which a ``load_for_read`` given no body could not (it
     asks whether the requester may PUT in some context). A refusal is
     ``access.AccessDenied``, or ``Http404`` for a resource the requester
-    cannot read. Then, in the order DRF's serializer validators check it:
+    cannot read. Then a body that is not a JSON object (a list, a string,
+    a number) is refused (`RequestBodyNotAnObjectError`, 400), as DRF's
+    serializer refuses it. Then, in the order DRF's serializer validators
+    check it:
     its JSON Schema (`validate_schema`), then, for a ``WorkflowPolicy``, the
     policy's own checks (`validate_policy_write`), then the workflow check
     (`scrud_django.core.workflow.workflow_check`, given `stored`'s content
@@ -319,6 +323,10 @@ def validate_write(
             covered=request.method == COVERED_ITEM_METHOD,
             body=body,
         )
+    # DRF's serializer refuses a body that is not a JSON object (400) once
+    # the request and object checks have passed, before it validates.
+    if not isinstance(body, Mapping):
+        raise RequestBodyNotAnObjectError()
     if narrow is None:
         narrow = tuple(
             check

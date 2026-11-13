@@ -584,6 +584,68 @@ def test_create_parity(type_slug, user_name, body_context, request):
     )
 
 
+@pytest.mark.django_db
+@pytest.mark.parametrize("method", ["POST", "PUT"])
+@pytest.mark.parametrize("user_name", USER_NAMES)
+@pytest.mark.parametrize("type_slug", TYPE_SLUGS)
+def test_non_object_body_parity(type_slug, user_name, method, request):
+    """A POST to the list, or a PUT of a resource in "a", whose body is a
+    list (of a valid body), not a JSON object: the DRF route's status
+    against the facade's `validate_write`, then `create` or `update`."""
+    parity = TYPES[type_slug]
+    user = users_for(parity.uri)[user_name]
+    resource_type = resource_type_of(parity)
+    requirement = requirement_for(resource_type, parity.slug)
+    body = [parity.body("a")]
+    resource = store(parity, "a") if method == "PUT" else None
+
+    def facade_write():
+        write = request_of(method, user)
+        if resource is None:
+            validate_write(
+                write,
+                resource_type,
+                body,
+                stored=None,
+                requirement=requirement,
+                readable=None,
+            )
+            create(write, resource_type, body, requirement=requirement, using="default")
+            return
+        stored = load_for_read(
+            write, resource_type, resource.pk, requirement=requirement, method="PUT"
+        )
+        validate_write(
+            write,
+            resource_type,
+            body,
+            stored=stored,
+            requirement=requirement,
+            readable=lambda: object_readable(write, resource_type, stored, requirement),
+        )
+        update(
+            write, resource_type, stored, body, requirement=requirement, using="default"
+        )
+
+    with transaction.atomic():
+        facade = outcome_class(outcome_of(facade_write))
+        transaction.set_rollback(True)
+    if resource is None:
+        with transaction.atomic():
+            response = client_of(user).post(
+                reverse(f"{parity.slug}-list"), body, format="json"
+            )
+            transaction.set_rollback(True)
+    else:
+        response = drf_status(parity, user, "PUT", resource, body=body)
+    check_parity(
+        request,
+        ("non-object", type_slug, user_name, method),
+        facade,
+        drf_authz_status(response),
+    )
+
+
 def more_permissive(pair):
     """Whether the facade `pair` ``(facade, drf)`` allows what DRF refuses."""
     facade, drf = pair

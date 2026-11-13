@@ -432,7 +432,11 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   checked as a create. An `Update` requires `readable`, whether the
   requester may read the stored resource: an update's workflow error is
   hidden when it says not (`validate_write` of an update raises
-  `TypeError` without one). The workflow check first removes any mark an
+  `TypeError` without one). `validate_write` (so `create` and `update`)
+  refuses a body that is not a JSON object once the request and object
+  checks pass, as the DRF routes do: a 400
+  (`scrud_django.exceptions.RequestBodyNotAnObjectError`, with the body
+  DRF answers). The workflow check first removes any mark an
   earlier check left on the request, so one that fails leaves none, on DRF
   too. The facade's `create` and `update` always validate the body they
   save themselves (`validate_write`, an update's errors hidden
