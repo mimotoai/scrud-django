@@ -6,3 +6,7 @@ except ImportError as error:
     raise ImportError(
         "scrud_django.ninja needs django-ninja: pip install 'scrud-django[ninja]'"
     ) from error
+
+from scrud_django.ninja.api import api  # noqa: E402
+
+__all__ = ["api"]
