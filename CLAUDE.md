@@ -37,8 +37,9 @@ and map its `ScrudException`s and access errors to DRF's
 (`check_request`, `load_for_read`, `object_readable`, `readable_content`,
 `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
 `create`, `update`, `destroy`) is not called by DRF (which calls the
-unguarded `_readable_content` and `found_item`); only the `tests/test_core_*`
-modules pin it (`tests/test_core_parity.py` against the DRF routes).
+unguarded `_readable_content` and `found_item`); the ninja adapter calls it,
+and the `tests/test_core_*` modules (`tests/test_core_parity.py` against the
+DRF routes) and `tests/test_front_end_parity.py` pin it.
 `readable_queryset` (of a GET or HEAD), `load_for_read` and
 `validate_write` ask the route's request check (`check_request`: for a
 list's GET each grants leaf as its list type, else each leaf's
@@ -72,7 +73,8 @@ Put new domain logic in `core`, not in a view; per-type hooks are
 
 `scrud_django/ninja/` is the second adapter (the optional `ninja` extra,
 `scrud_django.ninja.api(types=[...])`). Its handlers call only the core
-facade: no domain logic lives there, and a handler that needs something the
+(`scrud_django/core/`: the facade above, `core.lists`, `core.collections`,
+`core.computed`, `core.writes`, `core.urls`): no domain logic lives there, and a handler that needs something the
 core lacks adds it to the core with a core test. It answers as the DRF routes
 do, and `tests/test_front_end_parity.py` is the proof (the same exchanges
 replayed against both, compared exactly); the generic suites take the
