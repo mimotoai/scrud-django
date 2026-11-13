@@ -697,3 +697,50 @@ def test_requirement_for_leaves_are_trusted_to_ask_the_grants(type_slug):
     assert asks_grants(requirement)
     for leaf in requirement_leaves(requirement):
         assert asks_grants_itself(leaf) or is_hook(leaf), leaf
+
+
+def computed_allow(slug, user_name):
+    """``(DRF's Allow, the facade's)``, sorted, for the item route of the
+    computed type `slug` as the matrix user `user_name` asks it; DRF's is
+    ``None`` when its route does not answer the OPTIONS with a 200."""
+    url = reverse(f"{slug}-detail", args=["k"])
+    hooked_resource_types()
+    resource_type = get_resource_type_for(slug)
+    user = users_for(resource_type.type_uri)[user_name]
+    response = client_of(user).options(url)
+    stored = ResourceRegistration.register({"rbac_context": "a"}, slug)
+    core = allowed_methods(
+        request_of("OPTIONS", user, url),
+        resource_type,
+        stored,
+        requirement_for(resource_type, slug),
+    )
+    if response.status_code != 200:
+        return None, sorted(core)
+    return sorted(m.strip() for m in response["Allow"].split(",")), sorted(core)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("user_name", ["superuser", "reader-a", "anonymous"])
+def test_computed_allow_parity(user_name):
+    """A computed type registered with ``compute=`` lists GET (HEAD, OPTIONS)
+    as its DRF route does (`served_methods`), for a user it answers."""
+    drf, core = computed_allow("summaries", user_name)
+    if user_name == "anonymous":
+        # DRF's route answers the anonymous OPTIONS 401, with no Allow.
+        assert drf is None
+        assert core == ["OPTIONS"]
+        return
+    assert core == drf == ["GET", "HEAD", "OPTIONS"]
+
+
+@pytest.mark.django_db
+def test_studio_computed_allow_is_pinned():
+    """KNOWN DIVERGENCE (follow-up ``studio-computed-to-compute``): the
+    studio's computed types register a ``viewset_class``, not ``compute=``,
+    so `served_methods` treats them as plain types and the facade lists PUT
+    and DELETE for a superuser where DRF lists GET only. Remove when they
+    take ``compute=``."""
+    drf, core = computed_allow("ui-branch-status", "superuser")
+    assert drf == ["GET", "HEAD", "OPTIONS"]
+    assert core == ["DELETE", "GET", "HEAD", "OPTIONS", "PUT"]

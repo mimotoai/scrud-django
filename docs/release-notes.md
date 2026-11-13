@@ -465,6 +465,10 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   answer alike. A front end
   runs `scrud_django.core.bodies.check_body` on a write's body before the
   facade, as DRF answers a malformed body 400 before any 403.
+  `allowed_methods` lists the methods its route serves
+  (`scrud_django.core.resources.served_methods`: GET alone for a computed
+  type registered with `compute=`, else the item's GET, PUT and DELETE or
+  the list's GET and POST), or the `methods=` it is given.
   `readable_queryset` and `list_last_modified`, which filter by a
   resource's stored contexts, raise `ImproperlyConfigured` for a
   requirement with a leaf that may read others: one whose `contexts_for`

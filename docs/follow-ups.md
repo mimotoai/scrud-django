@@ -1199,16 +1199,6 @@ resource, and its detail GET answers 403. It should leave the resource out
 and answer 404, as the facade does
 (`test_anyof_option_refused_at_request_level_is_not_satisfied`).
 
-<a id="core-method-sets-hard-coded"></a>
-## core-method-sets-hard-coded: `ITEM_METHODS` and `LIST_METHODS` are fixed
-
-`core.resources.ITEM_METHODS` (GET, PUT, DELETE) and `LIST_METHODS` (GET,
-POST) are constants, so `allowed_methods` lists them for a computed type too,
-which serves GET and HEAD only. Ninja phase 3 should take the methods a route
-serves as an argument. Test: in `tests/test_core_resources.py`, call
-`allowed_methods` for a computed type's item as a user granted every method;
-assert only GET, HEAD and OPTIONS.
-
 <a id="core-options-copy-entry"></a>
 ## core-options-copy-entry: the ninja front end must refuse scrudful's OPTIONS copy at entry
 

@@ -815,3 +815,45 @@ def test_readable_content_takes_no_grants_flag_and_the_private_one_asks_object_c
     assert not resources._readable_content(
         read, {"text": "x", "secret": True}, requirement, grants=False
     )
+
+
+@pytest.mark.django_db
+@test_context
+def test_allowed_methods_of_a_computed_item():
+    """A computed type (registered with ``compute=``) serves GET only: its
+    ``Allow`` lists no PUT or DELETE even for a superuser, as the DRF route's
+    does."""
+    from scrud_django.core.resources import allowed_methods, served_methods
+    from tests.resource_types import hooked_resource_types
+
+    url = reverse("summaries-detail", args=["k"])
+    hooked_resource_types()  # the computed type's row and options
+    resource_type = get_resource_type_for("summaries")
+    assert served_methods(resource_type, item=True) == ("GET",)
+    assert served_methods(resource_type, item=False) == ("GET",)
+    assert served_methods(json_ld(), item=True) == ("GET", "PUT", "DELETE")
+    assert served_methods(json_ld(), item=False) == ("GET", "POST")
+    user = users()["superuser"]
+    response = client_of(user).options(url)
+    # A computed route answers OPTIONS with DRF's metadata (200), not
+    # scrudful's 204; its ``Allow`` is the oracle all the same.
+    assert response.status_code == status.HTTP_200_OK
+    item = ResourceRegistration.register({"rbac_context": "a"}, "summaries")
+    core = allowed_methods(
+        request_of("OPTIONS", user, url),
+        resource_type,
+        item,
+        [GrantsLeaf(resource_type.type_uri)],
+    )
+    assert core == ["GET", "OPTIONS", "HEAD"]
+    # DRF's own ``Allow`` (not scrudful's) lists them in its order.
+    assert sorted(core) == sorted(allow_of(response))
+    # An explicit `methods` overrides the type's.
+    assert allowed_methods(
+        request_of("OPTIONS", user, url),
+        resource_type,
+        item,
+        [GrantsLeaf(resource_type.type_uri)],
+        methods=("GET", "PUT"),
+    ) == ["GET", "PUT", "OPTIONS", "HEAD"]
+    hooked_resource_types()  # the options as registered, for later tests

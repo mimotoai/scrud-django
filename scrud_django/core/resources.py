@@ -63,7 +63,7 @@ from scrud_django.core.requirements import (
     readable_by_object_checks,
     requirement_leaves,
 )
-from scrud_django.core.types import BODY_METHODS, HookLeaf
+from scrud_django.core.types import BODY_METHODS, HookLeaf, type_options
 from scrud_django.core.workflow import authorizing_write
 from scrud_django.core.writes import (  # noqa: F401  (re-exported)
     create,
@@ -90,6 +90,16 @@ COVERED_LIST_METHOD = "POST"
 # HEAD is GET's answer; OPTIONS is always allowed.
 ITEM_METHODS = ("GET", "PUT", "DELETE")
 LIST_METHODS = ("GET", "POST")
+
+
+def served_methods(resource_type, *, item: bool) -> tuple[str, ...]:
+    """The methods the route of `resource_type` serves (`item`: its detail
+    route, else its list): a computed type (``TypeOptions.compute``, by its
+    IRI) serves ``GET`` only; any other `ITEM_METHODS` or `LIST_METHODS`."""
+    if type_options(resource_type.type_uri).compute is not None:
+        return ("GET",)
+    return ITEM_METHODS if item else LIST_METHODS
+
 
 # The order of the methods ``Allow`` lists, as scrudful's ``allow_value``
 # orders them (its ``METHOD_KEYS``).
@@ -489,6 +499,7 @@ def allowed_methods(
     requirement: Requirement | Sequence,
     *,
     list_requirement: Requirement | Sequence | None = None,
+    methods: Sequence[str] | None = None,
 ) -> list[str]:
     """The methods the ``Allow`` of the OPTIONS `request` lists, as the DRF
     route's (scrudful's ``_allowed_methods`` over ``ResourceViewMixin``)
@@ -496,7 +507,8 @@ def allowed_methods(
     `obj` (a `Resource` of `resource_type`, as its lookup found it), or of
     the list for ``None``.
 
-    1. Each method the route serves (`ITEM_METHODS`, `LIST_METHODS`) is
+    1. Each method the route serves (`methods`, by default
+       `served_methods`: GET alone for a computed type) is
        checked with the request checks (``has_permission``) of `requirement`
        on a body-less copy of `request` with that method (`_options_copy`),
        ``scrud_workflow`` allowing for the PUT of an item and the POST of
@@ -525,8 +537,12 @@ def allowed_methods(
     requirement = Requirement.of(requirement, caller="allowed_methods")
     if list_requirement is not None:
         list_requirement = Requirement.of(list_requirement, caller="allowed_methods")
+    checked = tuple(
+        methods
+        if methods is not None
+        else served_methods(resource_type, item=obj is not None)
+    )
     if obj is None:
-        checked = LIST_METHODS
         covered = COVERED_LIST_METHOD
         if list_requirement is None:
             list_requirement = Requirement.of(
@@ -535,7 +551,6 @@ def allowed_methods(
             )
         requirements = {"GET": list_requirement}
     else:
-        checked = ITEM_METHODS
         covered = COVERED_ITEM_METHOD
         requirements = {}
     copies = {method: _options_copy(request, method) for method in checked}
@@ -565,6 +580,6 @@ def allowed_methods(
                 allowed[method] = False
             except access.AccessDenied:
                 allowed[method] = False
-    allowed["HEAD"] = allowed["GET"]
+    allowed["HEAD"] = allowed.get("GET", False)
     allowed["OPTIONS"] = True
     return [method for method in ALLOW_ORDER if allowed.get(method)]
