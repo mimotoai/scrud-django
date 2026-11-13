@@ -491,7 +491,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   built `Requirement.unchecked` (a DRF view with no `IsAuthorized` asks no
   grants and is still served); `core.requirements.to_scoped_rbac` gives an
   `AnyOf` back as scoped-rbac's. `scrud_django.core.lists.list_queryset`
-  gives the list a front end serves: `readable_queryset`, then, for a type
+  gives the list a front end serves (for a GET or HEAD: any other method is
+  a `ValueError`, as `readable_queryset` asks the list grant for those two
+  alone): `readable_queryset`, then, for a type
   registered with `content_filter=`, the content filter on its query
   parameters (`content_filtered`, but the `ignored=` ones), in
   `Resource.Meta.ordering`; `page_of` gives a page of it and the count, as
@@ -500,6 +502,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   (`rows_by_keys`, which `StandardResultsSetPagination` calls too), so a
   row whose content is over MySQL's `sort_buffer_size` is never sorted
   (error 1038). It is the base for other front ends.
+  `update` raises `TypeError` for a `None` instance, and `allowed_methods`'
+  `methods=` are upper-cased and checked in `ALLOW_ORDER`, whatever the
+  caller's order or case.
 * Per-type hooks, honoured by every front end, on `json_resource_type`
   (`checks=`, `object_checks=`, `content_filter=`) and
   `computed_resource_type` (`compute=`). They can only refuse what the grants
@@ -507,7 +512,8 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   hook allows only by returning `True`: any other return (`None`, `"no"`,
   `1`) refuses. The hooks of a body with `rbac_context: []` are asked in
   the default context, and a hook given an object that is neither a mapping
-  nor a `Resource` raises `TypeError`.
+  nor a `Resource` raises `TypeError`; `TypeOptions` refuses a hook that is
+  not callable (`TypeError`).
   `checks` govern writes only: asked of a write in each context it writes, of
   the stored resource of a PUT, PATCH or DELETE in each of its contexts, of
   the saved resource in each of its contexts and of a workflow transition in
@@ -543,6 +549,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ### Upgrading
 
+* A DRF view whose own `rbac_requirement()` returns an empty `access.AnyOf`,
+  or one with an empty option, now raises (`ValueError`, a 500) instead of
+  refusing or allowing every object.
 * `ScrudException` and its subclasses are no longer DRF `APIException`s (they
   are neutral, `scrud_django.exceptions`). The DRF views wrap them
   (`scrud_django.exceptions.as_drf`), so the status and body of every answer
