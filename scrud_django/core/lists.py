@@ -1,9 +1,11 @@
 """A list of resources without DRF: the resources a requester may list
-(`readable_queryset`), filtered on query parameters (`content_filtered`), and
-the list's validators (`list_etag`, `list_last_modified`) and the
-preconditions of a POST to it (`evaluate_list_preconditions`), as the DRF
-routes answer them (`scrud_django.filters.ResourceRbacFilter`,
-``ResourceContentFilter``, ``ListValidatorsMixin``).
+(`readable_queryset`), filtered on query parameters (`content_filtered`),
+both in the list's order (`list_queryset`), a page of them read key first
+on MySQL (`page_of`, `rows_by_keys`), and the list's validators
+(`list_etag`, `list_last_modified`) and the preconditions of a POST to it
+(`evaluate_list_preconditions`), as the DRF routes answer them
+(`scrud_django.filters.ResourceRbacFilter`, ``ResourceContentFilter``,
+``StandardResultsSetPagination``, ``ListValidatorsMixin``).
 
 A requirement's leaves must read a resource's contexts as they are stored
 (their ``ResourceContext`` rows, which the SQL filter and the removal stamps
@@ -22,6 +24,8 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from urllib.parse import urlencode
 
+from django.core.paginator import Paginator
+from django.db import connections
 from django.db.models import (
     BooleanField,
     Case,
@@ -61,8 +65,10 @@ from scrud_django.core.requirements import (
     readable_removal,
     require_stored_contexts,
 )
+from scrud_django.core.types import type_options
 from scrud_django.exceptions import QueryParameterError
 from scrud_django.models import Resource, ResourceContext
+from scrud_django.rows import unsorted
 
 # The preconditions a POST to a list evaluates (`evaluate_list_preconditions`).
 LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
@@ -263,6 +269,60 @@ def content_filtered(queryset, params: QueryDict, *, ignored: frozenset[str]):
         for value in values:
             queryset = queryset.filter(**{alias: value})
     return queryset
+
+
+def list_queryset(
+    request,
+    resource_type,
+    params: QueryDict,
+    *,
+    requirement: Requirement | Sequence,
+    ignored: frozenset[str] = frozenset(),
+    using: str | None = None,
+) -> QuerySet[Resource]:
+    """The list of `resource_type` `request`'s user gets, as the DRF list
+    route lists it: `readable_queryset` (its request check, its refusals,
+    `requirement` and `using` as it takes them), then, when the type's
+    ``TypeOptions.content_filter`` is set (`scrud_django.core.types.type_options`
+    of its ``type_uri``), filtered on the query parameters `params` but those
+    `ignored` (`content_filtered`, the pagination parameters, the format
+    override and the UI's, the caller's; a `QueryParameterError` for a
+    parameter that cannot be a content key), ordered by
+    ``Resource.Meta.ordering``. Page it with `page_of`."""
+    queryset = readable_queryset(request, resource_type, requirement, using=using)
+    if type_options(resource_type.type_uri).content_filter:
+        queryset = content_filtered(queryset, params, ignored=ignored)
+    return queryset.order_by(*Resource._meta.ordering)
+
+
+def rows_by_keys(queryset, keys: Sequence) -> list[Resource]:
+    """The rows of `queryset` whose keys are `keys`, in `keys`' order (a key
+    `queryset` does not hold is left out), read by key with no ``ORDER BY``
+    (`scrud_django.rows.unsorted`): sorting rows whose JSON content is over
+    MySQL's ``sort_buffer_size`` fails there (error 1038,
+    `scrud_django.rows`)."""
+    rows = {row.pk: row for row in unsorted(queryset.filter(pk__in=keys))}
+    return [rows[pk] for pk in keys if pk in rows]
+
+
+def page_of(queryset, *, number: int, size: int) -> tuple[list[Resource], int]:
+    """Page `number` (from 1) of `queryset` (`list_queryset`'s, ordered), of
+    `size` rows, and the count of `queryset`'s rows, as Django's
+    ``Paginator`` pages it (an empty list has one, empty, page). A `number`
+    past the last page (or below 1) raises
+    ``django.core.paginator.EmptyPage``; a `size` below 1 is a
+    ``ValueError``. On MySQL the page is found among the keys alone
+    (``values_list("pk", flat=True)``), then its rows are read by key
+    (`rows_by_keys`): MySQL sorts with every column it selects, so a page
+    holding a row whose content is over its ``sort_buffer_size`` would fail
+    (error 1038); elsewhere the queryset is sliced."""
+    if size < 1:
+        raise ValueError(f"A page holds at least one row, not {size}.")
+    if connections[queryset.db].vendor != "mysql":
+        page = Paginator(queryset, size).page(number)
+        return list(page.object_list), page.paginator.count
+    page = Paginator(queryset.values_list("pk", flat=True), size).page(number)
+    return rows_by_keys(queryset, list(page.object_list)), page.paginator.count
 
 
 def list_etag(

@@ -7,7 +7,7 @@ server's ``sort_buffer_size`` (256 KB by default) fails the sort with error
 unordered queryset sorts too. So a query that reads ``content`` either asks
 for no order (`unsorted`) and is sorted here (`by_pk`), or sorts the keys
 alone and reads the rows by key (`first_by_pk`, `locked_by_pk`,
-`StandardResultsSetPagination`). Sorting keys alone needs no large buffer
+`scrud_django.core.lists.page_of`, `StandardResultsSetPagination`). Sorting keys alone needs no large buffer
 on any database.
 """
 

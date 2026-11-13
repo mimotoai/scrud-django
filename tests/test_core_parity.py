@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import pytest
 from django.contrib.auth.models import AnonymousUser
 from django.db import transaction
-from django.http import Http404
+from django.http import Http404, QueryDict
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils.http import quote_etag
@@ -34,7 +34,7 @@ from scoped_rbac import access
 from scoped_rbac.permissions import drf_error
 
 from scrud_django import collection_type_uri_for
-from scrud_django.core.lists import readable_queryset
+from scrud_django.core.lists import list_queryset, page_of, readable_queryset
 from scrud_django.core.requirements import (
     asks_grants,
     asks_grants_itself,
@@ -462,6 +462,37 @@ def test_list_parity(type_slug, user_name):
     response = list_response(parity, user)
     assert response.status_code == 200, response.content
     assert {str(r.pk) for r in facade_list(parity, user)} == listed_pks(response)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("type_slug, user_name", list_cases(listed=True))
+def test_list_page_parity(type_slug, user_name):
+    """A page of the list (``?page=2&page_size=2``): the DRF route's entries,
+    in its order, and its count are the facade's (`list_queryset`, then
+    `page_of`)."""
+    parity = TYPES[type_slug]
+    user = users_for(parity.uri)[user_name]
+    for where in STORED_IN * 2:
+        store(parity, where)
+    query = "page=2&page_size=2"
+    response = client_of(user).get(
+        f"{reverse(f'{parity.slug}-list')}?{query}", HTTP_ACCEPT=JSON
+    )
+    assert response.status_code == 200, response.content
+    body = response.json()
+    drf_pks = [entry["href"].rstrip("/").rsplit("/", 1)[1] for entry in body["content"]]
+    resource_type = resource_type_of(parity)
+    queryset = list_queryset(
+        request_of("GET", user, f"/?{query}"),
+        resource_type,
+        QueryDict(query),
+        requirement=requirement_for(resource_type, parity.slug),
+        ignored=frozenset({"page", "page_size"}),
+    )
+    rows, count = page_of(queryset, number=2, size=2)
+    assert drf_pks  # a page that holds rows, for every lister
+    assert [str(row.pk) for row in rows] == drf_pks
+    assert count == body["count"]
 
 
 @pytest.mark.django_db

@@ -490,7 +490,16 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   grants too. `scrud_django.drf_requirements.requirement_of` returns one
   built `Requirement.unchecked` (a DRF view with no `IsAuthorized` asks no
   grants and is still served); `core.requirements.to_scoped_rbac` gives an
-  `AnyOf` back as scoped-rbac's. It is the base for other front ends.
+  `AnyOf` back as scoped-rbac's. `scrud_django.core.lists.list_queryset`
+  gives the list a front end serves: `readable_queryset`, then, for a type
+  registered with `content_filter=`, the content filter on its query
+  parameters (`content_filtered`, but the `ignored=` ones), in
+  `Resource.Meta.ordering`; `page_of` gives a page of it and the count, as
+  Django's `Paginator` pages it (`EmptyPage` past the last page). On MySQL
+  `page_of` finds the page among the keys alone and reads its rows by key
+  (`rows_by_keys`, which `StandardResultsSetPagination` calls too), so a
+  row whose content is over MySQL's `sort_buffer_size` is never sorted
+  (error 1038). It is the base for other front ends.
 * Per-type hooks, honoured by every front end, on `json_resource_type`
   (`checks=`, `object_checks=`, `content_filter=`) and
   `computed_resource_type` (`compute=`). They can only refuse what the grants

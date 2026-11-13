@@ -9,6 +9,8 @@ from uuid import uuid4
 import pytest
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
+from django.core.paginator import EmptyPage
+from django.db import OperationalError, connection, transaction
 from django.http import QueryDict
 from django.test import RequestFactory, override_settings
 from django.urls import reverse
@@ -21,6 +23,7 @@ from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django import collection_type_uri_for
 from scrud_django.core.requirements import GrantsLeaf
+from scrud_django.core.types import requirement_for
 from scrud_django.exceptions import ScrudException
 from scrud_django.filters import ui_parameters
 from scrud_django.models import Resource, ResourceRemoval
@@ -28,6 +31,7 @@ from scrud_django.registration import ResourceRegistration, get_resource_type_fo
 
 from .factories import UserFactory
 from .rbac_defaults import TYPE_URI_LIST_PARTNER_PROFILES, TYPE_URI_PARTNER_PROFILES
+from .resource_types import HOOKED_NOTE_TYPE_URI, hooked_resource_types
 from .steps import *  # noqa: F403, F401
 
 PP = TYPE_URI_PARTNER_PROFILES
@@ -427,3 +431,120 @@ def test_readable_queryset_refuses_a_leaf_with_its_own_contexts():
         assert list_last_modified(request, rtype, listed, requirement) == (
             in_a.modified_at
         )
+
+
+ON_MYSQL = settings.DATABASES["default"]["ENGINE"] == "django.db.backends.mysql"
+HOOKED_READER = {
+    "http.GET": [HOOKED_NOTE_TYPE_URI, collection_type_uri_for(HOOKED_NOTE_TYPE_URI)]
+}
+
+
+def hooked_note(text, context):
+    """A ``hooked-notes`` resource (a type with ``content_filter``)."""
+    reverse("hooked-notes-list")
+    hooked_resource_types()
+    return ResourceRegistration.register(
+        {"text": text, "rbac_context": context}, "hooked-notes"
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_list_queryset_orders_and_filters():
+    from scrud_django.core.lists import list_queryset
+
+    first, _, third = (hooked_note(text, "a") for text in ("x", "y", "x"))
+    hooked_note("x", "b")  # not readable by the requester
+    rtype = get_resource_type_for("hooked-notes")
+    request = get_request(user_with((HOOKED_READER, "a")))
+    requirement = requirement_for(rtype, "hooked-notes")
+    params = QueryDict("text=x&page=2")
+    listed = list_queryset(
+        request, rtype, params, requirement=requirement, ignored=frozenset({"page"})
+    )
+    assert listed.query.order_by == tuple(Resource._meta.ordering)
+    assert list(listed.values_list("pk", flat=True)) == [first.pk, third.pk]
+    # Without the type's content filter, the parameters filter nothing.
+    one, two = profile("one", "a"), profile("two", "a")
+    profiles = get_resource_type_for("partner-profiles")
+    listed = list_queryset(
+        get_request(user_with((PP_READER, "a"))),
+        profiles,
+        QueryDict("name=one"),
+        requirement=[GrantsLeaf(PP)],
+    )
+    assert list(listed.values_list("pk", flat=True)) == [one.pk, two.pk]
+
+
+@pytest.mark.django_db
+@test_context
+def test_page_of_returns_key_order():
+    from scrud_django.core.lists import list_queryset, page_of
+
+    stored = [profile(f"p-{n}", "a") for n in range(5)]
+    rtype = get_resource_type_for("partner-profiles")
+    request = get_request(user_with((PP_READER, "a")))
+    queryset = list_queryset(request, rtype, QueryDict(), requirement=[GrantsLeaf(PP)])
+    rows, count = page_of(queryset, number=1, size=2)
+    assert [row.pk for row in rows] == [stored[0].pk, stored[1].pk]
+    assert count == 5
+    rows, count = page_of(queryset, number=3, size=2)
+    assert [row.pk for row in rows] == [stored[4].pk]
+    assert count == 5
+    with pytest.raises(EmptyPage):
+        page_of(queryset, number=4, size=2)
+    with pytest.raises(EmptyPage):
+        page_of(queryset, number=0, size=2)
+    with pytest.raises(ValueError):
+        page_of(queryset, number=1, size=0)
+    # An empty list has one page, empty.
+    assert page_of(queryset.none(), number=1, size=2) == ([], 0)
+
+
+@pytest.mark.django_db
+@test_context
+def test_rows_by_keys_keeps_the_keys_order():
+    from scrud_django.core.lists import rows_by_keys
+
+    a, b, c = (profile(name, "a") for name in "abc")
+    queryset = Resource.objects.filter(resource_type=a.resource_type)
+    rows = rows_by_keys(queryset, [c.pk, a.pk, b.pk])
+    assert [row.pk for row in rows] == [c.pk, a.pk, b.pk]
+    # A key the queryset does not hold is left out.
+    assert rows_by_keys(queryset.exclude(pk=a.pk), [c.pk, a.pk]) == [c]
+    assert rows_by_keys(queryset, []) == []
+
+
+@pytest.mark.skipif(not ON_MYSQL, reason="MySQL's sort_buffer_size")
+@pytest.mark.django_db
+@test_context
+def test_page_of_a_large_row_on_mysql():
+    """A row whose content is over MySQL's ``sort_buffer_size`` (256 KB by
+    default), as `tests.test_ui_branch_large_rows` builds one: a page sorting
+    whole rows fails with error 1038; `page_of` sorts the keys alone. The
+    resources the requester does not read (in "b") outnumber those it does,
+    so that MySQL reads the context rows first and sorts the page (``Using
+    filesort``) rather than reading the type's index in key order."""
+    from scrud_django.core.lists import list_queryset, page_of
+
+    large = "a" * 262144
+    small = profile("small", "a")
+    big = profile(large, "a")
+    after = profile("after", "a")
+    for n in range(20):
+        profile(f"unread-{n}", "b")
+    rtype = get_resource_type_for("partner-profiles")
+    request = get_request(user_with((PP_READER, "a")))
+    queryset = list_queryset(request, rtype, QueryDict(), requirement=[GrantsLeaf(PP)])
+    if not connection.mysql_is_mariadb:
+        # The page sorting whole rows fails on MySQL: this test reaches the
+        # sort it guards against.
+        with pytest.raises(OperationalError) as raised, transaction.atomic():
+            list(queryset[:2])
+        assert raised.value.args[0] == 1038
+    rows, count = page_of(queryset, number=1, size=2)
+    assert [row.pk for row in rows] == [small.pk, big.pk]
+    assert rows[1].content["name"] == large
+    assert count == 3
+    rows, _ = page_of(queryset, number=2, size=2)
+    assert [row.pk for row in rows] == [after.pk]
