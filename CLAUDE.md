@@ -70,6 +70,14 @@ does; the DRF views' list and readability (`meets_object_checks` without
 Put new domain logic in `core`, not in a view; per-type hooks are
 `core.types.TypeOptions`.
 
+`scrud_django/ninja/` is the second adapter (the optional `ninja` extra,
+`scrud_django.ninja.api(types=[...])`). Its handlers call only the core
+facade: no domain logic lives there, and a handler that needs something the
+core lacks adds it to the core with a core test. It answers as the DRF routes
+do, and `tests/test_front_end_parity.py` is the proof (the same exchanges
+replayed against both, compared exactly); the generic suites take the
+`front_end` fixture and run on both. It serves no UI or studio types yet.
+
 ## Commands
 
 Python 3.13 is pinned in `.python-version`; CI covers 3.11-3.13, not 3.14 (the

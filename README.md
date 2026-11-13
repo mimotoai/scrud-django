@@ -25,6 +25,65 @@ templates and stylesheets stored as resources, layered per RBAC context and
 shown exactly as the viewer is authorized, with htmx for editing. See the
 [UI documentation](docs/ui.md).
 
+## django-ninja (preview)
+
+scrud-django can also serve its resource types through
+[django-ninja](https://django-ninja.dev), answering as the DRF routes do (the
+same statuses, headers and bodies; `tests/test_front_end_parity.py` replays
+the same exchanges against both). It is additive and a preview: nothing
+changes for a DRF project.
+
+```bash
+uv add "scrud-django[ninja]"
+# or: pip install 'scrud-django[ninja]'
+```
+
+```python
+# urls.py
+from django.urls import include, path
+
+from scrud_django import registration
+from scrud_django.ninja import api
+
+scrud_api = api(
+    types=[
+        registration.json_resource_type_spec(
+            # the arguments of registration.json_resource_type
+        ),
+    ],
+)
+
+urlpatterns = [
+    path("api/", scrud_api.urls),
+    path("", include("scoped_rbac.semantic_urls")),
+]
+```
+
+* The factory is `scrud_django.ninja.api(*, types=(), urls_namespace="scrud",
+  built_ins=True, **ninja_kwargs)`. `types` are `TypeSpec`s, from
+  `registration.json_resource_type_spec(...)` and
+  `registration.computed_resource_type_spec(...)`; it serves them and, unless
+  `built_ins=False`, the built-in types, with the service catalog
+  (`services/`), scoped-rbac's role routes and the collection documents.
+* Do not pass `auth=`: `api()` raises `TypeError`. scrud resolves the user of
+  every request itself, so an anonymous request gets the anonymous user's
+  grants and a hidden item is a 404.
+* Two APIs in one process need distinct `urls_namespace`s. Links (`href`,
+  `Location`, `Link` headers, `services/`) are reversed within the namespace
+  the request was resolved under.
+* A ninja-only URLconf must also `include("scoped_rbac.semantic_urls")`: the
+  role routes' (`roles/`, `role-assignments/`, `user-rbac-policy/`) semantic
+  Links reverse those global names, and answer 500 without it.
+* `services/` lists every type registered in the process. Serving two APIs
+  with different `types=` in one process, or a ninja-only URLconf after DRF
+  routes registered other types, makes `services/` fail (500); see
+  `services-unrouted-types` in the [follow-ups](docs/follow-ups.md).
+* The UI types (`scrud_django.ui`) and the studio types are not served on
+  ninja yet, nor are the `ui-css-files` and `ui-js-files` views, and a ninja
+  route never answers `text/html`.
+* `scrud_django.urls` stays DRF until the release that switches it; include
+  it as before for a DRF project.
+
 ## Configuration
 
 ### Required

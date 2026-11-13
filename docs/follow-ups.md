@@ -246,10 +246,12 @@ lookup by `type_uri`), and assert one row for the slug; it fails today.
 argument but does not pass it to `ResourceTypeRegistration`. A type
 registered with one (and no `indexing_policy_func`) has its indexing policy
 set to `None` and saved at every start, clearing one stored before, so its
-resources are indexed without one. Fix: pass it through. Test: register a
+resources are indexed without one. `json_resource_type_spec` (the ninja
+front end's `TypeSpec`) takes the same argument and inherits the drop. Fix:
+pass it through. Test: register a
 type with `json_resource_type(..., indexing_policy_resource=<a stored
-policy>)` and assert the stored type's `indexing_policy` is that resource;
-it is `None` today.
+policy>)` (and with `json_resource_type_spec(...).register()`) and assert the
+stored type's `indexing_policy` is that resource; it is `None` today.
 
 <a id="hsr-context-less-types"></a>
 ## hsr-context-less-types: the HTTP Schema Resource of a type with a schema and no JSON-LD context is a 500
@@ -1256,6 +1258,247 @@ requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
 `has_permission` refuses, as a user holding the list grant; assert
 `AccessDenied` (today it allows).
 
+<a id="services-unrouted-types"></a>
+## services-unrouted-types: `services/` fails when the serving URLconf does not route every registered type
+
+The service catalog (`scrud_django.services.services`) is process-global: it
+lists every type registered in the process, whichever URLconf serves them.
+An entry the serving URLconf does not route raises `NoReverseMatch` (a 500)
+when `services/` is read, on either front end. It happens when two ninja
+APIs with different `types=` are served from one process, and when a
+ninja-only URLconf is read after the DRF routes registered other types.
+Owner's call: omit the entries that do not reverse on ninja, or state a
+one-API-per-process rule. The README says the second until then.
+
+Test: GET `/api/services/` under `tests.ninja_only_urls` after `tests.urls`
+registered `todos`; assert 200 (it is a 500 today). The ninja-only tests
+isolate the catalog (`monkeypatch` of `services.services`) for this reason,
+and `tests/test_error_media_types.py::test_the_service_lists_conditional_400_follows_uniform_errors`
+stays DRF-only.
+
+<a id="ninja-semantic-urls-include"></a>
+## ninja-semantic-urls-include: a ninja-only URLconf must include `scoped_rbac.semantic_urls`
+
+The role routes (`roles/`, `role-assignments/`, `user-rbac-policy/`) add
+semantic Links that scoped-rbac reverses by global name. A URLconf that
+mounts only `scrud_django.ninja.api().urls` lacks them, and those three
+routes answer 500 (`NoReverseMatch`). 3A documents the
+`include("scoped_rbac.semantic_urls")` in the README; a system check, or
+`api()` mounting them, belongs to the release that makes ninja the default
+`scrud_django.urls`. Test: a URLconf of the ninja API alone; GET `roles/` as
+a superuser; assert 200 (a 500 without the include).
+
+<a id="ninja-uniform-errors-per-front-end"></a>
+## ninja-uniform-errors-per-front-end: the ninja routers read `UNIFORM_ERRORS` when they are built
+
+The ninja routers read `SCOPED_RBAC["UNIFORM_ERRORS"]["ninja"]` once, when
+the API is built (as scoped-rbac does); DRF reads `"drf"` for each request.
+If the setting changes while the process runs (tests with
+`override_settings` do), or differs between the front ends, scrudful's
+400, 412 and 428 bodies on ninja keep the value at build time. Test: build
+the API, switch `UNIFORM_ERRORS` with `override_settings`, send a request
+that is refused 412, and compare it with the DRF route's answer; they
+differ today.
+
+<a id="ninja-hsr-link-targets"></a>
+## ninja-hsr-link-targets: the HTTP Schema Resource of a ninja route may link the DRF routes
+
+scrudful calls the link function with `(None, None)` when it builds a
+route's HTTP Schema Resource, so `item_link_targets(None, ...)` reverses the
+plain route names, which are DRF's when both front ends are mounted. On a
+ninja-only URLconf they are ninja's and the links resolve (pinned by
+`tests/test_ninja_routers.py::test_a_ninja_only_apis_list_links_and_hsr_resolve_within_it`);
+with both mounted a ninja HSR can name the DRF schema and context routes,
+which answer alike. The parity harness masks HSR targets. Test: mount both
+front ends, GET a ninja item's HSR, and assert its links start with the ninja
+prefix; they start with the DRF prefix when the DRF routes were reversed first.
+
+<a id="ninja-collection-options-drf-defaults"></a>
+## ninja-collection-options-drf-defaults: the collection documents' OPTIONS body copies DRF's defaults
+
+The ninja OPTIONS of `collections-json-schema/<slug>/` and
+`collections-json-ld/<slug>/` lists DRF's default renderer and parser
+classes, and the name and description DRF's `VIEW_NAME_FUNCTION` and
+`VIEW_DESCRIPTION_FUNCTION` give those views. A project that sets
+`REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"]`, `DEFAULT_PARSER_CLASSES` or
+those functions gets a different DRF body than ninja's. The ninja OPTIONS
+also ignores `Accept` (DRF renders HTML for `text/html` and answers 406 for
+a type it cannot give), and is throttled as any ninja operation is by the
+API's throttles (scrudful's automatic OPTIONS runs none; `api()` sets none).
+Test: with `DEFAULT_PARSER_CLASSES` set to JSON only, OPTIONS
+`collections-json-schema/partner-profiles/` on both front ends and compare
+the bodies; they differ today.
+
+<a id="ninja-allow-of-entry-refusals"></a>
+## ninja-allow-of-entry-refusals: refusals made at entry carry no DRF `Allow`
+
+The collection documents', computed types' and catalog's answers give DRF's
+`Allow` (`routers.as_drf_api_views`), but a response `entry` short-circuits
+(a CSRF 403, a rewritten OPTIONS) is made outside that wrapper and has none,
+and the `Allow` of a 405 from a plain POST or PUT on the collection routes
+was not compared. Test: a CSRF-refused POST to a collection document on each
+front end, comparing headers; or PUT to it (405).
+
+<a id="ninja-put-reload"></a>
+## ninja-put-reload: a ninja PUT's validators come from the written row, with no second check
+
+After a 2xx PUT, scrudful loads the resource again for its validators and
+Links; the ninja operation hands it the row the core wrote
+(`routers.WRITTEN_ATTR`) without a second request or object check (the
+plan's design). DRF reloads through `get_object()` and drops the validators
+if that fails. They answer alike unless a grant changes between the write and
+the reload. Test: a PUT whose `scrud_post_save` revokes the writer's read
+grant; compare `ETag` and `Link` of the answers on both front ends.
+
+<a id="ninja-user-hook-401-message"></a>
+## ninja-user-hook-401-message: a `NINJA_USER` hook's own 401 message is not carried
+
+With `UNIFORM_ERRORS` off for ninja, a `NINJA_USER` hook raising ninja's
+`AuthenticationError` is answered with the generic "Authentication
+credentials were not provided." rather than the hook's message. Test: a hook
+raising `AuthenticationError("expired")`; assert the body names it (it does
+not).
+
+<a id="ninja-string-content"></a>
+## ninja-string-content: a resource whose content is a `str` is returned as stored
+
+DRF's `to_content` runs `json.loads` on a resource whose content is a
+`str`; the ninja retrieve returns `obj.content` as stored. No test resource
+has string content. A core representation helper would give both the same
+body. Test: save a resource whose `content` is a JSON string and GET it on
+both front ends; compare the bodies.
+
+<a id="ninja-postgres-subprocess-test"></a>
+## ninja-postgres-subprocess-test: the first-parity-call test cannot run on PostgreSQL
+
+`tests/test_front_end_parity.py::test_hooked_types_are_served_alike_on_a_processs_first_parity_call`
+runs a subprocess pytest that tries to create `test_scrud` while the parent
+session holds it ("database ... already exists / being accessed by other
+users"). It fails on PostgreSQL before and after the ninja work, so
+`test-postgres` in CI would hit it. Test: run that test with
+`SCRUD_TEST_PG_HOST` set (see `tests/settings.py`); it fails.
+
+<a id="ninja-private-upstream-use"></a>
+## ninja-private-upstream-use: the ninja front end leans on private scrudful and ninja internals
+
+Each is worked around here; none has a public replacement upstream yet.
+
+- `routers.py` uses `scrudful._adapter.set_validator_headers` and
+  `scrudful._django` (`aware`, `conditional_response`, `precondition_headers`),
+  and `scrudful._hsr.is_preflight` for the OPTIONS answer. There is no
+  public conditional rendering for a described (plain) operation with an
+  error entity, so `_precondition_response` composes
+  `scrudful._django.conditional_response` with scoped-rbac's
+  `conditional_problem` and `PROBLEM_LINKS`; and no public preflight test or
+  way to keep scrudful's automatic OPTIONS while supplying the whole `Allow`
+  (its `allowed=` takes a per-method hook on a loaded object, ruled out by
+  R4).
+- A ninja handler has no handle on its API, so `_noting_serving_api` finds it
+  through `inspect.unwrap(run).__self__.api` (scrudful has a private
+  `_SERVING_API`), which holds only while every view decorator before it uses
+  `functools.wraps`; `entry` does the same.
+- `entry._hsr_link_of` takes the HTTP Schema Resource link from scrudful's 405
+  to a copy of the request with an unserved method (`TRACE`), as there is no
+  public lookup for a path's link. An unguarded call could turn a
+  misconfigured path into a 500; a `try`/`except` falling back to no link
+  would stop that.
+- scrudful names ninja's HSR routes `scrudful_hsr_<n>_<template>_<m>` (with
+  counters), so nothing can `reverse()` them; `tests.front_ends.hsr_url`
+  derives the URL from the path template and breaks if the naming changes.
+- scrudful's DRF HSR cache (`_HSRS`) is cleared only on `setting_changed`, and
+  so is its ninja one: neither follows a change of `ROOT_URLCONF` made by
+  pytest-django's `urls` mark (which sends no signal), so a test can be served
+  an HSR built under another URLconf. `tests/test_front_end_parity.py` wraps each test in `override_settings` to
+  send the signal.
+
+Test: for each, one that fails when upstream renames or removes the helper:
+`tests/test_ninja_api.py` and `tests/test_front_end_parity.py` already break
+on import or on the first request when a helper goes. For the cache, a test that switches
+`ROOT_URLCONF` with the `urls` mark and asserts the second HSR's links; it is
+served stale today.
+
+<a id="scoped-rbac-list-iri"></a>
+## scoped-rbac-list-iri: proposal, a `list_iri=` parameter
+
+Proposal for django-scoped-rbac (spec §3.5 item 1): `list_check` and
+`authorized_list` take `list_iri=` (default `"<iri>/list"`), and
+`crud_router` passes it through. scrud's list is granted on the type's list
+IRI and filtered by a resource's stored contexts, which scoped-rbac's own
+list check does not know; without it scrud writes its own `before` and
+`after_throttles` for lists from the neutral `access` functions, as the ninja
+routers do now. Test (upstream): `crud_router(..., list_iri="x/list")`; a user
+granted `x/list` lists, one granted only `<iri>/list` gets 403.
+
+<a id="scoped-rbac-crud-router-checks"></a>
+## scoped-rbac-crud-router-checks: proposal, extra checks on `crud_router` and the blocks
+
+Proposal (spec §3.5 item 2): `crud_router(..., checks=[...])` and the building
+blocks take extra item and write checks, called in the same transaction in a
+documented order (after the request check, before the save). scrud's
+workflow check, body checks and every-context policy check are such checks;
+today the ninja routers are hand-written to place them. Test (upstream): a
+check that raises refuses a PUT before the save and rolls the write back.
+
+<a id="scoped-rbac-options-denials"></a>
+## scoped-rbac-options-denials: proposal, a public `_options_denials`
+
+Proposal (spec §3.5 item 3): make `_options_denials` public, so wrapped
+`before`/`load` hooks answer scrudful's OPTIONS copies correctly (an
+`AccessError` on a copy must become Django's `PermissionDenied`, which drops
+the method from `Allow`, or `Http404`). scrud keeps a five-line equivalent,
+`routers._options_denials`, for its own hooks. Test (upstream): a custom
+`load` raising `AccessDenied` on an OPTIONS copy drops its method from
+`Allow` instead of failing the OPTIONS.
+
+<a id="scoped-rbac-ninja-docs-pin"></a>
+## scoped-rbac-ninja-docs-pin: `docs/ninja.rst` states a stale ninja pin
+
+Proposal (spec §3.5 item 4): the page still says ninja 1.7.0 and 1.7.1 and
+`<1.8`, where the package pins `>=1.7,<1.7.4`. Test (upstream): a docs test
+comparing the page's range with the package metadata's.
+
+<a id="scoped-rbac-ninja-auth-digest"></a>
+## scoped-rbac-ninja-auth-digest: the auth-loop digest knows only ninja 1.7.0 and 1.7.1
+
+scoped-rbac copies ninja's `_run_authentication` to record which
+authenticator succeeded, guarded by a source digest of ninja 1.7.0 and
+1.7.1. On 1.7.2 and 1.7.3 (inside the pin) it logs a warning once and
+CSRF-checks every unsafe request of a session user, header credentials
+included. It fails closed, but a bearer-token or API-key client that is
+exempt on 1.7.0 and 1.7.1 is refused a write with 403 "CSRF Failed". Test
+(upstream, on ninja 1.7.2): a PUT with `Authorization: Bearer ...` and no CSRF
+token from a `NINJA_USER` hook returning a non-session user; assert it is
+allowed (it is refused today).
+
+<a id="scoped-rbac-checks-before-405"></a>
+## scoped-rbac-checks-before-405: only `AccessDenied` from `resolve_user` is caught before a 405
+
+`scoped_rbac.ninja.blocks._checks_before_405` catches only
+`access.AccessDenied` from `resolve_user`. A `NINJA_USER` hook raising
+ninja's `AuthenticationError` on a method a ScrudfulRouter path does not
+route (PATCH on a type route, HEAD on `services/`) escapes as an unhandled
+exception (500). scrud works around it for routed methods (`entry`) and for
+its computed routes' unrouted ones (`refuse_the_anonymous`), and
+`entry.authenticate_first` covers its own paths; scoped-rbac's role routes
+and any other ScrudfulRouter path outside it are not. Test (upstream): a hook
+raising `AuthenticationError`; PATCH a `crud_router` path; assert 401 (500
+today).
+
+<a id="scoped-rbac-ninja-policy-vary"></a>
+## scoped-rbac-ninja-policy-vary: `user-rbac-policy/` OPTIONS sends no `Vary: Cookie`
+
+DRF's answer has `Vary: Cookie`; scoped-rbac's ninja one does not (every other
+role-route answer's `Vary` matches). Test (upstream): OPTIONS
+`user-rbac-policy/` on both front ends and compare `Vary`.
+
+<a id="scoped-rbac-ninja-http404-message"></a>
+## scoped-rbac-ninja-http404-message: the ninja handlers drop an `Http404`'s message
+
+`install_error_handlers` answers any `Http404` with "Not found.", where DRF
+keeps the exception's message. scrud re-raises its collection routes' as
+`HttpError(404, message)`. Test (upstream): a handler raising
+`Http404("No such schema.")`; assert the problem's `detail`.
+
 # Decided
 
 <a id="core-allowed-methods-existence-leak"></a>
@@ -1567,3 +1810,48 @@ Test: this command reports no issues, and a job should run it:
 ```bash
 uv run --with mypy mypy scrud_django/core --ignore-missing-imports --follow-imports=silent
 ```
+
+<a id="ninja-3a-rulings"></a>
+## ninja-3a-rulings: R1 to R5 of the additive ninja front end
+
+Decided in `docs/superpowers/plans/2026-11-12-ninja-phase3a-front-end.md`
+(the owner may overrule; each says its cost if wrong there):
+
+- **R1. The list route is not `scrudful_list`.** `scrudful_list` 400s a bad
+  `page` or `page_size`; scrud's paginator clamps `page_size` silently (below
+  1 or not an integer gives 100, above 1000 gives 1000) and answers 404
+  "Invalid page.". The ninja list is a described GET that pages with
+  `core.lists` and validates with the core's list ETag, Last-Modified and
+  precondition functions, giving DRF's answers. So the spec's list-envelope
+  change (`first` and `last`, page 1's `previous` as `?page=1`) and the
+  scrudful `list_etag_func(request, queryset, page)` proposal are dropped.
+- **R2. Conditional create is evaluated by the core**, not by
+  `scrudful_create(list_load=...)`: the ninja create holds
+  `core.writes.conditional_create_lock` and evaluates
+  `core.evaluate_list_preconditions` as DRF's `create` does
+  (`tests/test_ninja_api.py::test_conditional_create_holds_the_type_lock`).
+- **R3. Not served on ninja in 3A:** the UI types (`ui_resource_type_urls()`),
+  the studio's computed types (`studio_computed_type_urls()`) and the
+  `ui-css-files` and `ui-js-files` views. `api()` does not mount them; phase 2
+  moves them onto core hooks.
+- **R4. OPTIONS is scrud's own operation**, not scrudful's automatic one with
+  an `allowed=` hook (see `core-allowed-methods-existence-leak`).
+- **R5. Links follow the serving API's namespace.** The ninja routes keep
+  DRF's route names under the `NinjaAPI`'s `urls_namespace`, and
+  `core.urls.absolute_reverse` reverses `<request namespace>:<name>` first when
+  the request was resolved under a namespace. This is how `href`, `Location`,
+  `Link`s and `services/` point at the ninja routes.
+
+R6 (no system check for `NinjaAPI(auth=...)`: the factory refuses `auth=`) and
+R7 (the slug registry waits for phase 2) are in the plan too.
+
+<a id="ninja-options-and-collections"></a>
+## ninja-options-and-collections: OPTIONS on type routes, and where the collection documents live
+
+OPTIONS on a ninja type route answers DRF's 204 with `Allow` from
+`core.resources.allowed_methods_for` (and the HTTP Schema Resource link), not
+scrudful's automatic OPTIONS. The collection documents
+(`collections-json-schema/`, `collections-json-ld/`) moved into
+`scrud_django/core/collections.py` and both front ends serve them
+(`tests/test_core_collections.py`, and the `options-*` cases of
+`tests/test_front_end_parity.py`).

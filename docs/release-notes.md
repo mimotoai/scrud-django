@@ -371,6 +371,20 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ### Added
 
+* An additive django-ninja front end, `scrud_django.ninja` (a preview; the new
+  optional extra `ninja`, `scrud-django[ninja]`). `scrud_django.ninja.api(types=[...])`
+  returns a `NinjaAPI` serving the built-in types, your types, the service
+  catalog, scoped-rbac's role routes and the collection documents, with the
+  statuses, headers and bodies of the DRF routes. It takes no `auth=`, takes
+  a `urls_namespace` (distinct for each API in a process), and needs
+  `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. UI and
+  studio types are not served on it yet, and `scrud_django.urls` is still DRF.
+  See "django-ninja (preview)" in the README.
+* `registration.TypeSpec` and the functions `json_resource_type_spec`,
+  `computed_resource_type_spec` and `built_in_type_specs`: a resource type as
+  every front end registers it, without a front end's routes.
+  `json_resource_type` and `computed_resource_type` are unchanged.
+
 * `scrud_django.ui`, an optional app (add it to `INSTALLED_APPS` and install
   the new `ui` extra, `scrud-django[ui]`, which adds Jinja2) that serves every
   resource URL as `text/html`, chosen by `Accept: text/html`, rendered on the
@@ -538,6 +552,15 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   `requirement_for` takes the slug from the resource type (a different one
   is `ImproperlyConfigured`) and imports `ROOT_URLCONF` once per process,
   so a worker that never served a request still has the hooks.
+
+### Changed
+
+* Links now reverse within the URL namespace the request was resolved under:
+  `href`, `Location`, the schema and context `Link`s, the service URLs and the
+  stored-policy URL of a workflow error. A DRF app that mounts scrud's routes
+  under a namespaced `include()` gets namespaced links; before, those reverses
+  only worked if the routes were also mounted globally. Without a namespace
+  the links are as before.
 
 ### Fixed
 
