@@ -82,9 +82,6 @@ def write_then_answer(request, pk: int, status: int):
     return HttpResponse(status=status)
 
 
-PROBE_API = scrud_django.ninja.api(urls_namespace="test-ninja-api", built_ins=False)
-PROBE_API.add_router("", probes)
-
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -93,10 +90,19 @@ def drf_error_probe(request, name):
     raise ERRORS[name]()
 
 
-urlpatterns = [
-    path("drf/errors/<name>/", drf_error_probe),
-    path("ninja/", PROBE_API.urls),
-]
+def __getattr__(name):
+    """This URLconf's ``urlpatterns`` (``/drf/``'s probe, and the probe API at
+    ``/ninja/``), built on the first URL resolution, in a test: the API
+    registers the built-in types as it is built, which needs the database."""
+    if name != "urlpatterns":
+        raise AttributeError(name)
+    probe_api = scrud_django.ninja.api(urls_namespace="test-ninja-api")
+    probe_api.add_router("", probes)
+    patterns = globals()["urlpatterns"] = [
+        path("drf/errors/<name>/", drf_error_probe),
+        path("ninja/", probe_api.urls),
+    ]
+    return patterns
 
 # An OPTIONS whose ``request.method`` middleware rewrote (tests.middleware).
 REWRITING = override_settings(
@@ -111,6 +117,21 @@ REWRITING = override_settings(
 def test_api_refuses_auth():
     with pytest.raises(TypeError):
         scrud_django.ninja.api(auth=object())
+
+
+def test_api_always_serves_the_built_in_types():
+    # Every stored type's Links name its schema and context resources, which
+    # the built-in types' routes serve: there is no API without them (a
+    # ``built_ins`` argument goes to ``NinjaAPI``, which refuses it).
+    with pytest.raises(TypeError):
+        scrud_django.ninja.api(urls_namespace="test-no-built-ins", built_ins=False)
+    client = Client()
+    client.force_login(
+        User.objects.create(username="admin", is_staff=True, is_superuser=True)
+    )
+    for slug in ("json-schema", "json-ld", "indexing-policies", "workflow-policies"):
+        response = client.get(f"/ninja/{slug}/")
+        assert response.status_code == 200, (slug, response.content)
 
 
 @pytest.mark.parametrize("name", sorted(ERRORS))

@@ -60,11 +60,13 @@ urlpatterns = [
 ```
 
 * The factory is `scrud_django.ninja.api(*, types=(), urls_namespace="scrud",
-  built_ins=True, **ninja_kwargs)`. `types` are `TypeSpec`s, from
+  **ninja_kwargs)`. `types` are `TypeSpec`s, from
   `registration.json_resource_type_spec(...)` and
-  `registration.computed_resource_type_spec(...)`; it serves them and, unless
-  `built_ins=False`, the built-in types, with the service catalog
-  (`services/`), scoped-rbac's role routes and the collection documents.
+  `registration.computed_resource_type_spec(...)`; it serves them and always
+  the built-in types (`json-schema/`, `json-ld/`, `indexing-policies/`,
+  `workflow-policies/`: every type's Links name its schema and context
+  resources there), with the service catalog (`services/`), scoped-rbac's
+  role routes and the collection documents.
 * Do not pass `auth=`: `api()` raises `TypeError`. scrud resolves the user of
   every request itself, so an anonymous request gets the anonymous user's
   grants and a hidden item is a 404.

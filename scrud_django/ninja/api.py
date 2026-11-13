@@ -19,12 +19,12 @@ def api(
     *,
     types: Sequence[TypeSpec] = (),
     urls_namespace: str = "scrud",
-    built_ins: bool = True,
     **ninja_kwargs,
 ) -> ninja.NinjaAPI:
     """A ``NinjaAPI`` serving scrud's resource types: the built-in ones (JSON
-    Schema and JSON-LD documents, indexing and workflow policies) unless
-    `built_ins` is false, and each of `types`, every one registered first
+    Schema and JSON-LD documents, indexing and workflow policies), always
+    (every stored type's Links name its schema and context resources, which
+    the built-in routes serve), and each of `types`, every one registered first
     (`TypeSpec.register`): a stored type's list and item routes
     (`routers.type_router`), a computed type's item route
     (`computed.computed_router`). Also the service catalog (``services/``,
@@ -62,7 +62,7 @@ def api(
     scrud_api = ninja.NinjaAPI(
         urls_namespace=urls_namespace, default_router=ScrudfulRouter(), **ninja_kwargs
     )
-    specs = [*(built_in_type_specs() if built_ins else ()), *types]
+    specs = [*built_in_type_specs(), *types]
     type_routes = []
     computed_routes = []
     for spec in specs:
