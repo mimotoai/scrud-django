@@ -126,7 +126,9 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
     item = _item_operation_options(spec, urls_namespace)
     list_name = f"{slug}-list"
 
-    @router.api_operation(["GET", "HEAD"], "/", url_name=list_name)
+    @router.api_operation(
+        ["GET", "HEAD"], "/", url_name=list_name, operation_id=f"{slug}_list"
+    )
     @described(_collection_entity(spec, urls_namespace))
     def list_resources(request, response: HttpResponse):
         rtype = _resource_type(request, spec)
@@ -153,7 +155,9 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         _set_validators(response, etag, last_modified)
         return lists.list_body(request, rtype, page)
 
-    @router.api_operation(["POST"], "/", url_name=list_name)
+    @router.api_operation(
+        ["POST"], "/", url_name=list_name, operation_id=f"{slug}_create"
+    )
     @described(_item_entity(spec, urls_namespace))
     def create(request):
         rtype = _resource_type(request, spec)
@@ -195,13 +199,17 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         _set_validators(response, *resources.item_validators(obj))
         return response
 
-    @router.api_operation(["GET", "HEAD"], "/{slug}/", url_name=url_name)
+    @router.api_operation(
+        ["GET", "HEAD"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_retrieve"
+    )
     @scrudful(**item)
     def retrieve(request, slug: str, obj, response: HttpResponse):
         _as_document(request, response, spec)
         return obj.content
 
-    @router.api_operation(["PUT"], "/{slug}/", url_name=url_name)
+    @router.api_operation(
+        ["PUT"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_replace"
+    )
     @scrudful(**item)
     def replace(request, slug: str, obj, response: HttpResponse):
         rtype = _resource_type(request, spec)
@@ -217,7 +225,9 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         _as_document(request, response, spec)
         return written.content
 
-    @router.api_operation(["DELETE"], "/{slug}/", url_name=url_name)
+    @router.api_operation(
+        ["DELETE"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_destroy"
+    )
     @scrudful(**item)
     def destroy(request, slug: str, obj):
         rtype = _resource_type(request, spec)
@@ -295,6 +305,7 @@ def collections_router() -> Router:
             ["GET", "HEAD"],
             _document_operation(document, media_type),
             url_name=name,
+            operation_id=f"{name}_retrieve",
         )
         router.add_api_operation(
             path,

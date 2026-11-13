@@ -375,8 +375,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   optional extra `ninja`, `scrud-django[ninja]`). `scrud_django.ninja.api(types=[...])`
   returns a `NinjaAPI` serving the built-in types, your types, the service
   catalog, scoped-rbac's role routes and the collection documents, with the
-  statuses, headers and bodies of the DRF routes. It takes no `auth=`, takes
-  a `urls_namespace` (distinct for each API in a process), and needs
+  statuses, headers and bodies of the DRF routes. It serves no `docs/` or
+  `openapi.json` unless given `docs_url=` and `openapi_url=`. It takes no
+  `auth=`, takes a `urls_namespace` (distinct for each API in a process), and needs
   `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. UI and
   studio types are not served on it yet, and `scrud_django.urls` is still DRF.
   See "django-ninja (preview)" in the README.

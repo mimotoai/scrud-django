@@ -33,7 +33,11 @@ def api(
     catalog, ``registration.register_role_services``), and the collection
     documents the lists link to (`routers.collections_router`). Its URL names
     are under `urls_namespace`; the rest of `ninja_kwargs` go to
-    ``NinjaAPI``, but ``auth`` (``TypeError``): scrud authenticates every
+    ``NinjaAPI`` (whose ``docs_url`` and ``openapi_url`` default to ``None``
+    here: no interactive docs or OpenAPI document, which the DRF routes do
+    not serve either, unless passed; each operation has an id of its own,
+    ``<slug>_<operation>``, so the document is valid), but ``auth``
+    (``TypeError``): scrud authenticates every
     request itself (`scrud_django.ninja.entry.entry`), as scoped-rbac
     decides, so that an anonymous request gets the anonymous user's grants
     and a hidden item is a 404 rather than ninja's 401.
@@ -59,6 +63,11 @@ def api(
             "scrud_django.ninja.api() takes no auth: scrud resolves the user of "
             "each request itself (scoped_rbac.ninja.resolve_user)."
         )
+    # No interactive docs or OpenAPI document unless asked for (the DRF
+    # routes serve none); each operation's id is unique, so one turned on
+    # is valid.
+    ninja_kwargs.setdefault("docs_url", None)
+    ninja_kwargs.setdefault("openapi_url", None)
     scrud_api = ninja.NinjaAPI(
         urls_namespace=urls_namespace, default_router=ScrudfulRouter(), **ninja_kwargs
     )

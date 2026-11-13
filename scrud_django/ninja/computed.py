@@ -72,7 +72,9 @@ def computed_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Rou
     router.add_decorator(_noting_serving_api, mode="view")
     name = f"{spec.slug}-detail"
 
-    @router.api_operation(["GET", "HEAD"], "/{slug}/", url_name=name)
+    @router.api_operation(
+        ["GET", "HEAD"], "/{slug}/", url_name=name, operation_id=f"{spec.slug}_computed"
+    )
     def computed(request, slug: str):
         check_authenticated(request)
         rtype = _resource_type(request, spec)

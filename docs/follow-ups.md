@@ -1417,6 +1417,20 @@ on import or on the first request when a helper goes. For the cache, a test that
 `ROOT_URLCONF` with the `urls` mark and asserts the second HSR's links; it is
 served stale today.
 
+<a id="ninja-openapi-head-operation-id"></a>
+## ninja-openapi-head-operation-id: a GET-and-HEAD operation is described twice under one `operationId`
+
+With `docs_url=`/`openapi_url=` turned on, every scrud operation has an id
+of its own (`<slug>_list`, `<slug>_retrieve`, ...), and ninja prints no
+duplicate warning. But ninja describes one operation serving GET and HEAD
+(the lists, items, computed and collection routes, and scoped-rbac's role
+routes) under both methods of its path with that one id, which OpenAPI asks
+to be unique per method. Splitting GET and HEAD into two operations would
+change how scrudful serves them, and scoped-rbac's routes are upstream.
+Test: build `api(docs_url="/docs", openapi_url="/openapi.json")`, collect
+every `operationId` of `get_openapi_schema()["paths"]` per path and method,
+and assert none repeats (`partner-profiles_list` repeats today).
+
 <a id="scoped-rbac-list-iri"></a>
 ## scoped-rbac-list-iri: proposal, a `list_iri=` parameter
 

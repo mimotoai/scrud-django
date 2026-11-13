@@ -50,7 +50,9 @@ def services_router() -> ScrudfulRouter:
     router = ScrudfulRouter()
     router.add_decorator(entry, mode="view")
 
-    @router.api_operation(["GET"], "/", url_name=SERVICES_ROUTE)
+    @router.api_operation(
+        ["GET"], "/", url_name=SERVICES_ROUTE, operation_id=f"{SERVICES_ROUTE}_list"
+    )
     @scrudful(
         load=lambda request, **params: services.catalog(request),
         load_as="catalog",

@@ -67,6 +67,11 @@ urlpatterns = [
   `workflow-policies/`: every type's Links name its schema and context
   resources there), with the service catalog (`services/`), scoped-rbac's
   role routes and the collection documents.
+* It serves no interactive docs and no OpenAPI document unless you pass
+  `docs_url=` and `openapi_url=` (they go to `NinjaAPI`, as the rest of
+  `ninja_kwargs` do); those routes are public. Each operation has an
+  `operationId` of its own (`<slug>_list`, `<slug>_retrieve`, ...), so the
+  document is valid.
 * Do not pass `auth=`: `api()` raises `TypeError`. scrud resolves the user of
   every request itself, so an anonymous request gets the anonymous user's
   grants and a hidden item is a 404.

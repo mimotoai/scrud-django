@@ -35,7 +35,7 @@ from scrud_django.ninja.entry import entry
 
 from .front_ends import MOUNTS, serve_both
 from .rbac_defaults import TYPE_URI_PARTNER_PROFILES as PP
-from .resource_types import PARTNER_PROFILES_TYPE
+from .resource_types import PARTNER_PROFILES_TYPE, ninja_type_specs
 from .test_core_resources import user_with
 
 pytestmark = [pytest.mark.urls(__name__), pytest.mark.django_db]
@@ -82,7 +82,6 @@ def write_then_answer(request, pk: int, status: int):
     return HttpResponse(status=status)
 
 
-
 @api_view(["GET"])
 @permission_classes([AllowAny])
 @drf_errors
@@ -103,6 +102,7 @@ def __getattr__(name):
         path("ninja/", probe_api.urls),
     ]
     return patterns
+
 
 # An OPTIONS whose ``request.method`` middleware rewrote (tests.middleware).
 REWRITING = override_settings(
@@ -386,3 +386,44 @@ def test_conditional_create_holds_the_type_lock(
 
     assert response.status_code == status, response.content
     assert seen == events
+
+
+def test_the_api_serves_no_docs_or_openapi_by_default():
+    # Nothing comparable is served on DRF; a caller turns them on.
+    assert Client().get("/ninja/").status_code == 404
+    for path_ in ("/ninja/docs", "/ninja/openapi.json"):
+        assert Client().get(path_).status_code == 404, path_
+
+
+def test_a_turned_on_openapi_schema_names_each_operation_once(capsys):
+    api = scrud_django.ninja.api(
+        types=ninja_type_specs(),
+        urls_namespace="test-ninja-openapi",
+        docs_url="/docs",
+        openapi_url="/openapi.json",
+    )
+    assert (api.docs_url, api.openapi_url) == ("/docs", "/openapi.json")
+    capsys.readouterr()
+
+    schema = api.get_openapi_schema(path_prefix="/api/")
+
+    # ninja prints a warning for an operation id used twice.
+    assert "Warning" not in capsys.readouterr().out
+    # ninja describes an operation serving GET and HEAD under both methods of
+    # its path, with its one id: each id is that of one path's operation.
+    paths_of = {}
+    for path_, operations in schema["paths"].items():
+        for operation in operations.values():
+            paths_of.setdefault(operation["operationId"], set()).add(path_)
+    assert {op_id for op_id, paths in paths_of.items() if len(paths) > 1} == set()
+    assert {
+        "partner-profiles_list",
+        "partner-profiles_create",
+        "partner-profiles_retrieve",
+        "partner-profiles_replace",
+        "partner-profiles_destroy",
+        "summaries_computed",
+        "services_list",
+        "collections-json-schema_retrieve",
+        "collections-json-ld_retrieve",
+    } <= set(paths_of)
