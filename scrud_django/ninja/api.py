@@ -55,7 +55,8 @@ def api(
     errors are answered as on DRF (`errors.install`), as uniform errors
     are for each request (`errors.answer_natively_when_off`); the routes of
     DRF views negotiating among several renderers vary on ``Accept`` as
-    theirs (`routers.vary_on_accept`); the computed routes refuse the
+    theirs (`routers.vary_on_accept`; not a scrudful route's CORS
+    preflight); the computed routes refuse the
     anonymous before their 405 (`computed.refuse_the_anonymous`); the
     plain routers' 405 is DRF's whatever uniform errors are
     (`routers.method_not_allowed_as_drf`); and the
@@ -136,12 +137,11 @@ def api(
         scrud_api, [*routers.COLLECTION_ROUTES, *computed_routes]
     )
     errors.answer_natively_when_off(scrud_api)
-    negotiation.negotiate_as_drf(
-        scrud_api,
-        offers,
-        described=frozenset([*type_routes, services.SERVICES_ROUTE]),
-    )
-    routers.vary_on_accept(scrud_api, scrud_routes)
+    # The scrudful routers' routes, whose CORS preflight scrudful answers
+    # before the DRF view.
+    described = frozenset([*type_routes, services.SERVICES_ROUTE])
+    negotiation.negotiate_as_drf(scrud_api, offers, described=described)
+    routers.vary_on_accept(scrud_api, scrud_routes, described=described)
     routers.as_drf_api_views(scrud_api, [*routers.COLLECTION_ROUTES, *computed_routes])
     services.as_drf_api_view_function(
         scrud_api, [services.SERVICES_ROUTE], services.SERVICES_METHODS

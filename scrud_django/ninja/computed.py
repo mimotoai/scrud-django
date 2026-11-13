@@ -4,8 +4,10 @@ computed answer (`scrud_django.core.computed`), answering as
 
 import functools
 
-from django.http import HttpResponse
+from django.core.exceptions import PermissionDenied
+from django.http import Http404, HttpResponse
 from ninja import Router
+from ninja.errors import HttpError
 from scoped_rbac import access
 from scoped_rbac.ninja import resolve_user
 
@@ -78,7 +80,13 @@ def computed_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Rou
     def computed(request, slug: str):
         check_authenticated(request)
         rtype = _resource_type(request, spec)
-        content, etag = computed_answer(request, rtype, slug)
+        try:
+            content, etag = computed_answer(request, rtype, slug)
+        except (Http404, PermissionDenied) as exc:
+            answered = _as_drf_answers(exc)
+            if answered is exc:
+                raise
+            raise answered from exc
         if not_modified(request, etag):
             response = HttpResponse(status=304)
             del response["Content-Type"]
@@ -107,6 +115,21 @@ def computed_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Rou
         )
 
     return router
+
+
+def _as_drf_answers(exc):
+    """`exc`, a ``Http404`` or ``PermissionDenied`` that ``compute`` raised,
+    as the error the API answers as DRF does (``exceptions.NotFound`` or
+    ``PermissionDenied`` of its arguments): its message as the ``detail``,
+    the default one without (scoped-rbac's handler answers a ``Http404``
+    with its own, follow-up ``scoped-rbac-ninja-http404-message``, and a
+    ``PermissionDenied`` with the default). A ``Http404`` without a message
+    is answered as it is."""
+    message = exc.args[0] if exc.args else None
+    if isinstance(exc, Http404):
+        return exc if message is None else HttpError(404, str(message))
+    # The requester is authenticated here (`check_authenticated`): a 403.
+    return access.AccessDenied(None if message is None else str(message))
 
 
 def refuse_the_anonymous(api, url_names) -> None:

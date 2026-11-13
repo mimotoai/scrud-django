@@ -2,6 +2,7 @@
 `tests.parity_urls` (``/drf/``, ``/ninja/``) over one database, answer each
 case alike, normalized only as `tests.front_ends` says."""
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -68,8 +69,6 @@ def test_the_harness_normalizes_only_the_listed_differences():
     response["Content-Length"] = str(len(body.encode()))
     response["Date"] = "Thu, 01 Oct 2026 12:00:00 GMT"
     response["Vary"] = "Accept"
-    response["WWW-Authenticate"] = 'Basic realm="api"'
-    response.set_cookie("sessionid", "x")
     response["Location"] = "http://testserver/ninja/todos/12/"
     response["Link"] = (
         '<http://testserver/ninja/todos/_hsr/slug>; rel="' + HSR_REL + '"; '
@@ -103,6 +102,17 @@ def test_the_harness_normalizes_only_the_listed_differences():
 def test_the_harness_refuses_keys_it_cannot_tell_apart():
     with pytest.raises(ValueError):
         normalized(HttpResponse(), "/drf/", {"a": 1, "b": 1})
+
+
+def test_the_harness_refuses_runs_choosing_different_keys():
+    chosen = iter([970001, 970002])
+
+    def setup(client):
+        front_ends.note_chosen_key(next(chosen))
+        return {}
+
+    with pytest.raises(AssertionError, match="chose different keys"):
+        parity(Case("drifting", "GET", "{mount}services/", setup))
 
 
 def test_each_front_end_runs_on_the_same_fresh_data():
@@ -216,6 +226,7 @@ def test_unknown_route_is_404_on_both():
 PROFILES = "tests://PartnerProfiles"
 WORKFLOW_POLICY = "http://api.openteams.com/json-ld/WorkflowPolicy"
 JSON_SCHEMA = "http://json-schema.org/draft-04/schema"
+JSON_LD = "http://www.w3.org/ns/json-ld#context"
 
 
 def _user(client, *grants, superuser=False):
@@ -254,14 +265,16 @@ def _nested(depth):
 
 
 class ItemType:
-    """A type the item corpus runs on: its slug and IRI, and the content of
-    a resource stored in a context."""
+    """A type the item corpus runs on: its slug and IRI, the content of a
+    resource stored in a context, and the media type its documents are
+    served as (asked for by the ``-get-own-type`` case)."""
 
-    def __init__(self, slug, iri, content, body):
+    def __init__(self, slug, iri, content, body, own_type="application/schema+json"):
         self.slug = slug
         self.iri = iri
         self.content = content
         self.body = body
+        self.own_type = own_type
 
     def store(self, context="a", **content):
         return registration.ResourceRegistration.register(
@@ -296,6 +309,19 @@ SCHEMA = ItemType(
     lambda context: {"type": "object", "rbac_context": context},
     lambda context: {"type": "string", "rbac_context": context},
 )
+LD = ItemType(
+    "json-ld",
+    JSON_LD,
+    lambda context: {
+        "@context": {"x": "http://example.org/x"},
+        "rbac_context": context,
+    },
+    lambda context: {
+        "@context": {"y": "http://example.org/y"},
+        "rbac_context": context,
+    },
+    own_type="application/ld+json",
+)
 
 
 def _read_cases(kind):
@@ -328,7 +354,7 @@ def _read_cases(kind):
                 "GET",
                 kind.path(),
                 kind.setup(reader),
-                headers={"Accept": "application/schema+json, application/json;q=0.5"},
+                headers={"Accept": f"{kind.own_type}, application/json;q=0.5"},
             ),
             200,
         ),
@@ -735,6 +761,7 @@ def _shared_policy_cases():
 ITEM_CASES = [
     *_read_cases(PROFILE),
     *_read_cases(SCHEMA),
+    *_read_cases(LD),
     *_profile_write_cases(),
     *_workflow_cases(),
     *_shared_policy_cases(),
@@ -815,9 +842,11 @@ CREATOR = {"http.GET": [PROFILES, PROFILES_LIST], "http.POST": [PROFILES]}
 
 def store(slug, keys, content):
     """A resource of `slug` whose content is `content`, stored with the first
-    of `keys` no resource has."""
+    of `keys` no resource has (noted for `parity`,
+    `front_ends.note_chosen_key`)."""
     taken = set(Resource.objects.values_list("pk", flat=True))
     key = next(key for key in keys if key not in taken)
+    front_ends.note_chosen_key(key)
     resource_type = registration.get_resource_type_for(slug)
     return registration.ResourceRegistration.register_instance(
         Resource(pk=key, content=content, resource_type=resource_type)
@@ -1703,6 +1732,54 @@ def test_computed_routes_answer_alike(case, status):
     assert drf == ninja
 
 
+# A computed type's ``compute`` may raise ``PermissionDenied`` or ``Http404``
+# (``refusing-summaries``, `tests.resource_types.refuse_summary`): DRF
+# answers its message as the ``detail``, its own default without one.
+
+REFUSING = "{mount}refusing-summaries/"
+PERMISSION_DENIED = "You do not have permission to perform this action."
+
+COMPUTE_REFUSAL_CASES = [
+    (Case("computed-compute-403", "GET", REFUSING + "denied/", _admin), 403, "nope"),
+    (
+        Case("computed-compute-403-bare", "GET", REFUSING + "denied-bare/", _admin),
+        403,
+        PERMISSION_DENIED,
+    ),
+    (Case("computed-compute-404", "GET", REFUSING + "missing/", _admin), 404, "nope"),
+    (
+        Case("computed-compute-404-bare", "GET", REFUSING + "missing-bare/", _admin),
+        404,
+        "Not found.",
+    ),
+    (
+        Case("computed-compute-404-head", "HEAD", REFUSING + "missing/", _admin),
+        404,
+        None,
+    ),
+]
+
+
+@pytest.mark.parametrize("uniform", [True, False], ids=["uniform", "native"])
+@pytest.mark.parametrize(
+    "case, status, detail",
+    [
+        pytest.param(case, status, detail, id=case.id)
+        for case, status, detail in COMPUTE_REFUSAL_CASES
+    ],
+)
+def test_computed_refusals_answer_alike(case, status, detail, uniform):
+    serve_both()
+    setting = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
+    with override_settings(SCOPED_RBAC=setting):
+        drf, ninja = parity(case)
+
+    assert drf.status == status, drf
+    if detail is not None:
+        assert json.loads(drf.body)["detail"] == detail, drf
+    assert drf == ninja
+
+
 def test_computed_links_name_the_documents_of_the_serving_mount():
     drf, ninja = parity(Case("computed-links", "GET", COMPUTED, _admin))
 
@@ -1929,6 +2006,31 @@ def test_computed_and_services_vary_on_accept_alike(client):
         assert varies["drf"] == varies["ninja"], (name, varies)
 
 
+def test_preflights_vary_alike(client):
+    # A scrudful route's CORS preflight is scrudful's bare 204, answered
+    # before DRF's view (no Vary); the others are their DRF view's answer.
+    serve_both()
+    _user(client, superuser=True)
+    item = PROFILE.store()
+    varies = {
+        path: _varies(client, "OPTIONS", path, headers=PREFLIGHT)
+        for path in (
+            PROFILE.path(item.pk),
+            PROFILE.path("999999999"),
+            LIST,
+            SERVICES,
+            COMPUTED,
+            COLLECTION_SCHEMA,
+            "{mount}collections-json-ld/partner-profiles/",
+        )
+    }
+
+    for path, vary in varies.items():
+        assert vary["drf"] == vary["ninja"], (path, vary)
+    for path in (PROFILE.path(item.pk), LIST, SERVICES):
+        assert varies[path]["drf"] is None, (path, varies[path])
+
+
 def _refusing_hook(request):
     """A ``SCOPED_RBAC["NINJA_USER"]`` hook refusing the request's credentials."""
     raise AuthenticationError()
@@ -1950,19 +2052,20 @@ def test_options_refuses_a_requester_failing_authentication(client, path):
     a ``NINJA_USER`` hook refusing the credentials refuses it (401), as DRF
     refuses credentials its authentication fails."""
     serve_both()
+    _user(client, superuser=True)
     url = path.replace("{mount}", MOUNTS["ninja"])
-    assert client.options(url).status_code in (200, 204, 401)
+    # Answered without the hook: it is the hook that refuses.
+    assert client.options(url).status_code in (200, 204)
     refusing = {**settings.SCOPED_RBAC, "NINJA_USER": _refusing_hook}
     with override_settings(SCOPED_RBAC=refusing):
-        response = client.options(url)
+        ninja = front_ends.exchange(client, "ninja", "OPTIONS", path)
 
-    assert response.status_code == 401, response.content
-    assert response.json()["code"] == "not_authenticated", response.content
-    drf = client.options(
-        path.replace("{mount}", MOUNTS["drf"]),
-        headers={"Authorization": "Basic bm86bm8="},
+    assert ninja.status == 401, ninja
+    assert json.loads(ninja.body)["code"] == "not_authenticated", ninja
+    drf = front_ends.exchange(
+        Client(), "drf", "OPTIONS", path, headers=REFUSED_CREDENTIALS
     )
-    assert drf.status_code == 401, drf.content
+    assert drf == ninja
 
 
 #: Credentials each front end refuses: a ``NINJA_USER`` hook raising ninja's
@@ -2011,9 +2114,14 @@ def test_failing_credentials_are_refused_alike(case):
     refusing = {**settings.SCOPED_RBAC, "NINJA_USER": _refusing_hook}
     with override_settings(SCOPED_RBAC=refusing):
         drf, ninja = parity(case)
+        varies = _varies(Client(), case.method, case.path, headers=case.headers)
 
     assert drf.status == 401, drf
     assert drf == ninja
+    # The two are refused by different mechanisms: DRF's authentication reads
+    # the session before the Basic credentials fail (``Vary: Cookie``);
+    # ninja's hook refuses before the session is read.
+    assert varies["drf"] == ", ".join(filter(None, [varies["ninja"], "Cookie"])), varies
 
 
 def test_role_routes_vary_alike(client):
@@ -2396,6 +2504,138 @@ def test_negotiation_answers_alike(case, uniform):
         assert drf.status == 404, drf
     else:
         assert drf.status < 400, drf
+
+
+# The parameters of the accepted media range reach DRF's JSON renderers:
+# ``indent`` pretty-prints (clamped to 0-8, 0 or a non-integer compact).
+
+INDENTED = {"Accept": "application/json; indent=4"}
+
+
+def _indent_cases():
+    cases = [
+        (Case("indent-item", "GET", PROFILE.path(), PROFILE.setup(WRITER)), INDENTED),
+        (Case("indent-list", "GET", LIST, ADMIN_LIST), INDENTED),
+        (Case("indent-collection-schema", "GET", COLLECTION_SCHEMA), INDENTED),
+        (Case("indent-computed", "GET", COMPUTED, _admin), INDENTED),
+        (
+            Case("indent-computed-refused", "GET", REFUSING + "denied/", _admin),
+            INDENTED,
+        ),
+        (
+            Case("indent-item-missing", "GET", PROFILE.path("999"), PROFILE.setup()),
+            INDENTED,
+        ),
+        (
+            Case(
+                "indent-item-anonymous",
+                "GET",
+                PROFILE.path(),
+                PROFILE.setup(login=False),
+            ),
+            INDENTED,
+        ),
+        (
+            Case(
+                "indent-item-put",
+                "PUT",
+                PROFILE.path(),
+                PROFILE.setup(WRITER),
+                body=PROFILE.body("a"),
+                headers=lambda keys: {**INDENTED, **_etag("item")(keys)},
+            ),
+            None,
+        ),
+        (
+            Case(
+                "indent-schema-document",
+                "GET",
+                SCHEMA.path(),
+                SCHEMA.setup({"http.GET": [JSON_SCHEMA]}),
+            ),
+            {"Accept": "application/schema+json; indent=2"},
+        ),
+    ]
+    for name, accept in (
+        ("any", "*/*; indent=2"),
+        ("application-any", "application/*; indent=3"),
+        ("zero", "application/json; indent=0"),
+        ("negative", "application/json; indent=-2"),
+        ("over", "application/json; indent=20"),
+        ("not-an-integer", "application/json; indent=x"),
+        ("quoted", 'application/json; indent="5"'),
+        ("q", "application/json; q=0.5; indent=1"),
+    ):
+        cases.append(
+            (
+                Case(f"indent-{name}", "GET", PROFILE.path(), PROFILE.setup(WRITER)),
+                {"Accept": accept},
+            )
+        )
+    cases.append(
+        (
+            Case(
+                "indent-schema-document-missing",
+                "GET",
+                SCHEMA.path("999"),
+                SCHEMA.setup({"http.GET": [JSON_SCHEMA]}),
+            ),
+            {"Accept": "application/schema+json; indent=2"},
+        )
+    )
+    # Every error case of uniform errors, indented.
+    cases.extend(
+        (dataclasses.replace(case, id=f"indent-{case.id}"), INDENTED)
+        for case in UNIFORM_CASES
+    )
+    return [
+        dataclasses.replace(case, headers=_with(case.headers, headers))
+        for case, headers in cases
+    ]
+
+
+def _with(own, headers):
+    """A case's headers `own` (a mapping, or a callable of its setup's keys)
+    with `headers` (``None``: none) over them."""
+    if headers is None:
+        return own
+    if own is None:
+        return headers
+
+    def merged(keys):
+        return {**(own(keys) if callable(own) else own), **headers}
+
+    return merged
+
+
+@pytest.mark.parametrize("uniform", [True, False], ids=["uniform", "native"])
+@pytest.mark.parametrize("case", _indent_cases(), ids=lambda case: case.id)
+def test_accept_parameters_answer_alike(case, uniform):
+    serve_both()
+    setting = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
+    with override_settings(SCOPED_RBAC=setting):
+        drf, ninja = parity(case)
+
+    assert drf == ninja
+    if case.id in {"indent-item", "indent-list", "indent-collection-schema"}:
+        assert drf.body.startswith("{\n    "), drf
+
+
+def test_services_indent_alike():
+    # The catalogs differ where the serving mount does
+    # (`test_services_differ_only_where_the_serving_mount_does`): each is
+    # indented as DRF indents it, its other headers alike.
+    drf, ninja = parity(Case("indent-services", "GET", SERVICES, headers=INDENTED))
+
+    for exchange in (drf, ninja):
+        assert exchange.status == 200, exchange
+        assert exchange.body == json.dumps(
+            json.loads(exchange.body), indent=4, separators=(",", ": ")
+        ), exchange
+    differing = {"ETag", "Content-Length"}
+    assert {k: v for k, v in drf.headers.items() if k not in differing} == {
+        k: v for k, v in ninja.headers.items() if k not in differing
+    }
 
 
 def test_negotiation_refusals_vary_on_accept_alike(client):

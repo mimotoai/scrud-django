@@ -104,7 +104,8 @@ urlpatterns = [
 * Content negotiation is DRF's: an `Accept` none of a route's DRF renderers
   serves (`Accept: application/xml`) is DRF's 406 (`not_acceptable`), and a
   `?format=` none of them has its 404, on both front ends; the document
-  routes choose their media type as DRF does.
+  routes choose their media type as DRF does, and JSON is indented as DRF
+  indents it for `Accept: application/json; indent=4`.
 * The UI types (`scrud_django.ui`) and the studio types are not served on
   ninja yet, nor are the `ui-css-files` and `ui-js-files` views, and a ninja
   route never answers `text/html`: a request that DRF would answer as HTML

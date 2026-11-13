@@ -598,14 +598,26 @@ def _body_present(request) -> bool:
     return length > 0
 
 
-def vary_on_accept(api, url_names) -> None:
+def vary_on_accept(api, url_names, *, described=frozenset()) -> None:
     """Have `api`'s URL patterns named in `url_names` (the type routers'
     routes) vary every response on ``Accept``, errors, 405s and OPTIONS
     included, as the DRF views' do (DRF's ``APIView``, which negotiates
     among several renderers, sends ``Vary: Accept`` on each; a document
-    type's representation does depend on it, `_as_document`). Call it before
+    type's representation does depend on it, `_as_document`), but a CORS
+    preflight of a path named in `described` (a scrudful router's, which
+    scrudful answers before the DRF view, with no ``Vary``). Call it before
     ``api.urls`` is read."""
-    _wrap_patterns(api, url_names, _varying_on_accept)
+    described = frozenset(described)
+    _wrap_patterns(
+        api,
+        [name for name in url_names if name not in described],
+        functools.partial(_varying_on_accept, preflights=True),
+    )
+    _wrap_patterns(
+        api,
+        [name for name in url_names if name in described],
+        functools.partial(_varying_on_accept, preflights=False),
+    )
 
 
 def _wrap_patterns(api, url_names, wrap):
@@ -625,11 +637,12 @@ def _wrap_patterns(api, url_names, wrap):
     api._get_urls = _get_urls
 
 
-def _varying_on_accept(view):
+def _varying_on_accept(view, *, preflights):
     @functools.wraps(view)
     def varied(request, *args, **kwargs):
         response = view(request, *args, **kwargs)
-        patch_vary_headers(response, ["Accept"])
+        if preflights or not is_preflight(request.method, request.headers.get):
+            patch_vary_headers(response, ["Accept"])
         return response
 
     return varied

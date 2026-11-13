@@ -5,7 +5,8 @@ both on fresh data, so that their responses compare byte for byte.
 A response is normalized as the design allows, and in no other way:
 
 - the mount prefix (``/drf/``, ``/ninja/``) becomes ``{mount}``;
-- ``Date``, ``Vary``, ``WWW-Authenticate`` and ``Set-Cookie`` are dropped;
+- ``Date`` and ``Vary`` are dropped (each route's ``Vary`` is compared
+  directly, ``tests.test_front_end_parity``'s ``*_vary_*`` tests);
 - the target of the HTTP Schema Resource link (`HSR_REL`) becomes ``{hsr}``
   (each front end serves its HSRs at URLs of its own);
 - each key a case's setup created becomes ``{name}``, and the key of each
@@ -13,7 +14,8 @@ A response is normalized as the design allows, and in no other way:
   ``{created-2}`` ...), in URL path segments only (PostgreSQL's sequences do
   not roll back, so keys differ between the front ends' runs; a list's ETag
   hashes its resources' keys, so a list case's setup stores its resources
-  with keys of its own, the same in both runs);
+  with keys of its own, the same in both runs, `note_chosen_key`, which
+  `parity` checks);
 - ``Content-Length`` is that of the body once so replaced.
 
 Everything else (status, every other header, the body's bytes) must match.
@@ -55,7 +57,7 @@ HSR_REL = "https://w3id.org/semantic-http/ns#http-schema-resource-document"
 HSR = "{hsr}"
 
 #: The response headers dropped.
-IGNORED_HEADERS = frozenset({"date", "vary", "www-authenticate", "set-cookie"})
+IGNORED_HEADERS = frozenset({"date", "vary"})
 
 #: The time of a case's setup, then of its request: `parity` freezes the
 #: clock, so both front ends store and answer the same times.
@@ -144,13 +146,43 @@ def hsr_url(front_end, route_name):
     return f"http://testserver{api_url(front_end, f'{slug}-list')}_hsr/{template}"
 
 
+#: The keys the running case's setup chose for the resources it stored
+#: (`note_chosen_key`), ``None`` outside a run.
+_chosen_keys: list | None = None
+
+
+def note_chosen_key(key):
+    """Note `key`, which a case's setup chose for a resource it stores (a
+    list case's: a list's ETag hashes its resources' keys), so that `parity`
+    checks that each front end's run chose the same keys. A setup chooses
+    the first free key of a range; were a key of it taken in one run only
+    (MySQL's ``AUTO_INCREMENT`` does not roll back, and may reach the
+    range), the runs' lists, and their ETags, would differ for no fault of
+    either front end."""
+    if _chosen_keys is not None:
+        _chosen_keys.append(key)
+
+
 def parity(case: Case) -> tuple[Exchange, Exchange]:
     """`case`'s exchange on each front end (`FRONT_ENDS`, in that order),
     each on fresh data: its setup and request run in a transaction rolled
     back afterwards, with the clock frozen (`CLOCK_TARGETS`), once both
-    front ends serve their types (`serve_both`)."""
+    front ends serve their types (`serve_both`). ``AssertionError`` if the
+    runs' setups chose different keys (`note_chosen_key`)."""
+    global _chosen_keys
     serve_both()
-    return tuple(_run(case, front_end) for front_end in FRONT_ENDS)
+    exchanges, chosen = [], {}
+    for front_end in FRONT_ENDS:
+        _chosen_keys = []
+        try:
+            exchanges.append(_run(case, front_end))
+        finally:
+            chosen[front_end], _chosen_keys = _chosen_keys, None
+    assert len({tuple(keys) for keys in chosen.values()}) == 1, (
+        f"{case.id}: the runs' setups chose different keys {chosen}: a key of "
+        "their range was taken in one run only"
+    )
+    return tuple(exchanges)
 
 
 def serve_both():

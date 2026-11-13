@@ -162,7 +162,7 @@ def _native(request, response, api):
     links = [
         link
         for link in _split_links(response.get("Link", ""))
-        if link[1 : link.index(">")] not in PROBLEM_LINK_TARGETS
+        if _link_target(link) not in PROBLEM_LINK_TARGETS
     ]
     if links:
         response["Link"] = ", ".join(links)
@@ -172,6 +172,13 @@ def _native(request, response, api):
         allowed = {method.strip() for method in response["Allow"].split(",")}
         response["Allow"] = ", ".join(m for m in DRF_METHOD_ORDER if m in allowed)
     return response
+
+
+def _link_target(link):
+    """The target of the link-value `link` (``<target>; ...``), ``None`` for
+    one with no ``>`` (an app's hand-built Link, kept as it is)."""
+    end = link.find(">")
+    return None if end == -1 else link[1:end]
 
 
 def _split_links(value):

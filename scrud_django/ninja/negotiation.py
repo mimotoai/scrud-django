@@ -4,12 +4,16 @@ media types of the renderers its DRF view negotiates among, in their order
 404 (a format override, ``?format=``, none of them has) before anything else
 of the route, as DRF's ``initial()`` negotiates first. The renderer it
 selects (`negotiated`) decides whether a document is served as its own media
-type (``routers._as_media_type``). Only the choice is DRF's: a route that
-negotiates ``text/html`` (the browsable API's, or ``scrud_django.ui``'s) is
-answered as it is without one, never as HTML."""
+type (``routers._as_media_type``), and the media type it accepted (DRF's
+``accepted_media_type``) whether JSON is indented (`IndentingJSONRenderer`).
+Only the choice is DRF's: a route that negotiates ``text/html`` (the
+browsable API's, or ``scrud_django.ui``'s) is answered as it is without one,
+never as HTML."""
 
+import contextlib
 import functools
 import inspect
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -17,6 +21,7 @@ from django.conf import settings
 from django.utils.http import parse_header_parameters
 from django.utils.translation import gettext
 from scoped_rbac import access, problems
+from scoped_rbac.ninja import DRFStyleJSONRenderer
 from scrudful._hsr import is_preflight
 
 from scrud_django import ui
@@ -26,6 +31,18 @@ from scrud_django.ninja.errors import PROBLEM_JSON, uniform_errors
 #: The request attribute holding the media type of the renderer negotiated
 #: for the request (`negotiated`).
 NEGOTIATED_ATTR = "_scrud_ninja_negotiated"
+
+#: The request attribute holding the media type the request accepted, as
+#: DRF's ``DefaultContentNegotiation`` gives it (its ``accepted_media_type``),
+#: when the renderer negotiated is one of DRF's ``JSONRenderer``s
+#: (`JSON_RENDERERS`), whose ``indent`` parameter they read.
+ACCEPTED_ATTR = "_scrud_ninja_accepted"
+
+#: The largest indent DRF's ``JSONRenderer.get_indent`` gives.
+MAX_INDENT = 8
+
+#: The separators DRF's ``JSONRenderer`` writes indented JSON with.
+INDENT_SEPARATORS = (",", ": ")
 
 #: DRF's ``DefaultContentNegotiation`` limits on the ``Accept`` it reads.
 MAX_ACCEPT_HEADER_LENGTH = 8192
@@ -55,6 +72,10 @@ DOCUMENT_RENDERERS = {
     "application/schema+json": Renderer("application/schema+json", "schema-json"),
     "application/ld+json": Renderer("application/ld+json", "ld-json"),
 }
+
+#: The renderers that are DRF's ``JSONRenderer`` or a subclass of it
+#: (``scrud_django.renderers``), which indent as the accepted media type asks.
+JSON_RENDERERS = frozenset({JSON, *DOCUMENT_RENDERERS.values()})
 
 #: The methods whose answer is the document, on a route serving one
 #: (``DocumentMediaTypeMixin.serves_document``).
@@ -99,12 +120,16 @@ def api_view_renderers(document_media_type=None):
     return renderers
 
 
-def select(request, renderers: Sequence[Renderer]) -> Renderer:
+def select(request, renderers: Sequence[Renderer]) -> tuple[Renderer, str]:
     """The renderer of `renderers` that DRF's ``DefaultContentNegotiation``
-    selects for `request`: of those with the format override's format (if
-    the request names one: else `UnknownFormat`), the first matching the
-    most specific of the ``Accept`` media ranges (``*/*`` without one; ``q``
-    is not weighed, only how specific a range is), else `NotAcceptable`."""
+    selects for `request`, and the media type it accepted: of those with the
+    format override's format (if the request names one: else
+    `UnknownFormat`), the first matching the most specific of the ``Accept``
+    media ranges (``*/*`` without one; ``q`` is not weighed, only how
+    specific a range is), else `NotAcceptable`. The media type accepted is
+    the range matched, or the renderer's own media type with the range's
+    parameters when the range is less specific (``*/*; indent=2`` accepts
+    ``application/json;indent=2``), as DRF gives it."""
     format_parameter = getattr(settings, "REST_FRAMEWORK", {}).get(
         "URL_FORMAT_OVERRIDE", "format"
     )
@@ -119,8 +144,9 @@ def select(request, renderers: Sequence[Renderer]) -> Renderer:
         if not ranges:
             continue
         for renderer in renderers:
-            if any(media.matches(renderer.media_type) for media in ranges):
-                return renderer
+            for media in ranges:
+                if media.matches(renderer.media_type):
+                    return renderer, media.accepted(renderer.media_type)
     raise NotAcceptable()
 
 
@@ -148,6 +174,7 @@ class _MediaRange:
     """A media range of an ``Accept``, as DRF's ``_MediaType`` reads it."""
 
     def __init__(self, token):
+        self.orig = token
         try:
             full_type, self.params = parse_header_parameters(token)
         except ValueError:
@@ -172,6 +199,70 @@ class _MediaRange:
         main_type, _, sub_type = media_type.partition("/")
         return self.sub_type in ("*", sub_type) and self.main_type in ("*", main_type)
 
+    def accepted(self, media_type):
+        """The media type accepted when the range takes `media_type` (a
+        renderer's, as specific as a range without parameters): the range as
+        sent, or `media_type` with its parameters if the range is less
+        specific."""
+        if self.specificity < 2:
+            return ";".join(
+                (media_type, *(f"{key}={value}" for key, value in self.params.items()))
+            )
+        return self.orig
+
+
+def accepted_indent(request):
+    """The indent of JSON written for `request`, as DRF's
+    ``JSONRenderer.get_indent`` reads it from the media type accepted
+    (`ACCEPTED_ATTR`): its ``indent`` parameter, clamped to 0 to
+    `MAX_INDENT`, with 0, a missing or a non-integer one ``None`` (not
+    indented)."""
+    accepted = getattr(request, ACCEPTED_ATTR, None)
+    if not accepted:
+        return None
+    _, params = parse_header_parameters(accepted)
+    with contextlib.suppress(KeyError, ValueError, TypeError):
+        return max(min(int(params["indent"]), MAX_INDENT), 0) or None
+    return None
+
+
+class IndentingJSONRenderer(DRFStyleJSONRenderer):
+    """scoped-rbac's ``DRFStyleJSONRenderer`` (JSON as DRF's ``JSONRenderer``
+    writes it), indented as DRF's indents it when the media type the
+    request accepted asks (`accepted_indent`): with DRF's indented
+    separators (`INDENT_SEPARATORS`). Not an error answered under a
+    document's renderer, which DRF writes with ``JSONRenderer`` and its own
+    media type (``DocumentMediaTypeMixin.finalize_response``)."""
+
+    def render(self, request, data, *, response_status):
+        indent = accepted_indent(request)
+        if not 200 <= response_status < 300 and (
+            negotiated(request) in DOCUMENT_RENDERERS
+        ):
+            indent = None
+        if indent is None:
+            return super().render(request, data, response_status=response_status)
+        text = json.dumps(
+            data,
+            cls=self.encoder_class,
+            **{
+                **self.json_dumps_params,
+                "indent": indent,
+                "separators": INDENT_SEPARATORS,
+            },
+        )
+        return text.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+
+
+def indent_as_drf(api) -> None:
+    """Have `api` indent its JSON as DRF does for an accepted media type
+    asking it (`IndentingJSONRenderer`), if its renderer writes JSON as DRF
+    does (scoped-rbac's ``DRFStyleJSONRenderer``, which
+    ``scrud_django.ninja.errors.install`` sets for ninja's own); a renderer
+    of the API's own is left as it is. Call it after ``errors.install``."""
+    if type(api.renderer) is DRFStyleJSONRenderer:
+        api.renderer = IndentingJSONRenderer()
+
 
 def negotiated(request):
     """The media type of the renderer negotiated for `request`
@@ -188,7 +279,9 @@ def negotiate_as_drf(
     """Have `api`'s URL patterns named in `offers` negotiate among the
     renderers ``offers[name](request)`` gives, as their DRF views do, first,
     every method alike (`select`): the renderer selected is noted on the
-    request (`negotiated`); no renderer answers DRF's 406 (``not_acceptable``)
+    request (`negotiated`), and the media type accepted when it is a JSON
+    renderer (`ACCEPTED_ATTR`, for `IndentingJSONRenderer`, which
+    `indent_as_drf` gives `api`); no renderer answers DRF's 406 (``not_acceptable``)
     and an unknown format override DRF's 404 (`_refusal`). Not for a request
     rewritten from an OPTIONS, which the path refuses first, as scrud's DRF
     views do, nor for a CORS preflight of a path named in `described` (a
@@ -198,6 +291,7 @@ def negotiate_as_drf(
     ``routers.vary_on_accept`` and the ``Allow`` wrappers
     (``routers.as_drf_api_views``, ``services.as_drf_api_view_function``),
     which give its refusals their headers, before ``api.urls`` is read."""
+    indent_as_drf(api)
     get_urls = api._get_urls
 
     @functools.wraps(get_urls)
@@ -225,7 +319,7 @@ def _negotiating(api, view, renderers_of, described):
             return view(request, *args, **kwargs)
         renderers = renderers_of(request)
         try:
-            renderer = select(request, renderers)
+            renderer, accepted = select(request, renderers)
         except NotAcceptable:
             refused = _refusal(
                 api,
@@ -246,7 +340,9 @@ def _negotiating(api, view, renderers_of, described):
             )
         else:
             setattr(request, NEGOTIATED_ATTR, renderer.media_type)
-            return view(request, *args, **kwargs)
+            if renderer in JSON_RENDERERS:
+                setattr(request, ACCEPTED_ATTR, accepted)
+            return _problem_as_drf(request, view(request, *args, **kwargs))
         if not described:
             return refused
         raw = inspect.unwrap(view)
@@ -255,6 +351,30 @@ def _negotiating(api, view, renderers_of, described):
         )
 
     return negotiating
+
+
+def _problem_as_drf(request, response):
+    """`response`, written for `request`, not indented if it is problem
+    details with the problem-details Links (``problems.PROBLEM_LINKS``), as
+    DRF writes those: scoped-rbac's handler gives them, and renders them
+    with the view's JSON renderer and its own media type, so with no
+    ``indent``. scrud's own errors, which have no such Link
+    (``errors.install``), DRF writes with the media type accepted, so
+    indented as it asks."""
+    if (
+        accepted_indent(request) is None
+        or response.get("Content-Type", "").split(";")[0].strip() != PROBLEM_JSON
+        or f"<{problems.PROBLEM_SCHEMA}>" not in response.get("Link", "")
+    ):
+        return response
+    try:
+        body = json.loads(response.content)
+    except ValueError:
+        return response
+    response.content = DRFStyleJSONRenderer().render(
+        request, body, response_status=response.status_code
+    )
+    return response
 
 
 def _refusal(api, request, status, code, detail, renderers):

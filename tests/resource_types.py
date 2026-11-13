@@ -2,6 +2,9 @@ import datetime
 import decimal
 import importlib.resources
 
+from django.core.exceptions import PermissionDenied
+from django.http import Http404
+
 from scrud_django import registration
 from scrud_django.computed import ComputedResourceViewSet
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
@@ -230,6 +233,39 @@ ENCODED_SUMMARIES_TYPE = {
 }
 
 
+REFUSING_SUMMARY_TYPE_URI = "tests://RefusingSummary"
+
+#: What `refuse_summary` raises, by key.
+REFUSALS = {
+    "denied": lambda: PermissionDenied("nope"),
+    "denied-bare": PermissionDenied,
+    "missing": lambda: Http404("nope"),
+    "missing-bare": Http404,
+}
+
+
+def refuse_summary(request, key):
+    """A computed type's ``compute`` raising what its contract allows
+    (``PermissionDenied``, ``Http404``), with a message or without, by key
+    (`REFUSALS`); any other key is summarized."""
+    if key in REFUSALS:
+        raise REFUSALS[key]()
+    return summarize(request, key)
+
+
+REFUSING_SUMMARIES_TYPE = {
+    "resource_type_uri": REFUSING_SUMMARY_TYPE_URI,
+    "slug": "refusing-summaries",
+    "schema_func": lambda: dict(
+        SUMMARY_SCHEMA, **{"$id": REFUSING_SUMMARY_TYPE_URI, "title": "Refusing"}
+    ),
+    "context_func": lambda: dict(
+        SUMMARY_CONTEXT, **{"@type": "http://example.org/summary#Refusing"}
+    ),
+    "compute": refuse_summary,
+}
+
+
 WORKFLOW_NOTE_TYPE_URI = "tests://Note"
 
 WORKFLOW_NOTE_SCHEMA = {
@@ -266,13 +302,15 @@ def hooked_resource_types():
     ``hooked-notes`` (a check refusing the context "b", an object check
     hiding secret notes, and the content filter), the computed
     ``summaries`` (a ``compute`` hook, no viewset class) and
-    ``encoded-summaries`` (content not all JSON); ``checked-notes``
-    has the check only."""
+    ``encoded-summaries`` (content not all JSON) and ``refusing-summaries``
+    (a ``compute`` raising ``PermissionDenied`` or ``Http404``);
+    ``checked-notes`` has the check only."""
     return [
         registration.json_resource_type(**CHECKED_NOTES_TYPE),
         hooked_note_type(**HOOKED_NOTES_HOOKS),
         registration.computed_resource_type(**SUMMARIES_TYPE),
         registration.computed_resource_type(**ENCODED_SUMMARIES_TYPE),
+        registration.computed_resource_type(**REFUSING_SUMMARIES_TYPE),
         # ``tests://Note``, the type of ``tests.test_core_workflow``, as a
         # stored type (`tests.test_core_parity`).
         registration.json_resource_type(**WORKFLOW_NOTES_TYPE),
@@ -291,5 +329,6 @@ def ninja_type_specs():
         registration.json_resource_type_spec(**HOOKED_NOTES_TYPE, **HOOKED_NOTES_HOOKS),
         registration.computed_resource_type_spec(**SUMMARIES_TYPE),
         registration.computed_resource_type_spec(**ENCODED_SUMMARIES_TYPE),
+        registration.computed_resource_type_spec(**REFUSING_SUMMARIES_TYPE),
         registration.json_resource_type_spec(**WORKFLOW_NOTES_TYPE),
     ]

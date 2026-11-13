@@ -60,6 +60,18 @@ def ninja_error_probe(request, name: str):
     raise ERRORS[name]()
 
 
+@probes.get("/hand-built-link/")
+def hand_built_link_probe(request):
+    """An app's problem details error whose Link has a link-value with no
+    ``>``."""
+    body = {"type": "about:blank", "title": "Bad", "status": 400, "detail": "bad"}
+    response = HttpResponse(
+        json.dumps(body), status=400, content_type="application/problem+json"
+    )
+    response["Link"] = "<http://example.org/a>; rel=a, <unterminated"
+    return response
+
+
 @probes.put("/partner-profiles/{slug}/")
 def detail_probe(request, slug: str):
     """A detail-shaped PUT that asks the core's request check."""
@@ -162,6 +174,16 @@ def test_scrud_errors_render_as_on_drf(name):
         drf.get("Link"),
     )
     assert ninja.content == drf.content
+
+
+def test_an_unterminated_link_is_kept_when_answered_natively():
+    off = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=False)
+    with override_settings(SCOPED_RBAC=off):
+        response = Client().get("/ninja/hand-built-link/")
+
+    assert response.status_code == 400, response.content
+    assert response.json() == {"detail": "bad"}
+    assert response["Link"] == "<http://example.org/a>; rel=a, <unterminated"
 
 
 @pytest.fixture

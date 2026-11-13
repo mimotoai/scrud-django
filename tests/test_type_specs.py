@@ -179,6 +179,7 @@ def test_ninja_type_specs_share_the_drf_registrations_hooks(caplog):
         "hooked-notes",
         "summaries",
         "encoded-summaries",
+        "refusing-summaries",
         "workflow-notes",
     ]
     kinds = {spec.slug: spec.kind for spec in specs}
