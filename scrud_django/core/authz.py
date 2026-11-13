@@ -63,7 +63,7 @@ def _reading_every_context():
 # ``repr``), most recent last, at most `_MALFORMED_REPORTED_MAX` of them: each
 # is logged once per process, not on every evaluation (a list evaluates a
 # condition once per row).
-_MALFORMED_REPORTED = OrderedDict()
+_MALFORMED_REPORTED: OrderedDict[str, None] = OrderedDict()
 _MALFORMED_REPORTED_MAX = 256
 _MALFORMED_REPORTED_LOCK = threading.Lock()
 
@@ -134,7 +134,9 @@ def _mark_workflow_authorized(request, *, type_iri: str, stored_pk: int | None):
     setattr(request, _WORKFLOW_AUTHORIZED, (type_iri, stored_pk))
 
 
-def _workflow_authorized(request, *, type_iri: str, stored_pk: int | None) -> bool:
+def _workflow_authorized(
+    request, *, type_iri: str | None, stored_pk: int | None
+) -> bool:
     """Whether the workflow check authorized `request`'s write of the
     resource `stored_pk` (``None`` for a create) of the type `type_iri`:
     the mark `_mark_workflow_authorized` left is that exact tuple. A

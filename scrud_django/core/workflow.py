@@ -331,14 +331,15 @@ def workflow_check(
         prior = None
         readable = None
         stored_pk = None
-        contexts_before = ()
+        contexts_before: Sequence[str] = ()
     elif isinstance(write, Update):
         prior = write.prior
         readable = write.readable
         stored_pk = write.stored_pk
-        contexts_before = write.contexts_before
-        if contexts_before is None:
-            contexts_before = rbac_contexts_of(prior)
+        stored_before = write.contexts_before
+        contexts_before = (
+            rbac_contexts_of(prior) if stored_before is None else stored_before
+        )
     else:
         raise TypeError(
             "workflow_check checks a Create or an Update, not "

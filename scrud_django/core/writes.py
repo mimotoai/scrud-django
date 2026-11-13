@@ -71,7 +71,7 @@ logger = logging.getLogger("scrud_django.validators")
 
 
 class ValidatorEntry:
-    def __init__(self, resource_type: ResourceType, validate: callable):
+    def __init__(self, resource_type: ResourceType, validate: Callable):
         self.type_uri = resource_type.type_uri
         self.revision = resource_type.revision
         self.etag = resource_type.schema.etag
@@ -337,9 +337,11 @@ def validate_write(
     validate_schema(resource_type, body)
     if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
         validate_policy_write(body, stored.pk if stored is not None else None)
+    write: Create | Update
     if stored is None:
         write = Create(proposed=body)
     else:
+        assert readable is not None  # checked above, before the lookups
         write = Update(
             prior=prior_of(stored),
             proposed=body,

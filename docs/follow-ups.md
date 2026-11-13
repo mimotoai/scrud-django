@@ -1548,3 +1548,17 @@ processor therefore does not expand those four terms to
 document must wrap the body in `{"@context": ...}` itself. 0.12.0 changes only
 the media type it is served as (`application/ld+json`, as its `Link` says).
 `first` and `last` are never sent in a list.
+
+<a id="core-type-check-ci"></a>
+## core-type-check-ci: mypy is not run in CI
+
+`scrud_django/core/` type-checks clean, but nothing keeps it so: mypy is not
+a dependency and no CI job runs it. Django ships no stubs here
+(django-stubs is not installed), so the check ignores unresolved imports and
+does not follow into other packages.
+
+Test: this command reports no issues, and a job should run it:
+
+```bash
+uv run --with mypy mypy scrud_django/core --ignore-missing-imports --follow-imports=silent
+```
