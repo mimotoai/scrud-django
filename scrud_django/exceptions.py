@@ -151,9 +151,11 @@ class ScrudException(Exception):
     type: str | None = None
     title: str | None = None
     instance: str | None = None
-    # Whether a front end answers it with scoped-rbac's problem-details Links
-    # (``scoped_rbac.problems.PROBLEM_LINKS``): one standing for an error the
-    # DRF routes answer as scoped-rbac's own problem, which carries them.
+    # Whether it stands for an error the DRF routes answer through scoped-rbac's
+    # exception handler rather than scrud's own: while uniform errors are on, a
+    # problem carrying scoped-rbac's problem-details Links
+    # (``scoped_rbac.problems.PROBLEM_LINKS``); off, DRF's native body
+    # (`native_response_data`) as ``application/json``.
     problem_links: bool = False
 
     def __init__(self, message=None):
@@ -733,10 +735,24 @@ class RequestBodyNotAnObjectError(ScrudException):
     default_code = "invalid"
     problem_links = True
 
+    #: The message of the serializer's error (``SerializerMixin.to_internal_value``).
+    native_message = "Expected a JSON object."
+
     def response_data(self, context):
         from scoped_rbac.problems import validation_problem
 
         return validation_problem({"": [("invalid", None)]})
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off: its serializer's
+        non-field error."""
+        try:
+            from rest_framework.settings import api_settings
+        except ImportError:  # pragma: no cover - DRF is installed in the tests
+            key = "non_field_errors"
+        else:
+            key = api_settings.NON_FIELD_ERRORS_KEY
+        return {key: [self.native_message]}
 
 
 class ResourceInUseError(ScrudException):

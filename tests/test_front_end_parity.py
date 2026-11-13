@@ -2,6 +2,7 @@
 `tests.parity_urls` (``/drf/``, ``/ninja/``) over one database, answer each
 case alike, normalized only as `tests.front_ends` says."""
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +18,16 @@ from scoped_rbac.models import Role, RoleAssignment
 from scrud_django import collection_type_uri_for, registration
 from scrud_django.models import Resource, ResourceType
 
-from .front_ends import SETUP_TIME, Case, Exchange, normalized, parity
+from .front_ends import (
+    MOUNTS,
+    SETUP_TIME,
+    Case,
+    Exchange,
+    normalized,
+    parity,
+    serve_both,
+    split_links,
+)
 from .resource_types import PARTNER_PROFILES_TYPE, WORKFLOW_NOTE_TYPE_URI
 from .test_core_workflow import DRAFT, NOTE_POLICY, PUBLISHED
 
@@ -660,3 +670,189 @@ def test_anonymous_granted_nothing_answers_alike():
 
         assert drf.status == 401, drf
         assert drf == ninja
+
+
+# What the harness normalizes away, compared directly: the HTTP Schema
+# Resource a response links to, and Vary.
+
+
+def _hsr_of(response):
+    (link,) = [
+        link for link in split_links(response["Link"]) if f'rel="{HSR_REL}"' in link
+    ]
+    return link[1 : link.index(">")]
+
+
+def test_each_front_ends_hsr_links_to_its_own_routes(client):
+    serve_both()
+    _user(client, superuser=True)
+    profile = PROFILE.store()
+    rtype = registration.get_resource_type_for("partner-profiles")
+    for front_end, other in (("ninja", "drf"), ("drf", "ninja")):
+        mount = MOUNTS[front_end]
+        response = client.get(f"{mount}partner-profiles/{profile.pk}/")
+        assert response.status_code == 200, response.content
+        document = client.get(_hsr_of(response))
+        assert document.status_code == 200, document.content
+        text = document.content.decode()
+        assert f"{mount}json-schema/{rtype.schema.pk}/" in text, text
+        assert f"{mount}json-ld/{rtype.context.pk}/" in text, text
+        assert MOUNTS[other] not in text, text
+
+
+def _varies(client, method, path, **kwargs):
+    """The Vary of `method` `path` on each front end, by front end."""
+    return {
+        front_end: client.generic(method, path.replace("{mount}", mount), **kwargs).get(
+            "Vary"
+        )
+        for front_end, mount in MOUNTS.items()
+    }
+
+
+@pytest.mark.parametrize("kind", [SCHEMA, PROFILE], ids=lambda kind: kind.slug)
+def test_item_routes_vary_on_accept_alike(client, kind):
+    serve_both()
+    _user(client, superuser=True)
+    item = kind.store()
+    path = kind.path(item.pk)
+    etag = quote_etag(item.etag)
+    body = json.dumps(kind.body("a"))
+    json_body = {"data": body, "content_type": "application/json"}
+    asked = {
+        "get": _varies(client, "GET", path),
+        "get-json": _varies(
+            client, "GET", path, headers={"Accept": "application/json"}
+        ),
+        "head": _varies(client, "HEAD", path),
+        "missing": _varies(client, "GET", kind.path("999999999")),
+        "not-modified": _varies(client, "GET", path, headers={"If-None-Match": etag}),
+        "stale": _varies(
+            client, "PUT", path, headers={"If-Match": '"stale"'}, **json_body
+        ),
+        "unconditional": _varies(client, "PUT", path, **json_body),
+        "delete-stale": _varies(
+            client, "DELETE", path, headers={"If-Match": '"stale"'}
+        ),
+        "patch": _varies(client, "PATCH", path, **json_body),
+        "options": _varies(client, "OPTIONS", path),
+    }
+    # A PUT that writes, once on each front end.
+    written = {}
+    for front_end, mount in MOUNTS.items():
+        current = quote_etag(Resource.objects.get(pk=item.pk).etag)
+        response = client.put(
+            path.replace("{mount}", mount),
+            headers={"If-Match": current},
+            **json_body,
+        )
+        assert response.status_code == 200, response.content
+        written[front_end] = response.get("Vary")
+    asked["put"] = written
+
+    for name, varies in asked.items():
+        assert varies["drf"] == varies["ninja"], (name, varies)
+        # DRF negotiates among several renderers: every answer varies on
+        # Accept (a document type's representation does depend on it).
+        assert "Accept" in varies["drf"], (name, varies)
+
+
+# Uniform errors off (SCOPED_RBAC["UNIFORM_ERRORS"]) for a request: each front
+# end reads it per request, so an API built with it on answers natively.
+
+WRITER = {"http.GET": [PROFILES], "http.PUT": [PROFILES]}
+UNIFORM_CASES = [
+    Case(
+        "stale-if-match",
+        "PUT",
+        PROFILE.path(),
+        PROFILE.setup(WRITER),
+        body=PROFILE.body("a"),
+        headers={"If-Match": '"stale"'},
+    ),
+    Case(
+        "without-if-match",
+        "PUT",
+        PROFILE.path(),
+        PROFILE.setup(WRITER),
+        body={"name": "y"},
+    ),
+    Case(
+        "malformed-if-match",
+        "PUT",
+        PROFILE.path(),
+        PROFILE.setup(WRITER),
+        body=PROFILE.body("a"),
+        headers={"If-Match": "stale"},
+    ),
+    Case(
+        "document-stale-if-match",
+        "PUT",
+        SCHEMA.path(),
+        SCHEMA.setup(superuser=True),
+        body=SCHEMA.body("a"),
+        headers={"If-Match": '"stale"'},
+    ),
+    Case(
+        "not-an-object",
+        "PUT",
+        PROFILE.path(),
+        PROFILE.setup(superuser=True),
+        body=[1],
+        headers=_etag("item"),
+    ),
+    Case(
+        "failing-the-schema",
+        "PUT",
+        PROFILE.path(),
+        PROFILE.setup(WRITER),
+        body={"rbac_context": "a"},
+        headers=_etag("item"),
+    ),
+    Case(
+        "not-json",
+        "PUT",
+        PROFILE.path(),
+        PROFILE.setup(WRITER),
+        body="{x",
+        headers=_etag("item"),
+    ),
+    Case(
+        "not-a-json-media-type",
+        "PUT",
+        PROFILE.path(),
+        PROFILE.setup(WRITER),
+        body=b"x",
+        headers=lambda keys: {"Content-Type": "text/plain", **_etag("item")(keys)},
+    ),
+    Case("patch", "PATCH", PROFILE.path(), PROFILE.setup(WRITER), body={}),
+    Case("forbidden", "GET", PROFILE.path(), PROFILE.setup()),
+    Case("missing", "GET", PROFILE.path("999999999"), PROFILE.setup(superuser=True)),
+    Case("anonymous", "GET", PROFILE.path(), PROFILE.setup(login=False)),
+    Case(
+        "not-modified",
+        "GET",
+        PROFILE.path(),
+        PROFILE.setup(superuser=True),
+        headers=lambda keys: {
+            "If-None-Match": quote_etag(Resource.objects.get(pk=keys["item"]).etag)
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize("uniform", [True, False], ids=["uniform", "native"])
+@pytest.mark.parametrize("case", UNIFORM_CASES, ids=lambda case: case.id)
+def test_errors_follow_uniform_errors_per_request_alike(case, uniform):
+    # The ninja API is built (with uniform errors on, the tests' setting)
+    # before the setting changes.
+    serve_both()
+    setting = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
+    with override_settings(SCOPED_RBAC=setting):
+        drf, ninja = parity(case)
+
+    assert drf == ninja
+    if drf.status >= 400 and case.id != "failing-the-schema":
+        # scrud's own errors (a schema's) are problem details either way.
+        expected = "application/problem+json" if uniform else "application/json"
+        assert drf.headers["Content-Type"] == expected, drf

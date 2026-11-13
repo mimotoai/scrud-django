@@ -47,3 +47,31 @@ def test_namespace_without_the_name_falls_back():
     assert absolute_reverse("services", request=request) == (
         "http://testserver/services/"
     )
+
+
+def test_namespace_reverses_a_link_without_a_request_in_it():
+    # A link described without a request (scrudful's HTTP Schema Resource)
+    # points at the routes of the API describing it.
+    url = absolute_reverse(
+        "partner-profiles-detail", kwargs={"slug": "b"}, namespace="ns"
+    )
+    assert url == "/ns/partner-profiles/b/"
+
+
+def test_namespace_without_the_name_falls_back_without_a_request():
+    assert absolute_reverse("services", namespace="ns") == "/services/"
+
+
+def test_the_requests_namespace_wins_over_the_given_one():
+    request = resolved_request("/services/")
+    # Resolved under no namespace: the given one is asked first.
+    assert absolute_reverse(
+        "partner-profiles-detail", kwargs={"slug": "b"}, request=request, namespace="ns"
+    ) == ("http://testserver/ns/partner-profiles/b/")
+    request = resolved_request("/ns/partner-profiles/a/")
+    assert absolute_reverse(
+        "partner-profiles-detail",
+        kwargs={"slug": "b"},
+        request=request,
+        namespace="other",
+    ) == ("http://testserver/ns/partner-profiles/b/")

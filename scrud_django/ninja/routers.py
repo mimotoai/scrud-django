@@ -1,10 +1,12 @@
 """The ninja front end's per-type routers: each operation a thin adapter over
 the core facade (`scrud_django.core`), answering as the DRF route does."""
 
+import functools
 from contextlib import contextmanager
 
 from django.core.exceptions import PermissionDenied
 from django.http import HttpResponse
+from django.utils.cache import patch_vary_headers
 from scoped_rbac import access, problems
 from scoped_rbac.ninja import request_json
 from scrudful.ninja import ScrudfulRouter, scrudful
@@ -32,18 +34,24 @@ TYPE_ATTR = "_scrud_ninja_resource_type"
 LOCKED_METHODS = frozenset({"PUT", "DELETE"})
 
 
-def type_router(spec: TypeSpec) -> ScrudfulRouter:
+def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> ScrudfulRouter:
     """A router serving the resources of `spec`'s type: its detail route
     ``"/{slug}/"`` (named ``<slug>-detail``), GET and HEAD, PUT and DELETE,
     as the DRF detail route serves them (PATCH is not routed: 405). The type
     is read per request, by its slug, so a deferred registration is served
-    as on DRF. Every operation passes `entry` first. Build one per API: a
-    ninja router is mounted on one API only."""
+    as on DRF. Build one per API: a ninja router is mounted on one API only;
+    `urls_namespace` is that API's, which the links its HTTP Schema Resource
+    describes (without a request) are reversed in.
+
+    Every operation passes `entry` first. The API varies the route's
+    responses on ``Accept`` (`vary_on_accept`) and answers its errors as
+    uniform errors are for each request
+    (`scrud_django.ninja.errors.answer_natively_when_off`)."""
     router = ScrudfulRouter()
     router.add_decorator(entry, mode="view")
     slug = spec.slug
     url_name = f"{slug}-detail"
-    item = _item_operation_options(spec)
+    item = _item_operation_options(spec, urls_namespace)
 
     @router.api_operation(["GET", "HEAD"], "/{slug}/", url_name=url_name)
     @scrudful(**item)
@@ -85,7 +93,7 @@ def type_router(spec: TypeSpec) -> ScrudfulRouter:
     return router
 
 
-def _item_operation_options(spec):
+def _item_operation_options(spec, urls_namespace):
     """The ``@scrudful`` arguments of `spec`'s item operations."""
 
     def before(request, **path_params):
@@ -124,27 +132,31 @@ def _item_operation_options(spec):
                 lock_using=write_db() if lock else None,
             )
 
+    def targets(request):
+        return resources.item_link_targets(
+            request, _resource_type(request, spec), namespace=urls_namespace
+        )
+
     def schema_link(request, obj):
-        return resources.item_link_targets(request, _resource_type(request, spec))[0]
+        return targets(request)[0]
 
     def context_link(request, obj):
-        return resources.item_link_targets(request, _resource_type(request, spec))[1]
+        return targets(request)[1]
 
-    options = {
+    return {
         "load": load,
         "before": before,
         "etag_func": lambda obj: resources.item_validators(obj)[0],
         "last_modified_func": lambda obj: resources.item_validators(obj)[1],
         "schema_link_or_func": schema_link,
         "context_link_or_func": context_link,
+        # scrudful's own 400, 412 and 428 are problem details; while uniform
+        # errors are off for a request, the API answers them as scrudful's
+        # native {"detail": ...} (errors.answer_natively_when_off), as the
+        # DRF views do.
+        "error": problems.problem_entity(),
+        "error_body_func": problems.conditional_problem,
     }
-    # Read when the router is built, as scoped-rbac's install_error_handlers
-    # reads it: scrudful's own 400, 412 and 428 are problem details while
-    # uniform errors are on, its native {"detail": ...} otherwise.
-    if problems.uniform_errors("ninja"):
-        options["error"] = problems.problem_entity()
-        options["error_body_func"] = problems.conditional_problem
-    return options
 
 
 def _resource_type(request, spec):
@@ -171,6 +183,37 @@ def _body_present(request) -> bool:
     except (TypeError, ValueError):
         length = 0
     return length > 0
+
+
+def vary_on_accept(api, url_names) -> None:
+    """Have `api`'s URL patterns named in `url_names` (the type routers'
+    routes) vary every response on ``Accept``, errors, 405s and OPTIONS
+    included, as the DRF views' do (DRF's ``APIView``, which negotiates
+    among several renderers, sends ``Vary: Accept`` on each; a document
+    type's representation does depend on it, `_as_document`). Call it before
+    ``api.urls`` is read."""
+    get_urls = api._get_urls
+    names = frozenset(url_names)
+
+    @functools.wraps(get_urls)
+    def _get_urls():
+        patterns = get_urls()
+        for pattern in patterns:
+            if pattern.name in names:
+                pattern.callback = _varying_on_accept(pattern.callback)
+        return patterns
+
+    api._get_urls = _get_urls
+
+
+def _varying_on_accept(view):
+    @functools.wraps(view)
+    def varied(request, *args, **kwargs):
+        response = view(request, *args, **kwargs)
+        patch_vary_headers(response, ["Accept"])
+        return response
+
+    return varied
 
 
 def _as_document(request, response, spec):

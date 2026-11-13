@@ -332,11 +332,31 @@ def test_item_link_targets_are_the_links_targets():
     first, second = item_links(request, resource_type)
     assert first.startswith(f"<{schema}>;")
     assert second.startswith(f"<{context}>;")
-    # Without a request (scrudful builds its HTTP Schema Resource so), the
-    # paths of scrud's own routes.
+    # Without a request or a namespace, the paths of the global routes.
     assert item_link_targets(None, resource_type) == (
         schema.removeprefix("http://testserver"),
         context.removeprefix("http://testserver"),
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.urls("tests.parity_urls")
+@test_context
+def test_item_link_targets_without_a_request_are_the_namespaces():
+    # scrudful builds an HTTP Schema Resource without a request: the links of
+    # an API's document point at that API's routes (its URL namespace).
+    from scrud_django.core.resources import item_link_targets
+
+    from .front_ends import serve_both
+
+    serve_both()
+    resource_type = get_resource_type_for("partner-profiles")
+    schema, context = item_link_targets(None, resource_type, namespace="scrud-ninja")
+    assert schema == f"/ninja/json-schema/{resource_type.schema.pk}/"
+    assert context == f"/ninja/json-ld/{resource_type.context.pk}/"
+    assert item_link_targets(None, resource_type) == (
+        f"/drf/json-schema/{resource_type.schema.pk}/",
+        f"/drf/json-ld/{resource_type.context.pk}/",
     )
 
 

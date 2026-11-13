@@ -373,14 +373,19 @@ def item_validators(obj: Resource) -> tuple[str, datetime]:
     return (obj.etag, obj.modified_at)
 
 
-def item_link_targets(request, resource_type) -> tuple[str | None, str | None]:
+def item_link_targets(
+    request, resource_type, *, namespace: str | None = None
+) -> tuple[str | None, str | None]:
     """The targets of `item_links`: the URL of `resource_type`'s schema and
-    of its JSON-LD context (each ``None`` when the type has none), absolute
-    against `request` (paths of scrud's own routes without one), as
-    ``ScrudfulMeta`` gives scrudful its links."""
+    of its JSON-LD context (each ``None`` when the type has none), as
+    ``ScrudfulMeta`` gives scrudful its links: absolute against `request`,
+    within the URL namespace it was resolved under. Without a request (a
+    link described, as scrudful builds its HTTP Schema Resource), the paths
+    of scrud's own routes, within `namespace` first (that of the API
+    describing them; `scrud_django.core.urls.absolute_reverse`)."""
     return (
-        get_schema_uri_for(resource_type, request),
-        get_context_uri_for(resource_type, request),
+        get_schema_uri_for(resource_type, request, namespace),
+        get_context_uri_for(resource_type, request, namespace),
     )
 
 

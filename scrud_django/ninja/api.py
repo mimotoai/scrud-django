@@ -26,8 +26,10 @@ def api(
     anonymous request gets the anonymous user's grants and a hidden item is
     a 404 rather than ninja's 401.
 
-    Its errors are answered as on DRF (`errors.install`). More routers may be
-    added before its ``urls`` are read."""
+    Its errors are answered as on DRF (`errors.install`), as uniform errors
+    are for each request (`errors.answer_natively_when_off`), and its type
+    routes vary on ``Accept`` as DRF's (`routers.vary_on_accept`). More
+    routers may be added before its ``urls`` are read."""
     if "auth" in ninja_kwargs:
         raise TypeError(
             "scrud_django.ninja.api() takes no auth: scrud resolves the user of "
@@ -37,11 +39,18 @@ def api(
         urls_namespace=urls_namespace, default_router=ScrudfulRouter(), **ninja_kwargs
     )
     specs = [*(built_in_type_specs() if built_ins else ()), *types]
+    url_names = []
     for spec in specs:
         spec.register()
         # A computed type's route is not served yet. Each router is built
         # afresh for each API: ninja mounts a router on one API only.
         if spec.kind == "json":
-            scrud_api.add_router(f"{spec.slug}/", routers.type_router(spec))
+            scrud_api.add_router(
+                f"{spec.slug}/",
+                routers.type_router(spec, urls_namespace=urls_namespace),
+            )
+            url_names.append(f"{spec.slug}-detail")
     errors.install(scrud_api)
+    errors.answer_natively_when_off(scrud_api)
+    routers.vary_on_accept(scrud_api, url_names)
     return scrud_api
