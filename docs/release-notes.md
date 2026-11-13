@@ -380,7 +380,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   whatever `SCOPED_RBAC["UNIFORM_ERRORS"]` is, when the API is built or for a
   request: problem details while it is on, DRF's native `{"detail": ...}`
   bodies (a computed type's `compute` refusing with an empty message, or a
-  list or dict, included) while it is off. It serves no `docs/` or
+  list or dict, included) while it is off, but for a role or role
+  assignment body failing validation, which stays a problem (follow-up
+  `ninja-role-validation-native`). It serves no `docs/` or
   `openapi.json` unless given `docs_url=` and `openapi_url=`. It takes no
   `auth=`, takes a `urls_namespace` (distinct for each API in a process), and needs
   `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. A router

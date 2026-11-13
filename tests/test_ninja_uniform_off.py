@@ -5,16 +5,19 @@ project's setting) or turned on afterwards, as the API built with them on
 (`tests.test_front_end_parity`) does."""
 
 import json
+import threading
+import time
 
 import ninja
 import pytest
 from django.conf import settings
 from django.http import Http404
 from django.test import RequestFactory, override_settings
+from scoped_rbac.models import Role
 
 from scrud_django.ninja import errors
 
-from .front_ends import Case, parity, serve_both
+from .front_ends import SETUP_TIME, Case, parity, serve_both
 from .test_front_end_parity import (
     COMPUTE_MESSAGE_CASES,
     COMPUTE_REFUSAL_CASES,
@@ -83,6 +86,70 @@ CASES = list(
 )
 
 
+#: The key of the role a role-route case's setup stores (a key of its own:
+#: the harness replaces it in the URL, as each run stores it alike).
+ROLE_KEY = 970901
+
+
+def _stored_role(client):
+    """A role (`ROLE_KEY`) whose ETag is ``"fixed"``, the same in each run;
+    no one logged in."""
+    Role(pk=ROLE_KEY, definition={"http.GET": ["tests://R"]}).save()
+    Role.objects.filter(pk=ROLE_KEY).update(etag="fixed", modified_at=SETUP_TIME)
+    return {"role": ROLE_KEY}
+
+
+def _role(client):
+    """`_stored_role`, with a superuser logged in on `client`."""
+    _admin(client)
+    return _stored_role(client)
+
+
+ROLE = "{mount}roles/{role}/"
+ROLE_BODY = {"definition": {"http.GET": ["tests://S"]}}
+FIXED = {"If-Match": '"fixed"'}
+
+#: Errors of scoped-rbac's role routes and of user-rbac-policy, whose
+#: routers scoped-rbac builds reading ``UNIFORM_ERRORS`` (scrudful's 400,
+#: 412 and 428 bodies, the problem entity's Links). Not a role body failing
+#: validation: follow-up ``ninja-role-validation-native``.
+ROLE_ERROR_CASES = [
+    Case("role-put-stale", "PUT", ROLE, _role, ROLE_BODY, {"If-Match": '"stale"'}),
+    Case("role-put-without-if-match", "PUT", ROLE, _role, ROLE_BODY),
+    Case(
+        "role-put-malformed-if-match", "PUT", ROLE, _role, ROLE_BODY, {"If-Match": "x"}
+    ),
+    Case("role-put-not-json", "PUT", ROLE, _role, "{x", FIXED),
+    Case("role-patch-stale", "PATCH", ROLE, _role, ROLE_BODY, {"If-Match": '"stale"'}),
+    Case("role-delete-stale", "DELETE", ROLE, _role, None, {"If-Match": '"stale"'}),
+    Case("role-get-missing", "GET", "{mount}roles/970999/", _role),
+    Case(
+        "role-post-if-match-stale",
+        "POST",
+        "{mount}roles/",
+        _role,
+        ROLE_BODY,
+        {"If-Match": '"stale"'},
+    ),
+    Case("role-put-anonymous", "PUT", ROLE, _stored_role, ROLE_BODY, FIXED),
+    Case("user-rbac-policy-post", "POST", "{mount}user-rbac-policy/", _admin, {}),
+]
+
+
+ROLE_ERROR_STATUSES = {
+    "role-put-stale": 412,
+    "role-put-without-if-match": 428,
+    "role-put-malformed-if-match": 400,
+    "role-put-not-json": 400,
+    "role-patch-stale": 412,
+    "role-delete-stale": 412,
+    "role-get-missing": 404,
+    "role-post-if-match-stale": 412,
+    "role-put-anonymous": 401,
+    "user-rbac-policy-post": 405,
+}
+
+
 def _answers(case, uniform):
     _serve_off()
     setting = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
@@ -137,3 +204,43 @@ def test_the_api_gets_the_problem_details_handlers_built_with_uniform_errors_off
     assert response.status_code == 404
     assert response["Content-Type"] == "application/problem+json"
     assert json.loads(response.content)["detail"] == "Not found."
+
+
+@pytest.mark.parametrize("uniform", [False, True], ids=["native", "uniform"])
+@pytest.mark.parametrize("case", ROLE_ERROR_CASES, ids=lambda case: case.id)
+def test_role_route_errors_of_an_api_built_with_uniform_errors_off_answer_as_drf(
+    case, uniform
+):
+    drf, ninja = _answers(case, uniform)
+
+    assert drf.status == ROLE_ERROR_STATUSES[case.id], drf
+    assert drf == _semantic_links_of_the_drf_mount(ninja)
+
+
+def test_builds_on_two_threads_leave_uniform_errors_as_configured():
+    # Thread a swaps the settings and waits; thread b asks to swap them
+    # meanwhile (it waits for a's block to end), then leaves its block after
+    # a's: unserialized, b would restore the settings a swapped in, on for
+    # good.
+    a_inside, release_a, release_b = (threading.Event() for _ in range(3))
+
+    def build(entered, release):
+        with errors.building_with_uniform_errors_on():
+            if entered is not None:
+                entered.set()
+            release.wait(5)
+
+    off = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=False)
+    with override_settings(SCOPED_RBAC=off):
+        a = threading.Thread(target=build, args=(a_inside, release_a))
+        b = threading.Thread(target=build, args=(None, release_b))
+        a.start()
+        assert a_inside.wait(5)
+        b.start()
+        time.sleep(0.1)
+        release_a.set()
+        a.join(5)
+        release_b.set()
+        b.join(5)
+
+        assert not errors.uniform_errors()

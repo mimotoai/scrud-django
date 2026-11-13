@@ -1416,11 +1416,46 @@ Each is worked around here; none has a public replacement upstream yet.
   an HSR built under another URLconf. `tests/test_front_end_parity.py` wraps each test in `override_settings` to
   send the signal.
 
+- `errors.building_with_uniform_errors_on` swaps scoped-rbac's cached
+  settings: it sets the private `scoped_rbac.conf.RESOLVED_SETTINGS` to a
+  `conf.Settings` (private) built from `Settings.sources` plus
+  `{"UNIFORM_ERRORS": True}`, and restores it afterwards, around
+  `install_error_handlers` (`errors.install`) and `scoped_rbac_router()`
+  (`api()`). It assumes both read `UNIFORM_ERRORS` only through
+  `conf.scoped_rbac_settings()` (`problems.uniform_errors`). The swap is a
+  new `Settings` object, so scoped-rbac's derived caches (the policy-check
+  cache of `scoped_rbac.models`, keyed by the settings object) are rebuilt
+  after it, and a request another thread serves meanwhile reads uniform
+  errors on. If it stops working, `tests/test_ninja_uniform_off.py` fails
+  (the API built with uniform errors off answers ninja's own or scrudful's
+  bodies). The upstream fix to propose: `install_error_handlers` installs
+  the full handler set and every handler, and `crud_router` and `router()`,
+  read `UNIFORM_ERRORS` per request.
+
 Test: for each, one that fails when upstream renames or removes the helper:
 `tests/test_ninja_api.py` and `tests/test_front_end_parity.py` already break
 on import or on the first request when a helper goes. For the cache, a test that switches
 `ROOT_URLCONF` with the `urls` mark and asserts the second HSR's links; it is
 served stale today.
+
+<a id="ninja-role-validation-native"></a>
+## ninja-role-validation-native: a role body failing validation is a problem on ninja with uniform errors off
+
+With `SCOPED_RBAC["UNIFORM_ERRORS"]` off for the request, DRF answers a role
+or role assignment body failing validation with its serializer's field
+errors (`{"definition":["Not a JSON object."]}`, `{"non_field_errors":
+["Invalid data. Expected a dictionary, but got list."]}`), but ninja keeps
+scoped-rbac's 400 validation problem (`"errors": {"definition": [{"code":
+"invalid", ...}]}`, `application/problem+json`):
+`errors.answer_natively_when_off` leaves a validation problem as it is,
+since it does not keep the native field errors, and their wording is DRF's
+serializer's, not scoped-rbac's. It holds whenever the API was built
+(found for roles; role assignments go through the same `crud_router` and
+handler).
+Test: on `tests.parity_urls` (or `tests.ninja_off_urls`), with uniform errors
+off, a superuser's `PUT roles/<pk>/` with `If-Match` of the role's ETag and
+`{"definition": 5}`, and `[1]`, and `POST roles/` with `{"definition": 5}`;
+assert the two front ends answer alike (they differ today).
 
 <a id="ninja-openapi-head-operation-id"></a>
 ## ninja-openapi-head-operation-id: a GET-and-HEAD operation is described twice under one `operationId`
@@ -1996,20 +2031,27 @@ it.
 <a id="ninja-uniform-errors-per-front-end"></a>
 ## ninja-uniform-errors-per-front-end: an API built with uniform errors off keeps scoped-rbac's errors native
 
-Fixed in the commit `fix(ninja): DRF's error bodies when uniform errors are
-configured off`. scoped-rbac's `install_error_handlers` reads
-`SCOPED_RBAC["UNIFORM_ERRORS"]` once, when the API is built: built with
-uniform errors off, it registered only its native access-error handler, so
-ninja's own handlers answered the rest with bodies of their own, not DRF's
-(an anonymous GET of an item was a 401 `{"detail":"Unauthorized"}`, a PATCH
-of a computed route a 405 `{"detail":"Method not allowed"}`, a `compute`'s
-bare `Http404` a 404 `{"detail":"Not Found"}`), whether uniform errors were
-then off or on for the request. `errors.install` now installs scoped-rbac's
-problem-details handlers whatever the setting is when the API is built
-(`errors._uniform_errors_on`, a shim over scoped-rbac's cached settings,
-scoped-rbac unchanged), and `errors.answer_natively_when_off` answers each
-error as uniform errors are for the request. Pinned by
-`tests/test_ninja_uniform_off.py`: an API built with them off
-(`tests/ninja_off_urls.py`) answers the uniform-errors corpus, the computed
-routes' cases and the role routes as DRF does, with uniform errors off or on
-for the request.
+Fixed in bffa697 and the fix round after it. scoped-rbac reads
+`SCOPED_RBAC["UNIFORM_ERRORS"]` once, when the API is built:
+`install_error_handlers` then registered only its native access-error
+handler, so ninja's own handlers answered the rest with bodies of their own,
+not DRF's (an anonymous GET of an item was a 401 `{"detail":"Unauthorized"}`,
+a PATCH of a computed route a 405 `{"detail":"Method not allowed"}`, a
+`compute`'s bare `Http404` a 404 `{"detail":"Not Found"}`), and its role
+routers (`scoped_rbac_router()`) answered scrudful's 400, 412 and 428
+natively, even with uniform errors turned on for the request. `api()` now
+builds both as with uniform errors on (`errors.building_with_uniform_errors_on`,
+a shim over scoped-rbac's cached settings, see `ninja-private-upstream-use`),
+and `errors.answer_natively_when_off` answers each error as uniform errors
+are for the request.
+
+What is proven, by `tests/test_ninja_uniform_off.py` against an API built
+with uniform errors off (`tests/ninja_off_urls.py`), byte for byte with
+uniform errors off and on for the request: the uniform-errors corpus
+(`UNIFORM_CASES`), the computed routes' cases, a `compute`'s refusals
+(empty, list and dict messages included), the role routes' reads and their
+errors (412 for a stale `If-Match` on PUT, PATCH, DELETE and POST, 428
+without one, 400 for a malformed `If-Match` and a body that is not JSON,
+404, 401) and `user-rbac-policy/`'s 405. Not a role body failing validation
+with uniform errors off, which differs for any API
+(`ninja-role-validation-native`).

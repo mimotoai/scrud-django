@@ -5,6 +5,7 @@ end answers them, the rest as scoped-rbac's ninja handlers do, each following
 import contextlib
 import functools
 import json
+import threading
 
 from django.conf import settings
 from django.utils.translation import gettext
@@ -56,8 +57,9 @@ def install(api) -> None:
     scoped-rbac's handlers for everything else (`install_error_handlers`),
     which must come after this one and before ``api.urls`` is read: its
     problem-details set whatever ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is now
-    (`_uniform_errors_on`), each error then answered as uniform errors are
-    for the request (`answer_natively_when_off`), as DRF answers it. Built
+    (`building_with_uniform_errors_on`), each error then answered as uniform
+    errors are for the request (`answer_natively_when_off`), as DRF answers
+    it. Built
     with them off, scoped-rbac would install only its native handlers, and
     ninja's own would answer the rest with bodies of their own (a 401's
     ``"Unauthorized"``), not DRF's."""
@@ -78,29 +80,44 @@ def install(api) -> None:
         return response
 
     api.add_exception_handler(ScrudException, scrud_error)
-    with _uniform_errors_on():
+    with building_with_uniform_errors_on():
         install_error_handlers(api)
 
 
+#: Serializes `building_with_uniform_errors_on`: two APIs built at once on two
+#: threads would otherwise restore each other's swapped settings, leaving
+#: uniform errors on for good.
+_SWAP_LOCK = threading.RLock()
+
+
 @contextlib.contextmanager
-def _uniform_errors_on():
+def building_with_uniform_errors_on():
     """scoped-rbac's settings with ``UNIFORM_ERRORS`` on (for every front
-    end) over the configured ones, while the block runs, which
-    `install_error_handlers` reads when it is called, then the configured
-    ones again. scoped-rbac reads its settings through
-    ``conf.scoped_rbac_settings()``, cached in ``conf.RESOLVED_SETTINGS``
-    (cleared when ``SCOPED_RBAC`` changes): the block runs with a
-    ``conf.Settings`` whose last source turns them on. Process-wide while it
-    runs: an API is built at start-up (its URLconf's import), before any
-    request it could affect."""
-    saved = conf.RESOLVED_SETTINGS
-    conf.RESOLVED_SETTINGS = conf.Settings(
-        [*conf.scoped_rbac_settings().sources, {"UNIFORM_ERRORS": True}]
-    )
-    try:
-        yield
-    finally:
-        conf.RESOLVED_SETTINGS = saved
+    end) over the configured ones while the block runs, then the configured
+    ones again: for what scoped-rbac reads when it builds, not per request
+    (`install_error_handlers`, its role routers), so that what it builds
+    answers problem details, which `answer_natively_when_off` answers
+    natively for a request with uniform errors off.
+
+    scoped-rbac reads its settings through ``conf.scoped_rbac_settings()``,
+    cached in ``conf.RESOLVED_SETTINGS`` (cleared when ``SCOPED_RBAC``
+    changes): the block runs with a ``conf.Settings`` whose last source turns
+    them on (private upstream use, follow-up ``ninja-private-upstream-use``).
+    The swap is process-wide while the block runs: a request another thread
+    serves meanwhile reads uniform errors on. Django imports ``ROOT_URLCONF``
+    lazily, on the first request, so in a threaded server the API's build
+    can overlap other first requests; importing the URLconf at start-up
+    (e.g. a WSGI warm-up) avoids that. Swaps are serialized
+    (`_SWAP_LOCK`)."""
+    with _SWAP_LOCK:
+        saved = conf.RESOLVED_SETTINGS
+        conf.RESOLVED_SETTINGS = conf.Settings(
+            [*conf.scoped_rbac_settings().sources, {"UNIFORM_ERRORS": True}]
+        )
+        try:
+            yield
+        finally:
+            conf.RESOLVED_SETTINGS = saved
 
 
 def answer_natively_when_off(api) -> None:

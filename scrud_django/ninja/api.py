@@ -160,7 +160,12 @@ def api(
                 spec.document_media_type, routers.DOCUMENT_METHODS
             )
     scrud_api.add_router("services/", services.services_router())
-    scrud_api.add_router("", scoped_rbac_router())
+    # scoped-rbac's role routers read UNIFORM_ERRORS when built (scrudful's
+    # 400, 412 and 428 as problem details, or not): built as with them on,
+    # each answer then follows the setting per request
+    # (errors.answer_natively_when_off), as on DRF.
+    with errors.building_with_uniform_errors_on():
+        scrud_api.add_router("", scoped_rbac_router())
     registration.register_role_services()
     for spec in specs:
         if spec.kind == "computed":
