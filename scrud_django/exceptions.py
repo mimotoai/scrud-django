@@ -836,14 +836,21 @@ class StoredPolicyReference:
         self.resource = resource
 
     def url(self, request=None):
-        try:
-            path = reverse(
-                self.resource.resource_type.route_name_detail(),
-                args=[self.resource.pk],
-            )
-        except NoReverseMatch:
-            return None
-        return request.build_absolute_uri(path) if request is not None else path
+        """The policy's detail URL (absolute given a `request`), on the API
+        serving `request`: within the URL namespace it was resolved under (a
+        ninja API's ``urls_namespace``) first, as `core.urls.absolute_reverse`
+        links, else by the route's global name (the DRF routes'). ``None``
+        when neither reverses."""
+        name = self.resource.resource_type.route_name_detail()
+        match = getattr(request, "resolver_match", None)
+        namespace = getattr(match, "namespace", "")
+        for candidate in [f"{namespace}:{name}", name] if namespace else [name]:
+            try:
+                path = reverse(candidate, args=[self.resource.pk])
+            except NoReverseMatch:
+                continue
+            return request.build_absolute_uri(path) if request is not None else path
+        return None
 
     def __repr__(self):
         return f"StoredPolicyReference(pk={self.resource.pk!r})"

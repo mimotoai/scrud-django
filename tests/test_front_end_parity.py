@@ -213,6 +213,7 @@ def test_unknown_route_is_404_on_both():
 # application/schema+json).
 
 PROFILES = "tests://PartnerProfiles"
+WORKFLOW_POLICY = "http://api.openteams.com/json-ld/WorkflowPolicy"
 JSON_SCHEMA = "http://json-schema.org/draft-04/schema"
 
 
@@ -600,16 +601,19 @@ def _workflow_cases():
             },
         }
 
-    def setup(*transitions, content=DRAFT):
+    def setup(*transitions, content=DRAFT, read_policies=False):
         def setup(client):
-            registration.ResourceRegistration.register(
+            policy = registration.ResourceRegistration.register(
                 dict(NOTE_POLICY), "workflow-policies"
             )
             note = registration.ResourceRegistration.register(
                 dict(content), "workflow-notes"
             )
-            _user(client, (may_transition(*transitions), "a"))
-            return {"item": note.pk}
+            grants = [(may_transition(*transitions), "a")]
+            if read_policies:
+                grants.append(({"http.GET": [WORKFLOW_POLICY]}, "a"))
+            _user(client, *grants)
+            return {"item": note.pk, "policy": policy.pk}
 
         return setup
 
@@ -632,6 +636,20 @@ def _workflow_cases():
                 "PUT",
                 path,
                 setup("retract"),
+                body=dict(PUBLISHED),
+                headers=_etag("item"),
+            ),
+            400,
+        ),
+        (
+            # A requester who may read the policy is told its URL: the
+            # serving API's (a stored policy's URL reversed globally only
+            # named DRF's route on ninja).
+            Case(
+                "workflow-put-refused-policy-readable",
+                "PUT",
+                path,
+                setup("retract", read_policies=True),
                 body=dict(PUBLISHED),
                 headers=_etag("item"),
             ),
