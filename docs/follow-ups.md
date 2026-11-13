@@ -1,7 +1,8 @@
 # Follow-ups
 
 Open follow-ups come first; the entries under `# Decided` are limitations
-kept by a decision, each saying what was decided and why. Record a new known
+kept by a decision, each saying what was decided and why, and those under
+`# Done` were fixed, each citing its commit. Record a new known
 issue or deferred bug here, above `# Decided`, as a section with an anchor
 (`<a id="short-slug"></a>` then `## short-slug: title`).
 
@@ -1289,25 +1290,6 @@ routes answer 500 (`NoReverseMatch`). 0.16.0 documents the
 `scrud_django.urls`. Test: a URLconf of the ninja API alone; GET `roles/` as
 a superuser; assert 200 (a 500 without the include).
 
-<a id="ninja-uniform-errors-per-front-end"></a>
-## ninja-uniform-errors-per-front-end: an API built with uniform errors off keeps scoped-rbac's errors native
-
-scrud's own errors, scrudful's 400, 412 and 428, the 406 and every error
-scoped-rbac's handlers answered as problem details follow
-`SCOPED_RBAC["UNIFORM_ERRORS"]` for each request
-(`errors.answer_natively_when_off`, pinned by
-`tests/test_front_end_parity.py::test_errors_follow_uniform_errors_per_request_alike`
-for an API built with them on). But scoped-rbac's `install_error_handlers`
-reads the setting once, when the API is built: built with uniform errors
-off, it registers only its native access-error handler, so turning them on
-later leaves its errors native, where DRF answers problem details (an
-anonymous GET of an item is a 401 `{"detail":"Unauthorized"}`, served as
-`application/problem+json`; a PATCH a 405 `{"detail":"Method not
-allowed"}`). Test: build `api(types=[partner profiles])` under
-`override_settings(UNIFORM_ERRORS=False)` in a URLconf of its own, then,
-with uniform errors on, GET an item anonymously; assert a 401 problem
-(`"code": "not_authenticated"`); it is native today.
-
 <a id="ninja-hsr-link-targets"></a>
 ## ninja-hsr-link-targets: an API included under an outer namespace cannot describe its links
 
@@ -2005,3 +1987,29 @@ scrudful's automatic OPTIONS. The collection documents
 `scrud_django/core/collections.py` and both front ends serve them
 (`tests/test_core_collections.py`, and the `options-*` cases of
 `tests/test_front_end_parity.py`).
+
+# Done
+
+Follow-ups fixed since they were recorded, each with the commit that fixed
+it.
+
+<a id="ninja-uniform-errors-per-front-end"></a>
+## ninja-uniform-errors-per-front-end: an API built with uniform errors off keeps scoped-rbac's errors native
+
+Fixed in the commit `fix(ninja): DRF's error bodies when uniform errors are
+configured off`. scoped-rbac's `install_error_handlers` reads
+`SCOPED_RBAC["UNIFORM_ERRORS"]` once, when the API is built: built with
+uniform errors off, it registered only its native access-error handler, so
+ninja's own handlers answered the rest with bodies of their own, not DRF's
+(an anonymous GET of an item was a 401 `{"detail":"Unauthorized"}`, a PATCH
+of a computed route a 405 `{"detail":"Method not allowed"}`, a `compute`'s
+bare `Http404` a 404 `{"detail":"Not Found"}`), whether uniform errors were
+then off or on for the request. `errors.install` now installs scoped-rbac's
+problem-details handlers whatever the setting is when the API is built
+(`errors._uniform_errors_on`, a shim over scoped-rbac's cached settings,
+scoped-rbac unchanged), and `errors.answer_natively_when_off` answers each
+error as uniform errors are for the request. Pinned by
+`tests/test_ninja_uniform_off.py`: an API built with them off
+(`tests/ninja_off_urls.py`) answers the uniform-errors corpus, the computed
+routes' cases and the role routes as DRF does, with uniform errors off or on
+for the request.

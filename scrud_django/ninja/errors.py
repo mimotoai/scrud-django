@@ -2,12 +2,13 @@
 end answers them, the rest as scoped-rbac's ninja handlers do, each following
 ``SCOPED_RBAC["UNIFORM_ERRORS"]`` per request, as the DRF views read it."""
 
+import contextlib
 import functools
 import json
 
 from django.conf import settings
 from django.utils.translation import gettext
-from scoped_rbac import problems
+from scoped_rbac import conf, problems
 from scoped_rbac.ninja import install_error_handlers
 
 from scrud_django.exceptions import ScrudException
@@ -24,6 +25,12 @@ PROBLEM_LINK_TARGETS = frozenset({problems.PROBLEM_SCHEMA, problems.PROBLEM_CONT
 #: The attribute marking a response scrud's own error handler answered, which
 #: `answer_natively_when_off` leaves as it is.
 OWN_ERROR_ATTR = "_scrud_own_error"
+
+#: The attribute giving a problem-details response the body DRF answers its
+#: error with natively, which `answer_natively_when_off` writes rather than
+#: the problem's ``{"detail": ...}`` (a computed route's, whose ``compute``
+#: raised a message the problem words otherwise: an empty one, a list).
+NATIVE_BODY_ATTR = "_scrud_native_body"
 
 #: The methods in the order DRF's views list them in a 405's ``Allow``.
 DRF_METHOD_ORDER = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
@@ -47,7 +54,13 @@ def install(api) -> None:
     that one: with scoped-rbac's problem-details Links while uniform errors
     are on, else as DRF's native body (``application/json``). Then
     scoped-rbac's handlers for everything else (`install_error_handlers`),
-    which must come after this one and before ``api.urls`` is read."""
+    which must come after this one and before ``api.urls`` is read: its
+    problem-details set whatever ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is now
+    (`_uniform_errors_on`), each error then answered as uniform errors are
+    for the request (`answer_natively_when_off`), as DRF answers it. Built
+    with them off, scoped-rbac would install only its native handlers, and
+    ninja's own would answer the rest with bodies of their own (a 401's
+    ``"Unauthorized"``), not DRF's."""
 
     def scrud_error(request, exc):
         native = exc.problem_links and not uniform_errors()
@@ -65,7 +78,29 @@ def install(api) -> None:
         return response
 
     api.add_exception_handler(ScrudException, scrud_error)
-    install_error_handlers(api)
+    with _uniform_errors_on():
+        install_error_handlers(api)
+
+
+@contextlib.contextmanager
+def _uniform_errors_on():
+    """scoped-rbac's settings with ``UNIFORM_ERRORS`` on (for every front
+    end) over the configured ones, while the block runs, which
+    `install_error_handlers` reads when it is called, then the configured
+    ones again. scoped-rbac reads its settings through
+    ``conf.scoped_rbac_settings()``, cached in ``conf.RESOLVED_SETTINGS``
+    (cleared when ``SCOPED_RBAC`` changes): the block runs with a
+    ``conf.Settings`` whose last source turns them on. Process-wide while it
+    runs: an API is built at start-up (its URLconf's import), before any
+    request it could affect."""
+    saved = conf.RESOLVED_SETTINGS
+    conf.RESOLVED_SETTINGS = conf.Settings(
+        [*conf.scoped_rbac_settings().sources, {"UNIFORM_ERRORS": True}]
+    )
+    try:
+        yield
+    finally:
+        conf.RESOLVED_SETTINGS = saved
 
 
 def answer_natively_when_off(api) -> None:
@@ -73,8 +108,8 @@ def answer_natively_when_off(api) -> None:
     Schema Resources) answer, while uniform errors are off for the request,
     an error answered as problem details as DRF answers it then
     (`_native`): scrudful's own 400, 412 and 428, which scrud's routers
-    always describe as problem details, and scoped-rbac's errors, when its
-    handlers were installed with uniform errors on. Call it after `install`,
+    always describe as problem details, and scoped-rbac's errors, whose
+    handlers `install` installs with uniform errors on. Call it after `install`,
     before ``api.urls`` is read."""
     get_urls = api._get_urls
 
@@ -135,6 +170,7 @@ def _native(request, response, api):
     (`PROBLEM_MEMBERS`: ``{"detail": ...}`` and any extension, such as a
     428's ``accepted-precondition-headers``), with the ``detail`` DRF's own
     exception gives where the problem words it otherwise (`NATIVE_DETAILS`),
+    or the body the response carries (`NATIVE_BODY_ATTR`),
     as ``application/json``, without the problem-details Links; a 405's
     ``Allow`` in DRF's order. scrud's own errors (`install`) and validation
     problems (whose native field errors their problem does not keep) are
@@ -155,6 +191,7 @@ def _native(request, response, api):
     detail = NATIVE_DETAILS.get(body.get("code"))
     if detail is not None and "detail" in native:
         native["detail"] = detail(request)
+    native = getattr(response, NATIVE_BODY_ATTR, native)
     response.content = api.renderer.render(
         request, native, response_status=response.status_code
     )

@@ -6,6 +6,7 @@ import functools
 
 from django.core.exceptions import PermissionDenied
 from django.http import Http404, HttpResponse
+from django.utils.encoding import force_str
 from ninja import Router
 from ninja.errors import HttpError
 from scoped_rbac import access
@@ -19,6 +20,7 @@ from scrud_django.core.computed import (
     served_content,
 )
 from scrud_django.ninja.entry import entry
+from scrud_django.ninja.errors import NATIVE_BODY_ATTR
 from scrud_django.ninja.routers import (
     DRF_RENDERS,
     _noting_serving_api,
@@ -83,10 +85,7 @@ def computed_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Rou
         try:
             content, etag = computed_answer(request, rtype, slug)
         except (Http404, PermissionDenied) as exc:
-            answered = _as_drf_answers(exc)
-            if answered is exc:
-                raise
-            raise answered from exc
+            return _as_drf_answers(request, exc)
         if not_modified(request, etag):
             response = HttpResponse(status=304)
             del response["Content-Type"]
@@ -118,19 +117,47 @@ def computed_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Rou
     return router
 
 
-def _as_drf_answers(exc):
-    """`exc`, a ``Http404`` or ``PermissionDenied`` that ``compute`` raised,
-    as the error the API answers as DRF does (``exceptions.NotFound`` or
-    ``PermissionDenied`` of its arguments): its message as the ``detail``,
-    the default one without (scoped-rbac's handler answers a ``Http404``
-    with its own, follow-up ``scoped-rbac-ninja-http404-message``, and a
-    ``PermissionDenied`` with the default). A ``Http404`` without a message
-    is answered as it is."""
-    message = exc.args[0] if exc.args else None
+def _as_drf_answers(request, exc):
+    """The answer to `exc`, a ``Http404`` or ``PermissionDenied`` that
+    ``compute`` raised, as DRF's (``exceptions.NotFound`` or
+    ``PermissionDenied`` of its arguments, `_drf_detail`), by the serving
+    API's handlers: with uniform errors on, the problem whose ``detail`` is
+    its message (an empty one, or one that is not text, gives the status
+    title, as scoped-rbac's DRF handler words it), the default one without
+    (scoped-rbac's handler answers a ``Http404`` with its own, follow-up
+    ``scoped-rbac-ninja-http404-message``, and a ``PermissionDenied`` with
+    the default); with them off, DRF's native body for a message
+    (``{"detail": message}``, a list's or a dict's own), which
+    ``errors.answer_natively_when_off`` writes (`errors.NATIVE_BODY_ATTR`)."""
+    detail = _drf_detail(exc)
+    text = detail if isinstance(detail, str) else ""
     if isinstance(exc, Http404):
-        return exc if message is None else HttpError(404, str(message))
-    # The requester is authenticated here (`check_authenticated`): a 403.
-    return access.AccessDenied(None if message is None else str(message))
+        error = exc if detail is None else HttpError(404, text)
+    else:
+        # The requester is authenticated here (`check_authenticated`): a 403.
+        error = access.AccessDenied(None if detail is None else text)
+    response = _serving_api(request).on_exception(request, error)
+    if detail is not None:
+        native = detail if isinstance(detail, list | dict) else {"detail": detail}
+        setattr(response, NATIVE_BODY_ATTR, native)
+    return response
+
+
+def _drf_detail(exc):
+    """The ``detail`` DRF gives `exc` (``APIException(*exc.args)``): ``None``
+    without a message (the exception's default then), else the message with
+    each leaf as text (``force_str``), a list (or tuple) and a dict kept as
+    such, as DRF's ``_get_error_details`` makes it."""
+    message = exc.args[0] if exc.args else None
+    return None if message is None else _as_text(message)
+
+
+def _as_text(value):
+    if isinstance(value, list | tuple):
+        return [_as_text(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _as_text(item) for key, item in value.items()}
+    return force_str(value)
 
 
 def refuse_the_anonymous(api, url_names) -> None:

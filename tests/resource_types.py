@@ -241,6 +241,15 @@ REFUSALS = {
     "denied-bare": PermissionDenied,
     "missing": lambda: Http404("nope"),
     "missing-bare": Http404,
+    # As DRF takes them: an empty message, one that is not a string, and a
+    # PermissionDenied's code.
+    "denied-empty": lambda: PermissionDenied(""),
+    "missing-empty": lambda: Http404(""),
+    "denied-dict": lambda: PermissionDenied({"key": "x"}),
+    "missing-dict": lambda: Http404({"key": "x", "nested": [1, {"deep": None}]}),
+    "missing-list": lambda: Http404(["x", 2]),
+    "missing-number": lambda: Http404(42),
+    "denied-coded": lambda: PermissionDenied("nope", "custom_code"),
 }
 
 

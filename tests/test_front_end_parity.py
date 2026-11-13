@@ -1789,6 +1789,51 @@ def test_computed_refusals_answer_alike(case, status, detail, uniform):
     assert drf == ninja
 
 
+# A ``compute``'s message as DRF takes it (``NotFound(*exc.args)``,
+# ``PermissionDenied(*exc.args)``): an empty one is kept, and one that is
+# not a string is the native body itself (a list or a dict, its leaves as
+# strings) or its text; the problem's ``detail`` is then the status title.
+# (the case, the status, DRF's native body, the problem's ``detail``)
+COMPUTE_MESSAGE_CASES = [
+    ("denied-empty", 403, {"detail": ""}, "Forbidden"),
+    ("missing-empty", 404, {"detail": ""}, "Not Found"),
+    ("denied-dict", 403, {"key": "x"}, "Forbidden"),
+    (
+        "missing-dict",
+        404,
+        {"key": "x", "nested": ["1", {"deep": "None"}]},
+        "Not Found",
+    ),
+    ("missing-list", 404, ["x", "2"], "Not Found"),
+    ("missing-number", 404, {"detail": "42"}, "42"),
+    ("denied-coded", 403, {"detail": "nope"}, "nope"),
+]
+
+
+@pytest.mark.parametrize("uniform", [True, False], ids=["uniform", "native"])
+@pytest.mark.parametrize(
+    "key, status, native, detail",
+    COMPUTE_MESSAGE_CASES,
+    ids=[key for key, *_ in COMPUTE_MESSAGE_CASES],
+)
+def test_computed_refusals_of_any_message_answer_alike(
+    key, status, native, detail, uniform
+):
+    serve_both()
+    setting = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
+    with override_settings(SCOPED_RBAC=setting):
+        drf, ninja = parity(
+            Case(f"computed-{key}", "GET", REFUSING + key + "/", _admin)
+        )
+
+    assert drf.status == status, drf
+    if uniform:
+        assert json.loads(drf.body)["detail"] == detail, drf
+    else:
+        assert json.loads(drf.body) == native, drf
+    assert drf == ninja
+
+
 def test_computed_links_name_the_documents_of_the_serving_mount():
     drf, ninja = parity(Case("computed-links", "GET", COMPUTED, _admin))
 

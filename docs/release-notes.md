@@ -376,7 +376,11 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   returns a `NinjaAPI` serving the built-in types, your types, the service
   catalog, scoped-rbac's role routes and the collection documents, with the
   statuses, headers and bodies of the DRF routes (DRF's content negotiation
-  included: its 406 and `?format=` 404, but never HTML). It serves no `docs/` or
+  included: its 406 and `?format=` 404, but never HTML), errors included
+  whatever `SCOPED_RBAC["UNIFORM_ERRORS"]` is, when the API is built or for a
+  request: problem details while it is on, DRF's native `{"detail": ...}`
+  bodies (a computed type's `compute` refusing with an empty message, or a
+  list or dict, included) while it is off. It serves no `docs/` or
   `openapi.json` unless given `docs_url=` and `openapi_url=`. It takes no
   `auth=`, takes a `urls_namespace` (distinct for each API in a process), and needs
   `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. A router
