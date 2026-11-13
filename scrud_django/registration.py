@@ -13,7 +13,6 @@ from uuid import uuid4
 import reversion
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
-from django.core.validators import slug_re
 from django.db import router, transaction
 from django.db.models.functions import Length
 from django.db.utils import InterfaceError, OperationalError, ProgrammingError
@@ -986,10 +985,9 @@ class TypeSpec:
             raise ImproperlyConfigured(
                 f"{name}: its kind is 'json' or 'computed', not {self.kind!r}."
             )
-        if not isinstance(self.slug, str) or not slug_re.fullmatch(self.slug):
+        if not isinstance(self.slug, str) or not self.slug:
             raise ImproperlyConfigured(
-                f"{name}: its slug is a letters, digits, hyphens and underscores "
-                f"string (one URL segment), not {self.slug!r}."
+                f"{name}: its slug is a non-empty string, not {self.slug!r}."
             )
         if not isinstance(self.resource_type_uri, str) or not self.resource_type_uri:
             raise ImproperlyConfigured(

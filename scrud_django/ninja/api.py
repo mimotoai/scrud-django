@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 import ninja
 from django.core.exceptions import ImproperlyConfigured
+from django.core.validators import slug_re
 from scoped_rbac.ninja.api import router as scoped_rbac_router
 from scrudful.ninja import ScrudfulRouter
 
@@ -34,7 +35,7 @@ RESERVED_SLUGS = frozenset(
 def _check_specs(specs: Sequence[object]) -> None:
     """Refuse, before anything is registered, a spec the API cannot serve:
     one that is not a `TypeSpec` (``TypeError``), a slug that is reserved
-    (`RESERVED_SLUGS`) or shared, an IRI that is shared
+    (`RESERVED_SLUGS`), shared or not one URL segment (``slug_re``), an IRI that is shared
     (``ImproperlyConfigured``)."""
     for spec in specs:
         if not isinstance(spec, TypeSpec):
@@ -46,6 +47,12 @@ def _check_specs(specs: Sequence[object]) -> None:
     by_slug: dict[str, TypeSpec] = {}
     by_iri: dict[str, TypeSpec] = {}
     for spec in specs:
+        if not slug_re.fullmatch(spec.slug):
+            raise ImproperlyConfigured(
+                f"The type {spec.resource_type_uri} has the slug {spec.slug!r}, "
+                "which is not one URL segment of letters, digits, hyphens and "
+                "underscores."
+            )
         if spec.slug in RESERVED_SLUGS:
             raise ImproperlyConfigured(
                 f"The type {spec.resource_type_uri} has the slug {spec.slug!r}, "

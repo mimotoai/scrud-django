@@ -3,6 +3,7 @@ and its entry checks (`scrud_django.ninja.entry`), on probe routes of a
 throwaway API mounted by this module (``/ninja/``), beside a DRF probe view
 (``/drf/``)."""
 
+import dataclasses
 import inspect
 import json
 from contextlib import contextmanager
@@ -592,6 +593,13 @@ def test_an_empty_slug_is_refused_before_any_side_effect():
     with pytest.raises(ImproperlyConfigured, match="slug"):
         registration.json_resource_type_spec(REFUSED_URI, "")
     assert _registered_state() == before
+
+
+@pytest.mark.parametrize("slug", ["{pk}", "a/b", "a b", "a.b", "é"])
+def test_a_slug_that_is_not_one_url_segment_is_refused(slug):
+    _refused([_spec(slug=slug)], match="URL segment")
+    spec = dataclasses.replace(_spec(), slug=slug)
+    _refused([spec], match="URL segment")
 
 
 def test_two_specs_with_one_slug_are_refused():

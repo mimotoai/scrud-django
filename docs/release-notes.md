@@ -630,6 +630,17 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ### Upgrading
 
+* `json_resource_type` and `computed_resource_type` (with `compute`) now
+  build a `TypeSpec`, which refuses (`ImproperlyConfigured`) what could never
+  have worked: an empty or non-string slug or IRI, a slug or IRI of a
+  built-in type (JSON Schema, JSON-LD, indexing and workflow policies) on a
+  type that is not one, and a computed type's `checks`, `object_checks` or
+  `content_filter`. `json_resource_type` also raises `TypeError` for a
+  `schema_func`, `context_func` or `indexing_policy_func` that is not
+  callable, when it is called rather than when the type registers. The
+  slug's shape is not checked on DRF (a slug with a dot still registers);
+  `scrud_django.ninja.api()` refuses one that is not a single URL segment of
+  letters, digits, hyphens and underscores.
 * A DRF view whose own `rbac_requirement()` returns an empty `access.AnyOf`,
   or one with an empty option, now raises (`ValueError`, a 500) instead of
   refusing or allowing every object.

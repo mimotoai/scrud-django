@@ -416,8 +416,8 @@ def _computed_spec():
     )
 
 
-@pytest.mark.parametrize("slug", ["{pk}", "a/b", None, "", "a b", 3])
-def test_a_slug_that_is_not_one_url_segment_is_refused(slug):
+@pytest.mark.parametrize("slug", [None, "", 3])
+def test_a_slug_that_is_not_a_non_empty_string_is_refused(slug):
     with pytest.raises(ImproperlyConfigured, match="slug"):
         registration.json_resource_type_spec(TYPE_URI, slug)
     with pytest.raises(ImproperlyConfigured, match="slug"):
@@ -513,3 +513,21 @@ def test_register_urls_without_routes_is_a_type_error(db):
     )
     with pytest.raises(TypeError, match="build_urls=False"):
         row.register_urls()
+
+
+@pytest.mark.django_db
+def test_the_drf_path_still_registers_a_slug_with_a_dot():
+    # The slug's shape is ninja's to check (`api()`); a DRF route takes it.
+    try:
+        urls = registration.json_resource_type(
+            TYPE_URI,
+            "v1.notes",
+            schema_func=lambda: {},
+            context_func=lambda: {},
+            register_service=False,
+        )
+        assert urls
+    finally:
+        registration._PENDING_REGISTRATIONS.pop("v1.notes", None)
+        with core_types._OPTIONS_LOCK:
+            core_types._SLUG_IRIS.pop("v1.notes", None)
