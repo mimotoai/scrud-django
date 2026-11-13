@@ -31,6 +31,7 @@ from .front_ends import (
     SETUP_TIME,
     Case,
     Exchange,
+    excusing_drfs_session_vary,
     normalized,
     parity,
     serve_both,
@@ -94,9 +95,57 @@ def test_the_harness_normalizes_only_the_listed_differences():
                 '<http://testserver{mount}todos/{todo}/s>; rel="describedby"'
             ),
             "ETag": '"12"',
+            "Vary": "Accept",
         },
         body=expected_body,
     )
+
+
+def _with_vary(vary):
+    return Exchange(401, {} if vary is None else {"Vary": vary}, "{}")
+
+
+@pytest.mark.parametrize(
+    "drf, ninja",
+    [("Accept, Cookie", "Accept"), ("Cookie", None)],
+)
+def test_the_harness_excuses_drfs_session_vary_alone(drf, ninja):
+    excused = excusing_drfs_session_vary(_with_vary(drf), _with_vary(ninja))
+
+    assert excused == _with_vary(ninja)
+
+
+@pytest.mark.parametrize(
+    "drf, ninja",
+    [
+        ("Accept", "Accept"),
+        ("Accept, Cookie", None),
+        ("Cookie, Accept", "Accept"),
+        ("Accept, Cookie", "Origin"),
+        (None, None),
+    ],
+)
+def test_the_harness_excuses_no_other_vary_difference(drf, ninja):
+    with pytest.raises(AssertionError, match="plus Cookie"):
+        excusing_drfs_session_vary(_with_vary(drf), _with_vary(ninja))
+
+
+def test_the_harness_excuses_drfs_session_vary_only_where_a_case_says_so():
+    case = Case(
+        "failing-credentials-unflagged",
+        "GET",
+        "{mount}services/",
+        headers=REFUSED_CREDENTIALS,
+    )
+    refusing = {**settings.SCOPED_RBAC, "NINJA_USER": _refusing_hook}
+    with override_settings(SCOPED_RBAC=refusing):
+        drf, ninja = parity(case)
+
+    # Unflagged, the difference stays in the exchanges, for `drf == ninja`
+    # to fail on.
+    assert drf.status == ninja.status == 401
+    assert drf != ninja
+    assert excusing_drfs_session_vary(drf, ninja) == ninja
 
 
 @pytest.mark.parametrize("header", ["WWW-Authenticate", "Set-Cookie"])
@@ -2119,7 +2168,8 @@ def test_options_refuses_a_requester_failing_authentication(client, path):
     drf = front_ends.exchange(
         Client(), "drf", "OPTIONS", path, headers=REFUSED_CREDENTIALS
     )
-    assert drf == ninja
+    # Refused by different mechanisms (`Case.drf_alone_reads_the_session`).
+    assert excusing_drfs_session_vary(drf, ninja) == ninja
 
 
 #: Credentials each front end refuses: a ``NINJA_USER`` hook raising ninja's
@@ -2133,6 +2183,10 @@ FAILING_CREDENTIALS_CASES = [
         method,
         "{mount}" + path,
         headers=REFUSED_CREDENTIALS,
+        # DRF's authentication reads the session before the Basic credentials
+        # fail (``Vary: Cookie``); ninja's hook refuses before the session is
+        # read: `parity` asserts that this is the only difference of Vary.
+        drf_alone_reads_the_session=True,
     )
     for method, name, path in (
         # Methods the route does not serve: refused before the 405.
@@ -2168,14 +2222,9 @@ def test_failing_credentials_are_refused_alike(case):
     refusing = {**settings.SCOPED_RBAC, "NINJA_USER": _refusing_hook}
     with override_settings(SCOPED_RBAC=refusing):
         drf, ninja = parity(case)
-        varies = _varies(Client(), case.method, case.path, headers=case.headers)
 
     assert drf.status == 401, drf
     assert drf == ninja
-    # The two are refused by different mechanisms: DRF's authentication reads
-    # the session before the Basic credentials fail (``Vary: Cookie``);
-    # ninja's hook refuses before the session is read.
-    assert varies["drf"] == ", ".join(filter(None, [varies["ninja"], "Cookie"])), varies
 
 
 def test_role_routes_vary_alike(client):

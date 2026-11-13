@@ -666,4 +666,5 @@ def test_a_preflight_on_an_entry_router_does_not_resolve_the_user():
                 "Access-Control-Request-Method": "GET",
             },
         )
-    assert response.status_code != 401, response.content
+    # The probe's own answer: the hook, which would refuse (401), never ran.
+    assert response.status_code == 204, response.content

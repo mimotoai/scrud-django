@@ -36,9 +36,9 @@ django.setup()
 """
 
 
-def run(body):
+def run(body, script=SCRIPT):
     return subprocess.run(
-        [sys.executable, "-c", SCRIPT + body],
+        [sys.executable, "-c", script + body],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -95,5 +95,34 @@ else:
         cwd=ROOT,
         capture_output=True,
         text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_missing_dependency_of_ninja_raises_its_own_error():
+    # django-ninja is installed, but one of its own dependencies is missing:
+    # a ModuleNotFoundError naming pydantic, not ninja, re-raised unchanged.
+    script = SCRIPT.replace(
+        'if name == "ninja" or name.startswith("ninja."):',
+        'if name == "pydantic" or name.startswith("pydantic."):',
+    ).replace(
+        'raise ModuleNotFoundError(f"blocked: {name}", name=name)',
+        'raise ModuleNotFoundError(f"No module named {name!r}", name=name)',
+    )
+    assert script != SCRIPT
+    result = run(
+        """
+assert "pydantic" not in sys.modules and "ninja" not in sys.modules
+try:
+    import scrud_django.ninja
+except ImportError as error:
+    assert type(error) is ModuleNotFoundError, repr(error)
+    assert error.name == "pydantic", repr(error)
+    assert str(error) == "No module named 'pydantic'", str(error)
+    assert error.__cause__ is None, repr(error.__cause__)
+else:
+    raise SystemExit("import succeeded")
+""",
+        script=script,
     )
     assert result.returncode == 0, result.stderr

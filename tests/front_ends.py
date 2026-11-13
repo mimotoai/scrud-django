@@ -5,8 +5,7 @@ both on fresh data, so that their responses compare byte for byte.
 A response is normalized as the design allows, and in no other way:
 
 - the mount prefix (``/drf/``, ``/ninja/``) becomes ``{mount}``;
-- ``Date`` and ``Vary`` are dropped (each route's ``Vary`` is compared
-  directly, ``tests.test_front_end_parity``'s ``*_vary_*`` tests);
+- ``Date`` is dropped;
 - the target of the HTTP Schema Resource link (`HSR_REL`) becomes ``{hsr}``
   (each front end serves its HSRs at URLs of its own);
 - each key a case's setup created becomes ``{name}``, and the key of each
@@ -18,9 +17,13 @@ A response is normalized as the design allows, and in no other way:
   `parity` checks);
 - ``Content-Length`` is that of the body once so replaced.
 
-Everything else (status, every other header, the body's bytes) must match.
+Everything else (status, every other header, ``Vary`` included, the body's
+bytes) must match. The one difference a case may excuse, and then only by
+name, is DRF's ``Vary: Cookie`` on a refusal of failing credentials
+(`Case.drf_alone_reads_the_session`, `excusing_drfs_session_vary`).
 """
 
+import dataclasses
 import datetime
 import itertools
 import json
@@ -57,7 +60,7 @@ HSR_REL = "https://w3id.org/semantic-http/ns#http-schema-resource-document"
 HSR = "{hsr}"
 
 #: The response headers dropped.
-IGNORED_HEADERS = frozenset({"date", "vary"})
+IGNORED_HEADERS = frozenset({"date"})
 
 #: The time of a case's setup, then of its request: `parity` freezes the
 #: clock, so both front ends store and answer the same times.
@@ -96,6 +99,13 @@ class Case:
       table (the resources'), so that no two are alike.
     - `body` (sent as JSON unless a ``str`` or ``bytes``) and `headers` may
       be callables of those names, called after `setup`.
+    - `drf_alone_reads_the_session`: the case's credentials fail, and the two
+      front ends refuse them by different mechanisms (the first fix plan's
+      Ruling A): DRF's authentication reads the session before the
+      credentials fail (``Vary: Cookie``), ninja's ``NINJA_USER`` hook
+      refuses before the session is read. `parity` then asserts that DRF's
+      ``Vary`` is exactly ninja's plus ``Cookie``, and returns DRF's exchange
+      with ninja's ``Vary`` (`excusing_drfs_session_vary`).
     """
 
     id: str
@@ -104,6 +114,7 @@ class Case:
     setup: Callable[[Client], Mapping[str, object]] = _no_setup
     body: object = None
     headers: Mapping[str, str] | Callable[[Mapping], Mapping[str, str]] | None = None
+    drf_alone_reads_the_session: bool = False
 
 
 class Clock:
@@ -168,7 +179,9 @@ def parity(case: Case) -> tuple[Exchange, Exchange]:
     each on fresh data: its setup and request run in a transaction rolled
     back afterwards, with the clock frozen (`CLOCK_TARGETS`), once both
     front ends serve their types (`serve_both`). ``AssertionError`` if the
-    runs' setups chose different keys (`note_chosen_key`)."""
+    runs' setups chose different keys (`note_chosen_key`), or, for a case
+    `Case.drf_alone_reads_the_session`, if the ``Vary`` headers differ in
+    any other way than DRF's ``Cookie``."""
     global _chosen_keys
     serve_both()
     exchanges, chosen = [], {}
@@ -182,7 +195,28 @@ def parity(case: Case) -> tuple[Exchange, Exchange]:
         f"{case.id}: the runs' setups chose different keys {chosen}: a key of "
         "their range was taken in one run only"
     )
-    return tuple(exchanges)
+    drf, ninja = exchanges
+    if case.drf_alone_reads_the_session:
+        drf = excusing_drfs_session_vary(drf, ninja)
+    return drf, ninja
+
+
+def excusing_drfs_session_vary(drf: Exchange, ninja: Exchange) -> Exchange:
+    """`drf` with `ninja`'s ``Vary``, once its own is asserted to be exactly
+    ninja's plus ``Cookie``: the difference of a refusal of failing
+    credentials, which DRF's authentication refuses after reading the
+    session and ninja's ``NINJA_USER`` hook before (the first fix plan's
+    Ruling A; `Case.drf_alone_reads_the_session`). ``AssertionError`` for
+    any other difference."""
+    vary = ninja.headers.get("Vary")
+    expected = ", ".join(filter(None, [vary, "Cookie"]))
+    assert drf.headers.get("Vary") == expected, (
+        f"DRF's Vary {drf.headers.get('Vary')!r} is not ninja's {vary!r} plus Cookie"
+    )
+    headers = {name: value for name, value in drf.headers.items() if name != "Vary"}
+    if vary is not None:
+        headers["Vary"] = vary
+    return dataclasses.replace(drf, headers=headers)
 
 
 def serve_both():
