@@ -1322,9 +1322,6 @@ requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
 
 Before ninja phase 3. The core's types leave invariants to their callers:
 
-- `workflow_check` takes `prior=None` for both a create and no stored
-  content (`NULL_STORED_CONTENT` is a tuple against a `Mapping`
-  annotation): take distinct create and update inputs;
 - `TypeOptions` keeps whatever sequences it is given: convert them to
   tuples, with typed `Protocol`s for the hooks;
 - `ScrudException` should declare `type`, `title` and `instance` as class
@@ -1332,8 +1329,7 @@ Before ninja phase 3. The core's types leave invariants to their callers:
 - `ViewLeaf` reads its view's `type_iri` on each use: read it once.
 
 Test: type-checking (`mypy` or `pyright`) of `scrud_django/core/` with the
-new types, and in `tests/test_core_workflow.py` a create and an update over
-null content through the new inputs, each checked as itself.
+new types.
 
 # Decided
 

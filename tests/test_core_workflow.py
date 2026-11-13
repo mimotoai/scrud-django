@@ -14,7 +14,17 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
 
-from scrud_django.core.workflow import NoWorkflowPolicyDenied
+from scrud_django.core.workflow import (
+    NULL_CONTENT,
+    NULL_STORED_CONTENT,
+    Create,
+    NoWorkflowPolicyDenied,
+    NullContent,
+    Update,
+    prior_from,
+    prior_of,
+    workflow_check,
+)
 from scrud_django.exceptions import (
     HiddenWorkflowTransitionError,
     WorkflowTransitionError,
@@ -97,15 +107,21 @@ def store_note_policy():
 NOTE_PK = 1
 
 
-def publish(request, **kwargs):
-    from scrud_django.core.workflow import workflow_check
+def unreadable():
+    """An update's ``readable`` for a stored note the requester may not
+    read."""
+    return False
 
+
+def publish(request, *, readable=unreadable, **kwargs):
+    """Publish the stored draft `NOTE_PK` (`readable` by default says the
+    requester may not read it)."""
     return workflow_check(
         request,
         type_iri=NOTE,
-        prior=DRAFT,
-        proposed=PUBLISHED,
-        stored_pk=NOTE_PK,
+        write=Update(
+            prior=DRAFT, proposed=PUBLISHED, readable=readable, stored_pk=NOTE_PK
+        ),
         **kwargs,
     )
 
@@ -144,7 +160,6 @@ def test_the_mark_names_one_write():
     from types import SimpleNamespace
 
     from scrud_django.core.authz import _consume_workflow_mark
-    from scrud_django.core.workflow import workflow_check
 
     store_note_policy()
     user = user_with((may_transition("publish", "__INITIALIZE__"), "a"))
@@ -156,12 +171,16 @@ def test_the_mark_names_one_write():
     # An update that does not say which resource it writes is not marked.
     request = put_request(user)
     workflow_check(
-        request, type_iri=NOTE, prior=DRAFT, proposed=PUBLISHED, readable=lambda: True
+        request,
+        type_iri=NOTE,
+        write=Update(
+            prior=DRAFT, proposed=PUBLISHED, readable=lambda: True, stored_pk=None
+        ),
     )
     assert not marked(request)
     # A create's mark names no stored resource.
     request = put_request(user)
-    workflow_check(request, type_iri=NOTE, prior=None, proposed=DRAFT)
+    workflow_check(request, type_iri=NOTE, write=Create(proposed=DRAFT))
     assert _workflow_authorized(request, type_iri=NOTE, stored_pk=None)
     assert not published(request)
     # Consumed, from a wrapper and the request it wraps alike.
@@ -206,16 +225,18 @@ def test_hidden_when_unreadable():
 @pytest.mark.django_db
 @test_context
 def test_context_without_policy():
-    from scrud_django.core.workflow import workflow_check
-
     store_note_policy()
     request = put_request(user_with((may_transition("publish"), "b")))
     with pytest.raises(access.AccessDenied) as excinfo:
         workflow_check(
             request,
             type_iri=NOTE,
-            prior=dict(DRAFT, rbac_context="b"),
-            proposed=dict(PUBLISHED, rbac_context="b"),
+            write=Update(
+                prior=dict(DRAFT, rbac_context="b"),
+                proposed=dict(PUBLISHED, rbac_context="b"),
+                readable=lambda: True,
+                stored_pk=NOTE_PK,
+            ),
         )
     # The type the DRF adapter maps to its 403 (drf_error).
     assert type(excinfo.value) is NoWorkflowPolicyDenied
@@ -242,11 +263,10 @@ def test_narrow_refuses():
 @pytest.mark.django_db
 @test_context
 def test_a_delete_is_not_checked_yet():
-    from scrud_django.core.workflow import workflow_check
-
+    # No Create or Update: a delete runs no workflow check yet.
     request = put_request(UserFactory())
-    with pytest.raises(NotImplementedError, match="delete-no-workflow-check"):
-        workflow_check(request, type_iri=NOTE, prior=DRAFT, proposed=None)
+    with pytest.raises(TypeError, match="delete-no-workflow-check"):
+        workflow_check(request, type_iri=NOTE, write=None)
 
 
 @pytest.mark.django_db
@@ -356,21 +376,186 @@ def test_null_stored_content_is_checked_as_an_update(stored_content):
 
 @pytest.mark.django_db
 @test_context
-def test_an_update_without_readable_hides_its_errors():
-    # A caller that does not say whether the stored resource is readable
-    # (`readable=None`) gets an update's workflow error hidden: it fails
-    # closed. A create (no prior) has no stored state to hide.
-    from scrud_django.core.workflow import workflow_check
-
+def test_an_update_says_whether_its_stored_resource_is_readable():
+    # An update must say whether the requester may read the stored resource
+    # (`readable`): there is no default to fail closed on. One they may not
+    # read gets its workflow error hidden; a create has no stored state to
+    # hide.
+    for readable in (None, True):
+        with pytest.raises(TypeError, match="readable"):
+            Update(prior=DRAFT, proposed=PUBLISHED, readable=readable, stored_pk=1)
     store_note_policy()
     request = put_request(user_with((may_transition("retract"), "a")))
     with pytest.raises(HiddenWorkflowTransitionError) as excinfo:
-        publish(request)
+        publish(request, readable=unreadable)
     assert (excinfo.value.prior_state, excinfo.value.proposed_state) == (None, None)
     assert not marked(request)
 
     creator = put_request(user_with((may_transition("retract"), "a")))
     with pytest.raises(WorkflowTransitionError) as excinfo:
-        workflow_check(creator, type_iri=NOTE, prior=None, proposed=DRAFT)
+        workflow_check(creator, type_iri=NOTE, write=Create(proposed=DRAFT))
     assert type(excinfo.value) is WorkflowTransitionError
     assert excinfo.value.proposed_state == "draft"
+
+
+# A create and an update are distinct inputs (`Create`, `Update`): stored
+# content that is JSON null (`NULL_CONTENT`) is an update's, never a create.
+
+
+@pytest.mark.django_db
+@test_context
+def test_create_is_checked_as_a_create():
+    store_note_policy()
+    request = put_request(user_with((may_transition("__INITIALIZE__"), "a")))
+    ((context, _, transition),) = workflow_check(
+        request, type_iri=NOTE, write=Create(proposed=DRAFT)
+    )
+    assert context == "a"
+    assert transition.transition == "__INITIALIZE__"
+    assert (transition.prior_state, transition.proposed_state) == (None, "draft")
+    # A create's mark names no stored resource.
+    assert _workflow_authorized(request, type_iri=NOTE, stored_pk=None)
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_over_null_content_is_an_update():
+    store_note_policy()
+    user = user_with((may_transition("__INITIALIZE__"), "a"))
+    # The same body, which a create may write...
+    workflow_check(put_request(user), type_iri=NOTE, write=Create(proposed=DRAFT))
+    # ...is a transition from no state over null content stored in "a": no
+    # transition leads to "draft" from there.
+    request = put_request(user)
+    with pytest.raises(WorkflowTransitionError) as excinfo:
+        workflow_check(
+            request,
+            type_iri=NOTE,
+            write=Update(
+                prior=NULL_CONTENT,
+                proposed=DRAFT,
+                readable=lambda: True,
+                contexts_before=["a"],
+                stored_pk=NOTE_PK,
+            ),
+        )
+    assert type(excinfo.value) is WorkflowTransitionError
+    assert (excinfo.value.prior_state, excinfo.value.proposed_state) == (
+        None,
+        "draft",
+    )
+    assert not marked(request)
+
+
+@pytest.mark.django_db
+@test_context
+def test_workflow_check_refuses_other_inputs():
+    request = put_request(UserFactory())
+    for write in (None, {"proposed": DRAFT}, DRAFT):
+        with pytest.raises(TypeError):
+            workflow_check(request, type_iri=NOTE, write=write)
+    assert not marked(request)
+    # Nor does a Create or an Update take what is not its content.
+    for proposed in (None, [DRAFT], "x"):
+        with pytest.raises(TypeError):
+            Create(proposed=proposed)
+        with pytest.raises(TypeError):
+            Update(prior=DRAFT, proposed=proposed, readable=lambda: True, stored_pk=1)
+    for prior in (None, [DRAFT], ()):
+        with pytest.raises(TypeError):
+            Update(prior=prior, proposed=DRAFT, readable=lambda: True, stored_pk=1)
+    # A context named as a string is not a sequence of contexts.
+    with pytest.raises(TypeError):
+        Create(proposed=DRAFT, contexts_after="a")
+    with pytest.raises(TypeError):
+        Update(
+            prior=DRAFT,
+            proposed=DRAFT,
+            readable=lambda: True,
+            stored_pk=1,
+            contexts_before="a",
+        )
+
+
+@pytest.mark.django_db
+@test_context
+def test_prior_from():
+    assert prior_from(None) is NULL_CONTENT
+    assert prior_from({"a": 1}) == {"a": 1}
+    for value in ([], (), "x", 1):
+        with pytest.raises(TypeError):
+            prior_from(value)
+    assert NULL_STORED_CONTENT is NULL_CONTENT
+    assert isinstance(NULL_CONTENT, NullContent)
+    assert NullContent() is NULL_CONTENT
+    assert not NULL_CONTENT
+    assert repr(NULL_CONTENT) == "NULL_CONTENT"
+
+
+@pytest.mark.django_db
+@test_context
+def test_prior_of_a_resource():
+    from scrud_django.models import Resource
+
+    assert prior_of(Resource(content={"a": 1})) == {"a": 1}
+    assert prior_of(Resource(content=None)) is NULL_CONTENT
+    # Content stored before 0.12.0 that is not an object is read as null
+    # content is: in no state, in the default context.
+    assert prior_of(Resource(content=["x"])) is NULL_CONTENT
+
+
+# A validation that fails leaves no mark of an earlier one on the request.
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_failed_check_leaves_no_earlier_mark():
+    store_note_policy()
+    request = put_request(user_with((may_transition("publish"), "a")))
+    publish(request)
+    assert published(request)
+    # A second check on the same request, refused: no mark is left.
+    with pytest.raises(WorkflowTransitionError):
+        workflow_check(request, type_iri=NOTE, write=Create(proposed=DRAFT))
+    assert not marked(request)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_failed_drf_validation_leaves_no_earlier_mark():
+    from scrud_django.models import ResourceType
+    from scrud_django.serializers import ResourceSerializer
+
+    reverse("json-ld-list")
+    workflow_policy_resource_type()
+    ResourceRegistration.register(
+        {
+            "resource_type": JSON_LD,
+            "rbac_context": "a",
+            "initial_states": {"draft": 'state == "draft"'},
+            "states": {"published": 'state == "published"'},
+            "transitions": {"publish": {"from": "draft", "to": "published"}},
+        },
+        "workflow-policies",
+    )
+    resource_type = ResourceType.objects.get(type_uri=JSON_LD)
+    initialize = {
+        "condition": {
+            "operator": "scrud_workflow",
+            "authorized_transitions": ["__INITIALIZE__"],
+        }
+    }
+    request = RequestFactory().post("/")
+    request.user = user_with(({"http.POST": {JSON_LD: initialize}}, "a"))
+
+    def validate(body):
+        return ResourceSerializer(
+            data=body, resource_type=resource_type, context={"request": request}
+        ).is_valid(raise_exception=True)
+
+    assert validate({"state": "draft", "rbac_context": "a"})
+    assert _workflow_authorized(request, type_iri=JSON_LD, stored_pk=None)
+    # Not an initial state: refused, and the first validation's mark is gone.
+    with pytest.raises(WorkflowTransitionError):
+        validate({"state": "published", "rbac_context": "a"})
+    assert not marked(request)

@@ -277,7 +277,7 @@ def test_validate_write_checks_null_stored_content_as_an_update(stored_content):
             {"rbac_context": "a"},
             stored=stored,
             requirement=[GrantsLeaf(JSON_LD)],
-            readable=None,
+            readable=lambda: False,
         )
 
 
@@ -500,7 +500,7 @@ def test_update_checks_the_stored_object_without_a_load():
             body,
             stored=Resource.objects.get(pk=stored.pk),
             requirement=[GrantsLeaf(PP)],
-            readable=None,
+            readable=lambda: False,
         )
     # Readable in "a" but not writable there: a 403.
     reader = user_with(
@@ -579,7 +579,12 @@ def test_one_validation_authorizes_one_write():
         "scrud_django.core.writes.workflow_check", wraps=core_workflow.workflow_check
     ) as workflow_check:
         validate_write(
-            request, rtype, body, stored=row, requirement=requirement, readable=None
+            request,
+            rtype,
+            body,
+            stored=row,
+            requirement=requirement,
+            readable=lambda: False,
         )
         saved = update(
             request, rtype, row, body, requirement=requirement, using="default"
@@ -587,7 +592,7 @@ def test_one_validation_authorizes_one_write():
     # The update validated the body it saves itself: a second workflow
     # check, of that body.
     assert workflow_check.call_count == 2
-    assert workflow_check.call_args.kwargs["proposed"] == body
+    assert workflow_check.call_args.kwargs["write"].proposed == body
     assert Resource.objects.get(pk=stored.pk).content == body == saved.content
     after_first = row_of(stored)
     # The update's own validation marked the write again, and its save
@@ -634,7 +639,7 @@ def test_a_validation_does_not_authorize_another_resource():
         {"x": 2, "rbac_context": "a"},
         stored=Resource.objects.get(pk=validated.pk),
         requirement=requirement,
-        readable=None,
+        readable=lambda: False,
     )
     before = row_of(other)
     # The other resource's update validates its own body, which no policy
@@ -674,7 +679,12 @@ def test_save_checked_consumes_the_mark():
     body = {"x": 2, "rbac_context": "a"}
     row = Resource.objects.get(pk=stored.pk)
     validate_write(
-        request, rtype, body, stored=row, requirement=requirement, readable=None
+        request,
+        rtype,
+        body,
+        stored=row,
+        requirement=requirement,
+        readable=lambda: False,
     )
     unvalidated_update(request, rtype, row, body, requirement)
     assert row_of(stored)[0] == body
@@ -714,7 +724,12 @@ def test_a_failed_save_checked_consumes_the_mark(failure):
     body = {"x": 2, "rbac_context": "a"}
     row = Resource.objects.get(pk=stored.pk)
     validate_write(
-        request, rtype, body, stored=row, requirement=requirement, readable=None
+        request,
+        rtype,
+        body,
+        stored=row,
+        requirement=requirement,
+        readable=lambda: False,
     )
     assert _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
     if failure == "post-save":
@@ -804,7 +819,7 @@ def test_update_validates_its_body_not_the_one_validated_before():
         DRAFT_EDITED,
         stored=row,
         requirement=requirement,
-        readable=None,
+        readable=lambda: False,
     )
     # ...which does not let the update save another, publishing it.
     with pytest.raises(WorkflowTransitionError) as raised:
@@ -878,12 +893,22 @@ def test_a_failed_validation_leaves_no_earlier_mark(refused, error):
     request = request_by("put", user_with((may_stay_json_ld(), "a")))
     row = Resource.objects.get(pk=stored.pk)
     validate_write(
-        request, rtype, DRAFT_EDITED, stored=row, requirement=requirement, readable=None
+        request,
+        rtype,
+        DRAFT_EDITED,
+        stored=row,
+        requirement=requirement,
+        readable=lambda: False,
     )
     assert _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
     with pytest.raises(error):
         validate_write(
-            request, rtype, refused, stored=row, requirement=requirement, readable=None
+            request,
+            rtype,
+            refused,
+            stored=row,
+            requirement=requirement,
+            readable=lambda: False,
         )
     assert not _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
     # The grant is conditioned on scrud_workflow: with no mark, the save of
@@ -891,6 +916,41 @@ def test_a_failed_validation_leaves_no_earlier_mark(refused, error):
     with pytest.raises(access.AccessDenied):
         unvalidated_update(request, rtype, row, DRAFT_EDITED, requirement)
     assert row_of(stored) == before
+
+
+@pytest.mark.django_db
+@test_context
+def test_validate_write_of_an_update_needs_readable():
+    """An update must say whether the stored resource is readable (whether
+    its workflow errors are hidden): ``readable=None`` is a ``TypeError``,
+    and the mark an earlier validation left is gone all the same."""
+    store_draft_policy()
+    stored = ResourceRegistration.register(
+        {"state": "draft", "rbac_context": "a"}, "json-ld"
+    )
+    rtype = stored.resource_type
+    requirement = [GrantsLeaf(JSON_LD)]
+    request = request_by("put", user_with((may_stay_json_ld(), "a")))
+    row = Resource.objects.get(pk=stored.pk)
+    validate_write(
+        request,
+        rtype,
+        DRAFT_EDITED,
+        stored=row,
+        requirement=requirement,
+        readable=lambda: True,
+    )
+    assert _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
+    with pytest.raises(TypeError, match="readable"):
+        validate_write(
+            request,
+            rtype,
+            DRAFT_EDITED,
+            stored=row,
+            requirement=requirement,
+            readable=None,
+        )
+    assert not _workflow_authorized(request, type_iri=JSON_LD, stored_pk=stored.pk)
 
 
 @pytest.mark.django_db

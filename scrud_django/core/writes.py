@@ -43,6 +43,8 @@ from scrud_django.core.requirements import (
 )
 from scrud_django.core.types import HookLeaf
 from scrud_django.core.workflow import (
+    Create,
+    Update,
     authorizing_write,
     check_policy_is_unique,
     prior_of,
@@ -270,6 +272,11 @@ def validate_write(
     in it (each `HookLeaf`'s ``narrow``), so that a registered check can
     refuse a transition, as on DRF. A given `narrow` replaces them.
 
+    `readable` says whether the requester may read `stored` (whether its
+    workflow errors are hidden): required for an update, where ``None``
+    raises ``TypeError`` (once any earlier mark is removed); ignored for a
+    create.
+
     `requirement` is taken through
     `scrud_django.core.requirements.Requirement.of` (once any earlier mark
     is removed): one that asks no grants (empty, or hooks only) is
@@ -290,6 +297,11 @@ def validate_write(
     # Whatever an earlier validation on the request authorized, this one
     # replaces it: refused, it leaves no mark for a save to use.
     _consume_workflow_mark(request)
+    if stored is not None and readable is None:
+        raise TypeError(
+            "validate_write of an update needs readable: whether the requester "
+            "may read the stored resource."
+        )
     requirement = Requirement.of(requirement, caller="validate_write")
     check_request(
         request, resource_type, requirement, list_route=stored is None, body=body
@@ -317,14 +329,20 @@ def validate_write(
     validate_schema(resource_type, body)
     if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
         validate_policy_write(body, stored.pk if stored is not None else None)
+    if stored is None:
+        write = Create(proposed=body)
+    else:
+        write = Update(
+            prior=prior_of(stored),
+            proposed=body,
+            readable=readable,
+            stored_pk=stored.pk,
+        )
     return workflow_check(
         request,
         type_iri=resource_type.type_uri,
-        prior=prior_of(stored),
-        proposed=body,
+        write=write,
         narrow=narrow,
-        readable=readable,
-        stored_pk=stored.pk if stored is not None else None,
         post_save_type_iri=type_iri,
     )
 

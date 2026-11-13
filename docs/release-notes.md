@@ -422,10 +422,20 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   check is no type's hooks) the core asks them itself, whatever that
   leaf's `reads_each_context` says. And
   `validate_write` requires a `requirement=`, whose type's hooks are the
-  checks that may refuse a transition. The workflow check hides an update's
-  workflow error unless its caller says the stored resource is readable
-  (`readable=`). The facade's `create` and `update` always validate the
-  body they save themselves (`validate_write`, an update's errors hidden
+  checks that may refuse a transition. The workflow check
+  (`scrud_django.core.workflow.workflow_check`) takes its write as a
+  `Create(proposed)` or an `Update(prior, proposed, readable, stored_pk)`
+  (`write=`; anything else, a delete included, is a `TypeError`): an
+  update's stored content is a mapping or `NULL_CONTENT` (`prior_from`;
+  `prior_of` for a `Resource`, whose content that is JSON null or not an
+  object is `NULL_CONTENT`), never `None`, so null content is never
+  checked as a create. An `Update` requires `readable`, whether the
+  requester may read the stored resource: an update's workflow error is
+  hidden when it says not (`validate_write` of an update raises
+  `TypeError` without one). The workflow check first removes any mark an
+  earlier check left on the request, so one that fails leaves none, on DRF
+  too. The facade's `create` and `update` always validate the body they
+  save themselves (`validate_write`, an update's errors hidden
   unless the stored resource is readable). One validation authorizes one
   write: the workflow check's mark names the type the post-save check
   names and the resource written (none for a create), and the save that

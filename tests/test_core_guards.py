@@ -455,7 +455,7 @@ def test_drf_workflow_check_is_told_whether_an_update_is_readable(with_view):
     """The DRF adapter (``WorkflowValidator``) passes ``readable`` as a
     callable for every update, in the views and outside them (a
     serializer with no view: ``may_read_in_context`` of the stored
-    resource), and ``None`` only for a create."""
+    resource), and builds a ``Create``, which takes none, for a create."""
     from scrud_django.core import workflow as core_workflow
     from scrud_django.validators import WorkflowValidator
 
@@ -466,7 +466,7 @@ def test_drf_workflow_check_is_told_whether_an_update_is_readable(with_view):
     seen = []
 
     def recording(request, **kwargs):
-        seen.append(kwargs["readable"])
+        seen.append(kwargs["write"])
         return []
 
     for user, readable in ((reader, True), (other, False)):
@@ -483,11 +483,12 @@ def test_drf_workflow_check_is_told_whether_an_update_is_readable(with_view):
         )
         with mock.patch.object(core_workflow, "workflow_check", recording):
             WorkflowValidator()({"rbac_context": "a"}, context)
-            assert callable(seen[-1])
-            assert seen[-1]() is readable
+            assert type(seen[-1]) is core_workflow.Update
+            assert callable(seen[-1].readable)
+            assert seen[-1].readable() is readable
             context.instance = None
             WorkflowValidator()({"rbac_context": "a"}, context)
-            assert seen[-1] is None
+            assert type(seen[-1]) is core_workflow.Create
 
 
 class SelfTrusting:
@@ -841,5 +842,5 @@ def test_an_anyof_options_hooks_ask_their_request_check_outside_the_write():
         body,
         stored=Resource.objects.get(pk=stored.pk),
         requirement=requirement,
-        readable=None,
+        readable=lambda: False,
     )
