@@ -23,7 +23,6 @@ from uuid import uuid4
 import pytest
 from django.db import DEFAULT_DB_ALIAS, connections, transaction
 from django.test import override_settings
-from django.urls import reverse
 from django.utils.http import http_date, quote_etag
 from django.utils.timezone import now
 from rest_framework.test import APIClient
@@ -88,7 +87,7 @@ def client_with(definition, context):
         user=user, role=role, rbac_context=context, etag=uuid4().hex, modified_at=now()
     ).save()
     client = APIClient()
-    client.force_authenticate(user)
+    client.force_login(user)
     return client
 
 
@@ -131,13 +130,16 @@ def concurrent_write_before_the_write_transaction(write):
 
 
 @pytest.mark.django_db
-def test_a_transition_the_stored_state_forbids_is_refused():
-    todo = a_todo()
+def test_a_transition_the_stored_state_forbids_is_refused(front_end):
+    todo = a_todo(front_end=front_end)
     # in progress -> done is allowed; canceled -> done is not. The other
     # writer cancels the ToDo first.
     with concurrent_write_before_the_write_transaction(server_update(todo, CANCELED)):
-        response = admin_client().put(
-            todo_url(todo), DONE, format="json", HTTP_IF_UNMODIFIED_SINCE=later()
+        response = logged_in_admin().put(
+            todo_url(todo, front_end),
+            DONE,
+            format="json",
+            HTTP_IF_UNMODIFIED_SINCE=later(),
         )
     assert response.status_code == 400, response.content
     body = response.json()
@@ -147,11 +149,14 @@ def test_a_transition_the_stored_state_forbids_is_refused():
 
 
 @pytest.mark.django_db
-def test_a_put_whose_if_match_a_concurrent_write_made_stale_is_412():
-    todo = a_todo()
+def test_a_put_whose_if_match_a_concurrent_write_made_stale_is_412(front_end):
+    todo = a_todo(front_end=front_end)
     with concurrent_write_before_the_write_transaction(server_update(todo, CANCELED)):
-        response = admin_client().put(
-            todo_url(todo), DONE, format="json", HTTP_IF_MATCH=quote_etag(todo.etag)
+        response = logged_in_admin().put(
+            todo_url(todo, front_end),
+            DONE,
+            format="json",
+            HTTP_IF_MATCH=quote_etag(todo.etag),
         )
     assert response.status_code == 412, response.content
     stored = Resource.objects.get(pk=todo.pk)
@@ -160,11 +165,11 @@ def test_a_put_whose_if_match_a_concurrent_write_made_stale_is_412():
 
 
 @pytest.mark.django_db
-def test_a_delete_whose_if_match_a_concurrent_write_made_stale_is_412():
-    todo = a_todo()
+def test_a_delete_whose_if_match_a_concurrent_write_made_stale_is_412(front_end):
+    todo = a_todo(front_end=front_end)
     with concurrent_write_before_the_write_transaction(server_update(todo, CANCELED)):
-        response = admin_client().delete(
-            todo_url(todo), HTTP_IF_MATCH=quote_etag(todo.etag)
+        response = logged_in_admin().delete(
+            todo_url(todo, front_end), HTTP_IF_MATCH=quote_etag(todo.etag)
         )
     assert response.status_code == 412, response.content
     assert Resource.objects.get(pk=todo.pk).content == CANCELED
@@ -172,8 +177,8 @@ def test_a_delete_whose_if_match_a_concurrent_write_made_stale_is_412():
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("method", ["put", "delete"])
-def test_a_write_is_authorized_against_the_stored_context(method):
-    todo = a_todo()
+def test_a_write_is_authorized_against_the_stored_context(front_end, method):
+    todo = a_todo(front_end=front_end)
     client = client_with(
         {m: [TODO] for m in ("http.GET", "http.PUT", "http.DELETE")}, ""
     )
@@ -181,7 +186,7 @@ def test_a_write_is_authorized_against_the_stored_context(method):
     moved = dict(IN_PROGRESS, rbac_context="other")
     with concurrent_write_before_the_write_transaction(server_update(todo, moved)):
         response = getattr(client, method)(
-            todo_url(todo),
+            todo_url(todo, front_end),
             *([IN_PROGRESS] if method == "put" else []),
             format="json",
             HTTP_IF_UNMODIFIED_SINCE=later(),
@@ -215,25 +220,30 @@ def routed_reads():
 
 
 @pytest.mark.django_db
-def test_api_writes_read_no_resource_or_type_through_the_read_router():
-    todo = a_todo()
-    other = a_todo()
-    client = admin_client()
-    list_etag = client.get(reverse("todos-list"))["ETag"]
+def test_api_writes_read_no_resource_or_type_through_the_read_router(front_end):
+    todo = a_todo(front_end=front_end)
+    other = a_todo(front_end=front_end)
+    client = logged_in_admin()
+    list_etag = client.get(api_url(front_end, "todos-list"))["ETag"]
     with routed_reads() as reads:
         # A conditional create locks the type row it reads: read on the
         # type's write database, not a replica's (maybe older) revision. Every
         # create reads there the schema it validates the body against.
         for headers in ({"HTTP_IF_MATCH": list_etag}, {"HTTP_IF_MATCH": "*"}, {}):
             response = client.post(
-                reverse("todos-list"), IN_PROGRESS, format="json", **headers
+                api_url(front_end, "todos-list"), IN_PROGRESS, format="json", **headers
             )
             assert response.status_code == 201, (headers, response.content)
         response = client.put(
-            todo_url(todo), DONE, format="json", HTTP_IF_MATCH=quote_etag(todo.etag)
+            todo_url(todo, front_end),
+            DONE,
+            format="json",
+            HTTP_IF_MATCH=quote_etag(todo.etag),
         )
         assert response.status_code == 200, response.content
-        response = client.delete(todo_url(other), HTTP_IF_MATCH=quote_etag(other.etag))
+        response = client.delete(
+            todo_url(other, front_end), HTTP_IF_MATCH=quote_etag(other.etag)
+        )
         assert response.status_code == 204, response.content
     assert [r for r in reads if r in ("Resource", "ResourceType")] == []
 
@@ -262,7 +272,7 @@ def recorded_indexing():
     ids=["post", "post-if-match-any", "put"],
 )
 def test_what_runs_on_a_writes_commit_reads_no_type_through_the_read_router(
-    method, headers, committed_types
+    front_end, method, headers, committed_types
 ):
     # Search indexing reads the saved resource's type and its indexing policy
     # on commit; the save check refreshed that resource, emptying its related
@@ -271,16 +281,22 @@ def test_what_runs_on_a_writes_commit_reads_no_type_through_the_read_router(
     # dispatch's transaction and commits inside save_checked (a test's own
     # transaction would hold what runs on commit back until after the
     # response).
-    todo = a_todo()
-    client = admin_client()
+    todo = a_todo(front_end=front_end)
+    client = logged_in_admin()
     with routed_reads() as reads, recorded_indexing() as prepared:
         if method == "put":
             response = client.put(
-                todo_url(todo), DONE, format="json", HTTP_IF_MATCH=quote_etag(todo.etag)
+                todo_url(todo, front_end),
+                DONE,
+                format="json",
+                HTTP_IF_MATCH=quote_etag(todo.etag),
             )
         else:
             response = client.post(
-                reverse("todos-list"), IN_PROGRESS, format="json", **headers
+                api_url(front_end, "todos-list"),
+                IN_PROGRESS,
+                format="json",
+                **headers,
             )
     assert response.status_code in (200, 201), response.content
     assert prepared, "nothing was indexed on commit"
@@ -290,24 +306,24 @@ def test_what_runs_on_a_writes_commit_reads_no_type_through_the_read_router(
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("method", ["post", "put"])
 def test_a_policy_writes_commit_reads_no_type_through_the_read_router(
-    method, committed_types
+    front_end, method, committed_types
 ):
     # A WorkflowPolicy's save runs inside serialized_policy_save (its lock
     # and duplicate check), which wraps the save save_checked records: the
     # policy it returns is re-cached all the same.
-    policy = a_policy()
-    client = admin_client()
+    policy = a_policy(front_end)
+    client = logged_in_admin()
     with routed_reads() as reads, recorded_indexing() as prepared:
         if method == "put":
             response = client.put(
-                reverse("workflow-policies-detail", args=[policy.pk]),
+                api_url(front_end, "workflow-policies-detail", args=[policy.pk]),
                 dict(PERMISSIVE_POLICY, rbac_context="p", states={"x": "true"}),
                 format="json",
                 HTTP_IF_MATCH=quote_etag(policy.etag),
             )
         else:
             response = client.post(
-                reverse("workflow-policies-list"),
+                api_url(front_end, "workflow-policies-list"),
                 dict(PERMISSIVE_POLICY, rbac_context="q"),
                 format="json",
             )
@@ -341,15 +357,17 @@ def test_registering_types_reads_no_type_through_the_read_router():
 
 
 @pytest.mark.django_db
-def test_a_refused_transitions_policy_link_reads_no_type_through_the_router():
+def test_a_refused_transitions_policy_link_reads_no_type_through_the_router(
+    front_end,
+):
     # The 400 links the stored policy by its type's route: the type comes
     # with the policy, read on the write database.
-    todo = a_todo()
+    todo = a_todo(front_end=front_end)
     workflow_policy_resource_type()
     ResourceRegistration.register(dict(STRICT_POLICY), "workflow-policies")
     with routed_reads() as reads:
-        response = admin_client().put(
-            todo_url(todo),
+        response = logged_in_admin().put(
+            todo_url(todo, front_end),
             CANCELED,
             format="json",
             HTTP_IF_MATCH=quote_etag(todo.etag),
@@ -424,25 +442,25 @@ LAGGING = override_settings(
     ids=["post", "put"],
 )
 def test_a_write_is_validated_against_the_schema_not_a_lagging_replicas(
-    method, headers
+    front_end, method, headers
 ):
     # The replica still has an older, permissive schema: the body the
     # current one refuses is a 400 all the same, and nothing is stored.
-    todo = a_todo()
+    todo = a_todo(front_end=front_end)
     lagging_replica(todo.resource_type, schema={"type": "object"})
     refused = dict(IN_PROGRESS, priority="bogus")
-    client = admin_client()
+    client = logged_in_admin()
     with LAGGING:
         if method == "put":
             response = client.put(
-                todo_url(todo),
+                todo_url(todo, front_end),
                 refused,
                 format="json",
                 HTTP_IF_MATCH=quote_etag(todo.etag),
             )
         else:
             response = client.post(
-                reverse("todos-list"), refused, format="json", **headers
+                api_url(front_end, "todos-list"), refused, format="json", **headers
             )
     assert response.status_code == 400, response.content
     problem = response.json()
@@ -575,6 +593,8 @@ def test_a_write_reads_the_row_inside_its_transaction(front_end, method):
     assert ("lock", True) not in events
 
 
+# DRF only: it patches ResourceViewMixin.get_queryset, a DRF view internal; the
+# ninja front end's locked lookup is covered by the tests above and below.
 @pytest.mark.django_db
 @pytest.mark.parametrize("method", ["put", "delete"])
 def test_the_locked_lookup_selects_for_update_on_the_write_database(method):
@@ -643,7 +663,7 @@ def scrud_transactions():
     ],
     ids=["post", "post-if-match-any", "post-if-match", "put", "delete"],
 )
-def test_a_writes_transactions_open_on_the_write_database(method, headers):
+def test_a_writes_transactions_open_on_the_write_database(front_end, method, headers):
     # Every transaction scrud_django opens for a write (dispatch's,
     # save_checked's, the save's) names the write database (`using`). Here
     # that is the default alias, so a bare atomic() would behave the same;
@@ -653,18 +673,20 @@ def test_a_writes_transactions_open_on_the_write_database(method, headers):
     # alias would not hold back what runs on the write database's commit:
     # the save check's own transaction there would be outermost, and commit
     # before the type is cached again.
-    todo = a_todo()
-    client = admin_client()
+    todo = a_todo(front_end=front_end)
+    client = logged_in_admin()
     if headers == "list-etag":
-        headers = {"HTTP_IF_MATCH": client.get(reverse("todos-list"))["ETag"]}
+        headers = {
+            "HTTP_IF_MATCH": client.get(api_url(front_end, "todos-list"))["ETag"]
+        }
     with scrud_transactions() as opened:
         if method == "post":
             response = client.post(
-                reverse("todos-list"), IN_PROGRESS, format="json", **headers
+                api_url(front_end, "todos-list"), IN_PROGRESS, format="json", **headers
             )
         else:
             response = getattr(client, method)(
-                todo_url(todo),
+                todo_url(todo, front_end),
                 *([DONE] if method == "put" else []),
                 format="json",
                 HTTP_IF_MATCH=quote_etag(todo.etag),
@@ -745,6 +767,7 @@ def test_every_transaction_scrud_django_opens_names_its_database():
     assert found == {}
 
 
+# DRF only: it patches ResourceViewMixin.get_queryset, a DRF view internal.
 @pytest.mark.django_db(databases=["default", "other"])
 @pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "stale"])
 def test_a_locked_lookup_reads_the_write_database_whatever_get_queryset_uses(
@@ -774,12 +797,12 @@ def test_a_locked_lookup_reads_the_write_database_whatever_get_queryset_uses(
 
 
 @pytest.mark.django_db
-def test_a_refused_write_rolls_back_the_requests_transaction():
-    todo = a_todo()
+def test_a_refused_write_rolls_back_the_requests_transaction(front_end):
+    todo = a_todo(front_end=front_end)
     before = ResourceType.objects.get(pk=todo.resource_type_id).etag
     # A body in no workflow state is refused with 400 by the workflow check.
-    response = admin_client().put(
-        todo_url(todo),
+    response = logged_in_admin().put(
+        todo_url(todo, front_end),
         {"title": "t", "status": "nonsense"},
         format="json",
         HTTP_IF_MATCH=quote_etag(todo.etag),

@@ -530,7 +530,7 @@ def test_a_bulk_delete_of_a_policy_and_its_api_put_do_not_deadlock(
 
 @TWO_WRITERS
 @pytest.mark.django_db(transaction=True)
-def test_a_queryset_delete_deletes_only_the_rows_it_locked(committed_types):
+def test_a_queryset_delete_deletes_only_the_rows_it_locked(committed_types, front_end):
     # The bulk delete filters on content and locks what matches (nothing).
     # A server-side update then moves R into the filtered context and
     # commits, and an API PUT locks R and pauses. If the Collector ran the
@@ -541,7 +541,7 @@ def test_a_queryset_delete_deletes_only_the_rows_it_locked(committed_types):
     from scrud_django.models import resource as resource_module
 
     (stored,) = profiles("x")
-    url = reverse("partner-profiles-detail", args=[stored.pk])
+    url = api_url(front_end, "partner-profiles-detail", args=[stored.pk])
     client = admin_api_client()
     connections.close_all()
     slow = threading.local()
@@ -600,14 +600,16 @@ def test_a_queryset_delete_deletes_only_the_rows_it_locked(committed_types):
 
 @TWO_WRITERS
 @pytest.mark.django_db(transaction=True)
-def test_a_queryset_delete_leaves_a_row_moved_out_of_its_filter(committed_types):
+def test_a_queryset_delete_leaves_a_row_moved_out_of_its_filter(
+    committed_types, front_end
+):
     # R is in "y". An API PUT locks R, moves it to "z" and pauses; a bulk
     # delete of "y" then waits on R's lock. Once the PUT commits, PostgreSQL
     # re-checks only the lock's `id IN (...)` on the new row version, so R is
     # locked although it left "y". The delete must re-apply its filter to the
     # locked keys and leave R alone, as a delete that ran a moment later would.
     (stored,) = profiles("y")
-    url = reverse("partner-profiles-detail", args=[stored.pk])
+    url = api_url(front_end, "partner-profiles-detail", args=[stored.pk])
     client = admin_api_client()
     connections.close_all()
 
@@ -919,10 +921,11 @@ def test_the_documented_server_side_policy_write_and_an_api_put_do_not_deadlock(
 
 
 @contextmanager
-def paused_after_the_row_lock(pause):
+def paused_after_the_row_lock(pause, held=None):
     """Make the first locking read of a ``Resource`` row this thread runs on
     the write database sleep `pause` seconds once it has the row: an API
-    write paused right after its lookup, whatever it locked before it."""
+    write paused right after its lookup, whatever it locked before it.
+    `held`, an ``Event``, is set when it has the row, before it sleeps."""
     db = connections[write_db()]
     pending = [pause]
 
@@ -930,10 +933,12 @@ def paused_after_the_row_lock(pause):
         result = execute(sql, params, many, context)
         if (
             pending
-            and sql.startswith("SELECT")
+            and sql.lstrip().upper().startswith("SELECT")
             and RESOURCE_TABLE in sql
             and "FOR UPDATE" in sql.upper()
         ):
+            if held is not None:
+                held.set()
             time.sleep(pending.pop())
         return result
 
@@ -956,9 +961,10 @@ def test_an_api_put_of_a_policy_holding_its_row_and_a_server_update_do_not_deadl
     url = api_url(front_end, "workflow-policies-detail", args=[stored.pk])
     client = admin_api_client()
     connections.close_all()
+    holding = threading.Event()
 
     def put():
-        with paused_after_the_row_lock(0.6):
+        with paused_after_the_row_lock(0.6, holding):
             return client.put(
                 url,
                 dict(POLICY, initial_states={"x": "true"}),
@@ -967,13 +973,15 @@ def test_an_api_put_of_a_policy_holding_its_row_and_a_server_update_do_not_deadl
             ).status_code
 
     def server():
+        assert holding.wait(10), "the PUT never held the policy's row"
         return ResourceRegistration.update(
             dict(POLICY, initial_states={"y": "true"}),
             "workflow-policies",
             str(stored.pk),
         )
 
-    status, updated = run_together(put, server, delay=0.2)
+    # The update starts once the PUT holds the row, not after a guessed delay.
+    status, updated = run_together(put, server, delay=0)
     assert status == 200, repr(status)
     assert not isinstance(updated, Exception), repr(updated)
     # The update waited for the PUT, and then wrote over it.
