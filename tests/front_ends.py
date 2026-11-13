@@ -31,6 +31,7 @@ from unittest import mock
 
 from django.db import transaction
 from django.test import Client
+from django.urls import reverse
 
 from scrud_django import registration
 from scrud_django.models import Resource
@@ -38,6 +39,9 @@ from scrud_django.models import Resource
 from .resource_types import ninja_type_specs
 
 FRONT_ENDS = ("drf", "ninja")
+
+#: The URL namespace of the test types' ninja API (`tests.ninja_api`).
+NINJA_NAMESPACE = "scrud-ninja"
 
 #: Each front end's mount in `tests.parity_urls`.
 MOUNTS = {"drf": "/drf/", "ninja": "/ninja/"}
@@ -115,6 +119,18 @@ class Clock:
         return uuid.UUID(int=next(self.ids))
 
 
+def api_url(front_end, name, *args, **kwargs):
+    """The path of the route `name` on `front_end`, in the URLconf that
+    serves it (the ``front_end`` fixture's): DRF's route names are global,
+    the ninja API's under `NINJA_NAMESPACE`. `args` and `kwargs` go to
+    ``reverse``."""
+    if front_end == "ninja":
+        name = f"{NINJA_NAMESPACE}:{name}"
+    elif front_end != "drf":
+        raise ValueError(f"no front end {front_end!r}")
+    return reverse(name, *args, **kwargs)
+
+
 def parity(case: Case) -> tuple[Exchange, Exchange]:
     """`case`'s exchange on each front end (`FRONT_ENDS`, in that order),
     each on fresh data: its setup and request run in a transaction rolled
@@ -134,6 +150,17 @@ def serve_both():
     and the first run's ETags shifted. Registering a type already stored
     writes nothing."""
     from . import parity_urls  # noqa: F401
+
+    for spec in [*registration.built_in_type_specs(), *ninja_type_specs()]:
+        spec.register()
+
+
+def serve_ninja():
+    """Load `tests.ninja_urls`, and register every type its API serves, in
+    the test's transaction (as `serve_both`): the URLconf may have been
+    imported, and the types it registered rolled back, in an earlier test.
+    Registering a type already stored writes nothing."""
+    from . import ninja_urls  # noqa: F401
 
     for spec in [*registration.built_in_type_specs(), *ninja_type_specs()]:
         spec.register()
