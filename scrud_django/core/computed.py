@@ -147,8 +147,8 @@ def not_modified(request, etag: str) -> bool:
 def computed_link(request, resource_type, *, namespace: str | None = None):
     """The ``Link`` field value of a resource of `resource_type`: its schema
     (``rel="describedby"``) and its JSON-LD context, each absolute against
-    `request`, within the URL namespace it was resolved under (`namespace`
-    first without one), either left out when the type has none; ``None``
+    `request`, within `namespace` first when there is
+    no request resolved under one, either left out when the type has none; ``None``
     without either, or without a type."""
     if resource_type is None:
         return None

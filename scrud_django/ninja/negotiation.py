@@ -86,7 +86,7 @@ JSON_RENDERERS = frozenset({JSON, *DOCUMENT_RENDERERS.values()})
 
 #: The methods whose answer is the document, on a route serving one
 #: (``DocumentMediaTypeMixin.serves_document``).
-DOCUMENT_METHODS = frozenset({"GET", "HEAD"})
+DOCUMENT_METHODS = frozenset({"GET", "HEAD"})  # not routers' (adds PUT)
 
 
 class NotAcceptable(Exception):

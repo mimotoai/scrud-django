@@ -99,6 +99,15 @@ def test_the_harness_normalizes_only_the_listed_differences():
     )
 
 
+@pytest.mark.parametrize("header", ["WWW-Authenticate", "Set-Cookie"])
+def test_the_harness_does_not_normalize_authentication_headers(header):
+    plain = HttpResponse("{}", content_type="application/json")
+    other = HttpResponse("{}", content_type="application/json")
+    other[header] = 'Basic realm="api"' if header == "WWW-Authenticate" else "a=b"
+
+    assert normalized(plain, "/ninja/", {}) != normalized(other, "/ninja/", {})
+
+
 def test_the_harness_refuses_keys_it_cannot_tell_apart():
     with pytest.raises(ValueError):
         normalized(HttpResponse(), "/drf/", {"a": 1, "b": 1})

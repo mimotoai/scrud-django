@@ -30,25 +30,27 @@ WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 
 def entry(run):
     """Decorate a ninja operation's ``run`` (``router.add_decorator(entry,
-    mode="view")``, on every scrud router), so that, for each request but a
-    real OPTIONS (a CORS preflight is one), before anything else of the
-    operation:
+    mode="view")``, on every scrud router), so that, before anything else of
+    the operation:
 
     1. a request rewritten from an OPTIONS is refused
        (``access.refuse_rewritten_options``: 403, 401 for the anonymous),
        as DRF's ``initial`` refuses it;
     2. the user is resolved (``scoped_rbac.ninja.resolve_user``, with the
-       session user's CSRF check: 403), as DRF authenticates;
+       session user's CSRF check: 403), as DRF authenticates. This holds for
+       a real OPTIONS too (as DRF authenticates it; scrud's OPTIONS
+       operations resolve the user again, idempotently), but not for a CORS
+       preflight, which passes straight through: each OPTIONS operation of
+       scrud's answers a preflight itself
+       (``scrud_django.ninja.routers``);
     3. a PUT, PATCH or DELETE, or a POST carrying ``If-Match``,
-       ``If-None-Match`` or ``If-Unmodified-Since``, runs whole in one
-       transaction on `write_db` (``core.writes.write_transaction``), rolled
-       back when it answers a status of 400 or more (or raises), as DRF's
-       ``dispatch`` runs it.
+       ``If-None-Match`` or ``If-Unmodified-Since`` (and no other request:
+       a POST without one is in no transaction of the entry's), runs whole
+       in one transaction on `write_db` (``core.writes.write_transaction``),
+       rolled back when it answers a status of 400 or more (or raises), as
+       DRF's ``dispatch`` runs it.
 
-    A real OPTIONS passes straight through: scrud's OPTIONS operations
-    resolve the user themselves, once they know it is no CORS preflight
-    (``scrud_django.ninja.routers``). A refusal (or what a
-    ``SCOPED_RBAC["NINJA_USER"]`` hook raises: ninja's
+    A refusal (or what a ``SCOPED_RBAC["NINJA_USER"]`` hook raises: ninja's
     ``AuthenticationError`` is a 401) is answered by the operation's API
     (``api.on_exception``). Operations are sync
     (``TypeError`` for an async one)."""

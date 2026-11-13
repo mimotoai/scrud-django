@@ -247,8 +247,9 @@ argument but does not pass it to `ResourceTypeRegistration`. A type
 registered with one (and no `indexing_policy_func`) has its indexing policy
 set to `None` and saved at every start, clearing one stored before, so its
 resources are indexed without one. `json_resource_type_spec` (the ninja
-front end's `TypeSpec`) does not take the argument, so it cannot drop it;
-fixing this adds it there as a keyword-only argument. Fix: pass it through.
+front end's `TypeSpec`) does not take the argument, so it cannot drop it
+(passing it is a `TypeError`); fixing this adds it there as a keyword-only
+argument. Fix: pass it through.
 Test: register a type with `json_resource_type(..., indexing_policy_resource=<a
 stored policy>)` and assert the stored type's `indexing_policy` is that
 resource; it is `None` today.
@@ -1268,7 +1269,7 @@ when `services/` is read, on either front end. It happens when two ninja
 APIs with different `types=` are served from one process, and when a
 ninja-only URLconf is read after the DRF routes registered other types.
 Owner's call: omit the entries that do not reverse on ninja, or state a
-one-API-per-process rule. The README says the second until then.
+one-API-per-process rule. The README states the failure.
 
 Test: GET `/api/services/` under `tests.ninja_only_urls` after `tests.urls`
 registered `todos`; assert 200 (it is a 500 today). The ninja-only tests
@@ -1282,7 +1283,7 @@ stays DRF-only.
 The role routes (`roles/`, `role-assignments/`, `user-rbac-policy/`) add
 semantic Links that scoped-rbac reverses by global name. A URLconf that
 mounts only `scrud_django.ninja.api().urls` lacks them, and those three
-routes answer 500 (`NoReverseMatch`). 3A documents the
+routes answer 500 (`NoReverseMatch`). 0.16.0 documents the
 `include("scoped_rbac.semantic_urls")` in the README; a system check, or
 `api()` mounting them, belongs to the release that makes ninja the default
 `scrud_django.urls`. Test: a URLconf of the ninja API alone; GET `roles/` as
@@ -1390,16 +1391,6 @@ has string content. A core representation helper would give both the same
 body. Test: save a resource whose `content` is a JSON string and GET it on
 both front ends; compare the bodies.
 
-<a id="ninja-postgres-subprocess-test"></a>
-## ninja-postgres-subprocess-test: the first-parity-call test cannot run on PostgreSQL
-
-`tests/test_front_end_parity.py::test_hooked_types_are_served_alike_on_a_processs_first_parity_call`
-runs a subprocess pytest that tries to create `test_scrud` while the parent
-session holds it ("database ... already exists / being accessed by other
-users"). It fails on PostgreSQL before and after the ninja work, so
-`test-postgres` in CI would hit it. Test: run that test with
-`SCRUD_TEST_PG_HOST` set (see `tests/settings.py`); it fails.
-
 <a id="ninja-private-upstream-use"></a>
 ## ninja-private-upstream-use: the ninja front end leans on private scrudful and ninja internals
 
@@ -1415,6 +1406,16 @@ Each is worked around here; none has a public replacement upstream yet.
   way to keep scrudful's automatic OPTIONS while supplying the whole `Allow`
   (its `allowed=` takes a per-method hook on a loaded object, ruled out by
   R4).
+- Every URL-level wrapper monkeypatches ninja's private `NinjaAPI._get_urls`:
+  `entry.authenticate_first`, `errors.answer_natively_when_off`,
+  `negotiation.negotiate_as_drf` and `routers._wrap_patterns` (which feeds
+  `vary_on_accept`, `as_drf_api_views`, `method_not_allowed_as_drf`,
+  `refuse_the_anonymous` and `as_drf_api_view_function`). It is the largest
+  private dependency; its test is `tests/test_ninja_api.py` breaking on a
+  ninja upgrade, given the `<1.7.4` pin. `entry.py`, `services.py` and
+  `negotiation.py` use `scrudful._hsr.is_preflight` and `scrudful._django`
+  too, and `negotiation.py` calls `entry._hsr_link_of` and
+  `entry._described_as`, private across modules.
 - A ninja handler has no handle on its API, so `_noting_serving_api` finds it
   through `inspect.unwrap(run).__self__.api` (scrudful has a private
   `_SERVING_API`), which holds only while every view decorator before it uses
@@ -1460,9 +1461,8 @@ Proposal for django-scoped-rbac (spec §3.5 item 1): `list_check` and
 `authorized_list` take `list_iri=` (default `"<iri>/list"`), and
 `crud_router` passes it through. scrud's list is granted on the type's list
 IRI and filtered by a resource's stored contexts, which scoped-rbac's own
-list check does not know; without it scrud writes its own `before` and
-`after_throttles` for lists from the neutral `access` functions, as the ninja
-routers do now. Test (upstream): `crud_router(..., list_iri="x/list")`; a user
+list check does not know; without it scrud cannot use `crud_router`'s list; the
+ninja list is a described GET over `core.lists` (R1 of `ninja-3a-rulings`). Test (upstream): `crud_router(..., list_iri="x/list")`; a user
 granted `x/list` lists, one granted only `<iri>/list` gets 403.
 
 <a id="scoped-rbac-crud-router-checks"></a>
@@ -1506,26 +1506,85 @@ exempt on 1.7.0 and 1.7.1 is refused a write with 403 "CSRF Failed". Test
 token from a `NINJA_USER` hook returning a non-session user; assert it is
 allowed (it is refused today).
 
-<a id="scoped-rbac-checks-before-405"></a>
-## scoped-rbac-checks-before-405: only `AccessDenied` from `resolve_user` is caught before a 405
+<a id="ninja-drf-authenticators"></a>
+## ninja-drf-authenticators: ninja does not run DRF's authentication classes
 
-`scoped_rbac.ninja.blocks._checks_before_405` catches only
-`access.AccessDenied` from `resolve_user`. A `NINJA_USER` hook raising
-ninja's `AuthenticationError` on a method a ScrudfulRouter path does not
-route (PATCH on a type route, HEAD on `services/`) escapes as an unhandled
-exception (500). scrud works around it for routed methods (`entry`) and for
-its computed routes' unrouted ones (`refuse_the_anonymous`), and
-`entry.authenticate_first` covers its own paths; scoped-rbac's role routes
-and any other ScrudfulRouter path outside it are not. Test (upstream): a hook
-raising `AuthenticationError`; PATCH a `crud_router` path; assert 401 (500
-today).
+Ninja authenticates as spec §3.2 has it: scoped-rbac's `resolve_user`, which
+takes the `SCOPED_RBAC["NINJA_USER"]` hook's user, else `request.auth`, else
+the session's. It does not read DRF's `DEFAULT_AUTHENTICATION_CLASSES`, so a
+Basic or token client of a DRF project is the anonymous user on ninja (a
+hidden item is a 404/401, `services/` lists the anonymous user's grants)
+until the project writes a `NINJA_USER` hook (the README has one for Basic).
+`api()` forbids `auth=`, so ninja's own `HttpBasicAuth` is not an option
+either. Spec §3.3 does not say so: that omission is for the owner to settle
+in the spec (the spec document is not edited here). Making ninja run DRF's
+authenticators would tie it to DRF just as part C moves DRF into an extra;
+the option is an optional hook scrud provides that runs DRF's authenticators
+(for a project that has DRF installed), to be decided with part C.
+Test: `tests/test_ninja_auth.py` pins today's answers (Basic alone is
+anonymous; the hook maps it); the hook would add a case where DRF's Basic
+authentication alone gives the item GET a 200 on ninja.
 
-<a id="scoped-rbac-ninja-policy-vary"></a>
-## scoped-rbac-ninja-policy-vary: `user-rbac-policy/` OPTIONS sends no `Vary: Cookie`
+<a id="ninja-atomic-requests-rollback"></a>
+## ninja-atomic-requests-rollback: ninja's error handlers do not mark an `ATOMIC_REQUESTS` transaction for rollback
 
-DRF's answer has `Vary: Cookie`; scoped-rbac's ninja one does not (every other
-role-route answer's `Vary` matches). Test (upstream): OPTIONS
-`user-rbac-policy/` on both front ends and compare `Vary`.
+DRF's `exception_handler` calls `set_rollback()` for every error it
+answers, so under `ATOMIC_REQUESTS=True` a request that wrote and then
+answered a handled error is rolled back. Ninja's handlers
+(`scrud_django.ninja.errors.scrud_error`, and scoped-rbac's upstream) do
+not, so such a request commits on ninja. It is not reachable through
+scrud's routes (no route writes outside `save_checked`'s atomic block and
+then answers a handled error; `entry` rolls back a PUT, PATCH, DELETE and a
+conditional POST itself), but an app's own route can. Fix: call
+`django.db.transaction.set_rollback(True)` for each atomic database in
+`scrud_error`, or document the divergence for app routers. Test: an app
+route behind `entry` that writes a row and raises a handled error under
+`ATOMIC_REQUESTS=True`; the row should not exist.
+
+<a id="ninja-namespace-fallback-logging"></a>
+## ninja-namespace-fallback-logging: a link that falls back across namespaces is silent
+
+`core.urls.absolute_reverse` reverses `<request namespace>:<name>` first and,
+failing that, the bare name; the docstrings document it. When both front
+ends are mounted, a ninja answer (a `Link`, `Location`, a service catalog
+entry, a workflow error's `policy`) can then point at the DRF mount, with
+nothing logged, and the parity harness would not catch it because both
+mounts route everything. `StoredPolicyReference.url` also returns `None`
+when neither reverses (pre-existing). Fix: log at debug (or warn) on the
+fallback when a namespace was present, or make the fallback opt-in for the
+ninja adapter. Test: reverse a name the namespace lacks and assert the log
+record.
+
+<a id="ninja-entry-write-db"></a>
+## ninja-entry-write-db: `entry` always writes on scrud's write database
+
+`entry` opens its write transaction on `write_db` (scrud's resource
+database, `core.writes.write_transaction`). An app's own models, routed to
+another database (part B's), are not in that transaction: a rollback on a
+400 does not undo their writes. Part B decides whether `entry` takes the
+database as an argument (`entry_for(using=...)`) or an app router opens its
+own. Test: a probe route writing a model of a second database and answering
+400; the row should be rolled back.
+
+<a id="ninja-computed-link-none"></a>
+## ninja-computed-link-none: `computed_link` accepts "no type"
+
+`core.computed.computed_link(request, None)` returns `None` for a missing
+resource type. Accepting "no type" is a smell in a typed core function: the
+caller should decide. Left as is for now: nothing in scrud's routes passes
+`None` (the callers check first). Test: assert that `computed_link(request,
+None)` raises `TypeError` once the callers are tightened.
+
+<a id="ninja-negotiation-compact-problem"></a>
+## ninja-negotiation-compact-problem: ninja decides a problem's compactness by its Link header
+
+Ninja's negotiation renders a problem compactly when the response carries the
+problem-details `Link`, a stand-in for "went through scoped-rbac's handler".
+A `SCRUDFUL["ERROR"]` entity whose Links come first would diverge: DRF
+renders it compact, ninja indented. Not reachable with the shipped error
+entity. Fix: have the handler mark the response (an attribute) and read that.
+Test: set `SCRUDFUL["ERROR"]` to an entity with its own Links first, request
+a 404 with `Accept: application/json; indent=4`, and compare both front ends.
 
 <a id="scoped-rbac-ninja-http404-message"></a>
 ## scoped-rbac-ninja-http404-message: the ninja handlers drop an `Http404`'s message
@@ -1539,6 +1598,45 @@ Test (upstream): a handler raising
 `Http404("No such schema.")`; assert the problem's `detail`.
 
 # Decided
+
+<a id="ninja-postgres-subprocess-test"></a>
+## ninja-postgres-subprocess-test: the first-parity-call test gives its subprocess a database of its own
+
+The subprocess pytest of
+`tests/test_front_end_parity.py::test_hooked_types_are_served_alike_on_a_processs_first_parity_call`
+used to create `test_scrud` while the parent session held it. Fixed in
+bccf2e8: on PostgreSQL and MySQL it sets
+`SCRUD_TEST_<ENGINE>_NAME` to `<name>_first_parity_call`.
+
+<a id="scoped-rbac-checks-before-405"></a>
+## scoped-rbac-checks-before-405: only `AccessDenied` from `resolve_user` is caught before a 405
+
+Upstream, `scoped_rbac.ninja.blocks._checks_before_405` catches only
+`access.AccessDenied` from `resolve_user`, so a `NINJA_USER` hook raising
+ninja's `AuthenticationError` on a method a ScrudfulRouter path does not
+route escapes as a 500. scrud works around it on every route `api()` mounts
+(`entry.authenticate_first`, scoped-rbac's role routes included; 68022e6),
+pinned by `tests/test_front_end_parity.py::test_failing_credentials_are_refused_alike`.
+A ScrudfulRouter an app adds itself is not covered; the upstream proposal
+stands: a hook raising `AuthenticationError`, PATCH a `crud_router` path,
+assert 401.
+
+<a id="scoped-rbac-ninja-policy-vary"></a>
+## scoped-rbac-ninja-policy-vary: `user-rbac-policy/` OPTIONS now sends `Vary: Cookie` through scrud's `api()`
+
+Both front ends answer `Vary: Cookie` (68022e6): `authenticate_first`
+resolves the user, which touches the session, on the `scoped-rbac-*` routes.
+scoped-rbac's ninja router alone sends none. Pinned by
+`tests/test_front_end_parity.py::test_role_routes_vary_alike`.
+
+<a id="ninja-accept-parameters"></a>
+## ninja-accept-parameters: `Accept` media type parameters (`indent=N`)
+
+Ninja's negotiation ignored the parameters of the accepted media type, so
+`Accept: application/json; indent=4` came back compact on ninja and indented
+on DRF. Fixed in 0157baa: negotiation keeps the parameters and rendering
+passes `indent` through as DRF's `JSONRenderer.get_indent` does; parity
+cases cover an item, a list, `services/` and the collection documents.
 
 <a id="core-allowed-methods-existence-leak"></a>
 ## core-allowed-methods-existence-leak: `core.allowed_methods` takes a loaded item
@@ -1839,19 +1937,20 @@ the media type it is served as (`application/ld+json`, as its `Link` says).
 <a id="core-type-check-ci"></a>
 ## core-type-check-ci: mypy is not run in CI
 
-`scrud_django/core/` type-checks clean, but nothing keeps it so: mypy is not
-a dependency and no CI job runs it. Django ships no stubs here
-(django-stubs is not installed), so the check ignores unresolved imports and
-does not follow into other packages.
+`scrud_django/core/` type-checks clean (since the `TypeSpec` rework), but
+nothing keeps it so: mypy is not a dependency and no CI job runs it.
+Django ships no stubs here (django-stubs is not installed), so the check
+ignores unresolved imports and does not follow into other packages.
 
-Test: this command reports no issues, and a job should run it:
+Test: this command reports `Success: no issues found`, and a `lint`-stage
+job should run it:
 
 ```bash
 uv run --with mypy mypy scrud_django/core --ignore-missing-imports --follow-imports=silent
 ```
 
 <a id="ninja-3a-rulings"></a>
-## ninja-3a-rulings: R1 to R5 of the additive ninja front end
+## ninja-3a-rulings: R1 to R5 of the additive ninja front end (0.16.0)
 
 Decided in `docs/superpowers/plans/2026-11-12-ninja-phase3a-front-end.md`
 (the owner may overrule; each says its cost if wrong there):
@@ -1867,11 +1966,11 @@ Decided in `docs/superpowers/plans/2026-11-12-ninja-phase3a-front-end.md`
 - **R2. Conditional create is evaluated by the core**, not by
   `scrudful_create(list_load=...)`: the ninja create holds
   `core.writes.conditional_create_lock` and evaluates
-  `core.evaluate_list_preconditions` as DRF's `create` does
+  `core.lists.evaluate_list_preconditions` as DRF's `create` does
   (`tests/test_ninja_api.py::test_conditional_create_holds_the_type_lock`).
-- **R3. Not served on ninja in 3A:** the UI types (`ui_resource_type_urls()`),
+- **R3. Not served on ninja in 0.16.0:** the UI types (`ui_resource_type_urls()`),
   the studio's computed types (`studio_computed_type_urls()`) and the
-  `ui-css-files` and `ui-js-files` views. `api()` does not mount them; phase 2
+  `ui-css-files` and `ui-js-files` views. `api()` does not mount them; a later release
   moves them onto core hooks.
 - **R4. OPTIONS is scrud's own operation**, not scrudful's automatic one with
   an `allowed=` hook (see `core-allowed-methods-existence-leak`).
@@ -1882,7 +1981,7 @@ Decided in `docs/superpowers/plans/2026-11-12-ninja-phase3a-front-end.md`
   `Link`s and `services/` point at the ninja routes.
 
 R6 (no system check for `NinjaAPI(auth=...)`: the factory refuses `auth=`) and
-R7 (the slug registry waits for phase 2) are in the plan too.
+R7 (the slug registry waits for the release that makes ninja the default) are in the plan too.
 
 <a id="ninja-options-and-collections"></a>
 ## ninja-options-and-collections: OPTIONS on type routes, and where the collection documents live

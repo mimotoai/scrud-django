@@ -106,8 +106,9 @@ def computed_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Rou
         ["OPTIONS"], "/{slug}/", url_name=name, include_in_schema=False
     )
     def computed_options(request, slug: str):
-        # `entry` leaves a real OPTIONS to the operation: the DRF view
-        # authenticates it as any other (a CORS preflight included).
+        # `entry` resolves a real OPTIONS's user too, but not a CORS
+        # preflight's: the DRF view authenticates every OPTIONS alike (a
+        # preflight included), so the operation resolves it itself.
         resolve_user(request)
         check_authenticated(request)
         return _serving_api(request).create_response(

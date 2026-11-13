@@ -101,7 +101,7 @@ def api(
     (`negotiation.negotiate_as_drf`: DRF's 406 for an ``Accept`` none
     serves, its 404 for an unknown ``?format=``), as DRF's ``initial()``
     does; a route that negotiates ``text/html`` is answered as JSON, as
-    before. Every route of these then resolves its requester, every method
+    before. Every scrud route and scoped-rbac's then resolves its requester, every method
     alike (`entry.authenticate_first`), as DRF authenticates every request. Its
     errors are answered as on DRF (`errors.install`), as uniform errors
     are for each request (`errors.answer_natively_when_off`); the routes of

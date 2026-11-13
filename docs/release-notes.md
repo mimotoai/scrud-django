@@ -387,8 +387,38 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 * `registration.TypeSpec` and the functions `json_resource_type_spec`,
   `computed_resource_type_spec` and `built_in_type_specs`: a resource type as
   every front end registers it, without a front end's routes.
-  `json_resource_type` and `computed_resource_type` are unchanged.
-
+  `json_resource_type` and `computed_resource_type` are unchanged. A
+  `TypeSpec` is keyword-only, frozen and hashable, with five public fields
+  (`kind`, `resource_type_uri`, `slug`, `options`, `document_media_type`);
+  the rest of what stores its row is private, so the IRI and slug are
+  single-sourced and `dataclasses.replace(spec, slug=...)` cannot split a
+  spec's hooks from its stored row. A spec that contradicts itself (an
+  unknown `kind`, a computed type without `options.compute` or a json one
+  with it, a `document_media_type` outside
+  `registration.DOCUMENT_MEDIA_TYPES`, hooks on a built-in type) raises
+  `ImproperlyConfigured`, and `TypeOptions.compute` must be callable. The
+  helper functions return a private subclass (its `repr` shows
+  `_BuiltTypeSpec`); two specs are equal only when built the same way.
+  `json_resource_type_spec(uri, slug, *, ...)` takes its other arguments by
+  keyword only and no `indexing_policy_resource` (see
+  `json-resource-type-indexing-policy` in the follow-ups).
+  `ResourceTypeRegistration(build_urls=False, viewset_class=...)` raises
+  `TypeError`; `core.lists.ListPage` refuses a size or number below 1 or a
+  negative count; `core.urls.first_absolute_reverse` refuses a bare route
+  name given as a string.
+* `scrud_django.ninja.api()` refuses, before registering anything
+  process-wide, an element of `types=` that is not a `TypeSpec`, two types
+  with one slug or IRI, and a slug that is one of the API's own route
+  prefixes (`ImproperlyConfigured`/`TypeError`). `entry` refuses
+  `mode="operation"` when it is added, and resolves the user of a real
+  OPTIONS (not of a CORS preflight). Importing `scrud_django.ninja` with
+  django-ninja installed but failing to import raises ninja's own error,
+  not "needs django-ninja".
+* How ninja authenticates: scoped-rbac's `resolve_user` (the
+  `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`, else the session),
+  not DRF's `DEFAULT_AUTHENTICATION_CLASSES`. A Basic or token client of a
+  DRF project is the anonymous user on ninja unless a `NINJA_USER` hook maps
+  it; the README has an example for Basic credentials.
 * `scrud_django.ui`, an optional app (add it to `INSTALLED_APPS` and install
   the new `ui` extra, `scrud-django[ui]`, which adds Jinja2) that serves every
   resource URL as `text/html`, chosen by `Accept: text/html`, rendered on the
@@ -472,7 +502,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   stored resource with the body, as DRF's `get_object()` asks it, whether
   or not the caller loaded it with `load_for_read`: a writer cannot move a
   resource out of a context where they may not write it, nor, through an
-  `AnyOf`, where only another option's request check allows. A
+  `AnyOf`, where only another option's request check allows. For a
+  `WorkflowPolicy`, `validate_write` (so `update`) also asks the
+  every-context check (`core.writes.check_every_context_of_policy`). A
   `validate_write` first removes any mark an earlier validation left on
   the request, so one that fails leaves none for a save to use. A type's
   hooks are asked in a route's request check after the other entries and
@@ -557,6 +589,13 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   is `ImproperlyConfigured`) and imports `ROOT_URLCONF` once per process,
   so a worker that never served a request still has the hooks.
 
+* New in the core and registration, public but meant for the front ends:
+  `core.resources.allowed_methods_for`, the modules `core.collections` and
+  `core.computed`, `core.urls.first_absolute_reverse` and
+  `absolute_reverse(namespace=)`, `ScrudServices.add_service` taking a
+  sequence of route prefixes, `ResourceTypeRegistration(build_urls=)`,
+  `registration.register_role_services` and `exceptions.ContentFilterError`.
+
 ### Changed
 
 * Links now reverse within the URL namespace the request was resolved under:
@@ -568,6 +607,15 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ### Fixed
 
+* `core.resources.load_for_read` takes a `WorkflowPolicy`'s type lock before
+  the row lock when it locks for a write, as DRF's views do. A ninja PUT or
+  DELETE of a policy racing a server-side write of the same policy
+  (`ResourceRegistration.update`, a bulk delete, a sync repair) could
+  deadlock on PostgreSQL; both front ends now lock in one order.
+* On ninja, computed types' `Http404` and `PermissionDenied` messages,
+  preflight responses (no `Vary`, as DRF), and `Accept: ...; indent=N` answer
+  as DRF's do, and `WWW-Authenticate` and `Set-Cookie` are compared by the
+  parity harness.
 * `core.create` and `core.update` take `type_iri`, which names the
   post-save check and the workflow mark; `ErrorText` without DRF compares
   `code` as `ErrorDetail` does; the view-based `~` detection compares

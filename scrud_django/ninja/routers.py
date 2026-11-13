@@ -54,7 +54,7 @@ LOCKED_METHODS = frozenset({"PUT", "DELETE"})
 #: The methods whose answer on a document type's detail route is the
 #: document (``DocumentResourceViewSet.serves_document``: its retrieve and
 #: update actions), served as the type's media type (`_as_document`).
-DOCUMENT_METHODS = frozenset({"GET", "HEAD", "PUT"})
+DOCUMENT_METHODS = frozenset({"GET", "HEAD", "PUT"})  # not negotiation's
 
 #: The media type of HTML, which a ninja route never answers.
 HTML = "text/html"
@@ -70,7 +70,8 @@ COLLECTION_ROUTES = {
 }
 
 #: The ``Allow`` of every answer of the collection documents' routes, as the
-#: DRF views (``APIView``s serving GET) give it.
+#: DRF views (``APIView``s serving GET) give it, and of the computed routes,
+#: whose ``ComputedResourceViewSet`` has the same.
 COLLECTION_ALLOW = "GET, HEAD, OPTIONS"
 
 #: What the DRF views of the collection documents answer an OPTIONS with
@@ -98,7 +99,8 @@ The JSON-LD context of a resource type's list body (served as
 ``api.openteams.com`` IRIs are part of the API's semantics.""",
     },
 }
-#: The media types of DRF's default renderers and parsers (`COLLECTION_OPTIONS`).
+#: The media types of DRF's default renderers and parsers (`COLLECTION_OPTIONS`
+#: and ``computed.COMPUTED_OPTIONS``).
 DRF_RENDERS = ("application/json", "text/html")
 DRF_PARSES = (
     "application/json",
@@ -365,8 +367,9 @@ def _document_options(name):
 
 def as_drf_api_views(api, url_names) -> None:
     """Have `api`'s URL patterns named in `url_names` (the collection
-    documents' routes) answer as a DRF ``APIView`` serving ``GET`` does
-    (their DRF views are no scrudful views): every response, ninja's 405
+    documents' routes, and the computed routes, whose DRF view is a
+    ``ViewSet`` with the same ``Allow``) answer as a DRF ``APIView`` serving
+    ``GET`` does (their DRF views are no scrudful views): every response, ninja's 405
     included, with the view's ``Allow`` (`COLLECTION_ALLOW`), and without
     the ``Access-Control-Expose-Headers`` scrudful and scoped-rbac give the
     API's errors. Call it before ``api.urls`` is read."""
@@ -574,9 +577,9 @@ def _item_operation_options(spec, urls_namespace):
 
 def _resource_type(request, spec):
     """The resource type of `spec` for `request` (read once per request): on
-    `type_db` for an unsafe method, as DRF reads it for a write. ``None`` for
-    a request without one (scrudful builds its HTTP Schema Resource with
-    none)."""
+    `type_db` for an unsafe method, as DRF reads it for a write. `request`
+    is ``None`` when scrudful builds its HTTP Schema Resource: the type is
+    then read on the default database."""
     if request is None:
         return get_resource_type_for(spec.slug)
     rtype = getattr(request, TYPE_ATTR, None)
@@ -599,8 +602,8 @@ def _body_present(request) -> bool:
 
 
 def vary_on_accept(api, url_names, *, described=frozenset()) -> None:
-    """Have `api`'s URL patterns named in `url_names` (the type routers'
-    routes) vary every response on ``Accept``, errors, 405s and OPTIONS
+    """Have `api`'s URL patterns named in `url_names` (scrud's routes: those
+    of DRF views negotiating among several renderers) vary every response on ``Accept``, errors, 405s and OPTIONS
     included, as the DRF views' do (DRF's ``APIView``, which negotiates
     among several renderers, sends ``Vary: Accept`` on each; a document
     type's representation does depend on it, `_as_document`), but a CORS

@@ -938,7 +938,13 @@ class TypeSpec:
     media type, a built-in type with hooks, IRI or slug of its own) is
     ``ImproperlyConfigured``. `register` registers it. The DRF registrations
     (`json_resource_type`, `computed_resource_type`,
-    `built_in_resource_type_urls`) register theirs with their own routes."""
+    `built_in_resource_type_urls`) register theirs with their own routes.
+
+    A spec the helper functions build is an instance of a private subclass
+    (``_BuiltTypeSpec``, which its ``repr`` shows) that carries those
+    private arguments; it compares equal only to specs built the same way
+    (with equal fields and arguments), never to a plain `TypeSpec` of the
+    same public fields."""
 
     kind: Literal["json", "computed"]
     resource_type_uri: str
@@ -1038,7 +1044,8 @@ class TypeSpec:
     def register(self, *, urls_func: Callable[[str], list] | None = None) -> list:
         """Register the type: record its hooks (`register_type_options`,
         replacing any registered for its IRI before; a different set logs a
-        warning), then store its row and add it to the service catalog,
+        warning; not for a built-in type), then store its row and add it to
+        the service catalog (unless `register_service` is false),
         in a transaction on `type_db` (`register_or_defer`: on a database
         error the registration is left pending, and retried when the type
         is next read). Nothing of a front end is built here.

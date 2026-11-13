@@ -48,9 +48,9 @@ from scrud_django.ninja import api
 scrud_api = api(
     types=[
         registration.json_resource_type_spec(
-            # the IRI and slug, then registration.json_resource_type's other
-            # arguments as keywords (but viewset_class and
-            # indexing_policy_resource)
+            # the IRI and slug, then the arguments of
+            # registration.json_resource_type but viewset_class and
+            # indexing_policy_resource, as keywords
         ),
     ],
 )
@@ -72,17 +72,65 @@ urlpatterns = [
 * It serves no interactive docs and no OpenAPI document unless you pass
   `docs_url=` and `openapi_url=` (they go to `NinjaAPI`, as the rest of
   `ninja_kwargs` do); those routes are public. Each operation has an
-  `operationId` of its own (`<slug>_list`, `<slug>_retrieve`, ...), so the
-  document is valid.
+  `operationId` of its own (`<slug>_list`, `<slug>_retrieve`, ...), so ninja
+  logs no duplicate warning; one serving GET and HEAD is listed under both
+  methods with that one id (see `ninja-openapi-head-operation-id` in the
+  [follow-ups](docs/follow-ups.md)).
 * Do not pass `auth=`: `api()` raises `TypeError`. scrud resolves the user of
   every request itself, so an anonymous request gets the anonymous user's
   grants and a hidden item is a 404.
+* Authentication is scoped-rbac's `resolve_user`: the
+  `SCOPED_RBAC["NINJA_USER"]` hook's user, else `request.auth`, else the
+  session's. DRF's `DEFAULT_AUTHENTICATION_CLASSES` are not read, so a Basic
+  or token client of a DRF project is the anonymous user on ninja (a
+  credential nothing maps is not refused) until a hook maps it. A hook
+  returns the user, `None` for the anonymous user, or raises ninja's
+  `AuthenticationError` to refuse the credentials (401). For Basic
+  credentials:
+
+  ```python
+  import base64
+  import binascii
+
+  from django.contrib.auth import authenticate
+  from ninja.errors import AuthenticationError
+
+
+  def basic_user(request):
+      header = request.headers.get("Authorization", "")
+      scheme, _, credentials = header.partition(" ")
+      if scheme.lower() != "basic":
+          return None
+      try:
+          username, _, password = base64.b64decode(credentials).decode().partition(":")
+      except (binascii.Error, UnicodeDecodeError):
+          raise AuthenticationError() from None
+      user = authenticate(request, username=username, password=password)
+      if user is None:
+          raise AuthenticationError() from None
+      return user
+  ```
+
+  ```python
+  SCOPED_RBAC = {..., "NINJA_USER": "myapp.auth.basic_user"}
+  ```
+
+  A user a hook gives is not a session user, so a write needs no CSRF token
+  (a session user's unsafe request is CSRF-checked). See
+  `ninja-drf-authenticators` in the follow-ups.
+* A computed type's `compute(request, key)` receives a plain Django
+  `HttpRequest` on ninja (a DRF `Request` on DRF): read `request.GET` and
+  `request.user`, not `request.query_params` or `request.data`, and do not
+  hand it to a DRF permission's `has_permission(request, view)`.
 * A router you add to the API (`scrud_api.add_router(...)`) gets no
   authentication and no CSRF check from scrud: ninja's views are
   CSRF-exempt, and scrud resolves the user only on its own routes. Give it
   its own `auth=`, or scrud's entry checks (the user resolved as on scrud's
-  routes, a session user's unsafe request CSRF-checked, writes in one
-  transaction):
+  routes, a session user's unsafe request CSRF-checked; a PUT, PATCH,
+  DELETE, and a POST carrying `If-Match`, `If-None-Match` or
+  `If-Unmodified-Since`, in one transaction on scrud's write database,
+  rolled back on a status of 400 or more; a plain POST is in none of the
+  entry's):
 
   ```python
   from ninja import Router
