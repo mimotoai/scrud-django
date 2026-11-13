@@ -14,6 +14,7 @@ from scrud_django.core.computed import (
     computed_answer,
     computed_link,
     not_modified,
+    served_content,
 )
 from scrud_django.ninja.entry import entry
 from scrud_django.ninja.routers import (
@@ -80,8 +81,10 @@ def computed_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Rou
             response = HttpResponse(status=304)
             del response["Content-Type"]
         else:
+            # Written as DRF writes it (`served_content`), not as ninja's
+            # encoder would.
             response = _serving_api(request).create_response(
-                request, content, status=200
+                request, served_content(content), status=200
             )
             link = computed_link(request, rtype, namespace=urls_namespace)
             if link:

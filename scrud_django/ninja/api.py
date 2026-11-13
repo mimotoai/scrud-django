@@ -7,8 +7,12 @@ from scoped_rbac.ninja.api import router as scoped_rbac_router
 from scrudful.ninja import ScrudfulRouter
 
 from scrud_django import registration
-from scrud_django.ninja import computed, errors, routers, services
+from scrud_django.ninja import computed, entry, errors, routers, services
 from scrud_django.registration import TypeSpec, built_in_type_specs
+
+#: The prefix of the URL names of scoped-rbac's routes
+#: (``scoped_rbac.ninja.api.router``).
+SCOPED_RBAC_ROUTES = "scoped-rbac-"
 
 
 def api(
@@ -37,7 +41,9 @@ def api(
     The ``ScrudfulRouter``s are mounted first, before any path that could
     shadow their HTTP Schema Resource routes (``/_hsr/``).
 
-    Its errors are answered as on DRF (`errors.install`), as uniform errors
+    Every route of these resolves its requester first, every method alike
+    (`entry.authenticate_first`), as DRF authenticates every request. Its
+    errors are answered as on DRF (`errors.install`), as uniform errors
     are for each request (`errors.answer_natively_when_off`); the routes of
     DRF views negotiating among several renderers vary on ``Accept`` as
     theirs (`routers.vary_on_accept`); the computed routes refuse the
@@ -83,21 +89,25 @@ def api(
             computed_routes.append(f"{spec.slug}-detail")
     # The documents the lists' Links name.
     scrud_api.add_router("", routers.collections_router())
+    scrud_routes = frozenset(
+        [
+            *type_routes,
+            *computed_routes,
+            *routers.COLLECTION_ROUTES,
+            services.SERVICES_ROUTE,
+        ]
+    )
+    entry.authenticate_first(
+        scrud_api,
+        lambda name: name in scrud_routes or name.startswith(SCOPED_RBAC_ROUTES),
+    )
     errors.install(scrud_api)
     computed.refuse_the_anonymous(scrud_api, computed_routes)
     routers.method_not_allowed_as_drf(
         scrud_api, [*routers.COLLECTION_ROUTES, *computed_routes]
     )
     errors.answer_natively_when_off(scrud_api)
-    routers.vary_on_accept(
-        scrud_api,
-        [
-            *type_routes,
-            *computed_routes,
-            *routers.COLLECTION_ROUTES,
-            services.SERVICES_ROUTE,
-        ],
-    )
+    routers.vary_on_accept(scrud_api, scrud_routes)
     routers.as_drf_api_views(scrud_api, [*routers.COLLECTION_ROUTES, *computed_routes])
     services.as_drf_api_view_function(
         scrud_api, [services.SERVICES_ROUTE], services.SERVICES_METHODS

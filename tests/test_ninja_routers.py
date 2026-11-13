@@ -118,7 +118,8 @@ def test_a_ninja_only_apis_computed_links_resolve_within_it(client):
 
 def test_a_ninja_only_apis_catalog_lists_its_own_routes(client, monkeypatch):
     # The process's catalog holds the types every URLconf of the session
-    # registered, which this one does not route: the API's own only.
+    # registered, which this one does not route (follow-up
+    # services-unrouted-types): the API's own only.
     monkeypatch.setattr(services, "services", {})
     registration.json_resource_type_spec(**PARTNER_PROFILES_TYPE).register()
     registration.register_role_services()
@@ -142,6 +143,7 @@ def test_a_ninja_only_apis_catalog_lists_its_own_routes(client, monkeypatch):
 def test_a_ninja_only_apis_scrudful_routes_serve_their_hsrs(client, monkeypatch):
     """The ScrudfulRouters are mounted before any path that could shadow
     their HTTP Schema Resource routes: each one's HSR is served."""
+    # Follow-up services-unrouted-types: a catalog type this API does not route.
     monkeypatch.setattr(services, "services", {})
     client.force_login(
         User.objects.create(username="admin", is_staff=True, is_superuser=True)

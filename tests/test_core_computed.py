@@ -17,6 +17,7 @@ from django.contrib.auth.models import AnonymousUser, User
 from django.test import RequestFactory
 from django.urls import NoReverseMatch, resolve
 from django.utils.functional import lazy
+from rest_framework.renderers import JSONRenderer
 from rest_framework.utils.encoders import JSONEncoder
 from scoped_rbac import access
 
@@ -246,3 +247,27 @@ def test_a_catalog_lists_each_list_on_the_serving_mount():
             "tests://F": "http://example.com/f/",
         }
         assert catalog.etag_for(request) == catalog.etag_of(served)
+
+
+def test_served_content_is_the_json_drf_writes():
+    content = {
+        "z": datetime.datetime(2026, 1, 2, 3, 4, 5, 678901, tzinfo=datetime.UTC),
+        "n": decimal.Decimal("1.50"),
+        "d": datetime.timedelta(seconds=1.5),
+        "s": {3},
+        "é": "ü",
+    }
+    served = computed.served_content(content)
+
+    assert served == {
+        "z": "2026-01-02T03:04:05.678901Z",
+        "n": 1.5,
+        "d": "1.5",
+        "s": [3],
+        "é": "ü",
+    }
+    # In the order DRF writes it, and hashing as the content does.
+    assert list(served) == list(content)
+    drf = JSONRenderer().render(content)
+    assert JSONRenderer().render(served) == drf
+    assert computed.computed_etag(served) == computed.computed_etag(content)

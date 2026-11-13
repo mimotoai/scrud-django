@@ -88,7 +88,8 @@ def _options(request):
 
 def as_drf_api_view_function(api, url_names, methods) -> None:
     """Have `api`'s URL patterns named in `url_names` (the catalog's) give
-    every answer but an OPTIONS the ``Allow`` of the DRF view, a function
+    every answer but an OPTIONS's (a refusal of one included) the ``Allow``
+    of the DRF view, a function
     view of DRF's ``api_view(methods)`` (`drf_api_view_allow`), and expose
     it as scrudful's DRF views do. Call it after
     ``scrud_django.ninja.errors.answer_natively_when_off``, which orders a
@@ -101,7 +102,9 @@ def _as_drf_api_view_function(allow, view):
     @functools.wraps(view)
     def answered(request, *args, **kwargs):
         response = view(request, *args, **kwargs)
-        if request.method != "OPTIONS":
+        # scrudful's OPTIONS of the DRF view gives its own (none to a CORS
+        # preflight); the view's refusal of an OPTIONS, DRF's.
+        if request.method != "OPTIONS" or response.status_code >= 400:
             response["Allow"] = allow
         return response
 

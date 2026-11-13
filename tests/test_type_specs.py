@@ -178,9 +178,11 @@ def test_ninja_type_specs_share_the_drf_registrations_hooks(caplog):
         "checked-notes",
         "hooked-notes",
         "summaries",
+        "encoded-summaries",
         "workflow-notes",
     ]
-    assert {spec.slug: spec.kind for spec in specs}["summaries"] == "computed"
+    kinds = {spec.slug: spec.kind for spec in specs}
+    assert kinds["summaries"] == kinds["encoded-summaries"] == "computed"
     # Both front ends registering the same types in one process replace
     # nothing: their hooks are the same.
     with caplog.at_level(logging.WARNING):

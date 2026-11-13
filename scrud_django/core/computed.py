@@ -91,6 +91,14 @@ def computed_etag(content) -> str:
     return '"' + hashlib.sha256(canonical.encode()).hexdigest() + '"'
 
 
+def served_content(content):
+    """`content` (a computed answer's) as the JSON values DRF serves it as:
+    each value `ContentEncoder` writes (a datetime, a decimal, a duration, a
+    set ...) as it writes it, in the same order, so that any JSON renderer
+    writes the bytes DRF's ``JSONRenderer`` does."""
+    return json.loads(json.dumps(content, ensure_ascii=False, cls=ContentEncoder))
+
+
 def computed_answer(
     request,
     resource_type,

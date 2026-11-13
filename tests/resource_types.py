@@ -1,3 +1,5 @@
+import datetime
+import decimal
 import importlib.resources
 
 from scrud_django import registration
@@ -200,6 +202,34 @@ SUMMARIES_TYPE = {
 }
 
 
+ENCODED_SUMMARY_TYPE_URI = "tests://EncodedSummary"
+
+
+def encode_summary(request, key):
+    """A computed type's ``compute`` whose content is not all JSON: a
+    datetime with microseconds, a decimal, a duration and a set."""
+    return {
+        "key": key,
+        "at": datetime.datetime(2026, 1, 2, 3, 4, 5, 678901, tzinfo=datetime.UTC),
+        "amount": decimal.Decimal("1.50"),
+        "took": datetime.timedelta(seconds=1.5),
+        "tags": {3},
+    }
+
+
+ENCODED_SUMMARIES_TYPE = {
+    "resource_type_uri": ENCODED_SUMMARY_TYPE_URI,
+    "slug": "encoded-summaries",
+    "schema_func": lambda: dict(
+        SUMMARY_SCHEMA, **{"$id": ENCODED_SUMMARY_TYPE_URI, "title": "Encoded"}
+    ),
+    "context_func": lambda: dict(
+        SUMMARY_CONTEXT, **{"@type": "http://example.org/summary#Encoded"}
+    ),
+    "compute": encode_summary,
+}
+
+
 WORKFLOW_NOTE_TYPE_URI = "tests://Note"
 
 WORKFLOW_NOTE_SCHEMA = {
@@ -234,13 +264,15 @@ WORKFLOW_NOTES_TYPE = {
 def hooked_resource_types():
     """The types registered with per-type hooks (`tests.test_type_hooks`):
     ``hooked-notes`` (a check refusing the context "b", an object check
-    hiding secret notes, and the content filter) and the computed
-    ``summaries`` (a ``compute`` hook, no viewset class); ``checked-notes``
+    hiding secret notes, and the content filter), the computed
+    ``summaries`` (a ``compute`` hook, no viewset class) and
+    ``encoded-summaries`` (content not all JSON); ``checked-notes``
     has the check only."""
     return [
         registration.json_resource_type(**CHECKED_NOTES_TYPE),
         hooked_note_type(**HOOKED_NOTES_HOOKS),
         registration.computed_resource_type(**SUMMARIES_TYPE),
+        registration.computed_resource_type(**ENCODED_SUMMARIES_TYPE),
         # ``tests://Note``, the type of ``tests.test_core_workflow``, as a
         # stored type (`tests.test_core_parity`).
         registration.json_resource_type(**WORKFLOW_NOTES_TYPE),
@@ -258,5 +290,6 @@ def ninja_type_specs():
         registration.json_resource_type_spec(**CHECKED_NOTES_TYPE),
         registration.json_resource_type_spec(**HOOKED_NOTES_TYPE, **HOOKED_NOTES_HOOKS),
         registration.computed_resource_type_spec(**SUMMARIES_TYPE),
+        registration.computed_resource_type_spec(**ENCODED_SUMMARIES_TYPE),
         registration.json_resource_type_spec(**WORKFLOW_NOTES_TYPE),
     ]

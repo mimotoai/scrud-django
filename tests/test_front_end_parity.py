@@ -34,7 +34,11 @@ from .front_ends import (
     serve_both,
     split_links,
 )
-from .resource_types import PARTNER_PROFILES_TYPE, WORKFLOW_NOTE_TYPE_URI
+from .resource_types import (
+    PARTNER_PROFILES_TYPE,
+    WORKFLOW_NOTE_TYPE_URI,
+    encode_summary,
+)
 from .test_core_workflow import DRAFT, NOTE_POLICY, PUBLISHED
 
 pytestmark = [pytest.mark.urls("tests.parity_urls"), pytest.mark.django_db]
@@ -196,20 +200,6 @@ def test_hooked_types_are_served_alike_on_a_processs_first_parity_call():
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "The catalog's ETag hashes its absolute URLs, which name the serving "
-        "mount, and the UI's types are served on DRF only (R3): see "
-        "test_services_differ_only_where_the_serving_mount_does."
-    ),
-)
-def test_services_match():
-    drf, ninja = parity(Case("services", "GET", "{mount}services/"))
-
-    assert drf == ninja
 
 
 def test_unknown_route_is_404_on_both():
@@ -1524,6 +1514,7 @@ def test_options_resolves_the_user_as_other_methods_do(client):
 # schema and context Links; every other method a 405 (after authentication).
 
 COMPUTED = "{mount}summaries/k1/"
+ENCODED = "{mount}encoded-summaries/k1/"
 
 
 def _computed_etag(keys):
@@ -1602,6 +1593,20 @@ COMPUTED_CASES = [
     ),
     (Case("computed-put-anonymous", "PUT", COMPUTED, body={}), 401),
     (Case("computed-delete-anonymous", "DELETE", COMPUTED), 401),
+    # Content that is not all JSON (a datetime with microseconds, a decimal,
+    # a duration, a set), written as DRF writes it.
+    (Case("computed-encoded", "GET", ENCODED, _admin), 200),
+    (Case("computed-encoded-head", "HEAD", ENCODED, _admin), 200),
+    (
+        Case(
+            "computed-encoded-if-none-match",
+            "GET",
+            ENCODED,
+            _admin,
+            headers={"If-None-Match": computed_etag(encode_summary(None, "k1"))},
+        ),
+        304,
+    ),
 ]
 
 
@@ -1686,13 +1691,16 @@ def _catalog(exchange, front_end):
 
 
 def test_services_differ_only_where_the_serving_mount_does():
-    """What `test_services_match` cannot assert yet: the two catalogs, each
-    on its own mount, are alike but for what names that mount. Each lists
-    every type, in the same order; a type both front ends serve on the
-    serving mount (and so alike once normalized); one ninja does not serve
-    (the UI's, R3) at the URL serving it (DRF's). Their ETags are each a
-    hash of the catalog served (`ScrudServices.etag_of`): they differ as the
-    URLs do. Every other header is alike."""
+    """The two catalogs cannot answer alike byte for byte, so this asserts
+    exactly how they differ. A catalog lists absolute URLs, which name the
+    serving mount, and its ETag is a hash of the catalog served
+    (`ScrudServices.etag_of`): the two ETags differ as the URLs do, and no
+    normalization of the harness can equate two hashes. And the UI's types
+    are served on DRF only (R3), so ninja's catalog names DRF's URL for
+    them, where they are served. So: each lists every type, in the same
+    order; a type both front ends serve on the serving mount (alike once
+    normalized); one ninja does not serve at the URL serving it (DRF's);
+    each ETag the hash of its own catalog; every other header alike."""
     drf, ninja = parity(Case("services", "GET", SERVICES))
 
     assert drf.status == ninja.status == 200, drf
@@ -1873,6 +1881,75 @@ def test_options_refuses_a_requester_failing_authentication(client, path):
         headers={"Authorization": "Basic bm86bm8="},
     )
     assert drf.status_code == 401, drf.content
+
+
+#: Credentials each front end refuses: a ``NINJA_USER`` hook raising ninja's
+#: ``AuthenticationError`` (ninja; DRF reads no such hook) and Basic
+#: credentials of no user (DRF; ninja authenticates no Basic credentials).
+REFUSED_CREDENTIALS = {"Authorization": "Basic bm86bm8="}
+
+FAILING_CREDENTIALS_CASES = [
+    Case(
+        f"failing-credentials-{method.lower()}-{name}",
+        method,
+        "{mount}" + path,
+        headers=REFUSED_CREDENTIALS,
+    )
+    for method, name, path in (
+        # Methods the route does not serve: refused before the 405.
+        ("HEAD", "services", "services/"),
+        ("PATCH", "services", "services/"),
+        ("PATCH", "collection-schema", "collections-json-schema/partner-profiles/"),
+        ("PATCH", "collection-context", "collections-json-ld/partner-profiles/"),
+        ("PATCH", "roles", "roles/"),
+        ("PATCH", "role-assignments", "role-assignments/"),
+        ("PUT", "user-rbac-policy", "user-rbac-policy/"),
+        ("PATCH", "type-list", "partner-profiles/"),
+        ("PUT", "computed", "summaries/k1/"),
+        # Methods it serves.
+        ("GET", "services", "services/"),
+        ("GET", "type-list", "partner-profiles/"),
+        ("OPTIONS", "type-list", "partner-profiles/"),
+        ("GET", "roles", "roles/"),
+        ("GET", "user-rbac-policy", "user-rbac-policy/"),
+        ("GET", "collection-schema", "collections-json-schema/partner-profiles/"),
+        ("OPTIONS", "services", "services/"),
+        ("OPTIONS", "roles", "roles/"),
+        ("OPTIONS", "role-assignments", "role-assignments/"),
+        ("OPTIONS", "user-rbac-policy", "user-rbac-policy/"),
+        ("OPTIONS", "collection-schema", "collections-json-schema/partner-profiles/"),
+        ("OPTIONS", "computed", "summaries/k1/"),
+    )
+]
+
+
+@pytest.mark.parametrize("case", FAILING_CREDENTIALS_CASES, ids=lambda case: case.id)
+def test_failing_credentials_are_refused_alike(case):
+    serve_both()
+    refusing = {**settings.SCOPED_RBAC, "NINJA_USER": _refusing_hook}
+    with override_settings(SCOPED_RBAC=refusing):
+        drf, ninja = parity(case)
+
+    assert drf.status == 401, drf
+    assert drf == ninja
+
+
+def test_role_routes_vary_alike(client):
+    serve_both()
+    paths = ("{mount}roles/", "{mount}role-assignments/", "{mount}user-rbac-policy/")
+    asked = {}
+    for login in ("anonymous", "admin"):
+        if login == "admin":
+            _user(client, superuser=True)
+        for path in paths:
+            for method in ("GET", "OPTIONS"):
+                asked[(login, method, path)] = _varies(client, method, path)
+            asked[(login, "preflight", path)] = _varies(
+                client, "OPTIONS", path, headers=PREFLIGHT
+            )
+
+    for name, varies in asked.items():
+        assert varies["drf"] == varies["ninja"], (name, varies)
 
 
 # Uniform errors off (SCOPED_RBAC["UNIFORM_ERRORS"]) for a request: each front
