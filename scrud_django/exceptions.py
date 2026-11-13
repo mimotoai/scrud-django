@@ -239,6 +239,34 @@ class QueryParameterError(ScrudException):
         return data
 
 
+class ContentFilterError(QueryParameterError):
+    """A list's query parameters that cannot filter it, raised by
+    `scrud_django.core.lists.content_filtered`, as the DRF list route answers
+    them: its filter (``scrud_django.filters.ResourceContentFilter``) raises
+    DRF's ``ValidationError`` of ``errors`` (code ``invalid``), which
+    scoped-rbac's handler answers. While uniform errors are on, a validation
+    problem (`response_data`: each message the canonical one of ``invalid``)
+    with scoped-rbac's problem-details Links; off, DRF's native body
+    (`native_response_data`) as ``application/json``."""
+
+    problem_links = True
+
+    def response_data(self, context):
+        from scoped_rbac.problems import validation_problem
+
+        return validation_problem(
+            {
+                key: [("invalid", None) for _ in messages]
+                for key, messages in self.errors.items()
+            }
+        )
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off: each parameter's
+        messages."""
+        return {key: list(messages) for key, messages in self.errors.items()}
+
+
 class RbacContextInvalidError(ScrudException):
     """A request body whose ``rbac_context`` cannot be stored: an empty list
     (which would put the resource in no context), or a context longer than

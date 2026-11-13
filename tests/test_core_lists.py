@@ -15,7 +15,7 @@ from django.http import QueryDict
 from django.test import RequestFactory, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from django.utils.http import quote_etag
+from django.utils.http import http_date, quote_etag
 from rest_framework.test import APIClient
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
@@ -576,3 +576,290 @@ def test_page_of_a_large_row_on_mysql():
     assert count == 3
     rows, _ = page_of(queryset, number=2, size=2)
     assert [row.pk for row in rows] == [after.pk]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",
+        "page_size=1",
+        "page_size=1000",
+        "page_size=1001",
+        "page_size=5000",
+        "page_size=0",
+        "page_size=-3",
+        "page_size=x",
+        "page_size=",
+        "page_size=2.0",
+        "page_size=+7",
+        "page_size=%207",
+        "page_size=1_0",
+        "page_size=4&page_size=9",
+    ],
+)
+def test_page_size_of_is_drfs(query):
+    """The page size, as DRF's ``PageNumberPagination`` (stock, with the
+    list's settings) reads it."""
+    from rest_framework.pagination import PageNumberPagination
+    from rest_framework.request import Request
+
+    from scrud_django.core.lists import page_size_of
+
+    class Stock(PageNumberPagination):
+        page_size = 100
+        page_size_query_param = "page_size"
+        max_page_size = 1000
+
+    params = QueryDict(query)
+    expected = Stock().get_page_size(Request(RequestFactory().get("/?" + query)))
+    assert page_size_of(params) == expected
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("", 1),
+        ("page=", 1),
+        ("page=2", "2"),
+        ("page=last", 3),
+        ("page=x", "x"),
+        ("page=1&page=last", 3),
+    ],
+)
+def test_page_number_of_is_drfs(query, expected):
+    from django.core.paginator import Paginator
+    from rest_framework.pagination import PageNumberPagination
+    from rest_framework.request import Request
+
+    from scrud_django.core.lists import page_number_of
+
+    paginator = Paginator(list(range(5)), 2)
+    request = Request(RequestFactory().get("/?" + query))
+    assert page_number_of(QueryDict(query), paginator) == expected
+    assert PageNumberPagination().get_page_number(request, paginator) == expected
+
+
+@pytest.mark.parametrize(
+    "query", ["", "page=2", "page_size=1&page=2&b=1&a=2", "x=%C3%BC&page=3&y="]
+)
+@pytest.mark.parametrize("number", [1, 2, 3])
+def test_page_url_is_drfs(query, number):
+    from rest_framework.utils.urls import remove_query_param, replace_query_param
+
+    from scrud_django.core.lists import page_url
+
+    request = RequestFactory().get("/notes/?" + query)
+    url = request.build_absolute_uri()
+    if number == 1:
+        expected = remove_query_param(url, "page")
+    else:
+        expected = replace_query_param(url, "page", number)
+    assert page_url(request, number) == expected
+
+
+def test_page_url_under_a_published_branch_is_the_apis():
+    from scrud_django.core.lists import page_url
+
+    class Mount:
+        def canonical(self, url):
+            return url.replace("/branch/", "/api/")
+
+    request = RequestFactory().get("/branch/notes/?page=1")
+    request.scrud_ui_mount = Mount()
+    assert page_url(request, 2) == "http://testserver/api/notes/?page=2"
+
+
+@pytest.mark.django_db
+@test_context
+def test_requested_page_pages_as_drf():
+    from django.core.paginator import InvalidPage
+
+    from scrud_django.core.lists import ListPage, list_queryset, requested_page
+
+    stored = [profile(f"p-{n}", "a") for n in range(5)]
+    rtype = get_resource_type_for("partner-profiles")
+    request = get_request(user_with((PP_READER, "a")))
+    queryset = list_queryset(request, rtype, QueryDict(), requirement=[GrantsLeaf(PP)])
+
+    page = requested_page(queryset, QueryDict("page=2&page_size=2"))
+    assert page == ListPage(items=stored[2:4], count=5, number=2, size=2)
+    assert (page.page_count, page.has_next, page.has_previous) == (3, True, True)
+    last = requested_page(queryset, QueryDict("page=last&page_size=2"))
+    assert (last.items, last.number, last.has_next) == (stored[4:], 3, False)
+    assert requested_page(queryset, QueryDict("page_size=5000")).size == 1000
+    assert requested_page(queryset, QueryDict("page_size=0")).size == 100
+    for query in ("page=0", "page=x", "page=4&page_size=2", "page=1.0"):
+        with pytest.raises(InvalidPage):
+            requested_page(queryset, QueryDict(query))
+    empty = requested_page(queryset.none(), QueryDict())
+    assert (empty.count, empty.page_count, empty.has_next) == (0, 0, False)
+    with pytest.raises(InvalidPage):
+        requested_page(queryset.none(), QueryDict("page=2"))
+
+
+@pytest.mark.django_db
+@test_context
+def test_list_body_is_drfs():
+    """The list body (`list_body`, `resource_envelope`) the DRF list route
+    answers, byte for byte once rendered as DRF renders it."""
+    from rest_framework.renderers import JSONRenderer
+
+    from scrud_django.core.lists import (
+        ignored_list_parameters,
+        list_body,
+        list_queryset,
+        requested_page,
+    )
+
+    for n in range(3):
+        profile(f"p-{n}", "a")
+    user = user_with((PP_READER, "a"))
+    path = reverse("partner-profiles-list") + "?page_size=1&page=2&z=1"
+    client = APIClient()
+    client.force_authenticate(user)
+    response = client.get(path)
+    assert response.status_code == 200, response.content
+
+    request = get_request(user, path)
+    rtype = get_resource_type_for("partner-profiles")
+    queryset = list_queryset(
+        request,
+        rtype,
+        QueryDict("page_size=1&page=2"),
+        requirement=[GrantsLeaf(PP)],
+        ignored=ignored_list_parameters(),
+    )
+    body = list_body(request, rtype, requested_page(queryset, request.GET))
+    assert JSONRenderer().render(body) == response.content
+
+
+@pytest.mark.django_db
+@test_context
+def test_list_validators_and_read_preconditions_are_drfs():
+    from scrudful.conditional import http_timestamp
+
+    from scrud_django.core.lists import (
+        evaluate_list_read_preconditions,
+        list_queryset,
+        list_validators,
+        requested_page,
+    )
+
+    profile("p", "a")
+    user = user_with((PP_READER, "a"))
+    client = APIClient()
+    client.force_authenticate(user)
+    response = client.get(reverse("partner-profiles-list"))
+    request = get_request(user, reverse("partner-profiles-list"))
+    rtype = get_resource_type_for("partner-profiles")
+    requirement = [GrantsLeaf(PP)]
+    queryset = list_queryset(request, rtype, request.GET, requirement=requirement)
+    etag, last_modified = list_validators(
+        request, rtype, queryset, requested_page(queryset, request.GET), requirement
+    )
+    assert response["ETag"] == quote_etag(etag)
+    assert response["Last-Modified"] == http_date(last_modified.timestamp())
+
+    def evaluate(**headers):
+        return evaluate_list_read_preconditions(
+            "GET", headers, etag=etag, last_modified=last_modified
+        )
+
+    assert evaluate() is None
+    assert evaluate(**{"if-none-match": quote_etag(etag)}).status == 304
+    assert evaluate(**{"if-none-match": '"other"'}) is None
+    since = http_date(http_timestamp(last_modified))
+    assert evaluate(**{"if-modified-since": since}).status == 304
+    assert evaluate(**{"if-match": '"stale"'}).status == 412
+    assert evaluate(**{"if-match": "stale"}).status == 400
+    for name, value in (
+        ("If-None-Match", quote_etag(etag)),
+        ("If-Modified-Since", since),
+    ):
+        assert (
+            client.get(response.request["PATH_INFO"], headers={name: value}).status_code
+            == 304
+        )
+
+
+@pytest.mark.django_db
+@test_context
+def test_create_list_validators_are_the_lists_without_the_list_grant():
+    """A create's list validators (`create_list_validators`) are those of
+    the list its GET copy gets, filtered by the item grants alone: a writer
+    without the list grant still gets them."""
+    from scrud_django.core.lists import (
+        create_list_validators,
+        list_queryset,
+        list_validators,
+        requested_page,
+    )
+
+    profile("seen", "a")
+    profile("hidden", "b")
+    rtype = get_resource_type_for("partner-profiles")
+    requirement = [GrantsLeaf(PP)]
+    writer = user_with(({"http.GET": [PP], "http.POST": [PP]}, "a"))
+    post = RequestFactory().post("/?page_size=1")
+    post.user = writer
+    validators = create_list_validators(post, rtype, requirement=requirement)
+    reader = get_request(user_with((PP_READER, "a")), "/?page_size=1")
+    queryset = list_queryset(reader, rtype, reader.GET, requirement=requirement)
+    expected = list_validators(
+        reader, rtype, queryset, requested_page(queryset, reader.GET), requirement
+    )
+    assert validators == expected
+
+
+def test_ui_parameters_name_the_uis():
+    from scrud_django.core.lists import UI_PARAMETERS, ignored_list_parameters
+    from scrud_django.core.lists import ui_parameters as core_ui_parameters
+    from scrud_django.ui.branches.effective import BRANCH_PARAMETER, SAFE_PARAMETER
+    from scrud_django.ui.branches.selection import CONFIRM_PARAMETER
+    from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER
+
+    assert UI_PARAMETERS == {
+        BRANCH_PARAMETER,
+        CONFIRM_PARAMETER,
+        SCOPE_PARAMETER,
+        MODE_PARAMETER,
+        SAFE_PARAMETER,
+    }
+    assert core_ui_parameters() == ui_parameters() == UI_PARAMETERS
+    assert ignored_list_parameters() == {"page", "page_size", "format"} | UI_PARAMETERS
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("uniform", [True, False], ids=["uniform", "native"])
+def test_content_filter_errors_answer_as_on_drf(uniform):
+    """A content filter's 400 (`ContentFilterError`) on the DRF list route:
+    DRF's ``ValidationError`` as scoped-rbac answers it, which the ninja
+    front end answers from the error itself."""
+    from scrud_django.exceptions import ContentFilterError
+
+    client = APIClient()
+    client.force_authenticate(UserFactory(is_superuser=True, is_staff=True))
+    message = "An integer is not a content key a list can be filtered on."
+    with override_settings(
+        SCOPED_RBAC=dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
+    ):
+        response = client.get(reverse("filtered-partner-profiles-list") + "?1=x")
+    assert response.status_code == 400
+    error = ContentFilterError({"1": [message]})
+    if uniform:
+        assert response["Content-Type"] == "application/problem+json"
+        assert response.json() == {
+            "type": "about:blank",
+            "title": "Bad Request",
+            "status": 400,
+            "detail": "Invalid input.",
+            "code": "invalid",
+            "errors": {
+                "1": [{"code": "invalid", "message": "This value is not valid."}]
+            },
+        }
+        assert response.json() == error.response_data({})
+    else:
+        assert response["Content-Type"] == "application/json"
+        assert response.json() == {"1": [message]}
+        assert response.json() == error.native_response_data()

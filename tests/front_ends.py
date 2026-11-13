@@ -8,9 +8,12 @@ A response is normalized as the design allows, and in no other way:
 - ``Date``, ``Vary``, ``WWW-Authenticate`` and ``Set-Cookie`` are dropped;
 - the target of the HTTP Schema Resource link (`HSR_REL`) becomes ``{hsr}``
   (each front end serves its HSRs at URLs of its own);
-- each key a case's setup created becomes ``{name}``, in URL path segments
-  only (PostgreSQL's sequences do not roll back, so keys differ between the
-  front ends' runs);
+- each key a case's setup created becomes ``{name}``, and the key of each
+  resource the request itself created (a POST's) ``{created}`` (then
+  ``{created-2}`` ...), in URL path segments only (PostgreSQL's sequences do
+  not roll back, so keys differ between the front ends' runs; a list's ETag
+  hashes its resources' keys, so a list case's setup stores its resources
+  with keys of its own, the same in both runs);
 - ``Content-Length`` is that of the body once so replaced.
 
 Everything else (status, every other header, the body's bytes) must match.
@@ -30,6 +33,7 @@ from django.db import transaction
 from django.test import Client
 
 from scrud_django import registration
+from scrud_django.models import Resource
 
 from .resource_types import ninja_type_specs
 
@@ -148,6 +152,7 @@ def _run(case, front_end):
                 body = case.body(keys) if callable(case.body) else case.body
                 headers = case.headers(keys) if callable(case.headers) else case.headers
                 path = case.path.format(mount=MOUNT, **keys)
+                stored = set(Resource.objects.values_list("pk", flat=True))
                 return exchange(
                     client,
                     front_end,
@@ -156,18 +161,29 @@ def _run(case, front_end):
                     body=body,
                     headers=headers,
                     keys=keys,
+                    stored=stored,
                 )
             finally:
                 transaction.set_rollback(True)
 
 
 def exchange(
-    client, front_end, method, path, *, body=None, headers=None, keys=None
+    client,
+    front_end,
+    method,
+    path,
+    *,
+    body=None,
+    headers=None,
+    keys=None,
+    stored=None,
 ) -> Exchange:
     """Send `method` `path` (whose ``{mount}`` becomes `front_end`'s mount)
     with `client`, `body` as JSON (a ``str`` or ``bytes`` as is) and
     `headers`, and return the response `normalized`, with `keys` (``{name:
-    key}``) as the keys to replace."""
+    key}``) as the keys to replace. Given `stored`, the keys of the resources
+    stored before the request, each resource the request created is
+    ``created`` (then ``created-2`` ...), in key order."""
     mount = MOUNTS[front_end]
     kwargs = {"headers": dict(headers or {})}
     if body is not None:
@@ -175,6 +191,11 @@ def exchange(
         kwargs["content_type"] = "application/json"
     url = path.replace(MOUNT, mount)
     response = client.generic(method, url, **kwargs)
+    keys = dict(keys or {})
+    if stored is not None:
+        created = Resource.objects.exclude(pk__in=stored).order_by("pk")
+        for index, pk in enumerate(created.values_list("pk", flat=True), start=1):
+            keys["created" if index == 1 else f"created-{index}"] = pk
     length_of = None
     if method == "HEAD" and response.has_header("Content-Length"):
         # A HEAD's Content-Length is that of the GET's body, which it leaves
@@ -182,7 +203,7 @@ def exchange(
         get = client.generic("GET", url, **kwargs)
         assert get.status_code == response.status_code, get
         length_of = get.content
-    return normalized(response, mount, keys or {}, length_of=length_of)
+    return normalized(response, mount, keys, length_of=length_of)
 
 
 def normalized(response, mount, keys, *, length_of=None) -> Exchange:

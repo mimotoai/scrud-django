@@ -5,19 +5,22 @@ throwaway API mounted by this module (``/ninja/``), beside a DRF probe view
 
 import inspect
 import json
+from contextlib import contextmanager
 
 import pytest
 from django.contrib.auth.models import AnonymousUser, User
 from django.http import HttpResponse
 from django.test import Client, RequestFactory, override_settings
 from django.urls import path, resolve
+from django.utils.http import quote_etag
 from ninja import Router
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 
 import scrud_django.ninja
 from scrud_django import registration
-from scrud_django.core import resources
+from scrud_django.core import resources, writes
+from scrud_django.core.lists import list_etag
 from scrud_django.core.types import requirement_for
 from scrud_django.exceptions import (
     QueryParameterError,
@@ -28,6 +31,7 @@ from scrud_django.exceptions import (
 from scrud_django.models import Resource, ResourceType
 from scrud_django.ninja.entry import entry
 
+from .front_ends import MOUNTS, serve_both
 from .rbac_defaults import TYPE_URI_PARTNER_PROFILES as PP
 from .resource_types import PARTNER_PROFILES_TYPE
 from .test_core_resources import user_with
@@ -229,3 +233,75 @@ def test_unsafe_methods_run_in_one_transaction(method, headers, status, first_na
     assert response.status_code == status, response.content
     row.refresh_from_db()
     assert row.first_name == first_name
+
+
+def _list_etag_header(name):
+    """``{name: ETag}`` of the partner profiles list as a superuser gets it."""
+    resource_type = registration.get_resource_type_for("partner-profiles")
+    items = list(Resource.objects.filter(resource_type=resource_type))
+    etag = list_etag(resource_type, items=items, count=len(items), query=[])
+    return {name: quote_etag(etag)}
+
+
+@pytest.mark.urls("tests.parity_urls")
+@pytest.mark.parametrize("front_end", ["drf", "ninja"])
+@pytest.mark.parametrize(
+    "headers, status, events",
+    [
+        (lambda: _list_etag_header("If-Match"), 201, ["enter", "save", "exit"]),
+        (lambda: {"If-None-Match": '"other"'}, 201, ["enter", "save", "exit"]),
+        # ``If-None-Match: *`` needs no validator: it fails on the list
+        # existing, which it always does (core.lists.list_validators_needed),
+        # so no lock is taken, as on DRF (LockedWriteMixin.is_conditional_create).
+        (lambda: {"If-None-Match": "*"}, 412, []),
+        (lambda: {}, 201, ["save"]),
+    ],
+    ids=["if-match", "if-none-match-other", "if-none-match-star", "plain"],
+)
+def test_conditional_create_holds_the_type_lock(
+    monkeypatch, front_end, headers, status, events
+):
+    """A POST to the list whose preconditions need the list's validators
+    enters the type's conditional-create lock (core.writes) once, and saves
+    while it holds it; one that needs none takes no lock."""
+    serve_both()
+    registration.ResourceRegistration.register(
+        {"name": "x", "rbac_context": "a"}, "partner-profiles"
+    )
+    seen = []
+    lock = writes.conditional_create_lock
+
+    @contextmanager
+    def recording_lock(resource_type, using):
+        assert resource_type.slug == "partner-profiles"
+        with lock(resource_type, using):
+            seen.append("enter")
+            yield
+            seen.append("exit")
+
+    register_instance = registration.ResourceRegistration.register_instance
+
+    def recording_save(resource):
+        seen.append("save")
+        return register_instance(resource)
+
+    monkeypatch.setattr(writes, "conditional_create_lock", recording_lock)
+    monkeypatch.setattr(
+        registration.ResourceRegistration,
+        "register_instance",
+        staticmethod(recording_save),
+    )
+    client = Client()
+    client.force_login(
+        User.objects.create(username="admin", is_staff=True, is_superuser=True)
+    )
+
+    response = client.post(
+        f"{MOUNTS[front_end]}partner-profiles/",
+        json.dumps({"name": "y", "rbac_context": "a"}),
+        content_type="application/json",
+        headers=headers(),
+    )
+
+    assert response.status_code == status, response.content
+    assert seen == events

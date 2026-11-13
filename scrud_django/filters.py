@@ -35,6 +35,7 @@ from scrud_django.core.lists import (  # noqa: F401  (re-exported)
     _rows,
     content_filtered,
     filter_readable_resources,
+    ui_parameters,
 )
 from scrud_django.core.requirements import (  # noqa: F401  (re-exported)
     CANDIDATE_CHUNK_SIZE,
@@ -385,29 +386,6 @@ class ResourceRbacFilter(RbacFilter):
             return filter_readable_resources(queryset, request, permission)
         except access.ConditionalListTooLarge as exc:
             raise AccessAPIError(exc) from exc
-
-
-def ui_parameters() -> frozenset[str]:
-    """The query parameters that select the UI's presentation, never content,
-    when ``scrud_django.ui`` is installed: the branch and its confirmation,
-    the scope chain, the mode and safe mode. Empty without the UI."""
-    from scrud_django.ui import is_enabled
-
-    if not is_enabled():
-        return frozenset()
-    from scrud_django.ui.branches.effective import BRANCH_PARAMETER, SAFE_PARAMETER
-    from scrud_django.ui.branches.selection import CONFIRM_PARAMETER
-    from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER
-
-    return frozenset(
-        (
-            BRANCH_PARAMETER,
-            CONFIRM_PARAMETER,
-            SCOPE_PARAMETER,
-            MODE_PARAMETER,
-            SAFE_PARAMETER,
-        )
-    )
 
 
 class ResourceContentFilter(BaseFilterBackend):

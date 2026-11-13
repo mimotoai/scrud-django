@@ -16,9 +16,11 @@ from django.utils.http import http_date, quote_etag
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django import collection_type_uri_for, registration
+from scrud_django.core.lists import list_etag
 from scrud_django.models import Resource, ResourceType
 
 from .front_ends import (
+    HSR,
     MOUNTS,
     SETUP_TIME,
     Case,
@@ -32,6 +34,18 @@ from .resource_types import PARTNER_PROFILES_TYPE, WORKFLOW_NOTE_TYPE_URI
 from .test_core_workflow import DRAFT, NOTE_POLICY, PUBLISHED
 
 pytestmark = [pytest.mark.urls("tests.parity_urls"), pytest.mark.django_db]
+
+
+@pytest.fixture(autouse=True)
+def _hsrs_built_here_are_forgotten():
+    """pytest-django's ``urls`` mark sets ``ROOT_URLCONF`` without sending
+    ``setting_changed``, on which scrudful forgets the DRF views' HTTP Schema
+    Resources it built: those built here (linking under ``/drf/``) would be
+    served to later tests of another URLconf. ``override_settings`` sends it
+    as each test starts and ends."""
+    with override_settings(ROOT_URLCONF="tests.parity_urls"):
+        yield
+
 
 HSR_REL = "https://w3id.org/semantic-http/ns#http-schema-resource-document"
 
@@ -132,6 +146,21 @@ def test_hooked_types_are_served_alike_in_both_runs():
     assert seen[0], "hooked-notes is not registered"
     assert seen[0] == seen[1]
     assert drf.status == 200, drf
+    assert drf == ninja
+
+    # Its list, filtered on content (the type's content_filter): the list's
+    # ETag hashes the keys, so the note is stored with a key of its own.
+    def list_setup(client):
+        setup(client)
+        note = store("hooked-notes", LIST_KEYS, {"text": "m", "rbac_context": "a"})
+        return {"note": note.pk}
+
+    drf, ninja = parity(
+        Case("hooked-notes-list", "GET", "{mount}hooked-notes/?text=m", list_setup)
+    )
+
+    assert drf.status == 200, drf
+    assert '"count":1' in drf.body, drf
     assert drf == ninja
 
 
@@ -672,6 +701,452 @@ def test_anonymous_granted_nothing_answers_alike():
         assert drf == ninja
 
 
+# The list route (GET, HEAD, POST) and the collection documents its Links
+# name. A list's ETag hashes its resources' keys: the setups store them with
+# keys of their own (`store`), the same in both runs.
+
+#: The keys of the resources a list case stores, in order.
+LIST_KEYS = range(970001, 970100)
+
+LIST = "{mount}partner-profiles/"
+PROFILES_LIST = collection_type_uri_for(PROFILES)
+LIST_READER = {"http.GET": [PROFILES, PROFILES_LIST]}
+CREATOR = {"http.GET": [PROFILES, PROFILES_LIST], "http.POST": [PROFILES]}
+
+
+def store(slug, keys, content):
+    """A resource of `slug` whose content is `content`, stored with the first
+    of `keys` no resource has."""
+    taken = set(Resource.objects.values_list("pk", flat=True))
+    key = next(key for key in keys if key not in taken)
+    resource_type = registration.get_resource_type_for(slug)
+    return registration.ResourceRegistration.register_instance(
+        Resource(pk=key, content=content, resource_type=resource_type)
+    )
+
+
+def _listing(*grants, contexts=("a",), superuser=False, login=True):
+    """A setup storing a partner profile in each of `contexts` (``p0``,
+    ``p1`` ...) and logging in a user holding `grants` (each in context
+    "a")."""
+
+    def setup(client):
+        keys = {}
+        for index, context in enumerate(contexts):
+            profile = store(
+                "partner-profiles",
+                LIST_KEYS,
+                {"name": f"p{index}", "rbac_context": context},
+            )
+            keys[f"p{index}"] = profile.pk
+        if login:
+            _user(client, *((g, "a") for g in grants), superuser=superuser)
+        return keys
+
+    return setup
+
+
+def _list_etag(query=()):
+    """The headers of a request whose ``{header}`` is the ETag of the partner
+    profiles list as a superuser gets it (every profile, one page), with the
+    query parameters `query`."""
+
+    def etag(keys):
+        resource_type = registration.get_resource_type_for("partner-profiles")
+        items = list(Resource.objects.filter(resource_type=resource_type))
+        return quote_etag(
+            list_etag(resource_type, items=items, count=len(items), query=list(query))
+        )
+
+    return etag
+
+
+def _with_list_etag(header, query=()):
+    etag = _list_etag(query)
+    return lambda keys: {header: etag(keys)}
+
+
+def _notes(client):
+    _user(client, superuser=True)
+    keys = {}
+    for index, text in enumerate(("n", "m", "n")):
+        note = store("hooked-notes", LIST_KEYS, {"text": text, "rbac_context": "a"})
+        keys[f"n{index}"] = note.pk
+    return keys
+
+
+def _workflow_creator(client):
+    registration.ResourceRegistration.register(dict(NOTE_POLICY), "workflow-policies")
+    _user(
+        client,
+        (
+            {
+                "http.GET": [WORKFLOW_NOTE_TYPE_URI],
+                "http.POST": [WORKFLOW_NOTE_TYPE_URI],
+            },
+            "a",
+        ),
+    )
+    return {}
+
+
+ADMIN_LIST = _listing(contexts=("a", "b"), superuser=True)
+THREE = _listing(contexts=("a", "a", "a"), superuser=True)
+BODY = {"name": "y", "rbac_context": "a"}
+
+LIST_CASES = [
+    (Case("list-admin", "GET", LIST, ADMIN_LIST), 200),
+    (
+        Case("list-reader", "GET", LIST, _listing(LIST_READER, contexts=("a", "b"))),
+        200,
+    ),
+    (
+        Case(
+            "list-item-grant-only",
+            "GET",
+            LIST,
+            _listing({"http.GET": [PROFILES]}),
+        ),
+        403,
+    ),
+    (Case("list-anonymous", "GET", LIST, _listing(login=False)), 401),
+    (
+        Case(
+            "list-json",
+            "GET",
+            LIST,
+            ADMIN_LIST,
+            headers={"Accept": "application/json"},
+        ),
+        200,
+    ),
+    (Case("list-page", "GET", LIST + "?page=2&page_size=1", THREE), 200),
+    (Case("list-page-first", "GET", LIST + "?page=1&page_size=2", THREE), 200),
+    (Case("list-page-last", "GET", LIST + "?page=last&page_size=2", THREE), 200),
+    (Case("list-page-blank", "GET", LIST + "?page=&page_size=2", THREE), 200),
+    (Case("list-page-0", "GET", LIST + "?page=0", THREE), 404),
+    (Case("list-page-x", "GET", LIST + "?page=x", THREE), 404),
+    (Case("list-page-99", "GET", LIST + "?page=99", THREE), 404),
+    (Case("list-page-size-0", "GET", LIST + "?page_size=0", THREE), 200),
+    (Case("list-page-size-x", "GET", LIST + "?page_size=x", THREE), 200),
+    (Case("list-page-size-5000", "GET", LIST + "?page_size=5000", THREE), 200),
+    (Case("list-empty", "GET", LIST, _listing(contexts=(), superuser=True)), 200),
+    (
+        Case(
+            "list-empty-page-2",
+            "GET",
+            LIST + "?page=2",
+            _listing(contexts=(), superuser=True),
+        ),
+        404,
+    ),
+    (
+        Case(
+            "list-if-none-match",
+            "GET",
+            LIST,
+            ADMIN_LIST,
+            headers=_with_list_etag("If-None-Match"),
+        ),
+        304,
+    ),
+    (
+        Case(
+            "list-if-none-match-other",
+            "GET",
+            LIST,
+            ADMIN_LIST,
+            headers={"If-None-Match": '"other"'},
+        ),
+        200,
+    ),
+    (
+        Case(
+            "list-if-modified-since",
+            "GET",
+            LIST,
+            ADMIN_LIST,
+            headers={"If-Modified-Since": http_date(SETUP_TIME.timestamp())},
+        ),
+        304,
+    ),
+    (
+        Case(
+            "list-if-match-stale",
+            "GET",
+            LIST,
+            ADMIN_LIST,
+            headers={"If-Match": '"stale"'},
+        ),
+        412,
+    ),
+    (
+        Case(
+            "list-if-none-match-past-the-last-page",
+            "GET",
+            LIST + "?page=99",
+            ADMIN_LIST,
+            headers={"If-None-Match": "*"},
+        ),
+        404,
+    ),
+    (Case("list-head", "HEAD", LIST, ADMIN_LIST), 200),
+    (
+        Case(
+            "list-head-if-none-match",
+            "HEAD",
+            LIST,
+            ADMIN_LIST,
+            headers=_with_list_etag("If-None-Match"),
+        ),
+        304,
+    ),
+    # A content filter (hooked-notes is registered with content_filter=True).
+    (Case("list-filtered", "GET", "{mount}hooked-notes/?text=n", _notes), 200),
+    (
+        Case(
+            "list-filtered-paged",
+            "GET",
+            "{mount}hooked-notes/?text=n&page=2&page_size=1&format=json&ui-mode=view",
+            _notes,
+        ),
+        200,
+    ),
+    (Case("list-filter-integer", "GET", "{mount}hooked-notes/?1=x", _notes), 400),
+    (Case("list-filter-nul", "GET", "{mount}hooked-notes/?text=%00", _notes), 400),
+    # A computed type has no list.
+    (Case("list-computed", "GET", "{mount}summaries/", ADMIN_LIST), 404),
+    # Create.
+    (Case("post", "POST", LIST, _listing(CREATOR), body=BODY), 201),
+    (
+        Case(
+            "post-failing-the-schema",
+            "POST",
+            LIST,
+            _listing(CREATOR),
+            body={"display_name": 1, "rbac_context": "a"},
+        ),
+        400,
+    ),
+    (
+        Case(
+            "post-unwritable-context",
+            "POST",
+            LIST,
+            _listing(CREATOR),
+            body={"name": "y", "rbac_context": "b"},
+        ),
+        403,
+    ),
+    (Case("post-not-granted", "POST", LIST, _listing(LIST_READER), body=BODY), 403),
+    (
+        Case(
+            "post-anonymous",
+            "POST",
+            LIST,
+            _listing(login=False),
+            body={"name": "y", "rbac_context": ""},
+        ),
+        201,
+    ),
+    (
+        Case(
+            "post-anonymous-other-context",
+            "POST",
+            LIST,
+            _listing(login=False),
+            body=BODY,
+        ),
+        401,
+    ),
+    (Case("post-not-json", "POST", LIST, _listing(CREATOR), body="{x"), 400),
+    (Case("post-empty", "POST", LIST, _listing(CREATOR), body=""), 400),
+    (
+        Case(
+            "post-not-an-object",
+            "POST",
+            LIST,
+            _listing(superuser=True),
+            body=[1, 2],
+        ),
+        400,
+    ),
+    (
+        Case(
+            "post-if-none-match-star",
+            "POST",
+            LIST,
+            ADMIN_LIST,
+            body=BODY,
+            headers={"If-None-Match": "*"},
+        ),
+        412,
+    ),
+    (
+        Case(
+            "post-if-none-match-other",
+            "POST",
+            LIST,
+            ADMIN_LIST,
+            body=BODY,
+            headers={"If-None-Match": '"other"'},
+        ),
+        201,
+    ),
+    (
+        Case(
+            "post-if-none-match-current",
+            "POST",
+            LIST,
+            ADMIN_LIST,
+            body=BODY,
+            headers=_with_list_etag("If-None-Match"),
+        ),
+        412,
+    ),
+    (
+        Case(
+            "post-if-match",
+            "POST",
+            LIST,
+            ADMIN_LIST,
+            body=BODY,
+            headers=_with_list_etag("If-Match"),
+        ),
+        201,
+    ),
+    (
+        Case(
+            "post-if-match-paged",
+            "POST",
+            LIST + "?page_size=5000",
+            ADMIN_LIST,
+            body=BODY,
+            headers=_with_list_etag("If-Match", [("page_size", ["5000"])]),
+        ),
+        201,
+    ),
+    (
+        Case(
+            "post-if-match-stale",
+            "POST",
+            LIST,
+            ADMIN_LIST,
+            body=BODY,
+            headers={"If-Match": '"stale"'},
+        ),
+        412,
+    ),
+    (
+        Case(
+            "post-if-match-malformed",
+            "POST",
+            LIST,
+            ADMIN_LIST,
+            body=BODY,
+            headers={"If-Match": "stale"},
+        ),
+        400,
+    ),
+    (
+        Case(
+            "post-if-match-star",
+            "POST",
+            LIST,
+            ADMIN_LIST,
+            body=BODY,
+            headers={"If-Match": "*"},
+        ),
+        201,
+    ),
+    (
+        Case(
+            "post-if-unmodified-since",
+            "POST",
+            LIST,
+            ADMIN_LIST,
+            body=BODY,
+            headers={"If-Unmodified-Since": http_date(SETUP_TIME.timestamp() - 60)},
+        ),
+        412,
+    ),
+    (
+        Case(
+            "post-if-match-past-the-last-page",
+            "POST",
+            LIST + "?page=99",
+            ADMIN_LIST,
+            body=BODY,
+            headers={"If-Match": '"stale"'},
+        ),
+        404,
+    ),
+    (
+        Case(
+            "workflow-post-allowed",
+            "POST",
+            "{mount}workflow-notes/",
+            _workflow_creator,
+            body=dict(DRAFT),
+        ),
+        201,
+    ),
+    (
+        Case(
+            "workflow-post-refused",
+            "POST",
+            "{mount}workflow-notes/",
+            _workflow_creator,
+            body=dict(PUBLISHED),
+        ),
+        400,
+    ),
+    # The collection documents a list's Links name.
+    *(
+        (
+            Case(
+                f"{name}-{accept_id}",
+                "GET",
+                "{mount}" + f"{name}/partner-profiles/",
+                headers={"Accept": accept},
+            ),
+            200,
+        )
+        for name in ("collections-json-schema", "collections-json-ld")
+        for accept_id, accept in (("any", "*/*"), ("json", "application/json"))
+    ),
+    *(
+        (Case(f"{name}-unknown", "GET", "{mount}" + f"{name}/no-such-type/"), 404)
+        for name in ("collections-json-schema", "collections-json-ld")
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case, status",
+    [pytest.param(case, status, id=case.id) for case, status in LIST_CASES],
+)
+def test_list_routes_answer_alike(case, status):
+    drf, ninja = parity(case)
+
+    assert drf.status == status, drf
+    assert drf == ninja
+
+
+def test_list_links_name_the_collection_documents_of_the_serving_mount():
+    drf, ninja = parity(Case("list-links", "GET", LIST, ADMIN_LIST))
+
+    assert drf == ninja
+    links = split_links(ninja.headers["Link"])
+    assert links[:2] == [
+        "<http://testserver{mount}collections-json-schema/partner-profiles/>; "
+        'rel="describedby"; type="application/schema+json"',
+        "<http://testserver{mount}collections-json-ld/partner-profiles/>; "
+        'rel="http://www.w3.org/ns/json-ld#context"; type="application/ld+json"',
+    ]
+    assert links[2].startswith(f"<{HSR}>")
+
+
 # What the harness normalizes away, compared directly: the HTTP Schema
 # Resource a response links to, and Vary.
 
@@ -757,6 +1232,77 @@ def test_item_routes_vary_on_accept_alike(client, kind):
         assert "Accept" in varies["drf"], (name, varies)
 
 
+def test_list_routes_vary_on_accept_alike(client):
+    serve_both()
+    _user(client, superuser=True)
+    PROFILE.store()
+    json_body = {"data": json.dumps(BODY), "content_type": "application/json"}
+    asked = {
+        "get": _varies(client, "GET", LIST),
+        "get-json": _varies(
+            client, "GET", LIST, headers={"Accept": "application/json"}
+        ),
+        "head": _varies(client, "HEAD", LIST),
+        "page-0": _varies(client, "GET", LIST + "?page=0"),
+        "not-modified": _varies(
+            client,
+            "GET",
+            LIST,
+            headers={"If-Modified-Since": http_date(SETUP_TIME.timestamp() + 3600)},
+        ),
+        "filter-integer": _varies(client, "GET", "{mount}hooked-notes/?1=x"),
+        "post": _varies(client, "POST", LIST, **json_body),
+        "post-stale": _varies(
+            client, "POST", LIST, headers={"If-Match": '"stale"'}, **json_body
+        ),
+        "post-failing-the-schema": _varies(
+            client,
+            "POST",
+            LIST,
+            data=json.dumps({"display_name": 1}),
+            content_type="application/json",
+        ),
+        "put": _varies(client, "PUT", LIST, **json_body),
+        **{
+            f"{name}-{accept}": _varies(
+                client,
+                "GET",
+                "{mount}" + f"{name}/{slug}/",
+                headers={"Accept": accept},
+            )
+            for name in ("collections-json-schema", "collections-json-ld")
+            for slug in ("partner-profiles", "no-such-type")
+            for accept in ("*/*", "application/json")
+        },
+    }
+
+    for name, varies in asked.items():
+        assert varies["drf"] == varies["ninja"], (name, varies)
+        assert "Accept" in varies["drf"], (name, varies)
+
+
+def test_each_front_ends_list_hsr_links_to_its_own_routes(client):
+    serve_both()
+    _user(client, superuser=True)
+    rtype = registration.get_resource_type_for("partner-profiles")
+    for front_end, other in (("ninja", "drf"), ("drf", "ninja")):
+        mount = MOUNTS[front_end]
+        response = client.get(f"{mount}partner-profiles/")
+        assert response.status_code == 200, response.content
+        document = client.get(_hsr_of(response))
+        assert document.status_code == 200, document.content
+        text = document.content.decode()
+        for target in (
+            f"{mount}collections-json-schema/partner-profiles/",
+            f"{mount}collections-json-ld/partner-profiles/",
+            # The create's answer is the new resource's.
+            f"{mount}json-schema/{rtype.schema.pk}/",
+            f"{mount}json-ld/{rtype.context.pk}/",
+        ):
+            assert target in text, (target, text)
+        assert MOUNTS[other] not in text, text
+
+
 # Uniform errors off (SCOPED_RBAC["UNIFORM_ERRORS"]) for a request: each front
 # end reads it per request, so an API built with it on answers natively.
 
@@ -838,7 +1384,30 @@ UNIFORM_CASES = [
             "If-None-Match": quote_etag(Resource.objects.get(pk=keys["item"]).etag)
         },
     ),
+    *(
+        case
+        for case, _ in LIST_CASES
+        if case.id
+        in {
+            "list-page-0",
+            "list-anonymous",
+            "list-item-grant-only",
+            "list-if-match-stale",
+            "list-filter-integer",
+            "list-filter-nul",
+            "post-failing-the-schema",
+            "post-not-an-object",
+            "post-not-json",
+            "post-if-none-match-star",
+            "post-if-match-malformed",
+            "collections-json-schema-unknown",
+            "collections-json-ld-unknown",
+        }
+    ),
 ]
+
+# scrud's own errors (a schema's) are problem details either way.
+OWN_ERRORS = {"failing-the-schema", "post-failing-the-schema"}
 
 
 @pytest.mark.parametrize("uniform", [True, False], ids=["uniform", "native"])
@@ -852,7 +1421,6 @@ def test_errors_follow_uniform_errors_per_request_alike(case, uniform):
         drf, ninja = parity(case)
 
     assert drf == ninja
-    if drf.status >= 400 and case.id != "failing-the-schema":
-        # scrud's own errors (a schema's) are problem details either way.
+    if drf.status >= 400 and case.id not in OWN_ERRORS:
         expected = "application/problem+json" if uniform else "application/json"
         assert drf.headers["Content-Type"] == expected, drf

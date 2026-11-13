@@ -19,7 +19,8 @@ def api(
     """A ``NinjaAPI`` serving scrud's resource types: the built-in ones (JSON
     Schema and JSON-LD documents, indexing and workflow policies) unless
     `built_ins` is false, and each of `types`, every one registered first
-    (`TypeSpec.register`). Its URL names are under `urls_namespace`; the
+    (`TypeSpec.register`), and the collection documents their lists link to
+    (`routers.collections_router`). Its URL names are under `urls_namespace`; the
     rest of `ninja_kwargs` go to ``NinjaAPI``, but ``auth`` (``TypeError``):
     scrud authenticates every request itself
     (`scrud_django.ninja.entry.entry`), as scoped-rbac decides, so that an
@@ -49,7 +50,10 @@ def api(
                 f"{spec.slug}/",
                 routers.type_router(spec, urls_namespace=urls_namespace),
             )
-            url_names.append(f"{spec.slug}-detail")
+            url_names.extend((f"{spec.slug}-list", f"{spec.slug}-detail"))
+    # The documents the lists' Links name, after the type routers.
+    scrud_api.add_router("", routers.collections_router())
+    url_names.extend(routers.COLLECTION_ROUTES)
     errors.install(scrud_api)
     errors.answer_natively_when_off(scrud_api)
     routers.vary_on_accept(scrud_api, url_names)
