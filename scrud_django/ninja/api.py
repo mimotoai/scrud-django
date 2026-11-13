@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 
 import ninja
+from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac.ninja.api import router as scoped_rbac_router
 from scrudful.ninja import ScrudfulRouter
 
@@ -13,6 +14,56 @@ from scrud_django.registration import TypeSpec, built_in_type_specs
 #: The prefix of the URL names of scoped-rbac's routes
 #: (``scoped_rbac.ninja.api.router``).
 SCOPED_RBAC_ROUTES = "scoped-rbac-"
+
+#: The slugs no type may have: the first path segment of the routes that are
+#: not a type's: the service catalog (``services/``), scoped-rbac's
+#: (``roles/``, ``role-assignments/``, ``user-rbac-policy/``, and its HSR
+#: route ``_hsr/``), and the collection documents' (`routers.COLLECTION_ROUTES`).
+RESERVED_SLUGS = frozenset(
+    {
+        "services",
+        "roles",
+        "role-assignments",
+        "user-rbac-policy",
+        "_hsr",
+        *routers.COLLECTION_ROUTES,
+    }
+)
+
+
+def _check_specs(specs: Sequence[object]) -> None:
+    """Refuse, before anything is registered, a spec the API cannot serve:
+    one that is not a `TypeSpec` (``TypeError``), a slug that is reserved
+    (`RESERVED_SLUGS`) or shared, an IRI that is shared
+    (``ImproperlyConfigured``)."""
+    for spec in specs:
+        if not isinstance(spec, TypeSpec):
+            raise TypeError(
+                f"api(types=...) takes TypeSpecs (registration."
+                f"json_resource_type_spec, computed_resource_type_spec), "
+                f"not {spec!r}."
+            )
+    by_slug: dict[str, TypeSpec] = {}
+    by_iri: dict[str, TypeSpec] = {}
+    for spec in specs:
+        if spec.slug in RESERVED_SLUGS:
+            raise ImproperlyConfigured(
+                f"The type {spec.resource_type_uri} has the slug {spec.slug!r}, "
+                f"which is a route of its own (reserved: {sorted(RESERVED_SLUGS)})."
+            )
+        other = by_slug.get(spec.slug)
+        if other is not None:
+            raise ImproperlyConfigured(
+                f"The types {other.resource_type_uri} and "
+                f"{spec.resource_type_uri} have one slug, {spec.slug!r}."
+            )
+        other = by_iri.get(spec.resource_type_uri)
+        if other is not None:
+            raise ImproperlyConfigured(
+                f"The type {spec.resource_type_uri} has two slugs, "
+                f"{other.slug!r} and {spec.slug!r}."
+            )
+        by_slug[spec.slug] = by_iri[spec.resource_type_uri] = spec
 
 
 def api(
@@ -76,10 +127,12 @@ def api(
     # is valid.
     ninja_kwargs.setdefault("docs_url", None)
     ninja_kwargs.setdefault("openapi_url", None)
+    specs = [*built_in_type_specs(), *types]
+    # Before any side effect: nothing is registered, nor any API built.
+    _check_specs(specs)
     scrud_api = ninja.NinjaAPI(
         urls_namespace=urls_namespace, default_router=ScrudfulRouter(), **ninja_kwargs
     )
-    specs = [*built_in_type_specs(), *types]
     type_routes = []
     computed_routes = []
     # The renderers each route's DRF view negotiates among, by route name.
@@ -117,6 +170,10 @@ def api(
             )
             computed_routes.append(f"{spec.slug}-detail")
             offers[f"{spec.slug}-detail"] = negotiation.resource_renderers()
+        elif spec.kind != "json":
+            raise ImproperlyConfigured(
+                f"The type {spec.resource_type_uri} has the kind {spec.kind!r}."
+            )
     # The documents the lists' Links name.
     scrud_api.add_router("", routers.collections_router())
     scrud_routes = frozenset(

@@ -12,6 +12,7 @@ import functools
 import inspect
 
 from django.urls import URLPattern
+from ninja.operation import Operation
 from scoped_rbac import access
 from scoped_rbac.ninja import resolve_user
 from scrudful._django import precondition_headers
@@ -53,18 +54,29 @@ def entry(run):
     (``TypeError`` for an async one)."""
     if inspect.iscoroutinefunction(run):
         raise TypeError("scrud's ninja entry checks serve sync operations only.")
+    operation = getattr(inspect.unwrap(run), "__self__", None)
+    if not isinstance(operation, Operation):
+        raise TypeError(
+            "scrud's ninja entry decorates an operation's run, as "
+            '``router.add_decorator(entry, mode="view")`` does: use '
+            'mode="view" (mode="operation" decorates the view function).'
+        )
 
     @functools.wraps(run)
     def scrud_entry(request, *args, **kwargs):
-        if request.method == "OPTIONS":
-            return run(request, *args, **kwargs)
+        api = _api_of(run)
         try:
-            access.refuse_rewritten_options(request)
+            if is_preflight(request.method, request.headers.get):
+                return run(request, *args, **kwargs)
+            if request.method != "OPTIONS":
+                access.refuse_rewritten_options(request)
+            # A real OPTIONS resolves the user too, as DRF authenticates it
+            # (idempotent: scrud's OPTIONS operations resolve it again).
             resolve_user(request)
         except Exception as exc:
             # An access error, or what a ``NINJA_USER`` hook raises (ninja's
             # ``AuthenticationError``: 401), as the operation would answer it.
-            return _api_of(run).on_exception(request, exc)
+            return api.on_exception(request, exc)
         if not _in_write_transaction(request):
             return run(request, *args, **kwargs)
         with write_transaction(write_db()) as rollback:

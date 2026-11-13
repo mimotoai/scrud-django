@@ -69,3 +69,31 @@ else:
 def test_models_import_without_ninja():
     result = run("import scrud_django.models\n")
     assert result.returncode == 0, result.stderr
+
+
+def test_a_ninja_that_fails_to_import_raises_its_own_error():
+    # Installed, but broken: not "needs django-ninja".
+    script = SCRIPT.replace(
+        'raise ModuleNotFoundError(f"blocked: {name}", name=name)',
+        'raise ImportError(f"ninja is broken: {name}", name=name)',
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script
+            + """
+try:
+    import scrud_django.ninja
+except ImportError as error:
+    assert "ninja is broken" in str(error), str(error)
+    assert "scrud-django[ninja]" not in str(error), str(error)
+else:
+    raise SystemExit("import succeeded")
+""",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

@@ -974,6 +974,10 @@ class TypeSpec:
             raise ImproperlyConfigured(
                 f"{name}: its kind is 'json' or 'computed', not {self.kind!r}."
             )
+        if not isinstance(self.options, TypeOptions):
+            raise ImproperlyConfigured(
+                f"{name}: its options are a TypeOptions, not {self.options!r}."
+            )
         computed = self.kind == "computed"
         if computed != (self.options.compute is not None):
             raise ImproperlyConfigured(

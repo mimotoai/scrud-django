@@ -10,11 +10,12 @@ from contextlib import contextmanager
 import pytest
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser, User
+from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponse
 from django.test import Client, RequestFactory, override_settings
 from django.urls import path, resolve
 from django.utils.http import quote_etag
-from ninja import Router
+from ninja import NinjaAPI, Router
 from ninja.errors import AuthenticationError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -32,6 +33,8 @@ from scrud_django.exceptions import (
 )
 from scrud_django.mixins.view_mixins import ListValidatorsMixin
 from scrud_django.models import Resource, ResourceType
+from scrud_django.ninja import routers, services
+from scrud_django.ninja.api import RESERVED_SLUGS
 from scrud_django.ninja.entry import entry
 
 from .front_ends import MOUNTS, serve_both
@@ -106,6 +109,12 @@ added.add_decorator(entry, mode="view")
 def whoami(request):
     """The requester's username, as the entry checks resolved them."""
     return {"user": request.user.username}
+
+
+@added.api_operation(["OPTIONS"], "/options-probe/")
+def options_probe(request):
+    """An app's OPTIONS operation, which resolves nothing itself."""
+    return HttpResponse(status=204)
 
 
 @api_view(["GET"])
@@ -522,3 +531,116 @@ def test_a_router_added_with_the_entry_checks_resolves_and_csrf_checks():
         response = client.get("/ninja/added/whoami/")
     assert response.status_code == 200, response.content
     assert response.json() == {"user": "resolved"}
+
+
+# --- api() refuses what it cannot serve, before it registers anything ---
+
+REFUSED_URI = "tests://Refused"
+REFUSED_SLUG = "refused-things"
+
+
+def _registered_state():
+    from scrud_django.core import types as core_types
+
+    return (
+        set(ResourceType.objects.values_list("type_uri", flat=True)),
+        dict(core_types._SLUG_IRIS),
+        dict(core_types._OPTIONS),
+    )
+
+
+def _spec(uri=REFUSED_URI, slug=REFUSED_SLUG):
+    return registration.json_resource_type_spec(uri, slug)
+
+
+def _refused(types, match=None, error=ImproperlyConfigured):
+    before = _registered_state()
+    constructed = []
+    original = NinjaAPI.__init__
+
+    def recording(self, *args, **kwargs):
+        constructed.append(self)
+        original(self, *args, **kwargs)
+
+    NinjaAPI.__init__ = recording
+    try:
+        with pytest.raises(error, match=match):
+            scrud_django.ninja.api(urls_namespace="test-api-refused", types=types)
+    finally:
+        NinjaAPI.__init__ = original
+    assert _registered_state() == before
+    assert constructed == []  # no API, no routers, before the refusal
+
+
+def test_a_slug_a_built_in_type_has_is_refused_naming_both_iris():
+    clash = registration.json_resource_type_spec(REFUSED_URI, slug="json-schema")
+    built_in = {s.slug: s for s in registration.built_in_type_specs()}["json-schema"]
+    _refused([clash], match=REFUSED_URI)
+    _refused([clash], match=built_in.resource_type_uri)
+
+
+def test_two_specs_with_one_slug_are_refused():
+    _refused([_spec(), _spec("tests://RefusedToo")], match="tests://RefusedToo")
+
+
+def test_two_specs_with_one_iri_are_refused():
+    _refused([_spec(), _spec(slug="refused-twice")], match=REFUSED_URI)
+
+
+@pytest.mark.parametrize("slug", sorted(RESERVED_SLUGS))
+def test_a_slug_that_is_a_fixed_prefix_is_refused(slug):
+    _refused([_spec(slug=slug)], match=slug)
+
+
+def test_the_reserved_slugs_cover_every_fixed_route_prefix():
+    # What scoped-rbac's router and the collection documents' mount.
+    from scoped_rbac.ninja.api import router
+    from scrudful.ninja import ScrudfulRouter
+
+    probe = NinjaAPI(urls_namespace="test-reserved", default_router=ScrudfulRouter())
+    probe.add_router("", router())
+    probe.add_router("", routers.collections_router())
+    probe.add_router("services/", services.services_router())
+    first = {
+        str(p.pattern).split("/")[0] for p in probe._get_urls() if hasattr(p, "pattern")
+    } - {"", "docs", "openapi.json"}
+    assert first <= RESERVED_SLUGS
+
+
+@pytest.mark.parametrize("element", ["not-a-spec", object(), None])
+def test_an_element_that_is_not_a_type_spec_is_refused(element):
+    _refused([element], match="json_resource_type_spec", error=TypeError)
+
+
+def test_entry_in_operation_mode_is_refused_at_decoration_time():
+    router = Router()
+    router.add_decorator(entry, mode="operation")
+    with pytest.raises(TypeError, match='mode="view"'):
+
+        @router.get("/x/")
+        def x(request):
+            return {}
+
+        probe = NinjaAPI(urls_namespace="test-operation-mode")
+        probe.add_router("", router)
+        assert probe.urls
+
+
+def test_a_real_options_on_an_entry_router_resolves_the_user():
+    refusing = {**settings.SCOPED_RBAC, "NINJA_USER": _refusing_credentials}
+    with override_settings(SCOPED_RBAC=refusing):
+        response = Client().options("/ninja/added/options-probe/")
+    assert response.status_code == 401, response.content
+
+
+def test_a_preflight_on_an_entry_router_does_not_resolve_the_user():
+    refusing = {**settings.SCOPED_RBAC, "NINJA_USER": _refusing_credentials}
+    with override_settings(SCOPED_RBAC=refusing):
+        response = Client().options(
+            "/ninja/added/options-probe/",
+            headers={
+                "Origin": "http://example.org",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+    assert response.status_code != 401, response.content

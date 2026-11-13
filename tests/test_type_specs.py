@@ -299,7 +299,11 @@ def test_ninja_document_renderers_are_keyed_by_the_document_media_types():
 
 
 def test_a_built_in_spec_takes_no_options():
-    built_in = registration.built_in_type_specs()[2]  # indexing policies
+    built_in = next(
+        spec
+        for spec in registration.built_in_type_specs()
+        if spec.slug == "indexing-policies"
+    )
     with pytest.raises(ImproperlyConfigured):
         dataclasses.replace(
             built_in, options=core_types.TypeOptions(object_checks=(deny,))
@@ -310,6 +314,13 @@ def test_a_built_in_spec_takes_no_options():
     with pytest.raises(ImproperlyConfigured):
         dataclasses.replace(built_in, slug=OTHER_SLUG)
     assert dataclasses.replace(built_in) == built_in
+
+
+def test_options_that_are_not_type_options_are_refused():
+    spec = registration.json_resource_type_spec(TYPE_URI, SLUG)
+    for options in (None, {}, "options"):
+        with pytest.raises(ImproperlyConfigured):
+            dataclasses.replace(spec, options=options)
 
 
 def test_specs_are_hashable():
