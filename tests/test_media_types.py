@@ -5,7 +5,8 @@ context resource as ``application/ld+json``. A client that asks for
 ``application/json`` still gets the same body as ``application/json``;
 errors and lists keep theirs. The OPTIONS of a resource (a scrudful view) is a
 204 without content; that of a collection document (a plain DRF view) is DRF's
-200."""
+200. Each runs on both front ends (the ``front_end`` fixture) but the
+adopter's renderer's, a DRF route's."""
 
 import pytest
 from django.conf import settings
@@ -18,6 +19,7 @@ from scrud_django.models import Resource, ResourceType
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
+from .front_ends import api_url
 
 SCHEMA_JSON = "application/schema+json"
 LD_JSON = "application/ld+json"
@@ -25,19 +27,30 @@ LD_JSON = "application/ld+json"
 
 def superuser():
     client = APIClient()
-    client.force_authenticate(UserFactory(is_superuser=True, is_staff=True))
+    client.force_login(UserFactory(is_superuser=True, is_staff=True))
     return client
 
 
-def documents():
-    """(url, media type) of each document a resource's Link names."""
-    reverse("partner-profiles-list")  # importing tests.urls registers types
+def documents(front_end):
+    """(url, media type) of each document a resource's Link names, on
+    `front_end`."""
+    # Importing the URLconf registers the types.
+    api_url(front_end, "partner-profiles-list")
     partner_profiles = ResourceType.objects.get(slug="partner-profiles")
     return [
-        (reverse("collections-json-schema", args=["partner-profiles"]), SCHEMA_JSON),
-        (reverse("collections-json-ld", args=["partner-profiles"]), LD_JSON),
-        (reverse("json-schema-detail", args=[partner_profiles.schema_id]), SCHEMA_JSON),
-        (reverse("json-ld-detail", args=[partner_profiles.context_id]), LD_JSON),
+        (
+            api_url(front_end, "collections-json-schema", args=["partner-profiles"]),
+            SCHEMA_JSON,
+        ),
+        (api_url(front_end, "collections-json-ld", args=["partner-profiles"]), LD_JSON),
+        (
+            api_url(front_end, "json-schema-detail", args=[partner_profiles.schema_id]),
+            SCHEMA_JSON,
+        ),
+        (
+            api_url(front_end, "json-ld-detail", args=[partner_profiles.context_id]),
+            LD_JSON,
+        ),
     ]
 
 
@@ -46,9 +59,9 @@ def content_type(response):
 
 
 @pytest.mark.django_db
-def test_each_document_is_served_as_its_links_type():
+def test_each_document_is_served_as_its_links_type(front_end):
     client = superuser()
-    for url, media_type in documents():
+    for url, media_type in documents(front_end):
         for accept in (
             None,
             "*/*",
@@ -66,9 +79,9 @@ def test_each_document_is_served_as_its_links_type():
 
 
 @pytest.mark.django_db
-def test_a_client_asking_for_json_gets_the_same_body_as_json():
+def test_a_client_asking_for_json_gets_the_same_body_as_json(front_end):
     client = superuser()
-    for url, _media_type in documents():
+    for url, _media_type in documents(front_end):
         typed = client.get(url)
         plain = client.get(url, HTTP_ACCEPT="application/json")
         assert plain.status_code == 200, (url, plain.content)
@@ -80,19 +93,34 @@ def test_a_client_asking_for_json_gets_the_same_body_as_json():
 
 
 @pytest.mark.django_db
-def test_a_media_type_the_route_does_not_serve_is_406():
+def test_a_media_type_the_route_does_not_serve_is_406(front_end):
     client = superuser()
-    for url, _media_type in documents():
+    for url, _media_type in documents(front_end):
         response = client.get(url, HTTP_ACCEPT="application/xml")
         assert response.status_code == 406, (url, response.content)
+    # A resource, its list and the service catalog: DRF negotiates first,
+    # before it reads anything.
+    item = ResourceRegistration.register(
+        {"name": "x", "rbac_context": "a"}, "partner-profiles"
+    )
+    for url in (
+        api_url(front_end, "partner-profiles-detail", args=[item.pk]),
+        api_url(front_end, "partner-profiles-list"),
+        api_url(front_end, "services"),
+    ):
+        response = client.get(url, HTTP_ACCEPT="application/xml")
+        assert response.status_code == 406, (url, response.content)
+        assert content_type(response) == "application/problem+json", url
+        assert response.json()["code"] == "not_acceptable", url
+        assert "Accept" in response.get("Vary", ""), (url, response.get("Vary"))
 
 
 @pytest.mark.django_db
-def test_a_put_of_a_json_schema_answers_with_the_schema_type():
+def test_a_put_of_a_json_schema_answers_with_the_schema_type(front_end):
     client = superuser()
-    reverse("partner-profiles-list")
+    api_url(front_end, "partner-profiles-list")
     schema = ResourceRegistration.register({"type": "object"}, "json-schema")
-    url = reverse("json-schema-detail", args=[schema.pk])
+    url = api_url(front_end, "json-schema-detail", args=[schema.pk])
     response = client.put(
         url,
         {"type": "object", "title": "changed"},
@@ -104,14 +132,14 @@ def test_a_put_of_a_json_schema_answers_with_the_schema_type():
 
 
 @pytest.mark.django_db
-def test_lists_keep_application_json_and_options_has_no_content():
+def test_lists_keep_application_json_and_options_has_no_content(front_end):
     client = superuser()
-    documents()
+    documents(front_end)
     for name in ("json-schema-list", "json-ld-list"):
-        response = client.get(reverse(name))
+        response = client.get(api_url(front_end, name))
         assert response.status_code == 200, response.content
         assert content_type(response) == "application/json", name
-    collections, resources = documents()[:2], documents()[2:]
+    collections, resources = documents(front_end)[:2], documents(front_end)[2:]
     for url, _media_type in collections:
         # Plain DRF views (no scrudful): DRF's OPTIONS metadata, as
         # application/json, and no HSR link.
@@ -129,18 +157,18 @@ def test_lists_keep_application_json_and_options_has_no_content():
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("uniform", [True, False])
-def test_errors_keep_their_media_type(uniform):
+def test_errors_keep_their_media_type(front_end, uniform):
     error_type = "application/problem+json" if uniform else "application/json"
     client = superuser()
-    schema_url = documents()[2][0]
+    schema_url = documents(front_end)[2][0]
     with override_settings(
         SCOPED_RBAC=dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
     ):
         for url in (
-            reverse("collections-json-schema", args=["no-such-type"]),
-            reverse("collections-json-ld", args=["no-such-type"]),
-            reverse("json-schema-detail", args=[999999]),
-            reverse("json-ld-detail", args=[999999]),
+            api_url(front_end, "collections-json-schema", args=["no-such-type"]),
+            api_url(front_end, "collections-json-ld", args=["no-such-type"]),
+            api_url(front_end, "json-schema-detail", args=[999999]),
+            api_url(front_end, "json-ld-detail", args=[999999]),
         ):
             response = client.get(url)
             assert response.status_code == 404, (url, response.content)
@@ -152,9 +180,9 @@ def test_errors_keep_their_media_type(uniform):
 
 
 @pytest.mark.django_db
-def test_the_format_parameter_names_each_type():
+def test_the_format_parameter_names_each_type(front_end):
     client = superuser()
-    for url, media_type in documents():
+    for url, media_type in documents(front_end):
         response = client.get(url, {"format": "json"})
         assert response.status_code == 200, (url, response.content)
         assert content_type(response) == "application/json", url
@@ -165,13 +193,13 @@ def test_the_format_parameter_names_each_type():
 
 
 @pytest.mark.django_db
-def test_a_scrud_error_on_a_document_route_is_problem_details():
+def test_a_scrud_error_on_a_document_route_is_problem_details(front_end):
     # A PUT of a JSON Schema that does not compile: scrud's own 400, served
     # as problem details whichever renderer negotiation picked.
     client = superuser()
-    reverse("partner-profiles-list")
+    api_url(front_end, "partner-profiles-list")
     schema = ResourceRegistration.register({"type": "object"}, "json-schema")
-    url = reverse("json-schema-detail", args=[schema.pk])
+    url = api_url(front_end, "json-schema-detail", args=[schema.pk])
     for accept in (None, "application/json"):
         headers = {} if accept is None else {"HTTP_ACCEPT": accept}
         response = client.put(
@@ -181,6 +209,7 @@ def test_a_scrud_error_on_a_document_route_is_problem_details():
         assert content_type(response) == "application/problem+json", accept
 
 
+# DRF-only: an adopter's DRF renderer, on a viewset of tests/urls.py.
 @pytest.mark.django_db
 def test_an_adopters_own_json_renderer_keeps_its_type_on_a_scrud_error():
     # tests.urls.VndApiRenderer: a JSONRenderer subclass with its own media

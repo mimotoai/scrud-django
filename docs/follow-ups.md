@@ -1417,6 +1417,17 @@ on import or on the first request when a helper goes. For the cache, a test that
 `ROOT_URLCONF` with the `urls` mark and asserts the second HSR's links; it is
 served stale today.
 
+<a id="ninja-accept-parameters"></a>
+## ninja-accept-parameters: DRF's JSON reads `indent` from `Accept`; ninja's does not
+
+The ninja routes negotiate as DRF does (`scrud_django.ninja.negotiation`:
+the same renderer chosen, the same 406 and `?format=` 404), but they write
+JSON one way: DRF's `JSONRenderer` indents a body asked for with
+`Accept: application/json; indent=4`, ninja's renderer does not, so the
+bodies differ. (A request DRF answers as HTML gets JSON on ninja, which the
+README states.) Test: a parity case GET of a partner profile with
+`Accept: application/json; indent=4`; the bodies differ today.
+
 <a id="ninja-openapi-head-operation-id"></a>
 ## ninja-openapi-head-operation-id: a GET-and-HEAD operation is described twice under one `operationId`
 

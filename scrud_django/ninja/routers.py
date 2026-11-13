@@ -26,6 +26,7 @@ from scrud_django.core.bodies import check_body
 from scrud_django.core.collections import collection_context, collection_schema
 from scrud_django.core.types import SAFE_METHODS, requirement_for
 from scrud_django.core.urls import absolute_reverse
+from scrud_django.ninja import negotiation
 from scrud_django.ninja.entry import entry
 from scrud_django.registration import (
     TypeSpec,
@@ -49,6 +50,14 @@ TYPE_ATTR = "_scrud_ninja_resource_type"
 #: write transaction (`scrud_django.ninja.entry`).
 LOCKED_METHODS = frozenset({"PUT", "DELETE"})
 
+
+#: The methods whose answer on a document type's detail route is the
+#: document (``DocumentResourceViewSet.serves_document``: its retrieve and
+#: update actions), served as the type's media type (`_as_document`).
+DOCUMENT_METHODS = frozenset({"GET", "HEAD", "PUT"})
+
+#: The media type of HTML, which a ninja route never answers.
+HTML = "text/html"
 
 #: The media types of the collection documents (`collections_router`).
 SCHEMA_JSON = "application/schema+json"
@@ -289,7 +298,8 @@ def collections_router() -> Router:
     JSON Schema of `slug`'s list body, ``application/schema+json``) and
     ``"/collections-json-ld/{slug}/"`` (its JSON-LD context,
     ``application/ld+json``), GET and HEAD, public; served as
-    ``application/json`` to a request preferring it; and OPTIONS, answered
+    ``application/json`` to a request whose negotiation selects it
+    (`_as_media_type`); and OPTIONS, answered
     with the DRF view's metadata (`_document_options`). A plain ninja
     router: the DRF views are no scrudful views (no HTTP Schema Resource).
     Every operation passes `entry` first. The API gives every answer of its
@@ -626,18 +636,27 @@ def _varying_on_accept(view):
 
 
 def _as_document(request, response, spec):
-    """Serve `response` as `spec`'s document media type, unless the request
-    prefers ``application/json`` (``DocumentMediaTypeMixin``)."""
+    """Serve `response` as `spec`'s document media type, as DRF's content
+    negotiation selects it (`_as_media_type`, ``DocumentMediaTypeMixin``)."""
     if spec.document_media_type is not None:
         _as_media_type(request, response, spec.document_media_type)
 
 
 def _as_media_type(request, response, media_type):
-    """Serve `response` as `media_type`, unless the request prefers
-    ``application/json`` (``DocumentMediaTypeMixin``)."""
-    preferred = request.get_preferred_type([media_type, "application/json"])
-    if preferred == media_type:
-        response["Content-Type"] = media_type
+    """Serve `response` as `media_type` when DRF's content negotiation
+    selected that type's renderer for the request
+    (``negotiation.negotiated``, ``DocumentMediaTypeMixin``); a request
+    that negotiated another, ``application/json`` for one, gets
+    ``application/json``. One that negotiated ``text/html``, which DRF
+    answers as HTML, or none, is served `media_type` unless it prefers
+    ``application/json``."""
+    chosen = negotiation.negotiated(request)
+    if chosen is None or chosen == HTML:
+        if request.get_preferred_type([media_type, "application/json"]) != media_type:
+            return
+    elif chosen != media_type:
+        return
+    response["Content-Type"] = media_type
 
 
 @contextmanager

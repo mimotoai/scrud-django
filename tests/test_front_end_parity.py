@@ -2172,3 +2172,239 @@ def test_errors_follow_uniform_errors_per_request_alike(case, uniform):
     if drf.status >= 400 and case.id not in OWN_ERRORS:
         expected = "application/problem+json" if uniform else "application/json"
         assert drf.headers["Content-Type"] == expected, drf
+
+
+# DRF negotiates the response's renderer first (``initial()``), every method
+# alike: an Accept none of the route's renderers serves is its 406, and a
+# format override none of them has its 404, before anything else; a
+# scrudful route's CORS preflight is answered before (204). The renderer it
+# selects decides a document's media type (``q`` is not weighed).
+
+XML = {"Accept": "application/xml"}
+COLLECTION_SCHEMA = "{mount}collections-json-schema/partner-profiles/"
+
+
+def _xml_with_etag(keys):
+    return {**XML, **_etag("item")(keys)}
+
+
+NOT_ACCEPTABLE_CASES = [
+    Case("xml-item-get", "GET", PROFILE.path(), PROFILE.setup(WRITER), headers=XML),
+    Case(
+        "xml-item-get-anonymous",
+        "GET",
+        PROFILE.path(),
+        PROFILE.setup(login=False),
+        headers=XML,
+    ),
+    Case(
+        "xml-item-missing",
+        "GET",
+        PROFILE.path("999999999"),
+        PROFILE.setup(superuser=True),
+        headers=XML,
+    ),
+    Case(
+        "xml-item-put",
+        "PUT",
+        PROFILE.path(),
+        PROFILE.setup(WRITER),
+        body=PROFILE.body("a"),
+        headers=_xml_with_etag,
+    ),
+    Case(
+        "xml-item-delete",
+        "DELETE",
+        PROFILE.path(),
+        PROFILE.setup(superuser=True),
+        headers=_xml_with_etag,
+    ),
+    Case(
+        "xml-item-patch",
+        "PATCH",
+        PROFILE.path(),
+        PROFILE.setup(superuser=True),
+        body={},
+        headers=XML,
+    ),
+    Case(
+        "xml-item-options",
+        "OPTIONS",
+        PROFILE.path(),
+        PROFILE.setup(superuser=True),
+        headers=XML,
+    ),
+    Case(
+        "xml-item-preflight",
+        "OPTIONS",
+        PROFILE.path(),
+        PROFILE.setup(superuser=True),
+        headers={**XML, **PREFLIGHT},
+    ),
+    Case("xml-list-get", "GET", LIST, _listing(superuser=True), headers=XML),
+    Case(
+        "xml-list-post",
+        "POST",
+        LIST,
+        _listing(superuser=True),
+        body={"name": "n", "rbac_context": "a"},
+        headers=XML,
+    ),
+    Case("xml-list-options", "OPTIONS", LIST, _listing(superuser=True), headers=XML),
+    Case(
+        "xml-document-get",
+        "GET",
+        SCHEMA.path(),
+        SCHEMA.setup(superuser=True),
+        headers=XML,
+    ),
+    Case(
+        "xml-document-put",
+        "PUT",
+        SCHEMA.path(),
+        SCHEMA.setup(superuser=True),
+        body=SCHEMA.body("a"),
+        headers=_xml_with_etag,
+    ),
+    Case("xml-collection-get", "GET", COLLECTION_SCHEMA, headers=XML),
+    Case("xml-collection-head", "HEAD", COLLECTION_SCHEMA, headers=XML),
+    Case(
+        "xml-collection-unknown",
+        "GET",
+        "{mount}collections-json-ld/no-such-type/",
+        headers=XML,
+    ),
+    Case("xml-collection-options", "OPTIONS", COLLECTION_SCHEMA, headers=XML),
+    Case(
+        "xml-collection-preflight",
+        "OPTIONS",
+        COLLECTION_SCHEMA,
+        headers={**XML, **PREFLIGHT},
+    ),
+    Case("xml-collection-post", "POST", COLLECTION_SCHEMA, body={}, headers=XML),
+    Case("xml-computed-get", "GET", COMPUTED, _admin, headers=XML),
+    Case("xml-computed-get-anonymous", "GET", COMPUTED, headers=XML),
+    Case("xml-computed-put", "PUT", COMPUTED, _admin, body={}, headers=XML),
+    Case("xml-computed-put-anonymous", "PUT", COMPUTED, body={}, headers=XML),
+    Case("xml-computed-options", "OPTIONS", COMPUTED, _admin, headers=XML),
+    Case(
+        "xml-computed-preflight",
+        "OPTIONS",
+        COMPUTED,
+        _admin,
+        headers={**XML, **PREFLIGHT},
+    ),
+    Case("xml-services-get", "GET", SERVICES, headers=XML),
+    Case("xml-services-post", "POST", SERVICES, body={}, headers=XML),
+    Case("xml-services-options", "OPTIONS", SERVICES, headers=XML),
+    Case("xml-services-preflight", "OPTIONS", SERVICES, headers={**XML, **PREFLIGHT}),
+    # A format override none of the route's renderers has: 404.
+    Case(
+        "format-unknown-item",
+        "GET",
+        PROFILE.path() + "?format=xml",
+        PROFILE.setup(superuser=True),
+    ),
+    Case(
+        "format-unknown-document",
+        "GET",
+        SCHEMA.path() + "?format=ld-json",
+        SCHEMA.setup(superuser=True),
+    ),
+    Case("format-unknown-collection", "GET", COLLECTION_SCHEMA + "?format=html"),
+    Case("format-unknown-computed", "GET", COMPUTED + "?format=xml", _admin),
+    Case("format-unknown-services", "GET", SERVICES + "?format=html"),
+    # Formats the route's renderers have.
+    Case(
+        "format-json-document",
+        "GET",
+        SCHEMA.path() + "?format=json",
+        SCHEMA.setup(superuser=True),
+    ),
+    Case(
+        "format-own-document",
+        "GET",
+        SCHEMA.path() + "?format=schema-json",
+        SCHEMA.setup(superuser=True),
+    ),
+    Case("format-json-collection", "GET", COLLECTION_SCHEMA + "?format=json"),
+    Case(
+        "format-xml-json-collection",
+        "GET",
+        COLLECTION_SCHEMA + "?format=json",
+        headers=XML,
+    ),
+    # Accepts DRF reads in its own way.
+    *(
+        Case(f"accept-{name}-{kind}", "GET", path, setup, headers={"Accept": accept})
+        for name, accept in (
+            ("empty", ""),
+            ("image-any", "image/*"),
+            ("any-q-0", "*/*;q=0"),
+            ("json-q-0", "application/json;q=0"),
+            (
+                "document-lower-q",
+                "application/schema+json;q=0.1, application/json;q=0.5",
+            ),
+            ("document-with-a-parameter", "application/schema+json; x=1"),
+            ("any-json", "*/json"),
+            ("xml-then-any", "application/xml, */*;q=0.1"),
+        )
+        for kind, path, setup in (
+            ("document", SCHEMA.path(), SCHEMA.setup(superuser=True)),
+            ("collection", COLLECTION_SCHEMA, lambda client: {}),
+            ("item", PROFILE.path(), PROFILE.setup(superuser=True)),
+        )
+    ),
+]
+
+# The cases DRF answers 406.
+NOT_ACCEPTED = {
+    case.id
+    for case in NOT_ACCEPTABLE_CASES
+    if case.id.startswith("xml-")
+    and case.id not in {"xml-item-preflight", "xml-services-preflight"}
+} | {
+    f"accept-{name}-{kind}"
+    for name in ("empty", "image-any")
+    for kind in ("document", "collection", "item")
+} | {
+    # The format's renderer does not serve what the Accept asks.
+    "format-xml-json-collection",
+    # A plain type's item has no schema renderer.
+    "accept-document-with-a-parameter-item",
+}
+
+
+@pytest.mark.parametrize("uniform", [True, False], ids=["uniform", "native"])
+@pytest.mark.parametrize("case", NOT_ACCEPTABLE_CASES, ids=lambda case: case.id)
+def test_negotiation_answers_alike(case, uniform):
+    serve_both()
+    setting = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
+    with override_settings(SCOPED_RBAC=setting):
+        drf, ninja = parity(case)
+
+    assert drf == ninja
+    if case.id in NOT_ACCEPTED:
+        assert drf.status == 406, drf
+    elif case.id.startswith("format-unknown-"):
+        assert drf.status == 404, drf
+    else:
+        assert drf.status < 400, drf
+
+
+def test_negotiation_refusals_vary_on_accept_alike(client):
+    serve_both()
+    _user(client, superuser=True)
+    item = PROFILE.store()
+    for method, path in (
+        ("GET", PROFILE.path(item.pk)),
+        ("PATCH", PROFILE.path(item.pk)),
+        ("GET", LIST),
+        ("GET", COLLECTION_SCHEMA),
+        ("GET", COMPUTED),
+        ("GET", SERVICES),
+        ("OPTIONS", SERVICES),
+    ):
+        varies = _varies(client, method, path, headers=XML)
+        assert varies["drf"] == varies["ninja"], (method, path, varies)

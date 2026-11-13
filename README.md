@@ -101,9 +101,14 @@ urlpatterns = [
   with different `types=` in one process, or a ninja-only URLconf after DRF
   routes registered other types, makes `services/` fail (500); see
   `services-unrouted-types` in the [follow-ups](docs/follow-ups.md).
+* Content negotiation is DRF's: an `Accept` none of a route's DRF renderers
+  serves (`Accept: application/xml`) is DRF's 406 (`not_acceptable`), and a
+  `?format=` none of them has its 404, on both front ends; the document
+  routes choose their media type as DRF does.
 * The UI types (`scrud_django.ui`) and the studio types are not served on
   ninja yet, nor are the `ui-css-files` and `ui-js-files` views, and a ninja
-  route never answers `text/html`.
+  route never answers `text/html`: a request that DRF would answer as HTML
+  (`Accept: text/html`, `?format=api`) gets the JSON answer.
 * `scrud_django.urls` stays DRF until the release that switches it; include
   it as before for a DRF project.
 

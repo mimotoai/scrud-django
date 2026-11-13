@@ -7,7 +7,7 @@ from scoped_rbac.ninja.api import router as scoped_rbac_router
 from scrudful.ninja import ScrudfulRouter
 
 from scrud_django import registration
-from scrud_django.ninja import computed, entry, errors, routers, services
+from scrud_django.ninja import computed, entry, errors, negotiation, routers, services
 from scrud_django.registration import TypeSpec, built_in_type_specs
 
 #: The prefix of the URL names of scoped-rbac's routes
@@ -45,8 +45,13 @@ def api(
     The ``ScrudfulRouter``s are mounted first, before any path that could
     shadow their HTTP Schema Resource routes (``/_hsr/``).
 
-    Every route of these resolves its requester first, every method alike
-    (`entry.authenticate_first`), as DRF authenticates every request. Its
+    Every scrud route (but scoped-rbac's, JSON-only on DRF too) negotiates
+    its renderer first, every method alike, among those of its DRF view
+    (`negotiation.negotiate_as_drf`: DRF's 406 for an ``Accept`` none
+    serves, its 404 for an unknown ``?format=``), as DRF's ``initial()``
+    does; a route that negotiates ``text/html`` is answered as JSON, as
+    before. Every route of these then resolves its requester, every method
+    alike (`entry.authenticate_first`), as DRF authenticates every request. Its
     errors are answered as on DRF (`errors.install`), as uniform errors
     are for each request (`errors.answer_natively_when_off`); the routes of
     DRF views negotiating among several renderers vary on ``Accept`` as
@@ -76,6 +81,14 @@ def api(
     specs = [*built_in_type_specs(), *types]
     type_routes = []
     computed_routes = []
+    # The renderers each route's DRF view negotiates among, by route name.
+    offers = {
+        services.SERVICES_ROUTE: negotiation.api_view_renderers(),
+        **{
+            name: negotiation.api_view_renderers(media_type)
+            for name, (_, media_type) in routers.COLLECTION_ROUTES.items()
+        },
+    }
     for spec in specs:
         spec.register()
     # Each router is built afresh for each API: ninja mounts a router on one
@@ -88,6 +101,10 @@ def api(
                 routers.type_router(spec, urls_namespace=urls_namespace),
             )
             type_routes.extend((f"{spec.slug}-list", f"{spec.slug}-detail"))
+            offers[f"{spec.slug}-list"] = negotiation.resource_renderers()
+            offers[f"{spec.slug}-detail"] = negotiation.resource_renderers(
+                spec.document_media_type, routers.DOCUMENT_METHODS
+            )
     scrud_api.add_router("services/", services.services_router())
     scrud_api.add_router("", scoped_rbac_router())
     registration.register_role_services()
@@ -98,6 +115,7 @@ def api(
                 computed.computed_router(spec, urls_namespace=urls_namespace),
             )
             computed_routes.append(f"{spec.slug}-detail")
+            offers[f"{spec.slug}-detail"] = negotiation.resource_renderers()
     # The documents the lists' Links name.
     scrud_api.add_router("", routers.collections_router())
     scrud_routes = frozenset(
@@ -118,6 +136,11 @@ def api(
         scrud_api, [*routers.COLLECTION_ROUTES, *computed_routes]
     )
     errors.answer_natively_when_off(scrud_api)
+    negotiation.negotiate_as_drf(
+        scrud_api,
+        offers,
+        described=frozenset([*type_routes, services.SERVICES_ROUTE]),
+    )
     routers.vary_on_accept(scrud_api, scrud_routes)
     routers.as_drf_api_views(scrud_api, [*routers.COLLECTION_ROUTES, *computed_routes])
     services.as_drf_api_view_function(
