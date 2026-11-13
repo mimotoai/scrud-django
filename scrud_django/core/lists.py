@@ -399,29 +399,46 @@ def _paged(queryset, size, number_of):
     return rows_by_keys(queryset, list(page.object_list)), page
 
 
-def page_size_of(params: QueryDict) -> int:
+def page_size_of(
+    params: QueryDict,
+    *,
+    param: str | None = PAGE_SIZE_PARAMETER,
+    default: int | None = DEFAULT_PAGE_SIZE,
+    maximum: int | None = MAX_PAGE_SIZE,
+) -> int | None:
     """The size of the page the query parameters `params` ask for, as DRF's
-    ``PageNumberPagination.get_page_size`` reads it with the list's rules:
-    `PAGE_SIZE_PARAMETER` (its last value) when it is a positive integer, at
-    most `MAX_PAGE_SIZE`; else `DEFAULT_PAGE_SIZE`."""
+    ``PageNumberPagination.get_page_size`` reads it (by default with the
+    list's rules; a paginator passes its own ``page_size_query_param``,
+    ``page_size`` and ``max_page_size``): `param` (its last value) when it
+    is a positive integer, at most `maximum` (unless ``None``); else
+    `default`, as for no `param`."""
+    if not param:
+        return default
     try:
-        size = int(params[PAGE_SIZE_PARAMETER])
+        size = int(params[param])
     except (KeyError, ValueError):
-        return DEFAULT_PAGE_SIZE
+        return default
     if size < 1:
-        return DEFAULT_PAGE_SIZE
-    return min(size, MAX_PAGE_SIZE)
+        return default
+    return min(size, maximum) if maximum else size
 
 
-def page_number_of(params: QueryDict, paginator: Paginator):
+def page_number_of(
+    params: QueryDict,
+    paginator: Paginator,
+    *,
+    param: str = PAGE_PARAMETER,
+    last: Sequence[str] = LAST_PAGE_STRINGS,
+):
     """The page the query parameters `params` ask for, as DRF's
-    ``PageNumberPagination.get_page_number`` reads it: `PAGE_PARAMETER` (its
-    last value; 1 when absent or empty), the number of `paginator`'s last page
-    for one of `LAST_PAGE_STRINGS`. The ``Paginator`` validates it (a page
-    that is not a number is ``PageNotAnInteger``, one out of range
-    ``EmptyPage``)."""
-    number = params.get(PAGE_PARAMETER) or 1
-    if number in LAST_PAGE_STRINGS:
+    ``PageNumberPagination.get_page_number`` reads it (by default with the
+    list's names; a paginator passes its own ``page_query_param`` and
+    ``last_page_strings``): `param` (its last value; 1 when absent or
+    empty), the number of `paginator`'s last page for one of `last`. The
+    ``Paginator`` validates it (a page that is not a number is
+    ``PageNotAnInteger``, one out of range ``EmptyPage``)."""
+    number = params.get(param) or 1
+    if number in last:
         return paginator.num_pages
     return number
 
@@ -467,11 +484,12 @@ def requested_page(queryset, params: QueryDict) -> ListPage:
     )
 
 
-def page_url(request, number: int) -> str:
+def page_url(request, number: int, *, param: str = PAGE_PARAMETER) -> str:
     """The URL of page `number` of the list `request` asked for, as DRF's
     ``PageNumberPagination`` links the next and previous pages: `request`'s
-    absolute URL with `PAGE_PARAMETER` set to `number` (left out for page 1),
-    the query parameters sorted; under a published branch's prefix
+    absolute URL with the page parameter `param` (by default the list's; a
+    paginator passes its ``page_query_param``) set to `number` (left out for
+    page 1), the query parameters sorted; under a published branch's prefix
     (``request.scrud_ui_mount``, ``scrud_django.ui``'s ``Mount``), the API's
     URL."""
     scheme, netloc, path, query, fragment = urlsplit(
@@ -479,9 +497,9 @@ def page_url(request, number: int) -> str:
     )
     params = parse_qs(query, keep_blank_values=True)
     if number == 1:
-        params.pop(PAGE_PARAMETER, None)
+        params.pop(param, None)
     else:
-        params[PAGE_PARAMETER] = [force_str(number)]
+        params[force_str(param)] = [force_str(number)]
     query = urlencode(sorted(params.items()), doseq=True)
     url = urlunsplit((scheme, netloc, path, query, fragment))
     mount = getattr(request, "scrud_ui_mount", None)

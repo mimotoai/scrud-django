@@ -3,6 +3,7 @@
 case alike, normalized only as `tests.front_ends` says."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -168,11 +169,27 @@ def test_hooked_types_are_served_alike_on_a_processs_first_parity_call():
     # The test above, alone in a fresh process: its parity call is the first,
     # before the URLconf was imported.
     test = "tests/test_front_end_parity.py::test_hooked_types_are_served_alike_in_both_runs"
+    # On a database server, a test database of its own: this session's
+    # (test_scrud) is open, and a second session creating it would clash.
+    env = dict(os.environ)
+    for engine in ("PG", "MYSQL"):
+        name = os.environ.get(f"SCRUD_TEST_{engine}_NAME", "scrud")
+        env[f"SCRUD_TEST_{engine}_NAME"] = f"{name}_first_parity_call"
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--create-db",
+            test,
+        ],
         cwd=Path(__file__).resolve().parent.parent,
         capture_output=True,
         text=True,
+        env=env,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr

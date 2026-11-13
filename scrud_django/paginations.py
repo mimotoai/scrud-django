@@ -21,7 +21,10 @@ class StandardResultsSetPagination(PageNumberPagination):
     """DRF's page-number pagination, with the paging rules of
     `scrud_django.core.lists` (which the ninja front end pages with too):
     the page size (`page_size_of`), the page number (`page_number_of`) and
-    the next and previous pages' URLs (`page_url`)."""
+    the next and previous pages' URLs (`page_url`), each given this
+    paginator's attributes, so that a subclass setting its own (a
+    ``page_size``, a ``page_query_param`` ...) is paged by them, as DRF's
+    own paginator would."""
 
     page_size = DEFAULT_PAGE_SIZE
     page_query_param = PAGE_PARAMETER
@@ -30,10 +33,20 @@ class StandardResultsSetPagination(PageNumberPagination):
     last_page_strings = LAST_PAGE_STRINGS
 
     def get_page_size(self, request):
-        return page_size_of(request.query_params)
+        return page_size_of(
+            request.query_params,
+            param=self.page_size_query_param,
+            default=self.page_size,
+            maximum=self.max_page_size,
+        )
 
     def get_page_number(self, request, paginator):
-        return page_number_of(request.query_params, paginator)
+        return page_number_of(
+            request.query_params,
+            paginator,
+            param=self.page_query_param,
+            last=self.last_page_strings,
+        )
 
     def paginate_queryset(self, queryset, request, view=None):
         """DRF's page. On MySQL it is found among the keys alone, then its
@@ -60,12 +73,18 @@ class StandardResultsSetPagination(PageNumberPagination):
     def get_next_link(self):
         if not self.page.has_next():
             return None
-        return page_url(self.request, self.page.next_page_number())
+        return page_url(
+            self.request, self.page.next_page_number(), param=self.page_query_param
+        )
 
     def get_previous_link(self):
         if not self.page.has_previous():
             return None
-        return page_url(self.request, self.page.previous_page_number())
+        return page_url(
+            self.request,
+            self.page.previous_page_number(),
+            param=self.page_query_param,
+        )
 
     def get_paginated_response(self, data, *args, **kwargs):
 
