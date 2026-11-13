@@ -1185,3 +1185,50 @@ def test_update_refuses_a_missing_instance_before_validating():
             requirement=[GrantsLeaf(PP)],
             using="default",
         )
+
+
+@pytest.mark.django_db
+@test_context
+def test_update_of_a_policy_needs_the_write_in_every_context_it_applies_to():
+    # A WorkflowPolicy stored in ["a", "b"] (server-side) governs both: as
+    # DRF's update, update refuses a writer of "a" alone before validating
+    # the body, though the body moves the policy to "a" only.
+    policy_type = workflow_policy_resource_type()
+    WP = policy_type.type_uri
+    policy = {
+        "resource_type": "tests://ToDo",
+        "initial_states": {"any": "true"},
+        "states": {},
+        "transitions": {},
+    }
+    stored = ResourceRegistration.register(
+        dict(policy, rbac_context=["a", "b"]), "workflow-policies"
+    )
+    writer = user_with(({"http.GET": [WP], "http.PUT": [WP]}, "a"))
+    with (
+        mock.patch("scrud_django.core.writes._validated") as validated,
+        pytest.raises(access.AccessDenied),
+    ):
+        update(
+            request_by("put", writer),
+            policy_type,
+            Resource.objects.get(pk=stored.pk),
+            dict(policy, rbac_context="a"),
+            requirement=[GrantsLeaf(WP)],
+            using="default",
+        )
+    validated.assert_not_called()
+    row = Resource.objects.get(pk=stored.pk)
+    assert (row.content["rbac_context"], row.etag) == (["a", "b"], stored.etag)
+
+    # A writer in both may.
+    writes = {"http.GET": [WP], "http.PUT": [WP]}
+    saved = update(
+        request_by("put", user_with((writes, "a"), (writes, "b"))),
+        policy_type,
+        Resource.objects.get(pk=stored.pk),
+        dict(policy, rbac_context="a"),
+        requirement=[GrantsLeaf(WP)],
+        using="default",
+    )
+    assert saved.content["rbac_context"] == "a"

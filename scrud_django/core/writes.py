@@ -708,6 +708,10 @@ def update(
     (`check_post_save`). A front end needing a post-save check of its own
     saves with `save_checked` itself (follow-up ``core-write-no-recheck``).
 
+    A ``WorkflowPolicy`` must first be allowed in every context it applies
+    to (`check_every_context_of_policy`, with `requirement`, `covered` and
+    `type_iri`), before its body is validated, as DRF's ``update`` asks it.
+
     `requirement` is taken through `Requirement.of` (once any earlier mark
     is removed, as `validate_write` removes it). A ``None`` `instance` is a
     ``TypeError``, before anything is validated."""
@@ -718,6 +722,9 @@ def update(
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
         type_iri = resource_type.type_uri
+    check_every_context_of_policy(
+        request, instance, requirement, covered=covered, type_iri=type_iri
+    )
     _validated(
         request,
         resource_type,

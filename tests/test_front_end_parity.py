@@ -669,11 +669,74 @@ def _workflow_cases():
     ]
 
 
+def _shared_policy_cases():
+    """A ``WorkflowPolicy`` stored (server-side) in two contexts governs
+    both: updating or deleting it needs the write in each."""
+    policy = {
+        "resource_type": WORKFLOW_NOTE_TYPE_URI,
+        "initial_states": {"any": "true"},
+        "states": {},
+        "transitions": {},
+    }
+
+    def setup(*contexts):
+        def setup(client):
+            shared = registration.ResourceRegistration.register(
+                dict(policy, rbac_context=["a", "b"]), "workflow-policies"
+            )
+            methods = ("http.GET", "http.PUT", "http.DELETE")
+            _user(
+                client,
+                *(({m: [WORKFLOW_POLICY] for m in methods}, c) for c in contexts),
+            )
+            return {"policy": shared.pk}
+
+        return setup
+
+    path = "{mount}workflow-policies/{policy}/"
+    return [
+        (
+            # The update was not checked in every context on ninja.
+            Case(
+                "shared-policy-put-by-one-context",
+                "PUT",
+                path,
+                setup("a"),
+                body=dict(policy, rbac_context="a"),
+                headers=_etag("policy"),
+            ),
+            403,
+        ),
+        (
+            Case(
+                "shared-policy-put-by-every-context",
+                "PUT",
+                path,
+                setup("a", "b"),
+                body=dict(policy, rbac_context="a"),
+                headers=_etag("policy"),
+            ),
+            200,
+        ),
+        (
+            Case(
+                "shared-policy-delete-by-one-context",
+                "DELETE",
+                path,
+                setup("a"),
+                headers=_etag("policy"),
+            ),
+            403,
+        ),
+    ]
+
+
 ITEM_CASES = [
     *_read_cases(PROFILE),
     *_read_cases(SCHEMA),
     *_profile_write_cases(),
     *_workflow_cases(),
+    *_shared_policy_cases(),
 ]
 
 
