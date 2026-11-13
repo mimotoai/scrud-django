@@ -396,3 +396,120 @@ def test_a_registration_without_routes_takes_no_viewset_class():
 def test_role_list_routes_are_read_only():
     with pytest.raises(TypeError):
         registration.ROLE_LIST_ROUTES["Role"] = ("x",)
+
+
+# --- TypeSpec refuses its remaining invalid states -------------------------
+
+
+def _deny(*args):
+    return False
+
+
+def _json_spec(**changes):
+    spec = registration.json_resource_type_spec(TYPE_URI, SLUG)
+    return dataclasses.replace(spec, **changes) if changes else spec
+
+
+def _computed_spec():
+    return registration.computed_resource_type_spec(
+        TYPE_URI, SLUG, None, None, compute=lambda request, key: {}
+    )
+
+
+@pytest.mark.parametrize("slug", ["{pk}", "a/b", None, "", "a b", 3])
+def test_a_slug_that_is_not_one_url_segment_is_refused(slug):
+    with pytest.raises(ImproperlyConfigured, match="slug"):
+        registration.json_resource_type_spec(TYPE_URI, slug)
+    with pytest.raises(ImproperlyConfigured, match="slug"):
+        _json_spec(slug=slug)
+    with pytest.raises(ImproperlyConfigured, match="slug"):
+        dataclasses.replace(_computed_spec(), slug=slug)
+
+
+@pytest.mark.parametrize("uri", ["", None, 3])
+def test_an_iri_that_is_not_a_non_empty_string_is_refused(uri):
+    with pytest.raises(ImproperlyConfigured, match="resource_type_uri"):
+        registration.json_resource_type_spec(uri, SLUG)
+    with pytest.raises(ImproperlyConfigured, match="resource_type_uri"):
+        _json_spec(resource_type_uri=uri)
+    with pytest.raises(ImproperlyConfigured, match="resource_type_uri"):
+        registration.TypeSpec(
+            kind="json",
+            resource_type_uri=uri,
+            slug=SLUG,
+            options=core_types.TypeOptions(),
+            document_media_type=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"checks": (_deny,)},
+        {"object_checks": (_deny,)},
+        {"content_filter": True},
+    ],
+)
+def test_a_computed_spec_with_hooks_it_never_asks_is_refused(options):
+    spec = _computed_spec()
+    hooked = core_types.TypeOptions(compute=spec.options.compute, **options)
+    with pytest.raises(ImproperlyConfigured, match="compute alone"):
+        dataclasses.replace(spec, options=hooked)
+    with pytest.raises(ImproperlyConfigured, match="compute alone"):
+        registration.TypeSpec(
+            kind="computed",
+            resource_type_uri=TYPE_URI,
+            slug=SLUG,
+            options=hooked,
+            document_media_type=None,
+        )
+
+
+def test_a_computed_spec_with_only_compute_is_valid():
+    assert _computed_spec().options.compute is not None
+
+
+@pytest.mark.parametrize("which", ["json-schema", "json-ld"])
+def test_a_spec_that_is_not_a_built_in_cannot_use_a_built_in_identity(which):
+    built_in = {s.slug: s for s in registration.built_in_type_specs()}[which]
+    plain = dict(
+        kind="json",
+        document_media_type=None,
+        options=core_types.TypeOptions(),
+    )
+    for uri, slug in (
+        (TYPE_URI, which),
+        (built_in.resource_type_uri, SLUG),
+    ):
+        with pytest.raises(ImproperlyConfigured, match="built-in"):
+            registration.TypeSpec(resource_type_uri=uri, slug=slug, **plain)
+        with pytest.raises(ImproperlyConfigured, match="built-in"):
+            _json_spec(resource_type_uri=uri, slug=slug)
+        with pytest.raises(ImproperlyConfigured, match="built-in"):
+            registration.json_resource_type_spec(uri, slug)
+        with pytest.raises(ImproperlyConfigured, match="built-in"):
+            dataclasses.replace(_computed_spec(), resource_type_uri=uri, slug=slug)
+    # Un-pinning a built-in spec is no way round it.
+    with pytest.raises(ImproperlyConfigured):
+        dataclasses.replace(built_in, _built_in=False)
+
+
+@pytest.mark.parametrize(
+    "argument", ["schema_func", "context_func", "indexing_policy_func"]
+)
+def test_a_json_spec_with_a_callable_that_is_not_one_is_refused_at_build(argument):
+    with pytest.raises(TypeError, match=argument):
+        registration.json_resource_type_spec(TYPE_URI, SLUG, **{argument: "x"})
+
+
+def test_register_urls_without_routes_is_a_type_error(db):
+    row = registration.ResourceTypeRegistration(
+        resource_type_uri=TYPE_URI,
+        slug=SLUG,
+        schema_func=lambda: {},
+        context_func=lambda: {},
+        register_service=False,
+        build_urls=False,
+    )
+    with pytest.raises(TypeError, match="build_urls=False"):
+        row.register_urls()

@@ -13,6 +13,7 @@ from uuid import uuid4
 import reversion
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.core.validators import slug_re
 from django.db import router, transaction
 from django.db.models.functions import Length
 from django.db.utils import InterfaceError, OperationalError, ProgrammingError
@@ -320,6 +321,11 @@ class ResourceTypeRegistration:
 
     def register_urls(self):
         """Register resource type url."""
+        if self.viewset_class is None:
+            raise TypeError(
+                "register_urls() needs a viewset_class: this registration was "
+                "built with build_urls=False and builds no routes."
+            )
         self.urls = resource_type_urls(self.resource_type.slug, self.viewset_class)
 
 
@@ -980,6 +986,16 @@ class TypeSpec:
             raise ImproperlyConfigured(
                 f"{name}: its kind is 'json' or 'computed', not {self.kind!r}."
             )
+        if not isinstance(self.slug, str) or not slug_re.fullmatch(self.slug):
+            raise ImproperlyConfigured(
+                f"{name}: its slug is a letters, digits, hyphens and underscores "
+                f"string (one URL segment), not {self.slug!r}."
+            )
+        if not isinstance(self.resource_type_uri, str) or not self.resource_type_uri:
+            raise ImproperlyConfigured(
+                f"{name}: its resource_type_uri is a non-empty string, not "
+                f"{self.resource_type_uri!r}."
+            )
         if not isinstance(self.options, TypeOptions):
             raise ImproperlyConfigured(
                 f"{name}: its options are a TypeOptions, not {self.options!r}."
@@ -989,6 +1005,11 @@ class TypeSpec:
             raise ImproperlyConfigured(
                 f"{name}: a computed type, and only one, has options.compute."
             )
+        if computed and self.options != TypeOptions(compute=self.options.compute):
+            raise ImproperlyConfigured(
+                f"{name}: a computed type's hooks are its compute alone: its "
+                "checks, object_checks and content_filter would never be asked."
+            )
         if self.document_media_type is not None and (
             computed or self.document_media_type not in DOCUMENT_MEDIA_TYPES
         ):
@@ -997,6 +1018,16 @@ class TypeSpec:
                 f"{sorted(DOCUMENT_MEDIA_TYPES)} or None, a computed type's "
                 f"None, not {self.document_media_type!r}."
             )
+        if not self._built_in:
+            for built_in in _BUILT_INS.values():
+                built_in_uri = built_in.arguments["resource_type_uri"]
+                built_in_slug = built_in.arguments["slug"]
+                if self.slug == built_in_slug or self.resource_type_uri == built_in_uri:
+                    raise ImproperlyConfigured(
+                        f"{name} ({self.resource_type_uri}): the built-in type "
+                        f"{built_in_uri} has the slug {built_in_slug!r}; only "
+                        "built_in_type_specs() describe it."
+                    )
         unknown = set(self._storage) - _STORAGE_ARGUMENTS[self.kind]
         if unknown:
             raise ImproperlyConfigured(
@@ -1137,6 +1168,15 @@ def json_resource_type_spec(
     stored (``json-resource-type-indexing-policy`` in docs/follow-ups.md),
     and its `document_media_type` (``None``: plain JSON; else one of
     `DOCUMENT_MEDIA_TYPES`, ``ImproperlyConfigured`` for another)."""
+    for name, hook in (
+        ("schema_func", schema_func),
+        ("context_func", context_func),
+        ("indexing_policy_func", indexing_policy_func),
+    ):
+        if hook is not None and not callable(hook):
+            raise TypeError(
+                f"json_resource_type_spec({slug!r}): {name} is not callable"
+            )
     return TypeSpec._build(
         kind="json",
         resource_type_uri=resource_type_uri,

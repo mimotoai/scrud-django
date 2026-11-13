@@ -573,10 +573,25 @@ def _refused(types, match=None, error=ImproperlyConfigured):
 
 
 def test_a_slug_a_built_in_type_has_is_refused_naming_both_iris():
-    clash = registration.json_resource_type_spec(REFUSED_URI, slug="json-schema")
+    # The spec is refused when it is built (`TypeSpec.__post_init__`), so
+    # `api()` is never handed one.
     built_in = {s.slug: s for s in registration.built_in_type_specs()}["json-schema"]
-    _refused([clash], match=REFUSED_URI)
-    _refused([clash], match=built_in.resource_type_uri)
+    for build in (
+        lambda: registration.json_resource_type_spec(REFUSED_URI, slug="json-schema"),
+        lambda: registration.json_resource_type_spec(
+            built_in.resource_type_uri, REFUSED_SLUG
+        ),
+    ):
+        with pytest.raises(ImproperlyConfigured, match=built_in.resource_type_uri):
+            build()
+
+
+def test_an_empty_slug_is_refused_before_any_side_effect():
+    # `types.md` N2 / `errors.md` N3: it would have shadowed the API's root.
+    before = _registered_state()
+    with pytest.raises(ImproperlyConfigured, match="slug"):
+        registration.json_resource_type_spec(REFUSED_URI, "")
+    assert _registered_state() == before
 
 
 def test_two_specs_with_one_slug_are_refused():
