@@ -378,7 +378,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   statuses, headers and bodies of the DRF routes. It serves no `docs/` or
   `openapi.json` unless given `docs_url=` and `openapi_url=`. It takes no
   `auth=`, takes a `urls_namespace` (distinct for each API in a process), and needs
-  `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. UI and
+  `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. A router
+  you add to it carries its own `auth=` or scrud's entry checks
+  (`router.add_decorator(scrud_django.ninja.entry.entry, mode="view")`). UI and
   studio types are not served on it yet, and `scrud_django.urls` is still DRF.
   See "django-ninja (preview)" in the README.
 * `registration.TypeSpec` and the functions `json_resource_type_spec`,

@@ -82,6 +82,19 @@ def write_then_answer(request, pk: int, status: int):
     return HttpResponse(status=status)
 
 
+# A router an app adds to scrud's API, as the README says to: it passes
+# scrud's entry checks (`scrud_django.ninja.entry.entry`), which the API does
+# not give the routers it did not build.
+added = Router()
+added.add_decorator(entry, mode="view")
+
+
+@added.api_operation(["GET", "POST"], "/whoami/")
+def whoami(request):
+    """The requester's username, as the entry checks resolved them."""
+    return {"user": request.user.username}
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 @drf_errors
@@ -97,6 +110,7 @@ def __getattr__(name):
         raise AttributeError(name)
     probe_api = scrud_django.ninja.api(urls_namespace="test-ninja-api")
     probe_api.add_router("", probes)
+    probe_api.add_router("added/", added)
     patterns = globals()["urlpatterns"] = [
         path("drf/errors/<name>/", drf_error_probe),
         path("ninja/", probe_api.urls),
@@ -427,3 +441,28 @@ def test_a_turned_on_openapi_schema_names_each_operation_once(capsys):
         "collections-json-schema_retrieve",
         "collections-json-ld_retrieve",
     } <= set(paths_of)
+
+
+def _resolved_user(request):
+    """A ``SCOPED_RBAC["NINJA_USER"]`` hook: the user ``resolved``."""
+    return User.objects.get(username="resolved")
+
+
+def test_a_router_added_with_the_entry_checks_resolves_and_csrf_checks():
+    # The README's recipe for a router an app adds to scrud's API.
+    session_user = User.objects.create(username="session")
+    User.objects.create(username="resolved")
+    client = Client(enforce_csrf_checks=True)
+    client.force_login(session_user)
+
+    # A session POST without a CSRF token is refused, as DRF refuses it.
+    refused = client.post("/ninja/added/whoami/")
+    assert refused.status_code == 403, refused.content
+    assert "CSRF Failed" in refused.json()["detail"]
+    # The requester is resolved as scrud resolves it (the NINJA_USER hook's),
+    # not left as the session's.
+    hooked = {**settings.SCOPED_RBAC, "NINJA_USER": _resolved_user}
+    with override_settings(SCOPED_RBAC=hooked):
+        response = client.get("/ninja/added/whoami/")
+    assert response.status_code == 200, response.content
+    assert response.json() == {"user": "resolved"}

@@ -57,7 +57,9 @@ def api(
     collection documents', the computed routes' and the catalog's answers
     give DRF's ``Allow`` (`routers.as_drf_api_views`,
     `services.as_drf_api_view_function`). More routers may be added before
-    its ``urls`` are read."""
+    its ``urls`` are read; they get none of this, so each carries its own
+    ``auth=`` or scrud's entry checks (``router.add_decorator(entry,
+    mode="view")``, `scrud_django.ninja.entry.entry`)."""
     if "auth" in ninja_kwargs:
         raise TypeError(
             "scrud_django.ninja.api() takes no auth: scrud resolves the user of "

@@ -75,6 +75,22 @@ urlpatterns = [
 * Do not pass `auth=`: `api()` raises `TypeError`. scrud resolves the user of
   every request itself, so an anonymous request gets the anonymous user's
   grants and a hidden item is a 404.
+* A router you add to the API (`scrud_api.add_router(...)`) gets no
+  authentication and no CSRF check from scrud: ninja's views are
+  CSRF-exempt, and scrud resolves the user only on its own routes. Give it
+  its own `auth=`, or scrud's entry checks (the user resolved as on scrud's
+  routes, a session user's unsafe request CSRF-checked, writes in one
+  transaction):
+
+  ```python
+  from ninja import Router
+  from scrud_django.ninja.entry import entry
+
+  reports = Router()
+  reports.add_decorator(entry, mode="view")
+  scrud_api.add_router("reports/", reports)
+  ```
+
 * Two APIs in one process need distinct `urls_namespace`s. Links (`href`,
   `Location`, `Link` headers, `services/`) are reversed within the namespace
   the request was resolved under.

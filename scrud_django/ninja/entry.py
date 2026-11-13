@@ -1,5 +1,11 @@
 """The checks every scrud request on the ninja front end passes where it enters,
-in the order DRF's ``dispatch`` / ``initial`` asks them."""
+in the order DRF's ``dispatch`` / ``initial`` asks them.
+
+`entry` is public: a router an app adds to scrud's API
+(``api.add_router(...)``) gets neither ninja's authentication (the API
+takes no ``auth=``) nor scrud's (`authenticate_first` covers scrud's own
+routes), and ninja's views are CSRF-exempt, so such a router carries its own
+``auth=`` or ``router.add_decorator(entry, mode="view")``."""
 
 import copy
 import functools
