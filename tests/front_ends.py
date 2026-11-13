@@ -131,6 +131,19 @@ def api_url(front_end, name, *args, **kwargs):
     return reverse(name, *args, **kwargs)
 
 
+def hsr_url(front_end, route_name):
+    """The URL of the HTTP Schema Resource of the route `route_name` (a
+    type's ``<slug>-list`` or ``<slug>-detail``) on `front_end`, as its Link
+    names it: DRF's HSR routes are named by URL name at the root
+    (``include(hsr_urls())``), ninja's by path template under the type's
+    router (``""`` gives ``_root``, ``"{slug}/"`` gives ``slug``)."""
+    if front_end == "drf":
+        return f"http://testserver/_hsr/{route_name}"
+    slug, _, kind = route_name.rpartition("-")
+    template = {"list": "_root", "detail": "slug"}[kind]
+    return f"http://testserver{api_url(front_end, f'{slug}-list')}_hsr/{template}"
+
+
 def parity(case: Case) -> tuple[Exchange, Exchange]:
     """`case`'s exchange on each front end (`FRONT_ENDS`, in that order),
     each on fresh data: its setup and request run in a transaction rolled
