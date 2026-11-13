@@ -27,6 +27,7 @@ from scrud_django.registration import (
 from .factories import UserFactory
 from .fixtures import *  # noqa: F401, F403
 from .fixtures import RESOURCE_ENDPOINT_LIST_NAME
+from .front_ends import api_url
 from .rbac_defaults import TYPE_URI_LIST_PARTNER_PROFILES, TYPE_URI_PARTNER_PROFILES
 from .steps import *  # noqa: F403, F401
 
@@ -63,30 +64,33 @@ def user_with(*grants):
 
 def profile(name, **content):
     """A partner profile stored server-side (no API check), named `name`."""
-    reverse(RESOURCE_ENDPOINT_LIST_NAME)  # registers the test types' routes
+    # Importing tests.urls registers the test types' routes (whichever
+    # URLconf the test serves).
+    reverse(RESOURCE_ENDPOINT_LIST_NAME, urlconf="tests.urls")
     return ResourceRegistration.register(
         dict({"name": name, "slug": name}, **content), "partner-profiles"
     )
 
 
-def detail_url(resource, prefix="partner-profiles"):
-    return reverse(f"{prefix}-detail", kwargs={"slug": resource.pk})
+def detail_url(front_end, resource, prefix="partner-profiles"):
+    return api_url(front_end, f"{prefix}-detail", kwargs={"slug": resource.pk})
 
 
-def listed_names(path=None, **params):
-    """GET the partner profiles list (as the authenticated user); return the
-    names it shows (every page of it) and its ``count``."""
-    When.http.get(path or reverse(RESOURCE_ENDPOINT_LIST_NAME), params)
+def listed_names(front_end, path=None, **params):
+    """GET the partner profiles list on `front_end` (as the authenticated
+    user); return the names it shows (every page of it) and its ``count``."""
+    When.http.get(path or api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME), params)
     Then.http.status_code_is(status.HTTP_200_OK)
     body = json.loads(Http.response.content)
     return {entry["content"]["name"] for entry in body["content"]}, body["count"]
 
 
-def readable_on_detail(resources):
-    """The names of `resources` a detail GET answers 200 for (else 404)."""
+def readable_on_detail(front_end, resources):
+    """The names of `resources` a detail GET on `front_end` answers 200 for
+    (else 404)."""
     readable = set()
     for resource in resources:
-        When.http.get(detail_url(resource))
+        When.http.get(detail_url(front_end, resource))
         assert Http.response.status_code in (200, 404), Http.response.content
         if Http.response.status_code == 200:
             readable.add(resource.content["name"])
@@ -95,44 +99,46 @@ def readable_on_detail(resources):
 
 @pytest.mark.django_db
 @test_context
-def test_list_shows_only_resources_readable_in_the_users_contexts():
+def test_list_shows_only_resources_readable_in_the_users_contexts(front_end):
     in_a = profile("in-a", rbac_context="a")
     in_b = profile("in-b", rbac_context="b")
     in_a_and_b = profile("in-a-and-b", rbac_context=["a", "b"])
     in_default = profile("in-default")
     reader = user_with((READER, "b"))
-    Given.http.force_authenticate(reader)
-    names, count = listed_names()
+    Given.http.force_login(reader)
+    names, count = listed_names(front_end)
     assert names == {"in-b", "in-a-and-b"}
     assert count == 2
     # The list shows exactly what the detail route shows.
-    assert readable_on_detail([in_a, in_b, in_a_and_b, in_default]) == names
+    assert readable_on_detail(front_end, [in_a, in_b, in_a_and_b, in_default]) == names
 
 
 @pytest.mark.django_db
 @test_context
-def test_list_with_get_in_no_context_is_403():
+def test_list_with_get_in_no_context_is_403(front_end):
     # The view-level check needs http.GET on the list somewhere: without it the
     # list is refused before any resource is looked at.
     profile("in-b", rbac_context="b")
-    Given.http.force_authenticate(user_with(({"http.POST": [PARTNER]}, "b")))
-    When.http.get(reverse(RESOURCE_ENDPOINT_LIST_NAME))
+    Given.http.force_login(user_with(({"http.POST": [PARTNER]}, "b")))
+    When.http.get(api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME))
     Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
 
 
 @pytest.mark.django_db
 @test_context
-def test_list_in_a_context_without_resources_is_an_empty_page():
+def test_list_in_a_context_without_resources_is_an_empty_page(front_end):
     profile("in-a", rbac_context="a")
-    Given.http.force_authenticate(user_with((READER, "elsewhere")))
-    names, count = listed_names()
+    Given.http.force_login(user_with((READER, "elsewhere")))
+    names, count = listed_names(front_end)
     assert names == set()
     assert count == 0
 
 
 @pytest.mark.django_db
 @test_context
-def test_conditional_grant_lists_matching_resources_and_outright_ones_are_uncapped():
+def test_conditional_grant_lists_matching_resources_and_outright_ones_are_uncapped(
+    front_end,
+):
     # GET outright in "o" (with the list), and only by a condition in "c".
     conditional_reader = {"http.GET": {PARTNER: {"condition": 'name == "keep"'}}}
     user = user_with((READER, "o"), (conditional_reader, "c"))
@@ -143,24 +149,24 @@ def test_conditional_grant_lists_matching_resources_and_outright_ones_are_uncapp
     both = profile("both", rbac_context=["o", "c"])
     rbac = dict(settings.SCOPED_RBAC, CONDITIONAL_LIST_MAX_ROWS=2)
     with override_settings(SCOPED_RBAC=rbac):
-        Given.http.force_authenticate(user)
-        names, count = listed_names()
+        Given.http.force_login(user)
+        names, count = listed_names(front_end)
         # Four outright rows, past the cap of 2, are listed: only the two
         # conditional candidates count.
         assert names == {"o-0", "o-1", "o-2", "keep", "both"}
         assert count == 5
-        assert readable_on_detail([*outright, keep, drop, both]) == names
+        assert readable_on_detail(front_end, [*outright, keep, drop, both]) == names
 
         # A third candidate in "c" is past the cap.
         profile("drop-too", rbac_context="c")
-        When.http.get(reverse(RESOURCE_ENDPOINT_LIST_NAME))
+        When.http.get(api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME))
         Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
         assert Http.response.json()["code"] == "conditional_list_too_large"
 
 
 @pytest.mark.django_db
 @test_context
-def test_reserved_and_contextless_resources(admin_login):
+def test_reserved_and_contextless_resources(front_end, admin_login):
     reserved = profile("reserved", rbac_context="__x")
     reserved_star = profile("reserved-star", rbac_context="*")
     reserved_in_list = profile("reserved-in-list", rbac_context=["__x"])
@@ -181,10 +187,10 @@ def test_reserved_and_contextless_resources(admin_login):
     ]
 
     # A user with grants in "b": only the usable context counts.
-    Given.http.force_authenticate(user_with((READER, "b")))
-    names, _ = listed_names()
+    Given.http.force_login(user_with((READER, "b")))
+    names, _ = listed_names(front_end)
     assert names == {"mixed", "plain"}
-    assert readable_on_detail(resources) == names
+    assert readable_on_detail(front_end, resources) == names
 
     # A user whose grant applies in every context ("*") but who is not a
     # superuser: a resource with no usable context is granted by no role.
@@ -194,13 +200,13 @@ def test_reserved_and_contextless_resources(admin_login):
         "policy_read_partner_profiles_anywhere",
     )
     with override_settings(SCOPED_RBAC=anywhere):
-        Given.http.force_authenticate(UserFactory())
-        names, _ = listed_names()
+        Given.http.force_login(UserFactory())
+        names, _ = listed_names(front_end)
         assert {"mixed", "plain", "default", "null-context"} <= names
         assert names.isdisjoint(
             {"reserved", "reserved-star", "reserved-in-list", "contextless"}
         )
-        assert readable_on_detail(resources) == {
+        assert readable_on_detail(front_end, resources) == {
             "mixed",
             "plain",
             "default",
@@ -210,8 +216,8 @@ def test_reserved_and_contextless_resources(admin_login):
     # A superuser: a resource with no usable context is listed (as its detail
     # route shows it); one stored in a reserved context is never listed (its
     # detail route is a 404 to everyone).
-    Given.http.force_authenticate(admin_login)
-    names, _ = listed_names()
+    Given.http.force_login(admin_login)
+    names, _ = listed_names(front_end)
     superuser_reads = {
         "reserved-in-list",
         "contextless",
@@ -222,14 +228,14 @@ def test_reserved_and_contextless_resources(admin_login):
     }
     assert superuser_reads <= names
     assert names.isdisjoint({"reserved", "reserved-star"})
-    assert readable_on_detail(resources) == superuser_reads
+    assert readable_on_detail(front_end, resources) == superuser_reads
 
 
 @pytest.mark.django_db
 @test_context
-def test_workflow_policy_list_hides_other_contexts_policies():
+def test_workflow_policy_list_hides_other_contexts_policies(front_end):
     workflow_policy_resource_type()
-    reverse("workflow-policies-list")
+    api_url(front_end, "workflow-policies-list")
     policies = {
         context: ResourceRegistration.register(
             {
@@ -243,29 +249,29 @@ def test_workflow_policy_list_hides_other_contexts_policies():
         )
         for context in ("a", "b")
     }
-    Given.http.force_authenticate(user_with((POLICY_READER, "b")))
-    When.http.get(reverse("workflow-policies-list"))
+    Given.http.force_login(user_with((POLICY_READER, "b")))
+    When.http.get(api_url(front_end, "workflow-policies-list"))
     Then.http.status_code_is(status.HTTP_200_OK)
     body = json.loads(Http.response.content)
     hrefs = {entry["href"] for entry in body["content"]}
     assert hrefs == {
-        "http://testserver" + detail_url(policies["b"], "workflow-policies")
+        "http://testserver" + detail_url(front_end, policies["b"], "workflow-policies")
     }
     assert body["count"] == 1
-    When.http.get(detail_url(policies["a"], "workflow-policies"))
+    When.http.get(detail_url(front_end, policies["a"], "workflow-policies"))
     Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
 
 
 @pytest.mark.django_db
 @test_context
-def test_list_validators_change_only_with_what_the_requester_sees():
+def test_list_validators_change_only_with_what_the_requester_sees(front_end):
     profile("in-b", rbac_context="b")
     in_a = profile("in-a", rbac_context="a")
     reader = user_with((READER, "b"))
     writer = user_with((PARTNER_WRITER, "a"), (PARTNER_WRITER, "b"))
-    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
+    url = api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME)
 
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     When.http.get(url)
     Then.http.status_code_is(status.HTTP_200_OK)
     etag = Http.response["ETag"]
@@ -276,13 +282,13 @@ def test_list_validators_change_only_with_what_the_requester_sees():
         dict(in_a.content, display_name="changed"), "partner-profiles", in_a.pk
     )
     profile("new-in-a", rbac_context="a")
-    Given.http.force_authenticate(writer)
+    Given.http.force_login(writer)
     When.http.delete(
-        detail_url(profile("gone-in-a", rbac_context="a")), HTTP_IF_MATCH="*"
+        detail_url(front_end, profile("gone-in-a", rbac_context="a")), HTTP_IF_MATCH="*"
     )
     Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
 
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     When.http.get(url)
     Then.http.status_code_is(status.HTTP_200_OK)
     assert Http.response["ETag"] == etag
@@ -299,10 +305,10 @@ def test_list_validators_change_only_with_what_the_requester_sees():
 
 @pytest.mark.django_db
 @test_context
-def test_list_etag_follows_an_update_of_a_listed_resource():
+def test_list_etag_follows_an_update_of_a_listed_resource(front_end):
     in_b = profile("in-b", rbac_context="b")
-    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
-    Given.http.force_authenticate(user_with((READER, "b")))
+    url = api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME)
+    Given.http.force_login(user_with((READER, "b")))
     When.http.get(url)
     etag = Http.response["ETag"]
     ResourceRegistration.update(
@@ -315,11 +321,11 @@ def test_list_etag_follows_an_update_of_a_listed_resource():
 
 @pytest.mark.django_db
 @test_context
-def test_list_etag_differs_between_pages():
+def test_list_etag_differs_between_pages(front_end):
     for n in range(3):
         profile(f"p-{n}", rbac_context="b")
-    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
-    Given.http.force_authenticate(user_with((READER, "b")))
+    url = api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME)
+    Given.http.force_login(user_with((READER, "b")))
     When.http.get(url, {"page_size": 2})
     first = Http.response["ETag"]
     When.http.get(url, {"page_size": 2, "page": 2})
@@ -329,11 +335,11 @@ def test_list_etag_differs_between_pages():
 
 @pytest.mark.django_db
 @test_context
-def test_page_count_follows_the_page_size_asked_for():
+def test_page_count_follows_the_page_size_asked_for(front_end):
     for n in range(5):
         profile(f"p-{n}", rbac_context="b")
-    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
-    Given.http.force_authenticate(user_with((READER, "b")))
+    url = api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME)
+    Given.http.force_login(user_with((READER, "b")))
     When.http.get(url, {"page_size": 2})
     Then.http.status_code_is(status.HTTP_200_OK)
     body = Http.response.json()
@@ -350,33 +356,33 @@ def test_page_count_follows_the_page_size_asked_for():
 
 @pytest.mark.django_db
 @test_context
-def test_page_count_of_an_empty_list_is_zero():
-    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
-    Given.http.force_authenticate(user_with((READER, "b")))
+def test_page_count_of_an_empty_list_is_zero(front_end):
+    url = api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME)
+    Given.http.force_login(user_with((READER, "b")))
     When.http.get(url, {"page_size": 2})
     Then.http.status_code_is(status.HTTP_200_OK)
     body = Http.response.json()
     assert (body["count"], body["page_count"]) == (0, 0)
 
 
-def list_queries(user, count):
-    """The queries of one list request by `user` after storing `count`
-    profiles in "b"."""
+def list_queries(front_end, user, count):
+    """The queries of one list request on `front_end` by `user` after
+    storing `count` profiles in "b"."""
     for _ in range(count):
         profile(f"q-{uuid4().hex}", rbac_context="b")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     with CaptureQueriesContext(connection) as queries:
-        When.http.get(reverse(RESOURCE_ENDPOINT_LIST_NAME))
+        When.http.get(api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME))
     Then.http.status_code_is(status.HTTP_200_OK)
     return len(queries)
 
 
 @pytest.mark.django_db
 @test_context
-def test_list_queries_do_not_grow_with_the_page():
+def test_list_queries_do_not_grow_with_the_page(front_end):
     user = user_with((READER, "b"), ({"http.GET": [PARTNER]}, "c"))
-    few = list_queries(user, 2)
-    many = list_queries(user, 30)
+    few = list_queries(front_end, user, 2)
+    many = list_queries(front_end, user, 30)
     # No query per listed resource; the fixed cost (the user's roles, the
     # resource type, the count, the page, the newest modified_at) is bounded.
     assert many == few, (few, many)
@@ -385,17 +391,18 @@ def test_list_queries_do_not_grow_with_the_page():
 
 @pytest.mark.django_db
 @test_context
-def test_conditional_list_queries_do_not_grow_with_the_page():
+def test_conditional_list_queries_do_not_grow_with_the_page(front_end):
     conditional_reader = {"http.GET": {PARTNER: {"condition": "true"}}}
     user = user_with((READER, "o"), (conditional_reader, "b"))
-    few = list_queries(user, 2)
-    many = list_queries(user, 30)
+    few = list_queries(front_end, user, 2)
+    many = list_queries(front_end, user, 30)
     # No query per listed resource; the fixed cost (the user's roles, the
     # resource type, the count, the page, the newest modified_at) is bounded.
     assert many == few, (few, many)
     assert many <= 20, many
 
 
+# DRF-only: filtered/ is a route of tests/urls.py only.
 @pytest.mark.django_db
 @test_context
 def test_filtered_list_is_rbac_filtered_and_filters_on_query_parameters():
@@ -404,17 +411,18 @@ def test_filtered_list_is_rbac_filtered_and_filters_on_query_parameters():
     profile("hidden", rbac_context="a", display_name="Keep")
     path = reverse("filtered-partner-profiles-list")
     Given.http.force_authenticate(user_with((READER, "b")))
-    names, count = listed_names(path)
+    names, count = listed_names("drf", path)
     assert names == {"keep", "other"}
     assert count == 2
-    names, count = listed_names(path, display_name="Keep")
+    names, count = listed_names("drf", path, display_name="Keep")
     assert names == {"keep"}
     assert count == 1
     # Pagination parameters are not content filters.
-    names, count = listed_names(path, display_name="Keep", page=1, page_size=10)
+    names, count = listed_names("drf", path, display_name="Keep", page=1, page_size=10)
     assert names == {"keep"}
 
 
+# DRF-only: filtered/ is a route of tests/urls.py only.
 @pytest.mark.django_db
 @test_context
 def test_filtered_list_ignores_the_ui_parameters():
@@ -453,6 +461,7 @@ def test_filtered_list_ignores_the_ui_parameters():
     assert [e["content"]["name"] for e in filtered["content"]] == ["keep"]
 
 
+# DRF-only: filtered/ is a route of tests/urls.py only.
 @pytest.mark.django_db
 @test_context
 def test_filtered_list_parameters_are_keys_not_lookups():
@@ -460,10 +469,10 @@ def test_filtered_list_parameters_are_keys_not_lookups():
     path = reverse("filtered-partner-profiles-list")
     Given.http.force_authenticate(user_with((READER, "b")))
     # A key, never a lookup: no content has the key "name__startswith".
-    names, count = listed_names(path, name__startswith="k")
+    names, count = listed_names("drf", path, name__startswith="k")
     assert names == set()
     assert count == 0
-    names, _ = listed_names(path, contains="k")
+    names, _ = listed_names("drf", path, contains="k")
     assert names == set()
     # An integer would be read as an array index.
     When.http.get(path, {"0": "k"})
@@ -491,6 +500,7 @@ def test_resource_rows_are_never_listed_through_an_unfiltered_backend():
     assert Resource.objects.filter(content__name="in-a").exists()
 
 
+# DRF-only: filtered/ is a route of tests/urls.py only.
 @pytest.mark.django_db
 @test_context
 def test_filtered_list_refuses_a_nul_in_a_parameter():
