@@ -78,6 +78,7 @@ from scrud_django.headers import (
     get_schema_uri_for,
 )
 from scrud_django.models import Resource
+from scrud_django.registration import lock_if_workflow_policy
 
 # The method of an item whose object check the workflow check covers: the
 # PUT of its ``update`` action (``ResourceViewMixin.checks_workflow``, whose
@@ -336,8 +337,12 @@ def load_for_read(
       ``access.AccessDenied``.
 
     With `lock_using`, the row is read on that database with
-    ``select_for_update()`` (call it inside a transaction there); else as
-    the router reads.
+    ``select_for_update()`` (call it inside a transaction there), after the
+    ``WorkflowPolicy`` type lock when `resource_type` is that type
+    (`scrud_django.registration.lock_if_workflow_policy`), as every write of
+    a policy takes them: a policy's row locked first deadlocks with another
+    writer holding the type lock and waiting for the row. Else the row is
+    read as the router reads.
 
     `requirement` is taken through `Requirement.of`: one that asks no
     grants (empty, or hooks only) is ``ImproperlyConfigured``, before any
@@ -350,6 +355,7 @@ def load_for_read(
     check_request(checked, resource_type, requirement, list_route=False, body=body)
     queryset = Resource.objects.filter(resource_type=resource_type)
     if lock_using is not None:
+        lock_if_workflow_policy(resource_type, lock_using)
         queryset = queryset.using(lock_using).select_for_update()
     try:
         obj = queryset.get(pk=pk)

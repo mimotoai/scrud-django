@@ -37,10 +37,11 @@ from rest_framework.test import APIClient
 
 from scrud_django import registration
 from scrud_django.models import Resource
-from scrud_django.registration import ResourceRegistration
+from scrud_django.registration import ResourceRegistration, write_db
 from scrud_django.workflow import lock_workflow_policy_type
 
 from .factories import UserFactory
+from .front_ends import api_url
 
 # Quoted as the database quotes them ("x" or `x`).
 RESOURCE_TABLE = connection.ops.quote_name("scrud_django_resource")
@@ -267,8 +268,8 @@ POLICY = {
 }
 
 
-def a_policy():
-    reverse("todos-list")
+def a_policy(front_end="drf"):
+    api_url(front_end, "todos-list")
     return ResourceRegistration.register(dict(POLICY), "workflow-policies")
 
 
@@ -400,8 +401,10 @@ TWO_WRITERS = pytest.mark.skipif(
 
 
 def admin_api_client():
+    """A superuser's client logged in with a session, which both front ends
+    authenticate (``force_authenticate`` is DRF's alone)."""
     client = APIClient(raise_request_exception=False)
-    client.force_authenticate(UserFactory(is_staff=True, is_superuser=True))
+    client.force_login(UserFactory(is_staff=True, is_superuser=True))
     return client
 
 
@@ -454,10 +457,10 @@ def paused_while_locked(signal):
 @pytest.mark.parametrize("method", ["put", "delete"])
 @pytest.mark.parametrize("unlocked", ["model", "queryset"])
 def test_an_unlocked_delete_waits_for_a_locked_api_write(
-    method, unlocked, committed_types
+    method, unlocked, committed_types, front_end
 ):
     (resource,) = profiles("before")
-    url = reverse("partner-profiles-detail", args=[resource.pk])
+    url = api_url(front_end, "partner-profiles-detail", args=[resource.pk])
     client = admin_api_client()
     connections.close_all()
     signal = pre_save if method == "put" else pre_delete
@@ -489,8 +492,10 @@ def test_an_unlocked_delete_waits_for_a_locked_api_write(
 
 @TWO_WRITERS
 @pytest.mark.django_db(transaction=True)
-def test_a_bulk_delete_of_a_policy_and_its_api_put_do_not_deadlock(committed_types):
-    reverse("todos-list")
+def test_a_bulk_delete_of_a_policy_and_its_api_put_do_not_deadlock(
+    committed_types, front_end
+):
+    api_url(front_end, "todos-list")
     policy = {
         "resource_type": "tests://ToDo",
         "initial_states": {"any": "true"},
@@ -499,7 +504,7 @@ def test_a_bulk_delete_of_a_policy_and_its_api_put_do_not_deadlock(committed_typ
         "rbac_context": "pol",
     }
     stored = ResourceRegistration.register(policy, "workflow-policies")
-    url = reverse("workflow-policies-detail", args=[stored.pk])
+    url = api_url(front_end, "workflow-policies-detail", args=[stored.pk])
     client = admin_api_client()
     connections.close_all()
 
@@ -664,7 +669,9 @@ def test_a_delete_filtered_by_type_does_not_block_inserts_of_that_type(
 
 @TWO_WRITERS
 @pytest.mark.django_db(transaction=True)
-def test_a_sync_repair_of_a_policy_and_its_api_put_do_not_deadlock(committed_types):
+def test_a_sync_repair_of_a_policy_and_its_api_put_do_not_deadlock(
+    committed_types, front_end
+):
     # The repair of a drifted policy stamps the context it left, a
     # ResourceRemoval of the WorkflowPolicy type. An API PUT of the policy
     # holds the type lock and waits for the policy's row. A repair that
@@ -673,11 +680,11 @@ def test_a_sync_repair_of_a_policy_and_its_api_put_do_not_deadlock(committed_typ
     # runs before or after the PUT.
     from scrud_django.models import resource as resource_module
 
-    stored = a_policy()
+    stored = a_policy(front_end)
     Resource.objects.filter(pk=stored.pk).update(
         content=dict(POLICY, rbac_context="moved")
     )
-    url = reverse("workflow-policies-detail", args=[stored.pk])
+    url = api_url(front_end, "workflow-policies-detail", args=[stored.pk])
     client = admin_api_client()
     connections.close_all()
     original_sync = resource_module.sync_resource_contexts
@@ -714,7 +721,7 @@ def test_a_sync_repair_of_a_policy_and_its_api_put_do_not_deadlock(committed_typ
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("how", ["model", "queryset"])
 def test_a_delete_of_a_policy_holding_its_row_and_an_api_put_do_not_deadlock(
-    how, committed_types
+    how, committed_types, front_end
 ):
     # The delete locks the policy's row and pauses; an API PUT of the policy
     # then takes the type lock and waits for the row. The delete's removal
@@ -723,8 +730,8 @@ def test_a_delete_of_a_policy_holding_its_row_and_an_api_put_do_not_deadlock(
     # PUT's type lock, a deadlock, unless the delete took the type lock first.
     from scrud_django.models import resource as resource_module
 
-    stored = a_policy()
-    url = reverse("workflow-policies-detail", args=[stored.pk])
+    stored = a_policy(front_end)
+    url = api_url(front_end, "workflow-policies-detail", args=[stored.pk])
     client = admin_api_client()
     connections.close_all()
     original_lock = resource_module.lock_for_delete
@@ -760,7 +767,9 @@ def test_a_delete_of_a_policy_holding_its_row_and_an_api_put_do_not_deadlock(
 
 @TWO_WRITERS
 @pytest.mark.django_db(transaction=True)
-def test_a_save_moving_a_policy_and_its_api_put_do_not_deadlock(committed_types):
+def test_a_save_moving_a_policy_and_its_api_put_do_not_deadlock(
+    committed_types, front_end
+):
     # Resource.save() (the admin's change form, server code) of a policy that
     # leaves a context updates its row, then stamps the context it left: a
     # ResourceRemoval of the WorkflowPolicy type. An API PUT of the policy
@@ -769,8 +778,8 @@ def test_a_save_moving_a_policy_and_its_api_put_do_not_deadlock(committed_types)
     # unless the save took the type lock first.
     from scrud_django.models import resource as resource_module
 
-    stored = a_policy()
-    url = reverse("workflow-policies-detail", args=[stored.pk])
+    stored = a_policy(front_end)
+    url = api_url(front_end, "workflow-policies-detail", args=[stored.pk])
     client = admin_api_client()
     connections.close_all()
     original_stamp = resource_module.stamp_removals
@@ -883,13 +892,13 @@ def test_concurrent_first_removals_of_a_context_do_not_deadlock(committed_types)
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("write", ["save", "delete"])
 def test_the_documented_server_side_policy_write_and_an_api_put_do_not_deadlock(
-    write, committed_types
+    write, committed_types, front_end
 ):
     # The README's pattern holds the policy's row (after the type lock)
     # while an API PUT of the policy waits for the type lock: the PUT runs
     # after it. Locking the row first deadlocked (K4-M1), on PostgreSQL too.
-    stored = a_policy()
-    url = reverse("workflow-policies-detail", args=[stored.pk])
+    stored = a_policy(front_end)
+    url = api_url(front_end, "workflow-policies-detail", args=[stored.pk])
     client = admin_api_client()
     connections.close_all()
 
@@ -907,3 +916,66 @@ def test_the_documented_server_side_policy_write_and_an_api_put_do_not_deadlock(
     done, status = run_together(server, put, delay=0.2)
     assert not isinstance(done, Exception), repr(done)
     assert status == (200 if write == "save" else 404), status
+
+
+@contextmanager
+def paused_after_the_row_lock(pause):
+    """Make the first locking read of a ``Resource`` row this thread runs on
+    the write database sleep `pause` seconds once it has the row: an API
+    write paused right after its lookup, whatever it locked before it."""
+    db = connections[write_db()]
+    pending = [pause]
+
+    def hold(execute, sql, params, many, context):
+        result = execute(sql, params, many, context)
+        if (
+            pending
+            and sql.startswith("SELECT")
+            and RESOURCE_TABLE in sql
+            and "FOR UPDATE" in sql.upper()
+        ):
+            time.sleep(pending.pop())
+        return result
+
+    with db.execute_wrapper(hold):
+        yield pending
+    assert not pending, "the API write locked no resource row"
+
+
+@TWO_WRITERS
+@pytest.mark.django_db(transaction=True)
+def test_an_api_put_of_a_policy_holding_its_row_and_a_server_update_do_not_deadlock(
+    committed_types, front_end
+):
+    # The API PUT of a policy takes the type lock, then the policy's row,
+    # and pauses holding both. ResourceRegistration.update of the policy
+    # takes the type lock (and waits for the PUT), then the row. An API
+    # write that locked the row before the type held it while the update
+    # held the type and waited for the row: a deadlock, on PostgreSQL too.
+    stored = a_policy(front_end)
+    url = api_url(front_end, "workflow-policies-detail", args=[stored.pk])
+    client = admin_api_client()
+    connections.close_all()
+
+    def put():
+        with paused_after_the_row_lock(0.6):
+            return client.put(
+                url,
+                dict(POLICY, initial_states={"x": "true"}),
+                format="json",
+                HTTP_IF_MATCH="*",
+            ).status_code
+
+    def server():
+        return ResourceRegistration.update(
+            dict(POLICY, initial_states={"y": "true"}),
+            "workflow-policies",
+            str(stored.pk),
+        )
+
+    status, updated = run_together(put, server, delay=0.2)
+    assert status == 200, repr(status)
+    assert not isinstance(updated, Exception), repr(updated)
+    # The update waited for the PUT, and then wrote over it.
+    content = Resource.objects.get(pk=stored.pk).content
+    assert content["initial_states"] == {"y": "true"}, content

@@ -15,7 +15,7 @@ proof with two connections is in the batch report.
 
 import copy
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import timedelta
 from unittest import mock
 from uuid import uuid4
@@ -38,6 +38,7 @@ from scrud_django.registration import (
 )
 
 from .factories import UserFactory
+from .front_ends import api_url
 
 TODO = "tests://ToDo"
 WORKFLOW_POLICY = "http://api.openteams.com/json-ld/WorkflowPolicy"
@@ -71,6 +72,14 @@ def admin_client():
     return client
 
 
+def logged_in_admin():
+    """A superuser's client logged in with a session, which both front ends
+    authenticate (``force_authenticate`` is DRF's alone)."""
+    client = APIClient()
+    client.force_login(UserFactory(is_staff=True, is_superuser=True))
+    return client
+
+
 def client_with(definition, context):
     user = UserFactory()
     role = Role(definition=definition, etag=uuid4().hex, modified_at=now())
@@ -83,13 +92,13 @@ def client_with(definition, context):
     return client
 
 
-def a_todo(content=IN_PROGRESS):
-    reverse("todos-list")
+def a_todo(content=IN_PROGRESS, front_end="drf"):
+    api_url(front_end, "todos-list")
     return ResourceRegistration.register(dict(content), "todos")
 
 
-def todo_url(todo):
-    return reverse("todos-detail", args=[todo.pk])
+def todo_url(todo, front_end="drf"):
+    return api_url(front_end, "todos-detail", args=[todo.pk])
 
 
 def server_update(todo, content):
@@ -476,12 +485,22 @@ def recorded_write_order():
     """Record, in order, the policy type lock (``"lock"``), the queries of
     the ``Resource`` table (``"select"`` and ``"update"``/``"delete"``) and
     whether each ran inside a transaction the code under test opened on the
-    write database."""
+    write database.
+
+    The type lock is recorded through every module's reference to
+    ``lock_workflow_policy_type``: ``registration`` (whose
+    ``lock_if_workflow_policy`` both front ends take before the row),
+    ``core.writes`` and the DRF views import their own, and the model's
+    writes import it from ``scrud_django.workflow`` when they run."""
+    from scrud_django import workflow
+    from scrud_django.core import writes
+    from scrud_django.mixins import view_mixins
+
     connection = connections[write_db()]
     quote = connection.ops.quote_name
     depth = len(connection.atomic_blocks)
     events = []
-    original_lock = registration.lock_workflow_policy_type
+    original_lock = workflow.lock_workflow_policy_type
 
     def lock(using):
         events.append(("lock", len(connections[using].atomic_blocks) > depth))
@@ -496,15 +515,18 @@ def recorded_write_order():
             events.append((kind, len(connection.atomic_blocks) > depth))
         return execute(sql, params, many, context)
 
-    with (
-        mock.patch.object(registration, "lock_workflow_policy_type", lock),
-        connection.execute_wrapper(record),
-    ):
+    with ExitStack() as stack:
+        for module in (registration, writes, workflow, view_mixins):
+            assert module.lock_workflow_policy_type is original_lock, module
+            stack.enter_context(
+                mock.patch.object(module, "lock_workflow_policy_type", lock)
+            )
+        stack.enter_context(connection.execute_wrapper(record))
         yield events
 
 
-def a_policy():
-    reverse("todos-list")
+def a_policy(front_end="drf"):
+    api_url(front_end, "todos-list")
     workflow_policy_resource_type()
     return ResourceRegistration.register(
         dict(PERMISSIVE_POLICY, rbac_context="p"), "workflow-policies"
@@ -513,10 +535,10 @@ def a_policy():
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("method", ["put", "delete"])
-def test_a_policy_write_locks_the_type_before_it_reads_the_row(method):
-    stored = a_policy()
-    client = admin_client()
-    url = reverse("workflow-policies-detail", args=[stored.pk])
+def test_a_policy_write_locks_the_type_before_it_reads_the_row(front_end, method):
+    stored = a_policy(front_end)
+    client = logged_in_admin()
+    url = api_url(front_end, "workflow-policies-detail", args=[stored.pk])
     with recorded_write_order() as events:
         response = getattr(client, method)(
             url,
@@ -537,12 +559,12 @@ def test_a_policy_write_locks_the_type_before_it_reads_the_row(method):
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("method", ["put", "delete"])
-def test_a_write_reads_the_row_inside_its_transaction(method):
-    todo = a_todo()
-    client = admin_client()
+def test_a_write_reads_the_row_inside_its_transaction(front_end, method):
+    todo = a_todo(front_end=front_end)
+    client = logged_in_admin()
     with recorded_write_order() as events:
         response = getattr(client, method)(
-            todo_url(todo),
+            todo_url(todo, front_end),
             *([DONE] if method == "put" else []),
             format="json",
             HTTP_IF_MATCH=quote_etag(todo.etag),
