@@ -34,8 +34,11 @@ def entry(run):
        back when it answers a status of 400 or more (or raises), as DRF's
        ``dispatch`` runs it.
 
-    A refusal is answered by the operation's API (``api.on_exception``).
-    Operations are sync (``TypeError`` for an async one)."""
+    A real OPTIONS passes straight through: scrud's OPTIONS operations
+    resolve the user themselves, once they know it is no CORS preflight
+    (``scrud_django.ninja.routers``). A refusal is answered by the
+    operation's API (``api.on_exception``). Operations are sync
+    (``TypeError`` for an async one)."""
     if inspect.iscoroutinefunction(run):
         raise TypeError("scrud's ninja entry checks serve sync operations only.")
 

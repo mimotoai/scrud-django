@@ -166,6 +166,39 @@ def test_rewritten_options_is_refused_before_the_core(put_in_b, check_request_ca
     assert len(check_request_calls) == 1
 
 
+@pytest.mark.urls("tests.parity_urls")
+@REWRITING
+def test_rewritten_options_is_refused_on_the_real_detail_route(
+    put_in_b, check_request_calls
+):
+    # The ninja API's own partner-profiles detail route (tests.ninja_api), an
+    # item that exists: the rewritten OPTIONS is refused at entry, before
+    # any core call; the same PUT, not rewritten, reaches the core.
+    serve_both()
+    item = registration.ResourceRegistration.register(
+        {"name": "x", "rbac_context": "b"}, "partner-profiles"
+    )
+    url = f"{MOUNTS['ninja']}partner-profiles/{item.pk}/"
+    body = json.dumps({"name": "y", "rbac_context": "a"})
+
+    response = put_in_b.options(
+        url,
+        body,
+        content_type="application/json",
+        headers={"X-HTTP-Method-Override": "PUT", "If-Match": quote_etag(item.etag)},
+    )
+
+    assert response.status_code == 403, response.content
+    assert check_request_calls == []
+    put_in_b.put(
+        url,
+        body,
+        content_type="application/json",
+        headers={"If-Match": quote_etag(item.etag)},
+    )
+    assert check_request_calls
+
+
 @pytest.mark.parametrize(
     "user, status",
     [(lambda: User.objects.create(username="rewriter"), 403), (AnonymousUser, 401)],

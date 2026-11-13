@@ -28,9 +28,11 @@ def api(
     a 404 rather than ninja's 401.
 
     Its errors are answered as on DRF (`errors.install`), as uniform errors
-    are for each request (`errors.answer_natively_when_off`), and its type
-    routes vary on ``Accept`` as DRF's (`routers.vary_on_accept`). More
-    routers may be added before its ``urls`` are read."""
+    are for each request (`errors.answer_natively_when_off`), its type
+    routes vary on ``Accept`` as DRF's (`routers.vary_on_accept`), and the
+    collection documents' routes give DRF's ``Allow``
+    (`routers.as_drf_api_views`). More routers may be added before its
+    ``urls`` are read."""
     if "auth" in ninja_kwargs:
         raise TypeError(
             "scrud_django.ninja.api() takes no auth: scrud resolves the user of "
@@ -57,4 +59,5 @@ def api(
     errors.install(scrud_api)
     errors.answer_natively_when_off(scrud_api)
     routers.vary_on_accept(scrud_api, url_names)
+    routers.as_drf_api_views(scrud_api, routers.COLLECTION_ROUTES)
     return scrud_api

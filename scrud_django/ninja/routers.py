@@ -14,9 +14,10 @@ from django.utils.translation import gettext
 from ninja import Router
 from ninja.errors import HttpError
 from scoped_rbac import access, problems
-from scoped_rbac.ninja import request_json
+from scoped_rbac.ninja import request_json, resolve_user
 from scrudful._adapter import set_validator_headers
 from scrudful._django import aware, conditional_response, precondition_headers
+from scrudful._hsr import is_preflight
 from scrudful.conditional import http_timestamp, quote_etag
 from scrudful.ninja import Entity, ScrudfulRouter, described, scrudful
 
@@ -59,6 +60,43 @@ COLLECTION_ROUTES = {
     "collections-json-ld": (collection_context, LD_JSON),
 }
 
+#: The ``Allow`` of every answer of the collection documents' routes, as the
+#: DRF views (``APIView``s serving GET) give it.
+COLLECTION_ALLOW = "GET, HEAD, OPTIONS"
+
+#: What the DRF views of the collection documents answer an OPTIONS with
+#: (DRF's ``SimpleMetadata``, by route name): each view's name and
+#: description (its class's, its docstring dedented), and the media types
+#: of DRF's default renderers and parsers, which those views use. The parity
+#: corpus pins them against the DRF views
+#: (``tests/test_front_end_parity.py``, ``options-collections-*``).
+COLLECTION_OPTIONS = {
+    "collections-json-schema": {
+        "name": "Resource Collection Schema",
+        "description": """\
+The JSON Schema of a resource type's list body (the list's
+``describedby``): the page envelope of `StandardResultsSetPagination`,
+whose ``content`` is the page's resource envelopes, each with the type's
+schema embedded as its ``content`` (`embedded_schema`), a ``$ref`` to the
+type's ``schema_uri``, or any value for a type without a schema.""",
+    },
+    "collections-json-ld": {
+        "name": "Resource Collection Context",
+        "description": """\
+The JSON-LD context of a resource type's list body (served as
+``application/ld+json``). Its terms are kept as they were (the
+``opententeams:`` prefix of first/previous/next/last included): the
+``api.openteams.com`` IRIs are part of the API's semantics.""",
+    },
+}
+#: The media types of DRF's default renderers and parsers (`COLLECTION_OPTIONS`).
+DRF_RENDERS = ("application/json", "text/html")
+DRF_PARSES = (
+    "application/json",
+    "application/x-www-form-urlencoded",
+    "multipart/form-data",
+)
+
 
 def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> ScrudfulRouter:
     """A router serving the resources of `spec`'s type: its list route
@@ -70,6 +108,11 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
     a ninja router is mounted on one API only; `urls_namespace` is that
     API's, which the links its HTTP Schema Resource describes (without a
     request) are reversed in.
+
+    OPTIONS of either route is scrud's own operation, not scrudful's
+    automatic one (`_options`): its ``Allow`` is the core's
+    (``core.resources.allowed_methods_for``), which looks nothing up for a
+    requester refused every method; a CORS preflight is a bare 204.
 
     Every operation passes `entry` first. The API varies the route's
     responses on ``Accept`` (`vary_on_accept`) and answers its errors as
@@ -185,11 +228,49 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
             requirement=requirement_for(rtype),
             using=write_db(),
         )
-        response = HttpResponse(status=204)
-        del response["Content-Type"]
-        return response
+        return _no_content()
+
+    # scrud's own OPTIONS, replacing scrudful's automatic one on each path.
+    @router.api_operation(["OPTIONS"], "/", url_name=list_name, include_in_schema=False)
+    def list_options(request):
+        return _options(request, spec, None)
+
+    @router.api_operation(
+        ["OPTIONS"], "/{slug}/", url_name=url_name, include_in_schema=False
+    )
+    def item_options(request, slug: str):
+        return _options(request, spec, slug)
 
     return router
+
+
+def _options(request, spec, slug):
+    """The answer to an OPTIONS of `spec`'s item `slug` (``None``: its
+    list), as the DRF route answers it: a 204 with no content, whose
+    ``Allow`` is the core's (``core.resources.allowed_methods_for``) for the
+    requester, resolved first as for every other method (`resolve_user`,
+    which `entry` leaves to this operation); its ``Http404`` (an item
+    missing or hidden from a method the requester may use) answered by the
+    API. A CORS preflight is a bare 204, before anything else, as
+    scrudful's automatic OPTIONS answers it. scrudful's router run gives
+    every other answer the HTTP Schema Resource link and exposes ``Link``
+    and ``Allow``."""
+    if is_preflight(request.method, request.headers.get):
+        return _no_content()
+    resolve_user(request)
+    rtype = _resource_type(request, spec)
+    response = _no_content()
+    response["Allow"] = ", ".join(
+        resources.allowed_methods_for(request, rtype, slug, requirement_for(rtype))
+    )
+    return response
+
+
+def _no_content():
+    """A 204, with no content and no ``Content-Type``."""
+    response = HttpResponse(status=204)
+    del response["Content-Type"]
+    return response
 
 
 def collections_router() -> Router:
@@ -198,18 +279,29 @@ def collections_router() -> Router:
     JSON Schema of `slug`'s list body, ``application/schema+json``) and
     ``"/collections-json-ld/{slug}/"`` (its JSON-LD context,
     ``application/ld+json``), GET and HEAD, public; served as
-    ``application/json`` to a request preferring it. A plain ninja router:
-    the DRF views are no scrudful views (no HTTP Schema Resource). Every
-    operation passes `entry` first."""
+    ``application/json`` to a request preferring it; and OPTIONS, answered
+    with the DRF view's metadata (`_document_options`). A plain ninja
+    router: the DRF views are no scrudful views (no HTTP Schema Resource).
+    Every operation passes `entry` first. The API gives every answer of its
+    routes, a 405 included, the DRF views' ``Allow``
+    (`as_drf_api_views`)."""
     router = Router()
     router.add_decorator(entry, mode="view")
-    router.add_decorator(_as_drf_api_view, mode="view")
+    router.add_decorator(_noting_serving_api, mode="view")
     for name, (document, media_type) in COLLECTION_ROUTES.items():
+        path = f"/{name}/{{slug}}/"
         router.add_api_operation(
-            f"/{name}/{{slug}}/",
+            path,
             ["GET", "HEAD"],
             _document_operation(document, media_type),
             url_name=name,
+        )
+        router.add_api_operation(
+            path,
+            ["OPTIONS"],
+            _document_options(name),
+            url_name=name,
+            include_in_schema=False,
         )
     return router
 
@@ -227,16 +319,39 @@ def _document_operation(document, media_type):
     return collection_document
 
 
-def _as_drf_api_view(run):
-    """Decorate a ninja operation's ``run`` (``mode="view"``) to answer as a
-    DRF ``APIView`` of ``GET`` does (the collection documents' views, no
-    scrudful views): with its ``Allow`` on every response, and without the
-    ``Access-Control-Expose-Headers`` scrudful gives the API's errors."""
+def _document_options(name):
+    """The OPTIONS operation of the collection document `name`: DRF's
+    ``SimpleMetadata`` of its view (`COLLECTION_OPTIONS`, with DRF's
+    default renderers and parsers), a 200 written as DRF writes it (the
+    serving API's renderer, ``application/json``), whatever the slug, a
+    CORS preflight's too, as the DRF view answers them."""
+    metadata = {
+        **COLLECTION_OPTIONS[name],
+        "renders": list(DRF_RENDERS),
+        "parses": list(DRF_PARSES),
+    }
 
-    @functools.wraps(run)
+    def collection_document_options(request, slug: str):
+        return _serving_api(request).create_response(request, metadata, status=200)
+
+    return collection_document_options
+
+
+def as_drf_api_views(api, url_names) -> None:
+    """Have `api`'s URL patterns named in `url_names` (the collection
+    documents' routes) answer as a DRF ``APIView`` serving ``GET`` does
+    (their DRF views are no scrudful views): every response, ninja's 405
+    included, with the view's ``Allow`` (`COLLECTION_ALLOW`), and without
+    the ``Access-Control-Expose-Headers`` scrudful and scoped-rbac give the
+    API's errors. Call it before ``api.urls`` is read."""
+    _wrap_patterns(api, url_names, _as_drf_api_view)
+
+
+def _as_drf_api_view(view):
+    @functools.wraps(view)
     def answered(request, *args, **kwargs):
-        response = run(request, *args, **kwargs)
-        response["Allow"] = "GET, HEAD, OPTIONS"
+        response = view(request, *args, **kwargs)
+        response["Allow"] = COLLECTION_ALLOW
         if response.has_header("Access-Control-Expose-Headers"):
             del response["Access-Control-Expose-Headers"]
         return response
@@ -441,6 +556,12 @@ def vary_on_accept(api, url_names) -> None:
     among several renderers, sends ``Vary: Accept`` on each; a document
     type's representation does depend on it, `_as_document`). Call it before
     ``api.urls`` is read."""
+    _wrap_patterns(api, url_names, _varying_on_accept)
+
+
+def _wrap_patterns(api, url_names, wrap):
+    """Have `api`'s URL patterns named in `url_names` answer through
+    ``wrap(view)``, once its ``urls`` are read."""
     get_urls = api._get_urls
     names = frozenset(url_names)
 
@@ -449,7 +570,7 @@ def vary_on_accept(api, url_names) -> None:
         patterns = get_urls()
         for pattern in patterns:
             if pattern.name in names:
-                pattern.callback = _varying_on_accept(pattern.callback)
+                pattern.callback = wrap(pattern.callback)
         return patterns
 
     api._get_urls = _get_urls

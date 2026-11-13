@@ -1320,6 +1320,194 @@ def test_each_front_ends_list_hsr_links_to_its_own_routes(client):
         assert MOUNTS[other] not in text, text
 
 
+# OPTIONS: the type routes answer scrud's own OPTIONS (the core's
+# `allowed_methods_for`), a CORS preflight a bare 204; the collection
+# documents answer DRF's metadata.
+
+#: The requesters of the OPTIONS cases: a role definition to hold in context
+#: "a" (``None``: none), a superuser, or no login.
+OPTIONS_REQUESTERS = {
+    "admin": {"superuser": True},
+    "reader": {"grants": [LIST_READER]},
+    "nothing": {},
+    "anonymous": {"login": False},
+}
+PREFLIGHT = {"Origin": "http://example.com", "Access-Control-Request-Method": "PUT"}
+
+
+def _options_cases():
+    cases = []
+    for name, requester in OPTIONS_REQUESTERS.items():
+        grants = requester.get("grants", [])
+        superuser = requester.get("superuser", False)
+        login = requester.get("login", True)
+        cases.append(
+            Case(
+                f"options-list-{name}",
+                "OPTIONS",
+                LIST,
+                _listing(*grants, superuser=superuser, login=login),
+            )
+        )
+        for target, context, key in (
+            ("readable", "a", "{item}"),
+            ("hidden", "b", "{item}"),
+            ("missing", "a", "999999999"),
+            ("not-a-key", "a", "x"),
+        ):
+            cases.append(
+                Case(
+                    f"options-{target}-{name}",
+                    "OPTIONS",
+                    PROFILE.path(key),
+                    PROFILE.setup(
+                        *grants, context=context, superuser=superuser, login=login
+                    ),
+                )
+            )
+    for path in (LIST, PROFILE.path()):
+        cases.append(
+            Case(
+                f"preflight-{'list' if path == LIST else 'item'}",
+                "OPTIONS",
+                path,
+                PROFILE.setup(superuser=True),
+                headers=PREFLIGHT,
+            )
+        )
+    for name in ("collections-json-schema", "collections-json-ld"):
+        for slug in ("partner-profiles", "no-such-type"):
+            cases.append(
+                Case(f"options-{name}-{slug}", "OPTIONS", "{mount}" + f"{name}/{slug}/")
+            )
+        document = "{mount}" + f"{name}/partner-profiles/"
+        cases.extend(
+            [
+                Case(
+                    f"options-{name}-json",
+                    "OPTIONS",
+                    document,
+                    headers={"Accept": "application/json"},
+                ),
+                Case(f"preflight-{name}", "OPTIONS", document, headers=PREFLIGHT),
+                *(
+                    Case(f"{method.lower()}-{name}", method, document, body={})
+                    for method in ("POST", "PUT", "PATCH", "DELETE")
+                ),
+            ]
+        )
+    return cases
+
+
+@pytest.mark.parametrize("case", _options_cases(), ids=lambda case: case.id)
+def test_options_answer_alike(case):
+    drf, ninja = parity(case)
+
+    assert drf == ninja
+
+
+def test_options_answers_are_drfs():
+    """What the OPTIONS cases answer on DRF (`test_options_answer_alike`
+    compares ninja's with them): pinned, so that the corpus keeps covering
+    each kind of answer."""
+    answers = {}
+    for case in _options_cases():
+        drf, _ = parity(case)
+        answers[case.id] = (drf.status, drf.headers.get("Allow"))
+    every = "GET, PUT, DELETE, OPTIONS, HEAD"
+    document = (200, "GET, HEAD, OPTIONS")
+    refused = (405, "GET, HEAD, OPTIONS")
+    assert answers == {
+        "options-list-admin": (204, "GET, POST, OPTIONS, HEAD"),
+        "options-readable-admin": (204, every),
+        "options-hidden-admin": (204, every),
+        "options-missing-admin": (404, None),
+        "options-not-a-key-admin": (404, None),
+        "options-list-reader": (204, "GET, OPTIONS, HEAD"),
+        "options-readable-reader": (204, "GET, OPTIONS, HEAD"),
+        "options-hidden-reader": (404, None),
+        "options-missing-reader": (404, None),
+        "options-not-a-key-reader": (404, None),
+        **{
+            f"options-{target}-nothing": (204, "OPTIONS")
+            for target in ("list", "readable", "hidden", "missing", "not-a-key")
+        },
+        # The tests' policy for the anonymous grants partner profiles' POST.
+        "options-list-anonymous": (204, "POST, OPTIONS"),
+        **{
+            f"options-{target}-anonymous": (204, "OPTIONS")
+            for target in ("readable", "hidden", "missing", "not-a-key")
+        },
+        "preflight-list": (204, None),
+        "preflight-item": (204, None),
+        **{
+            f"{case}-{name}{suffix}": answer
+            for name in ("collections-json-schema", "collections-json-ld")
+            for case, suffix, answer in (
+                ("options", "-partner-profiles", document),
+                ("options", "-no-such-type", document),
+                ("options", "-json", document),
+                ("preflight", "", document),
+                ("post", "", refused),
+                ("put", "", refused),
+                ("patch", "", refused),
+                ("delete", "", refused),
+            )
+        },
+    }, answers
+
+
+def test_options_missing_and_existing_answer_alike():
+    """A requester granted nothing learns nothing of a key from OPTIONS: an
+    existing item, a hidden one and a missing key answer alike, on both
+    front ends."""
+
+    def setup(context):
+        def setup(client):
+            item = PROFILE.store(context)
+            _user(client)
+            return {"item": item.pk}
+
+        return setup
+
+    existing = parity(Case("options-existing", "OPTIONS", PROFILE.path(), setup("a")))
+    hidden = parity(Case("options-hidden", "OPTIONS", PROFILE.path(), setup("b")))
+    missing = parity(
+        Case("options-missing", "OPTIONS", PROFILE.path("999999999"), setup("a"))
+    )
+
+    for drf, ninja in (existing, hidden, missing):
+        assert drf == ninja
+    assert existing[0].status == 204, existing[0]
+    assert existing[0].headers["Allow"] == "OPTIONS"
+    assert existing == hidden == missing
+
+
+def test_options_resolves_the_user_as_other_methods_do(client):
+    """The ninja OPTIONS resolves its requester as every other method
+    (``scoped_rbac.ninja.resolve_user``): through ``SCOPED_RBAC["NINJA_USER"]``
+    when it is set, the session's user otherwise."""
+    serve_both()
+    admin = User.objects.create(username="admin", is_staff=True, is_superuser=True)
+    item = PROFILE.store()
+    url = f"{MOUNTS['ninja']}partner-profiles/{item.pk}/"
+    every = "GET, PUT, DELETE, OPTIONS, HEAD"
+
+    response = client.options(url)
+    assert (response.status_code, response["Allow"]) == (204, "OPTIONS")
+    mapped = {**settings.SCOPED_RBAC, "NINJA_USER": lambda request: admin}
+    with override_settings(SCOPED_RBAC=mapped):
+        response = client.options(url)
+        list_response = client.options(f"{MOUNTS['ninja']}partner-profiles/")
+    assert (response.status_code, response["Allow"]) == (204, every)
+    assert list_response["Allow"] == "GET, POST, OPTIONS, HEAD"
+    # The session's user, as on DRF.
+    client.force_login(admin)
+    for mount in MOUNTS.values():
+        response = client.options(f"{mount}partner-profiles/{item.pk}/")
+        assert (response.status_code, response["Allow"]) == (204, every)
+
+
 # Uniform errors off (SCOPED_RBAC["UNIFORM_ERRORS"]) for a request: each front
 # end reads it per request, so an API built with it on answers natively.
 

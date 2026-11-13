@@ -923,3 +923,102 @@ def test_allowed_methods_do_not_depend_on_the_methods_order_or_case():
     ]
     assert answers[0] == ["GET", "PUT", "OPTIONS", "HEAD"]
     assert answers[1] == answers[2] == answers[0]
+
+
+@pytest.mark.django_db
+@test_context
+def test_allowed_methods_for_matches_the_drf_route():
+    """`allowed_methods_for`, given the key rather than the item, answers
+    what the DRF route's OPTIONS answers: for the list, a readable item, a
+    hidden one and a missing key, as an admin, a reader in "a", a user
+    granted nothing and the anonymous user. Refused every method, a
+    requester gets ``Allow: OPTIONS`` whether the key exists or not: nothing
+    is looked up."""
+    from scrud_django.core.resources import allowed_methods_for
+
+    resource_type = json_ld()
+    requirement = [GrantsLeaf(JSON_LD)]
+    readable, hidden = store("a"), store("b")
+    matrix = users()
+    requesters = {
+        "admin": matrix["superuser"],
+        "reader-a": matrix["reader-a"],
+        "nothing": user_with(),
+        "anonymous": matrix["anonymous"],
+    }
+    targets = {
+        "list": None,
+        "readable": str(readable.pk),
+        "hidden": str(hidden.pk),
+        "missing": "999999999",
+        "not-a-key": "x",
+    }
+    seen = {}
+    for name, user in requesters.items():
+        client = client_of(user)
+        for target, pk in targets.items():
+            if pk is None:
+                url = reverse("json-ld-list")
+            else:
+                url = reverse("json-ld-detail", args=[pk])
+            response = client.options(url)
+            request = request_of("OPTIONS", user, url)
+            if response.status_code == status.HTTP_404_NOT_FOUND:
+                with pytest.raises(Http404):
+                    allowed_methods_for(request, resource_type, pk, requirement)
+                seen[name, target] = 404
+                continue
+            assert response.status_code == status.HTTP_204_NO_CONTENT, (name, target)
+            core = allowed_methods_for(request, resource_type, pk, requirement)
+            assert core == allow_of(response), (name, target)
+            seen[name, target] = tuple(core)
+    # DRF's answers, pinned.
+    every = ("GET", "PUT", "DELETE", "OPTIONS", "HEAD")
+    assert seen == {
+        ("admin", "list"): ("GET", "POST", "OPTIONS", "HEAD"),
+        ("admin", "readable"): every,
+        ("admin", "hidden"): every,
+        ("admin", "missing"): 404,
+        ("admin", "not-a-key"): 404,
+        ("reader-a", "list"): ("OPTIONS",),
+        ("reader-a", "readable"): ("GET", "OPTIONS", "HEAD"),
+        ("reader-a", "hidden"): 404,
+        ("reader-a", "missing"): 404,
+        ("reader-a", "not-a-key"): 404,
+        **{
+            (name, target): ("OPTIONS",)
+            for name in ("nothing", "anonymous")
+            for target in targets
+        },
+    }, seen
+
+
+@pytest.mark.django_db
+@test_context
+def test_allowed_methods_for_looks_nothing_up_for_a_requester_refused_everything(
+    monkeypatch,
+):
+    """Refused every method's request check, the requester gets ``Allow:
+    OPTIONS`` before any lookup: the key's existence is never asked. Once a
+    method passes, the item is looked up, a missing one a 404."""
+    from scrud_django.core import resources
+
+    resource_type = json_ld()
+    requirement = [GrantsLeaf(JSON_LD)]
+    looked_up = []
+    get = resources.Resource.objects.filter
+
+    def recording_filter(*args, **kwargs):
+        looked_up.append(kwargs)
+        return get(*args, **kwargs)
+
+    monkeypatch.setattr(resources.Resource.objects, "filter", recording_filter)
+    nothing = request_of("OPTIONS", user_with())
+    assert resources.allowed_methods_for(
+        nothing, resource_type, "999999999", requirement
+    ) == ["OPTIONS"]
+    assert looked_up == []
+    reader = request_of("OPTIONS", users()["reader-a"])
+    with pytest.raises(Http404):
+        resources.allowed_methods_for(reader, resource_type, "999999999", requirement)
+    assert looked_up

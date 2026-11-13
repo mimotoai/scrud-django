@@ -3,9 +3,10 @@ list and items, with a Django request, the `ResourceType` and a neutral
 requirement (`scrud_django.core.requirements`), as the DRF routes answer
 (``ResourceViewMixin``): an item's lookup and object check (`load_for_read`),
 whether it is readable (`object_readable`), its validators and Links, and
-the ``Allow`` of an OPTIONS (`allowed_methods`). The list's and the writes'
-functions are re-exported from `scrud_django.core.lists` and
-`scrud_django.core.writes`.
+the ``Allow`` of an OPTIONS (`allowed_methods`, and `allowed_methods_for`,
+given the key, which looks nothing up for a requester refused every
+method). The list's and the writes' functions are re-exported from
+`scrud_django.core.lists` and `scrud_django.core.writes`.
 
 A refusal of an object the requester cannot read is a 404 (``Http404``),
 for every method: another answer would reveal that it exists. A refusal of
@@ -553,7 +554,8 @@ def allowed_methods(
     loaded: on the DRF route a requester refused every method gets ``Allow:
     OPTIONS`` whether the object exists or not (nothing is loaded then),
     which a caller that answers a missing item with a 404 before calling
-    this does not reproduce.
+    this does not reproduce: a front end given the key calls
+    `allowed_methods_for`, which looks the item up only once a method passed.
 
     `requirement` (and a given `list_requirement`) is taken through
     `Requirement.of`: one that asks no grants (empty, or hooks only) is
@@ -561,34 +563,11 @@ def allowed_methods(
     requirement = Requirement.of(requirement, caller="allowed_methods")
     if list_requirement is not None:
         list_requirement = Requirement.of(list_requirement, caller="allowed_methods")
-    given = (
-        methods
-        if methods is not None
-        else served_methods(resource_type, item=obj is not None)
-    )
-    upper = dict.fromkeys(method.upper() for method in given)
-    checked = tuple(
-        [method for method in ALLOW_ORDER if method in upper]
-        + [method for method in upper if method not in ALLOW_ORDER]
-    )
-    if obj is None:
-        covered = COVERED_LIST_METHOD
-        if list_requirement is None:
-            list_requirement = Requirement.of(
-                [GrantsLeaf(collection_type_uri_for(resource_type.type_uri))],
-                caller="allowed_methods",
-            )
-        requirements = {"GET": list_requirement}
-    else:
-        covered = COVERED_ITEM_METHOD
-        requirements = {}
+    checked = _checked_methods(resource_type, methods, item=obj is not None)
     copies = {method: _options_copy(request, method) for method in checked}
-    allowed = {}
-    for method in checked:
-        with authorizing_write(copies[method], covered=method == covered):
-            allowed[method] = _request_checks_pass(
-                copies[method], requirements.get(method, requirement)
-            )
+    allowed = _request_allowed(
+        copies, resource_type, requirement, list_requirement, item=obj is not None
+    )
     loader = next((method for method in checked if allowed[method]), None)
     if obj is not None and loader is not None:
         found_item(resource_type, obj)
@@ -612,3 +591,107 @@ def allowed_methods(
     allowed["HEAD"] = allowed.get("GET", False)
     allowed["OPTIONS"] = True
     return [method for method in ALLOW_ORDER if allowed.get(method)]
+
+
+def _checked_methods(resource_type, methods, *, item: bool) -> tuple[str, ...]:
+    """The methods whose use OPTIONS checks, upper-cased, in `ALLOW_ORDER`
+    (a method not in it after those, in the order given): `methods`, by
+    default those the route serves (`served_methods`)."""
+    given = methods if methods is not None else served_methods(resource_type, item=item)
+    upper = dict.fromkeys(method.upper() for method in given)
+    return tuple(
+        [method for method in ALLOW_ORDER if method in upper]
+        + [method for method in upper if method not in ALLOW_ORDER]
+    )
+
+
+def _request_allowed(
+    copies, resource_type, requirement, list_requirement, *, item: bool
+) -> dict[str, bool]:
+    """Whether the request check of each method allows it, by method: on its
+    body-less copy (`copies`, by method, `_options_copy`), as step 1 of
+    `allowed_methods` asks it (the list's GET with `list_requirement`, by
+    default a `GrantsLeaf` of the type's list type)."""
+    if item:
+        covered = COVERED_ITEM_METHOD
+        requirements = {}
+    else:
+        covered = COVERED_LIST_METHOD
+        if list_requirement is None:
+            list_requirement = Requirement.of(
+                [GrantsLeaf(collection_type_uri_for(resource_type.type_uri))],
+                caller="allowed_methods",
+            )
+        requirements = {"GET": list_requirement}
+    allowed = {}
+    for method, copy_ in copies.items():
+        with authorizing_write(copy_, covered=method == covered):
+            allowed[method] = _request_checks_pass(
+                copy_, requirements.get(method, requirement)
+            )
+    return allowed
+
+
+def allowed_methods_for(
+    request,
+    resource_type,
+    pk: str | None,
+    requirement: Requirement | Sequence,
+    *,
+    list_requirement: Requirement | Sequence | None = None,
+    methods: Sequence[str] | None = None,
+) -> list[str]:
+    """The methods the ``Allow`` of the OPTIONS `request` lists, as the DRF
+    route answers it, given the key `pk` of the item (a path parameter, as
+    it came) or ``None`` for the list, rather than the item loaded
+    (`allowed_methods`, whose arguments the others are):
+
+    1. each method's request check (step 1 of `allowed_methods`) runs
+       first, before any lookup;
+    2. a requester refused every method gets ``["OPTIONS"]`` whatever `pk`
+       is: nothing is looked up, so the answer tells nothing of whether the
+       item exists, as on the DRF route, which loads nothing then;
+    3. else the item is looked up as `load_for_read` looks it up (``Http404``
+       for a missing key or one that is no key), and `allowed_methods`
+       answers with it (``Http404`` for one stored in a reserved context or
+       hidden from the first method allowed).
+
+    For the list (`pk` ``None``) it is `allowed_methods` without an item.
+
+    `requirement` (and a given `list_requirement`) is taken through
+    `Requirement.of`: one that asks no grants (empty, or hooks only) is
+    ``ImproperlyConfigured``, before any lookup."""
+    requirement = Requirement.of(requirement, caller="allowed_methods_for")
+    if list_requirement is not None:
+        list_requirement = Requirement.of(
+            list_requirement, caller="allowed_methods_for"
+        )
+    if pk is None:
+        return allowed_methods(
+            request,
+            resource_type,
+            None,
+            requirement,
+            list_requirement=list_requirement,
+            methods=methods,
+        )
+    checked = _checked_methods(resource_type, methods, item=True)
+    copies = {method: _options_copy(request, method) for method in checked}
+    allowed = _request_allowed(
+        copies, resource_type, requirement, list_requirement, item=True
+    )
+    if not any(allowed.values()):
+        return ["OPTIONS"]
+    try:
+        obj = Resource.objects.filter(resource_type=resource_type).get(pk=pk)
+    except (Resource.DoesNotExist, TypeError, ValueError, ValidationError):
+        # DRF's get_object_or_404: a pk that is no key is missing too.
+        raise Http404 from None
+    return allowed_methods(
+        request,
+        resource_type,
+        obj,
+        requirement,
+        list_requirement=list_requirement,
+        methods=methods,
+    )

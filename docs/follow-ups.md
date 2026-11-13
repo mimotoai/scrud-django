@@ -1168,19 +1168,6 @@ template typed for `/items/0` of one instance is restored in the form for
 `/items/0`; assert it has the default template, and that the typed one comes
 back with `instance=7` again.
 
-<a id="core-allowed-methods-existence-leak"></a>
-## core-allowed-methods-existence-leak: `core.allowed_methods` takes a loaded item
-
-`core.resources.allowed_methods` is given the item already loaded, so a front
-end that answers a missing item with a 404 before calling it tells a requester
-refused every method that the object does not exist. On the DRF route that
-requester gets `Allow: OPTIONS` for a missing and an existing object alike.
-The ninja front end must run the request-level step (`has_permission` of each
-method, as step 1 of `allowed_methods` does) before its lookup. Test: in
-`tests/test_core_resources.py`, OPTIONS the detail URL of a missing key as a
-user granted nothing on the type; assert 200 with `Allow: OPTIONS`, not 404,
-through the ninja route once it exists (the DRF route passes today).
-
 <a id="drf-anyof-list-object-check-only"></a>
 ## drf-anyof-list-object-check-only: the DRF list and readability ask a `|` option's object check alone
 
@@ -1199,27 +1186,6 @@ a reader in "a" with a resource stored in "a"; the list includes the
 resource, and its detail GET answers 403. It should leave the resource out
 and answer 404, as the facade does
 (`test_anyof_option_refused_at_request_level_is_not_satisfied`).
-
-<a id="core-options-copy-entry"></a>
-## core-options-copy-entry: the ninja front end must refuse scrudful's OPTIONS copy at entry
-
-Before ninja phase 3. `core.resources.check_request` (and so
-`load_for_read`, `readable_queryset`, `validate_write`) treats a request
-carrying scrudful's marker of a body-less OPTIONS copy
-(`access.checks_allow`: `request.method` a method, `META["REQUEST_METHOD"]`
-`"OPTIONS"`) as body-less: a PUT or POST is checked in some context, not in
-the contexts its body writes, and a type's hooks skip the body. The core
-leaves such a copy as it is, since `allowed_methods` and `load_for_read`
-build one themselves. A request that *arrives* so (middleware rewriting an
-OPTIONS's method, say from `X-HTTP-Method-Override`) must be refused where
-it enters the front end, as DRF's `initial()` refuses it
-(`access.refuse_rewritten_options`, 403; scoped-rbac's ninja error handlers
-do too). The ninja front end must call it before any core function. Test:
-in the ninja front end's tests, send an OPTIONS rewritten to a PUT whose
-body writes a context the requester may not write (the method overridden
-by middleware), as a requester who may PUT in another context; assert a
-403 before any core call, where `check_request` on that request alone
-allows it.
 
 <a id="studio-computed-to-compute"></a>
 ## studio-computed-to-compute: the studio's computed types still register a viewset class
@@ -1291,6 +1257,45 @@ requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
 `AccessDenied` (today it allows).
 
 # Decided
+
+<a id="core-allowed-methods-existence-leak"></a>
+## core-allowed-methods-existence-leak: `core.allowed_methods` takes a loaded item
+
+Decision: a front end given the key calls
+`core.resources.allowed_methods_for`, which runs each method's request
+check first and looks the item up only once one passed, then defers to
+`allowed_methods` with it. A requester refused every method gets `Allow:
+OPTIONS` for a missing, a hidden and an existing key alike, as on the DRF
+route. The ninja type routes answer OPTIONS with their own operation over it
+(`scrud_django.ninja.routers`, not scrudful's automatic OPTIONS), after
+resolving the user as every other method does.
+
+`tests/test_core_resources.py::test_allowed_methods_for_matches_the_drf_route`
+pins it against the DRF route (an admin, a reader in "a", a user granted
+nothing and the anonymous user; the list, a readable item, a hidden one, a
+missing key and one that is no key), and
+`::test_allowed_methods_for_looks_nothing_up_for_a_requester_refused_everything`
+that nothing is looked up for such a requester;
+`tests/test_front_end_parity.py::test_options_missing_and_existing_answer_alike`
+and the `options-*` corpus cases compare both front ends.
+
+<a id="core-options-copy-entry"></a>
+## core-options-copy-entry: the ninja front end must refuse scrudful's OPTIONS copy at entry
+
+Decision: every ninja operation passes `scrud_django.ninja.entry.entry`
+first, which refuses a request rewritten from an OPTIONS
+(`access.refuse_rewritten_options`: 403, 401 for the anonymous) before any
+core function, as DRF's `initial()` does; scoped-rbac's URL wrapping refuses
+it too. A real OPTIONS reaches only scrud's OPTIONS operations, whose
+body-less copies the core builds itself (`_options_copy`).
+
+`tests/test_ninja_api.py::test_rewritten_options_is_refused_before_the_core`
+(a probe route) and `::test_rewritten_options_is_refused_on_the_real_detail_route`
+(the ninja API's partner-profiles detail route, an existing item) send an
+OPTIONS rewritten to a PUT by middleware and assert a 403 with no call of
+`core.resources.check_request`, which the same PUT, not rewritten, reaches;
+`::test_entry_itself_refuses_a_rewritten_options` asks `entry` past the URL
+wrapping.
 
 <a id="own-code-reads-stored-content"></a>
 ## own-code-reads-stored-content: operators and permission classes of your own get the content as stored
