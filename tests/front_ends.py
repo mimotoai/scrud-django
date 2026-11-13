@@ -29,6 +29,10 @@ from unittest import mock
 from django.db import transaction
 from django.test import Client
 
+from scrud_django import registration
+
+from .resource_types import ninja_type_specs
+
 FRONT_ENDS = ("drf", "ninja")
 
 #: Each front end's mount in `tests.parity_urls`.
@@ -110,8 +114,25 @@ class Clock:
 def parity(case: Case) -> tuple[Exchange, Exchange]:
     """`case`'s exchange on each front end (`FRONT_ENDS`, in that order),
     each on fresh data: its setup and request run in a transaction rolled
-    back afterwards, with the clock frozen (`CLOCK_TARGETS`)."""
+    back afterwards, with the clock frozen (`CLOCK_TARGETS`), once both
+    front ends serve their types (`serve_both`)."""
+    serve_both()
     return tuple(_run(case, front_end) for front_end in FRONT_ENDS)
+
+
+def serve_both():
+    """Load `tests.parity_urls`, and register every type the two front ends
+    serve, in the test's transaction: before, and outside, each run's
+    transaction and clock. Otherwise the URLconf would be imported on the
+    first run's first request, registering the types the session does not
+    commit (``django_db_setup``: the hooked and computed ones) in that run's
+    transaction only, and with its clock: the next run would find them gone,
+    and the first run's ETags shifted. Registering a type already stored
+    writes nothing."""
+    from . import parity_urls  # noqa: F401
+
+    for spec in [*registration.built_in_type_specs(), *ninja_type_specs()]:
+        spec.register()
 
 
 def _run(case, front_end):
