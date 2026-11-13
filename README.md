@@ -48,7 +48,9 @@ from scrud_django.ninja import api
 scrud_api = api(
     types=[
         registration.json_resource_type_spec(
-            # the arguments of registration.json_resource_type
+            # the IRI and slug, then registration.json_resource_type's other
+            # arguments as keywords (but viewset_class and
+            # indexing_policy_resource)
         ),
     ],
 )

@@ -75,3 +75,12 @@ def test_the_requests_namespace_wins_over_the_given_one():
         request=request,
         namespace="other",
     ) == ("http://testserver/ns/partner-profiles/b/")
+
+
+def test_first_absolute_reverse_refuses_a_bare_name():
+    """A bare string is one name, not a sequence of its characters
+    (`types.md` S8)."""
+    from scrud_django.core.urls import first_absolute_reverse
+
+    with pytest.raises(TypeError):
+        first_absolute_reverse("services")

@@ -574,6 +574,21 @@ def allowed_methods(
     allowed = _request_allowed(
         copies, resource_type, requirement, list_requirement, item=obj is not None
     )
+    return _allowed_methods(resource_type, obj, requirement, checked, copies, allowed)
+
+
+def _allowed_methods(
+    resource_type,
+    obj: Resource | None,
+    requirement: Requirement,
+    checked: tuple[str, ...],
+    copies: dict,
+    allowed: dict[str, bool],
+) -> list[str]:
+    """Step 2 of `allowed_methods`, given step 1's answer (`allowed`, by
+    method, of the methods `checked` on their `copies`): each method's
+    request check is asked once, whether `allowed_methods` or
+    `allowed_methods_for` asked it. `allowed` is updated."""
     loader = next((method for method in checked if allowed[method]), None)
     if obj is not None and loader is not None:
         found_item(resource_type, obj)
@@ -693,11 +708,5 @@ def allowed_methods_for(
     except (Resource.DoesNotExist, TypeError, ValueError, ValidationError):
         # DRF's get_object_or_404: a pk that is no key is missing too.
         raise Http404 from None
-    return allowed_methods(
-        request,
-        resource_type,
-        obj,
-        requirement,
-        list_requirement=list_requirement,
-        methods=methods,
-    )
+    # The request checks were asked above: they are not asked again.
+    return _allowed_methods(resource_type, obj, requirement, checked, copies, allowed)

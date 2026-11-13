@@ -685,7 +685,7 @@ def test_requested_page_pages_as_drf():
     assert page == ListPage(items=stored[2:4], count=5, number=2, size=2)
     assert (page.page_count, page.has_next, page.has_previous) == (3, True, True)
     last = requested_page(queryset, QueryDict("page=last&page_size=2"))
-    assert (last.items, last.number, last.has_next) == (stored[4:], 3, False)
+    assert (last.items, last.number, last.has_next) == (tuple(stored[4:]), 3, False)
     assert requested_page(queryset, QueryDict("page_size=5000")).size == 1000
     assert requested_page(queryset, QueryDict("page_size=0")).size == 100
     for query in ("page=0", "page=x", "page=4&page_size=2", "page=1.0"):
@@ -863,3 +863,43 @@ def test_content_filter_errors_answer_as_on_drf(uniform):
         assert response["Content-Type"] == "application/json"
         assert response.json() == {"1": [message]}
         assert response.json() == error.native_response_data()
+
+
+def test_list_page_checks_its_invariants():
+    """A `ListPage` holds at least one row per page, a page from 1 and no
+    negative count, and keeps its items as a tuple (`types.md` S6)."""
+    from scrud_django.core.lists import ListPage
+
+    for bad in ({"size": 0}, {"number": 0}, {"count": -1}):
+        with pytest.raises(ValueError):
+            ListPage(**{"items": [], "count": 0, "number": 1, "size": 1, **bad})
+    page = ListPage(items=[], count=0, number=1, size=1)
+    assert page.items == ()
+    assert ListPage(items=iter([1, 2]), count=2, number=1, size=2).items == (1, 2)
+
+
+@pytest.mark.django_db
+@test_context
+def test_lists_ignore_the_paging_parameters_by_default():
+    """Without `ignored`, `list_queryset` and `create_list_validators` ignore
+    what the list routes ignore (`ignored_list_parameters`): a content-
+    filtered type is not filtered on ``page_size`` (`types.md` S7)."""
+    from scrud_django.core.lists import (
+        create_list_validators,
+        ignored_list_parameters,
+        list_queryset,
+    )
+
+    note = hooked_note("x", "a")
+    rtype = get_resource_type_for("hooked-notes")
+    requirement = requirement_for(rtype, "hooked-notes")
+    request = get_request(user_with((HOOKED_READER, "a")), "/?page_size=1")
+    listed = list_queryset(request, rtype, request.GET, requirement=requirement)
+    assert list(listed.values_list("pk", flat=True)) == [note.pk]
+    post = RequestFactory().post("/?page_size=1")
+    post.user = user_with(({"http.GET": [HOOKED_NOTE_TYPE_URI]}, "a"))
+    assert create_list_validators(
+        post, rtype, requirement=requirement
+    ) == create_list_validators(
+        post, rtype, requirement=requirement, ignored=ignored_list_parameters()
+    )

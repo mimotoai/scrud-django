@@ -87,6 +87,8 @@ class TypeOptions:
                 if not callable(hook):
                     raise TypeError(f"TypeOptions.{name}: {hook!r} is not callable")
             object.__setattr__(self, name, hooks)
+        if self.compute is not None and not callable(self.compute):
+            raise TypeError(f"TypeOptions.compute: {self.compute!r} is not callable")
 
 
 # The methods whose body the request check reads (the scrud views' own

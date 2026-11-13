@@ -308,7 +308,7 @@ def list_queryset(
     params: QueryDict,
     *,
     requirement: Requirement | Sequence,
-    ignored: frozenset[str] = frozenset(),
+    ignored: frozenset[str] | None = None,
     using: str | None = None,
 ) -> QuerySet[Resource]:
     """The list of `resource_type` `request`'s user gets, as the DRF list
@@ -316,8 +316,9 @@ def list_queryset(
     `requirement` and `using` as it takes them), then, when the type's
     ``TypeOptions.content_filter`` is set (`scrud_django.core.types.type_options`
     of its ``type_uri``), filtered on the query parameters `params` but those
-    `ignored` (`content_filtered`, the pagination parameters, the format
-    override and the UI's, the caller's; a `QueryParameterError` for a
+    `ignored` (`content_filtered`; by default, for ``None``, those the list
+    routes ignore, `ignored_list_parameters`: the pagination parameters, the
+    format override and the UI's; a `QueryParameterError` for a
     parameter that cannot be a content key), ordered by
     ``Resource.Meta.ordering``. Page it with `page_of`.
 
@@ -333,9 +334,11 @@ def list_queryset(
 
 
 def _listed(queryset, resource_type, params, ignored):
-    """`queryset` filtered on `params` but those `ignored` when
-    `resource_type`'s ``TypeOptions.content_filter`` is set, in the list's
-    order."""
+    """`queryset` filtered on `params` but those `ignored` (for ``None``,
+    `ignored_list_parameters`) when `resource_type`'s
+    ``TypeOptions.content_filter`` is set, in the list's order."""
+    if ignored is None:
+        ignored = ignored_list_parameters()
     if type_options(resource_type.type_uri).content_filter:
         queryset = content_filtered(queryset, params, ignored=ignored)
     return queryset.order_by(*Resource._meta.ordering)
@@ -445,13 +448,24 @@ def page_number_of(
 
 @dataclass(frozen=True)
 class ListPage:
-    """A page of a list (`requested_page`): its `items`, the `count` of the
-    list's rows, its `number` (from 1) and its `size`."""
+    """A page of a list (`requested_page`): its `items` (kept as a tuple),
+    the `count` of the list's rows, its `number` (from 1) and its `size`
+    (at least 1). Any other `number`, `size` or a negative `count` is a
+    ``ValueError``."""
 
-    items: list[Resource]
+    items: Sequence[Resource]
     count: int
     number: int
     size: int
+
+    def __post_init__(self):
+        object.__setattr__(self, "items", tuple(self.items))
+        if self.size < 1:
+            raise ValueError(f"A page holds at least one row, not {self.size}.")
+        if self.number < 1:
+            raise ValueError(f"Pages are numbered from 1, not {self.number}.")
+        if self.count < 0:
+            raise ValueError(f"A list counts no fewer than 0 rows, not {self.count}.")
 
     @property
     def page_count(self) -> int:
@@ -475,7 +489,8 @@ def requested_page(queryset, params: QueryDict) -> ListPage:
     last; an empty list has one, empty, page) raises
     ``django.core.paginator.InvalidPage``, which the DRF route answers 404
     ``"Invalid page."``."""
-    size = page_size_of(params)
+    # The list's default size, so never ``None``.
+    size = page_size_of(params) or DEFAULT_PAGE_SIZE
     rows, page = _paged(
         queryset, size, lambda paginator: page_number_of(params, paginator)
     )
@@ -615,7 +630,7 @@ def create_list_validators(
     resource_type,
     *,
     requirement: Requirement | Sequence,
-    ignored: frozenset[str] = frozenset(),
+    ignored: frozenset[str] | None = None,
     using: str | None = None,
 ) -> tuple[str, datetime | None]:
     """The list's validators (`list_validators`) against which the

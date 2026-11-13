@@ -27,6 +27,7 @@ from scrudful._hsr import is_preflight
 from scrud_django import ui
 from scrud_django.ninja import entry
 from scrud_django.ninja.errors import PROBLEM_JSON, uniform_errors
+from scrud_django.registration import DOCUMENT_MEDIA_TYPES
 
 #: The request attribute holding the media type of the renderer negotiated
 #: for the request (`negotiated`).
@@ -68,9 +69,15 @@ class Renderer:
 JSON = Renderer("application/json", "json")
 BROWSABLE_API = Renderer("text/html", "api")
 SCRUD_HTML = Renderer("text/html", "html")
+_DOCUMENT_FORMATS = {
+    "application/schema+json": "schema-json",
+    "application/ld+json": "ld-json",
+}
+#: The documents' renderers, by media type: one for each of
+#: ``registration.DOCUMENT_MEDIA_TYPES``.
 DOCUMENT_RENDERERS = {
-    "application/schema+json": Renderer("application/schema+json", "schema-json"),
-    "application/ld+json": Renderer("application/ld+json", "ld-json"),
+    media_type: Renderer(media_type, _DOCUMENT_FORMATS[media_type])
+    for media_type in sorted(DOCUMENT_MEDIA_TYPES)
 }
 
 #: The renderers that are DRF's ``JSONRenderer`` or a subclass of it

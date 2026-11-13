@@ -38,7 +38,12 @@ def first_absolute_reverse(
     a route two front ends name differently (DRF's ``role-list``,
     scoped-rbac's ninja ``scoped-rbac-role-list``) points at the API that
     served the request. ``NoReverseMatch`` when none reverses (or there is
-    none)."""
+    none); a bare string (one name, not a sequence of them) is a
+    ``TypeError``."""
+    if isinstance(names, str):
+        raise TypeError(
+            f"first_absolute_reverse takes a sequence of names, not {names!r}."
+        )
     names = tuple(names)
     match = getattr(request, "resolver_match", None)
     serving = getattr(match, "namespace", "") or namespace

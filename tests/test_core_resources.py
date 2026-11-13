@@ -1022,3 +1022,37 @@ def test_allowed_methods_for_looks_nothing_up_for_a_requester_refused_everything
     with pytest.raises(Http404):
         resources.allowed_methods_for(reader, resource_type, "999999999", requirement)
     assert looked_up
+
+
+class CountingGrantsLeaf(GrantsLeaf):
+    """A trusted leaf recording the method of each request check asked."""
+
+    def __init__(self, type_iri, asked):
+        super().__init__(type_iri)
+        self.asked = asked
+
+    def has_permission(self, request, body):
+        self.asked.append(request.method)
+        return super().has_permission(request, body)
+
+
+@pytest.mark.django_db
+@test_context
+def test_allowed_methods_for_asks_each_request_check_once():
+    """Each method's request check is asked once (as on DRF), not again when
+    the item's methods are answered (`types.md` S9)."""
+    from scrud_django.core.resources import allowed_methods_for
+
+    resource_type = json_ld()
+    note = store("a")
+    asked = []
+    requirement = [CountingGrantsLeaf(JSON_LD, asked)]
+    request = request_of("OPTIONS", users()["superuser"])
+    assert allowed_methods_for(request, resource_type, str(note.pk), requirement) == [
+        "GET",
+        "PUT",
+        "DELETE",
+        "OPTIONS",
+        "HEAD",
+    ]
+    assert sorted(asked) == ["DELETE", "GET", "PUT"]

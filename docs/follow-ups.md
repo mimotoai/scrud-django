@@ -247,11 +247,11 @@ argument but does not pass it to `ResourceTypeRegistration`. A type
 registered with one (and no `indexing_policy_func`) has its indexing policy
 set to `None` and saved at every start, clearing one stored before, so its
 resources are indexed without one. `json_resource_type_spec` (the ninja
-front end's `TypeSpec`) takes the same argument and inherits the drop. Fix:
-pass it through. Test: register a
-type with `json_resource_type(..., indexing_policy_resource=<a stored
-policy>)` (and with `json_resource_type_spec(...).register()`) and assert the
-stored type's `indexing_policy` is that resource; it is `None` today.
+front end's `TypeSpec`) does not take the argument, so it cannot drop it;
+fixing this adds it there as a keyword-only argument. Fix: pass it through.
+Test: register a type with `json_resource_type(..., indexing_policy_resource=<a
+stored policy>)` and assert the stored type's `indexing_policy` is that
+resource; it is `None` today.
 
 <a id="hsr-context-less-types"></a>
 ## hsr-context-less-types: the HTTP Schema Resource of a type with a schema and no JSON-LD context is a 500
