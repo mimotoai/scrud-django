@@ -319,6 +319,29 @@ def test_item_validators_and_links():
 
 @pytest.mark.django_db
 @test_context
+def test_item_link_targets_are_the_links_targets():
+    from scrud_django.core.resources import item_link_targets, item_links
+
+    reverse("partner-profiles-list")
+    resource_type = get_resource_type_for("partner-profiles")
+    request = RequestFactory().get("/")
+    schema, context = item_link_targets(request, resource_type)
+
+    assert schema.startswith("http://testserver/")
+    assert context.startswith("http://testserver/")
+    first, second = item_links(request, resource_type)
+    assert first.startswith(f"<{schema}>;")
+    assert second.startswith(f"<{context}>;")
+    # Without a request (scrudful builds its HTTP Schema Resource so), the
+    # paths of scrud's own routes.
+    assert item_link_targets(None, resource_type) == (
+        schema.removeprefix("http://testserver"),
+        context.removeprefix("http://testserver"),
+    )
+
+
+@pytest.mark.django_db
+@test_context
 def test_allowed_methods_match_drf_options():
     from scrud_django.core.resources import allowed_methods
 

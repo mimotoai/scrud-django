@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import ninja
 from scrudful.ninja import ScrudfulRouter
 
-from scrud_django.ninja import errors
+from scrud_django.ninja import errors, routers
 from scrud_django.registration import TypeSpec, built_in_type_specs
 
 
@@ -39,8 +39,9 @@ def api(
     specs = [*(built_in_type_specs() if built_ins else ()), *types]
     for spec in specs:
         spec.register()
-        # The type's routes are not served yet. Each type gets its own router
-        # here, built afresh for each API (ninja mounts a router on one API
-        # only): scrud_api.add_router(f"{spec.slug}/", <its router>).
+        # A computed type's route is not served yet. Each router is built
+        # afresh for each API: ninja mounts a router on one API only.
+        if spec.kind == "json":
+            scrud_api.add_router(f"{spec.slug}/", routers.type_router(spec))
     errors.install(scrud_api)
     return scrud_api

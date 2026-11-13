@@ -71,7 +71,11 @@ from scrud_django.core.writes import (  # noqa: F401  (re-exported)
     update,
     validate_write,
 )
-from scrud_django.headers import get_link_values_for
+from scrud_django.headers import (
+    get_context_uri_for,
+    get_link_values_for,
+    get_schema_uri_for,
+)
 from scrud_django.models import Resource
 
 # The method of an item whose object check the workflow check covers: the
@@ -367,6 +371,17 @@ def item_validators(obj: Resource) -> tuple[str, datetime]:
     """`obj`'s ``(etag, last_modified)``: its ``etag`` (unquoted) and
     ``modified_at``, as ``ScrudfulMeta`` gives scrudful."""
     return (obj.etag, obj.modified_at)
+
+
+def item_link_targets(request, resource_type) -> tuple[str | None, str | None]:
+    """The targets of `item_links`: the URL of `resource_type`'s schema and
+    of its JSON-LD context (each ``None`` when the type has none), absolute
+    against `request` (paths of scrud's own routes without one), as
+    ``ScrudfulMeta`` gives scrudful its links."""
+    return (
+        get_schema_uri_for(resource_type, request),
+        get_context_uri_for(resource_type, request),
+    )
 
 
 def item_links(request, resource_type) -> list[str]:

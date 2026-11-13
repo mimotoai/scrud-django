@@ -1,6 +1,7 @@
 """The ninja front end's error responses: scrud's own errors as the DRF front
 end answers them, the rest as scoped-rbac's ninja handlers do."""
 
+from scoped_rbac import problems
 from scoped_rbac.ninja import install_error_handlers
 
 from scrud_django.exceptions import ScrudException
@@ -14,7 +15,9 @@ def install(api) -> None:
     error's status, its `ScrudException.response_data` with that ``status``,
     written as DRF's JSON (scoped-rbac's renderer, which
     `install_error_handlers` sets), as ``application/problem+json``, without
-    a ``Link`` of its own. Then scoped-rbac's handlers for everything else
+    a ``Link`` of its own, but scoped-rbac's problem-details Links for one
+    standing for an error DRF answers as scoped-rbac's own problem
+    (`ScrudException.problem_links`). Then scoped-rbac's handlers for everything else
     (`install_error_handlers`), which must come after this one and before
     ``api.urls`` is read."""
 
@@ -23,6 +26,8 @@ def install(api) -> None:
         data["status"] = exc.status_code
         response = api.create_response(request, data, status=exc.status_code)
         response["Content-Type"] = PROBLEM_JSON
+        if exc.problem_links:
+            response["Link"] = problems.PROBLEM_LINKS
         return response
 
     api.add_exception_handler(ScrudException, scrud_error)

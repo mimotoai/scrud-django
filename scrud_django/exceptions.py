@@ -151,6 +151,10 @@ class ScrudException(Exception):
     type: str | None = None
     title: str | None = None
     instance: str | None = None
+    # Whether a front end answers it with scoped-rbac's problem-details Links
+    # (``scoped_rbac.problems.PROBLEM_LINKS``): one standing for an error the
+    # DRF routes answer as scoped-rbac's own problem, which carries them.
+    problem_links: bool = False
 
     def __init__(self, message=None):
         if message is None:
@@ -727,6 +731,7 @@ class RequestBodyNotAnObjectError(ScrudException):
     status_code = 400
     default_detail = "Invalid input."
     default_code = "invalid"
+    problem_links = True
 
     def response_data(self, context):
         from scoped_rbac.problems import validation_problem
