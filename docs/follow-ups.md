@@ -1394,10 +1394,13 @@ Each is worked around here; none has a public replacement upstream yet.
   `vary_on_accept`, `as_drf_api_views`, `method_not_allowed_as_drf`,
   `refuse_the_anonymous` and `as_drf_api_view_function`). It is the largest
   private dependency; its test is `tests/test_ninja_api.py` breaking on a
-  ninja upgrade, given the `<1.7.4` pin. `entry.py`, `services.py` and
-  `negotiation.py` use `scrudful._hsr.is_preflight` and `scrudful._django`
-  too, and `negotiation.py` calls `entry._hsr_link_of` and
-  `entry._described_as`, private across modules.
+  ninja upgrade, given the `<1.7.4` pin. `entry.py` uses
+  `scrudful._django.precondition_headers` and `scrudful._hsr.is_preflight`,
+  and `services.py` and `negotiation.py` use `scrudful._hsr.is_preflight`;
+  `negotiation.py` calls `entry._hsr_link_of` and `entry._described_as`, and
+  `computed.py` and `services.py` import `routers`' private
+  `_noting_serving_api`, `_resource_type`, `_serving_api`, `_wrap_patterns`
+  and `_no_content`: all private across modules.
 - A ninja handler has no handle on its API, so `_noting_serving_api` finds it
   through `inspect.unwrap(run).__self__.api` (scrudful has a private
   `_SERVING_API`), which holds only while every view decorator before it uses
@@ -1560,8 +1563,8 @@ states the behaviour. Test: `tests/test_ninja_auth.py` (the session-user cases).
 DRF's `exception_handler` calls `set_rollback()` for every error it
 answers, so under `ATOMIC_REQUESTS=True` a request that wrote and then
 answered a handled error is rolled back. Ninja's handlers
-(`scrud_django.ninja.errors.scrud_error`, and scoped-rbac's upstream) do
-not, so such a request commits on ninja. It is not reachable through
+(the handler `errors.install` adds, `scrud_error`, and scoped-rbac's
+upstream) do not, so such a request commits on ninja. It is not reachable through
 scrud's routes (no route writes outside `save_checked`'s atomic block and
 then answers a handled error; `entry` rolls back a PUT, PATCH, DELETE and a
 conditional POST itself), but an app's own route can. Fix: call
@@ -1600,9 +1603,15 @@ own. Test: a probe route writing a model of a second database and answering
 
 `core.computed.computed_link(request, None)` returns `None` for a missing
 resource type. Accepting "no type" is a smell in a typed core function: the
-caller should decide. Left as is for now: nothing in scrud's routes passes
-`None` (the callers check first). Test: assert that `computed_link(request,
-None)` raises `TypeError` once the callers are tightened.
+caller should decide. Left as is for now because DRF's computed view passes
+`None` on purpose: `ComputedResourceViewSet.retrieve` calls
+`computed_link(request, resource_type)` with `None` for a viewset that has no
+`resource_type_name`, and relies on the `None` it gets back. Tightening
+needs that caller to skip the call first; ninja's routes never pass `None`
+(the callers check first). Test: once the DRF view skips the call, assert
+that `computed_link(request, None)` raises `TypeError`, and that a
+`ComputedResourceViewSet` subclass without `resource_type_name` still
+answers 200 without a `Link`.
 
 <a id="ninja-negotiation-compact-problem"></a>
 ## ninja-negotiation-compact-problem: ninja decides a problem's compactness by its Link header
@@ -1626,19 +1635,69 @@ handler answers a Django `PermissionDenied` with the default message).
 Test (upstream): a handler raising
 `Http404("No such schema.")`; assert the problem's `detail`.
 
-# Decided
+<a id="ninja-computed-read-before-compute"></a>
+## ninja-computed-read-before-compute: ninja's computed GET reads the type before `compute` and on a 304
 
-<a id="ninja-postgres-subprocess-test"></a>
-## ninja-postgres-subprocess-test: the first-parity-call test gives its subprocess a database of its own
+`ninja/computed.py` loads the resource type (`_resource_type`) before it
+calls `compute`. The DRF view (`scrud_django/computed.py`) computes first,
+answers a 304 without loading the type, and loads it only for the `Link`.
+With the type's row missing, ninja answers the lookup's `Http404` as
+"Not found." (scoped-rbac drops the message) where DRF answers whatever
+`compute` raises first or the lookup's own message; every 304 on ninja costs
+one extra query. Reachable only with a missing type row, and it changes
+queries and that one message, not any other answer. Fix: pass the slug to
+`computed_answer` and load the type only after the 304 check, as DRF does.
+Test: a computed GET and a conditional GET, counting queries on both front
+ends.
 
-The subprocess pytest of
-`tests/test_front_end_parity.py::test_hooked_types_are_served_alike_on_a_processs_first_parity_call`
-used to create `test_scrud` while the parent session held it. Fixed in
-bccf2e8: on PostgreSQL and MySQL it sets
-`SCRUD_TEST_<ENGINE>_NAME` to `<name>_first_parity_call`.
+<a id="type-spec-copy-pickle"></a>
+## type-spec-copy-pickle: specs the helpers build cannot be deep-copied, pickled or turned into dicts
+
+`TypeSpec._storage` is a `MappingProxyType`, so for a spec from
+`json_resource_type_spec`, `computed_resource_type_spec` or
+`built_in_type_specs`, `copy.deepcopy`, `pickle.dumps` and
+`dataclasses.asdict` raise `TypeError: cannot pickle 'mappingproxy' object`
+(`copy.copy` works). It bites a spec kept in settings that a test
+deep-copies, or a debugging dump. Fix: store the arguments as a tuple of
+pairs (or a plain dict) and build the mapping in `_registration_arguments`,
+or give `_BuiltTypeSpec` a `__reduce__`. Test: deep-copy and pickle each
+helper's spec and compare it equal to the original.
+
+<a id="type-spec-media-types-twice"></a>
+## type-spec-media-types-twice: the document media-type set is declared twice
+
+`registration.DOCUMENT_MEDIA_TYPES` and the `DocumentMediaType` `Literal`
+can drift apart. Fix: `DOCUMENT_MEDIA_TYPES =
+frozenset(typing.get_args(DocumentMediaType))`, and type
+`_BuiltIn.document_media_type` as `DocumentMediaType | None` (it is
+`str | None`). Test: assert the two are equal.
+
+<a id="ninja-reserved-slugs"></a>
+## ninja-reserved-slugs: `RESERVED_SLUGS` is public, copies scoped-rbac's prefixes and leaves out the docs routes
+
+`scrud_django.ninja.api.RESERVED_SLUGS` is a public constant that lists
+scoped-rbac's route prefixes by hand (a test pins drift in CI, but an app
+running a newer scoped-rbac with a new route has no protection) and omits
+`docs_url` and `openapi_url`: `api(types=[spec("docs")], docs_url="/docs")`
+is accepted. Part C's slug registry (spec 3.1, R7) is likely to replace it.
+Until then: make it private, or derive the first path segments from the
+routers `api()` mounts (as the test does) plus `docs_url` and `openapi_url`
+when given.
+
+<a id="type-spec-nits"></a>
+## type-spec-nits: small leftovers in the `TypeSpec` and `api()` code
+
+- `TypeSpec._build` is a `classmethod` that ignores `cls`: `Subclass._build(...)`
+  returns a `_BuiltTypeSpec`. Make it a `staticmethod` or a module function.
+- `_check_specs(specs: Sequence[object])` gives mypy `attr-defined` errors on
+  `api.py` (outside the core gate). Narrow with a `TypeGuard`, or annotate
+  after the `isinstance` loop.
+- Two `api()` calls in one process may register one IRI under two slugs
+  (rows keep the first, routes use the second). Part C's process-wide
+  registry (R7) is already planned; noted only.
 
 <a id="scoped-rbac-checks-before-405"></a>
-## scoped-rbac-checks-before-405: only `AccessDenied` from `resolve_user` is caught before a 405
+## scoped-rbac-checks-before-405: proposal, catch `AuthenticationError` from `resolve_user` before a 405
 
 Upstream, `scoped_rbac.ninja.blocks._checks_before_405` catches only
 `access.AccessDenied` from `resolve_user`, so a `NINJA_USER` hook raising
@@ -1646,26 +1705,11 @@ ninja's `AuthenticationError` on a method a ScrudfulRouter path does not
 route escapes as a 500. scrud works around it on every route `api()` mounts
 (`entry.authenticate_first`, scoped-rbac's role routes included; 68022e6),
 pinned by `tests/test_front_end_parity.py::test_failing_credentials_are_refused_alike`.
-A ScrudfulRouter an app adds itself is not covered; the upstream proposal
-stands: a hook raising `AuthenticationError`, PATCH a `crud_router` path,
+A ScrudfulRouter an app adds itself is not covered, and the upstream
+proposal is still open (catch `AuthenticationError` too): a hook raising `AuthenticationError`, PATCH a `crud_router` path,
 assert 401.
 
-<a id="scoped-rbac-ninja-policy-vary"></a>
-## scoped-rbac-ninja-policy-vary: `user-rbac-policy/` OPTIONS now sends `Vary: Cookie` through scrud's `api()`
-
-Both front ends answer `Vary: Cookie` (68022e6): `authenticate_first`
-resolves the user, which touches the session, on the `scoped-rbac-*` routes.
-scoped-rbac's ninja router alone sends none. Pinned by
-`tests/test_front_end_parity.py::test_role_routes_vary_alike`.
-
-<a id="ninja-accept-parameters"></a>
-## ninja-accept-parameters: `Accept` media type parameters (`indent=N`)
-
-Ninja's negotiation ignored the parameters of the accepted media type, so
-`Accept: application/json; indent=4` came back compact on ninja and indented
-on DRF. Fixed in 0157baa: negotiation keeps the parameters and rendering
-passes `indent` through as DRF's `JSONRenderer.get_indent` does; parity
-cases cover an item, a list, `services/` and the collection documents.
+# Decided
 
 <a id="core-allowed-methods-existence-leak"></a>
 ## core-allowed-methods-existence-leak: `core.allowed_methods` takes a loaded item
@@ -2055,3 +2099,28 @@ without one, 400 for a malformed `If-Match` and a body that is not JSON,
 404, 401) and `user-rbac-policy/`'s 405. Not a role body failing validation
 with uniform errors off, which differs for any API
 (`ninja-role-validation-native`).
+
+<a id="ninja-postgres-subprocess-test"></a>
+## ninja-postgres-subprocess-test: the first-parity-call test gives its subprocess a database of its own
+
+The subprocess pytest of
+`tests/test_front_end_parity.py::test_hooked_types_are_served_alike_on_a_processs_first_parity_call`
+used to create `test_scrud` while the parent session held it. Fixed in bccf2e8: on PostgreSQL and MySQL it sets
+`SCRUD_TEST_<ENGINE>_NAME` to `<name>_first_parity_call`.
+
+<a id="ninja-accept-parameters"></a>
+## ninja-accept-parameters: `Accept` media type parameters (`indent=N`)
+
+Ninja's negotiation ignored the parameters of the accepted media type, so
+`Accept: application/json; indent=4` came back compact on ninja and indented
+on DRF. Fixed in 0157baa: negotiation keeps the parameters and rendering
+passes `indent` through as DRF's `JSONRenderer.get_indent` does; parity
+cases cover an item, a list, `services/` and the collection documents.
+
+<a id="scoped-rbac-ninja-policy-vary"></a>
+## scoped-rbac-ninja-policy-vary: `user-rbac-policy/` OPTIONS now sends `Vary: Cookie` through scrud's `api()`
+
+Both front ends answer `Vary: Cookie` (68022e6): `authenticate_first`
+resolves the user, which touches the session, on the `scoped-rbac-*` routes.
+scoped-rbac's ninja router alone sends none. Pinned by
+`tests/test_front_end_parity.py::test_role_routes_vary_alike`.

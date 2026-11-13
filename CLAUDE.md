@@ -79,9 +79,10 @@ the registration and service-catalog lookups (`scrud_django.registration`'s
 `get_resource_type_for`, `type_db`, `write_db`; `scrud_django.services`): no
 domain logic lives there, and a handler that needs something the core lacks
 adds it to the core with a core test. It authenticates with scoped-rbac's
-`resolve_user` (the `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`,
-else the session), not DRF's authentication classes (see the README). It answers as the DRF routes
-do, and `tests/test_front_end_parity.py` is the proof (the same exchanges
+`resolve_user` (the `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`
+(only on a router added with its own `auth=`), else the session), not DRF's
+authentication classes (see the README). It answers as the DRF routes do,
+and `tests/test_front_end_parity.py` is the proof (the same exchanges
 replayed against both, compared exactly); the generic suites take the
 `front_end` fixture and run on both. It serves no UI or studio types yet.
 
@@ -156,7 +157,7 @@ default-libmysqlclient-dev pkg-config`, on a docker network with the server),
 as the `test-mysql` job does.
 
 Demo app (API root at http://127.0.0.1:8000/api/; resource routes need a
-login, at `/api-auth/login/` or with Basic auth (DRF's; ninja does not read it
+login, at `/api-auth/login/` or with DRF's Basic auth; ninja does not read it
 without a `NINJA_USER` hook, see the README):
 
 ```bash

@@ -35,8 +35,8 @@ RESERVED_SLUGS = frozenset(
 def _check_specs(specs: Sequence[object]) -> None:
     """Refuse, before anything is registered, a spec the API cannot serve:
     one that is not a `TypeSpec` (``TypeError``), a slug that is reserved
-    (`RESERVED_SLUGS`), shared or not one URL segment (``slug_re``), an IRI that is shared
-    (``ImproperlyConfigured``)."""
+    (`RESERVED_SLUGS`), shared or not one URL segment (``slug_re``), or an IRI
+    that is shared (``ImproperlyConfigured``)."""
     for spec in specs:
         if not isinstance(spec, TypeSpec):
             raise TypeError(
@@ -82,7 +82,10 @@ def api(
     """A ``NinjaAPI`` serving scrud's resource types: the built-in ones (JSON
     Schema and JSON-LD documents, indexing and workflow policies), always
     (every stored type's Links name its schema and context resources, which
-    the built-in routes serve), and each of `types`, every one registered first
+    the built-in routes serve), and each of `types`, all of them checked before
+    any is registered (`_check_specs`: ``TypeError`` for a non-`TypeSpec`,
+    ``ImproperlyConfigured`` for a reserved or shared slug, a slug that is not
+    one URL segment, or a shared IRI), then registered
     (`TypeSpec.register`): a stored type's list and item routes
     (`routers.type_router`), a computed type's item route
     (`computed.computed_router`). Also the service catalog (``services/``,
@@ -94,7 +97,9 @@ def api(
     ``NinjaAPI`` (whose ``docs_url`` and ``openapi_url`` default to ``None``
     here: no interactive docs or OpenAPI document, which the DRF routes do
     not serve either, unless passed; each operation has an id of its own,
-    ``<slug>_<operation>``, so the document is valid), but ``auth``
+    ``<slug>_<operation>``, except that a GET and its HEAD share one, which
+    OpenAPI does not allow: see follow-up ``ninja-openapi-head-operation-id``),
+    but ``auth``
     (``TypeError``): scrud authenticates every
     request itself (`scrud_django.ninja.entry.entry`), as scoped-rbac
     decides, so that an anonymous request gets the anonymous user's grants
@@ -130,8 +135,9 @@ def api(
             "each request itself (scoped_rbac.ninja.resolve_user)."
         )
     # No interactive docs or OpenAPI document unless asked for (the DRF
-    # routes serve none); each operation's id is unique, so one turned on
-    # is valid.
+    # routes serve none); a GET and its HEAD share an operation id, so a
+    # document turned on is not strictly valid (follow-up
+    # `ninja-openapi-head-operation-id`).
     ninja_kwargs.setdefault("docs_url", None)
     ninja_kwargs.setdefault("openapi_url", None)
     specs = [*built_in_type_specs(), *types]

@@ -400,8 +400,10 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   single-sourced and `dataclasses.replace(spec, slug=...)` cannot split a
   spec's hooks from its stored row. A spec that contradicts itself (an
   unknown `kind`, a computed type without `options.compute` or a json one
-  with it, a `document_media_type` outside
-  `registration.DOCUMENT_MEDIA_TYPES`, hooks on a built-in type) raises
+  with it, a computed type with a hook but `compute`, an empty or non-string
+  slug or IRI, a plain type with a built-in type's IRI or slug, a
+  `document_media_type` outside `registration.DOCUMENT_MEDIA_TYPES`, hooks
+  on a built-in type) raises
   `ImproperlyConfigured`, and `TypeOptions.compute` must be callable. The
   helper functions return a private subclass (its `repr` shows
   `_BuiltTypeSpec`); two specs are equal only when built the same way.
@@ -416,12 +418,13 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   process-wide, an element of `types=` that is not a `TypeSpec`, two types
   with one slug or IRI, and a slug that is one of the API's own route
   prefixes (`ImproperlyConfigured`/`TypeError`). `entry` refuses
-  `mode="operation"` when it is added, and resolves the user of a real
+  `mode="operation"` when the router is mounted (`add_router`), and resolves the user of a real
   OPTIONS (not of a CORS preflight). Importing `scrud_django.ninja` with
   django-ninja installed but failing to import raises ninja's own error,
   not "needs django-ninja".
 * How ninja authenticates: scoped-rbac's `resolve_user` (the
-  `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`, else the session),
+  `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`, which only a router
+  you add with its own `auth=` sets, else the session),
   not DRF's `DEFAULT_AUTHENTICATION_CLASSES`. A Basic or token client of a
   DRF project is the anonymous user on ninja unless a `NINJA_USER` hook maps
   it; the README has an example for Basic credentials.
@@ -551,7 +554,8 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   a `ValueError`, as `readable_queryset` asks the list grant for those two
   alone): `readable_queryset`, then, for a type
   registered with `content_filter=`, the content filter on its query
-  parameters (`content_filtered`, but the `ignored=` ones), in
+  parameters (`content_filtered`, but the `ignored=` ones, which default to the
+  list routes' ignored parameters, as for `create_list_validators`), in
   `Resource.Meta.ordering`; `page_of` gives a page of it and the count, as
   Django's `Paginator` pages it (`EmptyPage` past the last page). On MySQL
   `page_of` finds the page among the keys alone and reads its rows by key
@@ -619,9 +623,8 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   (`ResourceRegistration.update`, a bulk delete, a sync repair) could
   deadlock on PostgreSQL; both front ends now lock in one order.
 * On ninja, computed types' `Http404` and `PermissionDenied` messages,
-  preflight responses (no `Vary`, as DRF), and `Accept: ...; indent=N` answer
-  as DRF's do, and `WWW-Authenticate` and `Set-Cookie` are compared by the
-  parity harness.
+  a type route's or `services/`'s CORS preflight (no `Vary`, as DRF), and
+  `Accept: ...; indent=N` answer as DRF's do.
 * `core.create` and `core.update` take `type_iri`, which names the
   post-save check and the workflow mark; `ErrorText` without DRF compares
   `code` as `ErrorDetail` does; the view-based `~` detection compares

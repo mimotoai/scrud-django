@@ -76,10 +76,10 @@ def _options(request):
     """The answer to an OPTIONS of the catalog, as scrudful answers it on the
     DRF view: a 204 with no content, whose ``Allow`` is
     `SERVICES_OPTIONS_ALLOW`, the requester resolved first as DRF
-    authenticates every request (`resolve_user`, which `entry` leaves to
-    this operation); a CORS preflight a bare 204, before anything else.
-    scrudful's router run gives every other answer the HTTP Schema Resource
-    link and exposes ``Link`` and ``Allow``."""
+    authenticates every request (`resolve_user`, again: `entry` resolved
+    it already, idempotently); a CORS preflight a bare 204, before anything
+    else. scrudful's router run gives every other answer the HTTP Schema
+    Resource link and exposes ``Link`` and ``Allow``."""
     if is_preflight(request.method, request.headers.get):
         return _no_content()
     resolve_user(request)

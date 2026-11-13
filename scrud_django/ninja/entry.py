@@ -41,8 +41,8 @@ def entry(run):
        a real OPTIONS too (as DRF authenticates it; scrud's OPTIONS
        operations resolve the user again, idempotently), but not for a CORS
        preflight, which passes straight through: each OPTIONS operation of
-       scrud's answers a preflight itself
-       (``scrud_django.ninja.routers``);
+       scrud's (its routers, computed routes and ``services/``) answers a
+       preflight itself;
     3. a PUT, PATCH or DELETE, or a POST carrying ``If-Match``,
        ``If-None-Match`` or ``If-Unmodified-Since`` (and no other request:
        a POST without one is in no transaction of the entry's), runs whole

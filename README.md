@@ -80,7 +80,8 @@ urlpatterns = [
   every request itself, so an anonymous request gets the anonymous user's
   grants and a hidden item is a 404.
 * Authentication is scoped-rbac's `resolve_user`: the
-  `SCOPED_RBAC["NINJA_USER"]` hook's user, else `request.auth`, else the
+  `SCOPED_RBAC["NINJA_USER"]` hook's user, else `request.auth` (set only on a
+  router you add with its own `auth=`, as `api()` takes none), else the
   session's. DRF's `DEFAULT_AUTHENTICATION_CLASSES` are not read, so a Basic
   or token client of a DRF project is the anonymous user on ninja (a
   credential nothing maps is not refused) until a hook maps it. A hook
@@ -121,13 +122,33 @@ urlpatterns = [
   `request.user`), or a logged-in session user becomes anonymous. A hook's
   user who is also the request's session user is CSRF-checked on an unsafe
   request, whether or not Basic credentials came with the cookie. A
-  Basic-only client has no session cookie, so a write needs no token. Send
-  Basic credentials only over TLS. See
+  Basic-only client has no session cookie, so a write needs no token. When
+  the session belongs to user A and the Basic credentials to user B, the hook
+  gives B and no CSRF check applies (B is not the session's user); that is
+  safe because a cross-site form cannot set `Authorization`. Send Basic
+  credentials only over TLS. See
   `ninja-drf-authenticators` in the follow-ups.
 * A computed type's `compute(request, key)` receives a plain Django
   `HttpRequest` on ninja (a DRF `Request` on DRF): read `request.GET` and
   `request.user`, not `request.query_params` or `request.data`, and do not
-  hand it to a DRF permission's `has_permission(request, view)`.
+  hand it to a DRF permission's `has_permission(request, view)`. Raise
+  `Http404` or `PermissionDenied` (Django's), as the DRF section says: a
+  `compute` that raises DRF's own `APIException`s (`NotFound`,
+  `ValidationError`, ...) is answered 404 or 400 on DRF but is a 500 on
+  ninja.
+* `TypeSpec` refuses, when it is built or derived with `dataclasses.replace`
+  (`ImproperlyConfigured`): an empty or non-string slug or IRI; a computed
+  type that carries any hook but `compute` (`checks`, `object_checks` and
+  `content_filter` would never be asked); a plain spec that reuses a built-in
+  type's IRI or slug (use `built_in_type_specs()`); and a built-in type with
+  hooks of its own. `json_resource_type_spec` refuses a
+  `schema_func`, `context_func` or `indexing_policy_func` that is not
+  callable, and `computed_resource_type_spec` a `compute` that is not (both
+  `TypeError`); and `register_urls()` of a
+  `ResourceTypeRegistration(build_urls=False)` is a `TypeError`. `api()`
+  also refuses a slug that is not one URL segment (letters, digits, hyphens
+  and underscores; DRF still accepts, for example, a dotted one), a reserved
+  slug, and a slug or IRI two types share, before it registers anything.
 * A router you add to the API (`scrud_api.add_router(...)`) gets no
   authentication and no CSRF check from scrud: ninja's views are
   CSRF-exempt, and scrud resolves the user only on its own routes. Give it

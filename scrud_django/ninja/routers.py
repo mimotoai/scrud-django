@@ -270,9 +270,9 @@ def _options(request, spec, slug):
     list), as the DRF route answers it: a 204 with no content, whose
     ``Allow`` is the core's (``core.resources.allowed_methods_for``) for the
     requester, resolved first as for every other method (`resolve_user`,
-    which `entry` leaves to this operation); its ``Http404`` (an item
-    missing or hidden from a method the requester may use) answered by the
-    API. A CORS preflight is a bare 204, before anything else, as
+    again: `entry` resolved it already, idempotently); its ``Http404`` (an
+    item missing or hidden from a method the requester may use) answered by
+    the API. A CORS preflight is a bare 204, before anything else, as
     scrudful's automatic OPTIONS answers it. scrudful's router run gives
     every other answer the HTTP Schema Resource link and exposes ``Link``
     and ``Allow``."""
@@ -348,8 +348,8 @@ def _document_options(name):
     default renderers and parsers), a 200 written as DRF writes it (the
     serving API's renderer, ``application/json``), whatever the slug, a
     CORS preflight's too, as the DRF view answers them, once the requester
-    is resolved (`resolve_user`, which `entry` leaves to this operation:
-    DRF authenticates every request)."""
+    is resolved (`resolve_user`: `entry` passes a preflight straight
+    through, and DRF authenticates every request)."""
     metadata = {
         **COLLECTION_OPTIONS[name],
         "renders": list(DRF_RENDERS),
@@ -357,8 +357,9 @@ def _document_options(name):
     }
 
     def collection_document_options(request, slug: str):
-        # `entry` leaves a real OPTIONS to the operation: the DRF view
-        # authenticates it as any other (a CORS preflight included).
+        # `entry` resolves a real OPTIONS's user but passes a CORS preflight
+        # straight through; the DRF view authenticates a preflight as any
+        # other request, so the operation resolves it here.
         resolve_user(request)
         return _serving_api(request).create_response(request, metadata, status=200)
 

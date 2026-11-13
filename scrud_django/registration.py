@@ -929,9 +929,9 @@ class TypeSpec:
     the media type its resources are served as when it is a document type
     (one of `DOCUMENT_MEDIA_TYPES`: ``"application/schema+json"`` for JSON
     Schema, ``"application/ld+json"`` for JSON-LD contexts; ``None``
-    otherwise, and always for a computed type). It is the ninja counterpart
-    of the viewset class a DRF registration chooses
-    (``JsonSchemaViewSet``, ``JsonLdViewSet``).
+    otherwise, and always for a computed type). On ninja, the media type does
+    what the viewset class a DRF registration chooses
+    (``JsonSchemaViewSet``, ``JsonLdViewSet``) does.
 
     Build one with `json_resource_type_spec`, `computed_resource_type_spec`
     or `built_in_type_specs`, which also give it the rest of what
@@ -939,9 +939,14 @@ class TypeSpec:
     context, ...): those are private, and its IRI and slug are always the
     fields', so a spec derived with ``dataclasses.replace`` stores its row
     where it records its hooks. A spec whose fields disagree (an unknown
-    kind, a computed type without ``compute`` or a json one with it, another
-    media type, a built-in type with hooks, IRI or slug of its own) is
-    ``ImproperlyConfigured``. `register` registers it. The DRF registrations
+    kind, an empty or non-string slug or IRI, a computed type without
+    ``compute`` or a json one with it, a computed type with any hook but
+    its ``compute`` (its ``checks``, ``object_checks`` and ``content_filter``
+    would never be asked), another media type, a plain spec that reuses a
+    built-in type's IRI or slug, a built-in type with hooks, IRI or slug of
+    its own) is ``ImproperlyConfigured``. (A slug that is not one URL segment
+    is refused by the ninja ``api()`` alone: DRF takes, for example, a dotted
+    one.) `register` registers it. The DRF registrations
     (`json_resource_type`, `computed_resource_type`,
     `built_in_resource_type_urls`) register theirs with their own routes.
 
@@ -1205,8 +1210,9 @@ def computed_resource_type_spec(
 ) -> TypeSpec:
     """The `TypeSpec` of a computed, read-only resource type (see
     `computed_resource_type`), whose content is `compute`, ``(request, key)
-    -> Mapping`` (``ImproperlyConfigured`` without one, ``TypeError`` for
-    one that is not callable)."""
+    -> Mapping`` (``ImproperlyConfigured`` for ``compute=None``,
+    ``TypeError`` for one that is not callable; leaving it out is a
+    ``TypeError`` too, as it is a required keyword)."""
     if compute is None:
         raise ImproperlyConfigured(
             f"computed_resource_type_spec({slug!r}) needs compute=."

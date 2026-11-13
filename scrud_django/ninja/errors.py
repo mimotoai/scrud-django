@@ -59,9 +59,9 @@ def install(api) -> None:
     problem-details set whatever ``SCOPED_RBAC["UNIFORM_ERRORS"]`` is now
     (`building_with_uniform_errors_on`), each error then answered as uniform
     errors are for the request (`answer_natively_when_off`), as DRF answers
-    it. Built
-    with them off, scoped-rbac would install only its native handlers, and
-    ninja's own would answer the rest with bodies of their own (a 401's
+    it.
+    Built with them off, scoped-rbac would install only its native handlers,
+    and ninja's own would answer the rest with bodies of their own (a 401's
     ``"Unauthorized"``), not DRF's."""
 
     def scrud_error(request, exc):
