@@ -16,7 +16,7 @@ route (`readable_by_grants`, `readable_by_object_checks`).
 """
 
 import copy
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Protocol
 
 from django.core.exceptions import ImproperlyConfigured, PermissionDenied
@@ -52,7 +52,9 @@ class Leaf(Protocol):
     - ``type_iri``: the item type it authorizes;
     - ``reads_each_context``: whether its own ``has_context_permission``
       asks the grants reading each context as the object is there; when
-      not, a caller asks the grants beside it;
+      not, a caller asks the grants beside it. Only a leaf of a trusted
+      class (`register_grant_asking_leaf`) is taken at its word: beside any
+      other (but a type's hooks, `is_hook`) the grants are asked anyway;
     - ``overrides_object_checks``: whether its object checks may refuse what
       the grants allow (a list then asks them object by object);
     - ``contexts_for(obj)``: the contexts it reads `obj` (a resource's
@@ -89,6 +91,174 @@ def as_get(request):
     return read
 
 
+# The leaf classes trusted to ask the grants (`register_grant_asking_leaf`).
+_GRANT_ASKING_LEAVES: tuple[type, ...] = ()
+
+# What a leaf's class decides about the grants: a subclass of a registered
+# class that overrides either is not trusted unless registered itself.
+_GRANT_ASKING_ATTRIBUTES = ("has_context_permission", "reads_each_context")
+
+
+def register_grant_asking_leaf(cls: type) -> type:
+    """Trust the leaves of class `cls` to ask the grants: `asks_grants`
+    counts one as asking them, and, when it says it reads each context as
+    the object is there (``reads_each_context``), none are asked beside it
+    (`asks_grants_itself`). A subclass of `cls` is trusted too while it
+    overrides neither ``has_context_permission`` nor ``reads_each_context``
+    (an override, of the class or of the instance, may stop asking the
+    grants); one that overrides either is trusted only when registered
+    itself. Returns `cls`, so it is usable as a class decorator. Register
+    only a class whose ``has_context_permission`` asks the grants
+    (`GrantsLeaf`, the DRF adapter's ``ViewLeaf``): a leaf of any other
+    class, whatever it says, counts as asking none and gets the grants
+    asked beside it (but a type's hooks, `is_hook`, which ask none and
+    get none asked)."""
+    global _GRANT_ASKING_LEAVES
+    if cls not in _GRANT_ASKING_LEAVES:
+        _GRANT_ASKING_LEAVES = (*_GRANT_ASKING_LEAVES, cls)
+    return cls
+
+
+def _trusted(leaf) -> bool:
+    """Whether `leaf`'s class is trusted to ask the grants
+    (`register_grant_asking_leaf`): registered itself, or a subclass of the
+    nearest registered class in its MRO overriding neither of
+    `_GRANT_ASKING_ATTRIBUTES`, with no instance attribute of either name."""
+    instance = getattr(leaf, "__dict__", {})
+    if any(name in instance for name in _GRANT_ASKING_ATTRIBUTES):
+        return False
+    cls = type(leaf)
+    for base in cls.__mro__:
+        if base in _GRANT_ASKING_LEAVES:
+            return all(
+                getattr(cls, name, None) is getattr(base, name, None)
+                for name in _GRANT_ASKING_ATTRIBUTES
+            )
+    return False
+
+
+def _own_request_check(leaf) -> bool:
+    """Whether `leaf`, of a trusted class (`_trusted`), has a request check
+    of its own: its class's ``has_permission`` is not that of the nearest
+    registered class in its MRO, or the instance was given one."""
+    if "has_permission" in getattr(leaf, "__dict__", {}):
+        return True
+    cls = type(leaf)
+    for base in cls.__mro__:
+        if base in _GRANT_ASKING_LEAVES:
+            return getattr(cls, "has_permission", None) is not getattr(
+                base, "has_permission", None
+            )
+    return True
+
+
+def asks_grants_itself(leaf) -> bool:
+    """Whether `leaf` asks the grants itself, reading each context as the
+    object is there: its class is trusted to (`register_grant_asking_leaf`)
+    and it says so (``reads_each_context``)."""
+    return _trusted(leaf) and leaf.reads_each_context
+
+
+_hook_leaf_class = None
+
+# What decides that a type's hooks only refuse: a subclass of ``HookLeaf``
+# (or an instance) overriding one of them is no type's hooks (`is_hook`).
+_HOOK_ATTRIBUTES = (
+    "contexts_for",
+    "has_permission",
+    "has_object_permission",
+    "has_context_permission",
+)
+
+
+def is_hook(leaf) -> bool:
+    """Whether `leaf` is a type's hooks (`scrud_django.core.types.HookLeaf`),
+    which only refuse: no grants are asked for it. A subclass of it is too
+    while it overrides none of `_HOOK_ATTRIBUTES` (``contexts_for`` and the
+    ``has_*`` checks) and the instance was given none of them, as
+    `_trusted` has it for a grants leaf: one that does may allow what a
+    type's hooks would not, and is a leaf of an unknown class (the grants
+    are asked beside it)."""
+    global _hook_leaf_class
+    if _hook_leaf_class is None:
+        # Imported here: scrud_django.core.types imports this module.
+        from scrud_django.core.types import HookLeaf
+
+        _hook_leaf_class = HookLeaf
+    if not isinstance(leaf, _hook_leaf_class):
+        return False
+    instance = getattr(leaf, "__dict__", {})
+    if any(name in instance for name in _HOOK_ATTRIBUTES):
+        return False
+    cls = type(leaf)
+    return all(
+        getattr(cls, name) is getattr(_hook_leaf_class, name)
+        for name in _HOOK_ATTRIBUTES
+    )
+
+
+# The leaf classes whose ``contexts_for`` reads a resource's stored contexts
+# (`register_stored_contexts_leaf`), each with what else an instance must
+# meet (``None``: nothing).
+_STORED_CONTEXTS_LEAVES: dict[type, Callable | None] = {}
+
+
+def register_stored_contexts_leaf(cls: type, reads_stored=None) -> type:
+    """Count the leaves of class `cls` as reading a resource's stored
+    contexts (its ``ResourceContext`` rows, which a list's SQL filter and
+    removal stamps read) when ``contexts_for`` is `cls`'s, neither
+    overridden by a subclass nor given to the instance, and, with
+    `reads_stored` (``(leaf) -> bool``), it allows the leaf too (the DRF
+    ``ViewLeaf``'s asks its permission). Returns `cls`, so it is usable as a
+    class decorator. Register only a class whose ``contexts_for`` reads
+    them (`GrantsLeaf`, the type's hooks' ``HookLeaf``, the DRF
+    ``ViewLeaf``): a leaf of any other class counts as reading contexts of
+    its own (`reads_stored_contexts`)."""
+    _STORED_CONTEXTS_LEAVES[cls] = reads_stored
+    return cls
+
+
+def reads_stored_contexts(leaf) -> bool:
+    """Whether `leaf` reads a resource's stored contexts: its class, or the
+    nearest registered class in its MRO (`register_stored_contexts_leaf`),
+    is registered, its ``contexts_for`` is that class's, the instance was
+    given none, and the class's own condition, if any, allows it."""
+    if "contexts_for" in getattr(leaf, "__dict__", {}):
+        return False
+    cls = type(leaf)
+    for base in cls.__mro__:
+        if base in _STORED_CONTEXTS_LEAVES:
+            if getattr(cls, "contexts_for", None) is not getattr(
+                base, "contexts_for", None
+            ):
+                return False
+            reads_stored = _STORED_CONTEXTS_LEAVES[base]
+            return reads_stored is None or bool(reads_stored(leaf))
+    return False
+
+
+def require_stored_contexts(requirement, caller: str) -> None:
+    """Raise ``ImproperlyConfigured`` unless every leaf of `requirement`
+    (``AnyOf`` options included) reads a resource's stored contexts
+    (`reads_stored_contexts`): `caller` (a list's, which filters by the
+    ``ResourceContext`` rows and reads removal stamps of those contexts)
+    would otherwise decide by contexts the leaf does not read."""
+    custom = [
+        leaf
+        for leaf in requirement_leaves(requirement)
+        if not reads_stored_contexts(leaf)
+    ]
+    if custom:
+        raise ImproperlyConfigured(
+            f"{caller}: the leaves {custom!r} may read contexts other than a "
+            "resource's stored ones (a contexts_for of their own, or a class "
+            "not registered with register_stored_contexts_leaf), which a list "
+            "filters by; check each object on its detail route instead."
+        )
+
+
+@register_stored_contexts_leaf
+@register_grant_asking_leaf
 class GrantsLeaf:
     """scoped-rbac's default ``IsAuthorized`` answers for `type_iri`, as a
     scrud resource view gives them: the request's action
@@ -181,8 +351,10 @@ def requirement_leaves(requirement):
 
 def asks_grants(requirement) -> bool:
     """Whether `requirement` asks the grants of every request it allows:
-    some entry of it does. A leaf asks them unless it is ``grants_nothing``
-    (a type's hooks, `HookLeaf`, only refuse); an ``AnyOf`` asks them only
+    some entry of it does. A leaf asks them only when its class is trusted
+    to (`register_grant_asking_leaf`: `GrantsLeaf`, the DRF ``ViewLeaf``);
+    a type's hooks (`HookLeaf`) only refuse, and a leaf of any other class
+    counts as asking none, whatever it says. An ``AnyOf`` asks them only
     when it has options and **every** option does (an option of hooks alone
     would allow what the grants refuse, and an ``AnyOf`` of none has no leaf
     to check a write after its save)."""
@@ -192,7 +364,7 @@ def asks_grants(requirement) -> bool:
             return bool(entry.options) and all(
                 any(map(asks, _entries(option))) for option in entry.options
             )
-        return not getattr(entry, "grants_nothing", False)
+        return _trusted(entry)
 
     return any(map(asks, requirement))
 
@@ -222,23 +394,56 @@ def object_check_requirement(requirement):
     return None
 
 
-def meets_object_checks(requirement, request, obj):
+def option_allows_request(option, request, body=None) -> bool:
+    """Whether every entry of the ``AnyOf`` option `option` allows
+    ``has_permission(request, body)`` (an ``AnyOf`` among them: any of its
+    options), as DRF's ``|`` asks an operand's request check
+    (``OR.has_object_permission``). `meets_object_checks` asks it without a
+    body: its facade callers (a list, readability) always ask it of a GET or
+    HEAD (a GET copy, `as_get`, for a write's), which has none."""
+
+    def allows(entry):
+        if isinstance(entry, access.AnyOf):
+            return any(
+                option_allows_request(option, request, body) for option in entry.options
+            )
+        return entry.has_permission(request, body)
+
+    return all(map(allows, _entries(option)))
+
+
+def meets_object_checks(requirement, request, obj, *, request_checks=False):
     """Whether every entry of `requirement` (any option of an ``AnyOf``
     suffices) allows ``has_object_permission(request, obj)``; one that raises
-    a refusal (`REFUSALS`) refuses `obj` only."""
+    a refusal (`REFUSALS`) refuses `obj` only.
+
+    With `request_checks` (the facade's), an ``AnyOf`` option counts only
+    when each of its entries also allows the request
+    (`option_allows_request`, without a body) before its object checks, as
+    DRF's ``|`` answers an object (``OR.has_object_permission``); a refusal
+    a request check raises refuses `obj`, as it refuses DRF's whole ``|``.
+    Without (the DRF views' list and readability, as on ``develop``), the
+    object checks alone."""
+
+    def satisfied(option):
+        if request_checks and not option_allows_request(option, request):
+            return False
+        return all(meets(e) for e in _entries(option))
 
     def meets(entry):
         if isinstance(entry, access.AnyOf):
-            return any(
-                all(meets(e) for e in _entries(option)) for option in entry.options
-            )
+            return any(satisfied(option) for option in entry.options)
         try:
             return entry.has_object_permission(request, obj)
         except REFUSALS:
             # Raised for this object, the detail route refuses it alone.
             return False
 
-    return all(meets(entry) for entry in requirement)
+    try:
+        return all(meets(entry) for entry in requirement)
+    except REFUSALS:
+        # Raised by a request check: DRF's ``|`` raises it for the object.
+        return False
 
 
 def _grants_meet(requirement, request, obj, permission_of):
@@ -250,7 +455,7 @@ def _grants_meet(requirement, request, obj, permission_of):
     def meets(entry):
         if isinstance(entry, access.AnyOf):
             return any(all(map(meets, _entries(option))) for option in entry.options)
-        if getattr(entry, "grants_nothing", False):
+        if is_hook(entry):
             # A leaf that only refuses (a type's hooks): no grants to ask.
             return True
         return reads(entry)
@@ -277,26 +482,31 @@ def readable_by_grants(requirement, request, obj):
     )
 
 
-def readable_by_object_checks(requirement, request, obj):
+def readable_by_object_checks(requirement, request, obj, *, request_checks=False):
     """Whether the object checks of `requirement` allow a read of `obj`, as
     a list asks them (`filter_by_object_checks`): `request` is a GET of the
     detail route (`as_get`). True when no leaf overrides its object checks
     (`object_check_requirement`: the grants decide alone). They can only
-    refuse: the grants are asked apart (`readable_by_grants`)."""
+    refuse: the grants are asked apart (`readable_by_grants`). With
+    `request_checks` (the facade's), an ``AnyOf`` option also asks its
+    request checks (`meets_object_checks`)."""
     narrowing = object_check_requirement(requirement)
     if narrowing is None:
         return True
-    return meets_object_checks(narrowing, request, obj)
+    return meets_object_checks(narrowing, request, obj, request_checks=request_checks)
 
 
-def filter_by_object_checks(queryset, request, requirement, object_for_checks):
+def filter_by_object_checks(
+    queryset, request, requirement, object_for_checks, *, request_checks=False
+):
     """`queryset` (a list, already RBAC-filtered) restricted to the objects
     `requirement` allows (`meets_object_checks`, given
-    ``object_for_checks(obj)``), as the detail route asks it, with
-    `request`'s method (GET or HEAD). An object stored in a context reserved
-    once normalised is left out (its detail route is a 404). Every object
-    examined counts against ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``:
-    past it, ``access.ConditionalListTooLarge``."""
+    ``object_for_checks(obj)``, with `request_checks`), as the detail route
+    asks it, with `request`'s method (GET or HEAD). An object stored in a
+    context reserved once normalised is left out (its detail route is a
+    404). Every object examined counts against
+    ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``: past it,
+    ``access.ConditionalListTooLarge``."""
     max_rows = conditional_list_max_rows()
     allowed_pks = []
     bounded = queryset.order_by()[: max_rows + 1]
@@ -307,7 +517,9 @@ def filter_by_object_checks(queryset, request, requirement, object_for_checks):
             raise access.ConditionalListTooLarge()
         if access.stored_in_reserved_context(obj):
             continue
-        if meets_object_checks(requirement, request, object_for_checks(obj)):
+        if meets_object_checks(
+            requirement, request, object_for_checks(obj), request_checks=request_checks
+        ):
             allowed_pks.append(obj.pk)
     return queryset.filter(pk__in=allowed_pks)
 

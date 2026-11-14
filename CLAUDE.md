@@ -34,15 +34,36 @@ for the pieces they call (requirements and grants, the workflow check, body
 checks, list queries and validators, the save and post-save checks, URLs)
 and map its `ScrudException`s and access errors to DRF's
 (`exceptions.as_drf`, `drf_error`). The facade in `core/resources.py`
-(`load_for_read`, `object_readable`, `readable_content`, `allowed_methods`,
-`check_object`, `readable_queryset`, `validate_write`, `create`, `update`,
-`destroy`) is not called by DRF (which calls the unguarded
-`_readable_content` and `found_item`); only the `tests/test_core_*` modules
-pin it. Its functions that decide access by a requirement (`load_for_read`,
-`object_readable`, `readable_content`, `allowed_methods`, `check_object`,
-`create`, `update`, `destroy` without a `check`, and `core.writes`'
-`save_checked` without a `recheck`) refuse one that asks no grants
-(`ImproperlyConfigured`), an `AnyOf` with an option of hooks only included.
+(`check_request`, `load_for_read`, `object_readable`, `readable_content`,
+`allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
+`create`, `update`, `destroy`) is not called by DRF (which calls the
+unguarded `_readable_content` and `found_item`); only the `tests/test_core_*`
+modules pin it (`tests/test_core_parity.py` against the DRF routes).
+`readable_queryset` (of a GET or HEAD), `load_for_read` and
+`validate_write` ask the route's request check (`check_request`: for a
+list's GET each grants leaf as its list type, else each leaf's
+`has_permission`, with the body for a write) before anything is looked up,
+as DRF's `initial()` does. Its functions that decide access by a
+requirement (`check_request`, `load_for_read`, `object_readable`,
+`readable_content`, `allowed_methods`, `check_object`, `readable_queryset`,
+`validate_write`, `create`, `update`, `destroy` without a `check`, and
+`core.writes`' `save_checked` without a `recheck`) refuse one that asks no
+grants (`ImproperlyConfigured`), an `AnyOf` with an option of hooks only
+included.
+The core trusts only `GrantsLeaf` and the DRF `ViewLeaf` (and a subclass
+overriding neither `has_context_permission` nor `reads_each_context`) to ask
+the grants: any other leaf but a type's hooks (`HookLeaf`, which count as
+asking none and get none asked beside them; a subclass or instance
+overriding `contexts_for` or a `has_*` check is no hook) gets them asked
+beside it and counts as asking none; register another leaf class, or an
+overriding subclass, with `core.requirements.register_grant_asking_leaf`.
+`readable_queryset` and `list_last_modified` filter by a resource's stored
+contexts, so they refuse (`ImproperlyConfigured`) a leaf that may read
+others (a `contexts_for` of its own, or a class not registered with
+`core.requirements.register_stored_contexts_leaf`). The facade's `AnyOf`
+options ask their request checks before their object checks, as DRF's `|`
+does; the DRF views' list and readability (`meets_object_checks` without
+`request_checks`) keep asking object checks alone.
 Put new domain logic in `core`, not in a view; per-type hooks are
 `core.types.TypeOptions`.
 

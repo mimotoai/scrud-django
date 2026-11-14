@@ -841,7 +841,8 @@ def json_resource_type(
       ``ResourceContentFilter`` among the type's view's ``filter_backends``,
       `content_filtered_viewset`).
 
-    They replace any registered for `slug` before (`register_type_options`),
+    They replace any registered for the type's IRI before
+    (`register_type_options`; a different set logs a warning),
     even when the registration is deferred.
 
     Returns the type's routes. When the database fails (unreachable, or not
@@ -851,12 +852,13 @@ def json_resource_type(
     from scrud_django import views
 
     register_type_options(
-        slug,
+        resource_type_uri,
         TypeOptions(
             checks=tuple(checks),
             object_checks=tuple(object_checks),
             content_filter=content_filter,
         ),
+        slug=slug,
     )
     viewset_class = viewset_class or views.ResourceViewSet
     if content_filter:
@@ -930,7 +932,7 @@ def computed_resource_type(
     URL of each type's list).
 
     Its content is `compute`, ``(request, key) -> Mapping``, recorded as the
-    type's (`register_type_options`, replacing any registered for `slug`
+    type's (`register_type_options`, replacing any registered for its IRI
     before), which ``ComputedResourceViewSet.compute`` calls unless
     `viewset_class` overrides it. `viewset_class` defaults to
     ``ComputedResourceViewSet``; one of the two is needed."""
@@ -940,7 +942,7 @@ def computed_resource_type(
         raise ImproperlyConfigured(
             f"computed_resource_type({slug!r}) needs compute= or viewset_class=."
         )
-    register_type_options(slug, TypeOptions(compute=compute))
+    register_type_options(resource_type_uri, TypeOptions(compute=compute), slug=slug)
     viewset_class = viewset_class or ComputedResourceViewSet
 
     def register():

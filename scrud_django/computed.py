@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.utils.encoders import JSONEncoder
 from scoped_rbac.rest import RbacJSONParser
 
-from scrud_django.core.types import type_options
+from scrud_django.core.types import type_options_for_slug
 from scrud_django.mixins.view_mixins import ResourceViewMixin, ScrudfulMeta
 
 
@@ -60,7 +60,7 @@ class ComputedResourceViewSet(ResourceViewMixin, viewsets.ViewSet):
         ``compute`` (``computed_resource_type(..., compute=)``,
         `scrud_django.core.types.type_options`), which a subclass may
         override."""
-        compute = type_options(self.resource_type_name).compute
+        compute = type_options_for_slug(self.resource_type_name).compute
         if compute is None:
             raise NotImplementedError
         return compute(request, key)

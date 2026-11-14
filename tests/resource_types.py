@@ -184,6 +184,29 @@ CHECKED_NOTE_CONTEXT = dict(
 )
 
 
+WORKFLOW_NOTE_TYPE_URI = "tests://Note"
+
+WORKFLOW_NOTE_SCHEMA = {
+    "$id": WORKFLOW_NOTE_TYPE_URI,
+    "$schema": "http://json-schema.org/draft-04/schema",
+    "title": "Workflow note",
+    "description": "A note under a workflow policy (tests.test_core_parity).",
+    "type": "object",
+    "properties": {
+        "state": {"type": "string"},
+        "rbac_context": {"type": "string"},
+    },
+}
+
+WORKFLOW_NOTE_CONTEXT = {
+    "ex": "http://example.org/workflow#",
+    "openteams": "http://api.openteams.com/json-ld/",
+    "@type": "http://example.org/workflow#Note",
+    "rbac_context": {"@id": "openteams:RBACContext"},
+    "state": {"@id": "ex:state"},
+}
+
+
 def hooked_resource_types():
     """The types registered with per-type hooks (`tests.test_type_hooks`):
     ``hooked-notes`` (a check refusing the context "b", an object check
@@ -210,5 +233,14 @@ def hooked_resource_types():
             schema_func=lambda: SUMMARY_SCHEMA,
             context_func=lambda: SUMMARY_CONTEXT,
             compute=summarize,
+        ),
+        # ``tests://Note``, the type of ``tests.test_core_workflow``, as a
+        # stored type (`tests.test_core_parity`).
+        registration.json_resource_type(
+            resource_type_uri=WORKFLOW_NOTE_TYPE_URI,
+            revision="1",
+            slug="workflow-notes",
+            schema_func=lambda: WORKFLOW_NOTE_SCHEMA,
+            context_func=lambda: WORKFLOW_NOTE_CONTEXT,
         ),
     ]

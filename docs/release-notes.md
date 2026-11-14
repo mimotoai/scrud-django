@@ -391,25 +391,79 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   adapters that delegate to it for the pieces they call, and every status,
   header and body they answer is unchanged, but for the overrides listed
   under Upgrading. The item-level facade of `scrud_django.core.resources`
-  (`load_for_read`, `object_readable`, `readable_content`,
+  (`check_request`, `load_for_read`, `object_readable`, `readable_content`,
   `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
   `create`, `update`, `destroy`) is not called by the DRF views; its tests
-  (`tests/test_core_*`) pin it against the DRF routes. Those of its
-  functions that decide access by a requirement (`load_for_read`,
-  `object_readable`, `readable_content`, `allowed_methods`, `check_object`,
-  `create`, `update`, `destroy` without a `check`, and
+  (`tests/test_core_*`, with a parity harness, `tests/test_core_parity.py`)
+  pin it against the DRF routes. It asks a route's request check
+  (`check_request`) before it looks anything up, as the DRF route asks its
+  permissions before `get_object()`: `readable_queryset` of a GET or HEAD
+  the list grant (each grants leaf asked as its list type, `http.GET` on
+  it, as DRF names the list type; a write's list validators are governed
+  by the write's own check), `load_for_read` the method's check (with the `body=` it is given,
+  else as `Allow` checks a PUT, without one), and `validate_write` the
+  write's check with its body, each refusing with `AccessDenied` (403):
+  for a missing item and an existing one alike, and before any validation
+  of the body. Those of its functions that decide access by a requirement
+  (`check_request`, `load_for_read`, `object_readable`,
+  `readable_content`, `allowed_methods`, `check_object`,
+  `readable_queryset`, `validate_write`, `create`, `update`, `destroy`
+  without a `check`, and
   `scrud_django.core.writes.save_checked` without a `recheck`) raise
   `ImproperlyConfigured` for one that asks no grants (empty, a type's hooks
   only, or an `AnyOf` with an option of hooks only) rather than allow every
-  requester, and
+  requester. Only a leaf of a trusted class (`GrantsLeaf`, the DRF
+  adapter's `ViewLeaf`, a subclass of either that overrides neither
+  `has_context_permission` nor `reads_each_context`, or one registered with
+  `scrud_django.core.requirements.register_grant_asking_leaf`) counts as
+  asking the grants; beside a leaf of any other class but a type's hooks
+  (which count as asking none, and get none asked beside them; a subclass
+  of `HookLeaf`, or an instance, overriding `contexts_for` or a `has_*`
+  check is no type's hooks) the core asks them itself, whatever that
+  leaf's `reads_each_context` says. And
   `validate_write` requires a `requirement=`, whose type's hooks are the
   checks that may refuse a transition. The workflow check hides an update's
   workflow error unless its caller says the stored resource is readable
-  (`readable=`). It is the base for other front ends.
+  (`readable=`). The facade's `create` and `update` always validate the
+  body they save themselves (`validate_write`, an update's errors hidden
+  unless the stored resource is readable). One validation authorizes one
+  write: the workflow check's mark names the type the post-save check
+  names and the resource written (none for a create), and the save that
+  uses it consumes it, whether it succeeds or fails, so a grant
+  conditioned on `scrud_workflow` allows neither a second save on the
+  request nor a save of another resource. An `AnyOf` option of the
+  facade's (DRF's `|`) allows an object only when each of its entries
+  allows the request (`has_permission`) and then the object, as DRF's `|`
+  asks them (`check_object`, and the object checks of `readable_content`
+  and `readable_queryset`; the DRF views' own are unchanged), and
+  `validate_write` (so `update`) of an update asks the object check of the
+  stored resource with the body, as DRF's `get_object()` asks it, whether
+  or not the caller loaded it with `load_for_read`: a writer cannot move a
+  resource out of a context where they may not write it, nor, through an
+  `AnyOf`, where only another option's request check allows. A
+  `validate_write` first removes any mark an earlier validation left on
+  the request, so one that fails leaves none for a save to use. A type's
+  hooks are asked in a route's request check after the other entries and
+  where `scrud_workflow` refuses, as the DRF route asks them
+  (`check_request_hooks`) once its own request check is over. A front end
+  runs `scrud_django.core.bodies.check_body` on a write's body before the
+  facade, as DRF answers a malformed body 400 before any 403.
+  `readable_queryset` and `list_last_modified`, which filter by a
+  resource's stored contexts, raise `ImproperlyConfigured` for a
+  requirement with a leaf that may read others: one whose `contexts_for`
+  is not its class's (`GrantsLeaf`, a type's hooks, the DRF `ViewLeaf`
+  whose permission keeps scoped-rbac's), or of any other class unless
+  registered with
+  `scrud_django.core.requirements.register_stored_contexts_leaf`. It is
+  the base for other front ends.
 * Per-type hooks, honoured by every front end, on `json_resource_type`
   (`checks=`, `object_checks=`, `content_filter=`) and
   `computed_resource_type` (`compute=`). They can only refuse what the grants
-  allow, and refuse superusers too (as an `IsAuthorized` subclass does).
+  allow, and refuse superusers too (as an `IsAuthorized` subclass does). A
+  hook allows only by returning `True`: any other return (`None`, `"no"`,
+  `1`) refuses. The hooks of a body with `rbac_context: []` are asked in
+  the default context, and a hook given an object that is neither a mapping
+  nor a `Resource` raises `TypeError`.
   `checks` govern writes only: asked of a write in each context it writes, of
   the stored resource of a PUT, PATCH or DELETE in each of its contexts, of
   the saved resource in each of its contexts and of a workflow transition in
@@ -425,8 +479,23 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   back). `content_filter` makes the list filter on its query parameters; it
   is read when the routes are built, so registering a slug again swaps the
   other hooks but not an already built route's filter. `compute` supplies a
-  computed type's content without a viewset subclass. Registering a slug
-  again replaces its hooks.
+  computed type's content without a viewset subclass. A type's hooks are
+  keyed by its type IRI: registering a type again replaces its hooks (a
+  different set logs a warning on `scrud_django.core.types`; another slug
+  registering the same IRI must carry the very same hook objects, else
+  `ImproperlyConfigured`: use module-level functions, as closures a
+  factory builds in the URLconf are new objects on each import), and
+  `requirement_for` takes the slug from the resource type (a different one
+  is `ImproperlyConfigured`) and imports `ROOT_URLCONF` once per process,
+  so a worker that never served a request still has the hooks.
+
+### Fixed
+
+* `core.create` and `core.update` take `type_iri`, which names the
+  post-save check and the workflow mark; `ErrorText` without DRF compares
+  `code` as `ErrorDetail` does; the view-based `~` detection compares
+  permission objects, not their count; `core.resources.readable_content`
+  no longer takes `grants`.
 
 ### Upgrading
 
@@ -468,6 +537,12 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   `authorizing_write(covered=self.checks_workflow(...))` itself. Overrides
   of `checks_workflow`, `check_post_save_permissions`, `object_for_checks`
   and `resource_type_iri_for` still take effect.
+* On DRF, the workflow check's authorization now covers one save of one
+  resource (`(type IRI, pk)`, none for a create), and that save consumes
+  it. A grant conditioned on `scrud_workflow` now gets 403 for a view
+  subclass that saves twice per validation, that calls `save_checked`
+  without `instance=` on an update, or whose `resource_type_iri_for`
+  differs between the validation and the save.
 
 Behaviour without `scrud_django.ui` in `INSTALLED_APPS` is unchanged.
 

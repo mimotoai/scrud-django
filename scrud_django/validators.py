@@ -128,14 +128,17 @@ class WorkflowValidator:
             def readable():
                 return self.stored_resource_readable(request, instance, context)
 
+        view = view_of(context)
         try:
             core_workflow.workflow_check(
                 request,
                 type_iri=resource_type.type_uri,
                 prior=prior_of(instance),
                 proposed=data,
-                narrow=narrow_of(view_of(context)),
+                narrow=narrow_of(view),
                 readable=readable,
+                stored_pk=instance.pk if instance is not None else None,
+                post_save_type_iri=self.post_save_type_iri(view, request, context),
             )
         except core_workflow.WorkflowRequestRequired:
             self.request_of(context)
@@ -143,6 +146,18 @@ class WorkflowValidator:
         except core_workflow.NoWorkflowPolicyDenied as exc:
             raise drf_error(exc, request) from exc
         return data
+
+    @staticmethod
+    def post_save_type_iri(view, request, context):
+        """The type the write's post-save check names, which the workflow
+        check's mark names (`scrud_django.core.workflow.workflow_check`):
+        the view's ``resource_type_iri_for`` (as its
+        ``check_post_save_permissions``), else, without a view that has
+        one, the serializer's resource type."""
+        iri_for = getattr(view, "resource_type_iri_for", None)
+        if iri_for is None:
+            return context.resource_type.type_uri
+        return iri_for(request)
 
     @staticmethod
     def body_of(data, context):

@@ -15,9 +15,15 @@ from rest_framework.exceptions import NotAuthenticated, NotFound, PermissionDeni
 from rest_framework.permissions import AND, NOT, OR
 from rest_framework.request import clone_request
 from scoped_rbac import access
-from scoped_rbac.permissions import IsAuthorized
+from scoped_rbac.permissions import IsAuthorized, custom_contexts_for
 
-from scrud_django.core.requirements import _entries, requirement_leaves
+from scrud_django.core.authz import resource_contexts
+from scrud_django.core.requirements import (
+    _entries,
+    register_grant_asking_leaf,
+    register_stored_contexts_leaf,
+    requirement_leaves,
+)
 from scrud_django.core.types import HookLeaf
 from scrud_django.permissions import (
     _leaves,
@@ -101,6 +107,19 @@ def as_detail_read(view, request):
             view.request = previous
 
 
+def _permission_reads_stored_contexts(leaf):
+    """Whether the permission of the `ViewLeaf` `leaf` reads a resource's
+    stored contexts: its class keeps scoped-rbac's ``contexts_for``
+    (``custom_contexts_for``), and the instance was given none but the
+    content's (`resource_contexts`, as `reading_content` gives it)."""
+    permission = leaf.permission
+    if custom_contexts_for(permission) is not None:
+        return False
+    given = getattr(permission, "__dict__", {}).get("contexts_for")
+    return given is None or given is resource_contexts
+
+
+@register_grant_asking_leaf
 class ViewLeaf:
     """The `Leaf` of the ``IsAuthorized`` `permission` of DRF view `view`:
     each check is the permission's, given `view`. Its checks read a
@@ -118,7 +137,11 @@ class ViewLeaf:
     with the view as its detail route has it (`as_detail_route`) and
     `request` as its ``request``, restored after. DRF's refusals
     (``PermissionDenied``, ``NotAuthenticated``; ``NotFound``) are raised as
-    Django's (``PermissionDenied``; ``Http404``)."""
+    Django's (``PermissionDenied``; ``Http404``).
+
+    The core trusts it to ask the grants (`register_grant_asking_leaf`):
+    an ``IsAuthorized``'s checks do, and its ``reads_each_context`` says
+    whether they read each context as the resource is there."""
 
     def __init__(self, permission, view):
         self.permission = permission
@@ -176,6 +199,11 @@ class ViewLeaf:
 
     def has_context_permission(self, request, obj, context):
         return self._leaf().has_context_permission(request, self.view, obj, context)
+
+
+# Its contexts are its permission's: stored ones only while the permission
+# keeps them.
+register_stored_contexts_leaf(ViewLeaf, _permission_reads_stored_contexts)
 
 
 def type_hook_leaf(view):
@@ -243,6 +271,27 @@ def _negates_is_authorized(permission):
     return False
 
 
+@contextmanager
+def _fixed_permissions(view):
+    """`view` with ``get_permissions()`` returning the same permission
+    objects for the block (those it makes on entry)."""
+    get_permissions = getattr(view, "get_permissions", None)
+    if not callable(get_permissions):
+        yield
+        return
+    fixed = list(get_permissions())
+    missing = object()
+    previous = view.__dict__.get("get_permissions", missing)
+    view.get_permissions = lambda: list(fixed)
+    try:
+        yield
+    finally:
+        if previous is missing:
+            del view.get_permissions
+        else:
+            view.get_permissions = previous
+
+
 def requirement_of(view):
     """`view`'s requirement: ``view.rbac_requirement()`` (scoped-rbac's
     ``AccessControlledAPIView``), or for a view without one each
@@ -250,14 +299,19 @@ def requirement_of(view):
     (`leaves_of`). Raises `NotNeutral` when DRF's ``~`` wraps an
     ``IsAuthorized`` among them: ``rbac_requirement`` leaves out exactly
     those, so a view whose ``_rbac_permissions()`` (every ``IsAuthorized``)
-    holds more than its requirement has one under ``~``. The hooks
+    holds a permission that is not one of its requirement's leaves has one
+    under ``~`` (compared as objects, not counted). The hooks
     registered for the view's type follow them (`hook_leaves`)."""
     rbac_requirement = getattr(view, "rbac_requirement", None)
     if callable(rbac_requirement):
-        requirement = list(rbac_requirement())
-        rbac_permissions = getattr(view, "_rbac_permissions", None)
-        every = rbac_permissions() if callable(rbac_permissions) else ()
-        if len(list(requirement_leaves(requirement))) < len(every):
+        # ``get_permissions()`` builds its permissions afresh on each call:
+        # both reads below must see the same objects to compare them.
+        with _fixed_permissions(view):
+            requirement = list(rbac_requirement())
+            rbac_permissions = getattr(view, "_rbac_permissions", None)
+            every = rbac_permissions() if callable(rbac_permissions) else ()
+        required = {id(leaf) for leaf in requirement_leaves(requirement)}
+        if any(id(permission) not in required for permission in every):
             raise NotNeutral(f"{type(view).__name__}: ~ over an IsAuthorized")
     else:
         permissions = getattr(view, "get_permissions", None)

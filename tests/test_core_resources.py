@@ -154,10 +154,20 @@ def test_load_404_vs_403():
             requirement=requirement,
             method="PUT",
         )
-    # May not GET it: a 404 whatever the method.
+    # May not GET it: a 404 for a GET. A PUT or DELETE, which the reader may
+    # not make anywhere, is refused by the request check before the lookup:
+    # a 403, as on the DRF route (whose request check runs first).
     other = store("b")
-    for method in ("GET", "PUT", "DELETE"):
-        with pytest.raises(Http404):
+    with pytest.raises(Http404):
+        load_for_read(
+            request_of("GET", matrix["reader-a"]),
+            resource_type,
+            other.pk,
+            requirement=requirement,
+            method="GET",
+        )
+    for method in ("PUT", "DELETE"):
+        with pytest.raises(access.AccessDenied):
             load_for_read(
                 request_of(method, matrix["reader-a"]),
                 resource_type,
@@ -165,12 +175,13 @@ def test_load_404_vs_403():
                 requirement=requirement,
                 method=method,
             )
-    # Anonymous: a 404.
+    # Anonymous: refused by the request check (DRF: 401).
     for method in ("GET", "PUT"):
-        with pytest.raises(Http404):
+        with pytest.raises(access.AccessDenied):
             load("anonymous", method)
-    # A conditioned reader of "b" reads nothing in "a".
-    with pytest.raises(Http404):
+    # A reader whose grant is conditioned on the object is refused by the
+    # request check of an item (scoped-rbac's authorize_request).
+    with pytest.raises(access.AccessDenied):
         load("conditioned", "GET")
     assert load("writer-a", "PUT") == note
     assert load("superuser", "DELETE") == note
@@ -491,4 +502,316 @@ def test_hooks_checks_must_allow_in_every_stored_context():
             method="GET",
         )
         == both
+    )
+
+
+class RefusingRequests:
+    """A leaf (of an untrusted class: the grants are asked beside it) whose
+    request check refuses every request and whose object check allows every
+    object."""
+
+    type_iri = JSON_LD
+    reads_each_context = False
+    overrides_object_checks = False
+
+    def contexts_for(self, obj):
+        return [obj.get("rbac_context", "")]
+
+    def has_permission(self, request, body):
+        return False
+
+    def has_object_permission(self, request, obj):
+        return True
+
+    def has_context_permission(self, request, obj, context):
+        return True
+
+
+class RefusingGrantsLeaf(GrantsLeaf):
+    """A trusted leaf (a `GrantsLeaf` subclass overriding neither
+    ``has_context_permission`` nor ``reads_each_context``) whose request
+    check refuses every request."""
+
+    def has_permission(self, request, body):
+        return False
+
+
+@pytest.mark.django_db
+@test_context
+def test_load_for_read_asks_the_request_check():
+    """A requirement ``[GrantsLeaf(JSON_LD), RefusingRequests()]``: its
+    request check refuses (DRF's ``has_permission`` refusal, 403), so
+    `load_for_read` raises ``access.AccessDenied`` whatever the object
+    check allows, before the lookup: a missing key is refused alike."""
+    from scrud_django.core.resources import load_for_read
+
+    resource_type = json_ld()
+    note = store("a")
+    superuser = users()["superuser"]
+    for method in ("GET", "PUT", "DELETE"):
+        request = request_of(method, superuser)
+        assert (
+            load_for_read(
+                request,
+                resource_type,
+                note.pk,
+                requirement=[GrantsLeaf(JSON_LD)],
+                method=method,
+            )
+            == note
+        )
+        for pk in (note.pk, note.pk + 1000, "not-a-key"):
+            with pytest.raises(access.AccessDenied):
+                load_for_read(
+                    request,
+                    resource_type,
+                    pk,
+                    requirement=[GrantsLeaf(JSON_LD), RefusingRequests()],
+                    method=method,
+                )
+
+
+@pytest.mark.django_db
+@test_context
+def test_load_for_read_refuses_at_request_level_before_the_lookup():
+    """A requester the method's request check refuses (anonymous, a reader
+    whose grant is conditioned on the object, a reader asking for a
+    DELETE) gets a 403 for an existing and a missing key alike, as on the
+    DRF route (``initial()`` asks the permissions before ``get_object()``):
+    nothing tells whether the key exists."""
+    from scrud_django.core.resources import load_for_read
+
+    resource_type = json_ld()
+    matrix = users()
+    stored = [store("a"), store("b")]
+    missing = stored[-1].pk + 1000
+    for name, method in (
+        ("anonymous", "GET"),
+        ("anonymous", "DELETE"),
+        ("conditioned", "GET"),
+        ("reader-a", "DELETE"),
+        ("lister-a", "PUT"),
+    ):
+        user = matrix[name]
+        for pk in (*(r.pk for r in stored), missing):
+            with pytest.raises(access.AccessDenied):
+                load_for_read(
+                    request_of(method, user),
+                    resource_type,
+                    pk,
+                    requirement=[GrantsLeaf(JSON_LD)],
+                    method=method,
+                )
+            url = reverse("json-ld-detail", args=[pk])
+            client = client_of(user)
+            if method == "GET":
+                response = client.get(url, HTTP_ACCEPT="application/json")
+            elif method == "PUT":
+                response = client.put(url, {"rbac_context": "a"}, format="json")
+            else:
+                response = client.delete(url)
+            expected = 401 if name == "anonymous" else 403
+            assert response.status_code == expected, (name, method, pk)
+
+
+@pytest.mark.django_db
+@test_context
+def test_load_for_read_checks_the_body_it_is_given():
+    """With a `body`, a PUT's request check reads the contexts it writes
+    (DRF's, with ``request.data``), before the lookup; without one it is
+    the body-less check ``Allow`` asks (`allowed_methods`), whether the
+    requester may PUT in some context."""
+    from scrud_django.core.resources import load_for_read
+
+    resource_type = json_ld()
+    matrix = users()
+    note = store("a")
+
+    def load(name, pk, **kwargs):
+        return load_for_read(
+            request_of("PUT", matrix[name]),
+            resource_type,
+            pk,
+            requirement=[GrantsLeaf(JSON_LD)],
+            method="PUT",
+            **kwargs,
+        )
+
+    assert load("writer-a", note.pk) == note
+    assert load("writer-a", note.pk, body={"rbac_context": "a"}) == note
+    for body in ({"rbac_context": "b"}, {"rbac_context": ["a", "b"]}, {}):
+        for pk in (note.pk, note.pk + 1000):
+            with pytest.raises(access.AccessDenied):
+                load("writer-a", pk, body=body)
+    # A grant conditioned on scrud_workflow passes the request check of the
+    # update's PUT, which the workflow check covers, as on DRF.
+    assert load("workflow-a", note.pk, body={"rbac_context": "a"}) == note
+    assert load("workflow-a", note.pk) == note
+
+
+@pytest.mark.django_db
+@test_context
+def test_check_request():
+    """The request check of a route: the list's GET or HEAD asks the list
+    grant and each entry's GET check; any other request (an item's, or a
+    POST to the list with its body) each entry's check of it. A
+    requirement asking no grants is ``ImproperlyConfigured``."""
+    from django.core.exceptions import ImproperlyConfigured
+
+    from scrud_django.core.resources import check_request
+
+    resource_type = json_ld()
+    matrix = users()
+    requirement = [GrantsLeaf(JSON_LD)]
+
+    def allows(name, method, *, list_route, body=None, requirement=requirement):
+        try:
+            check_request(
+                request_of(method, matrix[name]),
+                resource_type,
+                requirement,
+                list_route=list_route,
+                body=body,
+            )
+        except access.AccessDenied:
+            return False
+        return True
+
+    list_only = user_with(({"http.GET": [JSON_LD_LIST]}, "a"))
+    for method in ("GET", "HEAD"):
+        assert allows("lister-a", method, list_route=True)
+        assert allows("superuser", method, list_route=True)
+        # The item's grant alone does not list; the list's grant alone does
+        # (each grants leaf is asked as its list type, as DRF names it on
+        # the list action), the list then filtered by the item grants.
+        assert not allows("reader-a", method, list_route=True)
+        check_request(
+            request_of(method, list_only), resource_type, requirement, list_route=True
+        )
+        # A trusted leaf with a request check of its own is asked as it is
+        # beside the list grant.
+        with pytest.raises(access.AccessDenied):
+            check_request(
+                request_of(method, matrix["superuser"]),
+                resource_type,
+                [RefusingGrantsLeaf(JSON_LD)],
+                list_route=True,
+            )
+        assert not allows("anonymous", method, list_route=True)
+        assert not allows("conditioned", method, list_route=True)
+        assert allows("reader-a", method, list_route=False)
+        assert not allows("conditioned", method, list_route=False)
+        assert not allows(
+            "superuser",
+            method,
+            list_route=True,
+            requirement=[GrantsLeaf(JSON_LD), RefusingRequests()],
+        )
+    # A create (POST to the list) asks the requirement with the body, not
+    # the list's GET grant: the writer may create in "a" only.
+    for name in ("writer-a", "lister-a"):
+        assert allows(name, "POST", list_route=True, body={"rbac_context": "a"})
+        assert not allows(name, "POST", list_route=True, body={"rbac_context": "b"})
+    # A body that writes no context is checked in the default context "".
+    assert not allows("writer-a", "POST", list_route=True, body={})
+    assert not allows("reader-a", "POST", list_route=True, body={"rbac_context": "a"})
+    # An item's PUT, with its body.
+    assert allows("writer-a", "PUT", list_route=False, body={"rbac_context": "a"})
+    assert not allows("writer-a", "PUT", list_route=False, body={"rbac_context": "b"})
+    assert allows("workflow-a", "PUT", list_route=False, body={"rbac_context": "a"})
+    # A DELETE, which the workflow check does not cover: scrud_workflow
+    # refuses its request check, as on DRF.
+    assert allows("superuser", "DELETE", list_route=False)
+    assert not allows("workflow-a", "DELETE", list_route=False)
+    assert not allows("writer-a", "DELETE", list_route=False)
+    # An AnyOf: any option allowing suffices; an option allows when each of
+    # its entries does.
+    other = [GrantsLeaf("tests://Other")]
+    assert allows(
+        "reader-a",
+        "GET",
+        list_route=False,
+        requirement=[access.AnyOf([other, requirement])],
+    )
+    assert not allows(
+        "reader-a",
+        "GET",
+        list_route=False,
+        requirement=[access.AnyOf([other, [*requirement, RefusingRequests()]])],
+    )
+    with pytest.raises(ImproperlyConfigured, match="asks no grants"):
+        check_request(
+            request_of("GET", matrix["superuser"]),
+            resource_type,
+            [],
+            list_route=False,
+        )
+
+
+@pytest.mark.django_db
+@test_context
+def test_validate_write_asks_the_request_check_first():
+    """`validate_write` refuses (``access.AccessDenied``, DRF's 403) a body
+    whose contexts the requester may not write before it validates it, as
+    the DRF route asks ``has_permission`` with the body before its
+    serializer's validators. A create asks it of the list's POST."""
+    from scrud_django.core.writes import validate_write
+
+    resource_type = json_ld()
+    matrix = users()
+    note = store("a")
+    put = request_of("PUT", matrix["writer-a"])
+    for stored, method in ((note, "PUT"), (None, "POST")):
+        request = request_of(method, matrix["writer-a"])
+        with pytest.raises(access.AccessDenied):
+            validate_write(
+                request,
+                resource_type,
+                {"rbac_context": "b"},
+                stored=stored,
+                requirement=[GrantsLeaf(JSON_LD)],
+                readable=lambda: True,
+            )
+    validate_write(
+        put,
+        resource_type,
+        {"rbac_context": "a"},
+        stored=note,
+        requirement=[GrantsLeaf(JSON_LD)],
+        readable=lambda: True,
+    )
+    with pytest.raises(access.AccessDenied):
+        validate_write(
+            put,
+            resource_type,
+            {"rbac_context": "a"},
+            stored=note,
+            requirement=[GrantsLeaf(JSON_LD), RefusingRequests()],
+            readable=lambda: True,
+        )
+
+
+@pytest.mark.django_db
+@test_context
+def test_readable_content_takes_no_grants_flag_and_the_private_one_asks_object_checks():
+    from scrud_django.core import resources
+    from scrud_django.core.types import requirement_for
+
+    from .resource_types import hooked_resource_types
+
+    reverse("hooked-notes-list")
+    hooked_resource_types()
+    # The hooks alone: with no grants leaf, nothing is asked but the object
+    # checks (the public function refuses such a requirement).
+    requirement = requirement_for(
+        get_resource_type_for("hooked-notes"), "hooked-notes"
+    )[1:]
+    nobody = user_with()  # holds no grants at all
+    read = request_of("GET", nobody)
+    with pytest.raises(TypeError):
+        resources.readable_content(read, {}, requirement, grants=False)
+    # The object checks alone allow what is not secret and refuse what is.
+    assert resources._readable_content(read, {"text": "x"}, requirement, grants=False)
+    assert not resources._readable_content(
+        read, {"text": "x", "secret": True}, requirement, grants=False
     )

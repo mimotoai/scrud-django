@@ -12,10 +12,16 @@ the hooks refuse."""
 
 import datetime
 import json
+import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from django.conf import settings
-from django.test import override_settings
+from django.core.exceptions import ImproperlyConfigured
+from django.test import RequestFactory, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import parse_http_date, quote_etag
@@ -31,6 +37,7 @@ from scrud_django.core.types import (
     register_type_options,
     requirement_for,
     type_options,
+    type_options_for_slug,
 )
 from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
 from scrud_django.models import Resource
@@ -53,6 +60,7 @@ from .resource_types import (
 )
 from .steps import *  # noqa: F403, F401
 
+ROOT = Path(__file__).resolve().parent.parent
 HOOKED = HOOKED_NOTE_TYPE_URI
 HOOKED_LIST = collection_type_uri_for(HOOKED)
 ALL_METHODS = ("http.GET", "http.POST", "http.PUT", "http.DELETE")
@@ -232,9 +240,11 @@ def test_compute_hook():
 
 @pytest.mark.django_db
 @test_context
-def test_reregistering_replaces_options():
-    hooked_note_type()  # registered again, with no hooks
-    assert type_options("hooked-notes") == TypeOptions()
+def test_reregistering_replaces_options(caplog):
+    with caplog.at_level(logging.WARNING, logger="scrud_django.core.types"):
+        hooked_note_type()  # registered again, with no hooks
+    assert [r.name for r in caplog.records] == ["scrud_django.core.types"]
+    assert type_options_for_slug("hooked-notes") == TypeOptions()
     Given.http.force_authenticate(assign_role(WRITER, "a", "b"))
     post_note({"text": "allowed now", "rbac_context": "b"})
     Then.http.status_code_is(status.HTTP_201_CREATED)
@@ -243,12 +253,190 @@ def test_reregistering_replaces_options():
 
 
 def test_register_type_options_replaces_never_merges():
-    register_type_options("replaced", TypeOptions(checks=(deny_context_b,)))
-    register_type_options("replaced", TypeOptions(object_checks=(hide_secret,)))
-    assert type_options("replaced") == TypeOptions(object_checks=(hide_secret,))
-    register_type_options("replaced", TypeOptions())
-    assert type_options("replaced") == TypeOptions()
-    assert type_options("never-registered") == TypeOptions()
+    iri = "tests://Replaced"
+    register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="replaced")
+    register_type_options(
+        iri, TypeOptions(object_checks=(hide_secret,)), slug="replaced"
+    )
+    assert type_options(iri) == TypeOptions(object_checks=(hide_secret,))
+    assert type_options_for_slug("replaced") == type_options(iri)
+    register_type_options(iri, TypeOptions(), slug="replaced")
+    assert type_options(iri) == TypeOptions()
+    assert type_options("tests://never-registered") == TypeOptions()
+    assert type_options_for_slug("never-registered") == TypeOptions()
+
+
+def test_replacing_different_hooks_warns(caplog):
+    iri = "tests://Warned"
+    register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="warned")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="scrud_django.core.types"):
+        register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="warned")
+        assert caplog.records == []
+        register_type_options(
+            iri, TypeOptions(object_checks=(hide_secret,)), slug="warned"
+        )
+    (record,) = caplog.records
+    assert record.levelno == logging.WARNING
+    assert record.name == "scrud_django.core.types"
+    assert iri in record.getMessage()
+
+
+def deny(label):
+    def check(request, resource_type, body, context):
+        return label == "never"
+
+    return check
+
+
+def test_two_slugs_one_iri_need_the_same_hooks():
+    iri = "tests://Shared"
+    register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="one")
+    with pytest.raises(ImproperlyConfigured, match="one.*two.*tests://Shared"):
+        register_type_options(iri, TypeOptions(), slug="two")
+    assert type_options(iri) == TypeOptions(checks=(deny_context_b,))
+    register_type_options(iri, TypeOptions(checks=(deny_context_b,)), slug="two")
+    assert type_options_for_slug("two") == type_options_for_slug("one")
+
+
+def test_two_slugs_one_iri_refuse_closures_of_different_values():
+    iri = "tests://SharedClosures"
+    register_type_options(iri, TypeOptions(checks=(deny("a"),)), slug="one")
+    with pytest.raises(ImproperlyConfigured):
+        register_type_options(iri, TypeOptions(checks=(deny("a"),)), slug="two")
+    with pytest.raises(ImproperlyConfigured):
+        register_type_options(iri, TypeOptions(checks=(deny("b"),)), slug="two")
+
+
+def test_same_slug_reimport_is_silent_only_for_equal_closures(caplog):
+    iri = "tests://Reimported"
+    with caplog.at_level(logging.WARNING, logger="scrud_django.core.types"):
+        register_type_options(iri, TypeOptions(checks=(deny("a"),)), slug="reimported")
+        register_type_options(iri, TypeOptions(checks=(deny("a"),)), slug="reimported")
+        assert caplog.records == []
+        register_type_options(iri, TypeOptions(checks=(deny("b"),)), slug="reimported")
+    assert len(caplog.records) == 1
+
+
+def test_a_slug_moving_iri_releases_the_old_one():
+    register_type_options("tests://Old", TypeOptions(checks=(deny("a"),)), slug="mover")
+    register_type_options("tests://New", TypeOptions(), slug="mover")
+    assert type_options("tests://Old") == TypeOptions()
+    register_type_options("tests://Old", TypeOptions(), slug="other")  # not shared
+
+
+@pytest.fixture
+def fresh_loader(monkeypatch):
+    from scrud_django.core import types
+
+    monkeypatch.setattr(types, "_loaded", False)
+    return types
+
+
+def test_ensure_hooks_loaded_waits_for_the_first_import(fresh_loader, monkeypatch):
+    import importlib
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    imports = []
+
+    def slow_import(name):
+        imports.append(name)
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(importlib, "import_module", slow_import)
+    done = []
+    first = threading.Thread(
+        target=lambda: (fresh_loader.ensure_hooks_loaded(), done.append(1))
+    )
+    second = threading.Thread(
+        target=lambda: (fresh_loader.ensure_hooks_loaded(), done.append(2))
+    )
+    first.start()
+    assert started.wait(5)
+    second.start()
+    second.join(0.3)
+    assert second.is_alive() and done == []
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert sorted(done) == [1, 2]
+    assert imports == [settings.ROOT_URLCONF]
+
+
+def test_ensure_hooks_loaded_is_reentrant(fresh_loader, monkeypatch):
+    import importlib
+
+    calls = []
+
+    def reentrant_import(name):
+        fresh_loader.ensure_hooks_loaded()  # the URLconf asks for a requirement
+        calls.append(name)
+
+    monkeypatch.setattr(importlib, "import_module", reentrant_import)
+    fresh_loader.ensure_hooks_loaded()
+    fresh_loader.ensure_hooks_loaded()
+    assert calls == [settings.ROOT_URLCONF]
+
+
+def test_ensure_hooks_loaded_retries_a_failed_import(fresh_loader, monkeypatch):
+    import importlib
+
+    attempts = []
+
+    def flaky_import(name):
+        attempts.append(name)
+        if len(attempts) == 1:
+            raise RuntimeError("database down")
+
+    monkeypatch.setattr(importlib, "import_module", flaky_import)
+    with pytest.raises(RuntimeError):
+        fresh_loader.ensure_hooks_loaded()
+    fresh_loader.ensure_hooks_loaded()
+    assert len(attempts) == 2
+
+
+@pytest.mark.django_db
+def test_requirement_for_refuses_a_mismatched_slug():
+    hooked = get_resource_type_for("hooked-notes")
+    with pytest.raises(ImproperlyConfigured):
+        requirement_for(hooked, "todos")
+
+
+@pytest.mark.django_db
+def test_requirement_for_defaults_the_slug():
+    (_, hooks) = requirement_for(get_resource_type_for("hooked-notes"))
+    assert isinstance(hooks, HookLeaf)
+
+
+def test_hooks_load_without_the_urlconf_imported():
+    """A process that never imported the URLconf still has a type's hooks
+    once they are asked for (`ensure_hooks_loaded`)."""
+    script = """
+import sys
+import django
+from django.conf import settings
+from tests.settings import SETTINGS
+
+settings.configure(**SETTINGS)
+django.setup()
+from scrud_django.core import types
+
+assert "tests.urls" not in sys.modules
+assert not types.hooks_loaded()
+types.ensure_hooks_loaded()
+assert types.hooks_loaded()
+assert types.type_options_for_slug("hooked-notes").checks
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def refuses_leaving_b(request, resource_type, body, context):
@@ -644,3 +832,151 @@ def test_check_must_allow_in_every_stored_context():
     delete_note(both)
     Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
     assert Resource.objects.filter(pk=both.pk).exists()
+
+
+def says_no(request, resource_type, body, context):
+    return "no"
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_truthy_non_bool_hook_refuses():
+    # A hook allows by returning True: "no" (truthy) refuses, in a check
+    # and in an object check.
+    hooked_note_type(checks=(says_no,))
+    Given.http.force_authenticate(assign_role(WRITER, "a"))
+    before = Resource.objects.count()
+    post_note({"text": "x", "rbac_context": "a"})
+    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    assert Resource.objects.count() == before
+    hooked_note_type(object_checks=(lambda request, resource_type, obj: "yes",))
+    stored = note("n", "a")
+    When.http.get(reverse("hooked-notes-detail", args=[stored.pk]))
+    Then.http.status_code_is(status.HTTP_404_NOT_FOUND)
+
+
+@pytest.mark.django_db
+def test_a_truthy_non_bool_hook_refuses_a_workflow_transition():
+    hooked = get_resource_type_for("hooked-notes")
+    leaf = HookLeaf(hooked, TypeOptions(checks=(says_no,)))
+    assert [narrow(None, {}, "") for narrow in leaf.narrow] == [False]
+    for result in (None, 1, "no", [True]):
+        leaf = HookLeaf(
+            hooked,
+            TypeOptions(checks=(lambda request, rt, body, ctx, r=result: r,)),
+        )
+        assert leaf.narrow[0](None, {}, "") is False
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_body_with_no_context_is_asked_in_the_default_one():
+    # rbac_context [] names no context; the checks are asked in "" (never
+    # in none, which would allow it whatever they say).
+    asked = []
+
+    def deny_everything(request, resource_type, body, context):
+        asked.append(context)
+        return False
+
+    hooked = get_resource_type_for("hooked-notes")
+    leaf = HookLeaf(hooked, TypeOptions(checks=(deny_everything,)))
+    request = RequestFactory().post("/")
+    request.user = assign_role(WRITER, "a")
+    assert not leaf.has_permission(request, {"rbac_context": []})
+    assert asked == [""]
+    # (Over HTTP scoped-rbac answers such a body 400 before any hook.)
+
+
+@pytest.mark.django_db
+def test_a_hook_is_given_a_mapping_or_a_resource_only():
+    class Plain:
+        rbac_context = "b"
+
+    hooked = get_resource_type_for("hooked-notes")
+    leaf = HookLeaf(hooked, TypeOptions(checks=(deny_context_b,)))
+    request = RequestFactory().delete("/")
+    request.user = assign_role(WRITER, "a", "b")
+    with pytest.raises(TypeError, match="Plain"):
+        leaf.has_object_permission(request, Plain())
+    with pytest.raises(TypeError, match="Plain"):
+        leaf.has_context_permission(request, Plain(), "b")
+    # A Resource and a mapping are given as their content.
+    stored = note("in b", "b")
+    assert not leaf.has_object_permission(request, stored)
+    assert not leaf.has_object_permission(request, dict(stored.content))
+
+
+EXTRA = "tests://Extra"
+
+
+def asks_extra_grant(request, resource_type, body, context):
+    """A check that asks a grant of its own: the request's method on
+    `EXTRA` in `context`."""
+    from scoped_rbac import access
+    from scoped_rbac.policy import Permission
+
+    permission = Permission(access.action_iri_for(request.method), EXTRA)
+    return access.policy_for(request).should_allow(permission, context)
+
+
+def extra_grant(conditioned):
+    """A role writing `EXTRA`, only through the workflow check when
+    `conditioned` (a grant ``scrud_workflow`` conditions)."""
+    grant = (
+        {
+            EXTRA: {
+                "condition": {
+                    "operator": "scrud_workflow",
+                    "authorized_transitions": ["__INITIALIZE__", "__SAME_STATE__"],
+                }
+            }
+        }
+        if conditioned
+        else [EXTRA]
+    )
+    return {"http.POST": grant, "http.PUT": grant}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("conditioned", [True, False], ids=["workflow", "plain"])
+@test_context
+def test_hooks_request_check_runs_outside_the_write_checks(conditioned):
+    """DRF asks a type's hooks' request check (``check_request_hooks``)
+    after its own, outside ``write_checks``: there ``scrud_workflow``
+    refuses, so a hook that asks a grant conditioned on it is refused, a
+    403. The facade's `check_request` asks them outside
+    ``authorizing_write`` too, for a POST to the list and an item's PUT.
+    With an unconditioned grant both allow."""
+    from scoped_rbac import access
+
+    from scrud_django.core.resources import check_request
+
+    from .test_core_resources import user_with
+
+    hooked_note_type(checks=(asks_extra_grant,))
+    hooked = get_resource_type_for("hooked-notes")
+    requirement = requirement_for(hooked, "hooked-notes")
+    user = user_with((WRITER, "a"), (extra_grant(conditioned), "a"))
+    stored = note("n", "a")
+    body = {"text": "x", "rbac_context": "a"}
+    expected = status.HTTP_403_FORBIDDEN if conditioned else None
+    Given.http.force_authenticate(user)
+    post_note(body)
+    Then.http.status_code_is(expected or status.HTTP_201_CREATED)
+    put_note(stored, body)
+    Then.http.status_code_is(expected or status.HTTP_200_OK)
+    for method, list_route in (("post", True), ("put", False)):
+        request = getattr(RequestFactory(), method)("/")
+        request.user = user
+
+        def asked(request=request, list_route=list_route):
+            check_request(
+                request, hooked, requirement, list_route=list_route, body=body
+            )
+
+        if conditioned:
+            with pytest.raises(access.AccessDenied):
+                asked()
+        else:
+            asked()
