@@ -12,7 +12,6 @@ from uuid import uuid4
 import pytest
 from django.conf import settings
 from django.test import override_settings
-from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import quote_etag
 from rest_framework.test import APIClient
@@ -94,14 +93,13 @@ def test_errors_keep_their_native_shape_with_uniform_errors_off(front_end):
     assert responses[412].json() == {"detail": "Precondition failed."}
 
 
-# DRF-only: ninja's services/ raises NoReverseMatch here (the test client re-raises
-# it), for the UI types it does not route (follow-up services-unrouted-types).
 @pytest.mark.django_db
-def test_the_service_lists_conditional_400_follows_uniform_errors():
+def test_the_service_lists_conditional_400_follows_uniform_errors(front_end):
     # services/ is a scrudful function view: its malformed-precondition 400
     # is problem details while uniform errors are on, as the resource views'.
-    reverse("partner-profiles-list")
-    response = APIClient().get(reverse("services"), HTTP_IF_NONE_MATCH="abc")
+    api_url(front_end, "partner-profiles-list")
+    services_url = api_url(front_end, "services")
+    response = APIClient().get(services_url, HTTP_IF_NONE_MATCH="abc")
     assert response.status_code == 400, response.content
     assert response["Content-Type"] == "application/problem+json"
     assert PROBLEM_SCHEMA in response.get("Link", "")
@@ -110,7 +108,7 @@ def test_the_service_lists_conditional_400_follows_uniform_errors():
     assert isinstance(body["code"], str), body
     off = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=False)
     with override_settings(SCOPED_RBAC=off):
-        response = APIClient().get(reverse("services"), HTTP_IF_NONE_MATCH="abc")
+        response = APIClient().get(services_url, HTTP_IF_NONE_MATCH="abc")
     assert response.status_code == 400, response.content
     assert response["Content-Type"] == "application/json"
     assert response.json() == {"detail": "Malformed If-None-Match header."}

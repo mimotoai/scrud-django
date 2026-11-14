@@ -118,8 +118,7 @@ def test_a_ninja_only_apis_computed_links_resolve_within_it(client):
 
 def test_a_ninja_only_apis_catalog_lists_its_own_routes(client, monkeypatch):
     # The process's catalog holds the types every URLconf of the session
-    # registered, which this one does not route (follow-up
-    # services-unrouted-types): the API's own only.
+    # registered: this test's only, so that the catalog is exactly the API's.
     monkeypatch.setattr(services, "services", {})
     registration.json_resource_type_spec(**PARTNER_PROFILES_TYPE).register()
     registration.register_role_services()
@@ -140,10 +139,36 @@ def test_a_ninja_only_apis_catalog_lists_its_own_routes(client, monkeypatch):
         assert client.get(url).status_code in (200, 401), url
 
 
+def test_a_ninja_only_apis_catalog_leaves_out_a_type_it_does_not_route(
+    client, monkeypatch
+):
+    # A type registered in the process that no route of this URLconf names
+    # (another API's, the UI types on a ninja API) is not in the catalog,
+    # rather than a NoReverseMatch (a 500) for the whole catalog.
+    monkeypatch.setattr(services, "services", {})
+    registration.json_resource_type_spec(**PARTNER_PROFILES_TYPE).register()
+    registration.json_resource_type_spec(
+        **dict(
+            PARTNER_PROFILES_TYPE,
+            resource_type_uri="tests://NotRoutedHere",
+            slug="not-routed-here",
+        )
+    ).register()
+
+    response = client.get("/api/services/")
+
+    assert response.status_code == 200, response.content
+    catalog = response.json()
+    assert "tests://NotRoutedHere" not in catalog, catalog
+    assert catalog["tests://PartnerProfiles"] == (
+        "http://testserver/api/partner-profiles/"
+    )
+
+
 def test_a_ninja_only_apis_scrudful_routes_serve_their_hsrs(client, monkeypatch):
     """The ScrudfulRouters are mounted before any path that could shadow
     their HTTP Schema Resource routes: each one's HSR is served."""
-    # Follow-up services-unrouted-types: a catalog type this API does not route.
+    # The catalog holds this test's types only.
     monkeypatch.setattr(services, "services", {})
     client.force_login(
         User.objects.create(username="admin", is_staff=True, is_superuser=True)

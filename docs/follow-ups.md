@@ -1260,24 +1260,6 @@ requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
 `has_permission` refuses, as a user holding the list grant; assert
 `AccessDenied` (today it allows).
 
-<a id="services-unrouted-types"></a>
-## services-unrouted-types: `services/` fails when the serving URLconf does not route every registered type
-
-The service catalog (`scrud_django.services.services`) is process-global: it
-lists every type registered in the process, whichever URLconf serves them.
-An entry the serving URLconf does not route raises `NoReverseMatch` (a 500)
-when `services/` is read, on either front end. It happens when two ninja
-APIs with different `types=` are served from one process, and when a
-ninja-only URLconf is read after the DRF routes registered other types.
-Owner's call: omit the entries that do not reverse on ninja, or state a
-one-API-per-process rule. The README states the failure.
-
-Test: GET `/api/services/` under `tests.ninja_only_urls` after `tests.urls`
-registered `todos`; assert 200 (it is a 500 today). The ninja-only tests
-isolate the catalog (`monkeypatch` of `services.services`) for this reason,
-and `tests/test_error_media_types.py::test_the_service_lists_conditional_400_follows_uniform_errors`
-stays DRF-only.
-
 <a id="ninja-semantic-urls-include"></a>
 ## ninja-semantic-urls-include: a ninja-only URLconf must include `scoped_rbac.semantic_urls`
 
@@ -1460,6 +1442,11 @@ off, a superuser's `PUT roles/<pk>/` with `If-Match` of the role's ETag and
 `{"definition": 5}`, and `[1]`, and `POST roles/` with `{"definition": 5}`;
 assert the two front ends answer alike (they differ today).
 
+Owner's decision (2026-11-13): keep ninja's answer. A validation problem
+(`application/problem+json`, RFC 9457) is the body ninja gives with uniform
+errors on or off; nothing is proposed upstream. The difference stays
+documented (the README, the 0.16.0 release notes).
+
 <a id="ninja-openapi-head-operation-id"></a>
 ## ninja-openapi-head-operation-id: a GET-and-HEAD operation is described twice under one `operationId`
 
@@ -1547,6 +1534,23 @@ authentication alone gives the item GET a 200 on ninja.
 
 Owner's decision (2026-11-13): keep `resolve_user` as it is for now; revisit
 with part C.
+
+<a id="ninja-renderer-settings"></a>
+## ninja-renderer-settings: ninja negotiates with DRF's default renderers whatever the project sets
+
+The ninja routes offer the media types of DRF's default renderers
+(`JSONRenderer`, `BrowsableAPIRenderer`), plus the documents' and
+`scrud_django.ui`'s (`scrud_django.ninja.negotiation`), and do not read
+`REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"]`. A project that removes the
+browsable API (as production settings often do) gets DRF's 406 for
+`Accept: text/html` on its DRF routes and JSON on ninja; one that adds a
+renderer (YAML) gets it on DRF and a 406 on ninja. `Accept:
+application/json` and `*/*` answer alike either way. Not read on purpose:
+part C makes DRF an optional extra, and ninja never renders a DRF renderer's
+output (it answers JSON where DRF would render HTML). Part C may give ninja
+its own set (JSON and the documents, a 406 for `text/html`).
+Test: with `DEFAULT_RENDERER_CLASSES` set to `JSONRenderer` only, GET an item
+with `Accept: text/html` on both front ends; DRF is a 406, ninja a 200.
 
 <a id="scoped-rbac-ninja-user-hook-csrf-doc"></a>
 ## scoped-rbac-ninja-user-hook-csrf-doc: the `ninja_user_hook` docstring says a hook's user skips the CSRF check

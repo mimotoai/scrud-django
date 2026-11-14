@@ -98,11 +98,18 @@ class ScrudServices:
             self.services[type_uri] = functools.partial(_list_url, tuple(value))
 
     def catalog(self, request=None):
-        """The catalog as served to `request`: type URI -> list URL."""
-        return {
-            type_uri: url_func(request=request)
-            for type_uri, url_func in self.services.items()
-        }
+        """The catalog as served to `request`: type URI -> list URL, for each
+        service whose list a route names. The catalog holds every type the
+        process registered, whichever API serves it: one no route names
+        (``NoReverseMatch``: another API's type, a UI type on a ninja API)
+        is not a service of this API, and is left out."""
+        catalog = {}
+        for type_uri, url_func in self.services.items():
+            try:
+                catalog[type_uri] = url_func(request=request)
+            except NoReverseMatch:
+                continue
+        return catalog
 
     def etag_for(self, request=None):
         """The ETag of `catalog` for `request` (`etag_of`)."""

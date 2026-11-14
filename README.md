@@ -177,15 +177,18 @@ urlpatterns = [
 * A ninja-only URLconf must also `include("scoped_rbac.semantic_urls")`: the
   role routes' (`roles/`, `role-assignments/`, `user-rbac-policy/`) semantic
   Links reverse those global names, and answer 500 without it.
-* `services/` lists every type registered in the process. Serving two APIs
-  with different `types=` in one process, or a ninja-only URLconf after DRF
-  routes registered other types, makes `services/` fail (500); see
-  `services-unrouted-types` in the [follow-ups](docs/follow-ups.md).
-* Content negotiation is DRF's: an `Accept` none of a route's DRF renderers
-  serves (`Accept: application/xml`) is DRF's 406 (`not_acceptable`), and a
-  `?format=` none of them has its 404, on both front ends; the document
-  routes choose their media type as DRF does, and JSON is indented as DRF
-  indents it for `Accept: application/json; indent=4`.
+* `services/` lists the types the serving API routes. A type registered in
+  the process that it does not route (another API's, or a UI type on a ninja
+  API) is left out, on both front ends.
+* Content negotiation is DRF's with DRF's default renderers (`JSONRenderer`,
+  `BrowsableAPIRenderer`): an `Accept` none of a route's renderers serves
+  (`Accept: application/xml`) is DRF's 406 (`not_acceptable`), and a
+  `?format=` none of them has its 404, on both front ends. ninja does not
+  read `REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"]`: a project that changes
+  it gets DRF's answer from its DRF routes only (follow-up
+  `ninja-renderer-settings`). The document routes choose their media type as
+  DRF does, and JSON is indented as DRF indents it for
+  `Accept: application/json; indent=4`.
 * The UI types (`scrud_django.ui`) and the studio types are not served on
   ninja yet, nor are the `ui-css-files` and `ui-js-files` views, and a ninja
   route never answers `text/html`: a request that DRF would answer as HTML

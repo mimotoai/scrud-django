@@ -376,8 +376,8 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   `scrud_django.ninja.api(types=[...])` returns a `NinjaAPI` serving the
   built-in types, your types, the service catalog, scoped-rbac's role routes
   and the collection documents, with the statuses, headers and bodies of the
-  DRF routes (DRF's content negotiation included: its 406, its `?format=` 404
-  and `Accept: ...; indent=N`, but never HTML), errors included whatever
+  DRF routes (DRF's content negotiation with its default renderers included:
+  its 406, its `?format=` 404 and `Accept: ...; indent=N`, but never HTML), errors included whatever
   `SCOPED_RBAC["UNIFORM_ERRORS"]` is, when the API is built or for a request:
   problem details while it is on, DRF's native `{"detail": ...}` bodies (a
   computed type's `compute` refusing with an empty message, or a list or dict,
@@ -623,6 +623,10 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   under a namespaced `include()` gets namespaced links; before, those reverses
   only worked if the routes were also mounted globally. Without a namespace
   the links are as before.
+* `services/` leaves out a registered type that no route of the serving
+  URLconf names (another API's type, a UI type on a ninja API), where it
+  answered 500 (`NoReverseMatch`). `ScrudServices.catalog` and `etag_for`
+  leave it out too.
 
 ### Upgrading
 
