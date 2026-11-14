@@ -319,6 +319,49 @@ def test_item_validators_and_links():
 
 @pytest.mark.django_db
 @test_context
+def test_item_link_targets_are_the_links_targets():
+    from scrud_django.core.resources import item_link_targets, item_links
+
+    reverse("partner-profiles-list")
+    resource_type = get_resource_type_for("partner-profiles")
+    request = RequestFactory().get("/")
+    schema, context = item_link_targets(request, resource_type)
+
+    assert schema.startswith("http://testserver/")
+    assert context.startswith("http://testserver/")
+    first, second = item_links(request, resource_type)
+    assert first.startswith(f"<{schema}>;")
+    assert second.startswith(f"<{context}>;")
+    # Without a request or a namespace, the paths of the global routes.
+    assert item_link_targets(None, resource_type) == (
+        schema.removeprefix("http://testserver"),
+        context.removeprefix("http://testserver"),
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.urls("tests.parity_urls")
+@test_context
+def test_item_link_targets_without_a_request_are_the_namespaces():
+    # scrudful builds an HTTP Schema Resource without a request: the links of
+    # an API's document point at that API's routes (its URL namespace).
+    from scrud_django.core.resources import item_link_targets
+
+    from .front_ends import serve_both
+
+    serve_both()
+    resource_type = get_resource_type_for("partner-profiles")
+    schema, context = item_link_targets(None, resource_type, namespace="scrud-ninja")
+    assert schema == f"/ninja/json-schema/{resource_type.schema.pk}/"
+    assert context == f"/ninja/json-ld/{resource_type.context.pk}/"
+    assert item_link_targets(None, resource_type) == (
+        f"/drf/json-schema/{resource_type.schema.pk}/",
+        f"/drf/json-ld/{resource_type.context.pk}/",
+    )
+
+
+@pytest.mark.django_db
+@test_context
 def test_allowed_methods_match_drf_options():
     from scrud_django.core.resources import allowed_methods
 
@@ -880,3 +923,136 @@ def test_allowed_methods_do_not_depend_on_the_methods_order_or_case():
     ]
     assert answers[0] == ["GET", "PUT", "OPTIONS", "HEAD"]
     assert answers[1] == answers[2] == answers[0]
+
+
+@pytest.mark.django_db
+@test_context
+def test_allowed_methods_for_matches_the_drf_route():
+    """`allowed_methods_for`, given the key rather than the item, answers
+    what the DRF route's OPTIONS answers: for the list, a readable item, a
+    hidden one and a missing key, as an admin, a reader in "a", a user
+    granted nothing and the anonymous user. Refused every method, a
+    requester gets ``Allow: OPTIONS`` whether the key exists or not: nothing
+    is looked up."""
+    from scrud_django.core.resources import allowed_methods_for
+
+    resource_type = json_ld()
+    requirement = [GrantsLeaf(JSON_LD)]
+    readable, hidden = store("a"), store("b")
+    matrix = users()
+    requesters = {
+        "admin": matrix["superuser"],
+        "reader-a": matrix["reader-a"],
+        "nothing": user_with(),
+        "anonymous": matrix["anonymous"],
+    }
+    targets = {
+        "list": None,
+        "readable": str(readable.pk),
+        "hidden": str(hidden.pk),
+        "missing": "999999999",
+        "not-a-key": "x",
+    }
+    seen = {}
+    for name, user in requesters.items():
+        client = client_of(user)
+        for target, pk in targets.items():
+            if pk is None:
+                url = reverse("json-ld-list")
+            else:
+                url = reverse("json-ld-detail", args=[pk])
+            response = client.options(url)
+            request = request_of("OPTIONS", user, url)
+            if response.status_code == status.HTTP_404_NOT_FOUND:
+                with pytest.raises(Http404):
+                    allowed_methods_for(request, resource_type, pk, requirement)
+                seen[name, target] = 404
+                continue
+            assert response.status_code == status.HTTP_204_NO_CONTENT, (name, target)
+            core = allowed_methods_for(request, resource_type, pk, requirement)
+            assert core == allow_of(response), (name, target)
+            seen[name, target] = tuple(core)
+    # DRF's answers, pinned.
+    every = ("GET", "PUT", "DELETE", "OPTIONS", "HEAD")
+    assert seen == {
+        ("admin", "list"): ("GET", "POST", "OPTIONS", "HEAD"),
+        ("admin", "readable"): every,
+        ("admin", "hidden"): every,
+        ("admin", "missing"): 404,
+        ("admin", "not-a-key"): 404,
+        ("reader-a", "list"): ("OPTIONS",),
+        ("reader-a", "readable"): ("GET", "OPTIONS", "HEAD"),
+        ("reader-a", "hidden"): 404,
+        ("reader-a", "missing"): 404,
+        ("reader-a", "not-a-key"): 404,
+        **{
+            (name, target): ("OPTIONS",)
+            for name in ("nothing", "anonymous")
+            for target in targets
+        },
+    }, seen
+
+
+@pytest.mark.django_db
+@test_context
+def test_allowed_methods_for_looks_nothing_up_for_a_requester_refused_everything(
+    monkeypatch,
+):
+    """Refused every method's request check, the requester gets ``Allow:
+    OPTIONS`` before any lookup: the key's existence is never asked. Once a
+    method passes, the item is looked up, a missing one a 404."""
+    from scrud_django.core import resources
+
+    resource_type = json_ld()
+    requirement = [GrantsLeaf(JSON_LD)]
+    looked_up = []
+    get = resources.Resource.objects.filter
+
+    def recording_filter(*args, **kwargs):
+        looked_up.append(kwargs)
+        return get(*args, **kwargs)
+
+    monkeypatch.setattr(resources.Resource.objects, "filter", recording_filter)
+    nothing = request_of("OPTIONS", user_with())
+    assert resources.allowed_methods_for(
+        nothing, resource_type, "999999999", requirement
+    ) == ["OPTIONS"]
+    assert looked_up == []
+    reader = request_of("OPTIONS", users()["reader-a"])
+    with pytest.raises(Http404):
+        resources.allowed_methods_for(reader, resource_type, "999999999", requirement)
+    assert looked_up
+
+
+class CountingGrantsLeaf(GrantsLeaf):
+    """A trusted leaf recording the method of each request check asked."""
+
+    def __init__(self, type_iri, asked):
+        super().__init__(type_iri)
+        self.asked = asked
+
+    def has_permission(self, request, body):
+        self.asked.append(request.method)
+        return super().has_permission(request, body)
+
+
+@pytest.mark.django_db
+@test_context
+def test_allowed_methods_for_asks_each_request_check_once():
+    """Each method's request check is asked once (as on DRF), not again when
+    the item's methods are answered (`types.md` S9)."""
+    from scrud_django.core.resources import allowed_methods_for
+
+    resource_type = json_ld()
+    note = store("a")
+    asked = []
+    requirement = [CountingGrantsLeaf(JSON_LD, asked)]
+    request = request_of("OPTIONS", users()["superuser"])
+    assert allowed_methods_for(request, resource_type, str(note.pk), requirement) == [
+        "GET",
+        "PUT",
+        "DELETE",
+        "OPTIONS",
+        "HEAD",
+    ]
+    assert sorted(asked) == ["DELETE", "GET", "PUT"]

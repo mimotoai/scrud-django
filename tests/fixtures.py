@@ -86,23 +86,30 @@ def last_modified_for(resource):
     return http_date_for(resource.modified_at)
 
 
-def serialize_page(resources):
+def serialize_page(resources, front_end="drf"):
+    """A page of partner-profiles `resources` as `front_end` answers it."""
     return {
         'count': 1,
         'page_count': 1,
         'next': None,
         'previous': None,
-        'content': [serialize_resource_envelope(resource) for resource in resources],
+        'content': [
+            serialize_resource_envelope(resource, front_end) for resource in resources
+        ],
     }
 
 
-def serialize_resource_envelope(resource):
+def serialize_resource_envelope(resource, front_end="drf"):
+    """The envelope of the partner-profiles `resource` as `front_end` answers
+    it."""
+    from .front_ends import api_url
+
     return {
         'content': resource.content,
         'last_modified': last_modified_for(resource),
         'etag': quote_etag(resource.etag),
         'href': "http://testserver"
-        + reverse(RESOURCE_ENDPOINT_DETAIL_NAME, args=[resource.id]),
+        + api_url(front_end, RESOURCE_ENDPOINT_DETAIL_NAME, args=[resource.id]),
     }
 
 
@@ -263,7 +270,9 @@ def todo_reader_login(db):
 @pytest.fixture
 def todo_list(db):
     """A to-do list in "project-a" with two items, the second one done."""
-    reverse("todo-lists-list")  # the URLconf registers the types
+    # Importing tests.urls registers the types (whichever URLconf the test
+    # serves, the front_end fixture's included).
+    reverse("todo-lists-list", urlconf="tests.urls")
     return ResourceRegistration.register(
         {
             "title": "Groceries",
@@ -348,7 +357,9 @@ TYPE_URI_TODO = "tests://ToDo"
 @pytest.fixture
 def todo_item(db):
     """A workflow-governed to-do in the default context, "not started"."""
-    reverse("todos-list")  # the URLconf registers the types
+    # Importing tests.urls registers the types (whichever URLconf the test
+    # serves, the front_end fixture's included).
+    reverse("todos-list", urlconf="tests.urls")
     return ResourceRegistration.register(
         {
             "title": "Buy milk",
@@ -415,8 +426,9 @@ def partner_profile_post_data():
 
 @pytest.fixture
 def partner_profiles(db, partner_profile_post_data):
-    # force registration of resource types
-    reverse(RESOURCE_ENDPOINT_LIST_NAME)
+    # force registration of resource types (importing tests.urls, whichever
+    # URLconf the test serves, the front_end fixture's included)
+    reverse(RESOURCE_ENDPOINT_LIST_NAME, urlconf="tests.urls")
     return ResourceRegistration.register(
         content=partner_profile_post_data, register_type='partner-profiles'
     )

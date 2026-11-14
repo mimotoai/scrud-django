@@ -2,9 +2,8 @@
 
 from django.apps import apps
 from django.urls import include, path
-from scoped_rbac.models import Role, RoleAssignment
 
-from scrud_django import collection_type_uri_for, registration, services, ui
+from scrud_django import registration, ui
 from scrud_django.views import (
     ResourceCollectionContextView,
     ResourceCollectionSchemaView,
@@ -58,7 +57,4 @@ if ui.is_enabled():
 
         urlpatterns.extend(studio_computed_type_urls())
 
-services.add_service(collection_type_uri_for(Role.resource_type.iri), "role")
-services.add_service(
-    collection_type_uri_for(RoleAssignment.resource_type.iri), "roleassignment"
-)
+registration.register_role_services()

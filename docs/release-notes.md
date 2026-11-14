@@ -371,6 +371,66 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ### Added
 
+* An additive django-ninja front end, `scrud_django.ninja` (a preview; the new
+  optional extra `ninja`, `scrud-django[ninja]`).
+  `scrud_django.ninja.api(types=[...])` returns a `NinjaAPI` serving the
+  built-in types, your types, the service catalog, scoped-rbac's role routes
+  and the collection documents, with the statuses, headers and bodies of the
+  DRF routes (DRF's content negotiation with its default renderers included:
+  its 406, its `?format=` 404 and `Accept: ...; indent=N`, but never HTML), errors included whatever
+  `SCOPED_RBAC["UNIFORM_ERRORS"]` is, when the API is built or for a request:
+  problem details while it is on, DRF's native `{"detail": ...}` bodies (a
+  computed type's `compute` refusing with an empty message, or a list or dict,
+  included) while it is off, but for a role or role assignment body failing
+  validation, which stays a problem (follow-up
+  `ninja-role-validation-native`). It serves no `docs/` or `openapi.json`
+  unless given `docs_url=` and `openapi_url=`. It takes no `auth=`, takes a
+  `urls_namespace` (distinct for each API in a process), and needs
+  `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. A router you
+  add to it carries its own `auth=` or scrud's entry checks
+  (`router.add_decorator(scrud_django.ninja.entry.entry, mode="view")`). UI
+  and studio types are not served on it yet, and `scrud_django.urls` is still
+  DRF. See "django-ninja (preview)" in the README.
+* `registration.TypeSpec` and the functions `json_resource_type_spec`,
+  `computed_resource_type_spec` and `built_in_type_specs`: a resource type as
+  every front end registers it, without a front end's routes.
+  `json_resource_type` and `computed_resource_type` are unchanged. A
+  `TypeSpec` is keyword-only, frozen and hashable, with five public fields
+  (`kind`, `resource_type_uri`, `slug`, `options`, `document_media_type`);
+  the rest of what stores its row is private, so the IRI and slug are
+  single-sourced and `dataclasses.replace(spec, slug=...)` cannot split a
+  spec's hooks from its stored row. A spec that contradicts itself (an
+  unknown `kind`, a computed type without `options.compute` or a json one
+  with it, a computed type with a hook but `compute`, an empty or non-string
+  slug or IRI, a plain type with a built-in type's IRI or slug, a
+  `document_media_type` outside `registration.DOCUMENT_MEDIA_TYPES`, hooks
+  on a built-in type) raises
+  `ImproperlyConfigured`, and `TypeOptions.compute` must be callable. The
+  helper functions return a private subclass (its `repr` shows
+  `_BuiltTypeSpec`); two specs are equal only when built the same way.
+  `json_resource_type_spec(uri, slug, *, ...)` takes its other arguments by
+  keyword only and no `indexing_policy_resource` (see
+  `json-resource-type-indexing-policy` in the follow-ups).
+  `ResourceTypeRegistration(build_urls=False, viewset_class=...)` raises
+  `TypeError`, and so does
+  `ResourceTypeRegistration(build_urls=False).register_urls()` (it was
+  `AttributeError`); `core.lists.ListPage` refuses a size or number below 1 or a
+  negative count; `core.urls.first_absolute_reverse` refuses a bare route
+  name given as a string.
+* `scrud_django.ninja.api()` refuses, before registering anything
+  process-wide, an element of `types=` that is not a `TypeSpec`, two types
+  with one slug or IRI, and a slug that is one of the API's own route
+  prefixes (`ImproperlyConfigured`/`TypeError`). `entry` refuses
+  `mode="operation"` when the router is mounted (`add_router`), and resolves the user of a real
+  OPTIONS (not of a CORS preflight). Importing `scrud_django.ninja` with
+  django-ninja installed but failing to import raises ninja's own error,
+  not "needs django-ninja".
+* How ninja authenticates: scoped-rbac's `resolve_user` (the
+  `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`, which only a router
+  you add with its own `auth=` sets, else the session),
+  not DRF's `DEFAULT_AUTHENTICATION_CLASSES`. A Basic or token client of a
+  DRF project is the anonymous user on ninja unless a `NINJA_USER` hook maps
+  it; the README has an example for Basic credentials.
 * `scrud_django.ui`, an optional app (add it to `INSTALLED_APPS` and install
   the new `ui` extra, `scrud-django[ui]`, which adds Jinja2) that serves every
   resource URL as `text/html`, chosen by `Accept: text/html`, rendered on the
@@ -454,7 +514,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   stored resource with the body, as DRF's `get_object()` asks it, whether
   or not the caller loaded it with `load_for_read`: a writer cannot move a
   resource out of a context where they may not write it, nor, through an
-  `AnyOf`, where only another option's request check allows. A
+  `AnyOf`, where only another option's request check allows. For a
+  `WorkflowPolicy`, `validate_write` (so `update`) also asks the
+  every-context check (`core.writes.check_every_context_of_policy`). A
   `validate_write` first removes any mark an earlier validation left on
   the request, so one that fails leaves none for a save to use. A type's
   hooks are asked in a route's request check after the other entries and
@@ -495,7 +557,8 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   a `ValueError`, as `readable_queryset` asks the list grant for those two
   alone): `readable_queryset`, then, for a type
   registered with `content_filter=`, the content filter on its query
-  parameters (`content_filtered`, but the `ignored=` ones), in
+  parameters (`content_filtered`, but the `ignored=` ones, which default to the
+  list routes' ignored parameters, as for `create_list_validators`), in
   `Resource.Meta.ordering`; `page_of` gives a page of it and the count, as
   Django's `Paginator` pages it (`EmptyPage` past the last page). On MySQL
   `page_of` finds the page among the keys alone and reads its rows by key
@@ -539,16 +602,46 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   is `ImproperlyConfigured`) and imports `ROOT_URLCONF` once per process,
   so a worker that never served a request still has the hooks.
 
-### Fixed
+* New in the core and registration, public but meant for the front ends:
+  `core.resources.allowed_methods_for`, the modules `core.collections` and
+  `core.computed`, `core.urls.first_absolute_reverse` and
+  `absolute_reverse(namespace=)`, `ScrudServices.add_service` taking a
+  sequence of route prefixes, `ResourceTypeRegistration(build_urls=)`,
+  `registration.register_role_services` and `exceptions.ContentFilterError`.
+  `core.create` and `core.update` take `type_iri`, which names the post-save
+  check and the workflow mark. `core.resources.load_for_read`, locking for a
+  write, takes a `WorkflowPolicy`'s type lock before the row lock, as the DRF
+  views do, so a ninja write of a policy and a server-side write of it
+  (`ResourceRegistration.update`, a bulk delete, a sync repair) lock in one
+  order.
 
-* `core.create` and `core.update` take `type_iri`, which names the
-  post-save check and the workflow mark; `ErrorText` without DRF compares
-  `code` as `ErrorDetail` does; the view-based `~` detection compares
-  permission objects, not their count; `core.resources.readable_content`
-  no longer takes `grants`.
+### Changed
+
+* Links now reverse within the URL namespace the request was resolved under:
+  `href`, `Location`, the schema and context `Link`s, the service URLs and the
+  stored-policy URL of a workflow error. A DRF app that mounts scrud's routes
+  under a namespaced `include()` gets namespaced links; before, those reverses
+  only worked if the routes were also mounted globally. Without a namespace
+  the links are as before.
+* `services/` leaves out a registered type that no route of the serving
+  URLconf names (another API's type, a UI type on a ninja API), where it
+  answered 500 (`NoReverseMatch`). `ScrudServices.catalog` and `etag_for`
+  leave it out too.
 
 ### Upgrading
 
+* `json_resource_type` and `computed_resource_type` (with `compute`) now
+  build a `TypeSpec`, which refuses (`ImproperlyConfigured`) what could never
+  have worked: an empty or non-string slug or IRI, a slug or IRI of a
+  built-in type (JSON Schema, JSON-LD, indexing and workflow policies) on a
+  type that is not one. A hand-built `TypeSpec` (the ninja and neutral API;
+  `computed_resource_type` takes none of these) also refuses a computed
+  type's `checks`, `object_checks` or `content_filter`. `json_resource_type` also raises `TypeError` for a
+  `schema_func`, `context_func` or `indexing_policy_func` that is not
+  callable, when it is called rather than when the type registers. The
+  slug's shape is not checked on DRF (a slug with a dot still registers);
+  `scrud_django.ninja.api()` refuses one that is not a single URL segment of
+  letters, digits, hyphens and underscores.
 * A DRF view whose own `rbac_requirement()` returns an empty `access.AnyOf`,
   or one with an empty option, now raises (`ValueError`, a 500) instead of
   refusing or allowing every object.

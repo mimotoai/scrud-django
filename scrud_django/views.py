@@ -12,6 +12,12 @@ from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
 from scrudful.rest_framework import scrudful_api_view, scrudful_viewset
 
 from scrud_django import collection_type_uri_for, services
+from scrud_django.core.collections import (  # noqa: F401 (moved from here)
+    COLLECTION_CONTENT_POINTER,
+    collection_context,
+    collection_schema,
+    embedded_schema,
+)
 from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
 from scrud_django.mixins.view_mixins import (
     ReadableMixin,
@@ -133,45 +139,6 @@ class ResourceViewSetGenericFilter(
         return collection_type_uri_for(self.resource_type_iri)
 
 
-# Where a list's collection schema embeds the schema of its resources' content.
-COLLECTION_CONTENT_POINTER = "#/properties/content/items/properties/content"
-
-# The keywords whose values are data, not schemas: a ``$ref`` in them is not
-# a reference.
-_DATA_KEYWORDS = frozenset({"enum", "const", "default", "examples"})
-
-
-def embedded_schema(schema, pointer):
-    """A copy of JSON Schema `schema` to embed at `pointer` (a ``#`` JSON
-    pointer) of another: without its top-level ``$id``, which would make its
-    references resolve against that URI rather than the document it is in,
-    and with every reference into itself (a ``$ref`` starting with ``#``)
-    rebased under `pointer`. A reference to another document is kept."""
-
-    def rebase(node, data=False):
-        if isinstance(node, list):
-            return [rebase(item, data) for item in node]
-        if not isinstance(node, dict):
-            return node
-        rebased = {}
-        for key, value in node.items():
-            if (
-                not data
-                and key == "$ref"
-                and isinstance(value, str)
-                and value.startswith("#")
-            ):
-                rebased[key] = pointer + value[1:]
-            else:
-                rebased[key] = rebase(value, data or key in _DATA_KEYWORDS)
-        return rebased
-
-    if not isinstance(schema, dict):
-        return schema
-    schema = {key: value for key, value in schema.items() if key != "$id"}
-    return rebase(schema)
-
-
 class DocumentResourceViewSet(DocumentMediaTypeMixin, ResourceViewSet):
     """The resource views of a type whose resources are documents (JSON
     Schemas, JSON-LD contexts): a resource's representation (its detail
@@ -205,72 +172,7 @@ class ResourceCollectionSchemaView(ScrudErrorsMixin, DocumentMediaTypeMixin, API
     document_renderer_class = SchemaJSONRenderer
 
     def get(self, request, slug: str):
-        resource_type = get_resource_type_for(slug)
-
-        if resource_type.schema:
-            content_defn = embedded_schema(
-                resource_type.schema.content, COLLECTION_CONTENT_POINTER
-            )
-        elif resource_type.schema_uri:
-            content_defn = {"$ref": resource_type.schema_uri}
-        else:
-            content_defn = {}
-
-        url_or_null = {"type": ["string", "null"], "format": "uri"}
-        schema = {
-            "$id": "https://api.openteams.com/json-schema/ResourceCollection"
-            f"?contents_type={resource_type.type_uri}",
-            "$schema": "http://json-schema.org/draft-04/schema",
-            "description": f"A listing of resources of type {resource_type.type_uri}.",
-            "type": "object",
-            "properties": {
-                "count": {
-                    "type": "integer",
-                    "description": "The total number of items in the collection.",
-                },
-                "page_count": {
-                    "type": "integer",
-                    "description": "The total number of pages in the collection.",
-                },
-                "previous": dict(
-                    url_or_null, description="URL of the previous page, or null."
-                ),
-                "next": dict(url_or_null, description="URL of the next page, or null."),
-                "content": {
-                    "type": "array",
-                    "description": f"Listing of {resource_type.type_uri} "
-                    "resources in Envelopes.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "href": {
-                                "type": "string",
-                                "format": "uri",
-                                "description": "URL of the nested resource.",
-                            },
-                            "etag": {
-                                "type": "string",
-                                "description": "HTTP ETag header of the nested "
-                                "resource.",
-                            },
-                            "last_modified": {
-                                "type": "string",
-                                "description": "HTTP Last-Modified header of the "
-                                "nested resource.",
-                            },
-                            "link": {
-                                "type": "string",
-                                "description": "HTTP Link header of the nested "
-                                "resource: its schema and JSON-LD context.",
-                            },
-                            "content": content_defn,
-                        },
-                    },
-                },
-            },
-        }
-
-        return Response(schema)
+        return Response(collection_schema(get_resource_type_for(slug)))
 
 
 class ResourceCollectionContextView(ScrudErrorsMixin, DocumentMediaTypeMixin, APIView):
@@ -283,27 +185,7 @@ class ResourceCollectionContextView(ScrudErrorsMixin, DocumentMediaTypeMixin, AP
     document_renderer_class = JSONLDRenderer
 
     def get(self, request, slug: str):
-        resource_type = get_resource_type_for(slug)
-        return Response(
-            {
-                "openteams": "https://api.openteams.com/json-ld/",
-                "@id": collection_type_uri_for(resource_type.type_uri),
-                "http://www.w3.org/2000/01/rdf-schema#subClassOf": {
-                    "@id": "https://api.openteams.com/json-ld/ResourceCollection"
-                },
-                "count": {"@id": "openteams:count"},
-                "page_count": {"@id": "openteams:page_count"},
-                "first": {"@id": "opententeams:first"},
-                "previous": {"@id": "opententeams:previous"},
-                "next": {"@id": "opententeams:next"},
-                "last": {"@id": "opententeams:last"},
-                "content": {
-                    "@id": "openteams:Envelope",
-                    "@container": "@list",
-                    "openteams:envelopeContents": resource_type.type_uri,
-                },
-            }
-        )
+        return Response(collection_context(get_resource_type_for(slug)))
 
 
 def services_etag(view, request, *args, **kwargs):

@@ -27,10 +27,12 @@ from rest_framework.test import APIClient
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.models import Resource, ResourceType
-from scrud_django.registration import ResourceRegistration
+from scrud_django.registration import ResourceRegistration, json_resource_type_spec
 
 from .factories import UserFactory
+from .front_ends import api_url
 from .rbac_defaults import TYPE_URI_LIST_PARTNER_PROFILES, TYPE_URI_PARTNER_PROFILES
+from .resource_types import PARTNER_PROFILES_TYPE
 
 PP = TYPE_URI_PARTNER_PROFILES
 PP_LIST = TYPE_URI_LIST_PARTNER_PROFILES
@@ -51,16 +53,19 @@ def client_with(*grants):
             modified_at=now(),
         ).save()
     client = APIClient()
-    client.force_authenticate(user)
+    client.force_login(user)
     return client
 
 
-def url():
-    return reverse("partner-profiles-list")
+def url(front_end="drf"):
+    """The partner profiles list on `front_end` (the ``front_end`` fixture's
+    URLconf)."""
+    return api_url(front_end, "partner-profiles-list")
 
 
 def profile(name, context="a"):
-    url()
+    # Registered as either front end registers it (a stored type: no write).
+    json_resource_type_spec(**PARTNER_PROFILES_TYPE).register()
     return ResourceRegistration.register(
         {"name": name, "rbac_context": context}, "partner-profiles"
     )
@@ -70,8 +75,8 @@ def created():
     return Resource.objects.filter(content__name="new").count()
 
 
-def post(client, **headers):
-    return client.post(url(), BODY, format="json", **headers)
+def post(client, front_end, **headers):
+    return client.post(url(front_end), BODY, format="json", **headers)
 
 
 @pytest.fixture
@@ -81,16 +86,16 @@ def writer():
 
 
 @pytest.mark.django_db
-def test_if_match_with_the_lists_etag_creates(writer):
-    etag = writer.get(url())["ETag"]
-    response = post(writer, HTTP_IF_MATCH=etag)
+def test_if_match_with_the_lists_etag_creates(front_end, writer):
+    etag = writer.get(url(front_end))["ETag"]
+    response = post(writer, front_end, HTTP_IF_MATCH=etag)
     assert response.status_code == 201, response.content
     assert created() == 1
 
 
 @pytest.mark.django_db
-def test_if_match_with_another_etag_is_412_and_creates_nothing(writer):
-    response = post(writer, HTTP_IF_MATCH='"nope"')
+def test_if_match_with_another_etag_is_412_and_creates_nothing(front_end, writer):
+    response = post(writer, front_end, HTTP_IF_MATCH='"nope"')
     assert response.status_code == 412, response.content
     assert response["Content-Type"].startswith("application/problem+json")
     problem = response.json()
@@ -100,91 +105,91 @@ def test_if_match_with_another_etag_is_412_and_creates_nothing(writer):
 
 
 @pytest.mark.django_db
-def test_if_match_with_a_stale_etag_is_412(writer):
-    etag = writer.get(url())["ETag"]
+def test_if_match_with_a_stale_etag_is_412(front_end, writer):
+    etag = writer.get(url(front_end))["ETag"]
     profile("another")
-    response = post(writer, HTTP_IF_MATCH=etag)
+    response = post(writer, front_end, HTTP_IF_MATCH=etag)
     assert response.status_code == 412, response.content
     assert created() == 0
 
 
 @pytest.mark.django_db
-def test_if_match_any_creates(writer):
-    response = post(writer, HTTP_IF_MATCH="*")
+def test_if_match_any_creates(front_end, writer):
+    response = post(writer, front_end, HTTP_IF_MATCH="*")
     assert response.status_code == 201, response.content
 
 
 @pytest.mark.django_db
-def test_if_unmodified_since_is_evaluated(writer):
-    last_modified = writer.get(url())["Last-Modified"]
+def test_if_unmodified_since_is_evaluated(front_end, writer):
+    last_modified = writer.get(url(front_end))["Last-Modified"]
     earlier = http_date(
         Resource.objects.get(content__name="existing").modified_at.timestamp() - 60
     )
-    response = post(writer, HTTP_IF_UNMODIFIED_SINCE=earlier)
+    response = post(writer, front_end, HTTP_IF_UNMODIFIED_SINCE=earlier)
     assert response.status_code == 412, response.content
     assert created() == 0
-    response = post(writer, HTTP_IF_UNMODIFIED_SINCE=last_modified)
+    response = post(writer, front_end, HTTP_IF_UNMODIFIED_SINCE=last_modified)
     assert response.status_code == 201, response.content
 
 
 @pytest.mark.django_db
-def test_if_none_match_on_the_existing_list_is_412(writer):
-    etag = writer.get(url())["ETag"]
+def test_if_none_match_on_the_existing_list_is_412(front_end, writer):
+    etag = writer.get(url(front_end))["ETag"]
     for value in ("*", etag):
-        response = post(writer, HTTP_IF_NONE_MATCH=value)
+        response = post(writer, front_end, HTTP_IF_NONE_MATCH=value)
         assert response.status_code == 412, (value, response.content)
     assert created() == 0
-    response = post(writer, HTTP_IF_NONE_MATCH='"other"')
+    response = post(writer, front_end, HTTP_IF_NONE_MATCH='"other"')
     assert response.status_code == 201, response.content
 
 
 @pytest.mark.django_db
-def test_a_malformed_if_match_is_400(writer):
-    response = post(writer, HTTP_IF_MATCH="nope")
+def test_a_malformed_if_match_is_400(front_end, writer):
+    response = post(writer, front_end, HTTP_IF_MATCH="nope")
     assert response.status_code == 400, response.content
     assert response.json()["code"] == "malformed_precondition"
     assert created() == 0
 
 
 @pytest.mark.django_db
-def test_the_validators_are_the_requesters_list(writer):
+def test_the_validators_are_the_requesters_list(front_end, writer):
     # A write the requester cannot see does not change their list's ETag:
     # their If-Match still passes.
     other = profile("elsewhere", context="b")
-    etag = writer.get(url())["ETag"]
+    etag = writer.get(url(front_end))["ETag"]
     ResourceRegistration.update(
         {"name": "elsewhere, changed", "rbac_context": "b"},
         "partner-profiles",
         other.pk,
     )
-    response = post(writer, HTTP_IF_MATCH=etag)
+    response = post(writer, front_end, HTTP_IF_MATCH=etag)
     assert response.status_code == 201, response.content
 
 
 @pytest.mark.django_db
-def test_without_uniform_errors_a_412_is_scrudfuls_native_body(writer):
+def test_without_uniform_errors_a_412_is_scrudfuls_native_body(front_end, writer):
     with override_settings(
         SCOPED_RBAC=dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=False)
     ):
-        response = post(writer, HTTP_IF_MATCH='"nope"')
+        response = post(writer, front_end, HTTP_IF_MATCH='"nope"')
     assert response.status_code == 412, response.content
     assert response["Content-Type"].startswith("application/json")
     assert response.json() == {"detail": "Precondition failed."}
 
 
 @pytest.mark.django_db
-def test_a_create_without_preconditions_is_unchanged(writer):
-    response = post(writer)
+def test_a_create_without_preconditions_is_unchanged(front_end, writer):
+    response = post(writer, front_end)
     assert response.status_code == 201, response.content
     assert response.has_header("ETag") and response.has_header("Location")
 
 
 @pytest.mark.django_db
-def test_authorization_comes_before_preconditions():
+def test_authorization_comes_before_preconditions(front_end):
     profile("existing")
     reader = client_with(({"http.GET": [PP, PP_LIST]}, "a"))
     with recorded_type_locks() as events:
-        response = post(reader, HTTP_IF_MATCH='"nope"')
+        response = post(reader, front_end, HTTP_IF_MATCH='"nope"')
     assert response.status_code == 403, response.content
     # Refused before the type's row is locked (a row lock leaves nothing to
     # check afterwards; the recorder sees the call).
@@ -204,42 +209,46 @@ CONDITIONAL_WRITER = {
 
 
 @pytest.fixture
-def capped_writer():
+def capped_writer(front_end):
     for name in ("one", "two", "three"):
         profile(name)
     capped = dict(settings.SCOPED_RBAC, CONDITIONAL_LIST_MAX_ROWS=2)
     with override_settings(SCOPED_RBAC=capped):
         client = client_with((CONDITIONAL_WRITER, "a"))
-        response = client.get(url())
+        response = client.get(url(front_end))
         assert response.status_code == 400, response.content
         assert response.json()["code"] == "conditional_list_too_large"
         yield client
 
 
 @pytest.mark.django_db
-def test_if_match_any_past_the_cap_creates_as_an_unconditional_post(capped_writer):
-    assert post(capped_writer).status_code == 201
-    response = post(capped_writer, HTTP_IF_MATCH="*")
+def test_if_match_any_past_the_cap_creates_as_an_unconditional_post(
+    front_end, capped_writer
+):
+    assert post(capped_writer, front_end).status_code == 201
+    response = post(capped_writer, front_end, HTTP_IF_MATCH="*")
     assert response.status_code == 201, response.content
     assert created() == 2
 
 
 @pytest.mark.django_db
-def test_if_none_match_any_past_the_cap_is_412(capped_writer):
-    response = post(capped_writer, HTTP_IF_NONE_MATCH="*")
+def test_if_none_match_any_past_the_cap_is_412(front_end, capped_writer):
+    response = post(capped_writer, front_end, HTTP_IF_NONE_MATCH="*")
     assert response.status_code == 412, response.content
     assert created() == 0
 
 
 @pytest.mark.django_db
-def test_a_precondition_that_needs_the_validators_past_the_cap_is_400(capped_writer):
+def test_a_precondition_that_needs_the_validators_past_the_cap_is_400(
+    front_end, capped_writer
+):
     for headers in (
         {"HTTP_IF_MATCH": '"x"'},
         {"HTTP_IF_NONE_MATCH": '"x"'},
         {"HTTP_IF_UNMODIFIED_SINCE": "Thu, 01 Jan 2099 00:00:00 GMT"},
         {"HTTP_IF_MATCH": "*", "HTTP_IF_NONE_MATCH": '"x"'},
     ):
-        response = post(capped_writer, **headers)
+        response = post(capped_writer, front_end, **headers)
         assert response.status_code == 400, (headers, response.content)
         assert response.json()["code"] == "conditional_list_too_large", headers
     assert created() == 0
@@ -281,10 +290,10 @@ def type_locks(events):
 
 
 @pytest.mark.django_db
-def test_a_conditional_create_locks_the_type_row_before_it_writes(writer):
-    etag = writer.get(url())["ETag"]
+def test_a_conditional_create_locks_the_type_row_before_it_writes(front_end, writer):
+    etag = writer.get(url(front_end))["ETag"]
     with recorded_type_locks() as events:
-        response = post(writer, HTTP_IF_MATCH=etag)
+        response = post(writer, front_end, HTTP_IF_MATCH=etag)
     assert response.status_code == 201, response.content
     no_key = connection.features.has_select_for_no_key_update
     assert type_locks(events) == [("lock", no_key)], events
@@ -292,12 +301,14 @@ def test_a_conditional_create_locks_the_type_row_before_it_writes(writer):
 
 
 @pytest.mark.django_db
-def test_a_conditional_create_locks_the_row_of_the_type_it_saves_under(writer):
+def test_a_conditional_create_locks_the_row_of_the_type_it_saves_under(
+    front_end, writer
+):
     # The lock serializes the creates of the type only if it is the row the
     # resource is saved under (each type revision is a row of its own).
     # Recorded from the query's select_for_update flag, which SQLite (no row
     # locks) keeps too.
-    etag = writer.get(url())["ETag"]
+    etag = writer.get(url(front_end))["ETag"]
     locked = []
     original = QuerySet._fetch_all
 
@@ -308,7 +319,7 @@ def test_a_conditional_create_locks_the_row_of_the_type_it_saves_under(writer):
             locked.extend(row.pk for row in self._result_cache)
 
     with mock.patch.object(QuerySet, "_fetch_all", fetch_all):
-        response = post(writer, HTTP_IF_MATCH=etag)
+        response = post(writer, front_end, HTTP_IF_MATCH=etag)
     assert response.status_code == 201, response.content
     saved = Resource.objects.get(content__name="new")
     assert locked == [saved.resource_type_id], locked
@@ -318,21 +329,23 @@ def test_a_conditional_create_locks_the_row_of_the_type_it_saves_under(writer):
 @pytest.mark.parametrize(
     "headers", [{}, {"HTTP_IF_MATCH": "*"}], ids=["unconditional", "if-match-any"]
 )
-def test_a_create_that_needs_no_validators_takes_no_type_lock(writer, headers):
+def test_a_create_that_needs_no_validators_takes_no_type_lock(
+    front_end, writer, headers
+):
     with recorded_type_locks() as events:
-        response = post(writer, **headers)
+        response = post(writer, front_end, **headers)
     assert response.status_code == 201, response.content
     assert type_locks(events) == [], events
 
 
 @pytest.mark.django_db
-def test_a_conditional_create_of_a_workflow_policy_locks_its_type_once():
+def test_a_conditional_create_of_a_workflow_policy_locks_its_type_once(front_end):
     from scrud_django.registration import workflow_policy_resource_type
 
     workflow_policy_resource_type()
-    reverse("todos-list")
+    api_url(front_end, "todos-list")
     client = APIClient()
-    client.force_authenticate(UserFactory(is_superuser=True, is_staff=True))
+    client.force_login(UserFactory(is_superuser=True, is_staff=True))
     policy = {
         "resource_type": "tests://ToDo",
         "rbac_context": "pol",
@@ -342,7 +355,7 @@ def test_a_conditional_create_of_a_workflow_policy_locks_its_type_once():
     }
     with recorded_type_locks() as events:
         response = client.post(
-            reverse("workflow-policies-list"),
+            api_url(front_end, "workflow-policies-list"),
             policy,
             format="json",
             HTTP_IF_NONE_MATCH='"none"',
@@ -362,32 +375,46 @@ TWO_WRITERS = pytest.mark.skipif(
 
 def superuser_client():
     client = APIClient(raise_request_exception=False)
-    client.force_authenticate(UserFactory(is_superuser=True, is_staff=True))
+    client.force_login(UserFactory(is_superuser=True, is_staff=True))
     return client
 
 
 @contextmanager
-def paused_after_evaluation(thread_name, seconds=0.8):
+def paused_after_evaluation(thread_name, front_end="drf", seconds=0.8):
     """The create in thread `thread_name` pauses for `seconds` right after
-    its list preconditions passed (before it creates): scrudful evaluates
-    them before the ``create`` handler runs, which then calls
-    ``create_resource``. `timeline` records when (``paused``, ``resumed``)
-    and `evaluated` is set as it pauses."""
+    its list preconditions passed (before it creates), on `front_end`: on
+    DRF scrudful evaluates them before the ``create`` handler runs, which
+    then calls ``create_resource``; on ninja the create operation evaluates
+    them, then calls ``core.writes.create``. `timeline` records when
+    (``paused``, ``resumed``) and `evaluated` is set as it pauses."""
+    from scrud_django.core import writes
     from scrud_django.mixins.view_mixins import ResourceViewMixin
 
-    original = ResourceViewMixin.create_resource
+    target, name = {
+        "drf": (ResourceViewMixin, "create_resource"),
+        "ninja": (writes, "create"),
+    }[front_end]
+    original = getattr(target, name)
     evaluated = threading.Event()
     timeline = {}
 
-    def create_resource(self, request, *args, **kwargs):
+    def pause():
         if threading.current_thread().name == thread_name and "paused" not in timeline:
             timeline["paused"] = time.monotonic()
             evaluated.set()
             time.sleep(seconds)
             timeline["resumed"] = time.monotonic()
+
+    def create_resource(self, request, *args, **kwargs):
+        pause()
         return original(self, request, *args, **kwargs)
 
-    with mock.patch.object(ResourceViewMixin, "create_resource", create_resource):
+    def create(*args, **kwargs):
+        pause()
+        return original(*args, **kwargs)
+
+    paused = create_resource if front_end == "drf" else create
+    with mock.patch.object(target, name, paused):
         yield evaluated, timeline
 
 
@@ -418,19 +445,19 @@ def run_threads(**functions):
 @TWO_WRITERS
 @pytest.mark.django_db(transaction=True)
 def test_two_conditional_creates_with_one_etag_give_one_201_and_one_412(
-    committed_types,
+    committed_types, front_end
 ):
     profile("existing")
     first_client, second_client = superuser_client(), superuser_client()
-    etag = first_client.get(url())["ETag"]
+    etag = first_client.get(url(front_end))["ETag"]
     connections.close_all()
 
     def create(client, name):
         return client.post(
-            url(), dict(BODY, name=name), format="json", HTTP_IF_MATCH=etag
+            url(front_end), dict(BODY, name=name), format="json", HTTP_IF_MATCH=etag
         ).status_code
 
-    with paused_after_evaluation("first") as (evaluated, timeline):
+    with paused_after_evaluation("first", front_end) as (evaluated, timeline):
 
         def second():
             assert evaluated.wait(10), "the first create never evaluated"
@@ -452,18 +479,20 @@ def test_two_conditional_creates_with_one_etag_give_one_201_and_one_412(
     assert sorted(names) == ["existing", "first"], names
 
 
-def other_write(kind, stored):
+def other_write(kind, stored, front_end="drf"):
     """A write of `kind` to the partner profile `stored` (or a new one), as
-    the API or server code makes it; returns what a success looks like and
-    the function."""
+    `front_end` or server code makes it; returns what a success looks like
+    and the function."""
     client = superuser_client()
-    detail = reverse("partner-profiles-detail", args=[stored.pk])
+    detail = api_url(front_end, "partner-profiles-detail", args=[stored.pk])
     if kind == "create":
         return (
             201,
             lambda: (
                 client.post(
-                    url(), {"name": "other", "rbac_context": "a"}, format="json"
+                    url(front_end),
+                    {"name": "other", "rbac_context": "a"},
+                    format="json",
                 ).status_code
             ),
         )
@@ -518,10 +547,10 @@ def other_paused_holding_its_locks(kind, seconds=0.8):
 @pytest.mark.parametrize("kind", ["create", "put", "delete", "queryset-delete"])
 @pytest.mark.parametrize("first", ["conditional", "other"])
 def test_a_conditional_create_and_another_write_do_not_deadlock(
-    kind, first, committed_types
+    kind, first, committed_types, front_end
 ):
     stored = profile("existing")
-    expected, other = other_write(kind, stored)
+    expected, other = other_write(kind, stored, front_end)
     conditional_client = superuser_client()
     connections.close_all()
 
@@ -529,11 +558,11 @@ def test_a_conditional_create_and_another_write_do_not_deadlock(
         # Needs the validators (so takes the type lock); passes whatever the
         # list holds.
         return conditional_client.post(
-            url(), BODY, format="json", HTTP_IF_NONE_MATCH='"none"'
+            url(front_end), BODY, format="json", HTTP_IF_NONE_MATCH='"none"'
         ).status_code
 
     if first == "conditional":
-        pause = paused_after_evaluation("conditional")
+        pause = paused_after_evaluation("conditional", front_end)
         starts, waits = conditional, other
     else:
         pause = other_paused_holding_its_locks(kind)
@@ -555,6 +584,7 @@ def test_a_conditional_create_and_another_write_do_not_deadlock(
     assert results == {"conditional": 201, "other": expected}, results
 
 
+# DRF-only: scoped-rbac's DRF role list (its ninja one is scoped-rbac's own).
 @pytest.mark.django_db
 def test_scoped_rbacs_own_lists_evaluate_a_creates_preconditions():
     # scoped-rbac 0.12 (#62) evaluates them on its role and role-assignment
@@ -574,6 +604,10 @@ def test_scoped_rbacs_own_lists_evaluate_a_creates_preconditions():
     )
     assert response.status_code == 201, response.content
 
+
+# DRF-only, to the end of the module: DRF viewsets of tests/urls.py and
+# DRF internals (ninja serves no custom viewset; its create is
+# routers.type_router's).
 
 # A POST @action of the list that only calls create
 # (tests.urls.ImportingResourceViewSet.import_resource): scrudful evaluates

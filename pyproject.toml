@@ -21,6 +21,13 @@ dependencies = [
 [project.optional-dependencies]
 search = ["django-haystack>=3.3", "whoosh-reloaded>=2.7.5"]
 ui = ["jinja2>=3.1,<4"]
+# django-ninja directly: scrud_django.ninja uses ninja's internals itself
+# (NinjaAPI._get_urls, an operation's run), as scoped-rbac's pin allows.
+ninja = [
+    "django-ninja>=1.7.0,<1.7.4",
+    "django-scoped-rbac[ninja]>=0.12.1,<0.13",
+    "scrudful[ninja]>=0.10.1,<0.11",
+]
 
 [project.urls]
 Repository = "https://gitlab.com/dcharbon/scrud-django"
@@ -37,7 +44,7 @@ dev = [
     "ruff",
     "pre-commit",
     "django-extensions",
-    "scrud-django[search,ui]",
+    "scrud-django[search,ui,ninja]",
     # The PostgreSQL driver for the test suite on PostgreSQL (CI's
     # test-postgres job; tests/settings.py reads SCRUD_TEST_PG_*).
     "psycopg[binary]>=3.2,<4",

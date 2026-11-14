@@ -6,7 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CORE = ROOT / "scrud_django" / "core"
 
-# Nothing under scrud_django/core/ imports these (the DRF adapters' own).
+# Nothing under scrud_django/core/ imports these (the DRF and ninja adapters'
+# own).
 DENIED = (
     "rest_framework",
     "django_filters",
@@ -14,12 +15,25 @@ DENIED = (
     "scoped_rbac.rest",
     "scoped_rbac.filters",
     "scoped_rbac.permissions",
+    "ninja",
+    "pydantic",
+    "scoped_rbac.ninja",
+    "scrudful.ninja",
 )
 
 SCRIPT = """
 import importlib.abc, pkgutil, sys
 
-BLOCKED = ("rest_framework", "django_filters", "scrudful.rest_framework", "scoped_rbac.rest")
+BLOCKED = (
+    "rest_framework",
+    "django_filters",
+    "scrudful.rest_framework",
+    "scoped_rbac.rest",
+    "ninja",
+    "pydantic",
+    "scoped_rbac.ninja",
+    "scrudful.ninja",
+)
 
 class Blocker(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path=None, target=None):

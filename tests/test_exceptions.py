@@ -461,3 +461,38 @@ def test_a_bare_scrud_exception_renders_only_the_members_it_sets():
     assert ScrudException.type is None
     assert ScrudException.title is None
     assert ScrudException.instance is None
+
+
+@pytest.mark.django_db
+def test_a_stored_policys_url_is_the_serving_apis():
+    # A workflow error names a stored policy by the URL of the API serving
+    # the request: within the namespace the request was resolved under (a
+    # ninja API's), else by the route's global name (the DRF routes').
+    from django.test import RequestFactory
+    from django.urls import resolve
+
+    from .front_ends import serve_both
+
+    with override_settings(ROOT_URLCONF="tests.parity_urls"):
+        serve_both()
+        policy = ResourceRegistration.register(
+            {
+                "resource_type": "tests://ToDo",
+                "rbac_context": "p",
+                "initial_states": {"any": "true"},
+                "states": {},
+                "transitions": {},
+            },
+            "workflow-policies",
+        )
+        reference = StoredPolicyReference(policy)
+        urls = {}
+        for mount in ("drf", "ninja"):
+            request = RequestFactory().get(f"/{mount}/workflow-policies/")
+            request.resolver_match = resolve(request.path)
+            urls[mount] = reference.url(request)
+        assert urls == {
+            mount: f"http://testserver/{mount}/workflow-policies/{policy.pk}/"
+            for mount in ("drf", "ninja")
+        }
+        assert reference.url() == f"/drf/workflow-policies/{policy.pk}/"

@@ -25,6 +25,177 @@ templates and stylesheets stored as resources, layered per RBAC context and
 shown exactly as the viewer is authorized, with htmx for editing. See the
 [UI documentation](docs/ui.md).
 
+## django-ninja (preview)
+
+scrud-django can also serve its resource types through
+[django-ninja](https://django-ninja.dev), answering as the DRF routes do (the
+same statuses, headers and bodies; `tests/test_front_end_parity.py` replays
+the same exchanges against both). It is additive and a preview: nothing
+changes for a DRF project.
+
+```bash
+uv add "scrud-django[ninja]"
+# or: pip install 'scrud-django[ninja]'
+```
+
+```python
+# urls.py
+from django.urls import include, path
+
+from scrud_django import registration
+from scrud_django.ninja import api
+
+scrud_api = api(
+    types=[
+        registration.json_resource_type_spec(
+            # the IRI and slug, then the arguments of
+            # registration.json_resource_type but viewset_class and
+            # indexing_policy_resource, as keywords
+        ),
+    ],
+)
+
+urlpatterns = [
+    path("api/", scrud_api.urls),
+    path("", include("scoped_rbac.semantic_urls")),
+]
+```
+
+* The factory is `scrud_django.ninja.api(*, types=(), urls_namespace="scrud",
+  **ninja_kwargs)`. `types` are `TypeSpec`s, from
+  `registration.json_resource_type_spec(...)` and
+  `registration.computed_resource_type_spec(...)`; it serves them and always
+  the built-in types (`json-schema/`, `json-ld/`, `indexing-policies/`,
+  `workflow-policies/`: every type's Links name its schema and context
+  resources there), with the service catalog (`services/`), scoped-rbac's
+  role routes and the collection documents.
+* It serves no interactive docs and no OpenAPI document unless you pass
+  `docs_url=` and `openapi_url=` (they go to `NinjaAPI`, as the rest of
+  `ninja_kwargs` do); those routes are public. Each operation has an
+  `operationId` of its own (`<slug>_list`, `<slug>_retrieve`, ...), so ninja
+  logs no duplicate warning; one serving GET and HEAD is listed under both
+  methods with that one id (see `ninja-openapi-head-operation-id` in the
+  [follow-ups](docs/follow-ups.md)).
+* Do not pass `auth=`: `api()` raises `TypeError`. scrud resolves the user of
+  every request itself, so an anonymous request gets the anonymous user's
+  grants and a hidden item is a 404.
+* Authentication is scoped-rbac's `resolve_user`: the
+  `SCOPED_RBAC["NINJA_USER"]` hook's user, else `request.auth` (set only on a
+  router you add with its own `auth=`, as `api()` takes none), else the
+  session's. DRF's `DEFAULT_AUTHENTICATION_CLASSES` are not read, so a Basic
+  or token client of a DRF project is the anonymous user on ninja (a
+  credential nothing maps is not refused) until a hook maps it. A hook
+  returns the user, `None` for the anonymous user, or raises ninja's
+  `AuthenticationError` to refuse the credentials (401). For Basic
+  credentials:
+
+  ```python
+  import base64
+  import binascii
+
+  from django.contrib.auth import authenticate
+  from ninja.errors import AuthenticationError
+
+
+  def basic_user(request):
+      header = request.headers.get("Authorization", "")
+      scheme, _, credentials = header.partition(" ")
+      if scheme.lower() != "basic":
+          return getattr(request, "user", None)
+      try:
+          username, _, password = base64.b64decode(credentials).decode().partition(":")
+      except (binascii.Error, UnicodeDecodeError):
+          raise AuthenticationError() from None
+      user = authenticate(request, username=username, password=password)
+      if user is None:
+          raise AuthenticationError() from None
+      return user
+  ```
+
+  ```python
+  SCOPED_RBAC = {..., "NINJA_USER": "myapp.auth.basic_user"}
+  ```
+
+  A hook replaces the session lookup; it does not add to it. With a hook set,
+  only its result is the user, so a request without Basic credentials must get
+  the session's user from the hook itself (the example returns
+  `request.user`), or a logged-in session user becomes anonymous. A hook's
+  user who is also the request's session user is CSRF-checked on an unsafe
+  request, whether or not Basic credentials came with the cookie. A
+  Basic-only client has no session cookie, so a write needs no token (the
+  same caveat as below applies). When the session belongs to user A and the
+  Basic credentials to user B, the hook gives B and no CSRF check applies (B
+  is not the session's user). The hook's Basic user is not CSRF-checked,
+  exactly as DRF's `BasicAuthentication` (also CSRF-exempt) is not: a
+  browser re-sends cached HTTP Basic credentials on a cross-site request, so
+  Basic credentials suit non-browser API clients, not browsers. Send Basic
+  credentials only over TLS. See
+  `ninja-drf-authenticators` in the follow-ups.
+* A computed type's `compute(request, key)` receives a plain Django
+  `HttpRequest` on ninja (a DRF `Request` on DRF): read `request.GET` and
+  `request.user`, not `request.query_params` or `request.data`, and do not
+  hand it to a DRF permission's `has_permission(request, view)`. Raise
+  `Http404` or `PermissionDenied` (Django's), as the DRF section says: a
+  `compute` that raises DRF's own `APIException`s (`NotFound`,
+  `ValidationError`, ...) is answered 404 or 400 on DRF but is a 500 on
+  ninja.
+* `TypeSpec` refuses, when it is built or derived with `dataclasses.replace`
+  (`ImproperlyConfigured`): an empty or non-string slug or IRI; a computed
+  type that carries any hook but `compute` (`checks`, `object_checks` and
+  `content_filter` would never be asked); a plain spec that reuses a built-in
+  type's IRI or slug (use `built_in_type_specs()`); and a built-in type with
+  hooks of its own. `json_resource_type_spec` refuses a
+  `schema_func`, `context_func` or `indexing_policy_func` that is not
+  callable, and `computed_resource_type_spec` a `compute` that is not (both
+  `TypeError`); and `register_urls()` of a
+  `ResourceTypeRegistration(build_urls=False)` is a `TypeError`. `api()`
+  also refuses a slug that is not one URL segment (letters, digits, hyphens
+  and underscores; DRF still accepts, for example, a dotted one), a reserved
+  slug, and a slug or IRI two types share, before it registers anything.
+* A router you add to the API (`scrud_api.add_router(...)`) gets no
+  authentication and no CSRF check from scrud: ninja's views are
+  CSRF-exempt, and scrud resolves the user only on its own routes. Give it
+  its own `auth=`, or scrud's entry checks (the user resolved as on scrud's
+  routes, a session user's unsafe request CSRF-checked; a PUT, PATCH,
+  DELETE, and a POST carrying `If-Match`, `If-None-Match` or
+  `If-Unmodified-Since`, in one transaction on scrud's write database,
+  rolled back on a status of 400 or more; a plain POST is in none of the
+  entry's):
+
+  ```python
+  from ninja import Router
+  from scrud_django.ninja.entry import entry
+
+  reports = Router()
+  reports.add_decorator(entry, mode="view")
+  scrud_api.add_router("reports/", reports)
+  ```
+
+* Two APIs in one process need distinct `urls_namespace`s. Links (`href`,
+  `Location`, `Link` headers, `services/`) are reversed within the namespace
+  the request was resolved under.
+* A ninja-only URLconf must also `include("scoped_rbac.semantic_urls")`: the
+  role routes' (`roles/`, `role-assignments/`, `user-rbac-policy/`) semantic
+  Links reverse those global names, and answer 500 without it.
+* `services/` lists the types the serving API routes. A type registered in
+  the process that it does not route (another API's, or a UI type on a ninja
+  API) is left out, on both front ends.
+* Content negotiation is DRF's with DRF's default renderers (`JSONRenderer`,
+  `BrowsableAPIRenderer`): an `Accept` none of a route's renderers serves
+  (`Accept: application/xml`) is DRF's 406 (`not_acceptable`), and a
+  `?format=` none of them has its 404, on both front ends. ninja does not
+  read `REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"]`: a project that changes
+  it gets DRF's answer from its DRF routes only (follow-up
+  `ninja-renderer-settings`). The document routes choose their media type as
+  DRF does, and JSON is indented as DRF indents it for
+  `Accept: application/json; indent=4`.
+* The UI types (`scrud_django.ui`) and the studio types are not served on
+  ninja yet, nor are the `ui-css-files` and `ui-js-files` views, and a ninja
+  route never answers `text/html`: a request that DRF would answer as HTML
+  (`Accept: text/html`, `?format=api`) gets the JSON answer.
+* `scrud_django.urls` stays DRF until the release that switches it; include
+  it as before for a DRF project.
+
 ## Configuration
 
 ### Required

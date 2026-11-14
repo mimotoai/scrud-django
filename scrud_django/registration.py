@@ -3,7 +3,11 @@ import importlib.resources
 import json
 import logging
 import threading
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any, Literal
 from uuid import uuid4
 
 import reversion
@@ -204,12 +208,22 @@ class ResourceTypeRegistration:
         viewset_class: object = None,
         uses_reversion: bool = True,
         register_service: bool = True,
+        build_urls: bool = True,
     ):
         """
         Register resource type model.
-        """
-        from scrud_django import views
 
+        With `build_urls` (the default) its DRF routes are built too
+        (`urls`, served by `viewset_class`, default ``ResourceViewSet``);
+        without, `urls` is empty and nothing of DRF is loaded, for a front
+        end that builds its own routes (`TypeSpec.register`); a
+        `viewset_class` would serve nothing then, and is a ``TypeError``.
+        """
+        if not build_urls and viewset_class is not None:
+            raise TypeError(
+                "ResourceTypeRegistration(build_urls=False) builds no routes: "
+                "it takes no viewset_class."
+            )
         # Read on the type's write database, with the documents compared
         # below with the files (register_json_file): a lagging replica would
         # leave a schema edited since in place, add a second row for a type
@@ -221,8 +235,6 @@ class ResourceTypeRegistration:
             .select_related(*TYPE_DOCUMENTS)
             .filter(type_uri=resource_type_uri)
         )
-
-        self.viewset_class = viewset_class or views.ResourceViewSet
 
         stored = search[0] if search else None
         if stored is None:
@@ -296,10 +308,23 @@ class ResourceTypeRegistration:
         # Register with service catalog
         if register_service:
             services.add_service(self.resource_type.type_uri, self.resource_type.slug)
-        self.register_urls()
+        self.viewset_class = viewset_class
+        if build_urls:
+            if self.viewset_class is None:
+                from scrud_django import views
+
+                self.viewset_class = views.ResourceViewSet
+            self.register_urls()
+        else:
+            self.urls = []
 
     def register_urls(self):
         """Register resource type url."""
+        if self.viewset_class is None:
+            raise TypeError(
+                "register_urls() needs a viewset_class: this registration was "
+                "built with build_urls=False and builds no routes."
+            )
         self.urls = resource_type_urls(self.resource_type.slug, self.viewset_class)
 
 
@@ -682,18 +707,58 @@ WORKFLOW_POLICY_RESOURCE_TYPE_ = None
 WORKFLOW_POLICY_REGISTRATION_ = None
 
 
+def _static_document(name):
+    """The text of the document `name` of ``scrud_django.static``."""
+    return importlib.resources.files("scrud_django.static").joinpath(name).read_text()
+
+
+# What `ResourceTypeRegistration` takes for each built-in type (`_BUILT_INS`,
+# `built_in_type_specs`).
+_JSON_SCHEMA_TYPE = MappingProxyType(
+    {
+        "resource_type_uri": "http://json-schema.org/draft-04/schema",
+        "revision": "1",
+        "schema_uri": "http://json-schema.org/draft-04/schema",
+        "slug": "json-schema",
+    }
+)
+_JSON_LD_TYPE = MappingProxyType(
+    {
+        "resource_type_uri": "http://www.w3.org/ns/json-ld#context",
+        "revision": "1",
+        "slug": "json-ld",
+    }
+)
+_INDEXING_POLICY_TYPE = MappingProxyType(
+    {
+        "resource_type_uri": "http://api.openteams.com/json-ld/IndexingPolicy",
+        "revision": "1",
+        "slug": "indexing-policies",
+        "schema_func": functools.partial(
+            _static_document, "IndexingPolicy-schema.json"
+        ),
+        "context_func": functools.partial(_static_document, "IndexingPolicy-ld.json"),
+    }
+)
+_WORKFLOW_POLICY_TYPE = MappingProxyType(
+    {
+        "resource_type_uri": WORKFLOW_POLICY_TYPE_URI,
+        "revision": "1",
+        "slug": "workflow-policies",
+        "schema_func": functools.partial(
+            _static_document, "WorkflowPolicy-schema.json"
+        ),
+        "context_func": functools.partial(_static_document, "WorkflowPolicy-ld.json"),
+    }
+)
+
+
 def register_json_schema_resource_type(force=False):
     global JSON_SCHEMA_RESOURCE_TYPE_
     global JSON_SCHEMA_REGISTRATION_
     if JSON_SCHEMA_RESOURCE_TYPE_ is None or force:
-        from scrud_django.views import JsonSchemaViewSet
-
         JSON_SCHEMA_REGISTRATION_ = ResourceTypeRegistration(
-            resource_type_uri="http://json-schema.org/draft-04/schema",
-            revision="1",
-            schema_uri="http://json-schema.org/draft-04/schema",
-            slug="json-schema",
-            viewset_class=JsonSchemaViewSet,
+            **_JSON_SCHEMA_TYPE, build_urls=False
         )
         JSON_SCHEMA_RESOURCE_TYPE_ = JSON_SCHEMA_REGISTRATION_.resource_type
     return JSON_SCHEMA_RESOURCE_TYPE_
@@ -703,13 +768,8 @@ def register_json_ld_resource_type(force=False):
     global JSON_LD_RESOURCE_TYPE_
     global JSON_LD_REGISTRATION_
     if JSON_LD_RESOURCE_TYPE_ is None or force:
-        from scrud_django.views import JsonLdViewSet
-
         JSON_LD_REGISTRATION_ = ResourceTypeRegistration(
-            resource_type_uri="http://www.w3.org/ns/json-ld#context",
-            revision="1",
-            slug="json-ld",
-            viewset_class=JsonLdViewSet,
+            **_JSON_LD_TYPE, build_urls=False
         )
         JSON_LD_RESOURCE_TYPE_ = JSON_LD_REGISTRATION_.resource_type
     return JSON_LD_RESOURCE_TYPE_
@@ -720,19 +780,7 @@ def register_indexing_policy_resource_type(force=False):
     global INDEXING_POLICY_REGISTRATION_
     if INDEXING_POLICY_RESOURCE_TYPE_ is None or force:
         INDEXING_POLICY_REGISTRATION_ = ResourceTypeRegistration(
-            resource_type_uri="http://api.openteams.com/json-ld/IndexingPolicy",
-            revision="1",
-            slug="indexing-policies",
-            schema_func=lambda: (
-                importlib.resources.files("scrud_django.static")
-                .joinpath("IndexingPolicy-schema.json")
-                .read_text()
-            ),
-            context_func=lambda: (
-                importlib.resources.files("scrud_django.static")
-                .joinpath("IndexingPolicy-ld.json")
-                .read_text()
-            ),
+            **_INDEXING_POLICY_TYPE, build_urls=False
         )
         INDEXING_POLICY_RESOURCE_TYPE_ = INDEXING_POLICY_REGISTRATION_.resource_type
     return INDEXING_POLICY_RESOURCE_TYPE_
@@ -743,19 +791,7 @@ def workflow_policy_resource_type(force=False):
     global WORKFLOW_POLICY_REGISTRATION_
     if WORKFLOW_POLICY_RESOURCE_TYPE_ is None or force:
         WORKFLOW_POLICY_REGISTRATION_ = ResourceTypeRegistration(
-            resource_type_uri="http://api.openteams.com/json-ld/WorkflowPolicy",
-            revision="1",
-            slug="workflow-policies",
-            schema_func=lambda: (
-                importlib.resources.files("scrud_django.static")
-                .joinpath("WorkflowPolicy-schema.json")
-                .read_text()
-            ),
-            context_func=lambda: (
-                importlib.resources.files("scrud_django.static")
-                .joinpath("WorkflowPolicy-ld.json")
-                .read_text()
-            ),
+            **_WORKFLOW_POLICY_TYPE, build_urls=False
         )
         WORKFLOW_POLICY_RESOURCE_TYPE_ = WORKFLOW_POLICY_REGISTRATION_.resource_type
     return WORKFLOW_POLICY_RESOURCE_TYPE_
@@ -795,6 +831,400 @@ def register_json_ld_context(context_func, previous_revision):
 def register_indexing_policy(indexing_policy_func, previous_revision):
     resource_type = register_indexing_policy_resource_type()
     return register_json_file(indexing_policy_func, previous_revision, resource_type)
+
+
+#: The media types a document type's resources are served as
+#: (`TypeSpec.document_media_type`): JSON Schema's and JSON-LD contexts'.
+#: ``scrud_django.ninja.negotiation.DOCUMENT_RENDERERS`` is keyed by them.
+DOCUMENT_MEDIA_TYPES: frozenset[str] = frozenset(
+    {"application/schema+json", "application/ld+json"}
+)
+DocumentMediaType = Literal["application/schema+json", "application/ld+json"]
+
+# What `ResourceTypeRegistration` takes to store a type of each kind but its
+# IRI and slug, which are the `TypeSpec`'s own: the arguments a spec may
+# hold (`TypeSpec._storage`)...
+_STORAGE_ARGUMENTS = {
+    "json": frozenset(
+        {
+            "revision",
+            "schema_resource",
+            "schema_func",
+            "schema_uri",
+            "context_resource",
+            "context_func",
+            "context_uri",
+            "indexing_policy_func",
+            "uses_reversion",
+            "register_service",
+        }
+    ),
+    "computed": frozenset({"schema_func", "context_func"}),
+}
+# ... and those every type of the kind is stored with. A computed type has
+# no list, so it is left out of the service catalog (the URL of each type's
+# list), and keeps no reversion history.
+_KIND_ARGUMENTS = {
+    "json": MappingProxyType({}),
+    "computed": MappingProxyType({"uses_reversion": False, "register_service": False}),
+}
+
+
+@dataclass(frozen=True)
+class _BuiltIn:
+    """A built-in type: what `ResourceTypeRegistration` takes to store it
+    (`arguments`), the function registering it through its module-level
+    cache, the global name of its cached registration and the media type of
+    its documents."""
+
+    arguments: Mapping[str, Any]
+    register: Callable[..., Any]
+    registration_name: str
+    document_media_type: str | None
+
+
+# The built-in types (`built_in_type_specs`), by slug.
+_BUILT_INS = MappingProxyType(
+    {
+        built_in.arguments["slug"]: built_in
+        for built_in in (
+            _BuiltIn(
+                _JSON_SCHEMA_TYPE,
+                register_json_schema_resource_type,
+                "JSON_SCHEMA_REGISTRATION_",
+                "application/schema+json",
+            ),
+            _BuiltIn(
+                _JSON_LD_TYPE,
+                register_json_ld_resource_type,
+                "JSON_LD_REGISTRATION_",
+                "application/ld+json",
+            ),
+            _BuiltIn(
+                _INDEXING_POLICY_TYPE,
+                register_indexing_policy_resource_type,
+                "INDEXING_POLICY_REGISTRATION_",
+                None,
+            ),
+            _BuiltIn(
+                _WORKFLOW_POLICY_TYPE,
+                workflow_policy_resource_type,
+                "WORKFLOW_POLICY_REGISTRATION_",
+                None,
+            ),
+        )
+    }
+)
+
+
+def _no_arguments() -> Mapping[str, Any]:
+    return MappingProxyType({})
+
+
+@dataclass(frozen=True, kw_only=True)
+class TypeSpec:
+    """A resource type as every front end registers it, without any of their
+    routes: its kind (``"json"``, stored; ``"computed"``), IRI, slug, hooks
+    (`options`: a computed type's, and only its, have a ``compute``) and
+    the media type its resources are served as when it is a document type
+    (one of `DOCUMENT_MEDIA_TYPES`: ``"application/schema+json"`` for JSON
+    Schema, ``"application/ld+json"`` for JSON-LD contexts; ``None``
+    otherwise, and always for a computed type). On ninja, the media type does
+    what the viewset class a DRF registration chooses
+    (``JsonSchemaViewSet``, ``JsonLdViewSet``) does.
+
+    Build one with `json_resource_type_spec`, `computed_resource_type_spec`
+    or `built_in_type_specs`, which also give it the rest of what
+    `ResourceTypeRegistration` takes to store it (its revision, schema,
+    context, ...): those are private, and its IRI and slug are always the
+    fields', so a spec derived with ``dataclasses.replace`` stores its row
+    where it records its hooks. A spec whose fields disagree (an unknown
+    kind, an empty or non-string slug or IRI, a computed type without
+    ``compute`` or a json one with it, a computed type with any hook but
+    its ``compute`` (its ``checks``, ``object_checks`` and ``content_filter``
+    would never be asked), another media type, a plain spec that reuses a
+    built-in type's IRI or slug, a built-in type with hooks, IRI or slug of
+    its own) is ``ImproperlyConfigured``. (A slug that is not one URL segment
+    is refused by the ninja ``api()`` alone: DRF takes, for example, a dotted
+    one.) `register` registers it. The DRF registrations
+    (`json_resource_type`, `computed_resource_type`,
+    `built_in_resource_type_urls`) register theirs with their own routes.
+
+    A spec the helper functions build is an instance of a private subclass
+    (``_BuiltTypeSpec``, which its ``repr`` shows) that carries those
+    private arguments; it compares equal only to specs built the same way
+    (with equal fields and arguments), never to a plain `TypeSpec` of the
+    same public fields."""
+
+    kind: Literal["json", "computed"]
+    resource_type_uri: str
+    slug: str
+    options: TypeOptions
+    document_media_type: DocumentMediaType | None
+    # The arguments `ResourceTypeRegistration` stores the type with but its
+    # IRI and slug (`_STORAGE_ARGUMENTS`), and whether it is a built-in type
+    # (`_BUILT_INS`, by slug), which registers through its module-level
+    # cache and records no hooks. Set by `_build` alone.
+    _storage: Mapping[str, Any] = field(
+        init=False, repr=False, hash=False, default_factory=_no_arguments
+    )
+    _built_in: bool = field(init=False, repr=False, default=False)
+
+    @classmethod
+    def _build(
+        cls,
+        *,
+        storage: Mapping[str, Any] = MappingProxyType({}),
+        built_in: bool = False,
+        **fields,
+    ) -> "TypeSpec":
+        """The spec of `fields` stored with `storage` (a built-in type's
+        when `built_in`): the constructor of `json_resource_type_spec`,
+        `computed_resource_type_spec` and `built_in_type_specs`."""
+        return _BuiltTypeSpec(**fields, _storage=storage, _built_in=built_in)
+
+    def __post_init__(self):
+        object.__setattr__(self, "_storage", MappingProxyType(dict(self._storage)))
+        name = f"TypeSpec({self.slug!r})"
+        if self.kind not in _STORAGE_ARGUMENTS:
+            raise ImproperlyConfigured(
+                f"{name}: its kind is 'json' or 'computed', not {self.kind!r}."
+            )
+        if not isinstance(self.slug, str) or not self.slug:
+            raise ImproperlyConfigured(
+                f"{name}: its slug is a non-empty string, not {self.slug!r}."
+            )
+        if not isinstance(self.resource_type_uri, str) or not self.resource_type_uri:
+            raise ImproperlyConfigured(
+                f"{name}: its resource_type_uri is a non-empty string, not "
+                f"{self.resource_type_uri!r}."
+            )
+        if not isinstance(self.options, TypeOptions):
+            raise ImproperlyConfigured(
+                f"{name}: its options are a TypeOptions, not {self.options!r}."
+            )
+        computed = self.kind == "computed"
+        if computed != (self.options.compute is not None):
+            raise ImproperlyConfigured(
+                f"{name}: a computed type, and only one, has options.compute."
+            )
+        if computed and self.options != TypeOptions(compute=self.options.compute):
+            raise ImproperlyConfigured(
+                f"{name}: a computed type's hooks are its compute alone: its "
+                "checks, object_checks and content_filter would never be asked."
+            )
+        if self.document_media_type is not None and (
+            computed or self.document_media_type not in DOCUMENT_MEDIA_TYPES
+        ):
+            raise ImproperlyConfigured(
+                f"{name}: a json type's document_media_type is one of "
+                f"{sorted(DOCUMENT_MEDIA_TYPES)} or None, a computed type's "
+                f"None, not {self.document_media_type!r}."
+            )
+        if not self._built_in:
+            for built_in in _BUILT_INS.values():
+                built_in_uri = built_in.arguments["resource_type_uri"]
+                built_in_slug = built_in.arguments["slug"]
+                if self.slug == built_in_slug or self.resource_type_uri == built_in_uri:
+                    raise ImproperlyConfigured(
+                        f"{name} ({self.resource_type_uri}): the built-in type "
+                        f"{built_in_uri} has the slug {built_in_slug!r}; only "
+                        "built_in_type_specs() describe it."
+                    )
+        unknown = set(self._storage) - _STORAGE_ARGUMENTS[self.kind]
+        if unknown:
+            raise ImproperlyConfigured(
+                f"{name}: a {self.kind} type is not stored with {sorted(unknown)}."
+            )
+        if self._built_in:
+            built_in = _BUILT_INS.get(self.slug)
+            if (
+                built_in is None
+                or computed
+                or self.resource_type_uri != built_in.arguments["resource_type_uri"]
+                or self.document_media_type != built_in.document_media_type
+                or self.options != TypeOptions()
+                or self._storage
+            ):
+                raise ImproperlyConfigured(
+                    f"{name}: a built-in type is registered as it is: it takes "
+                    "no hooks, nor another IRI, slug or media type."
+                )
+
+    def _registration_arguments(self) -> Mapping[str, Any]:
+        """What `ResourceTypeRegistration` takes to store the type: its IRI
+        and slug, with its kind's arguments and its own."""
+        if self._built_in:
+            return _BUILT_INS[self.slug].arguments
+        return {
+            **_KIND_ARGUMENTS[self.kind],
+            **self._storage,
+            "resource_type_uri": self.resource_type_uri,
+            "slug": self.slug,
+        }
+
+    def _register_row(self, force=False) -> "ResourceTypeRegistration":
+        """Store the type's row (`ResourceTypeRegistration`): a built-in
+        type's through its module-level cache, registered again when
+        `force`."""
+        if self._built_in:
+            built_in = _BUILT_INS[self.slug]
+            built_in.register(force=force)
+            return globals()[built_in.registration_name]
+        return ResourceTypeRegistration(
+            **self._registration_arguments(), build_urls=False
+        )
+
+    def register(self, *, urls_func: Callable[[str], list] | None = None) -> list:
+        """Register the type: record its hooks (`register_type_options`,
+        replacing any registered for its IRI before; a different set logs a
+        warning; not for a built-in type), then store its row and add it to
+        the service catalog (unless `register_service` is false),
+        in a transaction on `type_db` (`register_or_defer`: on a database
+        error the registration is left pending, and retried when the type
+        is next read). Nothing of a front end is built here.
+
+        Returns its routes, ``urls_func(slug)`` (built when it registers, or
+        when its registration is deferred), or ``[]`` without `urls_func`."""
+        return _register_type(
+            self.resource_type_uri,
+            self.slug,
+            None if self._built_in else self.options,
+            self._register_row,
+            register_service=self._registration_arguments().get(
+                "register_service", True
+            ),
+            urls_func=urls_func,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class _BuiltTypeSpec(TypeSpec):
+    """A `TypeSpec` built by `TypeSpec._build`. Its private fields are
+    arguments of its constructor (not of `TypeSpec`'s), so that
+    ``dataclasses.replace``, which builds the derived spec with the
+    constructor of the spec's class, carries them over."""
+
+    _storage: Mapping[str, Any] = field(
+        repr=False, hash=False, default_factory=_no_arguments
+    )
+    _built_in: bool = field(repr=False, default=False)
+
+
+def _register_type(
+    resource_type_uri, slug, options, register_row, *, register_service, urls_func
+):
+    """Register the type `resource_type_uri` (`TypeSpec.register`): record
+    its hooks `options` (unless ``None``), then store its row with
+    `register_row`, ``(force=False) -> ResourceTypeRegistration``
+    (`register_or_defer`, which retries it with ``force=True``). Returns
+    ``urls_func(slug)``, or ``[]`` without `urls_func`."""
+    if options is not None:
+        register_type_options(resource_type_uri, options, slug=slug)
+
+    def urls(slug, viewset_class=None):
+        return [] if urls_func is None else urls_func(slug)
+
+    def register():
+        registered = register_row()
+        registered.urls = urls(slug)
+        return registered
+
+    return register_or_defer(
+        register,
+        resource_type_uri,
+        slug,
+        None,
+        register_service=register_service,
+        # A retry registers the type again rather than return a built-in
+        # one cached: one registered (as another type's document type) in
+        # a transaction that was then rolled back is cached but not
+        # stored. It builds no routes: they were returned at the first
+        # try.
+        retry=functools.partial(register_row, force=True),
+        urls_func=urls,
+    )
+
+
+def json_resource_type_spec(
+    resource_type_uri: str,
+    slug: str,
+    *,
+    revision: str = "1",
+    schema_resource: Resource | None = None,
+    schema_func=None,
+    schema_uri: str | None = None,
+    context_resource: Resource | None = None,
+    context_func=None,
+    context_uri: str | None = None,
+    indexing_policy_func=None,
+    uses_reversion: bool = True,
+    register_service: bool = True,
+    checks=(),
+    object_checks=(),
+    content_filter: bool = False,
+    document_media_type: DocumentMediaType | None = None,
+) -> TypeSpec:
+    """The `TypeSpec` of a stored json resource type, from the arguments of
+    `json_resource_type` (see it for the hooks; keyword-only here) but its
+    ``viewset_class`` and its ``indexing_policy_resource``, which it never
+    stored (``json-resource-type-indexing-policy`` in docs/follow-ups.md),
+    and its `document_media_type` (``None``: plain JSON; else one of
+    `DOCUMENT_MEDIA_TYPES`, ``ImproperlyConfigured`` for another)."""
+    for name, hook in (
+        ("schema_func", schema_func),
+        ("context_func", context_func),
+        ("indexing_policy_func", indexing_policy_func),
+    ):
+        if hook is not None and not callable(hook):
+            raise TypeError(
+                f"json_resource_type_spec({slug!r}): {name} is not callable"
+            )
+    return TypeSpec._build(
+        kind="json",
+        resource_type_uri=resource_type_uri,
+        slug=slug,
+        options=TypeOptions(
+            checks=tuple(checks),
+            object_checks=tuple(object_checks),
+            content_filter=content_filter,
+        ),
+        document_media_type=document_media_type,
+        storage={
+            "revision": revision,
+            "schema_resource": schema_resource,
+            "schema_func": schema_func,
+            "schema_uri": schema_uri,
+            "context_resource": context_resource,
+            "context_func": context_func,
+            "context_uri": context_uri,
+            "indexing_policy_func": indexing_policy_func,
+            "uses_reversion": uses_reversion,
+            "register_service": register_service,
+        },
+    )
+
+
+def computed_resource_type_spec(
+    resource_type_uri: str, slug: str, schema_func, context_func, *, compute
+) -> TypeSpec:
+    """The `TypeSpec` of a computed, read-only resource type (see
+    `computed_resource_type`), whose content is `compute`, ``(request, key)
+    -> Mapping`` (``ImproperlyConfigured`` for ``compute=None``,
+    ``TypeError`` for one that is not callable; leaving it out is a
+    ``TypeError`` too, as it is a required keyword)."""
+    if compute is None:
+        raise ImproperlyConfigured(
+            f"computed_resource_type_spec({slug!r}) needs compute=."
+        )
+    return TypeSpec._build(
+        kind="computed",
+        resource_type_uri=resource_type_uri,
+        slug=slug,
+        options=TypeOptions(compute=compute),
+        document_media_type=None,
+        storage={"schema_func": schema_func, "context_func": context_func},
+    )
 
 
 def json_resource_type(
@@ -851,42 +1281,31 @@ def json_resource_type(
     """
     from scrud_django import views
 
-    register_type_options(
+    # Not stored, as it never was (``json-resource-type-indexing-policy`` in
+    # docs/follow-ups.md).
+    del indexing_policy_resource
+    spec = json_resource_type_spec(
         resource_type_uri,
-        TypeOptions(
-            checks=tuple(checks),
-            object_checks=tuple(object_checks),
-            content_filter=content_filter,
-        ),
-        slug=slug,
+        slug,
+        revision=revision,
+        schema_resource=schema_resource,
+        schema_func=schema_func,
+        schema_uri=schema_uri,
+        context_resource=context_resource,
+        context_func=context_func,
+        context_uri=context_uri,
+        indexing_policy_func=indexing_policy_func,
+        uses_reversion=uses_reversion,
+        register_service=register_service,
+        checks=checks,
+        object_checks=object_checks,
+        content_filter=content_filter,
     )
     viewset_class = viewset_class or views.ResourceViewSet
     if content_filter:
         viewset_class = content_filtered_viewset(viewset_class)
-
-    def register():
-        return ResourceTypeRegistration(
-            resource_type_uri,
-            revision,
-            slug=slug,
-            schema_resource=schema_resource,
-            schema_func=schema_func,
-            schema_uri=schema_uri,
-            context_resource=context_resource,
-            context_func=context_func,
-            context_uri=context_uri,
-            viewset_class=viewset_class,
-            indexing_policy_func=indexing_policy_func,
-            uses_reversion=uses_reversion,
-            register_service=register_service,
-        )
-
-    return register_or_defer(
-        register,
-        resource_type_uri,
-        slug,
-        viewset_class,
-        register_service=register_service,
+    return spec.register(
+        urls_func=functools.partial(resource_type_urls, viewset_class=viewset_class)
     )
 
 
@@ -942,29 +1361,33 @@ def computed_resource_type(
         raise ImproperlyConfigured(
             f"computed_resource_type({slug!r}) needs compute= or viewset_class=."
         )
-    register_type_options(resource_type_uri, TypeOptions(compute=compute), slug=slug)
     viewset_class = viewset_class or ComputedResourceViewSet
-
-    def register():
-        registration = ResourceTypeRegistration(
-            resource_type_uri,
-            slug=slug,
-            schema_func=schema_func,
-            context_func=context_func,
-            viewset_class=viewset_class,
-            uses_reversion=False,
-            register_service=False,
+    urls_func = functools.partial(computed_urls, viewset_class=viewset_class)
+    if compute is not None:
+        spec = computed_resource_type_spec(
+            resource_type_uri, slug, schema_func, context_func, compute=compute
         )
-        registration.urls = computed_urls(slug, viewset_class)
-        return registration
+        return spec.register(urls_func=urls_func)
+    # Its `viewset_class` computes the content: it has no `TypeSpec` (whose
+    # computed type has a ``compute``), and records no hooks but empty ones.
+    arguments = {
+        **_KIND_ARGUMENTS["computed"],
+        "resource_type_uri": resource_type_uri,
+        "slug": slug,
+        "schema_func": schema_func,
+        "context_func": context_func,
+    }
 
-    return register_or_defer(
-        register,
+    def register_row(force=False):
+        return ResourceTypeRegistration(**arguments, build_urls=False)
+
+    return _register_type(
         resource_type_uri,
         slug,
-        viewset_class,
+        TypeOptions(),
+        register_row,
         register_service=False,
-        urls_func=computed_urls,
+        urls_func=urls_func,
     )
 
 
@@ -977,6 +1400,50 @@ def computed_urls(slug, viewset_class):
     return [path(f'{slug}/<str:slug>/', detail, name=name)]
 
 
+#: The route name prefixes of scoped-rbac's lists, by model: DRF's
+#: (``scoped_rbac.urls``), then its ninja router's (``scoped_rbac.ninja.api``).
+ROLE_LIST_ROUTES = MappingProxyType(
+    {
+        "Role": ("role", "scoped-rbac-role"),
+        "RoleAssignment": ("roleassignment", "scoped-rbac-roleassignment"),
+    }
+)
+
+
+def register_role_services():
+    """Add scoped-rbac's roles and role assignments to the service catalog
+    (by their collection type URIs), each on the front end serving the
+    request (`ROLE_LIST_ROUTES`): ``scrud_django.urls`` and the ninja API
+    (``scrud_django.ninja.api``), which mount them, both call it."""
+    from scoped_rbac.models import Role, RoleAssignment
+
+    from scrud_django import collection_type_uri_for
+
+    for model in (Role, RoleAssignment):
+        services.add_service(
+            collection_type_uri_for(model.resource_type.iri),
+            ROLE_LIST_ROUTES[model.__name__],
+        )
+
+
+def built_in_type_specs():
+    """The `TypeSpec`s of the built-in resource types: JSON Schema and JSON-LD
+    context documents, indexing policies and workflow policies. Each
+    registers through its module-level cache (`register_json_schema_resource_type`
+    and the others), and records no hooks."""
+    return [
+        TypeSpec._build(
+            kind="json",
+            resource_type_uri=built_in.arguments["resource_type_uri"],
+            slug=slug,
+            options=TypeOptions(),
+            document_media_type=built_in.document_media_type,
+            built_in=True,
+        )
+        for slug, built_in in _BUILT_INS.items()
+    ]
+
+
 def built_in_resource_type_urls():
     """The routes of the built-in resource types (JSON Schema, JSON-LD
     context, indexing policy and workflow policy documents), each registered
@@ -984,57 +1451,15 @@ def built_in_resource_type_urls():
     (`register_or_defer`). ``scrud_django.urls`` serves them."""
     from scrud_django import views
 
-    def registered(register_type, registration_name):
-        def register(force=False):
-            register_type(force=force)
-            return globals()[registration_name]
-
-        return register
-
-    built_in = (
-        (
-            register_json_schema_resource_type,
-            "JSON_SCHEMA_REGISTRATION_",
-            "http://json-schema.org/draft-04/schema",
-            "json-schema",
-            views.JsonSchemaViewSet,
-        ),
-        (
-            register_json_ld_resource_type,
-            "JSON_LD_REGISTRATION_",
-            "http://www.w3.org/ns/json-ld#context",
-            "json-ld",
-            views.JsonLdViewSet,
-        ),
-        (
-            register_indexing_policy_resource_type,
-            "INDEXING_POLICY_REGISTRATION_",
-            "http://api.openteams.com/json-ld/IndexingPolicy",
-            "indexing-policies",
-            views.ResourceViewSet,
-        ),
-        (
-            workflow_policy_resource_type,
-            "WORKFLOW_POLICY_REGISTRATION_",
-            WORKFLOW_POLICY_TYPE_URI,
-            "workflow-policies",
-            views.ResourceViewSet,
-        ),
-    )
+    viewsets = {"json-schema": views.JsonSchemaViewSet, "json-ld": views.JsonLdViewSet}
     urls = []
-    for register_type, registration_name, type_uri, slug, viewset_class in built_in:
-        register = registered(register_type, registration_name)
+    for spec in built_in_type_specs():
+        viewset_class = viewsets.get(spec.slug, views.ResourceViewSet)
         urls.extend(
-            register_or_defer(
-                register,
-                type_uri,
-                slug,
-                viewset_class,
-                # A retry registers the type again rather than return the
-                # one cached: one registered (as another type's document
-                # type) in a transaction that was then rolled back is cached
-                # but not stored.
-                retry=functools.partial(register, force=True),
+            spec.register(
+                urls_func=functools.partial(
+                    resource_type_urls, viewset_class=viewset_class
+                )
             )
         )
     return urls

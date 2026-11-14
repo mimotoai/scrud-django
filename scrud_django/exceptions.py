@@ -151,6 +151,12 @@ class ScrudException(Exception):
     type: str | None = None
     title: str | None = None
     instance: str | None = None
+    # Whether it stands for an error the DRF routes answer through scoped-rbac's
+    # exception handler rather than scrud's own: while uniform errors are on, a
+    # problem carrying scoped-rbac's problem-details Links
+    # (``scoped_rbac.problems.PROBLEM_LINKS``); off, DRF's native body
+    # (`native_response_data`) as ``application/json``.
+    problem_links: bool = False
 
     def __init__(self, message=None):
         if message is None:
@@ -231,6 +237,34 @@ class QueryParameterError(ScrudException):
         data = super().response_data(context)
         data["errors"] = self.errors
         return data
+
+
+class ContentFilterError(QueryParameterError):
+    """A list's query parameters that cannot filter it, raised by
+    `scrud_django.core.lists.content_filtered`, as the DRF list route answers
+    them: its filter (``scrud_django.filters.ResourceContentFilter``) raises
+    DRF's ``ValidationError`` of ``errors`` (code ``invalid``), which
+    scoped-rbac's handler answers. While uniform errors are on, a validation
+    problem (`response_data`: each message the canonical one of ``invalid``)
+    with scoped-rbac's problem-details Links; off, DRF's native body
+    (`native_response_data`) as ``application/json``."""
+
+    problem_links = True
+
+    def response_data(self, context):
+        from scoped_rbac.problems import validation_problem
+
+        return validation_problem(
+            {
+                key: [("invalid", None) for _ in messages]
+                for key, messages in self.errors.items()
+            }
+        )
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off: each parameter's
+        messages."""
+        return {key: list(messages) for key, messages in self.errors.items()}
 
 
 class RbacContextInvalidError(ScrudException):
@@ -727,11 +761,26 @@ class RequestBodyNotAnObjectError(ScrudException):
     status_code = 400
     default_detail = "Invalid input."
     default_code = "invalid"
+    problem_links = True
+
+    #: The message of the serializer's error (``SerializerMixin.to_internal_value``).
+    native_message = "Expected a JSON object."
 
     def response_data(self, context):
         from scoped_rbac.problems import validation_problem
 
         return validation_problem({"": [("invalid", None)]})
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off: its serializer's
+        non-field error."""
+        try:
+            from rest_framework.settings import api_settings
+        except ImportError:  # pragma: no cover - DRF is installed in the tests
+            key = "non_field_errors"
+        else:
+            key = api_settings.NON_FIELD_ERRORS_KEY
+        return {key: [self.native_message]}
 
 
 class ResourceInUseError(ScrudException):
@@ -787,14 +836,21 @@ class StoredPolicyReference:
         self.resource = resource
 
     def url(self, request=None):
-        try:
-            path = reverse(
-                self.resource.resource_type.route_name_detail(),
-                args=[self.resource.pk],
-            )
-        except NoReverseMatch:
-            return None
-        return request.build_absolute_uri(path) if request is not None else path
+        """The policy's detail URL (absolute given a `request`), on the API
+        serving `request`: within the URL namespace it was resolved under (a
+        ninja API's ``urls_namespace``) first, as `core.urls.absolute_reverse`
+        links, else by the route's global name (the DRF routes'). ``None``
+        when neither reverses."""
+        name = self.resource.resource_type.route_name_detail()
+        match = getattr(request, "resolver_match", None)
+        namespace = getattr(match, "namespace", "")
+        for candidate in [f"{namespace}:{name}", name] if namespace else [name]:
+            try:
+                path = reverse(candidate, args=[self.resource.pk])
+            except NoReverseMatch:
+                continue
+            return request.build_absolute_uri(path) if request is not None else path
+        return None
 
     def __repr__(self):
         return f"StoredPolicyReference(pk={self.resource.pk!r})"

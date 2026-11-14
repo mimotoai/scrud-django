@@ -19,10 +19,13 @@ do for an ``IsAuthorized`` that overrides ``contexts_for``.
 """
 
 import hashlib
+import json
+import math
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from django.core.paginator import Paginator
 from django.db import connections
@@ -39,6 +42,8 @@ from django.db.models import (
 )
 from django.db.models.fields.json import KeyTransform
 from django.http import QueryDict
+from django.utils.encoding import force_str
+from django.utils.http import quote_etag as quote_django_etag
 from scoped_rbac import access
 from scoped_rbac.conf import conditional_list_max_rows
 from scoped_rbac.policy import Permission
@@ -66,12 +71,37 @@ from scrud_django.core.requirements import (
     require_stored_contexts,
 )
 from scrud_django.core.types import type_options
-from scrud_django.exceptions import QueryParameterError
+from scrud_django.core.urls import absolute_reverse
+from scrud_django.exceptions import ContentFilterError
+from scrud_django.headers import get_link_header_for
 from scrud_django.models import Resource, ResourceContext
 from scrud_django.rows import unsorted
+from scrud_django.utils import http_date_for
 
 # The preconditions a POST to a list evaluates (`evaluate_list_preconditions`).
 LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
+
+# The paging rules of a list, as the DRF paginator
+# (`scrud_django.paginations.StandardResultsSetPagination`) has them: the
+# query parameters naming the page and its size, the size of a page that
+# names none (or not a positive integer) and the largest size, and the page
+# names standing for the last page.
+PAGE_PARAMETER = "page"
+PAGE_SIZE_PARAMETER = "page_size"
+DEFAULT_PAGE_SIZE = 100
+MAX_PAGE_SIZE = 1000
+LAST_PAGE_STRINGS = ("last",)
+
+# DRF's format override (``URL_FORMAT_OVERRIDE``'s default), which a list is
+# not filtered on.
+FORMAT_PARAMETER = "format"
+
+# The query parameters that select the UI's presentation (``scrud_django.ui``:
+# the branch and its confirmation, the scope chain, the mode and safe mode),
+# never content (`ui_parameters`).
+UI_PARAMETERS = frozenset(
+    {"ui-branch", "ui-branch-confirm", "ui-scope", "ui-mode", "ui-safe"}
+)
 
 # A query parameter that names an integer: a JSON path reads it as an array
 # index, so it cannot name a key of a resource's content (an object).
@@ -252,7 +282,8 @@ def content_filtered(queryset, params: QueryDict, *, ignored: frozenset[str]):
     key, never a lookup. All values of a repeated parameter must match. A key
     that is an integer (a JSON path reads it as an array index), or a NUL
     character in a key or a value (PostgreSQL text cannot hold one), is a
-    `QueryParameterError` (400) naming every such parameter."""
+    `ContentFilterError` (a ``QueryParameterError``, 400, answered as the DRF
+    list route answers it) naming every such parameter."""
     filters = [(key, values) for key, values in params.lists() if key not in ignored]
     errors = {}
     for key, values in filters:
@@ -262,7 +293,7 @@ def content_filtered(queryset, params: QueryDict, *, ignored: frozenset[str]):
         elif _INTEGER.match(key):
             errors[key] = ["An integer is not a content key a list can be filtered on."]
     if errors:
-        raise QueryParameterError(errors)
+        raise ContentFilterError(errors)
     for index, (key, values) in enumerate(filters):
         alias = f"_scrud_content_filter_{index}"
         queryset = queryset.alias(**{alias: KeyTransform(key, "content")})
@@ -277,7 +308,7 @@ def list_queryset(
     params: QueryDict,
     *,
     requirement: Requirement | Sequence,
-    ignored: frozenset[str] = frozenset(),
+    ignored: frozenset[str] | None = None,
     using: str | None = None,
 ) -> QuerySet[Resource]:
     """The list of `resource_type` `request`'s user gets, as the DRF list
@@ -285,8 +316,9 @@ def list_queryset(
     `requirement` and `using` as it takes them), then, when the type's
     ``TypeOptions.content_filter`` is set (`scrud_django.core.types.type_options`
     of its ``type_uri``), filtered on the query parameters `params` but those
-    `ignored` (`content_filtered`, the pagination parameters, the format
-    override and the UI's, the caller's; a `QueryParameterError` for a
+    `ignored` (`content_filtered`; by default, for ``None``, those the list
+    routes ignore, `ignored_list_parameters`: the pagination parameters, the
+    format override and the UI's; a `QueryParameterError` for a
     parameter that cannot be a content key), ordered by
     ``Resource.Meta.ordering``. Page it with `page_of`.
 
@@ -298,9 +330,37 @@ def list_queryset(
             f"list_queryset lists for a GET or HEAD, not a {request.method}"
         )
     queryset = readable_queryset(request, resource_type, requirement, using=using)
+    return _listed(queryset, resource_type, params, ignored)
+
+
+def _listed(queryset, resource_type, params, ignored):
+    """`queryset` filtered on `params` but those `ignored` (for ``None``,
+    `ignored_list_parameters`) when `resource_type`'s
+    ``TypeOptions.content_filter`` is set, in the list's order."""
+    if ignored is None:
+        ignored = ignored_list_parameters()
     if type_options(resource_type.type_uri).content_filter:
         queryset = content_filtered(queryset, params, ignored=ignored)
     return queryset.order_by(*Resource._meta.ordering)
+
+
+def ui_parameters() -> frozenset[str]:
+    """The UI's presentation parameters (`UI_PARAMETERS`) when
+    ``scrud_django.ui`` is installed, which a list is not filtered on; empty
+    without it."""
+    from scrud_django.ui import is_enabled
+
+    return UI_PARAMETERS if is_enabled() else frozenset()
+
+
+def ignored_list_parameters() -> frozenset[str]:
+    """The query parameters a list is not filtered on (`list_queryset`'s
+    ``ignored``), as the DRF list route ignores them: its paging, DRF's format
+    override and the UI's (`ui_parameters`)."""
+    return (
+        frozenset({PAGE_PARAMETER, PAGE_SIZE_PARAMETER, FORMAT_PARAMETER})
+        | ui_parameters()
+    )
 
 
 def rows_by_keys(queryset, keys: Sequence) -> list[Resource]:
@@ -326,11 +386,175 @@ def page_of(queryset, *, number: int, size: int) -> tuple[list[Resource], int]:
     (error 1038); elsewhere the queryset is sliced."""
     if size < 1:
         raise ValueError(f"A page holds at least one row, not {size}.")
+    rows, page = _paged(queryset, size, lambda paginator: number)
+    return rows, page.paginator.count
+
+
+def _paged(queryset, size, number_of):
+    """The rows of the page of `queryset` numbered ``number_of(paginator)``
+    (the Django ``Paginator`` of `size` rows), and that ``Page`` (`page_of`)."""
     if connections[queryset.db].vendor != "mysql":
-        page = Paginator(queryset, size).page(number)
-        return list(page.object_list), page.paginator.count
-    page = Paginator(queryset.values_list("pk", flat=True), size).page(number)
-    return rows_by_keys(queryset, list(page.object_list)), page.paginator.count
+        paginator = Paginator(queryset, size)
+        page = paginator.page(number_of(paginator))
+        return list(page.object_list), page
+    paginator = Paginator(queryset.values_list("pk", flat=True), size)
+    page = paginator.page(number_of(paginator))
+    return rows_by_keys(queryset, list(page.object_list)), page
+
+
+def page_size_of(
+    params: QueryDict,
+    *,
+    param: str | None = PAGE_SIZE_PARAMETER,
+    default: int | None = DEFAULT_PAGE_SIZE,
+    maximum: int | None = MAX_PAGE_SIZE,
+) -> int | None:
+    """The size of the page the query parameters `params` ask for, as DRF's
+    ``PageNumberPagination.get_page_size`` reads it (by default with the
+    list's rules; a paginator passes its own ``page_size_query_param``,
+    ``page_size`` and ``max_page_size``): `param` (its last value) when it
+    is a positive integer, at most `maximum` (unless ``None``); else
+    `default`, as for no `param`."""
+    if not param:
+        return default
+    try:
+        size = int(params[param])
+    except (KeyError, ValueError):
+        return default
+    if size < 1:
+        return default
+    return min(size, maximum) if maximum else size
+
+
+def page_number_of(
+    params: QueryDict,
+    paginator: Paginator,
+    *,
+    param: str = PAGE_PARAMETER,
+    last: Sequence[str] = LAST_PAGE_STRINGS,
+):
+    """The page the query parameters `params` ask for, as DRF's
+    ``PageNumberPagination.get_page_number`` reads it (by default with the
+    list's names; a paginator passes its own ``page_query_param`` and
+    ``last_page_strings``): `param` (its last value; 1 when absent or
+    empty), the number of `paginator`'s last page for one of `last`. The
+    ``Paginator`` validates it (a page that is not a number is
+    ``PageNotAnInteger``, one out of range ``EmptyPage``)."""
+    number = params.get(param) or 1
+    if number in last:
+        return paginator.num_pages
+    return number
+
+
+@dataclass(frozen=True)
+class ListPage:
+    """A page of a list (`requested_page`): its `items` (kept as a tuple),
+    the `count` of the list's rows, its `number` (from 1) and its `size`
+    (at least 1). Any other `number`, `size` or a negative `count` is a
+    ``ValueError``."""
+
+    items: Sequence[Resource]
+    count: int
+    number: int
+    size: int
+
+    def __post_init__(self):
+        object.__setattr__(self, "items", tuple(self.items))
+        if self.size < 1:
+            raise ValueError(f"A page holds at least one row, not {self.size}.")
+        if self.number < 1:
+            raise ValueError(f"Pages are numbered from 1, not {self.number}.")
+        if self.count < 0:
+            raise ValueError(f"A list counts no fewer than 0 rows, not {self.count}.")
+
+    @property
+    def page_count(self) -> int:
+        """The list's number of pages of `size` rows: 0 for an empty list."""
+        return math.ceil(self.count / self.size)
+
+    @property
+    def has_next(self) -> bool:
+        return self.number < max(self.page_count, 1)
+
+    @property
+    def has_previous(self) -> bool:
+        return self.number > 1
+
+
+def requested_page(queryset, params: QueryDict) -> ListPage:
+    """The page of `queryset` (`list_queryset`'s, ordered) the query
+    parameters `params` ask for, as the DRF list route pages it
+    (`page_size_of`, `page_number_of`, read as `page_of` reads a page). A
+    page that is not one of the list's (not a number, below 1 or past the
+    last; an empty list has one, empty, page) raises
+    ``django.core.paginator.InvalidPage``, which the DRF route answers 404
+    ``"Invalid page."``."""
+    # The list's default size, so never ``None``.
+    size = page_size_of(params) or DEFAULT_PAGE_SIZE
+    rows, page = _paged(
+        queryset, size, lambda paginator: page_number_of(params, paginator)
+    )
+    return ListPage(
+        items=rows, count=page.paginator.count, number=page.number, size=size
+    )
+
+
+def page_url(request, number: int, *, param: str = PAGE_PARAMETER) -> str:
+    """The URL of page `number` of the list `request` asked for, as DRF's
+    ``PageNumberPagination`` links the next and previous pages: `request`'s
+    absolute URL with the page parameter `param` (by default the list's; a
+    paginator passes its ``page_query_param``) set to `number` (left out for
+    page 1), the query parameters sorted; under a published branch's prefix
+    (``request.scrud_ui_mount``, ``scrud_django.ui``'s ``Mount``), the API's
+    URL."""
+    scheme, netloc, path, query, fragment = urlsplit(
+        force_str(request.build_absolute_uri())
+    )
+    params = parse_qs(query, keep_blank_values=True)
+    if number == 1:
+        params.pop(param, None)
+    else:
+        params[force_str(param)] = [force_str(number)]
+    query = urlencode(sorted(params.items()), doseq=True)
+    url = urlunsplit((scheme, netloc, path, query, fragment))
+    mount = getattr(request, "scrud_ui_mount", None)
+    return mount.canonical(url) if mount is not None else url
+
+
+def resource_envelope(request, resource_type, obj: Resource) -> dict:
+    """The envelope of `obj` (of `resource_type`) in a list's ``content``, as
+    the DRF list serializes it: its absolute URL (``href``, its detail route
+    within the URL namespace `request` was resolved under), ``last_modified``
+    (an HTTP date), its quoted ``etag``, its ``link`` (the Link field value
+    of its schema and JSON-LD context) and its ``content``."""
+    content = obj.content
+    if isinstance(content, str):
+        content = json.loads(content)
+    return {
+        "href": absolute_reverse(
+            resource_type.route_name_detail(), args=[obj.pk], request=request
+        ),
+        "last_modified": http_date_for(obj.modified_at),
+        "etag": quote_django_etag(obj.etag),
+        "link": get_link_header_for(resource_type, request),
+        "content": content,
+    }
+
+
+def list_body(request, resource_type, page: ListPage) -> dict:
+    """The body of the list `request` asked for whose page is `page`, as the
+    DRF list route answers it: ``count``, ``page_count``, the ``next`` and
+    ``previous`` pages' URLs (`page_url`, ``None`` at either end) and the
+    page's envelopes (`resource_envelope`) as ``content``."""
+    return {
+        "count": page.count,
+        "page_count": page.page_count,
+        "next": page_url(request, page.number + 1) if page.has_next else None,
+        "previous": page_url(request, page.number - 1) if page.has_previous else None,
+        "content": [
+            resource_envelope(request, resource_type, obj) for obj in page.items
+        ],
+    }
 
 
 def list_etag(
@@ -383,6 +607,70 @@ def list_last_modified(
     newest = queryset.aggregate(newest=Max("modified_at"))["newest"]
     removed = readable_removal(request, requirement, resource_type, queryset.db)
     return latest(newest, removed)
+
+
+def list_validators(
+    request, resource_type, queryset, page: ListPage, requirement
+) -> tuple[str, datetime | None]:
+    """The ``(etag, last_modified)`` of the list `request` (a GET or HEAD, or
+    the GET copy of a POST, `as_get`) gets: `list_etag` of `page` (of
+    `queryset`, the list) and `request`'s query parameters, and
+    `list_last_modified` of `queryset` with `requirement`."""
+    etag = list_etag(
+        resource_type,
+        items=page.items,
+        count=page.count,
+        query=sorted(request.GET.lists()),
+    )
+    return etag, list_last_modified(request, resource_type, queryset, requirement)
+
+
+def create_list_validators(
+    request,
+    resource_type,
+    *,
+    requirement: Requirement | Sequence,
+    ignored: frozenset[str] | None = None,
+    using: str | None = None,
+) -> tuple[str, datetime | None]:
+    """The list's validators (`list_validators`) against which the
+    preconditions of POST `request` to the list are evaluated
+    (`evaluate_list_preconditions`): of the list as the requester would GET
+    it from the POST's URL (its query parameters filtering and paging it,
+    `ignored` as `list_queryset` takes it), read on database `using` (the
+    create's, under its `scrud_django.core.writes.conditional_create_lock`),
+    as the DRF route reads them (``ListValidatorsMixin.create_list_validators``):
+    `readable_queryset` of the POST, which lists as its GET copy without the
+    list grant (the create's own request check governs it). A page that is
+    not one of the list's raises ``django.core.paginator.InvalidPage`` (404
+    on DRF), as the GET would."""
+    queryset = readable_queryset(request, resource_type, requirement, using=using)
+    queryset = _listed(queryset, resource_type, request.GET, ignored)
+    page = requested_page(queryset, request.GET)
+    return list_validators(as_get(request), resource_type, queryset, page, requirement)
+
+
+def evaluate_list_read_preconditions(
+    method: str,
+    headers,
+    *,
+    etag: str,
+    last_modified: datetime | None,
+) -> ConditionalResult | None:
+    """The failed preconditions of a GET or HEAD of a list, or ``None`` to
+    go on, as scrudful evaluates them on the DRF list route: every
+    precondition of RFC 9110 §13.2.2 (``If-Match``, ``If-Unmodified-Since``,
+    ``If-None-Match``, ``If-Modified-Since``; a 304, a 412, or a 400 for a
+    malformed one) with ``scrudful.conditional.evaluate_preconditions``,
+    against the list's `etag` (unquoted) and `last_modified`
+    (`list_validators`). Rendering the result is the caller's."""
+    return evaluate_preconditions(
+        method,
+        headers,
+        etag=quote_etag(etag),
+        last_modified=http_timestamp(aware(last_modified)),
+        require_precondition=True,
+    )
 
 
 def has_list_preconditions(headers):
