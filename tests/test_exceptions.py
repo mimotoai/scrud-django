@@ -322,3 +322,126 @@ def test_scrud_handler_body_for_a_resource_a_type_uses():
     assert body["used_by"] == [{"resource_type": "tests://ToDo", "as": "schema"}]
     assert "tests://ToDo" in body["detail"]
     assert Resource.objects.filter(pk=schema.pk).exists()
+
+
+@pytest.mark.django_db
+def test_scrud_error_under_drf_default_handler():
+    # An adopter's own DRF handler renders a scrud error: the body is the one
+    # recorded before scrud errors stopped being ``APIException``s.
+    reverse("todos-list")
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    with with_handler("rest_framework.views.exception_handler"):
+        response = client_for(admin).post(
+            reverse("todos-list"), dict(NOT_STARTED, title=5), format="json"
+        )
+    assert response.status_code == 400
+    assert response.content == b'{"detail":"data.title must be string"}'
+
+
+def test_scrud_error_is_not_api_exception():
+    from rest_framework.exceptions import APIException
+
+    from scrud_django.exceptions import as_drf
+
+    error = JsonValidationError(
+        fastjsonschema.JsonSchemaValueException(
+            "data must be object", value=5, name="data", rule="type"
+        )
+    )
+    assert not isinstance(error, APIException)
+    wrapped = as_drf(error)
+    assert isinstance(wrapped, APIException)
+    assert wrapped.detail.code == "json_invalid"
+    assert wrapped.status_code == 400
+    assert wrapped.scrud is error
+
+
+def test_scrud_error_full_details_are_drfs():
+    # A scrud error answers ``get_full_details`` as it did as an
+    # ``APIException``: its message and its code.
+    from scrud_django.exceptions import as_drf
+
+    error = JsonValidationError(
+        fastjsonschema.JsonSchemaValueException(
+            "data must be object", value=5, name="data", rule="type"
+        )
+    )
+    details = error.get_full_details()
+    assert details == {"message": "data must be object", "code": "json_invalid"}
+    assert details == as_drf(error).get_full_details()
+    assert isinstance(details["message"], ErrorDetail)
+    assert details["message"].code == "json_invalid"
+
+
+def test_drf_wrapper_class_is_defined_once_at_import():
+    # ``as_drf`` wraps every scrud error in the one ``ScrudAPIException``,
+    # defined when the module is imported, not on first use.
+    from rest_framework.exceptions import APIException
+
+    from scrud_django import exceptions
+
+    assert issubclass(exceptions.ScrudAPIException, APIException)
+    first = exceptions.as_drf(WorkflowPolicyInvalidError("first"))
+    second = exceptions.as_drf(
+        JsonValidationError(fastjsonschema.JsonSchemaValueException("x"))
+    )
+    assert type(first) is type(second) is exceptions.ScrudAPIException
+    assert not hasattr(exceptions, "_drf_scrud_class")
+
+
+def test_as_drf_without_drf_is_improperly_configured():
+    from unittest import mock
+
+    from django.core.exceptions import ImproperlyConfigured
+
+    from scrud_django import exceptions
+
+    with mock.patch.object(exceptions, "ScrudAPIException", None):
+        with pytest.raises(ImproperlyConfigured, match="Django REST framework"):
+            exceptions.as_drf(WorkflowPolicyInvalidError("x"))
+
+
+IMPORT_WITH = """
+import importlib.abc, sys
+
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name == "rest_framework" or name.startswith("rest_framework."):
+            raise {error}
+        return None
+
+sys.meta_path.insert(0, Blocker())
+import scrud_django.exceptions as exceptions
+print(exceptions.ScrudAPIException is None)
+"""
+
+
+@pytest.mark.parametrize(
+    "error, falls_back",
+    [
+        ('ModuleNotFoundError("absent", name="rest_framework")', True),
+        ('ModuleNotFoundError("absent", name=name)', True),
+        ('ModuleNotFoundError("absent", name="rest_framework_extra")', False),
+        ('ModuleNotFoundError("absent", name="yaml")', False),
+        ('ImportError("broken", name=name)', False),
+    ],
+)
+def test_only_drf_being_absent_selects_the_no_drf_branch(error, falls_back):
+    # Another import error (a DRF that fails to import, or a dependency of
+    # it missing) is raised, not taken for DRF being absent.
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [sys.executable, "-c", IMPORT_WITH.format(error=error)],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+    )
+    if falls_back:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "True"
+    else:
+        assert result.returncode != 0
+        assert "absent" in result.stderr or "broken" in result.stderr

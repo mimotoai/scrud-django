@@ -20,6 +20,32 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
   under DRF's `AllowAny` default; keep it that way (`tests/test_authz.py`).
 - The combined exception handler is `scrud_django.exceptions.scrud_exception_handler`.
 
+## Architecture
+
+Domain logic (authorization requirements, workflow checks, bodies, URLs, list
+queries, writes, reads) lives in `scrud_django/core/`, which is framework
+neutral: it takes a plain Django request and imports nothing from
+`rest_framework`, `django_filters`, `scrudful.rest_framework` or scoped-rbac's
+DRF modules (`tests/test_core_imports.py` holds the deny list). It does import
+`scrud_django.exceptions`, which loads `rest_framework.exceptions` when DRF is
+installed (a scrud error's detail is then DRF's `ErrorDetail`), and works
+without it. The DRF views and mixins are adapters: they delegate to `core`
+for the pieces they call (requirements and grants, the workflow check, body
+checks, list queries and validators, the save and post-save checks, URLs)
+and map its `ScrudException`s and access errors to DRF's
+(`exceptions.as_drf`, `drf_error`). The facade in `core/resources.py`
+(`load_for_read`, `object_readable`, `readable_content`, `allowed_methods`,
+`check_object`, `readable_queryset`, `validate_write`, `create`, `update`,
+`destroy`) is not called by DRF (which calls the unguarded
+`_readable_content` and `found_item`); only the `tests/test_core_*` modules
+pin it. Its functions that decide access by a requirement (`load_for_read`,
+`object_readable`, `readable_content`, `allowed_methods`, `check_object`,
+`create`, `update`, `destroy` without a `check`, and `core.writes`'
+`save_checked` without a `recheck`) refuse one that asks no grants
+(`ImproperlyConfigured`), an `AnyOf` with an option of hooks only included.
+Put new domain logic in `core`, not in a view; per-type hooks are
+`core.types.TypeOptions`.
+
 ## Commands
 
 Python 3.13 is pinned in `.python-version`; CI covers 3.11-3.13, not 3.14 (the

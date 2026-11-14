@@ -5,8 +5,12 @@ SCRUD-Django - Semantic Create, Read, Update and Delete Django application.
 import hashlib
 import json
 from importlib.metadata import PackageNotFoundError, version
+from urllib import parse
 
-from rest_framework.reverse import reverse
+from django.conf import settings
+from django.urls import NoReverseMatch
+from django.urls import reverse as django_reverse
+from django.utils.encoding import force_str
 
 try:
     __version__ = version("scrud-django")
@@ -14,6 +18,55 @@ except PackageNotFoundError:
     # Imported from a source tree that is not installed (e.g. a checkout on
     # PYTHONPATH): there is no distribution metadata to read the version from.
     __version__ = "0+unknown"
+
+
+def reverse(viewname, args=None, kwargs=None, request=None, format=None, **extra):
+    """DRF's ``rest_framework.reverse.reverse``, without importing DRF:
+    ``django.urls.reverse``, absolute when given a `request`; through the
+    request's versioning scheme when it has one (``request.versioning_scheme``,
+    which DRF's views set from ``DEFAULT_VERSIONING_CLASS``), falling back
+    to the plain route when the scheme cannot reverse it; and the request's
+    format override query parameter (``?format=``) kept."""
+    scheme = getattr(request, "versioning_scheme", None)
+    if scheme is not None:
+        try:
+            url = scheme.reverse(viewname, args, kwargs, request, format, **extra)
+        except NoReverseMatch:
+            # As DRF: a scheme that cannot reverse it falls back to the plain
+            # route.
+            url = _reverse(viewname, args, kwargs, request, format, **extra)
+    else:
+        url = _reverse(viewname, args, kwargs, request, format, **extra)
+    return _preserve_builtin_query_params(url, request)
+
+
+def _reverse(viewname, args=None, kwargs=None, request=None, format=None, **extra):
+    """DRF's ``_reverse``: ``django.urls.reverse`` (`format` as the route's
+    ``format`` keyword), absolute when given a `request`."""
+    if format is not None:
+        kwargs = kwargs or {}
+        kwargs["format"] = format
+    url = django_reverse(viewname, args=args, kwargs=kwargs, **extra)
+    if request:
+        return request.build_absolute_uri(url)
+    return url
+
+
+def _preserve_builtin_query_params(url, request=None):
+    """DRF's ``preserve_builtin_query_params``: `url` with `request`'s format
+    override query parameter (``REST_FRAMEWORK["URL_FORMAT_OVERRIDE"]``,
+    ``format`` by default) set to the request's value, the query's
+    parameters then sorted (DRF's ``replace_query_param``)."""
+    if request is None:
+        return url
+    param = getattr(settings, "REST_FRAMEWORK", {}).get("URL_FORMAT_OVERRIDE", "format")
+    if param and param in request.GET:
+        scheme, netloc, path, query, fragment = parse.urlsplit(force_str(url))
+        params = parse.parse_qs(query, keep_blank_values=True)
+        params[force_str(param)] = [force_str(request.GET[param])]
+        query = parse.urlencode(sorted(params.items()), doseq=True)
+        url = parse.urlunsplit((scheme, netloc, path, query, fragment))
+    return url
 
 
 class ScrudServices:

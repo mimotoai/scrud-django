@@ -23,7 +23,7 @@ class ScrudConfig(AppConfig):
             check_workflow_actions,
             check_write_routing,
         )
-        from scrud_django.permissions import authorized_transitions
+        from scrud_django.core.authz import authorized_transitions
 
         register_operator("scrud_workflow", authorized_transitions)
         checks.register(check_default_workflow_policies)

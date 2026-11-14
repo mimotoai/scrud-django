@@ -1,14 +1,11 @@
 import functools
-import hashlib
 import inspect
 from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
-from urllib.parse import urlencode
 
-import reversion
 from django.core.exceptions import FieldError, ImproperlyConfigured, ValidationError
-from django.db import DEFAULT_DB_ALIAS, router, transaction
-from django.db.models import Max, ProtectedError
+from django.db import DEFAULT_DB_ALIAS, router
+from django.db.models import Max
 from django.http import Http404
 from rest_framework import status
 from rest_framework.exceptions import NotAuthenticated, PermissionDenied
@@ -20,24 +17,51 @@ from scoped_rbac import access, problems
 from scoped_rbac.conditional import lock_collection
 from scoped_rbac.filters import RbacFilter
 from scoped_rbac.permissions import AccessAPIError, drf_error, view_permission
+from scoped_rbac.policy import Permission
 from scoped_rbac.rest import AccessControlledAPIView
-from scrudful._django import aware, conditional_response, precondition_headers
-from scrudful.conditional import (
-    evaluate_preconditions,
-    http_timestamp,
-    parse_etag_list,
-    parse_http_date,
-    quote_etag,
-)
+from scrudful._django import conditional_response, precondition_headers
+from scrudful.conditional import parse_etag_list
 from scrudful.rest_framework import ScrudfulViewFunc
 
 from scrud_django import ui
+from scrud_django.core import resources as core_resources
+from scrud_django.core import writes as core_writes
+from scrud_django.core.bodies import (
+    MARIADB_MAX_BODY_DEPTH,  # noqa: F401
+    MAX_BODY_DEPTH,  # noqa: F401
+    body_depth,  # noqa: F401
+    body_has_nul,  # noqa: F401
+    check_contexts,
+    check_depth,
+    check_nul,
+    check_present,
+    max_body_depth,  # noqa: F401
+)
+from scrud_django.core.bodies import check_body as core_check_body
+from scrud_django.core.lists import (  # noqa: F401  (re-exported)
+    LIST_PRECONDITIONS,
+    evaluate_list_preconditions,
+    has_list_preconditions,
+    latest,
+    list_validators_needed,
+)
+from scrud_django.core.lists import list_etag as core_list_etag
+from scrud_django.core.types import has_hooks, hook_leaf, type_options
+from scrud_django.core.workflow import authorizing_write
+from scrud_django.drf_requirements import (
+    NotNeutral,
+    ViewLeaf,
+    hook_leaves,
+    requirement_of,
+)
 from scrud_django.exceptions import (
-    RbacContextInvalidError,
-    RequestBodyMissingError,
-    RequestBodyNulError,
-    RequestBodyTooDeepError,
-    ResourceInUseError,
+    RbacContextInvalidError,  # noqa: F401  (re-exported)
+    RequestBodyMissingError,  # noqa: F401  (re-exported)
+    RequestBodyNulError,  # noqa: F401  (re-exported)
+    RequestBodyTooDeepError,  # noqa: F401  (re-exported)
+    ResourceInUseError,  # noqa: F401  (re-exported)
+    ScrudException,
+    as_drf,
 )
 from scrud_django.filters import (
     as_detail_read,
@@ -49,17 +73,20 @@ from scrud_django.filters import (
     readable_removal,
 )
 from scrud_django.headers import get_context_uri_for, get_schema_uri_for
-from scrud_django.mixins.resource_mixin import rbac_contexts_of
+from scrud_django.mixins.resource_mixin import rbac_contexts_of  # noqa: F401  (re-exported)
 from scrud_django.models import Resource
-from scrud_django.models.resource import MAX_CONTEXT_BYTES, context_fits
+from scrud_django.models.resource import (  # noqa: F401  (re-exported)
+    MAX_CONTEXT_BYTES,
+    context_fits,
+)
 from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.permissions import (
-    _checking_write,
+    _checking_write,  # noqa: F401  (re-exported)
     _not_checking_write,
-    _workflow_authorized,
+    _workflow_authorized,  # noqa: F401  (re-exported)
     checks_read_content,
     content_of,
-    may_act_in_context,
+    may_act_in_context,  # noqa: F401  (re-exported)
     reading_content,
     reads_each_context,
 )
@@ -68,11 +95,13 @@ from scrud_django.registration import (
     get_resource_type_for,
     lock_if_workflow_policy,
     type_db,
-    type_locked,
+    type_locked,  # noqa: F401  (re-exported)
     write_db,
 )
 from scrud_django.serializers import ResourceSerializer
-from scrud_django.validators import check_policy_is_unique
+from scrud_django.validators import (  # noqa: F401  (re-exported)
+    check_policy_is_unique,
+)
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     lock_workflow_policy_type,
@@ -90,9 +119,6 @@ LOCKED_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 TYPE_WRITE_METHODS = LOCKED_WRITE_METHODS | {"POST"}
 
 
-# The preconditions a POST to a list evaluates (`list_precondition_response`).
-LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
-
 # What a view records of the POST to its list it serves (`LockedWriteMixin`),
 # forgotten when it serves another: the list's validators read
 # (`create_list_validators`), whether the conditional create's lock is held,
@@ -106,12 +132,6 @@ _CREATE_STATE = (
 )
 
 
-def has_list_preconditions(headers):
-    """Whether `headers` (as ``precondition_headers`` gives them) carry a
-    precondition a POST to a list evaluates (`LIST_PRECONDITIONS`)."""
-    return any(headers.get(name) for name in LIST_PRECONDITIONS)
-
-
 def list_preconditions_to_evaluate(headers):
     """Whether the preconditions `headers` of a POST to a list must be
     evaluated (`LockedWriteMixin.dispatch` refuses a response that is no
@@ -123,26 +143,6 @@ def list_preconditions_to_evaluate(headers):
         return False
     if_match = parse_etag_list(headers.get("if-match") or None)
     return not (if_match == ["*"] and not headers.get("if-none-match"))
-
-
-def list_validators_needed(headers):
-    """Whether evaluating the preconditions `headers` (lower-case names, as
-    ``scrudful._django.precondition_headers`` gives them) of a POST to a list
-    needs the list's validators (RFC 9110 §13.2.2): an ``If-Match`` that names
-    entity-tags, an ``If-Unmodified-Since`` with a valid date and no
-    ``If-Match``, or an ``If-None-Match`` that names entity-tags. ``*``
-    (either field) is decided by the list existing, a malformed field is a
-    400 and an invalid date is ignored, without them."""
-    if_match = parse_etag_list(headers.get("if-match") or None)
-    if_none_match = parse_etag_list(headers.get("if-none-match") or None)
-    if if_match is None or if_none_match is None:
-        return False
-    if if_match and if_match != ["*"]:
-        return True
-    if_unmodified_since = parse_http_date(headers.get("if-unmodified-since") or None)
-    if not if_match and if_unmodified_since is not None:
-        return True
-    return bool(if_none_match) and if_none_match != ["*"]
 
 
 # The methods whose body is the resource to store.
@@ -168,111 +168,44 @@ def check_body_present(request, view=None):
         return
     if view is not None and request.method not in view.allowed_methods:
         return
-    if request.stream is None:
-        raise RequestBodyMissingError()
-
-
-# The deepest a POST, PUT or PATCH body may be nested (objects and arrays,
-# the outermost one counted): far deeper than resources need, far below what
-# Python code walking it recursively can follow (about 800 levels), and as
-# deep as MySQL's JSON type stores.
-MAX_BODY_DEPTH = 100
-
-# The deepest MariaDB stores a resource's content: its JSON column's
-# ``JSON_VALID`` check refuses a document nested 32 levels or more.
-MARIADB_MAX_BODY_DEPTH = 31
-
-
-def max_body_depth():
-    """The deepest a body may be nested: `MAX_BODY_DEPTH`, or
-    `MARIADB_MAX_BODY_DEPTH` when resources are written to MariaDB
-    (``router.db_for_write(Resource)``), which could not store a deeper one
-    (a 500)."""
-    from django.db import connections
-
-    connection = connections[router.db_for_write(Resource)]
-    if connection.vendor == "mysql" and connection.mysql_is_mariadb:
-        return MARIADB_MAX_BODY_DEPTH
-    return MAX_BODY_DEPTH
-
-
-def body_depth(data, limit=None):
-    """How deeply `data` (a parsed JSON body) nests objects and arrays (0 for
-    a scalar), counted without recursion; past `limit`, ``limit + 1``."""
-    deepest, stack = 0, [(data, 1)]
-    while stack:
-        node, depth = stack.pop()
-        if isinstance(node, Mapping):
-            items = node.values()
-        elif isinstance(node, (list, tuple)):
-            items = node
-        else:
-            continue
-        deepest = max(deepest, depth)
-        if limit is not None and deepest > limit:
-            return deepest
-        stack.extend((item, depth + 1) for item in items)
-    return deepest
+    check_present(request.stream is not None)
 
 
 def check_body_depth(request):
     """Raise `RequestBodyTooDeepError` (400) for a POST, PUT or PATCH body
     nested deeper than `max_body_depth`."""
-    if request.method not in BODY_METHODS:
-        return
-    limit = max_body_depth()
-    if body_depth(request.data, limit) > limit:
-        raise RequestBodyTooDeepError(limit)
-
-
-def body_has_nul(data):
-    """Whether a string of `data` (a parsed JSON body), a key or a value at
-    any depth, holds a NUL character; walked without recursion."""
-    stack = [data]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, str):
-            if "\x00" in node:
-                return True
-        elif isinstance(node, Mapping):
-            stack.extend(node.keys())
-            stack.extend(node.values())
-        elif isinstance(node, (list, tuple)):
-            stack.extend(node)
-    return False
+    if request.method in BODY_METHODS:
+        check_depth(request.data)
 
 
 def check_body_nul(request):
     """Raise `RequestBodyNulError` (400) for a POST, PUT or PATCH body with a
-    NUL character in any string (`body_has_nul`): PostgreSQL's ``jsonb``
-    cannot hold one, so it is refused on every database alike."""
-    if request.method not in BODY_METHODS:
-        return
-    if body_has_nul(request.data):
-        raise RequestBodyNulError()
+    NUL character in any string (`body_has_nul`)."""
+    if request.method in BODY_METHODS:
+        check_nul(request.data)
 
 
 def check_written_contexts(request):
     """Raise `RbacContextInvalidError` (400) when a POST, PUT or PATCH body's
-    ``rbac_context`` is an empty list, which would store the resource in no
-    context (only a superuser could read it; a server-side
-    ``ResourceRegistration`` may still store one), or names a context longer
-    than its rows hold (`context_fits`: 2048 bytes of UTF-8)."""
-    if request.method not in ("POST", "PUT", "PATCH"):
+    ``rbac_context`` is an empty list or names a context longer than its rows
+    hold (`context_fits`: 2048 bytes of UTF-8)."""
+    if request.method in BODY_METHODS:
+        check_contexts(request.data)
+
+
+def check_body(request, view=None):
+    """Check the body of a POST, PUT or PATCH that `view` serves (one it does
+    not is left to its 405) with `scrud_django.core.bodies.check_body`. The
+    body is *present* when DRF reads one: not an empty one, nor one without a
+    ``Content-Length`` (0 or absent, as for a chunked body), which DRF would
+    read as ``{}``. A body that is not JSON is left to the parser (415, or
+    400)."""
+    if request.method not in BODY_METHODS:
         return
-    data = request.data
-    if not isinstance(data, Mapping):
+    if view is not None and request.method not in view.allowed_methods:
         return
-    context = data.get("rbac_context")
-    if isinstance(context, (list, tuple)) and not context:
-        raise RbacContextInvalidError(
-            "rbac_context must name at least one context; leave it out (or give "
-            '"") for the default context.'
-        )
-    if not all(context_fits(c) for c in rbac_contexts_of(data)):
-        raise RbacContextInvalidError(
-            f"An rbac_context may be at most {MAX_CONTEXT_BYTES} bytes long in UTF-8."
-        )
+    present = request.stream is not None
+    core_check_body(request.data if present else None, present=present)
 
 
 @contextmanager
@@ -443,6 +376,18 @@ def gate_uniform_errors(cls):
                 value.__class__ = UniformErrorsViewFunc
 
 
+class ScrudErrorsMixin:
+    """Hand a scrud error (neutral, not an ``APIException``) to DRF's
+    exception handling wrapped (`scrud_django.exceptions.as_drf`), so that any
+    handler, scrud's or an adopter's own, answers it with its status and
+    detail."""
+
+    def handle_exception(self, exc):
+        if isinstance(exc, ScrudException):
+            exc = as_drf(exc)
+        return super().handle_exception(exc)
+
+
 class UniformErrorsMixin:
     """Gate the scrudful handlers' problem-details errors on
     ``SCOPED_RBAC["UNIFORM_ERRORS"]`` (`UniformErrorsViewFunc`), and have
@@ -610,7 +555,7 @@ class LockedWriteMixin:
         else:
             return super().dispatch(request, *args, **kwargs)
         db = self.locked_write_database()
-        with transaction.atomic(using=db), ExitStack() as locks:
+        with core_writes.write_transaction(db) as rollback, ExitStack() as locks:
             setattr(self, attribute, db)
             self._scrud_create_locks = locks
             try:
@@ -619,7 +564,7 @@ class LockedWriteMixin:
                 setattr(self, attribute, None)
                 self._scrud_create_locks = None
             if response.status_code >= 400:
-                transaction.set_rollback(True, using=db)
+                rollback()
             elif attribute == "conditional_create_db":
                 # Raised inside the transaction: what the handler wrote is
                 # rolled back.
@@ -737,9 +682,40 @@ class ListValidatorsMixin:
         the object checks a list asks (`readable_by_object_checks`), so that
         the detail route hides what the list leaves out. The object checks
         only narrow. A grant conditioned on ``scrud_workflow`` never makes
-        an object readable."""
+        an object readable.
+
+        The view's requirement (`requirement_of`, built as a GET of the
+        detail route has it) is asked through
+        `scrud_django.core.resources._readable_content`, the grants for
+        ``http.GET`` on the type the view names
+        (``resource_type_iri_for``): the unguarded helper, not the guarded
+        ``readable_content``, as a view with no ``IsAuthorized`` has no
+        grants to ask (its requirement is empty, or its type's hooks only,
+        and reads as readable, as scoped-rbac's ``is_readable`` has it). A
+        view with no requirement (`NotNeutral`: DRF's ``~`` over an
+        ``IsAuthorized``) asks its permissions itself."""
+        grants = isinstance(self, AccessControlledAPIView)
+        with (
+            _not_checking_write(),
+            checks_read_content(self),
+            as_detail_read(self, request) as read,
+        ):
+            try:
+                requirement = requirement_of(self)
+            except NotNeutral:
+                requirement = None
+            if requirement is not None:
+                permission = (
+                    Permission("http.GET", self.resource_type_iri_for(read))
+                    if grants
+                    else None
+                )
+                # Unguarded: a view with no IsAuthorized has no grants to ask.
+                return core_resources._readable_content(
+                    read, obj, requirement, grants=grants, permission=permission
+                )
         with _not_checking_write(), checks_read_content(self):
-            if isinstance(self, AccessControlledAPIView):
+            if grants:
                 with as_detail_read(self, request) as read:
                     if not readable_by_grants(self, read, obj):
                         return False
@@ -762,10 +738,25 @@ class ListValidatorsMixin:
         try:
             super().check_object_permissions(request, obj)
             self.check_grants_in_each_context(request, obj)
+            self.check_object_hooks(request, obj)
         except (PermissionDenied, NotAuthenticated):
             if not self.object_readable(request, obj):
                 raise Http404 from None
             raise
+
+    def type_hooks(self):
+        """The `scrud_django.core.types.HookLeaf` of the hooks registered for
+        the view's type, or ``None`` for none (`ResourceViewMixin`'s)."""
+        return None
+
+    def check_object_hooks(self, request, obj):
+        """Refuse (``permission_denied``) `obj` (the object as the object
+        check gets it) unless the object checks registered for the view's
+        type (`type_hooks`) allow it. They only narrow: the view's own
+        checks ran first."""
+        hooks = self.type_hooks()
+        if hooks is not None and not hooks.has_object_permission(request, obj):
+            self.permission_denied(request)
 
     def check_grants_in_each_context(self, request, obj):
         """Refuse (``permission_denied``) the resource `obj` (its content)
@@ -786,10 +777,15 @@ class ListValidatorsMixin:
         ):
             return
         with checks_read_content(self):
+            # Whether to ask is the view's ``get_rbac_permissions``' call (an
+            # override may add or drop a leaf); what is asked is its
+            # requirement's grants (`grants_allow`, the core's).
             if all(map(reads_each_context, reading_content(get_rbac_permissions()))):
                 return
-            if not grants_allow(self, request, obj, view_permission(request, self)):
-                self.permission_denied(request)
+            allowed = grants_allow(self, request, obj, view_permission(request, self))
+        if not allowed:
+            # DRF's own refusal (403, or 401 for the anonymous user).
+            self.permission_denied(request)
 
     def object_for_checks(self, obj):
         """`obj` as the detail route gives it to the object check: itself
@@ -885,20 +881,12 @@ class ListValidatorsMixin:
         else:
             items = page
             count = self.paginator.page.paginator.count
-        resource_type = self.get_resource_type()
-        parts = [
-            resource_type.pk,
-            resource_type.revision,
-            resource_type.schema_id,
-            resource_type.schema_uri,
-            resource_type.context_id,
-            resource_type.context_uri,
-            count,
-            urlencode(sorted(request.query_params.lists()), doseq=True),
-            *(f"{obj.pk}:{obj.etag}" for obj in items),
-        ]
-        digest = hashlib.sha256("\n".join(map(str, parts)).encode("utf-8"))
-        return digest.hexdigest()
+        return core_list_etag(
+            self.get_resource_type(),
+            items=items,
+            count=count,
+            query=sorted(request.query_params.lists()),
+        )
 
     def list_last_modified(self):
         """The list's Last-Modified: the newest ``modified_at`` of every
@@ -1027,21 +1015,14 @@ class ListValidatorsMixin:
         headers = precondition_headers(request)
         if not has_list_preconditions(headers):
             return None
-        if using is None or using == self.conditional_create_db:
-            etag, last_modified = self.create_list_validators(request)
-        elif list_validators_needed(headers):
+
+        def validators():
+            if using is None or using == self.conditional_create_db:
+                return self.create_list_validators(request)
             with self.as_list_read(request, using) as read:
-                etag, last_modified = self.list_etag(read), self.list_last_modified()
-        else:
-            etag = last_modified = None
-        result = evaluate_preconditions(
-            request.method,
-            headers,
-            etag=None if etag is None else quote_etag(etag),
-            last_modified=http_timestamp(aware(last_modified)),
-            require_precondition=False,
-            exists=True,
-        )
+                return self.list_etag(read), self.list_last_modified()
+
+        result = evaluate_list_preconditions(request.method, headers, validators)
         self._scrud_list_preconditions_evaluated = True
         if result is None:
             return None
@@ -1056,6 +1037,17 @@ class ListValidatorsMixin:
         return conditional_response(result)
 
 
+class _PostSaveLeaf(ViewLeaf):
+    """The `ViewLeaf` of `permission` (an ``IsAuthorized`` of `view`, reading
+    the content: `reading_content`) as the post-save check asks it
+    (`scrud_django.core.writes.check_post_save`): its object check is the
+    permission's own, asked as it is, whatever the request's method, its
+    refusals DRF's own."""
+
+    def has_object_permission(self, request, obj):
+        return self._leaf().has_object_permission(request, self.view, obj)
+
+
 class ReadableMixin:
     """Put first in a view composing scoped-rbac's ``AccessControlledAPIView``
     with `ResourceViewMixin` (or `GenericViewMixin`), as the scrud viewsets
@@ -1068,7 +1060,9 @@ class ReadableMixin:
         return self.object_readable(request, obj)
 
 
-class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin):
+class ResourceViewMixin(
+    ScrudErrorsMixin, UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
+):
     queryset = Resource.objects.all()
     serializer_class = ResourceSerializer
     pagination_class = StandardResultsSetPagination
@@ -1170,15 +1164,19 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         """The block in which a check of `request` runs: for a write the
         workflow check covers (`checks_workflow`: the view's ``create`` or
         ``update`` action), with the ``scrud_workflow`` operator allowing
-        (the workflow check decides the transition); with `authorized` (the
-        post-save check), only once the workflow check has authorized the
-        write. Anywhere else (an ``@action`` of the view included)
-        ``scrud_workflow`` refuses."""
-        if self.checks_workflow(request) and (
-            not authorized or _workflow_authorized(request)
-        ):
-            return _checking_write()
-        return _not_checking_write()
+        (the workflow check decides the transition); with `authorized`, only
+        once the workflow check has authorized the write. Anywhere else (an
+        ``@action`` of the view included) ``scrud_workflow`` refuses.
+
+        Nothing on the DRF path calls it with `authorized` but
+        `recheck_saved`, itself no longer called: the post-save check runs
+        in `scrud_django.core.writes.save_checked`, inside
+        ``authorizing_write(covered=self.checks_workflow(request),
+        authorized=True)``, so an override of this method does not reach it
+        (nor a DELETE's every-context check of a ``WorkflowPolicy``)."""
+        return authorizing_write(
+            request, covered=self.checks_workflow(request), authorized=authorized
+        )
 
     def check_object_permissions(self, request, obj):
         """DRF's object check, with ``scrud_workflow`` allowing for a PUT the
@@ -1188,6 +1186,40 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         403) is asked outside it (`object_readable`)."""
         with self.write_checks(request):
             super().check_object_permissions(request, obj)
+
+    def type_hooks(self):
+        """The `scrud_django.core.types.HookLeaf` of the ``checks`` and
+        ``object_checks`` registered for the view's type
+        (``resource_type_name``; ``registration.json_resource_type``),
+        naming the type as the view's permissions do
+        (``resource_type_iri``), or ``None`` when it has none (the type is
+        then not read). It takes part in the view's requirement
+        (`scrud_django.drf_requirements.requirement_of`), its request check
+        (`check_request_hooks`), object check (`check_object_hooks`), list,
+        post-save check (`_post_save_requirement`) and workflow check
+        (``scrud_django.validators.narrow_of``)."""
+        if not has_hooks(type_options(self.resource_type_name)):
+            return None
+        return hook_leaf(
+            self.get_resource_type(),
+            self.resource_type_name,
+            type_iri=getattr(self, "resource_type_iri", None),
+        )
+
+    def check_request_hooks(self, request):
+        """Refuse (``permission_denied``) a POST, PUT or PATCH the view
+        serves (not scrudful's body-less copy of an OPTIONS,
+        ``access.checks_allow``) unless the checks registered for its type
+        (`type_hooks`) allow it in each context its body writes. They only
+        narrow: the view's own checks ran first."""
+        if request.method not in self.allowed_methods or access.checks_allow(request):
+            return
+        hooks = self.type_hooks()
+        if hooks is None:
+            return
+        body = request.data if request.method in BODY_METHODS else None
+        if not hooks.has_permission(request, body):
+            self.permission_denied(request)
 
     def get_resource_type(self):
         """The view's resource type, read once per request and database (the
@@ -1249,14 +1281,11 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         obj = get_object_or_404(
             queryset, **{self.lookup_field: self.kwargs[lookup_url_kwarg]}
         )
-        resource_type = self.get_resource_type()
-        if obj.resource_type_id == resource_type.pk:
-            # The type the view read (on the same database), not read again.
-            Resource.resource_type.field.set_cached_value(obj, resource_type)
-        if access.stored_in_reserved_context(obj):
-            # The content checked below has no rbac_context attribute for
-            # scoped-rbac's check_object_permissions to read.
-            raise Http404
+        # The type the view read (on the same database) cached on it, not
+        # read again; a 404 for one stored in a reserved context: the content
+        # checked below has no rbac_context attribute for scoped-rbac's
+        # check_object_permissions to read.
+        core_resources.found_item(self.get_resource_type(), obj)
         with checks_read_content(self):
             self.check_object_permissions(self.request, self.object_for_checks(obj))
         return obj
@@ -1286,12 +1315,10 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         return super().get_serializer(*args, **kwargs)
 
     def perform_create(self, serializer):
-        if self.get_resource_type().uses_reversion:
-            with reversion.create_revision():
-                response = serializer.save()
-                reversion.set_comment('Add Resource')
-            return response
-        return serializer.save()
+        """``serializer.save()``, in a reversion revision when the type uses
+        reversion (`scrud_django.core.writes.creating_revision`)."""
+        with core_writes.creating_revision(self.get_resource_type()):
+            return serializer.save()
 
     def get_rbac_permissions(self):
         """Every ``IsAuthorized`` (or subclass) of ``get_permissions()``,
@@ -1314,34 +1341,39 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         for reads: a write may land the resource only where the writer may
         write, in each of those contexts.
 
-        It asks each permission itself, so that an ``IsAuthorized`` subclass's
-        overrides apply, giving it the saved resource's content
-        (`object_for_checks`), as the detail route's object check does: its
-        ``has_object_permission``
+        It asks each permission itself (`_post_save_requirement`), so that an
+        ``IsAuthorized`` subclass's overrides apply, giving it the saved
+        resource's content (`object_for_checks`), as the detail route's object
+        check does, the request's action named on the view's type
+        (``resource_type_iri_for``): its ``has_object_permission``
         must allow it (as scoped-rbac's own post-save check asks; superusers
         only for a resource in no usable context), and its
         ``has_context_permission`` must allow it in each context its
         ``contexts_for`` names, and, for one with a
         ``has_context_permission`` of its own, so must the grants, each
-        context read as the resource is there (`may_act_in_context`)."""
+        context read as the resource is there (`may_act_in_context`):
+        `scrud_django.core.writes.check_post_save`."""
         check = self.object_for_checks(obj)
-        permission = view_permission(request, self)
-        for leaf in reading_content(self.get_post_save_permissions()):
-            contexts = access.usable_contexts(leaf.contexts_for(check))
-            allowed = leaf.has_object_permission(request, self, check) and all(
-                leaf.has_context_permission(request, self, check, context)
-                for context in contexts
-            )
-            if allowed and not reads_each_context(leaf):
-                # Its own has_context_permission (and its super() call) read
-                # the content as stored: the grants are asked too, each
-                # context as the resource is there. Object checks only narrow.
-                allowed = all(
-                    may_act_in_context(request, permission, check, [context])
-                    for context in contexts
-                )
-            if not allowed:
-                raise access.AccessDenied()
+        type_iri = self.resource_type_iri_for(request)
+        core_writes.check_post_save(
+            request,
+            self.get_resource_type(),
+            obj,
+            self._post_save_requirement(),
+            type_iri=type_iri,
+            content=check,
+        )
+
+    def _post_save_requirement(self):
+        """`get_post_save_permissions`, each reading the content
+        (`reading_content`), as the requirement
+        `scrud_django.core.writes.check_post_save` checks a saved resource
+        against: every one must allow it, and so must the hooks registered
+        for the view's type (`type_hooks`)."""
+        return [
+            _PostSaveLeaf(permission, self)
+            for permission in reading_content(self.get_post_save_permissions())
+        ] + hook_leaves(self)
 
     def check_every_context_of_policy(self, request, instance):
         """For a ``WorkflowPolicy``, deny (403) an update or delete unless the
@@ -1352,8 +1384,13 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         if instance.resource_type.type_uri != WORKFLOW_POLICY_TYPE_URI:
             return
         try:
-            with self.write_checks(request):
-                self.check_post_save_permissions(request, instance)
+            core_writes.check_every_context_of_policy(
+                request,
+                instance,
+                None,  # The view's own check asks the view's permissions.
+                covered=self.checks_workflow(request),
+                check=self.check_post_save_permissions,
+            )
         except access.AccessError as exc:
             raise drf_error(exc, request) from exc
 
@@ -1365,26 +1402,29 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         validator's check ran before the lock; a concurrent write of the same
         type and context committed since is seen here."""
 
-        def locked_save():
-            lock_workflow_policy_type(db)
-            saved = save()
-            check_policy_is_unique(saved.content, saved.pk)
-            return saved
-
-        return locked_save
+        return core_writes.serialized_policy_save(
+            save, db, lock=lock_workflow_policy_type
+        )
 
     def recheck_saved(self, obj):
         """`check_post_save_permissions` of the saved `obj`, with
         ``scrud_workflow`` allowing only once the workflow check has
-        authorized the write (`write_checks`)."""
+        authorized the write (`write_checks`). `save_checked` no longer calls
+        it: `scrud_django.core.writes.save_checked` runs
+        `check_post_save_permissions` in the same block itself."""
         with self.write_checks(self.request, authorized=True):
             self.check_post_save_permissions(self.request, obj)
 
     def save_checked(self, save, instance=None):
         """Run `save` (which returns the saved resource) in a transaction and
-        check the resource as stored before it commits: a reserved context is a
-        400 and `check_post_save_permissions` a 403, either rolling the write
-        back. The request was authorized by the context its body names; this
+        check the resource as stored before it commits
+        (`scrud_django.core.writes.save_checked`, given the view's queryset,
+        `serialized_policy_save` and `check_post_save_permissions`): a
+        reserved context is a 400 and `check_post_save_permissions` a 403
+        (run by the core inside ``authorizing_write``, covered by
+        `checks_workflow`: ``scrud_workflow`` allows only once the workflow
+        check has authorized the write; `write_checks` is not called),
+        either rolling the write back. The request was authorized by the context its body names; this
         checks where the resource actually landed (scoped-rbac's ``SaveCheck``).
         `instance` is the resource an update replaces (``None`` for a create).
         Returns the saved resource as read back.
@@ -1404,52 +1444,41 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         of ``If-Match``, ``If-None-Match`` and ``If-Unmodified-Since``, or
         ``If-Match: *`` and no ``If-None-Match``) and a POST to an item (an
         ``@action`` creating)."""
-        saved = []
-
-        def recorded_save():
-            result = save()
-            saved.append(instance if result is None else result)
-            return result
-
-        check = access.SaveCheck(
-            self.request,
-            written_contexts=lambda obj: obj.rbac_contexts,
-            recheck=lambda obj, _moved_to: self.recheck_saved(obj),
-            queryset=self.get_queryset(),
-        )
+        request = self.request
+        resource_type = self.get_resource_type()
+        queryset = self.get_queryset()
         # The request's locked write transaction, if any (`dispatch`); else
         # the un-hinted write alias, as there (instance-hint routing of
         # scrud_django's models is not supported for the API).
         db = self.locked_write_db or write_db()
-        run = recorded_save
-        if self.get_resource_type().type_uri == WORKFLOW_POLICY_TYPE_URI:
-            run = self.serialized_policy_save(recorded_save, db)
+        covered = self.checks_workflow(request)
         try:
-            with transaction.atomic(using=db):
-                if instance is None:
-                    result = check.create(run, db=db)
-                else:
-                    result = check.update(instance, run, db=db)
-                self.cache_resource_type(*saved, result)
+            return core_writes.save_checked(
+                request,
+                resource_type,
+                save,
+                instance=instance,
+                # The view's own check asks the view's permissions.
+                requirement=None,
+                using=db,
+                covered=covered,
+                queryset=queryset,
+                serialize=self.serialized_policy_save,
+                recheck=self.check_post_save_permissions,
+            )
         except access.AccessError as exc:
-            raise drf_error(exc, self.request) from exc
-        return result
+            raise drf_error(exc, request) from exc
 
     def cache_resource_type(self, *objects):
         """Cache the view's type (`get_resource_type`) on each `Resource` of
         `objects` (lists and tuples of them too) that is of it."""
-        resource_type = self.get_resource_type()
-        for obj in objects:
-            if isinstance(obj, (list, tuple)):
-                self.cache_resource_type(*obj)
-            elif isinstance(obj, Resource) and obj.resource_type_id == resource_type.pk:
-                Resource.resource_type.field.set_cached_value(obj, resource_type)
+        core_writes.cache_resource_type(self.get_resource_type(), *objects)
 
     def conditional_create_lock(self, using):
         """A conditional create's lock: the type's row (`type_locked`), so
         that two conditional creates of the type run one at a time and the
         second is evaluated against the list the first left."""
-        return type_locked(self.get_resource_type(), using)
+        return core_writes.conditional_create_lock(self.get_resource_type(), using)
 
     def create(self, request):
         """Create a resource from the body, once the request's preconditions
@@ -1510,15 +1539,19 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         resource type uses (its schema, context or indexing policy) is kept:
         409 (`ResourceInUseError`)."""
         instance = self.get_instance(request, slug)
-        self.check_every_context_of_policy(request, instance)
         try:
-            ResourceRegistration.delete_locked(
+            core_writes.destroy(
+                request,
+                self.get_resource_type(),
                 instance,
-                resource_type=self.get_resource_type(),
+                # The view's own check asks the view's permissions.
+                requirement=None,
                 using=self.locked_write_db or write_db(),
+                covered=self.checks_workflow(request),
+                check=self.check_post_save_permissions,
             )
-        except ProtectedError as exc:
-            raise ResourceInUseError(instance, exc.protected_objects) from exc
+        except access.AccessError as exc:
+            raise drf_error(exc, request) from exc
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def retrieve(self, request, slug: str):
@@ -1528,13 +1561,12 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         return Response(serializer.data)
 
     def check_permissions(self, request):
-        """Refuse an empty body (`check_body_present`) and a body whose
-        ``rbac_context`` cannot be stored (`check_written_contexts`), with
-        400, before scoped-rbac's request check (which would authorize an
-        empty body as ``{}`` and refuse an empty context list with 403 for
-        everyone), a body nested deeper than `max_body_depth`
-        (`check_body_depth`) and one with a NUL character in a string
-        (`check_body_nul`): they depend on the body alone. scoped-rbac's
+        """Refuse an empty body, a body whose ``rbac_context`` cannot be
+        stored, one nested deeper than `max_body_depth` and one with a NUL
+        character in a string (`check_body`), with 400, before scoped-rbac's
+        request check (which would authorize an empty body as ``{}`` and
+        refuse an empty context list with 403 for everyone): they depend on
+        the body alone. scoped-rbac's
         request check then reads the body itself (``request.data``). A method
         the view does not serve skips the body checks (its body is not
         parsed), so that it gets its 405 whatever its body, as scoped-rbac's
@@ -1544,13 +1576,18 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         PUT there without a body, and the copy is no write to refuse. A
         request that *arrives* so is refused before it gets here
         (`LockedWriteMixin.initial`)."""
-        if request.method in self.allowed_methods and not access.checks_allow(request):
-            check_body_present(request, self)
-            check_body_depth(request)
-            check_body_nul(request)
-            check_written_contexts(request)
-        with self.write_checks(request):
-            super().check_permissions(request)
+        try:
+            if request.method in self.allowed_methods and not access.checks_allow(
+                request
+            ):
+                check_body(request, self)
+            with self.write_checks(request):
+                super().check_permissions(request)
+            self.check_request_hooks(request)
+        except ScrudException as exc:
+            # DRF's browsable API calls this outside ``dispatch`` and
+            # catches ``APIException``s only.
+            raise as_drf(exc) from exc
 
     def list_last_modified(self):
         """The list's Last-Modified: the newest ``modified_at`` of every
@@ -1562,13 +1599,16 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         read only by a condition, or not at all, does not move it (the ETag
         follows what they see)."""
         newest = super().list_last_modified()
+        # The view's removal (`scrud_django.filters.readable_removal`), not
+        # `scrud_django.core.lists.list_last_modified`'s: it also asks that
+        # the view's RBAC filter and ``contexts_for`` be the stamped ones.
         removed = readable_removal(
             self.request,
             self,
             self.get_resource_type(),
             using=self.list_queryset().db,
         )
-        return max((t for t in (newest, removed) if t is not None), default=None)
+        return latest(newest, removed)
 
     def list(self, request):
         """The resources of the type the requester may read, a page at a time."""
@@ -1582,7 +1622,9 @@ class ResourceViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixi
         return Response(serializer.data)
 
 
-class GenericViewMixin(UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin):
+class GenericViewMixin(
+    ScrudErrorsMixin, UniformErrorsMixin, LockedWriteMixin, ListValidatorsMixin
+):
     """SCRUD views over a model of your own (decorate with ``scrudful_viewset``).
 
     Subclasses provide DRF's ``get_queryset()``, not a ``get_instance``:

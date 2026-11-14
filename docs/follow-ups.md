@@ -1167,6 +1167,236 @@ template typed for `/items/0` of one instance is restored in the form for
 `/items/0`; assert it has the default template, and that the typed one comes
 back with `instance=7` again.
 
+<a id="core-write-no-type-iri-recheck"></a>
+## core-write-no-type-iri-recheck: `core.create` and `core.update` take no `type_iri` or `recheck`
+
+`scrud_django.core.writes.create` and `update` pass no `type_iri` or `recheck`
+to `save_checked`, which the DRF views thread from their own overrides
+(`resource_type_iri_for`, the post-save recheck). A front end other than DRF
+(the front end of ninja phase 3) that needs either must thread them itself or
+call `save_checked` directly; with `create` and `update` it checks the saved
+resource against the resource type's own URI only. Test: in
+`tests/test_core_writes.py`, write through `core.create` a resource whose
+type's `type_iri` differs from the `ResourceType.type_uri` the checks name,
+and assert the post-save check asks the former; today it asks the latter.
+
+<a id="core-allowed-methods-existence-leak"></a>
+## core-allowed-methods-existence-leak: `core.allowed_methods` takes a loaded item
+
+`core.resources.allowed_methods` is given the item already loaded, so a front
+end that answers a missing item with a 404 before calling it tells a requester
+refused every method that the object does not exist. On the DRF route that
+requester gets `Allow: OPTIONS` for a missing and an existing object alike.
+The ninja front end must run the request-level step (`has_permission` of each
+method, as step 1 of `allowed_methods` does) before its lookup. Test: in
+`tests/test_core_resources.py`, OPTIONS the detail URL of a missing key as a
+user granted nothing on the type; assert 200 with `Allow: OPTIONS`, not 404,
+through the ninja route once it exists (the DRF route passes today).
+
+<a id="core-anyof-object-check-only"></a>
+## core-anyof-object-check-only: the core treats an `AnyOf` as an object check only
+
+For a DRF `|` of `IsAuthorized` subclasses, the core's neutral requirement
+(`AnyOf`) is satisfied through any option's object check, but DRF's `|` also
+asks each option's request check first. The two answer alike on the
+permissions in the suite (`tests/test_core_requirements.py`); an option whose
+request check refuses and whose object check allows would differ. Test: in
+`tests/test_core_requirements.py`, compose an option that refuses at the
+request level and allows on the object with one that allows both, and compare
+the core's answer with DRF's `|`.
+
+<a id="core-method-sets-hard-coded"></a>
+## core-method-sets-hard-coded: `ITEM_METHODS` and `LIST_METHODS` are fixed
+
+`core.resources.ITEM_METHODS` (GET, PUT, DELETE) and `LIST_METHODS` (GET,
+POST) are constants, so `allowed_methods` lists them for a computed type too,
+which serves GET and HEAD only. Ninja phase 3 should take the methods a route
+serves as an argument. Test: in `tests/test_core_resources.py`, call
+`allowed_methods` for a computed type's item as a user granted every method;
+assert only GET, HEAD and OPTIONS.
+
+<a id="core-readable-queryset-stored-contexts"></a>
+## core-readable-queryset-stored-contexts: `readable_queryset` assumes leaves read stored contexts
+
+`core.lists.readable_queryset` and `list_last_modified` rely on a documented,
+unenforced precondition: no leaf of the requirement has a custom
+`contexts_for`, so every leaf reads a resource's stored contexts (the
+`ResourceContext` rows). A requirement with one would be filtered by the rows
+and not by what its `contexts_for` says. Add a guard (an error or the per-object
+path) before the ninja front end wires it up. Test: in
+`tests/test_core_lists.py`, build a requirement whose leaf overrides
+`contexts_for` and call `readable_queryset`; assert it raises or agrees with
+the detail route, where today it filters by the rows.
+
+<a id="core-list-grant-and-request-check"></a>
+## core-list-grant-and-request-check: the core's list and item reads skip DRF's list grant and request check
+
+`core.lists.readable_queryset` (re-exported by `core.resources`) filters by
+the item type's `http.GET` grants and the object checks, but does not ask
+the list grant (`http.GET` on `collection_type_uri_for(type_uri)`) or any
+request-level check of the requirement (`has_permission`), which the DRF
+list route asks first (a 403 without the list grant).
+`core.resources.load_for_read` likewise runs only the object check, not the
+route's request check. A front end calling them alone would list for a user
+the DRF route refuses. Add a public `check_request(request, resource_type,
+requirement, *, list_route)` to the core and call it from both before the
+ninja front end is built. Test: in `tests/test_core_lists.py`, as a user
+granted `http.GET` on `JSON_LD` in "a" but not on its list type, GET the DRF
+list (403) and call `readable_queryset` with `[GrantsLeaf(JSON_LD)]`, which
+today returns the resource; the new check should refuse (`AccessDenied`).
+
+<a id="core-facade-parity-harness"></a>
+## core-facade-parity-harness: no harness compares the core facade with the DRF routes
+
+The DRF views do not call `core.resources`' facade (`load_for_read`,
+`allowed_methods`, `readable_queryset`, `create`, `update`, `validate_write`,
+`check_object`); only hand-written cases in `tests/test_core_*` compare it
+with the DRF routes, so a divergence outside them goes unseen. Test: a
+parametrized harness in a new `tests/test_core_parity.py` that, for every
+registered test type (hooked and workflow types included) and the user
+matrix of `tests/test_core_resources.py::users`, calls each facade function
+and the DRF route it mirrors and asserts the same outcome (status for an
+error, the same resources, the same `Allow`).
+
+<a id="core-paging-key-first"></a>
+## core-paging-key-first: the list's paging and MySQL key-first hint are still DRF's
+
+The ninja front-end design
+(`docs/superpowers/specs/2026-11-11-ninja-front-end-design.md`, §1.2) puts the
+list's ordering and the MySQL key-first paging (a page found among the keys,
+then its rows read by key, so that a large JSON row does not overflow MySQL's
+`sort_buffer_size`, error 1038) in the core (`list_queryset`). They are still
+in DRF's pagination class
+(`scrud_django.paginations.StandardResultsSetPagination.paginate_queryset`;
+the order is `Resource.Meta.ordering`), so a front end that pages
+`readable_queryset` itself on MySQL would sort whole rows. Move the key-first
+page into `core.lists` and have the DRF class call it. Test: in
+`tests/test_core_lists.py`, page `readable_queryset` through the new core
+function on MySQL with a row over `sort_buffer_size` (as
+`tests/test_ui_branch_large_rows.py` builds one; see `mysql-sort-buffer`); it
+should return the page in key order without error 1038.
+
+<a id="studio-computed-to-compute"></a>
+## studio-computed-to-compute: the studio's computed types still register a viewset class
+
+The ninja front-end design
+(`docs/superpowers/specs/2026-11-11-ninja-front-end-design.md`, §1.4) moves
+the studio's computed types to the neutral `compute=` hook, but
+`scrud_django/ui/studio/computed.py` (`studio_computed_type_urls`) still
+registers each with `viewset_class=`, so a non-DRF front end gets no content
+for them. Test: in `tests/test_studio_computed.py`, assert that
+`core.types.type_options(slug).compute` is set for each slug of
+`STUDIO_COMPUTED_TYPES` (it is `None` today).
+
+<a id="core-leaf-self-declared-grants"></a>
+## core-leaf-self-declared-grants: the core trusts a leaf to say it asks the grants
+
+Before ninja phase 3. The core takes a leaf's word for whether it asks the
+grants: `check_grants_in_each_context` (`core/resources.py`) asks them beside
+the leaves only when one says `reads_each_context = False`, and
+`asks_grants` (`require_grants`) counts any leaf without `grants_nothing` as
+asking them. A third-party leaf that sets `reads_each_context = True` (or
+leaves `grants_nothing` unset) and never asks the grants in its own
+`has_context_permission` would authorize every requester through
+`load_for_read`, `check_object` and the post-save check. Proposal: a closed
+set of grant-asking leaf types (`GrantsLeaf`, the DRF adapter's `ViewLeaf`),
+and the grants asked beside any other leaf whatever it declares. Test: in
+`tests/test_core_guards.py`, a leaf class with `reads_each_context = True`
+whose `has_object_permission` and `has_context_permission` return `True`;
+assert `load_for_read(..., requirement=[leaf], method="DELETE")` by a user
+with no grants is refused (today it returns the resource).
+
+<a id="core-hooks-silently-absent"></a>
+## core-hooks-silently-absent: a type's hooks can be missing without a sign
+
+Before ninja phase 3. `type_options(slug)` returns an empty `TypeOptions`
+for a slug never registered, `requirement_for(resource_type, slug)` takes
+the slug apart from `resource_type.slug` (a mismatch gives another type's
+hooks, or none), hooks are registered only when the URLconf that calls
+`json_resource_type` is imported (a worker, or a ninja router in a module of
+its own, that never imports it gets none), and `register_type_options`
+replaces silently. Any of these drops a type's `checks` and `object_checks`,
+which only refuse, so the type then allows what they would refuse.
+Proposal: key the options by type IRI, default the slug from
+`resource_type` and assert that a given one matches, and warn on a
+replacement that changes the hooks. Test: in `tests/test_type_hooks.py`,
+call `requirement_for(get_resource_type_for("hooked-notes"), "todos")` and
+assert it raises (today it returns a requirement with no `HookLeaf`); in a
+subprocess that sets up Django without importing `tests.urls`, assert
+`type_options("hooked-notes")` is not silently empty.
+
+<a id="core-workflow-mark-not-bound"></a>
+## core-workflow-mark-not-bound: the workflow-authorized mark is not tied to what was validated
+
+Before ninja phase 3; predates this release. `validate_write` (the workflow
+check) marks the request authorized (`_mark_workflow_authorized`,
+`core/authz.py`), and the post-save check (`save_checked`, in
+`authorizing_write(..., authorized=True)`) lets a grant conditioned on
+`scrud_workflow` allow any write on that request. The mark is not tied to
+the validated body or contexts: a facade caller that changes the body after
+validating, or writes twice on one request, saves past the `scrud_workflow`
+grants. Proposal: store the validated body and contexts with the mark and
+compare them in the post-save check, or clear the mark once a save uses it.
+Test: in `tests/test_core_writes.py`, as a user whose `http.PUT` is
+conditioned on `scrud_workflow` (`may_stay_json_ld`), `validate_write` a
+body in "a", then `update` with a different body (or `update` twice);
+assert the second write is refused (today it saves).
+
+<a id="core-type-redesign"></a>
+## core-type-redesign: the core's types before the ninja front end
+
+Before ninja phase 3. The core's types leave invariants to their callers:
+
+- a requirement is a plain list built anywhere, with scoped-rbac's
+  `AnyOf`: build a validated, frozen `Requirement` once (with the core's
+  own frozen `AnyOf`, converted to scoped-rbac's in the DRF adapter);
+- `workflow_check` takes `prior=None` for both a create and no stored
+  content (`NULL_STORED_CONTENT` is a tuple against a `Mapping`
+  annotation): take distinct create and update inputs;
+- `TypeOptions` keeps whatever sequences it is given: convert them to
+  tuples, with typed `Protocol`s for the hooks;
+- `ScrudException` should declare `type`, `title` and `instance` as class
+  attributes;
+- `ViewLeaf` reads its view's `type_iri` on each use: read it once.
+
+Test: type-checking (`mypy` or `pyright`) of `scrud_django/core/` with the
+new types, and in `tests/test_core_workflow.py` a create and an update over
+null content through the new inputs, each checked as itself.
+
+<a id="core-small-semantics"></a>
+## core-small-semantics: small semantic gaps in the core
+
+Before ninja phase 3.
+
+- `ErrorText` equality differs with and without DRF: DRF's `ErrorDetail`
+  compares `code` too, the `str` fallback does not. Test: in a no-DRF
+  subprocess (as `tests/test_core_imports.py` runs one), assert
+  `ErrorText("x", "a") != ErrorText("x", "b")`.
+- Any truthy hook return counts as allow (`"no"` allows): compare `is True`,
+  or document it. Test: in `tests/test_type_hooks.py`, a check returning
+  `"no"`; assert the write is refused.
+- `NotNeutral` is detected by counting permissions, not by comparing them:
+  compare the objects. Test: in `tests/test_core_requirements.py`, a view
+  whose `~` permission is offset by an extra one; assert `NotNeutral`.
+- `readable_content(grants=False)` is public and used by nothing: make it
+  private or test it. Test: in `tests/test_core_resources.py`, assert it
+  asks the object checks alone.
+- `HookLeaf.has_permission` allows a body with `rbac_context: []` (it asks
+  the checks in no context): refuse it, or ask them in the default one.
+  Test: in `tests/test_type_hooks.py`, POST `{"rbac_context": []}` with a
+  check that refuses everything; assert the hook refuses it (today the body
+  checks answer it, so the hook is never what refuses).
+- `HookLeaf._as_content` (`core/types.py`) gives the hooks any object that
+  is not a mapping as `content_of(obj)`, which is `{}` for anything without
+  a mapping `content`: an `object_for_checks` of a view of your own that
+  returns neither a mapping nor a `Resource` reaches the hooks as `{}`,
+  whose contexts read as the default context `""`, so `checks` are asked in
+  `""` rather than where the object is. Raise for such an object instead.
+  Test: in `tests/test_type_hooks.py`, a hooked view whose
+  `object_for_checks` returns a plain object with `rbac_context = "b"`;
+  assert a DELETE is refused by `deny_context_b` (today it is asked in
+  `""` and allowed).
+
 # Decided
 
 <a id="own-code-reads-stored-content"></a>

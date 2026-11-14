@@ -16,6 +16,7 @@ from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
 from scrud_django.mixins.view_mixins import (
     ReadableMixin,
     ResourceViewMixin,
+    ScrudErrorsMixin,
     gate_uniform_errors,
 )
 from scrud_django.registration import get_resource_type_for
@@ -193,7 +194,7 @@ class JsonLdViewSet(DocumentResourceViewSet):
     document_renderer_class = JSONLDRenderer
 
 
-class ResourceCollectionSchemaView(DocumentMediaTypeMixin, APIView):
+class ResourceCollectionSchemaView(ScrudErrorsMixin, DocumentMediaTypeMixin, APIView):
     """The JSON Schema of a resource type's list body (the list's
     ``describedby``): the page envelope of `StandardResultsSetPagination`,
     whose ``content`` is the page's resource envelopes, each with the type's
@@ -272,7 +273,7 @@ class ResourceCollectionSchemaView(DocumentMediaTypeMixin, APIView):
         return Response(schema)
 
 
-class ResourceCollectionContextView(DocumentMediaTypeMixin, APIView):
+class ResourceCollectionContextView(ScrudErrorsMixin, DocumentMediaTypeMixin, APIView):
     """The JSON-LD context of a resource type's list body (served as
     ``application/ld+json``). Its terms are kept as they were (the
     ``opententeams:`` prefix of first/previous/next/last included): the

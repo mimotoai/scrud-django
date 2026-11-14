@@ -17,6 +17,7 @@ from django.urls import path
 from django.utils import timezone
 
 from scrud_django import services
+from scrud_django.core.types import TypeOptions, register_type_options
 from scrud_django.models import Resource, ResourceType
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_HELD,
@@ -811,16 +812,55 @@ def json_resource_type(
     indexing_policy_func=None,
     uses_reversion: bool = True,
     register_service: bool = True,
+    checks=(),
+    object_checks=(),
+    content_filter: bool = False,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
     of `context_resource, context_path, context_uri`.
+
+    Its hooks (`scrud_django.core.types.TypeOptions`), honoured by every front
+    end, can only refuse what the grants allow, superusers' included (as an
+    ``IsAuthorized`` subclass refuses them):
+
+    - `checks`: callables ``(request, resource_type, body, context) -> bool``,
+      which govern writes: asked of a write in each context it writes, of
+      the stored resource of a PUT, PATCH or DELETE in each of its contexts
+      (a resource in a refused context is neither deleted nor moved out of
+      it: 403), of a saved resource in each of its contexts and of a
+      workflow transition in each context it is authorized in. They never
+      hide a read: a type that wants both registers both;
+    - `object_checks`: callables ``(request, resource_type, obj) -> bool``,
+      which govern reads and objects: asked of a resource's content wherever
+      its object is checked (the detail route of every method, each listed
+      resource, the saved resource). A refused one is hidden (404), and
+      writing a resource they would hide is refused (403, after the save,
+      which is rolled back);
+    - `content_filter`: the list filters on its query parameters (on DRF,
+      ``ResourceContentFilter`` among the type's view's ``filter_backends``,
+      `content_filtered_viewset`).
+
+    They replace any registered for `slug` before (`register_type_options`),
+    even when the registration is deferred.
 
     Returns the type's routes. When the database fails (unreachable, or not
     migrated yet), they are returned all the same and the registration is
     retried when the type is next read (`register_or_defer`).
     """
     from scrud_django import views
+
+    register_type_options(
+        slug,
+        TypeOptions(
+            checks=tuple(checks),
+            object_checks=tuple(object_checks),
+            content_filter=content_filter,
+        ),
+    )
+    viewset_class = viewset_class or views.ResourceViewSet
+    if content_filter:
+        viewset_class = content_filtered_viewset(viewset_class)
 
     def register():
         return ResourceTypeRegistration(
@@ -843,8 +883,29 @@ def json_resource_type(
         register,
         resource_type_uri,
         slug,
-        viewset_class or views.ResourceViewSet,
+        viewset_class,
         register_service=register_service,
+    )
+
+
+def content_filtered_viewset(viewset_class):
+    """`viewset_class` with ``ResourceContentFilter`` among its
+    ``filter_backends`` (last): itself when it has it, else a subclass of
+    it, so that no other type's view gains it."""
+    from scrud_django.filters import ResourceContentFilter
+
+    backends = list(viewset_class.filter_backends)
+    if ResourceContentFilter in backends:
+        return viewset_class
+    return type(
+        viewset_class.__name__,
+        (viewset_class,),
+        {
+            "__module__": viewset_class.__module__,
+            "__qualname__": viewset_class.__qualname__,
+            "__doc__": viewset_class.__doc__,
+            "filter_backends": [*backends, ResourceContentFilter],
+        },
     )
 
 
@@ -853,7 +914,8 @@ def computed_resource_type(
     slug: str,
     schema_func,
     context_func,
-    viewset_class,
+    viewset_class=None,
+    compute=None,
 ):
     """Registration of a computed, read-only resource type
     (`scrud_django.computed.ComputedResourceViewSet`): its `ResourceType` row
@@ -865,7 +927,21 @@ def computed_resource_type(
     Returns the type's routes; the registration is retried when the type is
     next read after a database error (`register_or_defer`). A
     computed type has no list, so it is left out of the service catalog (the
-    URL of each type's list)."""
+    URL of each type's list).
+
+    Its content is `compute`, ``(request, key) -> Mapping``, recorded as the
+    type's (`register_type_options`, replacing any registered for `slug`
+    before), which ``ComputedResourceViewSet.compute`` calls unless
+    `viewset_class` overrides it. `viewset_class` defaults to
+    ``ComputedResourceViewSet``; one of the two is needed."""
+    from scrud_django.computed import ComputedResourceViewSet
+
+    if viewset_class is None and compute is None:
+        raise ImproperlyConfigured(
+            f"computed_resource_type({slug!r}) needs compute= or viewset_class=."
+        )
+    register_type_options(slug, TypeOptions(compute=compute))
+    viewset_class = viewset_class or ComputedResourceViewSet
 
     def register():
         registration = ResourceTypeRegistration(

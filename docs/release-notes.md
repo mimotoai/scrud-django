@@ -381,6 +381,93 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   `scrud-ui.js` through ordinary JSON PUTs. See the new UI page of the
   documentation, and the `seed_todo_demo` command of the demo project.
   The known limitations are in the follow-ups under the `ui-` names.
+* A framework-neutral core, `scrud_django.core`: the domain logic of the
+  resource views (authorization requirements, workflow checks, body checks,
+  URLs, list queries and preconditions, writes, post-save checks, reads and
+  `Allow`) as functions of a plain Django request, with no import of
+  `rest_framework`, `django_filters` or scoped-rbac's DRF modules (a test
+  enforces it; `scrud_django.exceptions`, which it imports, loads
+  `rest_framework.exceptions` when DRF is installed). The DRF views are
+  adapters that delegate to it for the pieces they call, and every status,
+  header and body they answer is unchanged, but for the overrides listed
+  under Upgrading. The item-level facade of `scrud_django.core.resources`
+  (`load_for_read`, `object_readable`, `readable_content`,
+  `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
+  `create`, `update`, `destroy`) is not called by the DRF views; its tests
+  (`tests/test_core_*`) pin it against the DRF routes. Those of its
+  functions that decide access by a requirement (`load_for_read`,
+  `object_readable`, `readable_content`, `allowed_methods`, `check_object`,
+  `create`, `update`, `destroy` without a `check`, and
+  `scrud_django.core.writes.save_checked` without a `recheck`) raise
+  `ImproperlyConfigured` for one that asks no grants (empty, a type's hooks
+  only, or an `AnyOf` with an option of hooks only) rather than allow every
+  requester, and
+  `validate_write` requires a `requirement=`, whose type's hooks are the
+  checks that may refuse a transition. The workflow check hides an update's
+  workflow error unless its caller says the stored resource is readable
+  (`readable=`). It is the base for other front ends.
+* Per-type hooks, honoured by every front end, on `json_resource_type`
+  (`checks=`, `object_checks=`, `content_filter=`) and
+  `computed_resource_type` (`compute=`). They can only refuse what the grants
+  allow, and refuse superusers too (as an `IsAuthorized` subclass does).
+  `checks` govern writes only: asked of a write in each context it writes, of
+  the stored resource of a PUT, PATCH or DELETE in each of its contexts, of
+  the saved resource in each of its contexts and of a workflow transition in
+  each context it is authorized in; a type with only `checks` lists by SQL.
+  Unlike an `IsAuthorized` subclass, whose object check allows a PUT or
+  DELETE when any context the resource is stored in allows it, `checks`
+  must allow in every one: a resource in `["a", "b"]` whose check refuses
+  `"b"` can be neither updated (not even moved to `"a"`) nor deleted (403,
+  and `Allow` leaves those methods out).
+  `object_checks` govern reads and objects (the detail route of every method,
+  each listed resource); a refused resource is hidden (404), and a write of a
+  resource they would hide is refused (403 after the save, which is rolled
+  back). `content_filter` makes the list filter on its query parameters; it
+  is read when the routes are built, so registering a slug again swaps the
+  other hooks but not an already built route's filter. `compute` supplies a
+  computed type's content without a viewset subclass. Registering a slug
+  again replaces its hooks.
+
+### Upgrading
+
+* `ScrudException` and its subclasses are no longer DRF `APIException`s (they
+  are neutral, `scrud_django.exceptions`). The DRF views wrap them
+  (`scrud_django.exceptions.as_drf`), so the status and body of every answer
+  are unchanged, including under an adopter's own `EXCEPTION_HANDLER`. That
+  handler now receives a `scrud_django.exceptions.ScrudAPIException` for a
+  scrud error, with the original on `.scrud`: one that branches on
+  `isinstance(exc, WorkflowTransitionError)` (or any scrud class) must check
+  `exc.scrud` instead (`scrud_exception_handler` accepts either). Code that
+  catches `APIException` around a direct call into scrud-django must catch
+  `ScrudException`. (The note under 0.12.0 that scrud errors are
+  `APIException`s describes that release.)
+* `scrud_django.reverse` is scrud-django's own function, no longer DRF's
+  `rest_framework.reverse.reverse` re-exported. It has DRF's signature
+  (`viewname, args=None, kwargs=None, request=None, format=None, **extra`)
+  and gives the same URLs: through the request's DRF versioning scheme when
+  it has one (`DEFAULT_VERSIONING_CLASS`), with the `?format=` override
+  kept. Patching `rest_framework.reverse.reverse` no longer changes the URLs
+  scrud-django builds (Link headers, a list envelope's `link`, the
+  `services/` catalog).
+* `ScrudAPIException`, the `APIException` that carries a scrud error through
+  DRF, is defined once, at import, as `scrud_django.exceptions.ScrudAPIException`
+  (`None` without DRF). `ScrudException.get_full_details()` answers as
+  `APIException`'s did: `{"message": ..., "code": ...}`.
+* Names moved into `scrud_django.core` stay importable from their old
+  modules, as the same objects. The third-party and standard library names
+  those modules happened to import are not re-exported.
+* `WorkflowValidator` subclass overrides of `transition_for`, `authorize`,
+  `allowed`, `allowed_on`, `authorize_without_policy` and
+  `errors_hidden_unless_readable` no longer affect `__call__`, which runs the
+  core's workflow check once.
+* The internal view helpers `recheck_saved`, `cache_resource_type` and
+  `check_every_context_of_policy` (on DELETE) are no longer called by the
+  save and destroy paths, so overriding them no longer takes effect. Nor does
+  an override of `write_checks` affect the post-save check or a DELETE's
+  every-context check of a `WorkflowPolicy`: the core runs them in
+  `authorizing_write(covered=self.checks_workflow(...))` itself. Overrides
+  of `checks_workflow`, `check_post_save_permissions`, `object_for_checks`
+  and `resource_type_iri_for` still take effect.
 
 Behaviour without `scrud_django.ui` in `INSTALLED_APPS` is unchanged.
 
