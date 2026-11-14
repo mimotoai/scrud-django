@@ -372,24 +372,25 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 ### Added
 
 * An additive django-ninja front end, `scrud_django.ninja` (a preview; the new
-  optional extra `ninja`, `scrud-django[ninja]`). `scrud_django.ninja.api(types=[...])`
-  returns a `NinjaAPI` serving the built-in types, your types, the service
-  catalog, scoped-rbac's role routes and the collection documents, with the
-  statuses, headers and bodies of the DRF routes (DRF's content negotiation
-  included: its 406 and `?format=` 404, but never HTML), errors included
-  whatever `SCOPED_RBAC["UNIFORM_ERRORS"]` is, when the API is built or for a
-  request: problem details while it is on, DRF's native `{"detail": ...}`
-  bodies (a computed type's `compute` refusing with an empty message, or a
-  list or dict, included) while it is off, but for a role or role
-  assignment body failing validation, which stays a problem (follow-up
-  `ninja-role-validation-native`). It serves no `docs/` or
-  `openapi.json` unless given `docs_url=` and `openapi_url=`. It takes no
-  `auth=`, takes a `urls_namespace` (distinct for each API in a process), and needs
-  `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. A router
-  you add to it carries its own `auth=` or scrud's entry checks
-  (`router.add_decorator(scrud_django.ninja.entry.entry, mode="view")`). UI and
-  studio types are not served on it yet, and `scrud_django.urls` is still DRF.
-  See "django-ninja (preview)" in the README.
+  optional extra `ninja`, `scrud-django[ninja]`).
+  `scrud_django.ninja.api(types=[...])` returns a `NinjaAPI` serving the
+  built-in types, your types, the service catalog, scoped-rbac's role routes
+  and the collection documents, with the statuses, headers and bodies of the
+  DRF routes (DRF's content negotiation included: its 406, its `?format=` 404
+  and `Accept: ...; indent=N`, but never HTML), errors included whatever
+  `SCOPED_RBAC["UNIFORM_ERRORS"]` is, when the API is built or for a request:
+  problem details while it is on, DRF's native `{"detail": ...}` bodies (a
+  computed type's `compute` refusing with an empty message, or a list or dict,
+  included) while it is off, but for a role or role assignment body failing
+  validation, which stays a problem (follow-up
+  `ninja-role-validation-native`). It serves no `docs/` or `openapi.json`
+  unless given `docs_url=` and `openapi_url=`. It takes no `auth=`, takes a
+  `urls_namespace` (distinct for each API in a process), and needs
+  `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. A router you
+  add to it carries its own `auth=` or scrud's entry checks
+  (`router.add_decorator(scrud_django.ninja.entry.entry, mode="view")`). UI
+  and studio types are not served on it yet, and `scrud_django.urls` is still
+  DRF. See "django-ninja (preview)" in the README.
 * `registration.TypeSpec` and the functions `json_resource_type_spec`,
   `computed_resource_type_spec` and `built_in_type_specs`: a resource type as
   every front end registers it, without a front end's routes.
@@ -607,6 +608,12 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   `absolute_reverse(namespace=)`, `ScrudServices.add_service` taking a
   sequence of route prefixes, `ResourceTypeRegistration(build_urls=)`,
   `registration.register_role_services` and `exceptions.ContentFilterError`.
+  `core.create` and `core.update` take `type_iri`, which names the post-save
+  check and the workflow mark. `core.resources.load_for_read`, locking for a
+  write, takes a `WorkflowPolicy`'s type lock before the row lock, as the DRF
+  views do, so a ninja write of a policy and a server-side write of it
+  (`ResourceRegistration.update`, a bulk delete, a sync repair) lock in one
+  order.
 
 ### Changed
 
@@ -616,22 +623,6 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   under a namespaced `include()` gets namespaced links; before, those reverses
   only worked if the routes were also mounted globally. Without a namespace
   the links are as before.
-
-### Fixed
-
-* `core.resources.load_for_read` takes a `WorkflowPolicy`'s type lock before
-  the row lock when it locks for a write, as DRF's views do. A ninja PUT or
-  DELETE of a policy racing a server-side write of the same policy
-  (`ResourceRegistration.update`, a bulk delete, a sync repair) could
-  deadlock on PostgreSQL; both front ends now lock in one order.
-* On ninja, computed types' `Http404` and `PermissionDenied` messages,
-  a type route's or `services/`'s CORS preflight (no `Vary`, as DRF), and
-  `Accept: ...; indent=N` answer as DRF's do.
-* `core.create` and `core.update` take `type_iri`, which names the
-  post-save check and the workflow mark; `ErrorText` without DRF compares
-  `code` as `ErrorDetail` does; the view-based `~` detection compares
-  permission objects, not their count; `core.resources.readable_content`
-  no longer takes `grants`.
 
 ### Upgrading
 

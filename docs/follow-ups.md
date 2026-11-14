@@ -1545,6 +1545,9 @@ Test: `tests/test_ninja_auth.py` pins today's answers (Basic alone is
 anonymous; the hook maps it); the hook would add a case where DRF's Basic
 authentication alone gives the item GET a 200 on ninja.
 
+Owner's decision (2026-11-13): keep `resolve_user` as it is for now; revisit
+with part C.
+
 <a id="scoped-rbac-ninja-user-hook-csrf-doc"></a>
 ## scoped-rbac-ninja-user-hook-csrf-doc: the `ninja_user_hook` docstring says a hook's user skips the CSRF check
 
