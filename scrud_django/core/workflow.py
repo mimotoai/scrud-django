@@ -28,6 +28,7 @@ resource they may not read, names neither the policy nor its states
 
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from django.core.exceptions import ImproperlyConfigured
 from scoped_rbac import access
@@ -36,6 +37,7 @@ from scoped_rbac.policy import Permission
 from scrud_django.core.authz import (
     _checking_transition,
     _checking_write,
+    _consume_workflow_mark,
     _mark_workflow_authorized,
     _not_checking_write,
     _reading_every_context,
@@ -50,6 +52,7 @@ from scrud_django.exceptions import (
     WorkflowTransitionError,
 )
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
+from scrud_django.models import Resource
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
     TransitionData,
@@ -140,25 +143,141 @@ def validate_policy_write(body: Mapping, stored_pk: int | None) -> None:
     check_policy_is_unique(body, stored_pk)
 
 
-# What `workflow_check` is given as the stored content (`prior`) of a
-# resource whose content is JSON null (``None``). ``None`` itself would mean a
-# create; this stand-in is an update over content that is not an object,
-# which the check reads as it always read null content: in the default
-# context (`rbac_contexts_of`), in no state (`WorkflowPolicy.state`), and an
-# error about it is hidden unless the stored resource is readable.
-NULL_STORED_CONTENT = ()
+class NullContent:
+    """The type of `NULL_CONTENT`, its one instance (``NullContent()`` is
+    it): falsy, ``repr`` ``NULL_CONTENT``."""
+
+    __slots__ = ()
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return "NULL_CONTENT"
+
+    def __reduce__(self):
+        # Copied or pickled, it stays the one instance.
+        return "NULL_CONTENT"
 
 
-def prior_of(instance):
-    """The stored content of `instance` (a ``Resource``) as `workflow_check`
-    takes it (`prior`): ``None`` for no instance (a create),
-    `NULL_STORED_CONTENT` for content that is JSON null, else the content.
-    Never pass ``instance.content`` itself: null content would be checked as
-    a create."""
-    if instance is None:
+# An `Update`'s stored content (`prior`) when the resource's content is JSON
+# null, or not an object (content stored before 0.12.0 could be a list):
+# the check reads it in the default context (`rbac_contexts_of`), in no
+# state (`WorkflowPolicy.state`), and an error about it is hidden unless the
+# stored resource is readable. A create is a `Create`, never null content.
+NULL_CONTENT = NullContent()
+
+# An alias of `NULL_CONTENT`, its earlier name (re-exported by
+# ``scrud_django.validators``).
+NULL_STORED_CONTENT = NULL_CONTENT
+
+
+def _contexts(value, name):
+    """`value` (a `Create`'s or `Update`'s `name`) as a tuple of contexts,
+    or ``None``; a ``str`` is one context, not a sequence of them."""
+    if value is None:
         return None
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        raise TypeError(f"{name} must be a sequence of contexts, not {value!r}.")
+    return tuple(value)
+
+
+def _content(value, name):
+    """Refuse (``TypeError``) a `value` (a write's `name`) that is not a
+    ``Mapping``: a body, or stored content, that is a JSON object."""
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a Mapping, not {type(value).__name__}.")
+
+
+@dataclass(frozen=True)
+class Create:
+    """A create of `proposed` (the body as sent), the input `workflow_check`
+    checks as a valid initial state in each context concerned.
+
+    - `contexts_after` are the contexts the write names; by default
+      ``rbac_contexts_of(proposed)``.
+
+    Raises ``TypeError`` for a `proposed` that is not a ``Mapping``."""
+
+    proposed: Mapping
+    contexts_after: Sequence[str] | None = None
+
+    def __post_init__(self):
+        _content(self.proposed, "proposed")
+        object.__setattr__(
+            self, "contexts_after", _contexts(self.contexts_after, "contexts_after")
+        )
+
+
+@dataclass(frozen=True)
+class Update:
+    """An update of the stored resource `stored_pk` from `prior` (its
+    stored content: a ``Mapping``, or `NULL_CONTENT`, `prior_from`) to
+    `proposed` (the body as sent), the input `workflow_check` checks as a
+    transition in each context concerned.
+
+    - `readable` says whether the requester may read the stored resource:
+      an error about an update of one they may not read is hidden
+      (`errors_hidden_unless_readable`). Required: a caller asks it.
+    - `stored_pk` is the resource the workflow mark names
+      (`_mark_workflow_authorized`); ``None``, an update that does not say
+      which resource it writes, is not marked, and the post-save check of
+      no save matches it.
+    - `contexts_before` and `contexts_after` are the contexts the resource
+      is in and those the write names; by default ``rbac_contexts_of`` of
+      `prior` and of `proposed`.
+
+    Raises ``TypeError`` for a `prior` or `proposed` of another type or a
+    `readable` that is not callable."""
+
+    prior: Mapping | NullContent
+    proposed: Mapping
+    readable: Callable[[], bool]
+    stored_pk: int | None
+    contexts_before: Sequence[str] | None = None
+    contexts_after: Sequence[str] | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.prior, NullContent):
+            _content(self.prior, "prior (or NULL_CONTENT)")
+        _content(self.proposed, "proposed")
+        if not callable(self.readable):
+            raise TypeError(
+                "An Update's readable must be callable (whether the requester "
+                f"may read the stored resource), not {self.readable!r}."
+            )
+        for name in ("contexts_before", "contexts_after"):
+            object.__setattr__(self, name, _contexts(getattr(self, name), name))
+
+
+def prior_from(value: object) -> Mapping | NullContent:
+    """`value` (stored content) as an `Update`'s ``prior``: `NULL_CONTENT`
+    for ``None`` (JSON null), a ``Mapping`` itself. Anything else raises
+    ``TypeError``. For an app's own models; a ``Resource``'s is
+    `prior_of`."""
+    if value is None:
+        return NULL_CONTENT
+    if isinstance(value, Mapping):
+        return value
+    raise TypeError(
+        f"Stored content must be a Mapping or None, not {type(value).__name__}."
+    )
+
+
+def prior_of(instance: Resource) -> Mapping | NullContent:
+    """The stored content of the ``Resource`` `instance` as an `Update`'s
+    ``prior`` (`prior_from`). Content that is not an object, which only a
+    resource stored before 0.12.0 can have, is `NULL_CONTENT`, which the
+    check reads as it always read such content: in the default context and
+    in no state."""
     content = instance.content
-    return NULL_STORED_CONTENT if content is None else content
+    return content if isinstance(content, Mapping) else NULL_CONTENT
 
 
 def plain_body(data):
@@ -176,53 +295,59 @@ def workflow_check(
     request,
     *,
     type_iri: str,
-    prior: Mapping | None,
-    proposed: Mapping | None,
-    contexts_before: list[str] | None = None,
-    contexts_after: list[str] | None = None,
+    write: Create | Update,
     narrow: Sequence[Callable] = (),
-    readable: Callable[[], bool] | None = None,
-    stored_pk: int | None = None,
     post_save_type_iri: str | None = None,
 ) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
-    """Check `request`'s write of `proposed` (the body as sent) over `prior`
-    (the stored content, ``None`` for a create) of the type `type_iri`, as
-    the module describes, and return the transitions it authorized:
-    ``(context, policy, transition data)`` for each context with a policy
-    (``None`` as the context: the resource is in none).
+    """Check `request`'s `write` (a `Create`, or an `Update` of its stored
+    content) of the type `type_iri`, as the module describes, and return the
+    transitions it authorized: ``(context, policy, transition data)`` for
+    each context with a policy (``None`` as the context: the resource is in
+    none).
 
-    - `contexts_before` and `contexts_after` are the contexts the resource
-      is in and those the write names; by default ``rbac_contexts_of`` of
-      `prior` (none for a create) and of `proposed`.
-    - `narrow` checks, ``(request, body, context) -> bool``, may refuse a
-      transition the request's policy allows, never allow one it refuses:
-      each is asked, while the transition is being authorized, with the body
-      as sent (`plain_body`) and the context.
-    - `readable` says whether the requester may read the stored resource; an
-      error about an update of one they may not read is hidden. ``None``
-      for an update (a `prior`) hides it: a caller that cannot tell fails
-      closed. A create has no stored resource and ignores it.
+    `narrow` checks, ``(request, body, context) -> bool``, may refuse a
+    transition the request's policy allows, never allow one it refuses:
+    each is asked, while the transition is being authorized, with the body
+    as sent (`plain_body`) and the context.
 
-    When every context passes, it marks the request authorized
+    It first removes any mark an earlier check left on the request
+    (`_consume_workflow_mark`): this check replaces it, and one that fails
+    leaves none. When every context passes, it marks the request authorized
     (`_mark_workflow_authorized`) for this one write: of the stored
-    resource `stored_pk` (``None`` for a create), named by the type
-    `post_save_type_iri` (the type the write's post-save check names; by
-    default `type_iri`). An update (a `prior`) without a `stored_pk` is not
-    marked: the post-save check of no save matches it. The save that uses
-    the mark consumes it (`scrud_django.core.writes.save_checked`).
+    resource (an `Update`'s ``stored_pk``; ``None`` for a `Create`), named
+    by the type `post_save_type_iri` (the type the write's post-save check
+    names; by default `type_iri`). An `Update` without a ``stored_pk`` is
+    not marked: the post-save check of no save matches it. The save that
+    uses the mark consumes it (`scrud_django.core.writes.save_checked`).
 
-    Raises `WorkflowTransitionError` (or a subclass) for a transition that
-    is invalid or not authorized, `NoWorkflowPolicyDenied` in a context
-    without a policy, `WorkflowRequestRequired` without a request where a
-    policy applies, and ``NotImplementedError`` for a delete
-    (`proposed` ``None``), which runs no workflow check (follow-up
-    ``delete-no-workflow-check``)."""
-    if proposed is None:
-        raise NotImplementedError(
-            "A delete runs no workflow check (follow-up delete-no-workflow-check)."
+    Raises ``TypeError`` for a `write` that is neither (a delete runs no
+    workflow check: follow-up ``delete-no-workflow-check``),
+    `WorkflowTransitionError` (or a subclass) for a transition that is
+    invalid or not authorized, `NoWorkflowPolicyDenied` in a context
+    without a policy, and `WorkflowRequestRequired` without a request where
+    a policy applies."""
+    _consume_workflow_mark(request)
+    if isinstance(write, Create):
+        prior = None
+        readable = None
+        stored_pk = None
+        contexts_before: Sequence[str] = ()
+    elif isinstance(write, Update):
+        prior = write.prior
+        readable = write.readable
+        stored_pk = write.stored_pk
+        stored_before = write.contexts_before
+        contexts_before = (
+            rbac_contexts_of(prior) if stored_before is None else stored_before
         )
-    if contexts_before is None:
-        contexts_before = rbac_contexts_of(prior) if prior is not None else []
+    else:
+        raise TypeError(
+            "workflow_check checks a Create or an Update, not "
+            f"{type(write).__name__}; a delete runs no workflow check "
+            "(follow-up delete-no-workflow-check)."
+        )
+    proposed = write.proposed
+    contexts_after = write.contexts_after
     if contexts_after is None:
         contexts_after = rbac_contexts_of(proposed)
     contexts = list(dict.fromkeys(list(contexts_before) + list(contexts_after)))
@@ -237,10 +362,6 @@ def workflow_check(
         if any(p is not None for _, p in policies):
             raise WorkflowRequestRequired()
         return []
-    if prior is not None and readable is None:
-        # Not told whether the stored resource is readable: hide what an
-        # error would reveal of it.
-        readable = _unreadable
     transitions = []
     for c, policy in policies:
         if policy is None:
@@ -268,12 +389,6 @@ def workflow_check(
             stored_pk=stored_pk,
         )
     return transitions
-
-
-def _unreadable():
-    """`workflow_check`'s ``readable`` for an update whose caller gave
-    none."""
-    return False
 
 
 @contextmanager

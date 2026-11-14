@@ -1,9 +1,11 @@
 """What a scrud front end requires of an object as far as RBAC is concerned,
-without a view: a **requirement**, a list of entries every one of which must
-allow the object, each a `Leaf` (a view-free ``IsAuthorized``) or an
-``scoped_rbac.access.AnyOf`` of alternatives (DRF's ``|``), each option a
-list of entries that must all allow it, as scoped-rbac's
-``AccessControlledAPIView.rbac_requirement`` builds one.
+without a view: a **requirement** (`Requirement`, frozen), entries every one
+of which must allow the object, each a `Leaf` (a view-free ``IsAuthorized``)
+or an `AnyOf` of alternatives (DRF's ``|``), each option a tuple of entries
+that must all allow it. `Requirement.of` takes the entries as scoped-rbac's
+``AccessControlledAPIView.rbac_requirement`` builds them (its
+``access.AnyOf`` converted to the core's `AnyOf`) and refuses one that asks
+no grants; the facade's entry points take a requirement through it.
 
 `GrantsLeaf` answers as scoped-rbac's ``IsAuthorized`` answers on a scrud
 resource view. The DRF views' own permissions are leaves too
@@ -17,6 +19,7 @@ route (`readable_by_grants`, `readable_by_object_checks`).
 
 import copy
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Protocol
 
 from django.core.exceptions import ImproperlyConfigured, PermissionDenied
@@ -29,6 +32,7 @@ from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
 from scrud_django.core.authz import (
     _every_context,
+    _not_checking_write,
     condition_resource,
     may_act_in_context,
     resource_contexts,
@@ -79,7 +83,107 @@ class Leaf(Protocol):
     def has_context_permission(self, request, obj: Mapping, context: str) -> bool: ...
 
 
-Requirement = list[Leaf | access.AnyOf]
+def _entries(option):
+    """An ``AnyOf`` option as the entries it requires: a list or tuple of
+    them as it is, any other entry (a leaf, an ``AnyOf``) alone."""
+    return option if isinstance(option, (list, tuple)) else [option]
+
+
+def _entry(entry):
+    """`entry` as a `Requirement` holds it: scoped-rbac's ``access.AnyOf``
+    as the core's `AnyOf`; a leaf (or the core's `AnyOf`) as it is."""
+    if isinstance(entry, access.AnyOf):
+        return AnyOf.of(*entry.options)
+    return entry
+
+
+@dataclass(frozen=True)
+class AnyOf:
+    """Alternatives (DRF's ``|``), any one of which allowing suffices: each
+    option a tuple of entries (leaves, or an `AnyOf`) that must all allow.
+    It has at least one option, and every option at least one entry
+    (``ValueError``): an ``AnyOf`` of none would allow nothing yet have no
+    leaf to check, and an empty option would allow everything. Its options
+    are normalised as `of` does, whatever they were given as."""
+
+    options: tuple[tuple["Leaf | AnyOf", ...], ...]
+
+    def __post_init__(self):
+        options = tuple(
+            tuple(_entry(e) for e in _entries(option)) for option in self.options
+        )
+        if not options:
+            raise ValueError("An AnyOf needs at least one option.")
+        if not all(options):
+            raise ValueError(f"An AnyOf option requires no entry: {self.options!r}.")
+        object.__setattr__(self, "options", options)
+
+    @classmethod
+    def of(cls, *options) -> "AnyOf":
+        """The `AnyOf` of `options`, each a leaf, a list (or tuple) of
+        entries, or an ``AnyOf`` (scoped-rbac's ``access.AnyOf``, as
+        ``AccessControlledAPIView.rbac_requirement`` builds one, converted
+        to the core's), as a tuple of its entries."""
+        return cls(options)
+
+
+def to_scoped_rbac(any_of: AnyOf) -> access.AnyOf:
+    """`any_of` as scoped-rbac's ``access.AnyOf`` (each option a list, a
+    nested `AnyOf` converted too), for a scoped-rbac call that needs its
+    own type."""
+
+    def entry(e):
+        return to_scoped_rbac(e) if isinstance(e, AnyOf) else e
+
+    return access.AnyOf([[entry(e) for e in option] for option in any_of.options])
+
+
+@dataclass(frozen=True)
+class Requirement:
+    """What a front end requires of a request and an object: `entries`,
+    every one of which must allow it, each a `Leaf` or an `AnyOf`; iterable
+    over them. Build one with `of`, which refuses one that asks no grants
+    (what the facade's entry points take), or, for a DRF view's own
+    requirement only (a view with no ``IsAuthorized`` asks none and is
+    still served), `unchecked`. Its entries are normalised as `of` does
+    (scoped-rbac's ``access.AnyOf`` as the core's `AnyOf`)."""
+
+    entries: tuple["Leaf | AnyOf", ...]
+
+    def __post_init__(self):
+        object.__setattr__(self, "entries", tuple(map(_entry, self.entries)))
+
+    def __iter__(self):
+        return iter(self.entries)
+
+    def __len__(self):
+        return len(self.entries)
+
+    def __getitem__(self, index):
+        """An entry (a slice: a tuple of entries, not a `Requirement`)."""
+        return self.entries[index]
+
+    @classmethod
+    def unchecked(cls, entries) -> "Requirement":
+        """`entries` (a sequence of leaves and ``AnyOf``s, scoped-rbac's
+        included) as a `Requirement`, with no grants check; a `Requirement`
+        as it is. Only for a DRF view's requirement
+        (`scrud_django.drf_requirements.requirement_of`) and the helpers
+        the DRF adapters call."""
+        if isinstance(entries, Requirement):
+            return entries
+        return cls(tuple(entries))
+
+    @classmethod
+    def of(cls, entries, *, caller: str = "Requirement.of") -> "Requirement":
+        """`entries` as a `Requirement` (`unchecked`; a `Requirement` is
+        returned as it is), refused (``ImproperlyConfigured``,
+        `require_grants`, naming `caller`) unless it asks the grants
+        (`asks_grants`): a `Requirement` built `unchecked` is checked
+        too."""
+        requirement = cls.unchecked(entries)
+        require_grants(requirement, caller)
+        return requirement
 
 
 def as_get(request):
@@ -161,6 +265,18 @@ def asks_grants_itself(leaf) -> bool:
 
 _hook_leaf_class = None
 
+
+def _hook_class() -> type:
+    """`scrud_django.core.types.HookLeaf`, imported on first use:
+    `scrud_django.core.types` imports this module."""
+    global _hook_leaf_class
+    if _hook_leaf_class is None:
+        from scrud_django.core.types import HookLeaf
+
+        _hook_leaf_class = HookLeaf
+    return _hook_leaf_class
+
+
 # What decides that a type's hooks only refuse: a subclass of ``HookLeaf``
 # (or an instance) overriding one of them is no type's hooks (`is_hook`).
 _HOOK_ATTRIBUTES = (
@@ -179,21 +295,15 @@ def is_hook(leaf) -> bool:
     `_trusted` has it for a grants leaf: one that does may allow what a
     type's hooks would not, and is a leaf of an unknown class (the grants
     are asked beside it)."""
-    global _hook_leaf_class
-    if _hook_leaf_class is None:
-        # Imported here: scrud_django.core.types imports this module.
-        from scrud_django.core.types import HookLeaf
-
-        _hook_leaf_class = HookLeaf
-    if not isinstance(leaf, _hook_leaf_class):
+    hook_class = _hook_class()
+    if not isinstance(leaf, hook_class):
         return False
     instance = getattr(leaf, "__dict__", {})
     if any(name in instance for name in _HOOK_ATTRIBUTES):
         return False
     cls = type(leaf)
     return all(
-        getattr(cls, name) is getattr(_hook_leaf_class, name)
-        for name in _HOOK_ATTRIBUTES
+        getattr(cls, name) is getattr(hook_class, name) for name in _HOOK_ATTRIBUTES
     )
 
 
@@ -334,19 +444,19 @@ class GrantsLeaf:
         return access.may_act_in(request, self._permission(request), context, resource)
 
 
-def _entries(option):
-    """An ``AnyOf`` option as the entries it requires."""
-    return option if isinstance(option, (list, tuple)) else [option]
+def _leaves(entries):
+    for entry in entries:
+        if isinstance(entry, AnyOf):
+            for option in entry.options:
+                yield from _leaves(option)
+        else:
+            yield entry
 
 
 def requirement_leaves(requirement):
-    """Every `Leaf` of `requirement`, ``AnyOf`` options included."""
-    for entry in requirement:
-        if isinstance(entry, access.AnyOf):
-            for option in entry.options:
-                yield from requirement_leaves(_entries(option))
-        else:
-            yield entry
+    """Every `Leaf` of `requirement` (a `Requirement`, or its entries,
+    `Requirement.unchecked`), `AnyOf` options included."""
+    return _leaves(Requirement.unchecked(requirement))
 
 
 def asks_grants(requirement) -> bool:
@@ -357,16 +467,15 @@ def asks_grants(requirement) -> bool:
     counts as asking none, whatever it says. An ``AnyOf`` asks them only
     when it has options and **every** option does (an option of hooks alone
     would allow what the grants refuse, and an ``AnyOf`` of none has no leaf
-    to check a write after its save)."""
+    to check a write after its save: `AnyOf` refuses one). `requirement`
+    is a `Requirement`, or its entries (`Requirement.unchecked`)."""
 
     def asks(entry):
-        if isinstance(entry, access.AnyOf):
-            return bool(entry.options) and all(
-                any(map(asks, _entries(option))) for option in entry.options
-            )
+        if isinstance(entry, AnyOf):
+            return all(any(map(asks, option)) for option in entry.options)
         return _trusted(entry)
 
-    return any(map(asks, requirement))
+    return any(map(asks, Requirement.unchecked(requirement)))
 
 
 def require_grants(requirement, caller: str) -> None:
@@ -389,6 +498,7 @@ def object_check_requirement(requirement):
     (``overrides_object_checks``: they may refuse what the grants allow,
     which the SQL filter cannot see); else ``None``, and a list is decided by
     the grants alone."""
+    requirement = Requirement.unchecked(requirement)
     if any(leaf.overrides_object_checks for leaf in requirement_leaves(requirement)):
         return requirement
     return None
@@ -400,16 +510,27 @@ def option_allows_request(option, request, body=None) -> bool:
     options), as DRF's ``|`` asks an operand's request check
     (``OR.has_object_permission``). `meets_object_checks` asks it without a
     body: its facade callers (a list, readability) always ask it of a GET or
-    HEAD (a GET copy, `as_get`, for a write's), which has none."""
+    HEAD (a GET copy, `as_get`, for a write's), which has none.
+
+    A type's hooks (a `HookLeaf`, of any subclass) are asked outside the
+    write's checks (`_not_checking_write`: ``scrud_workflow`` refuses
+    there), as the route's request check asks them
+    (`scrud_django.core.resources.check_request`) and the DRF route does
+    (``check_request_hooks``, once its ``write_checks`` is over): an
+    option's pairing with its object check then answers as the request
+    check did."""
 
     def allows(entry):
-        if isinstance(entry, access.AnyOf):
+        if isinstance(entry, AnyOf):
             return any(
                 option_allows_request(option, request, body) for option in entry.options
             )
+        if isinstance(entry, _hook_class()):
+            with _not_checking_write():
+                return entry.has_permission(request, body)
         return entry.has_permission(request, body)
 
-    return all(map(allows, _entries(option)))
+    return all(map(allows, option))
 
 
 def meets_object_checks(requirement, request, obj, *, request_checks=False):
@@ -428,10 +549,10 @@ def meets_object_checks(requirement, request, obj, *, request_checks=False):
     def satisfied(option):
         if request_checks and not option_allows_request(option, request):
             return False
-        return all(meets(e) for e in _entries(option))
+        return all(meets(e) for e in option)
 
     def meets(entry):
-        if isinstance(entry, access.AnyOf):
+        if isinstance(entry, AnyOf):
             return any(satisfied(option) for option in entry.options)
         try:
             return entry.has_object_permission(request, obj)
@@ -440,7 +561,7 @@ def meets_object_checks(requirement, request, obj, *, request_checks=False):
             return False
 
     try:
-        return all(meets(entry) for entry in requirement)
+        return all(meets(entry) for entry in Requirement.unchecked(requirement))
     except REFUSALS:
         # Raised by a request check: DRF's ``|`` raises it for the object.
         return False
@@ -453,14 +574,14 @@ def _grants_meet(requirement, request, obj, permission_of):
         )
 
     def meets(entry):
-        if isinstance(entry, access.AnyOf):
-            return any(all(map(meets, _entries(option))) for option in entry.options)
+        if isinstance(entry, AnyOf):
+            return any(all(map(meets, option)) for option in entry.options)
         if is_hook(entry):
             # A leaf that only refuses (a type's hooks): no grants to ask.
             return True
         return reads(entry)
 
-    return all(map(meets, requirement))
+    return all(map(meets, Requirement.unchecked(requirement)))
 
 
 def grants_allow(requirement, request, obj, permission):
@@ -507,6 +628,7 @@ def filter_by_object_checks(
     404). Every object examined counts against
     ``SCOPED_RBAC["CONDITIONAL_LIST_MAX_ROWS"]``: past it,
     ``access.ConditionalListTooLarge``."""
+    requirement = Requirement.unchecked(requirement)
     max_rows = conditional_list_max_rows()
     allowed_pks = []
     bounded = queryset.order_by()[: max_rows + 1]

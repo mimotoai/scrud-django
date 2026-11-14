@@ -1,9 +1,11 @@
 """A list of resources without DRF: the resources a requester may list
-(`readable_queryset`), filtered on query parameters (`content_filtered`), and
-the list's validators (`list_etag`, `list_last_modified`) and the
-preconditions of a POST to it (`evaluate_list_preconditions`), as the DRF
-routes answer them (`scrud_django.filters.ResourceRbacFilter`,
-``ResourceContentFilter``, ``ListValidatorsMixin``).
+(`readable_queryset`), filtered on query parameters (`content_filtered`),
+both in the list's order (`list_queryset`), a page of them read key first
+on MySQL (`page_of`, `rows_by_keys`), and the list's validators
+(`list_etag`, `list_last_modified`) and the preconditions of a POST to it
+(`evaluate_list_preconditions`), as the DRF routes answer them
+(`scrud_django.filters.ResourceRbacFilter`, ``ResourceContentFilter``,
+``StandardResultsSetPagination``, ``ListValidatorsMixin``).
 
 A requirement's leaves must read a resource's contexts as they are stored
 (their ``ResourceContext`` rows, which the SQL filter and the removal stamps
@@ -22,6 +24,8 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from urllib.parse import urlencode
 
+from django.core.paginator import Paginator
+from django.db import connections
 from django.db.models import (
     BooleanField,
     Case,
@@ -52,17 +56,19 @@ from scrudful.conditional import (
 from scrud_django.core.authz import condition_resource, content_of
 from scrud_django.core.requirements import (
     CANDIDATE_CHUNK_SIZE,
+    Requirement,
     _plainly_reserved,
     _usable,
     as_get,
     filter_by_object_checks,
     object_check_requirement,
     readable_removal,
-    require_grants,
     require_stored_contexts,
 )
+from scrud_django.core.types import type_options
 from scrud_django.exceptions import QueryParameterError
 from scrud_django.models import Resource, ResourceContext
+from scrud_django.rows import unsorted
 
 # The preconditions a POST to a list evaluates (`evaluate_list_preconditions`).
 LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
@@ -182,7 +188,11 @@ def _conditionally_allowed(candidates, request, policy, permission, scope, conte
 
 
 def readable_queryset(
-    request, resource_type, requirement, *, using: str | None = None
+    request,
+    resource_type,
+    requirement: Requirement | Sequence,
+    *,
+    using: str | None = None,
 ) -> QuerySet[Resource]:
     """The resources of `resource_type` `request`'s user may list, read on
     database `using` (``None``: as the router reads), in today's order: the
@@ -203,10 +213,10 @@ def readable_queryset(
     write's own request check governs it (`validate_write`'s), as DRF
     evaluates a conditional create's list validators without the list
     grant; its list is that of its GET copy (`as_get`), filtered by the
-    item grants. A `requirement` that asks no grants
-    (`scrud_django.core.requirements.require_grants`), or with a leaf that
-    may read contexts other than a resource's stored ones
-    (`scrud_django.core.requirements.require_stored_contexts`), is
+    item grants. A `requirement` (taken through
+    `scrud_django.core.requirements.Requirement.of`) that asks no grants,
+    or with a leaf that may read contexts other than a resource's stored
+    ones (`scrud_django.core.requirements.require_stored_contexts`), is
     ``ImproperlyConfigured`` whatever the method or the requester.
 
     The object checks ask, for each ``AnyOf`` option, its request checks
@@ -214,7 +224,7 @@ def readable_queryset(
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import check_request
 
-    require_grants(requirement, "readable_queryset")
+    requirement = Requirement.of(requirement, caller="readable_queryset")
     require_stored_contexts(requirement, "readable_queryset")
     if request.method in ("GET", "HEAD"):
         check_request(request, resource_type, requirement, list_route=True)
@@ -261,6 +271,68 @@ def content_filtered(queryset, params: QueryDict, *, ignored: frozenset[str]):
     return queryset
 
 
+def list_queryset(
+    request,
+    resource_type,
+    params: QueryDict,
+    *,
+    requirement: Requirement | Sequence,
+    ignored: frozenset[str] = frozenset(),
+    using: str | None = None,
+) -> QuerySet[Resource]:
+    """The list of `resource_type` `request`'s user gets, as the DRF list
+    route lists it: `readable_queryset` (its request check, its refusals,
+    `requirement` and `using` as it takes them), then, when the type's
+    ``TypeOptions.content_filter`` is set (`scrud_django.core.types.type_options`
+    of its ``type_uri``), filtered on the query parameters `params` but those
+    `ignored` (`content_filtered`, the pagination parameters, the format
+    override and the UI's, the caller's; a `QueryParameterError` for a
+    parameter that cannot be a content key), ordered by
+    ``Resource.Meta.ordering``. Page it with `page_of`.
+
+    It lists for a GET or HEAD only: any other method of `request` is a
+    ``ValueError`` (`readable_queryset` asks the list grant for those two
+    alone, so a list served for another method would skip it)."""
+    if request.method not in ("GET", "HEAD"):
+        raise ValueError(
+            f"list_queryset lists for a GET or HEAD, not a {request.method}"
+        )
+    queryset = readable_queryset(request, resource_type, requirement, using=using)
+    if type_options(resource_type.type_uri).content_filter:
+        queryset = content_filtered(queryset, params, ignored=ignored)
+    return queryset.order_by(*Resource._meta.ordering)
+
+
+def rows_by_keys(queryset, keys: Sequence) -> list[Resource]:
+    """The rows of `queryset` whose keys are `keys`, in `keys`' order (a key
+    `queryset` does not hold is left out), read by key with no ``ORDER BY``
+    (`scrud_django.rows.unsorted`): sorting rows whose JSON content is over
+    MySQL's ``sort_buffer_size`` fails there (error 1038,
+    `scrud_django.rows`)."""
+    rows = {row.pk: row for row in unsorted(queryset.filter(pk__in=keys))}
+    return [rows[pk] for pk in keys if pk in rows]
+
+
+def page_of(queryset, *, number: int, size: int) -> tuple[list[Resource], int]:
+    """Page `number` (from 1) of `queryset` (`list_queryset`'s, ordered), of
+    `size` rows, and the count of `queryset`'s rows, as Django's
+    ``Paginator`` pages it (an empty list has one, empty, page). A `number`
+    past the last page (or below 1) raises
+    ``django.core.paginator.EmptyPage``; a `size` below 1 is a
+    ``ValueError``. On MySQL the page is found among the keys alone
+    (``values_list("pk", flat=True)``), then its rows are read by key
+    (`rows_by_keys`): MySQL sorts with every column it selects, so a page
+    holding a row whose content is over its ``sort_buffer_size`` would fail
+    (error 1038); elsewhere the queryset is sliced."""
+    if size < 1:
+        raise ValueError(f"A page holds at least one row, not {size}.")
+    if connections[queryset.db].vendor != "mysql":
+        page = Paginator(queryset, size).page(number)
+        return list(page.object_list), page.paginator.count
+    page = Paginator(queryset.values_list("pk", flat=True), size).page(number)
+    return rows_by_keys(queryset, list(page.object_list)), page.paginator.count
+
+
 def list_etag(
     resource_type,
     *,
@@ -292,16 +364,21 @@ def latest(*times):
     return max((t for t in times if t is not None), default=None)
 
 
-def list_last_modified(request, resource_type, queryset, requirement):
+def list_last_modified(
+    request, resource_type, queryset, requirement: Requirement | Sequence
+):
     """The list's Last-Modified: the newest ``modified_at`` of `queryset`
     (`readable_queryset`'s), or the newest time a resource left a context in
     which the requester may list every resource
     (`scrud_django.core.requirements.readable_removal` of `requirement`, read
     on the queryset's database), whichever is later; ``None`` for neither.
     The leaves must read a resource's contexts as stored (the module's
-    note): the stamps are of those contexts. A `requirement` with a leaf
-    that may read others is ``ImproperlyConfigured``
-    (`scrud_django.core.requirements.require_stored_contexts`)."""
+    note): the stamps are of those contexts. `requirement` is taken through
+    `scrud_django.core.requirements.Requirement.of`: one that asks no
+    grants, or with a leaf that may read others
+    (`scrud_django.core.requirements.require_stored_contexts`), is
+    ``ImproperlyConfigured``."""
+    requirement = Requirement.of(requirement, caller="list_last_modified")
     require_stored_contexts(requirement, "list_last_modified")
     newest = queryset.aggregate(newest=Max("modified_at"))["newest"]
     removed = readable_removal(request, requirement, resource_type, queryset.db)

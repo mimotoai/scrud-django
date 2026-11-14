@@ -36,13 +36,15 @@ from scrud_django.core.authz import (
     may_act_in_context,
 )
 from scrud_django.core.requirements import (
+    Requirement,
     asks_grants_itself,
     is_hook,
-    require_grants,
     requirement_leaves,
 )
 from scrud_django.core.types import HookLeaf
 from scrud_django.core.workflow import (
+    Create,
+    Update,
     authorizing_write,
     check_policy_is_unique,
     prior_of,
@@ -52,6 +54,7 @@ from scrud_django.core.workflow import (
 from scrud_django.exceptions import (
     JsonSchemaInvalidError,
     JsonValidationError,
+    RequestBodyNotAnObjectError,
     ResourceInUseError,
 )
 from scrud_django.models import Resource, ResourceType
@@ -68,7 +71,7 @@ logger = logging.getLogger("scrud_django.validators")
 
 
 class ValidatorEntry:
-    def __init__(self, resource_type: ResourceType, validate: callable):
+    def __init__(self, resource_type: ResourceType, validate: Callable):
         self.type_uri = resource_type.type_uri
         self.revision = resource_type.revision
         self.etag = resource_type.schema.etag
@@ -224,7 +227,7 @@ def validate_write(
     body: Mapping,
     *,
     stored: Resource | None,
-    requirement,
+    requirement: Requirement | Sequence,
     narrow: Sequence[Callable] | None = None,
     readable: Callable[[], bool] | None,
     type_iri: str | None = None,
@@ -253,7 +256,10 @@ def validate_write(
     object check, which a ``load_for_read`` given no body could not (it
     asks whether the requester may PUT in some context). A refusal is
     ``access.AccessDenied``, or ``Http404`` for a resource the requester
-    cannot read. Then, in the order DRF's serializer validators check it:
+    cannot read. Then a body that is not a JSON object (a list, a string,
+    a number) is refused (`RequestBodyNotAnObjectError`, 400), as DRF's
+    serializer refuses it. Then, in the order DRF's serializer validators
+    check it:
     its JSON Schema (`validate_schema`), then, for a ``WorkflowPolicy``, the
     policy's own checks (`validate_policy_write`), then the workflow check
     (`scrud_django.core.workflow.workflow_check`, given `stored`'s content
@@ -270,8 +276,15 @@ def validate_write(
     in it (each `HookLeaf`'s ``narrow``), so that a registered check can
     refuse a transition, as on DRF. A given `narrow` replaces them.
 
-    A `requirement` that asks no grants (empty, or hooks only) is
-    ``ImproperlyConfigured`` (`scrud_django.core.requirements.require_grants`).
+    `readable` says whether the requester may read `stored` (whether its
+    workflow errors are hidden): required for an update, where ``None``
+    raises ``TypeError`` (once any earlier mark is removed); ignored for a
+    create.
+
+    `requirement` is taken through
+    `scrud_django.core.requirements.Requirement.of` (once any earlier mark
+    is removed): one that asks no grants (empty, or hooks only) is
+    ``ImproperlyConfigured``.
 
     `create` and `update` always call it themselves, on the body they save
     (a caller that called it first gets the workflow check, and an update's
@@ -288,6 +301,12 @@ def validate_write(
     # Whatever an earlier validation on the request authorized, this one
     # replaces it: refused, it leaves no mark for a save to use.
     _consume_workflow_mark(request)
+    if stored is not None and readable is None:
+        raise TypeError(
+            "validate_write of an update needs readable: whether the requester "
+            "may read the stored resource."
+        )
+    requirement = Requirement.of(requirement, caller="validate_write")
     check_request(
         request, resource_type, requirement, list_route=stored is None, body=body
     )
@@ -304,6 +323,10 @@ def validate_write(
             covered=request.method == COVERED_ITEM_METHOD,
             body=body,
         )
+    # DRF's serializer refuses a body that is not a JSON object (400) once
+    # the request and object checks have passed, before it validates.
+    if not isinstance(body, Mapping):
+        raise RequestBodyNotAnObjectError()
     if narrow is None:
         narrow = tuple(
             check
@@ -314,14 +337,22 @@ def validate_write(
     validate_schema(resource_type, body)
     if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
         validate_policy_write(body, stored.pk if stored is not None else None)
+    write: Create | Update
+    if stored is None:
+        write = Create(proposed=body)
+    else:
+        assert readable is not None  # checked above, before the lookups
+        write = Update(
+            prior=prior_of(stored),
+            proposed=body,
+            readable=readable,
+            stored_pk=stored.pk,
+        )
     return workflow_check(
         request,
         type_iri=resource_type.type_uri,
-        prior=prior_of(stored),
-        proposed=body,
+        write=write,
         narrow=narrow,
-        readable=readable,
-        stored_pk=stored.pk if stored is not None else None,
         post_save_type_iri=type_iri,
     )
 
@@ -446,7 +477,7 @@ def save_checked(
     save: Callable[[], Resource | None],
     *,
     instance: Resource | None,
-    requirement,
+    requirement: Requirement | Sequence | None,
     using: str,
     covered: bool,
     queryset=None,
@@ -490,9 +521,9 @@ def save_checked(
     transaction on `using`, so that a write outside a transaction of the
     caller's commits only once the type is cached again.
 
-    Without a `recheck`, a `requirement` that asks no grants (empty, or
-    hooks only) is ``ImproperlyConfigured`` (`require_grants`), before
-    anything is saved: its post-save check would let any write land
+    Without a `recheck`, `requirement` is taken through `Requirement.of`:
+    one that asks no grants (empty, or hooks only) is
+    ``ImproperlyConfigured``, before anything is saved: its post-save check would let any write land
     anywhere. (`check_post_save` itself takes one: a DRF view with no
     ``IsAuthorized`` checks nothing after the save.) `create` and `update`
     give no `recheck`.
@@ -500,7 +531,7 @@ def save_checked(
     Raises ``access.AccessError``s for the caller to answer."""
     try:
         if recheck is None:
-            require_grants(requirement, "save_checked")
+            requirement = Requirement.of(requirement, caller="save_checked")
         if type_iri is None:
             type_iri = resource_type.type_uri
         stored_pk = instance.pk if instance is not None else None
@@ -602,7 +633,7 @@ def create(
     resource_type,
     body,
     *,
-    requirement,
+    requirement: Requirement | Sequence,
     using: str,
     covered: bool = True,
     type_iri: str | None = None,
@@ -615,7 +646,12 @@ def create(
 
     It takes no ``recheck``: its post-save check is `requirement`'s
     (`check_post_save`). A front end needing a post-save check of its own
-    saves with `save_checked` itself (follow-up ``core-write-no-recheck``)."""
+    saves with `save_checked` itself (follow-up ``core-write-no-recheck``).
+
+    `requirement` is taken through `Requirement.of` (once any earlier mark
+    is removed, as `validate_write` removes it)."""
+    _consume_workflow_mark(request)
+    requirement = Requirement.of(requirement, caller="create")
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
         type_iri = resource_type.type_uri
@@ -652,7 +688,7 @@ def update(
     instance: Resource,
     body,
     *,
-    requirement,
+    requirement: Requirement | Sequence,
     using: str,
     covered: bool = True,
     type_iri: str | None = None,
@@ -670,7 +706,15 @@ def update(
 
     It takes no ``recheck``: its post-save check is `requirement`'s
     (`check_post_save`). A front end needing a post-save check of its own
-    saves with `save_checked` itself (follow-up ``core-write-no-recheck``)."""
+    saves with `save_checked` itself (follow-up ``core-write-no-recheck``).
+
+    `requirement` is taken through `Requirement.of` (once any earlier mark
+    is removed, as `validate_write` removes it). A ``None`` `instance` is a
+    ``TypeError``, before anything is validated."""
+    if instance is None:
+        raise TypeError("update needs the stored instance to write to, not None")
+    _consume_workflow_mark(request)
+    requirement = Requirement.of(requirement, caller="update")
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
         type_iri = resource_type.type_uri
@@ -701,7 +745,7 @@ def destroy(
     resource_type,
     instance: Resource,
     *,
-    requirement,
+    requirement: Requirement | Sequence | None,
     using: str,
     # A DELETE is no write the workflow check covers: scrud_workflow refuses.
     covered: bool = False,
@@ -720,13 +764,13 @@ def destroy(
     `scrud_django.core.resources.load_for_read` with ``method="DELETE"``
     first (DRF's ``get_object()``), which asks it.
 
-    Without a `check`, a `requirement` that asks no grants (empty, or hooks
-    only) is ``ImproperlyConfigured`` (`require_grants`), before anything is
-    deleted, as in `save_checked`: its every-context check of a
+    Without a `check`, `requirement` is taken through `Requirement.of`: one
+    that asks no grants (empty, or hooks only) is ``ImproperlyConfigured``,
+    before anything is deleted, as in `save_checked`: its every-context check of a
     ``WorkflowPolicy`` would allow anyone. (DRF's ``destroy`` passes the
     view's own check.)"""
     if check is None:
-        require_grants(requirement, "destroy")
+        requirement = Requirement.of(requirement, caller="destroy")
     check_every_context_of_policy(
         request,
         instance,

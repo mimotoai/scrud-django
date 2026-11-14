@@ -685,10 +685,11 @@ MySQL sorts a result with every column it selects, and a row whose JSON
 with error 1038, "Out of sort memory". `Resource.Meta.ordering` is `["id"]`, so
 an unordered queryset sorts too. The UI's reads (rendering, CSS files, item
 lists, versions, pull, push, restore, branch deletion) and the resource list's
-page (`StandardResultsSetPagination`, which on MySQL pages among the keys and
-reads the page's rows by key) no longer sort content (`scrud_django.rows`;
-`tests/test_ui_branch_large_rows.py`). Other reads still use the default
-ordering: a list view without a paginator, the Django admin's resource
+page (`StandardResultsSetPagination` and the core's `core.lists.page_of`,
+which on MySQL page among the keys and read the page's rows by key,
+`core.lists.rows_by_keys`) no longer sort content (`scrud_django.rows`;
+`tests/test_ui_branch_large_rows.py`, `tests/test_core_lists.py`). Other
+reads still use the default ordering: a list view without a paginator, the Django admin's resource
 changelist, and code of a project that reads `Resource` rows itself.
 
 Fix: drop the default ordering (`order_by()`) where those read content, or
@@ -1199,16 +1200,6 @@ resource, and its detail GET answers 403. It should leave the resource out
 and answer 404, as the facade does
 (`test_anyof_option_refused_at_request_level_is_not_satisfied`).
 
-<a id="core-method-sets-hard-coded"></a>
-## core-method-sets-hard-coded: `ITEM_METHODS` and `LIST_METHODS` are fixed
-
-`core.resources.ITEM_METHODS` (GET, PUT, DELETE) and `LIST_METHODS` (GET,
-POST) are constants, so `allowed_methods` lists them for a computed type too,
-which serves GET and HEAD only. Ninja phase 3 should take the methods a route
-serves as an argument. Test: in `tests/test_core_resources.py`, call
-`allowed_methods` for a computed type's item as a user granted every method;
-assert only GET, HEAD and OPTIONS.
-
 <a id="core-options-copy-entry"></a>
 ## core-options-copy-entry: the ninja front end must refuse scrudful's OPTIONS copy at entry
 
@@ -1229,24 +1220,6 @@ body writes a context the requester may not write (the method overridden
 by middleware), as a requester who may PUT in another context; assert a
 403 before any core call, where `check_request` on that request alone
 allows it.
-
-<a id="core-paging-key-first"></a>
-## core-paging-key-first: the list's paging and MySQL key-first hint are still DRF's
-
-The ninja front-end design
-(`docs/superpowers/specs/2026-11-11-ninja-front-end-design.md`, §1.2) puts the
-list's ordering and the MySQL key-first paging (a page found among the keys,
-then its rows read by key, so that a large JSON row does not overflow MySQL's
-`sort_buffer_size`, error 1038) in the core (`list_queryset`). They are still
-in DRF's pagination class
-(`scrud_django.paginations.StandardResultsSetPagination.paginate_queryset`;
-the order is `Resource.Meta.ordering`), so a front end that pages
-`readable_queryset` itself on MySQL would sort whole rows. Move the key-first
-page into `core.lists` and have the DRF class call it. Test: in
-`tests/test_core_lists.py`, page `readable_queryset` through the new core
-function on MySQL with a row over `sort_buffer_size` (as
-`tests/test_ui_branch_large_rows.py` builds one; see `mysql-sort-buffer`); it
-should return the page in key order without error 1038.
 
 <a id="studio-computed-to-compute"></a>
 ## studio-computed-to-compute: the studio's computed types still register a viewset class
@@ -1316,27 +1289,6 @@ requirement: ask a `ViewLeaf` whose permission's class overrides
 requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
 `has_permission` refuses, as a user holding the list grant; assert
 `AccessDenied` (today it allows).
-
-<a id="core-type-redesign"></a>
-## core-type-redesign: the core's types before the ninja front end
-
-Before ninja phase 3. The core's types leave invariants to their callers:
-
-- a requirement is a plain list built anywhere, with scoped-rbac's
-  `AnyOf`: build a validated, frozen `Requirement` once (with the core's
-  own frozen `AnyOf`, converted to scoped-rbac's in the DRF adapter);
-- `workflow_check` takes `prior=None` for both a create and no stored
-  content (`NULL_STORED_CONTENT` is a tuple against a `Mapping`
-  annotation): take distinct create and update inputs;
-- `TypeOptions` keeps whatever sequences it is given: convert them to
-  tuples, with typed `Protocol`s for the hooks;
-- `ScrudException` should declare `type`, `title` and `instance` as class
-  attributes;
-- `ViewLeaf` reads its view's `type_iri` on each use: read it once.
-
-Test: type-checking (`mypy` or `pyright`) of `scrud_django/core/` with the
-new types, and in `tests/test_core_workflow.py` a create and an update over
-null content through the new inputs, each checked as itself.
 
 # Decided
 
@@ -1596,3 +1548,17 @@ processor therefore does not expand those four terms to
 document must wrap the body in `{"@context": ...}` itself. 0.12.0 changes only
 the media type it is served as (`application/ld+json`, as its `Link` says).
 `first` and `last` are never sent in a list.
+
+<a id="core-type-check-ci"></a>
+## core-type-check-ci: mypy is not run in CI
+
+`scrud_django/core/` type-checks clean, but nothing keeps it so: mypy is not
+a dependency and no CI job runs it. Django ships no stubs here
+(django-stubs is not installed), so the check ignores unresolved imports and
+does not follow into other packages.
+
+Test: this command reports no issues, and a job should run it:
+
+```bash
+uv run --with mypy mypy scrud_django/core --ignore-missing-imports --follow-imports=silent
+```

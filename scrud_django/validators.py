@@ -7,6 +7,7 @@ from scoped_rbac.permissions import drf_error
 
 from scrud_django.core import workflow as core_workflow
 from scrud_django.core.workflow import (  # noqa: F401  (moved; re-exported)
+    NULL_CONTENT,
     NULL_STORED_CONTENT,
     check_policy_is_unique,
     plain_body,
@@ -97,8 +98,9 @@ class WorkflowValidator:
     """Checks a create or update of a resource against the workflow policy of
     every context concerned: the DRF adapter of
     `scrud_django.core.workflow.workflow_check`, which describes the check.
-    It gives the check the body as sent (`body_of`), the stored content of
-    the serializer's ``instance`` (``None`` for a create), the view's
+    It gives the check the body as sent (`body_of`), as a ``Create``, or,
+    over the serializer's ``instance``, an ``Update`` of its stored content
+    (`prior_of`), the view's
     ``IsAuthorized`` permissions as its ``narrow`` (`narrow_of`; without a
     view, a serializer used outside the views, the policy alone decides),
     and whether the stored resource is readable (`stored_resource_readable`).
@@ -122,22 +124,24 @@ class WorkflowValidator:
         if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
             self.validate_policy(data, instance)
         request = context.context.get("request")
-        readable = None
-        if instance is not None:
-
-            def readable():
-                return self.stored_resource_readable(request, instance, context)
-
+        if instance is None:
+            write = core_workflow.Create(proposed=data)
+        else:
+            write = core_workflow.Update(
+                prior=prior_of(instance),
+                proposed=data,
+                readable=lambda: self.stored_resource_readable(
+                    request, instance, context
+                ),
+                stored_pk=instance.pk,
+            )
         view = view_of(context)
         try:
             core_workflow.workflow_check(
                 request,
                 type_iri=resource_type.type_uri,
-                prior=prior_of(instance),
-                proposed=data,
+                write=write,
                 narrow=narrow_of(view),
-                readable=readable,
-                stored_pk=instance.pk if instance is not None else None,
                 post_save_type_iri=self.post_save_type_iri(view, request, context),
             )
         except core_workflow.WorkflowRequestRequired:
@@ -189,7 +193,7 @@ class WorkflowValidator:
         return core_workflow.errors_hidden_unless_readable(
             workflow_policy,
             request,
-            prior_of(instance),
+            None if instance is None else prior_of(instance),
             lambda: self.stored_resource_readable(request, instance, context),
         )
 
@@ -233,7 +237,10 @@ class WorkflowValidator:
         """`scrud_django.core.workflow.transition_for` from the stored
         `instance` (``None`` for a create)."""
         return core_workflow.transition_for(
-            workflow_policy, data, prior_of(instance), entering
+            workflow_policy,
+            data,
+            None if instance is None else prior_of(instance),
+            entering,
         )
 
     def authorize(

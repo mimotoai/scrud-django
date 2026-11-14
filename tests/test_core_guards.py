@@ -113,7 +113,9 @@ def test_asks_grants():
     assert asks_grants([access.AnyOf([grants, [GrantsLeaf("other")]])])
     assert asks_grants([access.AnyOf([GrantsLeaf(JSON_LD), grants])])
     assert asks_grants([*grants, access.AnyOf([grants, hooks_only(resource_type)])])
-    assert not asks_grants([access.AnyOf([])])
+    # An AnyOf of no option is refused outright (the core's AnyOf).
+    with pytest.raises(ValueError):
+        asks_grants([access.AnyOf([])])
     for requirement in no_grants(resource_type).values():
         assert not asks_grants(requirement)
 
@@ -453,7 +455,7 @@ def test_drf_workflow_check_is_told_whether_an_update_is_readable(with_view):
     """The DRF adapter (``WorkflowValidator``) passes ``readable`` as a
     callable for every update, in the views and outside them (a
     serializer with no view: ``may_read_in_context`` of the stored
-    resource), and ``None`` only for a create."""
+    resource), and builds a ``Create``, which takes none, for a create."""
     from scrud_django.core import workflow as core_workflow
     from scrud_django.validators import WorkflowValidator
 
@@ -464,7 +466,7 @@ def test_drf_workflow_check_is_told_whether_an_update_is_readable(with_view):
     seen = []
 
     def recording(request, **kwargs):
-        seen.append(kwargs["readable"])
+        seen.append(kwargs["write"])
         return []
 
     for user, readable in ((reader, True), (other, False)):
@@ -481,11 +483,12 @@ def test_drf_workflow_check_is_told_whether_an_update_is_readable(with_view):
         )
         with mock.patch.object(core_workflow, "workflow_check", recording):
             WorkflowValidator()({"rbac_context": "a"}, context)
-            assert callable(seen[-1])
-            assert seen[-1]() is readable
+            assert type(seen[-1]) is core_workflow.Update
+            assert callable(seen[-1].readable)
+            assert seen[-1].readable() is readable
             context.instance = None
             WorkflowValidator()({"rbac_context": "a"}, context)
-            assert seen[-1] is None
+            assert type(seen[-1]) is core_workflow.Create
 
 
 class SelfTrusting:
@@ -786,3 +789,105 @@ def test_a_hook_subclass_overriding_a_check_is_no_hook(name, where):
     # Still no leaf asking the grants: alone, it is refused.
     with pytest.raises(ImproperlyConfigured, match="asks no grants"):
         require_grants([leaf], "x")
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_anyof_options_hooks_ask_their_request_check_outside_the_write():
+    """A type's hooks in an ``AnyOf`` option ask their request check
+    (``has_permission``) outside the write's checks (``scrud_workflow``
+    refusing there), wherever the facade asks it: in the route's request
+    check (`check_request`) and in pairing the option with its object check
+    (`check_object`, and so `validate_write`), as the DRF route asks hooks
+    once its ``write_checks`` is over. A hook refusing its request check
+    inside the write's checks answers the same through both."""
+    from scrud_django.core.authz import _OUTSIDE, _checking_write, _transition
+
+    resource_type = json_ld()
+    stored = ResourceRegistration.register({"rbac_context": "a"}, "json-ld")
+    body = {"rbac_context": "a", "via": "request"}
+
+    def outside_only(request, rtype, content, context):
+        # Its request check (of the body) refuses inside the write's
+        # checks; its object check (of the stored resource) allows.
+        return content.get("via") != "request" or _transition.get() is _OUTSIDE
+
+    hook = HookLeaf(resource_type, TypeOptions(checks=(outside_only,)))
+    writer = user_with(
+        ({"http.GET": [JSON_LD], "http.PUT": [JSON_LD]}, "a"),
+    )
+    request = request_of("PUT", writer)
+    # The hook does refuse inside the write's checks.
+    assert hook.has_permission(request, body)
+    with _checking_write():
+        assert not hook.has_permission(request, body)
+
+    requirement = [
+        access.AnyOf([[GrantsLeaf("tests://Other")], [GrantsLeaf(JSON_LD), hook]])
+    ]
+    resources.check_request(
+        request, resource_type, requirement, list_route=False, body=body
+    )
+    resources.check_object(
+        request,
+        resource_type,
+        Resource.objects.get(pk=stored.pk),
+        requirement,
+        covered=True,
+        body=body,
+    )
+    writes.validate_write(
+        request,
+        resource_type,
+        body,
+        stored=Resource.objects.get(pk=stored.pk),
+        requirement=requirement,
+        readable=lambda: False,
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_anyof_options_hook_refusing_outside_the_write_still_refuses():
+    """A type's hook nested in an ``AnyOf`` option that refuses when asked
+    outside the write's checks refuses through `check_request`,
+    `check_object` and `validate_write` alike (the option has no other way
+    in: the writer holds no grant for the other option)."""
+    from scrud_django.core.authz import _OUTSIDE, _transition
+
+    resource_type = json_ld()
+    stored = ResourceRegistration.register({"rbac_context": "a"}, "json-ld")
+    body = {"rbac_context": "a"}
+
+    def inside_only(request, rtype, content, context):
+        return _transition.get() is not _OUTSIDE
+
+    hook = HookLeaf(resource_type, TypeOptions(checks=(inside_only,)))
+    writer = user_with(({"http.GET": [JSON_LD], "http.PUT": [JSON_LD]}, "a"))
+    request = request_of("PUT", writer)
+    assert not hook.has_permission(request, body)
+    requirement = [
+        access.AnyOf([[GrantsLeaf("tests://Other")], [GrantsLeaf(JSON_LD), hook]])
+    ]
+    with pytest.raises(access.AccessDenied):
+        resources.check_request(
+            request, resource_type, requirement, list_route=False, body=body
+        )
+    with pytest.raises(access.AccessDenied):
+        resources.check_object(
+            request,
+            resource_type,
+            Resource.objects.get(pk=stored.pk),
+            requirement,
+            covered=True,
+            body=body,
+        )
+    with pytest.raises(access.AccessDenied):
+        writes.validate_write(
+            request,
+            resource_type,
+            body,
+            stored=Resource.objects.get(pk=stored.pk),
+            requirement=requirement,
+            readable=lambda: False,
+        )

@@ -146,6 +146,11 @@ class ScrudException(Exception):
     status_code = 500
     default_detail = "A server error occurred."
     default_code = "error"
+    # The RFC 7807 members a subclass says more with; one left ``None`` is
+    # left out of `response_data`.
+    type: str | None = None
+    title: str | None = None
+    instance: str | None = None
 
     def __init__(self, message=None):
         if message is None:
@@ -167,8 +172,8 @@ class ScrudException(Exception):
         """Return RFC 7807 response data"""
         data = {}
         for property_name in ["type", "title", "detail", "instance"]:
-            if hasattr(self, property_name):
-                value = getattr(self, property_name)
+            value = getattr(self, property_name)
+            if value is not None:
                 data[property_name] = str(value) if isinstance(value, str) else value
         return data
 
@@ -710,6 +715,23 @@ class RequestBodyNulError(ScrudException):
         )
         self.type = "https://api.openteams.com/http-problem/body-nul-character"
         self.title = "NUL character in request body"
+
+
+class RequestBodyNotAnObjectError(ScrudException):
+    """A POST or PUT body that is not a JSON object (a list, a string, a
+    number): a resource is one. Its body is the 400 the DRF routes answer
+    for one (their serializer's ``ValidationError``, as scoped-rbac renders
+    it): ``scoped_rbac.problems.validation_problem`` of a non-field
+    ``invalid`` error, code ``invalid``."""
+
+    status_code = 400
+    default_detail = "Invalid input."
+    default_code = "invalid"
+
+    def response_data(self, context):
+        from scoped_rbac.problems import validation_problem
+
+        return validation_problem({"": [("invalid", None)]})
 
 
 class ResourceInUseError(ScrudException):

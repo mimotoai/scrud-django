@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import pytest
 from django.contrib.auth.models import AnonymousUser
 from django.db import transaction
-from django.http import Http404
+from django.http import Http404, QueryDict
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils.http import quote_etag
@@ -34,7 +34,7 @@ from scoped_rbac import access
 from scoped_rbac.permissions import drf_error
 
 from scrud_django import collection_type_uri_for
-from scrud_django.core.lists import readable_queryset
+from scrud_django.core.lists import list_queryset, page_of, readable_queryset
 from scrud_django.core.requirements import (
     asks_grants,
     asks_grants_itself,
@@ -465,6 +465,37 @@ def test_list_parity(type_slug, user_name):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("type_slug, user_name", list_cases(listed=True))
+def test_list_page_parity(type_slug, user_name):
+    """A page of the list (``?page=2&page_size=2``): the DRF route's entries,
+    in its order, and its count are the facade's (`list_queryset`, then
+    `page_of`)."""
+    parity = TYPES[type_slug]
+    user = users_for(parity.uri)[user_name]
+    for where in STORED_IN * 2:
+        store(parity, where)
+    query = "page=2&page_size=2"
+    response = client_of(user).get(
+        f"{reverse(f'{parity.slug}-list')}?{query}", HTTP_ACCEPT=JSON
+    )
+    assert response.status_code == 200, response.content
+    body = response.json()
+    drf_pks = [entry["href"].rstrip("/").rsplit("/", 1)[1] for entry in body["content"]]
+    resource_type = resource_type_of(parity)
+    queryset = list_queryset(
+        request_of("GET", user, f"/?{query}"),
+        resource_type,
+        QueryDict(query),
+        requirement=requirement_for(resource_type, parity.slug),
+        ignored=frozenset({"page", "page_size"}),
+    )
+    rows, count = page_of(queryset, number=2, size=2)
+    assert drf_pks  # a page that holds rows, for every lister
+    assert [str(row.pk) for row in rows] == drf_pks
+    assert count == body["count"]
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize("type_slug, user_name", list_cases(listed=False))
 def test_list_refusal_parity(type_slug, user_name, request):
     """The DRF list is refused (no list grant: 403, or 401 for the
@@ -584,6 +615,68 @@ def test_create_parity(type_slug, user_name, body_context, request):
     )
 
 
+@pytest.mark.django_db
+@pytest.mark.parametrize("method", ["POST", "PUT"])
+@pytest.mark.parametrize("user_name", USER_NAMES)
+@pytest.mark.parametrize("type_slug", TYPE_SLUGS)
+def test_non_object_body_parity(type_slug, user_name, method, request):
+    """A POST to the list, or a PUT of a resource in "a", whose body is a
+    list (of a valid body), not a JSON object: the DRF route's status
+    against the facade's `validate_write`, then `create` or `update`."""
+    parity = TYPES[type_slug]
+    user = users_for(parity.uri)[user_name]
+    resource_type = resource_type_of(parity)
+    requirement = requirement_for(resource_type, parity.slug)
+    body = [parity.body("a")]
+    resource = store(parity, "a") if method == "PUT" else None
+
+    def facade_write():
+        write = request_of(method, user)
+        if resource is None:
+            validate_write(
+                write,
+                resource_type,
+                body,
+                stored=None,
+                requirement=requirement,
+                readable=None,
+            )
+            create(write, resource_type, body, requirement=requirement, using="default")
+            return
+        stored = load_for_read(
+            write, resource_type, resource.pk, requirement=requirement, method="PUT"
+        )
+        validate_write(
+            write,
+            resource_type,
+            body,
+            stored=stored,
+            requirement=requirement,
+            readable=lambda: object_readable(write, resource_type, stored, requirement),
+        )
+        update(
+            write, resource_type, stored, body, requirement=requirement, using="default"
+        )
+
+    with transaction.atomic():
+        facade = outcome_class(outcome_of(facade_write))
+        transaction.set_rollback(True)
+    if resource is None:
+        with transaction.atomic():
+            response = client_of(user).post(
+                reverse(f"{parity.slug}-list"), body, format="json"
+            )
+            transaction.set_rollback(True)
+    else:
+        response = drf_status(parity, user, "PUT", resource, body=body)
+    check_parity(
+        request,
+        ("non-object", type_slug, user_name, method),
+        facade,
+        drf_authz_status(response),
+    )
+
+
 def more_permissive(pair):
     """Whether the facade `pair` ``(facade, drf)`` allows what DRF refuses."""
     facade, drf = pair
@@ -635,3 +728,50 @@ def test_requirement_for_leaves_are_trusted_to_ask_the_grants(type_slug):
     assert asks_grants(requirement)
     for leaf in requirement_leaves(requirement):
         assert asks_grants_itself(leaf) or is_hook(leaf), leaf
+
+
+def computed_allow(slug, user_name):
+    """``(DRF's Allow, the facade's)``, sorted, for the item route of the
+    computed type `slug` as the matrix user `user_name` asks it; DRF's is
+    ``None`` when its route does not answer the OPTIONS with a 200."""
+    url = reverse(f"{slug}-detail", args=["k"])
+    hooked_resource_types()
+    resource_type = get_resource_type_for(slug)
+    user = users_for(resource_type.type_uri)[user_name]
+    response = client_of(user).options(url)
+    stored = ResourceRegistration.register({"rbac_context": "a"}, slug)
+    core = allowed_methods(
+        request_of("OPTIONS", user, url),
+        resource_type,
+        stored,
+        requirement_for(resource_type, slug),
+    )
+    if response.status_code != 200:
+        return None, sorted(core)
+    return sorted(m.strip() for m in response["Allow"].split(",")), sorted(core)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("user_name", ["superuser", "reader-a", "anonymous"])
+def test_computed_allow_parity(user_name):
+    """A computed type registered with ``compute=`` lists GET (HEAD, OPTIONS)
+    as its DRF route does (`served_methods`), for a user it answers."""
+    drf, core = computed_allow("summaries", user_name)
+    if user_name == "anonymous":
+        # DRF's route answers the anonymous OPTIONS 401, with no Allow.
+        assert drf is None
+        assert core == ["OPTIONS"]
+        return
+    assert core == drf == ["GET", "HEAD", "OPTIONS"]
+
+
+@pytest.mark.django_db
+def test_studio_computed_allow_is_pinned():
+    """KNOWN DIVERGENCE (follow-up ``studio-computed-to-compute``): the
+    studio's computed types register a ``viewset_class``, not ``compute=``,
+    so `served_methods` treats them as plain types and the facade lists PUT
+    and DELETE for a superuser where DRF lists GET only. Remove when they
+    take ``compute=``."""
+    drf, core = computed_allow("ui-branch-status", "superuser")
+    assert drf == ["GET", "HEAD", "OPTIONS"]
+    assert core == ["DELETE", "GET", "HEAD", "OPTIONS", "PUT"]

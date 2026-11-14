@@ -422,10 +422,24 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   check is no type's hooks) the core asks them itself, whatever that
   leaf's `reads_each_context` says. And
   `validate_write` requires a `requirement=`, whose type's hooks are the
-  checks that may refuse a transition. The workflow check hides an update's
-  workflow error unless its caller says the stored resource is readable
-  (`readable=`). The facade's `create` and `update` always validate the
-  body they save themselves (`validate_write`, an update's errors hidden
+  checks that may refuse a transition. The workflow check
+  (`scrud_django.core.workflow.workflow_check`) takes its write as a
+  `Create(proposed)` or an `Update(prior, proposed, readable, stored_pk)`
+  (`write=`; anything else, a delete included, is a `TypeError`): an
+  update's stored content is a mapping or `NULL_CONTENT` (`prior_from`;
+  `prior_of` for a `Resource`, whose content that is JSON null or not an
+  object is `NULL_CONTENT`), never `None`, so null content is never
+  checked as a create. An `Update` requires `readable`, whether the
+  requester may read the stored resource: an update's workflow error is
+  hidden when it says not (`validate_write` of an update raises
+  `TypeError` without one). `validate_write` (so `create` and `update`)
+  refuses a body that is not a JSON object once the request and object
+  checks pass, as the DRF routes do: a 400
+  (`scrud_django.exceptions.RequestBodyNotAnObjectError`, with the body
+  DRF answers). The workflow check first removes any mark an
+  earlier check left on the request, so one that fails leaves none, on DRF
+  too. The facade's `create` and `update` always validate the body they
+  save themselves (`validate_write`, an update's errors hidden
   unless the stored resource is readable). One validation authorizes one
   write: the workflow check's mark names the type the post-save check
   names and the resource written (none for a create), and the save that
@@ -445,17 +459,52 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   the request, so one that fails leaves none for a save to use. A type's
   hooks are asked in a route's request check after the other entries and
   where `scrud_workflow` refuses, as the DRF route asks them
-  (`check_request_hooks`) once its own request check is over. A front end
+  (`check_request_hooks`) once its own request check is over, and so are
+  those of an `AnyOf` option where the option's request check is paired
+  with its object check (`check_object`, so `validate_write`): the two
+  answer alike. A front end
   runs `scrud_django.core.bodies.check_body` on a write's body before the
   facade, as DRF answers a malformed body 400 before any 403.
+  `allowed_methods` lists the methods its route serves
+  (`scrud_django.core.resources.served_methods`: GET alone for a computed
+  type registered with `compute=`, else the item's GET, PUT and DELETE or
+  the list's GET and POST), or the `methods=` it is given.
   `readable_queryset` and `list_last_modified`, which filter by a
   resource's stored contexts, raise `ImproperlyConfigured` for a
   requirement with a leaf that may read others: one whose `contexts_for`
   is not its class's (`GrantsLeaf`, a type's hooks, the DRF `ViewLeaf`
   whose permission keeps scoped-rbac's), or of any other class unless
   registered with
-  `scrud_django.core.requirements.register_stored_contexts_leaf`. It is
-  the base for other front ends.
+  `scrud_django.core.requirements.register_stored_contexts_leaf`. A
+  requirement is a `scrud_django.core.requirements.Requirement`, frozen,
+  whose `AnyOf` is the core's own (frozen, each option a tuple; one of no
+  option, or with an empty option, is a `ValueError`):
+  `Requirement.of(entries)` converts scoped-rbac's `access.AnyOf` and
+  raises `ImproperlyConfigured` for one that asks no grants, and
+  `core.types.requirement_for` returns one. Every facade entry point
+  (`load_for_read`, `check_object`, `allowed_methods`, `readable_queryset`,
+  `list_last_modified`, `check_request`, `readable_content`,
+  `validate_write`, `create`, `update`, `destroy`, `save_checked` without a
+  `recheck`) takes a `Requirement` or its entries, through
+  `Requirement.of`: `list_last_modified` now refuses one that asks no
+  grants too. `scrud_django.drf_requirements.requirement_of` returns one
+  built `Requirement.unchecked` (a DRF view with no `IsAuthorized` asks no
+  grants and is still served); `core.requirements.to_scoped_rbac` gives an
+  `AnyOf` back as scoped-rbac's. `scrud_django.core.lists.list_queryset`
+  gives the list a front end serves (for a GET or HEAD: any other method is
+  a `ValueError`, as `readable_queryset` asks the list grant for those two
+  alone): `readable_queryset`, then, for a type
+  registered with `content_filter=`, the content filter on its query
+  parameters (`content_filtered`, but the `ignored=` ones), in
+  `Resource.Meta.ordering`; `page_of` gives a page of it and the count, as
+  Django's `Paginator` pages it (`EmptyPage` past the last page). On MySQL
+  `page_of` finds the page among the keys alone and reads its rows by key
+  (`rows_by_keys`, which `StandardResultsSetPagination` calls too), so a
+  row whose content is over MySQL's `sort_buffer_size` is never sorted
+  (error 1038). It is the base for other front ends.
+  `update` raises `TypeError` for a `None` instance, and `allowed_methods`'
+  `methods=` are upper-cased and checked in `ALLOW_ORDER`, whatever the
+  caller's order or case.
 * Per-type hooks, honoured by every front end, on `json_resource_type`
   (`checks=`, `object_checks=`, `content_filter=`) and
   `computed_resource_type` (`compute=`). They can only refuse what the grants
@@ -463,7 +512,8 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   hook allows only by returning `True`: any other return (`None`, `"no"`,
   `1`) refuses. The hooks of a body with `rbac_context: []` are asked in
   the default context, and a hook given an object that is neither a mapping
-  nor a `Resource` raises `TypeError`.
+  nor a `Resource` raises `TypeError`; `TypeOptions` refuses a hook that is
+  not callable (`TypeError`).
   `checks` govern writes only: asked of a write in each context it writes, of
   the stored resource of a PUT, PATCH or DELETE in each of its contexts, of
   the saved resource in each of its contexts and of a workflow transition in
@@ -499,6 +549,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ### Upgrading
 
+* A DRF view whose own `rbac_requirement()` returns an empty `access.AnyOf`,
+  or one with an empty option, now raises (`ValueError`, a 500) instead of
+  refusing or allowing every object.
 * `ScrudException` and its subclasses are no longer DRF `APIException`s (they
   are neutral, `scrud_django.exceptions`). The DRF views wrap them
   (`scrud_django.exceptions.as_drf`), so the status and body of every answer
@@ -541,8 +594,9 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   resource (`(type IRI, pk)`, none for a create), and that save consumes
   it. A grant conditioned on `scrud_workflow` now gets 403 for a view
   subclass that saves twice per validation, that calls `save_checked`
-  without `instance=` on an update, or whose `resource_type_iri_for`
-  differs between the validation and the save.
+  without `instance=` on an update, whose `resource_type_iri_for`
+  differs between the validation and the save, or that validates several
+  resources before saving them (two serializers, a `many=True` create).
 
 Behaviour without `scrud_django.ui` in `INSTALLED_APPS` is unchanged.
 

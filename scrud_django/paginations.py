@@ -4,7 +4,7 @@ from django.db import connections
 from django.db.models import QuerySet
 from rest_framework.pagination import PageNumberPagination
 
-from scrud_django.rows import unsorted
+from scrud_django.core.lists import rows_by_keys
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -18,7 +18,8 @@ class StandardResultsSetPagination(PageNumberPagination):
         selects, so a page holding a row whose JSON content is over its
         ``sort_buffer_size`` would fail (error 1038, `scrud_django.rows`);
         sorting the keys alone does not. The page keeps the queryset's
-        order."""
+        order (`scrud_django.core.lists.rows_by_keys`, as the core's
+        ``page_of`` reads a page)."""
         if (
             not isinstance(queryset, QuerySet)
             or connections[queryset.db].vendor != "mysql"
@@ -31,8 +32,7 @@ class StandardResultsSetPagination(PageNumberPagination):
         )
         if pks is None:
             return None
-        rows = {row.pk: row for row in unsorted(queryset.filter(pk__in=pks))}
-        return [rows[pk] for pk in pks if pk in rows]
+        return rows_by_keys(queryset, pks)
 
     def get_next_link(self):
         return _canonical(self.request, super().get_next_link())
