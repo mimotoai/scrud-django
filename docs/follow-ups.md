@@ -2079,6 +2079,18 @@ scrudful's automatic OPTIONS. The collection documents
 Follow-ups fixed since they were recorded, each with the commit that fixed
 it.
 
+<a id="services-unrouted-types"></a>
+## services-unrouted-types: `services/` failed when the serving URLconf did not route every registered type
+
+Fixed in 5b9439f. The catalog is process-global: an entry no route of the
+serving URLconf named (two APIs with different `types=` in one process, a
+ninja-only URLconf after the DRF routes registered other types, the UI types
+on a ninja API) raised `NoReverseMatch`, a 500, on either front end. The
+catalog now leaves such an entry out (owner's call: a missing service is not
+a server error). Pinned by
+`tests/test_ninja_routers.py::test_a_ninja_only_apis_catalog_leaves_out_a_type_it_does_not_route`
+and `tests/test_type_registration.py::test_the_catalog_leaves_out_a_service_no_route_names`.
+
 <a id="ninja-uniform-errors-per-front-end"></a>
 ## ninja-uniform-errors-per-front-end: an API built with uniform errors off keeps scoped-rbac's errors native
 
