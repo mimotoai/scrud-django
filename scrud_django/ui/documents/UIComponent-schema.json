@@ -1,0 +1,55 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIComponent",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Component",
+  "description": "A server-rendered template that renders a node of a resource's JSON in a mode (view or edit).",
+  "type": "object",
+  "properties": {
+    "rbac_context": {
+      "type": "string",
+      "description": "The context the component's write is authorized in on its branch: the branch's context."
+    },
+    "branch": {
+      "type": "string",
+      "description": "The name of the branch the component is on; main when absent."
+    },
+    "deleted": {
+      "type": "boolean",
+      "description": "true: a deletion marker, hiding the base's component of this name on this branch. It needs only a name."
+    },
+    "base": {
+      "type": ["string", "null"],
+      "description": "Server-managed: the ETag of the parent branch's component this one overrides, or null."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^(?!scrud:)(?:[a-z][a-z0-9-]*:)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "The component's name, unique on its branch. A name with a prefix (abc:name) may only override an installed UI layer's item of this kind; the scrud: prefix is reserved."
+    },
+    "engine": {
+      "type": "string",
+      "enum": ["django", "jinja2"]
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["view", "edit"]
+    },
+    "template": {
+      "type": "string",
+      "description": "The template source."
+    },
+    "scopes": {
+      "type": "object",
+      "description": "Maps a property name (or \"*\" for array items) to the scope name its child is rendered in.",
+      "additionalProperties": { "type": "string" }
+    },
+    "stylesheets": {
+      "type": "array",
+      "description": "Names of stylesheets that also apply to the component's descendants (its subtree below it), not to the component's own node.",
+      "items": { "type": "string" }
+    },
+    "label": { "type": "string" },
+    "description": { "type": "string" }
+  },
+  "required": ["name"]
+}

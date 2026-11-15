@@ -1,0 +1,6 @@
+{
+  "name": "studio:branch-picker",
+  "engine": "jinja2",
+  "mode": "view",
+  "template": "{%- set branches = value.branches or [] -%}\n<nav class=\"studio-branch-picker\" data-studio-branch-picker aria-label=\"Branches\">\n<details class=\"studio-branch-picker-menu\">\n<summary class=\"studio-branch-picker-summary\">Branches ({{ branches|length }})</summary>\n<ul class=\"studio-branch-choices\">\n{%- for branch in branches %}\n<li class=\"studio-branch-choice {{ 'studio-branch-published' if branch.published else 'studio-branch-working' }}\" data-studio-branch-name=\"{{ branch.name }}\">{%- if branch.href %}<a class=\"studio-branch-link\" href=\"{{ in_mount(branch.href) }}?ui-scope=studio&amp;ui-mode=view\">{{ branch.name }}</a>{%- else %}<span class=\"studio-branch-name\">{{ branch.name }}</span>{%- endif %} <span class=\"studio-badge\">{{ \"published\" if branch.published else \"working\" }}</span></li>\n{%- endfor %}\n</ul>\n</details>\n</nav>\n"
+}

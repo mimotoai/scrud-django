@@ -1,0 +1,30 @@
+{
+  "$id": "tests://TodoList",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "To-do list",
+  "description": "A to-do list, for testing the UI components.",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "rbac_context": {
+      "type": "string"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "done": {
+            "type": "boolean"
+          }
+        },
+        "required": ["text"]
+      }
+    }
+  }
+}

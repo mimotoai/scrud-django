@@ -1,0 +1,55 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIStylesheet",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Stylesheet",
+  "description": "Rules that select nodes of a resource's JSON and assign each a UI component.",
+  "type": "object",
+  "properties": {
+    "rbac_context": {
+      "type": "string",
+      "description": "The context the stylesheet's write is authorized in on its branch."
+    },
+    "applies_to": {
+      "type": "string",
+      "description": "The context the stylesheet applies to; \"\" for everywhere."
+    },
+    "branch": {
+      "type": "string",
+      "description": "The name of the branch the stylesheet is on; main when absent."
+    },
+    "deleted": {
+      "type": "boolean",
+      "description": "true: a deletion marker, hiding the base's stylesheet of this name (and applies_to) on this branch. It needs only a name."
+    },
+    "base": {
+      "type": ["string", "null"],
+      "description": "Server-managed: the ETag of the parent branch's stylesheet this one overrides, or null."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^(?!scrud:)(?:[a-z][a-z0-9-]*:)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "The stylesheet's name, unique on its branch for the context it applies to. A name with a prefix (abc:name) may only override an installed UI layer's item of this kind; the scrud: prefix is reserved."
+    },
+    "prefixes": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "order": {
+      "type": "integer",
+      "default": 0
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "select": { "type": "string" },
+          "component": { "type": "string" }
+        },
+        "required": ["select", "component"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["name"]
+}

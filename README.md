@@ -17,6 +17,185 @@ For haystack search support, install the `search` extra:
 uv add "scrud-django[search]"
 ```
 
+## Server-rendered UI
+
+The optional `scrud_django.ui` app (`pip install "scrud-django[ui]"`) serves
+every resource URL as `text/html` as well, rendered on the server through
+templates and stylesheets stored as resources, layered per RBAC context and
+shown exactly as the viewer is authorized, with htmx for editing. See the
+[UI documentation](docs/ui.md).
+
+## django-ninja (preview)
+
+scrud-django can also serve its resource types through
+[django-ninja](https://django-ninja.dev), answering as the DRF routes do (the
+same statuses, headers and bodies; `tests/test_front_end_parity.py` replays
+the same exchanges against both). It is additive and a preview: nothing
+changes for a DRF project.
+
+```bash
+uv add "scrud-django[ninja]"
+# or: pip install 'scrud-django[ninja]'
+```
+
+```python
+# urls.py
+from django.urls import include, path
+
+from scrud_django import registration
+from scrud_django.ninja import api
+
+scrud_api = api(
+    types=[
+        registration.json_resource_type_spec(
+            # the IRI and slug, then the arguments of
+            # registration.json_resource_type but viewset_class and
+            # indexing_policy_resource, as keywords
+        ),
+    ],
+)
+
+urlpatterns = [
+    path("api/", scrud_api.urls),
+    path("", include("scoped_rbac.semantic_urls")),
+]
+```
+
+* The factory is `scrud_django.ninja.api(*, types=(), urls_namespace="scrud",
+  **ninja_kwargs)`. `types` are `TypeSpec`s, from
+  `registration.json_resource_type_spec(...)` and
+  `registration.computed_resource_type_spec(...)`; it serves them and always
+  the built-in types (`json-schema/`, `json-ld/`, `indexing-policies/`,
+  `workflow-policies/`: every type's Links name its schema and context
+  resources there), with the service catalog (`services/`), scoped-rbac's
+  role routes and the collection documents.
+* It serves no interactive docs and no OpenAPI document unless you pass
+  `docs_url=` and `openapi_url=` (they go to `NinjaAPI`, as the rest of
+  `ninja_kwargs` do); those routes are public. Each operation has an
+  `operationId` of its own (`<slug>_list`, `<slug>_retrieve`, ...), so ninja
+  logs no duplicate warning; one serving GET and HEAD is listed under both
+  methods with that one id (see `ninja-openapi-head-operation-id` in the
+  [follow-ups](docs/follow-ups.md)).
+* Do not pass `auth=`: `api()` raises `TypeError`. scrud resolves the user of
+  every request itself, so an anonymous request gets the anonymous user's
+  grants and a hidden item is a 404.
+* Authentication is scoped-rbac's `resolve_user`: the
+  `SCOPED_RBAC["NINJA_USER"]` hook's user, else `request.auth` (set only on a
+  router you add with its own `auth=`, as `api()` takes none), else the
+  session's. DRF's `DEFAULT_AUTHENTICATION_CLASSES` are not read, so a Basic
+  or token client of a DRF project is the anonymous user on ninja (a
+  credential nothing maps is not refused) until a hook maps it. A hook
+  returns the user, `None` for the anonymous user, or raises ninja's
+  `AuthenticationError` to refuse the credentials (401). For Basic
+  credentials:
+
+  ```python
+  import base64
+  import binascii
+
+  from django.contrib.auth import authenticate
+  from ninja.errors import AuthenticationError
+
+
+  def basic_user(request):
+      header = request.headers.get("Authorization", "")
+      scheme, _, credentials = header.partition(" ")
+      if scheme.lower() != "basic":
+          return getattr(request, "user", None)
+      try:
+          username, _, password = base64.b64decode(credentials).decode().partition(":")
+      except (binascii.Error, UnicodeDecodeError):
+          raise AuthenticationError() from None
+      user = authenticate(request, username=username, password=password)
+      if user is None:
+          raise AuthenticationError() from None
+      return user
+  ```
+
+  ```python
+  SCOPED_RBAC = {..., "NINJA_USER": "myapp.auth.basic_user"}
+  ```
+
+  A hook replaces the session lookup; it does not add to it. With a hook set,
+  only its result is the user, so a request without Basic credentials must get
+  the session's user from the hook itself (the example returns
+  `request.user`), or a logged-in session user becomes anonymous. A hook's
+  user who is also the request's session user is CSRF-checked on an unsafe
+  request, whether or not Basic credentials came with the cookie. A
+  Basic-only client has no session cookie, so a write needs no token (the
+  same caveat as below applies). When the session belongs to user A and the
+  Basic credentials to user B, the hook gives B and no CSRF check applies (B
+  is not the session's user). The hook's Basic user is not CSRF-checked,
+  exactly as DRF's `BasicAuthentication` (also CSRF-exempt) is not: a
+  browser re-sends cached HTTP Basic credentials on a cross-site request, so
+  Basic credentials suit non-browser API clients, not browsers. Send Basic
+  credentials only over TLS. See
+  `ninja-drf-authenticators` in the follow-ups.
+* A computed type's `compute(request, key)` receives a plain Django
+  `HttpRequest` on ninja (a DRF `Request` on DRF): read `request.GET` and
+  `request.user`, not `request.query_params` or `request.data`, and do not
+  hand it to a DRF permission's `has_permission(request, view)`. Raise
+  `Http404` or `PermissionDenied` (Django's), as the DRF section says: a
+  `compute` that raises DRF's own `APIException`s (`NotFound`,
+  `ValidationError`, ...) is answered 404 or 400 on DRF but is a 500 on
+  ninja.
+* `TypeSpec` refuses, when it is built or derived with `dataclasses.replace`
+  (`ImproperlyConfigured`): an empty or non-string slug or IRI; a computed
+  type that carries any hook but `compute` (`checks`, `object_checks` and
+  `content_filter` would never be asked); a plain spec that reuses a built-in
+  type's IRI or slug (use `built_in_type_specs()`); and a built-in type with
+  hooks of its own. `json_resource_type_spec` refuses a
+  `schema_func`, `context_func` or `indexing_policy_func` that is not
+  callable, and `computed_resource_type_spec` a `compute` that is not (both
+  `TypeError`); and `register_urls()` of a
+  `ResourceTypeRegistration(build_urls=False)` is a `TypeError`. `api()`
+  also refuses a slug that is not one URL segment (letters, digits, hyphens
+  and underscores; DRF still accepts, for example, a dotted one), a reserved
+  slug, and a slug or IRI two types share, before it registers anything.
+* A router you add to the API (`scrud_api.add_router(...)`) gets no
+  authentication and no CSRF check from scrud: ninja's views are
+  CSRF-exempt, and scrud resolves the user only on its own routes. Give it
+  its own `auth=`, or scrud's entry checks (the user resolved as on scrud's
+  routes, a session user's unsafe request CSRF-checked; a PUT, PATCH,
+  DELETE, and a POST carrying `If-Match`, `If-None-Match` or
+  `If-Unmodified-Since`, in one transaction on scrud's write database,
+  rolled back on a status of 400 or more; a plain POST is in none of the
+  entry's):
+
+  ```python
+  from ninja import Router
+  from scrud_django.ninja.entry import entry
+
+  reports = Router()
+  reports.add_decorator(entry, mode="view")
+  scrud_api.add_router("reports/", reports)
+  ```
+
+* Two APIs in one process need distinct `urls_namespace`s. Links (`href`,
+  `Location`, `Link` headers, `services/`) are reversed within the namespace
+  the request was resolved under.
+* A ninja-only URLconf must also `include("scoped_rbac.semantic_urls")`: the
+  role routes' (`roles/`, `role-assignments/`, `user-rbac-policy/`) semantic
+  Links reverse those global names, and answer 500 without it.
+* `services/` lists the types the serving API routes. A type registered in
+  the process that it does not route (another API's, or a UI type on a ninja
+  API) is left out, on both front ends.
+* Content negotiation is DRF's with DRF's default renderers (`JSONRenderer`,
+  `BrowsableAPIRenderer`): an `Accept` none of a route's renderers serves
+  (`Accept: application/xml`) is DRF's 406 (`not_acceptable`), and a
+  `?format=` none of them has its 404, on both front ends. ninja does not
+  read `REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"]`: a project that changes
+  it gets DRF's answer from its DRF routes only (follow-up
+  `ninja-renderer-settings`). The document routes choose their media type as
+  DRF does, and JSON is indented as DRF indents it for
+  `Accept: application/json; indent=4`.
+* The UI types (`scrud_django.ui`) and the studio types are not served on
+  ninja yet, nor are the `ui-css-files` and `ui-js-files` views, and a ninja
+  route never answers `text/html`: a request that DRF would answer as HTML
+  (`Accept: text/html`, `?format=api`) gets the JSON answer.
+* `scrud_django.urls` stays DRF until the release that switches it; include
+  it as before for a DRF project.
+
 ## Configuration
 
 ### Required
@@ -180,7 +359,71 @@ type's row follows the registration's arguments (`slug`, `revision`,
 it, the stored row keeps its slug, revision and URIs, and only its
 documents (and `uses_reversion`) are updated. Pass
 `viewset_class=ResourceViewSetGenericFilter` (`scrud_django.views`) for a
-list that filters on its query parameters (`?text=...`).
+list that filters on its query parameters (`?text=...`; with `scrud_django.ui`
+installed, its URL parameters `ui-branch`, `ui-branch-confirm`, `ui-scope`,
+`ui-mode` and `ui-safe` are not filters).
+
+Hooks on `json_resource_type`, honoured by every front end, narrow what the
+grants allow (they can only refuse, and refuse superusers too, as an
+`IsAuthorized` subclass does). A hook must return `True` to allow: any other
+return (`None`, `"yes"`, `1`) refuses.
+
+- `checks`: callables `(request, resource_type, body, context) -> bool` that
+  govern **writes**: asked of a write in each context it writes, of the
+  stored resource of a PUT, PATCH or DELETE in each of its contexts, of the
+  saved resource in each of its contexts, and of a workflow transition in
+  each context it is authorized in. Unlike an `IsAuthorized` subclass, whose
+  object check allows a PUT or DELETE when any context the resource is
+  stored in allows it, `checks` must allow in every one: a resource in
+  `["a", "b"]` whose check refuses `"b"` can be neither updated (not even
+  moved to `"a"`) nor deleted (403). They never hide a read, and a type with
+  only `checks` lists by SQL; a type that wants both registers both.
+- `object_checks`: callables `(request, resource_type, obj) -> bool` that
+  govern **reads and objects**, asked of a resource's content wherever the
+  object is checked (the detail route of every method, each listed
+  resource). A refused resource is hidden (404). A write of a resource they
+  would hide is refused too (403, after the save, which is rolled back).
+- `content_filter=True`: the list filters on its query parameters. It is read
+  when the routes are built, so registering a slug again replaces the other
+  hooks but not an already built route's filter.
+
+Hooks are keyed by the type's IRI: registering a type again replaces the
+hooks registered for it before (a different set logs a warning on
+`scrud_django.core.types`), and `requirement_for` imports `ROOT_URLCONF`
+once per process, so a worker that never served a request still has them.
+Slugs sharing a type IRI must register the very same hook objects, or the
+second gets `ImproperlyConfigured`: use module-level functions, since
+closures a factory builds in the URLconf are new objects each time it is
+imported, and a re-import then raises.
+
+To move the rule of an `IsAuthorized` subclass's `has_context_permission`
+to hooks, register it twice. As a `checks=` callable it governs writes, but
+it no longer hides reads, and it is stricter on a resource stored in
+several contexts: the subclass allowed a PUT or DELETE that any of them
+allowed, a check must allow it in every one. To hide what the subclass
+refused to read, add an `object_checks=` callable that applies the same rule to each of the
+resource's contexts (`rbac_contexts_of(obj)`, from
+`scrud_django.mixins.resource_mixin`) and combines the answers as the
+subclass did. scoped-rbac's `has_object_permission` allows when any context
+allows, so use `any` unless the subclass overrode it:
+
+```python
+from scrud_django.mixins.resource_mixin import rbac_contexts_of
+
+
+def not_archived(request, resource_type, obj, context):
+    return context != "archived"
+
+
+def readable_somewhere(request, resource_type, obj):
+    return any(
+        not_archived(request, resource_type, obj, context)
+        for context in rbac_contexts_of(obj)
+    )
+
+
+json_resource_type(..., checks=[not_archived], object_checks=[readable_somewhere])
+```
 
 Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
 `http.POST`, `http.PUT`, `http.DELETE`) and `http.GET` on its list type,
@@ -382,6 +625,53 @@ RBAC-checked on their own routes.
 
 The Django admin shows `Resource` and `ResourceType` to superusers only: a
 write there bypasses scoped-rbac, the workflow and JSON Schema validation.
+
+### Computed resource types
+
+A computed type has a schema and a JSON-LD context like any resource type, but
+its content is computed per request, never stored: a read-only view of data
+the server derives for the requesting user. Subclass
+`scrud_django.computed.ComputedResourceViewSet`, implement
+`compute(request, key)` (return a mapping; raise `Http404` or
+`PermissionDenied`), and register it with `computed_resource_type`:
+
+```python
+from scrud_django import registration
+from scrud_django.computed import ComputedResourceViewSet
+
+
+class BranchSummaryViewSet(ComputedResourceViewSet):
+    def compute(self, request, key):
+        # Return only what request.user may read as JSON.
+        return {"name": key, "items": []}
+
+
+urlpatterns += registration.computed_resource_type(
+    resource_type_uri="http://example.org/BranchSummary",
+    slug="branch-summaries",
+    schema_func=lambda: SCHEMA_JSON,
+    context_func=lambda: CONTEXT_JSON,
+    viewset_class=BranchSummaryViewSet,
+)
+```
+
+It routes `branch-summaries/<key>/` only (route name `branch-summaries-detail`;
+no list route, so a computed type is not in the service catalog, which gives
+each type's list URL) and adds no revision history. A GET answers the content with an
+`ETag` (the SHA-256 of its canonical JSON) and a 304 for a matching
+`If-None-Match`; any method other than GET, HEAD and OPTIONS is a 405. The response carries the
+`Link` headers to the type's schema and JSON-LD context, as a stored resource's
+does. The view requires an authenticated
+user and applies no authorization of its own to the content: `compute` must ask
+the same checks the stored resources' views do. The type is registered, so a
+published branch's prefix claims its slug, and HTML negotiation renders it
+through the UI cascade as view-only content.
+
+Instead of subclassing, pass `compute=` to `computed_resource_type`: a
+callable `(request, key) -> Mapping` (raise `Http404` or `PermissionDenied`)
+that supplies the content for the default `ComputedResourceViewSet`. One of
+`compute=` and `viewset_class=` is needed; registering a slug again replaces
+its `compute`.
 
 ### Search (optional)
 

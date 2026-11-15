@@ -1,0 +1,6 @@
+{
+  "name": "studio:page",
+  "engine": "jinja2",
+  "mode": "view",
+  "template": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"csrf-token\" content=\"{{ csrf_token }}\">\n<title>{{ title }}</title>\n{% for href in css %}<link rel=\"stylesheet\" href=\"{{ href }}\">\n{% endfor %}<script src=\"{{ static.htmx }}\" defer></script>\n<script src=\"{{ static.scrud_ui }}\" defer></script>\n{% for src in scripts %}<script src=\"{{ src }}\" defer></script>\n{% endfor %}</head>\n<body>\n<div class=\"studio\" data-studio><main>{{ body }}</main></div>\n</body>\n</html>\n"
+}

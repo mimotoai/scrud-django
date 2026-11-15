@@ -22,6 +22,7 @@ from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
+from .front_ends import api_url
 from .steps import *  # noqa: F403, F401
 
 TODO = "tests://ToDo"
@@ -63,19 +64,20 @@ def user_with(*grants):
 
 
 def client_with(*grants):
-    """A client whose user holds each ``(definition, context)`` of `grants`."""
+    """A client whose user holds each ``(definition, context)`` of `grants`,
+    logged in through the session (both front ends)."""
     client = APIClient()
-    client.force_authenticate(user_with(*grants))
+    client.force_login(user_with(*grants))
     return client
 
 
 def todo(content=PLAN):
-    reverse("todos-list")
+    reverse("todos-list", urlconf="tests.urls")
     return ResourceRegistration.register(dict(content), "todos")
 
 
-def detail(resource):
-    return reverse("todos-detail", args=[resource.pk])
+def detail(front_end, resource):
+    return api_url(front_end, "todos-detail", args=[resource.pk])
 
 
 def if_match(resource):
@@ -93,55 +95,63 @@ CANCELLER = {"*": {TODO: scrud_workflow(["cancel"]), TODO_LIST: True}}
 
 
 @pytest.mark.django_db
-def test_a_cancel_only_role_cannot_read_list_or_delete():
+def test_a_cancel_only_role_cannot_read_list_or_delete(front_end):
     stored = todo()
     client = client_with((CANCELLER, "team"))
-    assert client.get(detail(stored)).status_code == 403
-    assert client.head(detail(stored)).status_code == 403
-    response = client.get(reverse("todos-list"))
+    assert client.get(detail(front_end, stored)).status_code == 403
+    assert client.head(detail(front_end, stored)).status_code == 403
+    response = client.get(api_url(front_end, "todos-list"))
     assert listed_titles(response) == []
     assert response.json()["count"] == 0
-    assert client.head(reverse("todos-list")).status_code == 200
-    response = client.delete(detail(stored), **if_match(stored))
+    assert client.head(api_url(front_end, "todos-list")).status_code == 200
+    response = client.delete(detail(front_end, stored), **if_match(stored))
     assert response.status_code == 403, response.content
     assert Resource.objects.filter(pk=stored.pk).exists()
 
 
 @pytest.mark.django_db
-def test_a_cancel_only_role_still_cancels_and_nothing_else():
+def test_a_cancel_only_role_still_cancels_and_nothing_else(front_end):
     stored = todo()
     client = client_with((CANCELLER, "team"))
     # A create is __INITIALIZE__, not listed.
     before = Resource.objects.count()
-    response = client.post(reverse("todos-list"), PLAN, format="json")
+    response = client.post(api_url(front_end, "todos-list"), PLAN, format="json")
     assert response.status_code == 400, response.content
     assert Resource.objects.count() == before
     # "start" is not listed.
     started = dict(PLAN, status="in progress")
-    response = client.put(detail(stored), started, format="json", **if_match(stored))
+    response = client.put(
+        detail(front_end, stored), started, format="json", **if_match(stored)
+    )
     assert response.status_code == 400, response.content
     assert Resource.objects.get(pk=stored.pk).content == PLAN
     # "cancel" is.
     canceled = dict(PLAN, status="canceled")
-    response = client.put(detail(stored), canceled, format="json", **if_match(stored))
+    response = client.put(
+        detail(front_end, stored), canceled, format="json", **if_match(stored)
+    )
     assert response.status_code == 200, response.content
     assert Resource.objects.get(pk=stored.pk).content == canceled
 
 
 @pytest.mark.django_db
-def test_a_cancel_only_role_with_its_own_get_grant_reads():
+def test_a_cancel_only_role_with_its_own_get_grant_reads(front_end):
     # What the Upgrading line tells adopters: a role that should read needs
     # its own http.GET grant.
     stored = todo()
     client = client_with((CANCELLER, "team"), ({"http.GET": [TODO]}, "team"))
-    assert client.get(detail(stored)).status_code == 200
-    assert listed_titles(client.get(reverse("todos-list"))) == ["private plan"]
-    response = client.delete(detail(stored), **if_match(stored))
+    assert client.get(detail(front_end, stored)).status_code == 200
+    assert listed_titles(client.get(api_url(front_end, "todos-list"))) == [
+        "private plan"
+    ]
+    response = client.delete(detail(front_end, stored), **if_match(stored))
     assert response.status_code == 403, response.content
 
 
 @pytest.mark.django_db
-def test_per_method_grants_conditioned_on_scrud_workflow_allow_no_get_or_delete():
+def test_per_method_grants_conditioned_on_scrud_workflow_allow_no_get_or_delete(
+    front_end,
+):
     stored = todo()
     client = client_with(
         (
@@ -152,15 +162,15 @@ def test_per_method_grants_conditioned_on_scrud_workflow_allow_no_get_or_delete(
             "team",
         )
     )
-    assert client.get(detail(stored)).status_code == 403
-    assert listed_titles(client.get(reverse("todos-list"))) == []
-    response = client.delete(detail(stored), **if_match(stored))
+    assert client.get(detail(front_end, stored)).status_code == 403
+    assert listed_titles(client.get(api_url(front_end, "todos-list"))) == []
+    response = client.delete(detail(front_end, stored), **if_match(stored))
     assert response.status_code == 403, response.content
     assert Resource.objects.filter(pk=stored.pk).exists()
 
 
 @pytest.mark.django_db
-def test_the_list_and_the_detail_route_agree():
+def test_the_list_and_the_detail_route_agree(front_end):
     # GET outright in "open", only through scrud_workflow in "team": the list
     # shows the "open" ToDo alone, and the detail route hides the "team" one
     # (404: it is not readable), as the list leaves it out.
@@ -170,13 +180,15 @@ def test_the_list_and_the_detail_route_agree():
         ({"http.GET": [TODO, TODO_LIST]}, "open"),
         ({"http.GET": {TODO: scrud_workflow(["cancel"])}}, "team"),
     )
-    assert listed_titles(client.get(reverse("todos-list"))) == ["open plan"]
-    assert client.get(detail(shown)).status_code == 200
-    assert client.get(detail(hidden)).status_code == 404
+    assert listed_titles(client.get(api_url(front_end, "todos-list"))) == ["open plan"]
+    assert client.get(detail(front_end, shown)).status_code == 200
+    assert client.get(detail(front_end, hidden)).status_code == 404
 
 
 @pytest.mark.django_db
-def test_a_put_refused_by_its_object_check_hides_what_scrud_workflow_would_read():
+def test_a_put_refused_by_its_object_check_hides_what_scrud_workflow_would_read(
+    front_end,
+):
     # The PUT's own checks run with the write's allowance; whether a refused
     # resource is readable (403) or hidden (404) is asked outside it, so a
     # GET grant conditioned on scrud_workflow does not make it readable.
@@ -191,7 +203,9 @@ def test_a_put_refused_by_its_object_check_hides_what_scrud_workflow_would_read(
         )
     )
     canceled = dict(PLAN, status="canceled", title="never")
-    response = client.put(detail(stored), canceled, format="json", **if_match(stored))
+    response = client.put(
+        detail(front_end, stored), canceled, format="json", **if_match(stored)
+    )
     assert response.status_code == 404, response.content
     assert Resource.objects.get(pk=stored.pk).content == PLAN
 
@@ -210,6 +224,7 @@ def archive(resource):
     )
 
 
+# DRF-only: archiving-todos/ is a DRF @action of tests/urls.py only.
 @pytest.mark.django_db
 @pytest.mark.parametrize(
     "definition",
@@ -234,6 +249,7 @@ def test_a_scrud_workflow_grant_does_not_authorize_a_custom_write_action(definit
     assert "POST" not in Http.response["Allow"], Http.response["Allow"]
 
 
+# DRF-only: archiving-todos/ is a DRF @action of tests/urls.py only.
 @pytest.mark.django_db
 @test_context
 def test_a_plain_post_grant_authorizes_a_custom_write_action():
@@ -264,6 +280,7 @@ def reopen(route, resource):
     )
 
 
+# DRF-only: the reopen routes are DRF views of tests/urls.py only.
 @pytest.mark.django_db
 @pytest.mark.parametrize("route", REOPEN_ROUTES)
 @pytest.mark.parametrize(
@@ -289,6 +306,7 @@ def test_a_scrud_workflow_grant_does_not_authorize_another_put(route, definition
     assert "PUT" not in Http.response["Allow"], Http.response["Allow"]
 
 
+# DRF-only: the reopen routes are DRF views of tests/urls.py only.
 @pytest.mark.django_db
 @pytest.mark.parametrize("route", REOPEN_ROUTES)
 @test_context
@@ -307,17 +325,17 @@ def test_a_plain_put_grant_authorizes_another_put(route):
 
 @pytest.mark.django_db
 @test_context
-def test_a_scrud_workflow_grant_still_offers_its_create_and_update():
+def test_a_scrud_workflow_grant_still_offers_its_create_and_update(front_end):
     # The workflow check covers a scrud viewset's create (POST to the list)
     # and update (PUT to the detail route): its OPTIONS offers them to a
     # role conditioned on scrud_workflow alone, which the workflow check
     # then decides by the transition.
     stored = todo()
-    Given.http.force_authenticate(user_with((CANCELLER, "team")))
-    When.http.options(detail(stored))
+    Given.http.force_login(user_with((CANCELLER, "team")))
+    When.http.options(detail(front_end, stored))
     Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
     assert "PUT" in Http.response["Allow"], Http.response["Allow"]
-    When.http.options(reverse("todos-list"))
+    When.http.options(api_url(front_end, "todos-list"))
     Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
     assert "POST" in Http.response["Allow"], Http.response["Allow"]
 
@@ -359,7 +377,9 @@ def test_a_malformed_authorized_transitions_denies_everywhere(
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("transitions", MALFORMED, ids=repr)
-def test_a_put_under_a_malformed_authorized_transitions_is_refused(transitions):
+def test_a_put_under_a_malformed_authorized_transitions_is_refused(
+    front_end, transitions
+):
     stored = todo()
     client = client_with(
         (
@@ -368,13 +388,15 @@ def test_a_put_under_a_malformed_authorized_transitions_is_refused(transitions):
         )
     )
     canceled = dict(PLAN, status="canceled")
-    response = client.put(detail(stored), canceled, format="json", **if_match(stored))
+    response = client.put(
+        detail(front_end, stored), canceled, format="json", **if_match(stored)
+    )
     assert response.status_code == 403, response.content
     assert Resource.objects.get(pk=stored.pk).content == PLAN
 
 
 @pytest.mark.django_db
-def test_a_put_under_a_well_formed_authorized_transitions_cancels():
+def test_a_put_under_a_well_formed_authorized_transitions_cancels(front_end):
     stored = todo()
     client = client_with(
         (
@@ -383,7 +405,9 @@ def test_a_put_under_a_well_formed_authorized_transitions_cancels():
         )
     )
     canceled = dict(PLAN, status="canceled")
-    response = client.put(detail(stored), canceled, format="json", **if_match(stored))
+    response = client.put(
+        detail(front_end, stored), canceled, format="json", **if_match(stored)
+    )
     assert response.status_code == 200, response.content
     assert Resource.objects.get(pk=stored.pk).content == canceled
 
@@ -434,18 +458,19 @@ def team_policy():
     from scrud_django.registration import workflow_policy_resource_type
 
     workflow_policy_resource_type()
-    reverse("todos-list")
+    reverse("todos-list", urlconf="tests.urls")
     return ResourceRegistration.register(dict(TEAM_POLICY), "workflow-policies")
 
 
-def put_state(client, stored, status):
+def put_state(front_end, client, stored, status):
     body = dict(PLAN, status=status, title="changed")
-    return client.put(detail(stored), body, format="json", HTTP_IF_MATCH="*")
+    return client.put(detail(front_end, stored), body, format="json", HTTP_IF_MATCH="*")
 
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("shape", list(STATE_ERRORS))
 def test_a_workflow_error_hides_the_stored_state_from_a_writer_who_cannot_read(
+    front_end,
     shape,
 ):
     stored_status, status, _message, _prior = STATE_ERRORS[shape]
@@ -454,8 +479,8 @@ def test_a_workflow_error_hides_the_stored_state_from_a_writer_who_cannot_read(
     canceller = client_with(
         (dict(CANCELLER, **{"http.GET": [WFP]}), "team"),
     )
-    assert canceller.get(detail(stored)).status_code == 403
-    response = put_state(canceller, stored, status)
+    assert canceller.get(detail(front_end, stored)).status_code == 403
+    response = put_state(front_end, canceller, stored, status)
     assert response.status_code == 400, response.content
     problem = response.json()
     assert problem["type"] == WORKFLOW_ERROR, problem
@@ -469,14 +494,16 @@ def test_a_workflow_error_hides_the_stored_state_from_a_writer_who_cannot_read(
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("shape", list(STATE_ERRORS))
-def test_a_workflow_error_gives_the_stored_state_to_a_writer_who_reads(shape):
+def test_a_workflow_error_gives_the_stored_state_to_a_writer_who_reads(
+    front_end, shape
+):
     stored_status, status, message, prior = STATE_ERRORS[shape]
     policy = team_policy()
     stored = todo(dict(PLAN, status=stored_status))
     reader = client_with(
         (dict(CANCELLER, **{"http.GET": [TODO, WFP]}), "team"),
     )
-    response = put_state(reader, stored, status)
+    response = put_state(front_end, reader, stored, status)
     assert response.status_code == 400, response.content
     problem = response.json()
     assert problem["type"] == WORKFLOW_ERROR, problem
@@ -547,7 +574,9 @@ def test_the_malformed_configurations_remembered_are_bounded(
 
 
 @pytest.mark.django_db
-def test_a_list_under_a_malformed_condition_logs_once(fresh_malformed_log, caplog):
+def test_a_list_under_a_malformed_condition_logs_once(
+    front_end, fresh_malformed_log, caplog
+):
     for n in range(5):
         todo(dict(PLAN, title=f"plan {n}"))
     client = client_with(
@@ -557,6 +586,6 @@ def test_a_list_under_a_malformed_condition_logs_once(fresh_malformed_log, caplo
         )
     )
     with caplog.at_level("ERROR", logger="scrud_django.permissions"):
-        response = client.get(reverse("todos-list"))
+        response = client.get(api_url(front_end, "todos-list"))
     assert listed_titles(response) == []
     assert len(malformed_records(caplog)) == 1

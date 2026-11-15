@@ -101,26 +101,29 @@ Before you submit a merge request, check that it meets these guidelines:
 2. If the merge request adds functionality, the docs should be updated. Put your new functionality into a function with a docstring.
 3. The change should work for Python 3.11, 3.12 and 3.13, on SQLite and
    PostgreSQL.
-4. A merge request that changes the package (`scrud_django/`, or the published
-   parts of `pyproject.toml`, including `[tool.uv.build-backend]`) must raise
-   the version; see "Releasing" below.
+4. Merge requests target `develop` and need no version bump; the version is
+   set when releasing (see "Releasing" below).
 
 ### Releasing
 
-Releases are published to PyPI from CI. The merge request that changes the
-package sets the version to release:
+Releases are published to PyPI from CI, from the release branch `main`. Work
+lands on `develop`, the default branch. To release, set the version on
+`develop`, in a feature merge request or a small one of its own:
 
 ```{sourceCode} console
 $ uv version --bump minor   # or: uv version 1.0.0
 ```
 
-and commits `pyproject.toml` and `uv.lock`. The `version-check` job fails the
-merge request if the version is not above the target branch's and every release
-on PyPI; it checks any merge request that changes the version, even one that
-changes nothing else. When the merge request lands on `develop`, the `publish`
-job tags `vX.Y.Z`, creates a GitLab release and uploads to PyPI, but only if that
+and commit `pyproject.toml` and `uv.lock`. Then open a merge request from
+`develop` into `main`. Its `version-check` job fails it if it changes the
+package and its version is not above `main`'s and every release on PyPI; it
+checks any release merge request that changes the version, even one that
+changes nothing else. Merge requests into `develop` are not version-checked.
+When the release merge request lands on `main`, the `publish` job tags
+`vX.Y.Z`, creates a GitLab release and uploads to PyPI, but only if that
 version is not on PyPI yet; a merge that leaves the version alone publishes
-nothing, and a version lower than the latest on PyPI fails the job. If an upload
+nothing, and a version lower than the latest on PyPI fails the job. `main` is
+protected: nobody pushes to it directly, and only Maintainers merge. If an upload
 stops part way, retry the job: it uploads the files that are missing. The
 `package` job builds the distribution on every pipeline, checks that its README
 renders, and installs the wheel in a clean venv to check that it holds every

@@ -637,3 +637,13 @@ def test_registration_updates_the_row_that_reads_use(latest_first):
     older.refresh_from_db()
     assert latest.schema.content == SCHEMA
     assert older.schema is None
+
+
+def test_the_catalog_leaves_out_a_service_no_route_names(monkeypatch):
+    monkeypatch.setattr(services, "services", {})
+    services.add_service("tests://Routed", lambda request=None: "/routed/")
+    services.add_service("tests://NotRouted", "no-such-route")
+    services.add_service("tests://NotRoutedEither", ["nor-this", "nor-that"])
+
+    assert services.catalog() == {"tests://Routed": "/routed/"}
+    assert services.etag_for() == services.etag_of({"tests://Routed": "/routed/"})

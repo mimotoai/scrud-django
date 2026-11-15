@@ -9,6 +9,7 @@ caption: Contents
 contributing
 contributors
 installation
+ui
 release-notes
 follow-ups
 ```

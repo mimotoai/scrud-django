@@ -1,0 +1,25 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UISelectableBranches",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Selectable Branches",
+  "description": "Computed: the branches the requesting user may select (main first, then by name), marked working or published. Read-only.",
+  "type": "object",
+  "properties": {
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "published": { "type": "boolean" },
+          "href": {
+            "type": ["string", "null"],
+            "description": "The branch's resource; null when it is not stored (main before its first write) or the user may not GET it."
+          }
+        },
+        "required": ["name", "published", "href"]
+      }
+    }
+  },
+  "required": ["branches"]
+}

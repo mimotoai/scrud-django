@@ -22,6 +22,7 @@ from scrud_django.serializers import ResourceSerializer
 from scrud_django.workflow import WorkflowPolicy, workflow_policy_for
 
 from .factories import UserFactory
+from .front_ends import api_url
 
 TODO = "tests://ToDo"
 PP = "tests://PartnerProfiles"
@@ -50,8 +51,9 @@ def user_with(*grants):
 
 
 def client_for(user):
+    """A client logged in as `user` through the session (both front ends)."""
     client = APIClient()
-    client.force_authenticate(user)
+    client.force_login(user)
     return client
 
 
@@ -60,7 +62,7 @@ def admin():
 
 
 def register(content, slug):
-    reverse("todos-list")
+    reverse("todos-list", urlconf="tests.urls")
     return ResourceRegistration.register(content, slug)
 
 
@@ -69,9 +71,9 @@ def store_policy(content):
     return register(content, "workflow-policies")
 
 
-def put(user, resource, content, slug):
+def put(front_end, user, resource, content, slug):
     return client_for(user).put(
-        reverse(f"{slug}-detail", args=[resource.pk]),
+        api_url(front_end, f"{slug}-detail", args=[resource.pk]),
         content,
         format="json",
         HTTP_IF_MATCH=quote_etag(resource.etag),
@@ -96,20 +98,20 @@ def test_determine_state_of_content_that_is_not_an_object_is_no_match():
 
 
 @pytest.mark.django_db
-def test_put_over_list_content_follows_the_policy():
+def test_put_over_list_content_follows_the_policy(front_end):
     stored = register([dict(NOT_STARTED)], "todos")
     # The default ToDo policy: the stored content is in no state, so no
     # transition leads from it.
-    response = put(admin(), stored, dict(NOT_STARTED), "todos")
+    response = put(front_end, admin(), stored, dict(NOT_STARTED), "todos")
     assert response.status_code == 400, response.content
     assert response.json()["type"] == WORKFLOW_ERROR
     assert_unchanged(stored)
 
 
 @pytest.mark.django_db
-def test_put_over_list_content_without_a_policy_is_200():
+def test_put_over_list_content_without_a_policy_is_200(front_end):
     stored = register([{"name": "n"}], "partner-profiles")
-    response = put(admin(), stored, {"name": "n"}, "partner-profiles")
+    response = put(front_end, admin(), stored, {"name": "n"}, "partner-profiles")
     assert response.status_code == 200, response.content
     assert Resource.objects.get(pk=stored.pk).content == {"name": "n"}
 
@@ -153,26 +155,30 @@ def receiver_adding_other_context():
 
 
 @pytest.mark.django_db
-def test_post_save_check_requires_every_context(receiver_adding_other_context):
-    reverse("todos-list")
+def test_post_save_check_requires_every_context(
+    front_end, receiver_adding_other_context
+):
+    api_url(front_end, "todos-list")
     writer = user_with(({m: [PP] for m in ("http.GET", "http.POST")}, ""))
     before = Resource.objects.count()
     response = client_for(writer).post(
-        reverse("partner-profiles-list"), {"name": "n"}, format="json"
+        api_url(front_end, "partner-profiles-list"), {"name": "n"}, format="json"
     )
     assert response.status_code == 403, response.content
     assert Resource.objects.count() == before
 
 
 @pytest.mark.django_db
-def test_post_save_check_passes_with_every_context(receiver_adding_other_context):
-    reverse("todos-list")
+def test_post_save_check_passes_with_every_context(
+    front_end, receiver_adding_other_context
+):
+    api_url(front_end, "todos-list")
     writer = user_with(
         ({m: [PP] for m in ("http.GET", "http.POST")}, ""),
         ({"http.POST": [PP]}, "other"),
     )
     response = client_for(writer).post(
-        reverse("partner-profiles-list"), {"name": "n"}, format="json"
+        api_url(front_end, "partner-profiles-list"), {"name": "n"}, format="json"
     )
     assert response.status_code == 201, response.content
 
@@ -264,10 +270,11 @@ def locked_profile(context="q"):
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("transitions", [[], ["__SAME_STATE__", "unlock"]])
-def test_conditioned_put_without_a_policy_is_403(transitions):
+def test_conditioned_put_without_a_policy_is_403(front_end, transitions):
     resource = locked_profile()
     user = user_with((dict(pp_reader(), **conditioned("http.PUT", transitions)), "q"))
     response = put(
+        front_end,
         user,
         resource,
         {"name": "anything", "state": "open", "rbac_context": "q"},
@@ -278,22 +285,22 @@ def test_conditioned_put_without_a_policy_is_403(transitions):
 
 
 @pytest.mark.django_db
-def test_unconditional_put_without_a_policy_is_200():
+def test_unconditional_put_without_a_policy_is_200(front_end):
     resource = locked_profile()
     user = user_with(({"http.GET": [PP], "http.PUT": [PP]}, "q"))
     body = {"name": "anything", "state": "open", "rbac_context": "q"}
-    response = put(user, resource, body, "partner-profiles")
+    response = put(front_end, user, resource, body, "partner-profiles")
     assert response.status_code == 200, response.content
     assert Resource.objects.get(pk=resource.pk).content == body
 
 
 @pytest.mark.django_db
-def test_conditioned_post_without_a_policy_is_403():
-    reverse("todos-list")
+def test_conditioned_post_without_a_policy_is_403(front_end):
+    api_url(front_end, "todos-list")
     user = user_with((conditioned("http.POST", ["__INITIALIZE__"]), "q"))
     before = Resource.objects.count()
     response = client_for(user).post(
-        reverse("partner-profiles-list"),
+        api_url(front_end, "partner-profiles-list"),
         {"name": "n", "rbac_context": "q"},
         format="json",
     )
@@ -302,18 +309,18 @@ def test_conditioned_post_without_a_policy_is_403():
 
 
 @pytest.mark.django_db
-def test_cel_conditioned_post_without_a_policy_reads_the_body():
-    reverse("todos-list")
+def test_cel_conditioned_post_without_a_policy_reads_the_body(front_end):
+    api_url(front_end, "todos-list")
     user = user_with(({"http.POST": {PP: {"condition": 'name == "ok"'}}}, "q"))
     client = client_for(user)
     response = client.post(
-        reverse("partner-profiles-list"),
+        api_url(front_end, "partner-profiles-list"),
         {"name": "ok", "rbac_context": "q"},
         format="json",
     )
     assert response.status_code == 201, response.content
     response = client.post(
-        reverse("partner-profiles-list"),
+        api_url(front_end, "partner-profiles-list"),
         {"name": "no", "rbac_context": "q"},
         format="json",
     )
@@ -321,7 +328,7 @@ def test_cel_conditioned_post_without_a_policy_reads_the_body():
 
 
 @pytest.mark.django_db
-def test_leaving_a_context_whose_grant_is_conditioned_is_403():
+def test_leaving_a_context_whose_grant_is_conditioned_is_403(front_end):
     # Conditioned (no transitions) in "q", an unconditional writer in "r":
     # the resource may not be moved out of "q".
     resource = locked_profile("q")
@@ -330,38 +337,40 @@ def test_leaving_a_context_whose_grant_is_conditioned_is_403():
         ({"http.GET": [PP], "http.PUT": [PP]}, "r"),
     )
     body = {"name": "n", "state": "locked", "rbac_context": "r"}
-    response = put(user, resource, body, "partner-profiles")
+    response = put(front_end, user, resource, body, "partner-profiles")
     assert response.status_code == 403, response.content
     assert_unchanged(resource)
 
 
 @pytest.mark.django_db
-def test_unconditional_writer_of_one_context_of_a_shared_resource_is_unaffected():
+def test_unconditional_writer_of_one_context_of_a_shared_resource_is_unaffected(
+    front_end,
+):
     # Without a policy, an update is checked by the object check (any of the
     # resource's contexts) and the post-save check, as before: no grant at all
     # in "x" does not block an unconditional writer of "q".
     resource = locked_profile(["q", "x"])
     user = user_with(({"http.GET": [PP], "http.PUT": [PP]}, "q"))
     body = {"name": "n2", "state": "locked", "rbac_context": "q"}
-    response = put(user, resource, body, "partner-profiles")
+    response = put(front_end, user, resource, body, "partner-profiles")
     assert response.status_code == 200, response.content
 
 
 @pytest.mark.django_db
-def test_cel_conditioned_post_on_a_workflow_type_reads_the_body():
+def test_cel_conditioned_post_on_a_workflow_type_reads_the_body(front_end):
     # The workflow check authorizes the transition with the body as the fields
     # a CEL condition reads (it once gave CEL an object, not a mapping: a 500).
-    reverse("todos-list")
+    api_url(front_end, "todos-list")
     user = user_with(({"http.POST": {TODO: {"condition": 'title == "ok"'}}}, "q"))
     client = client_for(user)
     response = client.post(
-        reverse("todos-list"),
+        api_url(front_end, "todos-list"),
         dict(NOT_STARTED, title="ok", rbac_context="q"),
         format="json",
     )
     assert response.status_code == 201, response.content
     response = client.post(
-        reverse("todos-list"),
+        api_url(front_end, "todos-list"),
         dict(NOT_STARTED, title="no", rbac_context="q"),
         format="json",
     )
@@ -386,10 +395,11 @@ def states(response):
 
 
 @pytest.mark.django_db
-def test_invalid_transition_error_names_prior_then_proposed_state():
+def test_invalid_transition_error_names_prior_then_proposed_state(front_end):
     store_policy(dict(LOCKING_PP_POLICY, rbac_context="q"))
     resource = locked_profile()
     response = put(
+        front_end,
         admin(),
         resource,
         {"name": "n", "state": "open", "rbac_context": "q"},
@@ -400,16 +410,18 @@ def test_invalid_transition_error_names_prior_then_proposed_state():
 
 
 @pytest.mark.django_db
-def test_transition_from_no_state_error_names_no_prior_state():
+def test_transition_from_no_state_error_names_no_prior_state(front_end):
     store_policy(dict(LOCKING_PP_POLICY, rbac_context=""))
     stored = register([{"name": "n"}], "partner-profiles")
-    response = put(admin(), stored, {"name": "n", "state": "open"}, "partner-profiles")
+    response = put(
+        front_end, admin(), stored, {"name": "n", "state": "open"}, "partner-profiles"
+    )
     assert response.status_code == 400, response.content
     assert states(response) == (None, "open")
 
 
 @pytest.mark.django_db
-def test_unauthorized_transition_error_names_prior_then_proposed_state():
+def test_unauthorized_transition_error_names_prior_then_proposed_state(front_end):
     store_policy(dict(LOCKING_PP_POLICY, rbac_context="q"))
     resource = register(
         {"name": "n", "state": "open", "rbac_context": "q"}, "partner-profiles"
@@ -424,6 +436,7 @@ def test_unauthorized_transition_error_names_prior_then_proposed_state():
         )
     )
     response = put(
+        front_end,
         user,
         resource,
         {"name": "n", "state": "locked", "rbac_context": "q"},
@@ -434,7 +447,7 @@ def test_unauthorized_transition_error_names_prior_then_proposed_state():
 
 
 @pytest.mark.django_db
-def test_unauthorized_create_error_has_no_prior_state():
+def test_unauthorized_create_error_has_no_prior_state(front_end):
     store_policy(dict(LOCKING_PP_POLICY, rbac_context="q"))
     user = user_with(
         (
@@ -446,7 +459,7 @@ def test_unauthorized_create_error_has_no_prior_state():
         )
     )
     response = client_for(user).post(
-        reverse("partner-profiles-list"),
+        api_url(front_end, "partner-profiles-list"),
         {"name": "n", "state": "open", "rbac_context": "q"},
         format="json",
     )

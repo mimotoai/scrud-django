@@ -1,0 +1,18 @@
+{
+  "$id": "tests://TodoSummary",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "To-do summary",
+  "description": "The to-do lists of one context the requesting user may read, computed.",
+  "type": "object",
+  "properties": {
+    "context": {
+      "type": "string"
+    },
+    "titles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

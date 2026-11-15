@@ -1,0 +1,375 @@
+"""The parity harness of the two front ends: one exchange (a request and its
+response) on a front end's mount in `tests.parity_urls`, and a case run on
+both on fresh data, so that their responses compare byte for byte.
+
+A response is normalized as the design allows, and in no other way:
+
+- the mount prefix (``/drf/``, ``/ninja/``) becomes ``{mount}``;
+- ``Date`` is dropped;
+- the target of the HTTP Schema Resource link (`HSR_REL`) becomes ``{hsr}``
+  (each front end serves its HSRs at URLs of its own);
+- each key a case's setup created becomes ``{name}``, and the key of each
+  resource the request itself created (a POST's) ``{created}`` (then
+  ``{created-2}`` ...), in URL path segments only (PostgreSQL's sequences do
+  not roll back, so keys differ between the front ends' runs; a list's ETag
+  hashes its resources' keys, so a list case's setup stores its resources
+  with keys of its own, the same in both runs, `note_chosen_key`, which
+  `parity` checks);
+- ``Content-Length`` is that of the body once so replaced.
+
+Everything else (status, every other header, ``Vary`` included, the body's
+bytes) must match. The one difference a case may excuse, and then only by
+name, is DRF's ``Vary: Cookie`` on a refusal of failing credentials
+(`Case.drf_alone_reads_the_session`, `excusing_drfs_session_vary`).
+"""
+
+import dataclasses
+import datetime
+import itertools
+import json
+import re
+import uuid
+from collections.abc import Callable, Mapping
+from contextlib import ExitStack
+from dataclasses import dataclass
+from unittest import mock
+
+from django.db import transaction
+from django.test import Client
+from django.urls import reverse
+
+from scrud_django import registration
+from scrud_django.models import Resource
+
+from .resource_types import ninja_type_specs
+
+FRONT_ENDS = ("drf", "ninja")
+
+#: The URL namespace of the test types' ninja API (`tests.ninja_api`).
+NINJA_NAMESPACE = "scrud-ninja"
+
+#: Each front end's mount in `tests.parity_urls`.
+MOUNTS = {"drf": "/drf/", "ninja": "/ninja/"}
+
+#: The placeholder the mount prefix becomes, in paths, headers and bodies.
+MOUNT = "{mount}"
+
+#: The relation of the HTTP Schema Resource link scrudful adds to the
+#: responses of a described path, and the placeholder its target becomes.
+HSR_REL = "https://w3id.org/semantic-http/ns#http-schema-resource-document"
+HSR = "{hsr}"
+
+#: The response headers dropped.
+IGNORED_HEADERS = frozenset({"date"})
+
+#: The time of a case's setup, then of its request: `parity` freezes the
+#: clock, so both front ends store and answer the same times.
+SETUP_TIME = datetime.datetime(2026, 10, 1, 12, 0, 0, tzinfo=datetime.UTC)
+REQUEST_TIME = SETUP_TIME + datetime.timedelta(minutes=1)
+
+#: What a resource's (and a resource type's) ``etag`` and ``modified_at`` are
+#: made of: `parity` replaces them with its clock's.
+CLOCK_TARGETS = {
+    "django.utils.timezone.now": "now",
+    "scrud_django.models.resource.uuid4": "uuid4",
+    "scrud_django.registration.uuid4": "uuid4",
+}
+
+
+@dataclass(frozen=True)
+class Exchange:
+    status: int
+    headers: dict[str, str]
+    body: str | None
+
+
+def _no_setup(client):
+    return {}
+
+
+@dataclass(frozen=True)
+class Case:
+    """One request of the parity corpus.
+
+    - `path` holds ``{mount}`` (the front end's mount) and may hold
+      ``{name}`` for a key `setup` returns.
+    - `setup(client)` creates what the case needs (rows, users, grants;
+      logging `client` in when the request is not anonymous) and returns
+      ``{name: key}`` of the rows whose keys appear in URLs: keys of one
+      table (the resources'), so that no two are alike.
+    - `body` (sent as JSON unless a ``str`` or ``bytes``) and `headers` may
+      be callables of those names, called after `setup`.
+    - `drf_alone_reads_the_session`: the case's credentials fail, and the two
+      front ends refuse them by different mechanisms (the first fix plan's
+      Ruling A): DRF's authentication reads the session before the
+      credentials fail (``Vary: Cookie``), ninja's ``NINJA_USER`` hook
+      refuses before the session is read. `parity` then asserts that DRF's
+      ``Vary`` is exactly ninja's plus ``Cookie``, and returns DRF's exchange
+      with ninja's ``Vary`` (`excusing_drfs_session_vary`).
+    """
+
+    id: str
+    method: str
+    path: str
+    setup: Callable[[Client], Mapping[str, object]] = _no_setup
+    body: object = None
+    headers: Mapping[str, str] | Callable[[Mapping], Mapping[str, str]] | None = None
+    drf_alone_reads_the_session: bool = False
+
+
+class Clock:
+    """``now()`` at `SETUP_TIME`, then at `REQUEST_TIME`; ``uuid4()`` a
+    sequence started afresh for each front end."""
+
+    def __init__(self):
+        self.time = SETUP_TIME
+        self.ids = itertools.count(1)
+
+    def now(self):
+        return self.time
+
+    def uuid4(self):
+        return uuid.UUID(int=next(self.ids))
+
+
+def api_url(front_end, name, *args, **kwargs):
+    """The path of the route `name` on `front_end`, in the URLconf that
+    serves it (the ``front_end`` fixture's): DRF's route names are global,
+    the ninja API's under `NINJA_NAMESPACE`. `args` and `kwargs` go to
+    ``reverse``."""
+    if front_end == "ninja":
+        name = f"{NINJA_NAMESPACE}:{name}"
+    elif front_end != "drf":
+        raise ValueError(f"no front end {front_end!r}")
+    return reverse(name, *args, **kwargs)
+
+
+def hsr_url(front_end, route_name):
+    """The URL of the HTTP Schema Resource of the route `route_name` (a
+    type's ``<slug>-list`` or ``<slug>-detail``) on `front_end`, as its Link
+    names it: DRF's HSR routes are named by URL name at the root
+    (``include(hsr_urls())``), ninja's by path template under the type's
+    router (``""`` gives ``_root``, ``"{slug}/"`` gives ``slug``)."""
+    if front_end == "drf":
+        return f"http://testserver/_hsr/{route_name}"
+    slug, _, kind = route_name.rpartition("-")
+    template = {"list": "_root", "detail": "slug"}[kind]
+    return f"http://testserver{api_url(front_end, f'{slug}-list')}_hsr/{template}"
+
+
+#: The keys the running case's setup chose for the resources it stored
+#: (`note_chosen_key`), ``None`` outside a run.
+_chosen_keys: list | None = None
+
+
+def note_chosen_key(key):
+    """Note `key`, which a case's setup chose for a resource it stores (a
+    list case's: a list's ETag hashes its resources' keys), so that `parity`
+    checks that each front end's run chose the same keys. A setup chooses
+    the first free key of a range; were a key of it taken in one run only
+    (MySQL's ``AUTO_INCREMENT`` does not roll back, and may reach the
+    range), the runs' lists, and their ETags, would differ for no fault of
+    either front end."""
+    if _chosen_keys is not None:
+        _chosen_keys.append(key)
+
+
+def parity(case: Case) -> tuple[Exchange, Exchange]:
+    """`case`'s exchange on each front end (`FRONT_ENDS`, in that order),
+    each on fresh data: its setup and request run in a transaction rolled
+    back afterwards, with the clock frozen (`CLOCK_TARGETS`), once both
+    front ends serve their types (`serve_both`). ``AssertionError`` if the
+    runs' setups chose different keys (`note_chosen_key`), or, for a case
+    `Case.drf_alone_reads_the_session`, if the ``Vary`` headers differ in
+    any other way than DRF's ``Cookie``."""
+    global _chosen_keys
+    serve_both()
+    exchanges, chosen = [], {}
+    for front_end in FRONT_ENDS:
+        _chosen_keys = []
+        try:
+            exchanges.append(_run(case, front_end))
+        finally:
+            chosen[front_end], _chosen_keys = _chosen_keys, None
+    assert len({tuple(keys) for keys in chosen.values()}) == 1, (
+        f"{case.id}: the runs' setups chose different keys {chosen}: a key of "
+        "their range was taken in one run only"
+    )
+    drf, ninja = exchanges
+    if case.drf_alone_reads_the_session:
+        drf = excusing_drfs_session_vary(drf, ninja)
+    return drf, ninja
+
+
+def excusing_drfs_session_vary(drf: Exchange, ninja: Exchange) -> Exchange:
+    """`drf` with `ninja`'s ``Vary``, once its own is asserted to be exactly
+    ninja's plus ``Cookie``: the difference of a refusal of failing
+    credentials, which DRF's authentication refuses after reading the
+    session and ninja's ``NINJA_USER`` hook before (the first fix plan's
+    Ruling A; `Case.drf_alone_reads_the_session`). ``AssertionError`` for
+    any other difference."""
+    vary = ninja.headers.get("Vary")
+    expected = ", ".join(filter(None, [vary, "Cookie"]))
+    assert drf.headers.get("Vary") == expected, (
+        f"DRF's Vary {drf.headers.get('Vary')!r} is not ninja's {vary!r} plus Cookie"
+    )
+    headers = {name: value for name, value in drf.headers.items() if name != "Vary"}
+    if vary is not None:
+        headers["Vary"] = vary
+    return dataclasses.replace(drf, headers=headers)
+
+
+def serve_both():
+    """Load `tests.parity_urls`, and register every type the two front ends
+    serve, in the test's transaction: before, and outside, each run's
+    transaction and clock. Otherwise the URLconf would be imported on the
+    first run's first request, registering the types the session does not
+    commit (``django_db_setup``: the hooked and computed ones) in that run's
+    transaction only, and with its clock: the next run would find them gone,
+    and the first run's ETags shifted. Registering a type already stored
+    writes nothing."""
+    from . import parity_urls  # noqa: F401
+
+    for spec in [*registration.built_in_type_specs(), *ninja_type_specs()]:
+        spec.register()
+
+
+def serve_ninja():
+    """Load `tests.ninja_urls`, and register every type its API serves, in
+    the test's transaction (as `serve_both`): the URLconf may have been
+    imported, and the types it registered rolled back, in an earlier test.
+    Registering a type already stored writes nothing."""
+    from . import ninja_urls  # noqa: F401
+
+    for spec in [*registration.built_in_type_specs(), *ninja_type_specs()]:
+        spec.register()
+
+
+def _run(case, front_end):
+    clock = Clock()
+    with ExitStack() as stack:
+        for target, attribute in CLOCK_TARGETS.items():
+            stack.enter_context(mock.patch(target, getattr(clock, attribute)))
+        with transaction.atomic():
+            try:
+                client = Client()
+                keys = dict(case.setup(client))
+                clock.time = REQUEST_TIME
+                body = case.body(keys) if callable(case.body) else case.body
+                headers = case.headers(keys) if callable(case.headers) else case.headers
+                path = case.path.format(mount=MOUNT, **keys)
+                stored = set(Resource.objects.values_list("pk", flat=True))
+                return exchange(
+                    client,
+                    front_end,
+                    case.method,
+                    path,
+                    body=body,
+                    headers=headers,
+                    keys=keys,
+                    stored=stored,
+                )
+            finally:
+                transaction.set_rollback(True)
+
+
+def exchange(
+    client,
+    front_end,
+    method,
+    path,
+    *,
+    body=None,
+    headers=None,
+    keys=None,
+    stored=None,
+) -> Exchange:
+    """Send `method` `path` (whose ``{mount}`` becomes `front_end`'s mount)
+    with `client`, `body` as JSON (a ``str`` or ``bytes`` as is) and
+    `headers`, and return the response `normalized`, with `keys` (``{name:
+    key}``) as the keys to replace. Given `stored`, the keys of the resources
+    stored before the request, each resource the request created is
+    ``created`` (then ``created-2`` ...), in key order."""
+    mount = MOUNTS[front_end]
+    kwargs = {"headers": dict(headers or {})}
+    if body is not None:
+        kwargs["data"] = body if isinstance(body, str | bytes) else json.dumps(body)
+        kwargs["content_type"] = "application/json"
+    url = path.replace(MOUNT, mount)
+    response = client.generic(method, url, **kwargs)
+    keys = dict(keys or {})
+    if stored is not None:
+        created = Resource.objects.exclude(pk__in=stored).order_by("pk")
+        for index, pk in enumerate(created.values_list("pk", flat=True), start=1):
+            keys["created" if index == 1 else f"created-{index}"] = pk
+    length_of = None
+    if method == "HEAD" and response.has_header("Content-Length"):
+        # A HEAD's Content-Length is that of the GET's body, which it leaves
+        # out: it counts the mount and the keys too.
+        get = client.generic("GET", url, **kwargs)
+        assert get.status_code == response.status_code, get
+        length_of = get.content
+    return normalized(response, mount, keys, length_of=length_of)
+
+
+def normalized(response, mount, keys, *, length_of=None) -> Exchange:
+    """`response` as an `Exchange`, normalized (see the module docstring):
+    `mount` is the front end's, `keys` ``{name: key}``, `length_of` the body
+    a HEAD's ``Content-Length`` counts (the response's own otherwise)."""
+    replace = _replacer(mount, keys)
+    content = response.content if length_of is None else length_of
+    headers = {}
+    for name, value in response.headers.items():
+        if name.lower() in IGNORED_HEADERS:
+            continue
+        if name.lower() == "content-length":
+            if int(value) != len(content):
+                raise AssertionError(f"Content-Length {value} is not the body's")
+            value = str(len(replace(content.decode()).encode()))
+        elif name.lower() == "link":
+            value = replace(masked_hsr(value))
+        else:
+            value = replace(value)
+        headers[name] = value
+    text = response.content.decode() if response.content else None
+    return Exchange(
+        status=response.status_code,
+        headers=headers,
+        body=None if text is None else replace(text),
+    )
+
+
+def _replacer(mount, keys):
+    """The replacement of `keys` in path segments, then of `mount`, in a
+    text. ``ValueError`` for two names of one key, which no replacement could
+    tell apart."""
+    names = {}
+    for name, key in keys.items():
+        if str(key) in names:
+            raise ValueError(f"{name!r} and {names[str(key)]!r} are both {key!r}")
+        names[str(key)] = name
+    # A segment: after a "/", up to the next "/", or the end of the path (its
+    # query, fragment, or the end of the URL in JSON text or a Link).
+    segment = re.compile(
+        r"(?<=/)(" + "|".join(map(re.escape, names)) + r')(?=[/?#"><]|$)'
+    )
+
+    def replace(text):
+        if names:
+            text = segment.sub(lambda match: "{" + names[match.group(1)] + "}", text)
+        return text.replace(mount, MOUNT)
+
+    return replace
+
+
+def split_links(value):
+    """The link-values of a Link field value (no URL here holds ``", <"``)."""
+    return [part if part.startswith("<") else "<" + part for part in value.split(", <")]
+
+
+def masked_hsr(value):
+    """The Link field value `value` with its HSR link's target `HSR`."""
+    return ", ".join(
+        f"<{HSR}>{link[link.index('>') + 1 :]}" if f'rel="{HSR_REL}"' in link else link
+        for link in split_links(value)
+    )

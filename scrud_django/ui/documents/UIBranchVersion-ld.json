@@ -1,0 +1,19 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UIBranchVersion",
+  "rbac_context": {
+    "@id": "openteams:AccessControlContext"
+  },
+  "branch": {
+    "@id": "openteams:UIBranchReference"
+  },
+  "number": {
+    "@id": "openteams:UIBranchVersionNumber"
+  },
+  "items": {
+    "@id": "openteams:UIBranchVersionItems"
+  },
+  "ancestors": {
+    "@id": "openteams:UIBranchingPoint"
+  }
+}

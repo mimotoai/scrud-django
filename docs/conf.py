@@ -44,7 +44,7 @@ todo_include_todos = True
 
 # Heading anchors, so that links such as follow-ups.md#policy-recheck-isolation
 # resolve (see _ext/myst_slugs.py).
-myst_heading_anchors = 2
+myst_heading_anchors = 3
 myst_heading_slug_func = 'myst_slugs.follow_up_slug'
 
 # Add any paths that contain templates here, relative to this directory.

@@ -1,0 +1,6 @@
+/* htmx's indicator rules, which htmx 2 inserts as an inline <style> on
+   load. The live preview's CSP allows inline styles by nonce only, so its
+   page turns that off (htmx-config includeIndicatorStyles: false) and links
+   the same rules from here. */
+.htmx-indicator { opacity: 0; }
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; transition: opacity 200ms ease-in; }

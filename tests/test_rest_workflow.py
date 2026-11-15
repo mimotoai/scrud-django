@@ -2,23 +2,23 @@ import json
 
 import pytest
 from rest_framework import status
-from rest_framework.reverse import reverse
 from safetydance_django.test import *
 
 from scrud_django.registration import ResourceRegistration
 
 from .fixtures import *  # noqa
 from .fixtures import role_todo_creator, todo_creator_login  # noqa: F401
+from .front_ends import api_url
 from .steps import *
 
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_initial_state(admin_login):
+def test_invalid_initial_state(front_end, admin_login):
     # TODO check the error response body for expected messages
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.post(
-        reverse("todos-list"),
+        api_url(front_end, "todos-list"),
         data=json.dumps(
             {
                 "title": "Buy milk",
@@ -34,10 +34,10 @@ def test_invalid_initial_state(admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_valid_initial_state(admin_login):
-    Given.http.force_authenticate(admin_login)
+def test_valid_initial_state(front_end, admin_login):
+    Given.http.force_login(admin_login)
     When.http.post(
-        reverse("todos-list"),
+        api_url(front_end, "todos-list"),
         data=json.dumps(
             {
                 "title": "Buy milk",
@@ -53,11 +53,11 @@ def test_valid_initial_state(admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_state(admin_login):
+def test_invalid_state(front_end, admin_login):
     # TODO check the error response body for expected messages
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.post(
-        reverse("todos-list"),
+        api_url(front_end, "todos-list"),
         data=json.dumps(
             {
                 "title": "Buy milk",
@@ -71,7 +71,7 @@ def test_invalid_state(admin_login):
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
 
     When.http.post(
-        reverse("todos-list"),
+        api_url(front_end, "todos-list"),
         data=json.dumps(
             {
                 "title": "Buy milk",
@@ -85,7 +85,7 @@ def test_invalid_state(admin_login):
     Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
 
     When.http.post(
-        reverse("todos-list"),
+        api_url(front_end, "todos-list"),
         data=json.dumps(
             {
                 "title": "Buy milk",
@@ -101,7 +101,7 @@ def test_invalid_state(admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_transition(admin_login):
+def test_invalid_transition(front_end, admin_login):
     # TODO check the error response body for expected messages
     data = {
         "title": "Buy milk",
@@ -109,9 +109,11 @@ def test_invalid_transition(admin_login):
         "priority": "medium",
         "assignee": "http://somewhere.example/someone",
     }
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.post(
-        reverse("todos-list"), data=json.dumps(data), content_type="application/json"
+        api_url(front_end, "todos-list"),
+        data=json.dumps(data),
+        content_type="application/json",
     )
     Then.http.status_code_is(status.HTTP_201_CREATED)
 
@@ -151,16 +153,18 @@ def test_invalid_transition(admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_valid_transition(admin_login):
+def test_valid_transition(front_end, admin_login):
     data = {
         "title": "Buy milk",
         "status": "not started",
         "priority": "medium",
         "assignee": "http://somewhere.example/someone",
     }
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.post(
-        reverse("todos-list"), data=json.dumps(data), content_type="application/json"
+        api_url(front_end, "todos-list"),
+        data=json.dumps(data),
+        content_type="application/json",
     )
     Then.http.status_code_is(status.HTTP_201_CREATED)
     url = Http.response["Location"]
@@ -191,16 +195,18 @@ def test_valid_transition(admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_unauthorized_transition(todo_creator_login):
+def test_unauthorized_transition(front_end, todo_creator_login):
     data = {
         "title": "Buy milk",
         "status": "not started",
         "priority": "medium",
         "assignee": "http://somewhere.example/someone",
     }
-    Given.http.force_authenticate(todo_creator_login)
+    Given.http.force_login(todo_creator_login)
     When.http.post(
-        reverse("todos-list"), data=json.dumps(data), content_type="application/json"
+        api_url(front_end, "todos-list"),
+        data=json.dumps(data),
+        content_type="application/json",
     )
     Then.http.status_code_is(status.HTTP_201_CREATED)
     url = Http.response["Location"]
@@ -219,16 +225,18 @@ def test_unauthorized_transition(todo_creator_login):
 
 @pytest.mark.django_db
 @test_context
-def test_authorized_transition(todo_creator_login):
+def test_authorized_transition(front_end, todo_creator_login):
     data = {
         "title": "Buy milk",
         "status": "not started",
         "priority": "medium",
         "assignee": "http://somewhere.example/someone",
     }
-    Given.http.force_authenticate(todo_creator_login)
+    Given.http.force_login(todo_creator_login)
     When.http.post(
-        reverse("todos-list"), data=json.dumps(data), content_type="application/json"
+        api_url(front_end, "todos-list"),
+        data=json.dumps(data),
+        content_type="application/json",
     )
     Then.http.status_code_is(status.HTTP_201_CREATED)
     url = Http.response["Location"]
@@ -258,10 +266,10 @@ EMPTY_CONTEXT_TODO = {
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_initial_state_with_empty_rbac_context(admin_login):
-    Given.http.force_authenticate(admin_login)
+def test_invalid_initial_state_with_empty_rbac_context(front_end, admin_login):
+    Given.http.force_login(admin_login)
     When.http.post(
-        reverse("todos-list"),
+        api_url(front_end, "todos-list"),
         data=json.dumps(dict(EMPTY_CONTEXT_TODO, status="done")),
         content_type="application/json",
     )
@@ -270,11 +278,13 @@ def test_invalid_initial_state_with_empty_rbac_context(admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_unauthorized_transition_with_empty_rbac_context(todo_creator_login):
+def test_unauthorized_transition_with_empty_rbac_context(front_end, todo_creator_login):
     data = dict(EMPTY_CONTEXT_TODO)
-    Given.http.force_authenticate(todo_creator_login)
+    Given.http.force_login(todo_creator_login)
     When.http.post(
-        reverse("todos-list"), data=json.dumps(data), content_type="application/json"
+        api_url(front_end, "todos-list"),
+        data=json.dumps(data),
+        content_type="application/json",
     )
     Then.http.status_code_is(status.HTTP_201_CREATED)
     url = Http.response["Location"]
@@ -293,12 +303,12 @@ def test_unauthorized_transition_with_empty_rbac_context(todo_creator_login):
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_transition_with_empty_rbac_context(admin_login):
+def test_invalid_transition_with_empty_rbac_context(front_end, admin_login):
     done = ResourceRegistration.register(
         dict(EMPTY_CONTEXT_TODO, status="done"), "todos"
     )
-    url = reverse("todos-detail", args=[done.id])
-    Given.http.force_authenticate(admin_login)
+    url = api_url(front_end, "todos-detail", args=[done.id])
+    Given.http.force_login(admin_login)
     Given.http.head(url)
     When.http.put(  # no transition leads from "done" back to "not started"
         url,

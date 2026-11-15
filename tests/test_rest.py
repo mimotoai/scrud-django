@@ -2,7 +2,6 @@ import json
 from copy import copy
 
 import pytest
-from django.urls import reverse
 from rest_framework import status
 from safetydance_django.test import *  # noqa: F403, F401
 
@@ -16,6 +15,7 @@ from .fixtures import (
     serialize_page,
     serialize_resource,
 )
+from .front_ends import api_url
 from .steps import *  # noqa: F403, F401
 
 # TESTS
@@ -23,28 +23,29 @@ from .steps import *  # noqa: F403, F401
 
 @pytest.mark.django_db
 @test_context
-def test_resource_get_list(regular_login, partner_profiles):
-    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
+def test_resource_get_list(front_end, regular_login, partner_profiles):
+    url = api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME)
     assert url == '/partner-profiles/'
 
-    Given.http.force_authenticate(regular_login)
+    Given.http.force_login(regular_login)
     And.http.get(url)
     Then.http.status_code_is(status.HTTP_200_OK)
     And.http.content_type_is('application/json')
-    And.http.response_json_is(serialize_page([partner_profiles]))
+    And.http.response_json_is(serialize_page([partner_profiles], front_end))
     assert Http.response["Last-Modified"] == last_modified_for(partner_profiles)
 
 
 @pytest.mark.django_db
 @test_context
-def test_resource_get_detail(regular_login, partner_profiles):
-    url = reverse(
+def test_resource_get_detail(front_end, regular_login, partner_profiles):
+    url = api_url(
+        front_end,
         RESOURCE_ENDPOINT_DETAIL_NAME,
         kwargs={'slug': partner_profiles.id},
     )
     assert url == f'/partner-profiles/{partner_profiles.id}/'
 
-    Given.http.force_authenticate(regular_login)
+    Given.http.force_login(regular_login)
     And.http.get(url)
     Then.http.status_code_is(status.HTTP_200_OK)
     And.http.content_type_is('application/json')
@@ -54,13 +55,13 @@ def test_resource_get_detail(regular_login, partner_profiles):
 
 @pytest.mark.django_db
 @test_context
-def test_resource_post(admin_login, partner_profile_post_data):
-    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
+def test_resource_post(front_end, admin_login, partner_profile_post_data):
+    url = api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME)
     assert url == '/partner-profiles/'
 
     serialized_data = partner_profile_post_data
 
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     And.http.post(
         url,
         data=json.dumps(partner_profile_post_data),
@@ -73,14 +74,14 @@ def test_resource_post(admin_login, partner_profile_post_data):
 
 @pytest.mark.django_db
 @test_context
-def test_resource_post_bad_request(admin_login, partner_profile_post_data):
-    url = reverse(RESOURCE_ENDPOINT_LIST_NAME)
+def test_resource_post_bad_request(front_end, admin_login, partner_profile_post_data):
+    url = api_url(front_end, RESOURCE_ENDPOINT_LIST_NAME)
     assert url == '/partner-profiles/'
 
     serialized_data = dict(partner_profile_post_data)
     serialized_data['logo'] = 42  # must be a string and valid URI
 
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     And.http.post(
         url,
         data=json.dumps(serialized_data),
@@ -102,7 +103,9 @@ def test_resource_post_bad_request(admin_login, partner_profile_post_data):
 
 @pytest.mark.django_db
 @test_context
-def test_resource_put(admin_login, partner_profiles, partner_profile_post_data):
+def test_resource_put(
+    front_end, admin_login, partner_profiles, partner_profile_post_data
+):
     resource = ResourceRegistration.register(
         content=partner_profile_post_data, register_type='partner-profiles'
     )
@@ -114,10 +117,12 @@ def test_resource_put(admin_login, partner_profiles, partner_profile_post_data):
 
     serialized_data = partner_profile_put_data
 
-    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={'slug': resource.id})
+    url = api_url(
+        front_end, RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={'slug': resource.id}
+    )
     assert url == f'/partner-profiles/{resource.id}/'
 
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     And.http.get(url)
     response = Http.response
     And.http.put(
@@ -134,15 +139,17 @@ def test_resource_put(admin_login, partner_profiles, partner_profile_post_data):
 
 @pytest.mark.django_db
 @test_context
-def test_resource_delete(admin_login, partner_profile_post_data):
+def test_resource_delete(front_end, admin_login, partner_profile_post_data):
     resource = ResourceRegistration.register(
         content=partner_profile_post_data, register_type='partner-profiles'
     )
 
-    url = reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={'slug': resource.id})
+    url = api_url(
+        front_end, RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={'slug': resource.id}
+    )
     assert url == f'/partner-profiles/{resource.id}/'
 
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     And.http.get(url)
     response = Http.response
     And.http.delete(
@@ -162,11 +169,11 @@ JSON_SCHEMA_ENDPOINT_LIST_NAME = f"{JSON_SCHEMA_ENDPOINT_PREFIX}-list"
 
 @pytest.mark.django_db
 @test_context
-def test_js_schema_get_list(regular_login):
-    url = reverse(JSON_SCHEMA_ENDPOINT_LIST_NAME)
+def test_js_schema_get_list(front_end, regular_login):
+    url = api_url(front_end, JSON_SCHEMA_ENDPOINT_LIST_NAME)
     assert url == '/json-schema/'
 
-    Given.http.force_authenticate(regular_login)
+    Given.http.force_login(regular_login)
     And.http.get(url)
     Then.http.status_code_is(status.HTTP_200_OK)
     And.http.content_type_is('application/json')
@@ -182,11 +189,11 @@ JSON_LD_ENDPOINT_LIST_NAME = f"{JSON_LD_ENDPOINT_PREFIX}-list"
 
 @pytest.mark.django_db
 @test_context
-def test_js_ld_get_list(regular_login):
-    url = reverse(JSON_LD_ENDPOINT_LIST_NAME)
+def test_js_ld_get_list(front_end, regular_login):
+    url = api_url(front_end, JSON_LD_ENDPOINT_LIST_NAME)
     assert url == '/json-ld/'
 
-    Given.http.force_authenticate(regular_login)
+    Given.http.force_login(regular_login)
     And.http.get(url)
     Then.http.status_code_is(status.HTTP_200_OK)
     And.http.content_type_is('application/json')

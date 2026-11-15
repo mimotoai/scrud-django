@@ -28,7 +28,7 @@ from scrud_django.permissions import current_transition
 from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
 
 from .models import Note
-from .resource_types import json_resource_types
+from .resource_types import hooked_resource_types, json_resource_types
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -37,6 +37,8 @@ urlpatterns = [
     path("", include(hsr_urls())),
 ]
 urlpatterns.extend(registration.resource_types(*json_resource_types()))
+# The types registered with per-type hooks (tests.test_type_hooks).
+urlpatterns.extend(registration.resource_types(*hooked_resource_types()))
 
 # The partner profiles list again, served by ResourceViewSetGenericFilter, whose
 # list filters on query parameters.
@@ -88,6 +90,80 @@ urlpatterns.extend(
         ),
     ]
 )
+
+
+class OtherIriResourceViewSet(ResourceViewSet):
+    """The partner profiles again, named by the view as another type
+    (``resource_type_iri_for``), authorized by ContextDenyingIsAuthorized:
+    its own ``has_context_permission`` makes the post-save check ask the
+    grants beside it, for the type the view names."""
+
+    OTHER_IRI = "tests://PartnerProfilesElsewhere"
+
+    permission_classes = [ContextDenyingIsAuthorized]
+
+    def resource_type_iri_for(self, request):
+        return self.OTHER_IRI
+
+
+class ViewCheckedIsAuthorized(IsAuthorized):
+    """Refuses an object its view's ``object_for_checks`` did not mark."""
+
+    def has_object_permission(self, request, view, obj):
+        if not obj.get(ObjectForChecksResourceViewSet.MARK):
+            return False
+        return super().has_object_permission(request, view, obj)
+
+
+class ObjectForChecksResourceViewSet(ResourceViewSet):
+    """The partner profiles again, whose object checks get the content
+    marked by the view's own ``object_for_checks``."""
+
+    MARK = "checked_by_view"
+
+    permission_classes = [ViewCheckedIsAuthorized]
+
+    def object_for_checks(self, obj):
+        return dict(super().object_for_checks(obj), **{self.MARK: True})
+
+
+class PostSaveRefusingResourceViewSet(ResourceViewSet):
+    """The partner profiles again, whose own post-save check refuses a
+    resource saved with the name `REFUSED`."""
+
+    REFUSED = "refused after saving"
+
+    def check_post_save_permissions(self, request, obj):
+        if obj.content.get("name") == self.REFUSED:
+            raise access.AccessDenied()
+        super().check_post_save_permissions(request, obj)
+
+
+for prefix, viewset in (
+    ("other-iri", OtherIriResourceViewSet),
+    ("object-for-checks", ObjectForChecksResourceViewSet),
+    ("post-save-refusing", PostSaveRefusingResourceViewSet),
+):
+    urlpatterns.extend(
+        [
+            path(
+                f"{prefix}/partner-profiles/",
+                viewset.as_view(
+                    {"get": "list", "head": "list", "post": "create"},
+                    resource_type_name="partner-profiles",
+                ),
+                name=f"{prefix}-partner-profiles-list",
+            ),
+            path(
+                f"{prefix}/partner-profiles/<slug>/",
+                viewset.as_view(
+                    {"get": "retrieve", "put": "update", "delete": "destroy"},
+                    resource_type_name="partner-profiles",
+                ),
+                name=f"{prefix}-partner-profiles-detail",
+            ),
+        ]
+    )
 
 
 class LockedDenyingIsAuthorized(IsAuthorized):
@@ -995,6 +1071,44 @@ urlpatterns.extend(
                 resource_type_name="json-ld",
             ),
             name="denying-json-ld-detail",
+        ),
+    ]
+)
+
+
+class RefusingIsAuthorized(IsAuthorized):
+    """Refuses everything: under DRF's ``~`` it allows everything, and leaves
+    its view with no neutral requirement (``NotNeutral``)."""
+
+    def has_permission(self, request, view):
+        return False
+
+    def has_object_permission(self, request, view, obj):
+        return False
+
+
+class NotNeutralResourceViewSet(ResourceViewSet):
+    permission_classes = [IsAuthorized & ~RefusingIsAuthorized]
+
+
+# The hooked notes (tests.test_type_hooks) read by a view with no neutral
+# requirement: the type's hooks apply on its view-based path too.
+urlpatterns.extend(
+    [
+        path(
+            "not-neutral/hooked-notes/",
+            NotNeutralResourceViewSet.as_view(
+                {"get": "list", "head": "list"}, resource_type_name="hooked-notes"
+            ),
+            name="not-neutral-hooked-notes-list",
+        ),
+        path(
+            "not-neutral/hooked-notes/<slug>/",
+            NotNeutralResourceViewSet.as_view(
+                {"get": "retrieve", "head": "retrieve"},
+                resource_type_name="hooked-notes",
+            ),
+            name="not-neutral-hooked-notes-detail",
         ),
     ]
 )

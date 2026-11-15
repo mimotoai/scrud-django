@@ -14,7 +14,6 @@ import pytest
 from django.apps import apps
 from django.db import connection, connections, transaction
 from django.test import override_settings
-from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
 from rest_framework.test import APIClient
@@ -27,6 +26,7 @@ from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save, write
 from scrud_django.search_indexes import ResourceIndex
 
 from .factories import UserFactory
+from .front_ends import api_url
 from .workflow_actions import actions
 
 TODO = "tests://ToDo"
@@ -118,7 +118,7 @@ def indexed(monkeypatch):
 
 def admin_client():
     client = APIClient()
-    client.force_authenticate(UserFactory(is_staff=True, is_superuser=True))
+    client.force_login(UserFactory(is_staff=True, is_superuser=True))
     return client
 
 
@@ -137,7 +137,7 @@ def default_context_todo_writer():
         modified_at=now(),
     ).save()
     client = APIClient()
-    client.force_authenticate(user)
+    client.force_login(user)
     return client
 
 
@@ -160,8 +160,8 @@ def todos_moved_after_save(context="other"):
         scrud_post_save.disconnect(dispatch_uid="test-post-commit-move")
 
 
-def a_todo(content=NOT_STARTED):
-    reverse("todos-list")
+def a_todo(content=NOT_STARTED, front_end="drf"):
+    api_url(front_end, "todos-list")
     return ResourceRegistration.register(dict(content), "todos")
 
 
@@ -191,16 +191,16 @@ def read_from_the_replica(todo):
 
 @pytest.mark.django_db
 def test_a_create_refused_after_its_save_runs_no_side_effect(
-    ran, indexed, django_capture_on_commit_callbacks
+    front_end, ran, indexed, django_capture_on_commit_callbacks
 ):
-    reverse("todos-list")
+    api_url(front_end, "todos-list")
     before = Resource.objects.count()
     with (
         todos_moved_after_save(),
         django_capture_on_commit_callbacks(execute=True),
     ):
         response = default_context_todo_writer().post(
-            reverse("todos-list"), NOT_STARTED, format="json"
+            api_url(front_end, "todos-list"), NOT_STARTED, format="json"
         )
     assert response.status_code == 403, response.content
     assert Resource.objects.count() == before
@@ -219,7 +219,7 @@ def test_a_create_refused_after_its_save_runs_no_side_effect(
     ids=["refused-403", "reserved-context-400", "created"],
 )
 def test_a_committed_create_runs_its_side_effects_only_if_it_stands(
-    context, client, status, ran, indexed, committed_types
+    front_end, context, client, status, ran, indexed, committed_types
 ):
     # Committed for real: a POST with no preconditions runs in no
     # transaction of the request's, so save_checked's is the outermost and
@@ -231,7 +231,9 @@ def test_a_committed_create_runs_its_side_effects_only_if_it_stands(
     indexed.clear()
     moved = todos_moved_after_save(context) if context else nullcontext()
     with moved:
-        response = client().post(reverse("todos-list"), NOT_STARTED, format="json")
+        response = client().post(
+            api_url(front_end, "todos-list"), NOT_STARTED, format="json"
+        )
     assert response.status_code == status, response.content
     if status == 201:
         pk = Resource.objects.latest("pk").pk
@@ -245,15 +247,15 @@ def test_a_committed_create_runs_its_side_effects_only_if_it_stands(
 
 @pytest.mark.django_db
 def test_an_update_refused_after_its_save_runs_no_side_effect(
-    ran, indexed, django_capture_on_commit_callbacks
+    front_end, ran, indexed, django_capture_on_commit_callbacks
 ):
-    todo = a_todo()
+    todo = a_todo(front_end=front_end)
     with (
         todos_moved_after_save(),
         django_capture_on_commit_callbacks(execute=True),
     ):
         response = default_context_todo_writer().put(
-            reverse("todos-detail", args=[todo.pk]),
+            api_url(front_end, "todos-detail", args=[todo.pk]),
             IN_PROGRESS,
             format="json",
             HTTP_IF_MATCH=quote_etag(todo.etag),
@@ -266,12 +268,12 @@ def test_an_update_refused_after_its_save_runs_no_side_effect(
 
 @pytest.mark.django_db
 def test_a_create_runs_its_side_effects_once_after_commit(
-    ran, indexed, django_capture_on_commit_callbacks
+    front_end, ran, indexed, django_capture_on_commit_callbacks
 ):
-    reverse("todos-list")
+    api_url(front_end, "todos-list")
     with django_capture_on_commit_callbacks() as callbacks:
         response = admin_client().post(
-            reverse("todos-list"), NOT_STARTED, format="json"
+            api_url(front_end, "todos-list"), NOT_STARTED, format="json"
         )
         assert response.status_code == 201, response.content
     # Nothing ran inside the write's transaction.
@@ -286,12 +288,12 @@ def test_a_create_runs_its_side_effects_once_after_commit(
 
 @pytest.mark.django_db
 def test_an_update_runs_its_side_effects_once_after_commit(
-    ran, indexed, django_capture_on_commit_callbacks
+    front_end, ran, indexed, django_capture_on_commit_callbacks
 ):
-    todo = a_todo()
+    todo = a_todo(front_end=front_end)
     with django_capture_on_commit_callbacks() as callbacks:
         response = admin_client().put(
-            reverse("todos-detail", args=[todo.pk]),
+            api_url(front_end, "todos-detail", args=[todo.pk]),
             IN_PROGRESS,
             format="json",
             HTTP_IF_MATCH=quote_etag(todo.etag),
@@ -307,12 +309,12 @@ def test_an_update_runs_its_side_effects_once_after_commit(
 
 @pytest.mark.django_db
 def test_a_delete_runs_its_side_effects_once_after_commit(
-    ran, indexed, django_capture_on_commit_callbacks
+    front_end, ran, indexed, django_capture_on_commit_callbacks
 ):
-    todo = a_todo()
+    todo = a_todo(front_end=front_end)
     with django_capture_on_commit_callbacks() as callbacks:
         response = admin_client().delete(
-            reverse("todos-detail", args=[todo.pk]),
+            api_url(front_end, "todos-detail", args=[todo.pk]),
             HTTP_IF_MATCH=quote_etag(todo.etag),
         )
         assert response.status_code == 204, response.content
@@ -423,12 +425,12 @@ def assert_names_the_failed_action(record, kind, pk):
 
 @pytest.mark.django_db
 def test_an_action_that_raises_on_commit_does_not_fail_the_write(
-    failing_on_save, caplog, django_capture_on_commit_callbacks
+    front_end, failing_on_save, caplog, django_capture_on_commit_callbacks
 ):
-    reverse("todos-list")
+    api_url(front_end, "todos-list")
     with django_capture_on_commit_callbacks(execute=True):
         response = admin_client().post(
-            reverse("todos-list"), NOT_STARTED, format="json"
+            api_url(front_end, "todos-list"), NOT_STARTED, format="json"
         )
     assert response.status_code == 201, response.content
     pk = Resource.objects.latest("pk").pk
@@ -473,13 +475,13 @@ def test_an_action_that_raises_outside_a_transaction_does_not_raise(
 
 @pytest.mark.django_db
 def test_an_on_delete_action_that_raises_is_logged_with_the_deleted_pk(
-    failing_on_delete, caplog, django_capture_on_commit_callbacks
+    front_end, failing_on_delete, caplog, django_capture_on_commit_callbacks
 ):
-    todo = a_todo()
+    todo = a_todo(front_end=front_end)
     todo_pk = todo.pk
     with django_capture_on_commit_callbacks(execute=True):
         response = admin_client().delete(
-            reverse("todos-detail", args=[todo_pk]),
+            api_url(front_end, "todos-detail", args=[todo_pk]),
             HTTP_IF_MATCH=quote_etag(todo.etag),
         )
     assert response.status_code == 204, response.content

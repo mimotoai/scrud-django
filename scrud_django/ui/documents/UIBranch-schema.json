@@ -1,0 +1,48 @@
+{
+  "$id": "http://api.openteams.com/json-schema/UIBranch",
+  "$schema": "http://json-schema.org/draft-04/schema",
+  "title": "UI Branch",
+  "description": "A named set of UI items (components, stylesheets) that override those of its parent branch. A branch with a prefix is published at that URL prefix.",
+  "type": "object",
+  "properties": {
+    "rbac_context": {
+      "type": "string",
+      "description": "The branch's context: grants there decide who may see, change, push from or pull it."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+      "description": "The branch's site-wide unique name. main is reserved for the published branch at the API URLs."
+    },
+    "parent": {
+      "type": ["string", "null"],
+      "description": "The name of the branch this one is based on, or null."
+    },
+    "base": {
+      "type": "string",
+      "enum": ["live", "pinned"],
+      "default": "live",
+      "description": "live: over the parent's current state; pinned: over the parent's state at the branching point. Needs a parent."
+    },
+    "branching_point": {
+      "type": "object",
+      "description": "Server-managed: the version of every ancestor when the branch was started or last pulled.",
+      "additionalProperties": { "type": "integer" }
+    },
+    "prefix": {
+      "type": ["string", "null"],
+      "description": "A published branch's URL prefix (\"\" or /segment/.../), unique; null for a working branch."
+    },
+    "conflicts": {
+      "type": "array",
+      "description": "Server-managed: the items a pull could not merge."
+    },
+    "pull": {
+      "type": "boolean",
+      "description": "Write-only: true pulls the parent's changes into the branch."
+    },
+    "label": { "type": "string" },
+    "description": { "type": "string" }
+  },
+  "required": ["name", "rbac_context"]
+}

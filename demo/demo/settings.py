@@ -72,7 +72,13 @@ INSTALLED_APPS = [
     'rest_framework',
     'scoped_rbac',
     'scrud_django',
+    # Server-rendered UI components and stylesheets, stored as resources.
+    'scrud_django.ui',
+    # The bootstrap studio: /studio/ (sign in first at /api-auth/login/).
+    'scrud_django.ui.studio',
     'reversion',
+    # The demo itself: its seed_todo_demo management command.
+    'demo',
 ]
 
 MIDDLEWARE = [
@@ -81,6 +87,8 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # Serves each published UI branch at its prefix (/manage/, /todo/).
+    'scrud_django.ui.branches.middleware.PublishedBranchMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -162,6 +170,9 @@ REST_FRAMEWORK = {
 # the request). Set it to the URL the API is served at.
 
 SCRUDFUL = {"BASE_URL": "http://127.0.0.1:8000"}
+
+# The published branch that serves the self-hosted studio (see seed_todo_demo).
+SCRUD_UI_STUDIO_BRANCH = "studio"
 
 
 # Static files (CSS, JavaScript, Images)

@@ -20,6 +20,72 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
   under DRF's `AllowAny` default; keep it that way (`tests/test_authz.py`).
 - The combined exception handler is `scrud_django.exceptions.scrud_exception_handler`.
 
+## Architecture
+
+Domain logic (authorization requirements, workflow checks, bodies, URLs, list
+queries, writes, reads) lives in `scrud_django/core/`, which is framework
+neutral: it takes a plain Django request and imports nothing from
+`rest_framework`, `django_filters`, `scrudful.rest_framework` or scoped-rbac's
+DRF modules (`tests/test_core_imports.py` holds the deny list). It does import
+`scrud_django.exceptions`, which loads `rest_framework.exceptions` when DRF is
+installed (a scrud error's detail is then DRF's `ErrorDetail`), and works
+without it. The DRF views and mixins are adapters: they delegate to `core`
+for the pieces they call (requirements and grants, the workflow check, body
+checks, list queries and validators, the save and post-save checks, URLs)
+and map its `ScrudException`s and access errors to DRF's
+(`exceptions.as_drf`, `drf_error`). The facade in `core/resources.py`
+(`check_request`, `load_for_read`, `object_readable`, `readable_content`,
+`allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
+`create`, `update`, `destroy`) is not called by DRF (which calls the
+unguarded `_readable_content` and `found_item`); the ninja adapter calls it,
+and the `tests/test_core_*` modules (`tests/test_core_parity.py` against the
+DRF routes) and `tests/test_front_end_parity.py` pin it.
+`readable_queryset` (of a GET or HEAD), `load_for_read` and
+`validate_write` ask the route's request check (`check_request`: for a
+list's GET each grants leaf as its list type, else each leaf's
+`has_permission`, with the body for a write) before anything is looked up,
+as DRF's `initial()` does. Its functions that decide access by a
+requirement (`check_request`, `load_for_read`, `object_readable`,
+`readable_content`, `allowed_methods`, `check_object`, `readable_queryset`,
+`validate_write`, `create`, `update`, `destroy` without a `check`,
+`list_last_modified`, and `core.writes`' `save_checked` without a
+`recheck`) take it through `core.requirements.Requirement.of` (a frozen
+`Requirement`, whose `AnyOf` is the core's own, scoped-rbac's converted),
+which refuses one that asks no grants (`ImproperlyConfigured`), an `AnyOf`
+with an option of hooks only included; the DRF adapter's `requirement_of`
+builds one `Requirement.unchecked`.
+The core trusts only `GrantsLeaf` and the DRF `ViewLeaf` (and a subclass
+overriding neither `has_context_permission` nor `reads_each_context`) to ask
+the grants: any other leaf but a type's hooks (`HookLeaf`, which count as
+asking none and get none asked beside them; a subclass or instance
+overriding `contexts_for` or a `has_*` check is no hook) gets them asked
+beside it and counts as asking none; register another leaf class, or an
+overriding subclass, with `core.requirements.register_grant_asking_leaf`.
+`readable_queryset` and `list_last_modified` filter by a resource's stored
+contexts, so they refuse (`ImproperlyConfigured`) a leaf that may read
+others (a `contexts_for` of its own, or a class not registered with
+`core.requirements.register_stored_contexts_leaf`). The facade's `AnyOf`
+options ask their request checks before their object checks, as DRF's `|`
+does; the DRF views' list and readability (`meets_object_checks` without
+`request_checks`) keep asking object checks alone.
+Put new domain logic in `core`, not in a view; per-type hooks are
+`core.types.TypeOptions`.
+
+`scrud_django/ninja/` is the second adapter (the optional `ninja` extra,
+`scrud_django.ninja.api(types=[...])`). Its handlers call only the core
+(`scrud_django/core/`: the facade above, `core.lists`, `core.collections`,
+`core.computed`, `core.writes`, `core.urls`, `core.bodies`, `core.types`) and
+the registration and service-catalog lookups (`scrud_django.registration`'s
+`get_resource_type_for`, `type_db`, `write_db`; `scrud_django.services`): no
+domain logic lives there, and a handler that needs something the core lacks
+adds it to the core with a core test. It authenticates with scoped-rbac's
+`resolve_user` (the `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`
+(only on a router added with its own `auth=`), else the session), not DRF's
+authentication classes (see the README). It answers as the DRF routes do,
+and `tests/test_front_end_parity.py` is the proof (the same exchanges
+replayed against both, compared exactly); the generic suites take the
+`front_end` fixture and run on both. It serves no UI or studio types yet.
+
 ## Commands
 
 Python 3.13 is pinned in `.python-version`; CI covers 3.11-3.13, not 3.14 (the
@@ -91,24 +157,32 @@ default-libmysqlclient-dev pkg-config`, on a docker network with the server),
 as the `test-mysql` job does.
 
 Demo app (API root at http://127.0.0.1:8000/api/; resource routes need a
-login, at `/api-auth/login/` or with Basic auth):
+login, at `/api-auth/login/` or with DRF's Basic auth; ninja does not read it
+without a `NINJA_USER` hook, see the README):
 
 ```bash
 cd demo
 uv run python manage.py migrate
+uv run python manage.py seed_todo_demo
 uv run python manage.py createsuperuser
 uv run python manage.py runserver
 ```
+
+The seed prints the self-hosted studio's workbench URLs (sign in as
+`author`/`author`): `/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`.
 
 CI is `.gitlab-ci.yml`: lint, migrations check, docs build, tests with
 coverage on 3.11-3.13 (then again with `--reverse`), the suite on PostgreSQL
 14 via `SCRUD_TEST_PG_*` (`test-postgres`) and on MySQL 8.4 and MariaDB 11.4
 via `SCRUD_TEST_MYSQL_*` (`test-mysql`), a package build/README/installed-
-wheel check, and a version check on merge requests. Run the lint and test
-commands above before committing. Publishing to PyPI runs in CI when a merge
-to `develop` carries a version not yet on PyPI (`scripts/release.py`), and
-fails for one lower than PyPI's latest; never run `uv publish` locally or
-create release tags by hand.
+wheel check, and a version check on release merge requests into `main`. Run the lint and test
+commands above before committing. Work merges into `develop` (the default
+branch) with no version bump. Releasing is a merge request from `develop` into
+`main` (protected): `version-check` runs only on those, and publishing to PyPI
+runs in CI when a merge to `main` carries a version not yet on PyPI
+(`scripts/release.py`), and fails for one lower than PyPI's latest; never run
+`uv publish` locally or create release tags by hand. The old `master` history
+(to 2021) is kept in the `legacy-master` tag.
 
 ## Test conventions
 

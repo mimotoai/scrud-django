@@ -1,0 +1,11 @@
+{% extends "scrud_studio/base.html" %}
+{% block title %}Studio: types{% endblock %}
+{% block content %}
+<h1>Types</h1>
+<form method="get" action="{% url 'scrud-studio:types' %}" role="search">
+<input type="search" name="q" value="{{ q }}" placeholder="Search slug, title or URI" aria-label="Search types"
+ hx-get="{% url 'scrud-studio:types' %}" hx-trigger="input changed delay:200ms, search" hx-target="#studio-types" hx-swap="outerHTML">
+<button type="submit">Search</button>
+</form>
+{% include "scrud_studio/_type_list.html" %}
+{% endblock %}

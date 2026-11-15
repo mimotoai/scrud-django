@@ -1,17 +1,93 @@
+from django.core.exceptions import ImproperlyConfigured
 from django.urls import NoReverseMatch, reverse
-from rest_framework.exceptions import APIException
-from rest_framework.views import exception_handler as drf_exception_handler
-from scoped_rbac.rest import exception_handler as scoped_rbac_exception_handler
 
-from scrud_django.renderers import DOCUMENT_RENDERERS
+
+def _drf_is_absent(error: ImportError) -> bool:
+    """Whether `error` says DRF itself is not installed: a
+    ``ModuleNotFoundError`` for ``rest_framework`` or one of its modules.
+    Any other import error (a DRF that fails to import, a dependency of it
+    missing) is not."""
+    name = getattr(error, "name", None) or ""
+    return isinstance(error, ModuleNotFoundError) and (
+        name == "rest_framework" or name.startswith("rest_framework.")
+    )
+
+
+try:  # DRF's own classes when it is installed, so that ``isinstance`` holds.
+    from rest_framework.exceptions import APIException as _APIException
+    from rest_framework.exceptions import ErrorDetail as _ErrorBase
+
+    class ScrudAPIException(_APIException):
+        """The ``APIException`` that carries a scrud error (`as_drf`) through
+        DRF's views and exception handlers, as ``.scrud``. Defined once, at
+        import; ``None`` when DRF is not installed."""
+
+        def __init__(self, scrud):
+            self.scrud = scrud
+            self.status_code = scrud.status_code
+            self.default_detail = scrud.default_detail
+            self.default_code = scrud.default_code
+            super().__init__(detail=scrud.detail, code=scrud.default_code)
+
+except ImportError as error:  # scrud imports without DRF
+    if not _drf_is_absent(error):
+        raise
+    _ErrorBase = str
+    ScrudAPIException = None
+
+
+class ErrorText(_ErrorBase):
+    """A message with the ``code`` of the error that carries it: the type of a
+    scrud error's ``detail``. DRF's ``ErrorDetail`` when DRF is installed, a
+    ``str`` with a ``code`` otherwise."""
+
+    code = None
+
+    if _ErrorBase is str:
+
+        def __new__(cls, string, code=None):
+            self = super().__new__(cls, string)
+            self.code = code
+            return self
+
+        def __eq__(self, other):
+            # As DRF's ErrorDetail: the code is part of the value.
+            result = super().__eq__(other)
+            if result is NotImplemented or not result:
+                return result
+            return getattr(other, "code", self.code) == self.code
+
+        def __ne__(self, other):
+            result = self.__eq__(other)
+            return result if result is NotImplemented else not result
+
+        __hash__ = str.__hash__
+
+
+def __getattr__(name):
+    """``DOCUMENT_RENDERERS`` (`scrud_django.renderers`), importable from here
+    as before, read on first use: the renderers import DRF, and this module
+    imports without it."""
+    if name == "DOCUMENT_RENDERERS":
+        from scrud_django.renderers import DOCUMENT_RENDERERS
+
+        return DOCUMENT_RENDERERS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def scrud_exception_handler(exc, context):
     """Scrud errors keep their own body; everything else gets scoped-rbac's
     RFC 9457 problem details."""
+    from rest_framework.views import exception_handler as drf_exception_handler
+    from scoped_rbac.rest import exception_handler as scoped_rbac_exception_handler
+
+    from scrud_django.renderers import DOCUMENT_RENDERERS
+
+    if isinstance(exc, ScrudAPIException):
+        exc = exc.scrud
     if not isinstance(exc, ScrudException):
         return scoped_rbac_exception_handler(exc, context)
-    response = drf_exception_handler(exc, context)
+    response = drf_exception_handler(as_drf(exc), context)
     response.data = exc.response_data(context)
     response.data["status"] = response.status_code
     try:
@@ -28,22 +104,82 @@ def scrud_exception_handler(exc, context):
     return response
 
 
-class ScrudException(APIException):
-    """A scrud error. Its ``detail`` is always an ``ErrorDetail`` (a message
-    with the class's ``default_code``), as DRF's ``APIException`` makes it, so
-    any exception handler (DRF's, scoped-rbac's, scrud's) can render it and read
-    its code. The RFC 7807 body `scrud_exception_handler` sends is
-    `response_data`, which may say more."""
+def as_drf(exc):
+    """`exc` (a `ScrudException`) as the ``APIException`` DRF's views and
+    handlers know: its status code, its detail (an ``ErrorDetail`` of the
+    message and the error's ``default_code``), and `exc` itself as ``.scrud``
+    (`ScrudAPIException`). Without DRF installed there is none:
+    ``ImproperlyConfigured``."""
+    if ScrudAPIException is None:
+        raise ImproperlyConfigured(
+            "scrud_django.exceptions.as_drf needs Django REST framework, which "
+            "is not installed: a scrud error is a ScrudException without it."
+        )
+    return ScrudAPIException(exc)
+
+
+def drf_errors(func):
+    """Decorate a DRF function view (``@api_view``) so that a `ScrudException`
+    it raises reaches DRF's handlers as `as_drf` of it. Apply it below
+    ``@api_view``."""
+    import functools
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except ScrudException as exc:
+            raise as_drf(exc) from exc
+
+    return wrapper
+
+
+class ScrudException(Exception):
+    """A scrud error. It is neutral: no DRF. Its ``detail`` is a message
+    carrying the class's ``default_code`` (`ErrorText`), so that any exception
+    handler can render it and read its code. scrud's DRF views wrap it in an
+    ``APIException`` (`as_drf`, through ``ScrudErrorsMixin``; a function view
+    through `drf_errors`) before a handler sees it; `scrud_exception_handler`
+    accepts either. The RFC 7807 body
+    `scrud_exception_handler` sends is `response_data`, which may say more."""
+
+    status_code = 500
+    default_detail = "A server error occurred."
+    default_code = "error"
+    # The RFC 7807 members a subclass says more with; one left ``None`` is
+    # left out of `response_data`.
+    type: str | None = None
+    title: str | None = None
+    instance: str | None = None
+    # Whether it stands for an error the DRF routes answer through scoped-rbac's
+    # exception handler rather than scrud's own: while uniform errors are on, a
+    # problem carrying scoped-rbac's problem-details Links
+    # (``scoped_rbac.problems.PROBLEM_LINKS``); off, DRF's native body
+    # (`native_response_data`) as ``application/json``.
+    problem_links: bool = False
 
     def __init__(self, message=None):
-        super().__init__(detail=message)
+        if message is None:
+            message = self.default_detail
+        self.detail = ErrorText(str(message), self.default_code)
+
+    def __str__(self):
+        return str(self.detail)
+
+    def get_codes(self):
+        return self.detail.code
+
+    def get_full_details(self):
+        """The message and its code, as DRF's ``APIException`` gives them for
+        a message: ``{"message": ..., "code": ...}``."""
+        return {"message": self.detail, "code": self.detail.code}
 
     def response_data(self, context):
         """Return RFC 7807 response data"""
         data = {}
         for property_name in ["type", "title", "detail", "instance"]:
-            if hasattr(self, property_name):
-                value = getattr(self, property_name)
+            value = getattr(self, property_name)
+            if value is not None:
                 data[property_name] = str(value) if isinstance(value, str) else value
         return data
 
@@ -83,6 +219,54 @@ class JsonSchemaInvalidError(ScrudException):
         self.title = "Invalid JSON Schema"
 
 
+class QueryParameterError(ScrudException):
+    """A list's query parameters that cannot filter it
+    (`scrud_django.core.lists.content_filtered`): ``errors`` maps each
+    offending parameter to its messages. The DRF filter answers it as DRF's
+    ``ValidationError`` of ``errors`` (code ``invalid``), a 400."""
+
+    status_code = 400
+    default_detail = "Invalid query parameters."
+    default_code = "invalid"
+
+    def __init__(self, errors):
+        super().__init__()
+        self.errors = errors
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        data["errors"] = self.errors
+        return data
+
+
+class ContentFilterError(QueryParameterError):
+    """A list's query parameters that cannot filter it, raised by
+    `scrud_django.core.lists.content_filtered`, as the DRF list route answers
+    them: its filter (``scrud_django.filters.ResourceContentFilter``) raises
+    DRF's ``ValidationError`` of ``errors`` (code ``invalid``), which
+    scoped-rbac's handler answers. While uniform errors are on, a validation
+    problem (`response_data`: each message the canonical one of ``invalid``)
+    with scoped-rbac's problem-details Links; off, DRF's native body
+    (`native_response_data`) as ``application/json``."""
+
+    problem_links = True
+
+    def response_data(self, context):
+        from scoped_rbac.problems import validation_problem
+
+        return validation_problem(
+            {
+                key: [("invalid", None) for _ in messages]
+                for key, messages in self.errors.items()
+            }
+        )
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off: each parameter's
+        messages."""
+        return {key: list(messages) for key, messages in self.errors.items()}
+
+
 class RbacContextInvalidError(ScrudException):
     """A request body whose ``rbac_context`` cannot be stored: an empty list
     (which would put the resource in no context), or a context longer than
@@ -114,6 +298,397 @@ class WorkflowPolicyInvalidError(ScrudException):
         super().__init__(message)
         self.type = "https://api.openteams.com/http-problem/workflow-policy-invalid"
         self.title = "Invalid workflow policy"
+
+
+class UIComponentNameTakenError(ScrudException):
+    """A UI component whose ``name`` another component already has: names are
+    unique site-wide."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_component_name_taken"
+
+    def __init__(self, name):
+        super().__init__(f"A UI component named {name!r} already exists.")
+        self.type = "https://api.openteams.com/http-problem/ui-component-name-taken"
+        self.title = "UI component name taken"
+
+
+class UISelectorInvalidError(ScrudException):
+    """A UI stylesheet rule whose selector does not parse."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_selector_invalid"
+
+    def __init__(self, reason, rule=None):
+        super().__init__(f"The stylesheet selector is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-selector-invalid"
+        self.title = "UI selector invalid"
+        # The field of the rule's selector, as JSON Schema's validation
+        # errors name theirs (the UI shows the error beside that rule).
+        self.name = f"rules[{rule}].select" if rule is not None else None
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        if self.name is not None:
+            data["name"] = self.name
+        return data
+
+
+class UITemplateInvalidError(ScrudException):
+    """A UI component whose template does not compile."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_template_invalid"
+
+    def __init__(self, reason):
+        super().__init__(f"The component template is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-template-invalid"
+        self.title = "UI template invalid"
+
+
+class UIStylesheetNameTakenError(ScrudException):
+    """A UI stylesheet whose ``name`` another stylesheet in the same context
+    already has."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_stylesheet_name_taken"
+
+    def __init__(self, name, context):
+        super().__init__(
+            f"A UI stylesheet named {name!r} already exists in context {context!r}."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-stylesheet-name-taken"
+        self.title = "UI stylesheet name taken"
+
+
+class UILayerNameReservedError(ScrudException):
+    """A UI item whose ``name`` has a prefix (``abc:``) that is not an
+    installed UI layer's, or that names no item of that layer of its kind
+    (and, for a stylesheet, ``applies_to``) for it to override. ``scrud:``,
+    the built-ins' prefix, is never a layer's."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_layer_name_reserved"
+
+    def __init__(self, name):
+        super().__init__(
+            f"The name {name!r} is reserved: a name with a prefix may only "
+            "override an item of that kind that an installed UI layer has, and "
+            "'scrud:' is reserved outright."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-layer-name-reserved"
+        self.title = "UI layer name reserved"
+
+
+class UICssNameTakenError(ScrudException):
+    """A UI CSS item whose ``name`` another CSS item on the same branch
+    already has."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_css_name_taken"
+
+    def __init__(self, name):
+        super().__init__(f"A UI CSS item named {name!r} already exists.")
+        self.type = "https://api.openteams.com/http-problem/ui-css-name-taken"
+        self.title = "UI CSS name taken"
+
+
+class UICssInvalidError(ScrudException):
+    """A UI CSS item whose text could end the page's ``<style>`` (it contains
+    ``</style``)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_css_invalid"
+
+    def __init__(self):
+        super().__init__("The CSS may not contain '</style'.")
+        self.type = "https://api.openteams.com/http-problem/ui-css-invalid"
+        self.title = "UI CSS invalid"
+
+
+class UIJsNameTakenError(ScrudException):
+    """A UI JS item whose ``name`` another JS item on the same branch already
+    has."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_js_name_taken"
+
+    def __init__(self, name):
+        super().__init__(f"A UI JS item named {name!r} already exists.")
+        self.type = "https://api.openteams.com/http-problem/ui-js-name-taken"
+        self.title = "UI JS name taken"
+
+
+class UIJsInvalidError(ScrudException):
+    """A UI JS item whose text could end the page's ``<script>`` (it contains
+    ``</script``)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_js_invalid"
+
+    def __init__(self):
+        super().__init__("The JavaScript may not contain '</script'.")
+        self.type = "https://api.openteams.com/http-problem/ui-js-invalid"
+        self.title = "UI JS invalid"
+
+
+class UIBranchInvalidError(ScrudException):
+    """A UI branch write that is refused (a bad or taken name or prefix, a
+    missing parent, a cycle of parents, a reserved ``main`` that is not as
+    reserved), or a UI item naming a branch that does not exist, with the
+    reason as ``detail``. `name` is the refused field, when it is one
+    (``prefix``), as JSON Schema's errors name theirs: the UI shows the
+    error beside it."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_branch_invalid"
+
+    def __init__(self, reason, name=None):
+        super().__init__(reason)
+        self.type = "https://api.openteams.com/http-problem/ui-branch-invalid"
+        self.title = "UI branch invalid"
+        self.name = name
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        if self.name is not None:
+            data["name"] = self.name
+        return data
+
+
+class UIBranchContextError(ScrudException):
+    """A UI item whose ``rbac_context`` is not its authorizing context on its
+    branch (`scrud_django.ui.branches.model.authorizing_context`): the one
+    context its write is authorized in."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_branch_context"
+
+    def __init__(self, expected):
+        super().__init__(
+            f"This item's rbac_context must be {expected!r}: on its branch, "
+            "its write is authorized in that context."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-branch-context"
+        self.title = "UI item in the wrong context for its branch"
+
+
+class UIBranchUnavailableError(ScrudException):
+    """A JSON list of UI items whose request selects a branch (the
+    ``Scrud-UI-Branch`` header or the ``ui-branch`` parameter) that is
+    refused: unknown, not readable by the requester, out of the tree of the
+    URL's published branch, or pinned to a missing version. One answer for
+    all, so that it tells nothing about a branch the requester may not
+    see."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_branch_unavailable"
+
+    def __init__(self, branch):
+        super().__init__(
+            f"The UI branch {branch!r} is not available here: it does not "
+            "exist, you may not read it, or it is not in this URL's tree."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-branch-unavailable"
+        self.title = "UI branch unavailable"
+
+
+class UIStudioContextUnavailableError(ScrudException):
+    """A studio sample or preview in a data context whose stylesheets the
+    requester may not read (GET on UI stylesheets there). One answer for
+    every refused context, so that it tells nothing of any."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_studio_context_unavailable"
+
+    def __init__(self):
+        super().__init__(
+            "This data context is not available: you may not read its UI stylesheets."
+        )
+        self.type = (
+            "https://api.openteams.com/http-problem/ui-studio-context-unavailable"
+        )
+        self.title = "Studio data context unavailable"
+
+
+class UIStudioBranchReadOnlyError(ScrudException):
+    """A studio write other than a revert naming a published branch
+    (``main``, or one with a ``prefix``): the studio edits working branches
+    only, so that changes reach a published branch by a push; it only
+    reverts a published branch's own items. Refused before anything is
+    written or dispatched."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_studio_branch_read_only"
+
+    def __init__(self, branch):
+        super().__init__(
+            f"UI branch {branch!r} is published: the studio does not edit it "
+            "(it only reverts its own items). Edit a working branch, then push it."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-studio-branch-read-only"
+        self.title = "Studio branch read-only"
+
+
+class UIStudioPreviewInvalidError(ScrudException):
+    """A studio live preview whose ``request`` is not one: missing, not JSON
+    the server can read (nested too deep for the parser too), not a JSON
+    object, a field of the wrong shape, more than ``MAX_DRAFTS`` (50)
+    drafts, or an ``after_push`` sent with drafts of its own (it previews
+    the source's stored overrides alone)."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_studio_preview_invalid"
+
+    def __init__(self, reason):
+        super().__init__(f"The live preview request is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-studio-preview-invalid"
+        self.title = "Studio preview request invalid"
+
+
+class UIBranchInUseError(ScrudException):
+    """A DELETE of a UI branch that other branches name as their parent:
+    409 Conflict, naming them."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "ui_branch_in_use"
+
+    def __init__(self, branch, children):
+        names = ", ".join(map(repr, children))
+        super().__init__(
+            f"UI branch {branch!r} is the parent of {names}: delete or re-parent "
+            "them first."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-branch-in-use"
+        self.title = "UI branch in use"
+
+
+class UIBranchVersionMissingError(ScrudException):
+    """A version of a UI branch that is not stored
+    (`scrud_django.ui.branches.versions.snapshot`)."""
+
+    status_code = 404
+    default_detail = "Not Found"
+    default_code = "ui_branch_version_missing"
+
+    def __init__(self, branch, number):
+        super().__init__(f"UI branch {branch!r} has no version {number!r}.")
+        self.type = "https://api.openteams.com/http-problem/ui-branch-version-missing"
+        self.title = "UI branch version missing"
+
+
+class UIPushConflictError(ScrudException):
+    """A UI push whose source overrides items the target changed since
+    (`scrud_django.ui.branches.sync.conflicts`): 409 Conflict, naming in
+    ``detail`` and listing as ``conflicts`` (``{"kind", "key", "base",
+    "current"}`` each) those on items the pusher may read in the target, and
+    only counting the `unreadable` others (``unreadable_conflicts``).
+    Nothing is written."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "ui_push_conflict"
+
+    def __init__(self, conflicts, unreadable=0):
+        self.conflicts = list(conflicts)
+        self.unreadable = unreadable
+        names = [f"{entry['kind']} {tuple(entry['key'])!r}" for entry in self.conflicts]
+        if unreadable:
+            names.append(f"and {unreadable} more you may not read")
+        super().__init__(
+            f"The target changed these items since the source overrode them: "
+            f"{', '.join(names)}. Pull the source and resolve them, then push "
+            "again."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-push-conflict"
+        self.title = "UI push conflict"
+
+    def response_data(self, context):
+        data = super().response_data(context)
+        data["conflicts"] = self.conflicts
+        data["unreadable_conflicts"] = self.unreadable
+        return data
+
+
+class UIPushForbiddenError(ScrudException):
+    """A UI push or restore that would write an item into the target that
+    the pusher may not write there directly (the grant on the item's type in
+    its authorizing context on the target): 403 Forbidden. Nothing is
+    written."""
+
+    status_code = 403
+    default_detail = "Forbidden"
+    default_code = "ui_push_forbidden"
+
+    def __init__(self, kind, key):
+        super().__init__(
+            f"You may not write the {kind} {tuple(key)!r} into the target "
+            "branch: a push needs, for each item, the grant a direct write of "
+            "it there needs."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-push-forbidden"
+        self.title = "UI push forbidden"
+
+
+class UIPushAppliedError(ScrudException):
+    """A DELETE of a UI push that is applied: an applied push is the record
+    of a change to its target, and is kept (409 Conflict)."""
+
+    status_code = 409
+    default_detail = "Conflict"
+    default_code = "ui_push_applied"
+
+    def __init__(self):
+        super().__init__(
+            "An applied UI push is a record of what it changed and cannot be deleted."
+        )
+        self.type = "https://api.openteams.com/http-problem/ui-push-applied"
+        self.title = "UI push applied"
+
+
+class UIHeaderInvalidError(ScrudException):
+    """An HTML request whose fragment header (``Scrud-UI-Pointer``) is
+    invalid."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_header_invalid"
+
+    def __init__(self, header, reason):
+        super().__init__(f"The {header} header is invalid: {reason}")
+        self.type = "https://api.openteams.com/http-problem/ui-header-invalid"
+        self.title = "UI header invalid"
+
+
+class UIPointerNotFoundError(ScrudException):
+    """A JSON Pointer (the studio's ``?pointer=``) that names no node a
+    render of the resource has: a key or index the content or its schema
+    lacks, or not a pointer."""
+
+    status_code = 400
+    default_detail = "Bad Request"
+    default_code = "ui_pointer_not_found"
+
+    def __init__(self, pointer):
+        super().__init__(f"No node of this resource is at {pointer!r}.")
+        self.type = "https://api.openteams.com/http-problem/ui-pointer-not-found"
+        self.title = "UI pointer not found"
 
 
 class RequestBodyMissingError(ScrudException):
@@ -176,6 +751,38 @@ class RequestBodyNulError(ScrudException):
         self.title = "NUL character in request body"
 
 
+class RequestBodyNotAnObjectError(ScrudException):
+    """A POST or PUT body that is not a JSON object (a list, a string, a
+    number): a resource is one. Its body is the 400 the DRF routes answer
+    for one (their serializer's ``ValidationError``, as scoped-rbac renders
+    it): ``scoped_rbac.problems.validation_problem`` of a non-field
+    ``invalid`` error, code ``invalid``."""
+
+    status_code = 400
+    default_detail = "Invalid input."
+    default_code = "invalid"
+    problem_links = True
+
+    #: The message of the serializer's error (``SerializerMixin.to_internal_value``).
+    native_message = "Expected a JSON object."
+
+    def response_data(self, context):
+        from scoped_rbac.problems import validation_problem
+
+        return validation_problem({"": [("invalid", None)]})
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off: its serializer's
+        non-field error."""
+        try:
+            from rest_framework.settings import api_settings
+        except ImportError:  # pragma: no cover - DRF is installed in the tests
+            key = "non_field_errors"
+        else:
+            key = api_settings.NON_FIELD_ERRORS_KEY
+        return {key: [self.native_message]}
+
+
 class ResourceInUseError(ScrudException):
     """A DELETE of a resource that a resource type uses as its JSON Schema,
     JSON-LD context or indexing policy (``on_delete=PROTECT``): 409 Conflict,
@@ -229,14 +836,21 @@ class StoredPolicyReference:
         self.resource = resource
 
     def url(self, request=None):
-        try:
-            path = reverse(
-                self.resource.resource_type.route_name_detail(),
-                args=[self.resource.pk],
-            )
-        except NoReverseMatch:
-            return None
-        return request.build_absolute_uri(path) if request is not None else path
+        """The policy's detail URL (absolute given a `request`), on the API
+        serving `request`: within the URL namespace it was resolved under (a
+        ninja API's ``urls_namespace``) first, as `core.urls.absolute_reverse`
+        links, else by the route's global name (the DRF routes'). ``None``
+        when neither reverses."""
+        name = self.resource.resource_type.route_name_detail()
+        match = getattr(request, "resolver_match", None)
+        namespace = getattr(match, "namespace", "")
+        for candidate in [f"{namespace}:{name}", name] if namespace else [name]:
+            try:
+                path = reverse(candidate, args=[self.resource.pk])
+            except NoReverseMatch:
+                continue
+            return request.build_absolute_uri(path) if request is not None else path
+        return None
 
     def __repr__(self):
         return f"StoredPolicyReference(pk={self.resource.pk!r})"

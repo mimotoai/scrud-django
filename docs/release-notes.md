@@ -1,5 +1,693 @@
 # Change Log
 
+## 0.16.0
+
+This release adds the optional UI app, `scrud_django.ui` (components,
+branches and the studio), a framework-neutral core, `scrud_django.core`,
+and a django-ninja front end, `scrud_django.ninja` (a preview; DRF stays the
+default). Some changes refuse configurations or requests 0.15.0 accepted:
+work through Upgrading before you deploy it.
+
+### Added
+
+* An additive django-ninja front end, `scrud_django.ninja` (a preview; the new
+  optional extra `ninja`, `scrud-django[ninja]`).
+  `scrud_django.ninja.api(types=[...])` returns a `NinjaAPI` serving the
+  built-in types, your types, the service catalog, scoped-rbac's role routes
+  and the collection documents, with the statuses, headers and bodies of the
+  DRF routes (DRF's content negotiation with its default renderers included:
+  its 406, its `?format=` 404 and `Accept: ...; indent=N`, but never HTML), errors included whatever
+  `SCOPED_RBAC["UNIFORM_ERRORS"]` is, when the API is built or for a request:
+  problem details while it is on, DRF's native `{"detail": ...}` bodies (a
+  computed type's `compute` refusing with an empty message, or a list or dict,
+  included) while it is off, but for a role or role assignment body failing
+  validation, which stays a problem (follow-up
+  `ninja-role-validation-native`). It serves no `docs/` or `openapi.json`
+  unless given `docs_url=` and `openapi_url=`. It takes no `auth=`, takes a
+  `urls_namespace` (distinct for each API in a process), and needs
+  `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. A router you
+  add to it carries its own `auth=` or scrud's entry checks
+  (`router.add_decorator(scrud_django.ninja.entry.entry, mode="view")`). UI
+  and studio types are not served on it yet, and `scrud_django.urls` is still
+  DRF. See "django-ninja (preview)" in the README.
+* `registration.TypeSpec` and the functions `json_resource_type_spec`,
+  `computed_resource_type_spec` and `built_in_type_specs`: a resource type as
+  every front end registers it, without a front end's routes.
+  `json_resource_type` and `computed_resource_type` are unchanged. A
+  `TypeSpec` is keyword-only, frozen and hashable, with five public fields
+  (`kind`, `resource_type_uri`, `slug`, `options`, `document_media_type`);
+  the rest of what stores its row is private, so the IRI and slug are
+  single-sourced and `dataclasses.replace(spec, slug=...)` cannot split a
+  spec's hooks from its stored row. A spec that contradicts itself (an
+  unknown `kind`, a computed type without `options.compute` or a json one
+  with it, a computed type with a hook but `compute`, an empty or non-string
+  slug or IRI, a plain type with a built-in type's IRI or slug, a
+  `document_media_type` outside `registration.DOCUMENT_MEDIA_TYPES`, hooks
+  on a built-in type) raises
+  `ImproperlyConfigured`, and `TypeOptions.compute` must be callable. The
+  helper functions return a private subclass (its `repr` shows
+  `_BuiltTypeSpec`); two specs are equal only when built the same way.
+  `json_resource_type_spec(uri, slug, *, ...)` takes its other arguments by
+  keyword only and no `indexing_policy_resource` (see
+  `json-resource-type-indexing-policy` in the follow-ups).
+  `ResourceTypeRegistration(build_urls=False, viewset_class=...)` raises
+  `TypeError`, and so does
+  `ResourceTypeRegistration(build_urls=False).register_urls()` (it was
+  `AttributeError`); `core.lists.ListPage` refuses a size or number below 1 or a
+  negative count; `core.urls.first_absolute_reverse` refuses a bare route
+  name given as a string.
+* `scrud_django.ninja.api()` refuses, before registering anything
+  process-wide, an element of `types=` that is not a `TypeSpec`, two types
+  with one slug or IRI, and a slug that is one of the API's own route
+  prefixes (`ImproperlyConfigured`/`TypeError`). `entry` refuses
+  `mode="operation"` when the router is mounted (`add_router`), and resolves the user of a real
+  OPTIONS (not of a CORS preflight). Importing `scrud_django.ninja` with
+  django-ninja installed but failing to import raises ninja's own error,
+  not "needs django-ninja".
+* How ninja authenticates: scoped-rbac's `resolve_user` (the
+  `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`, which only a router
+  you add with its own `auth=` sets, else the session),
+  not DRF's `DEFAULT_AUTHENTICATION_CLASSES`. A Basic or token client of a
+  DRF project is the anonymous user on ninja unless a `NINJA_USER` hook maps
+  it; the README has an example for Basic credentials.
+* `scrud_django.ui`, an optional app (add it to `INSTALLED_APPS` and install
+  the new `ui` extra, `scrud-django[ui]`, which adds Jinja2) that serves every
+  resource URL as `text/html`, chosen by `Accept: text/html`, rendered on the
+  server exactly as the viewer is authorized. Templates (UI components, Django
+  or sandboxed Jinja2) and CSS-like stylesheets that select them, layered per
+  RBAC context, are stored as resources of two new types, `UIComponent` and
+  `UIStylesheet`. Resources are edited in the browser with htmx 2.0.4 and
+  `scrud-ui.js` through ordinary JSON PUTs. See the new UI page of the
+  documentation, and the `seed_todo_demo` command of the demo project.
+  The known limitations are in the follow-ups under the `ui-` names.
+* A framework-neutral core, `scrud_django.core`: the domain logic of the
+  resource views (authorization requirements, workflow checks, body checks,
+  URLs, list queries and preconditions, writes, post-save checks, reads and
+  `Allow`) as functions of a plain Django request, with no import of
+  `rest_framework`, `django_filters` or scoped-rbac's DRF modules (a test
+  enforces it; `scrud_django.exceptions`, which it imports, loads
+  `rest_framework.exceptions` when DRF is installed). The DRF views are
+  adapters that delegate to it for the pieces they call, and every status,
+  header and body they answer is unchanged, but for the overrides listed
+  under Upgrading. The item-level facade of `scrud_django.core.resources`
+  (`check_request`, `load_for_read`, `object_readable`, `readable_content`,
+  `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
+  `create`, `update`, `destroy`) is not called by the DRF views; its tests
+  (`tests/test_core_*`, with a parity harness, `tests/test_core_parity.py`)
+  pin it against the DRF routes. It asks a route's request check
+  (`check_request`) before it looks anything up, as the DRF route asks its
+  permissions before `get_object()`: `readable_queryset` of a GET or HEAD
+  the list grant (each grants leaf asked as its list type, `http.GET` on
+  it, as DRF names the list type; a write's list validators are governed
+  by the write's own check), `load_for_read` the method's check (with the `body=` it is given,
+  else as `Allow` checks a PUT, without one), and `validate_write` the
+  write's check with its body, each refusing with `AccessDenied` (403):
+  for a missing item and an existing one alike, and before any validation
+  of the body. Those of its functions that decide access by a requirement
+  (`check_request`, `load_for_read`, `object_readable`,
+  `readable_content`, `allowed_methods`, `check_object`,
+  `readable_queryset`, `validate_write`, `create`, `update`, `destroy`
+  without a `check`, and
+  `scrud_django.core.writes.save_checked` without a `recheck`) raise
+  `ImproperlyConfigured` for one that asks no grants (empty, a type's hooks
+  only, or an `AnyOf` with an option of hooks only) rather than allow every
+  requester. Only a leaf of a trusted class (`GrantsLeaf`, the DRF
+  adapter's `ViewLeaf`, a subclass of either that overrides neither
+  `has_context_permission` nor `reads_each_context`, or one registered with
+  `scrud_django.core.requirements.register_grant_asking_leaf`) counts as
+  asking the grants; beside a leaf of any other class but a type's hooks
+  (which count as asking none, and get none asked beside them; a subclass
+  of `HookLeaf`, or an instance, overriding `contexts_for` or a `has_*`
+  check is no type's hooks) the core asks them itself, whatever that
+  leaf's `reads_each_context` says. And
+  `validate_write` requires a `requirement=`, whose type's hooks are the
+  checks that may refuse a transition. The workflow check
+  (`scrud_django.core.workflow.workflow_check`) takes its write as a
+  `Create(proposed)` or an `Update(prior, proposed, readable, stored_pk)`
+  (`write=`; anything else, a delete included, is a `TypeError`): an
+  update's stored content is a mapping or `NULL_CONTENT` (`prior_from`;
+  `prior_of` for a `Resource`, whose content that is JSON null or not an
+  object is `NULL_CONTENT`), never `None`, so null content is never
+  checked as a create. An `Update` requires `readable`, whether the
+  requester may read the stored resource: an update's workflow error is
+  hidden when it says not (`validate_write` of an update raises
+  `TypeError` without one). `validate_write` (so `create` and `update`)
+  refuses a body that is not a JSON object once the request and object
+  checks pass, as the DRF routes do: a 400
+  (`scrud_django.exceptions.RequestBodyNotAnObjectError`, with the body
+  DRF answers). The workflow check first removes any mark an
+  earlier check left on the request, so one that fails leaves none, on DRF
+  too. The facade's `create` and `update` always validate the body they
+  save themselves (`validate_write`, an update's errors hidden
+  unless the stored resource is readable). One validation authorizes one
+  write: the workflow check's mark names the type the post-save check
+  names and the resource written (none for a create), and the save that
+  uses it consumes it, whether it succeeds or fails, so a grant
+  conditioned on `scrud_workflow` allows neither a second save on the
+  request nor a save of another resource. An `AnyOf` option of the
+  facade's (DRF's `|`) allows an object only when each of its entries
+  allows the request (`has_permission`) and then the object, as DRF's `|`
+  asks them (`check_object`, and the object checks of `readable_content`
+  and `readable_queryset`; the DRF views' own are unchanged), and
+  `validate_write` (so `update`) of an update asks the object check of the
+  stored resource with the body, as DRF's `get_object()` asks it, whether
+  or not the caller loaded it with `load_for_read`: a writer cannot move a
+  resource out of a context where they may not write it, nor, through an
+  `AnyOf`, where only another option's request check allows. For a
+  `WorkflowPolicy`, `validate_write` (so `update`) also asks the
+  every-context check (`core.writes.check_every_context_of_policy`). A
+  `validate_write` first removes any mark an earlier validation left on
+  the request, so one that fails leaves none for a save to use. A type's
+  hooks are asked in a route's request check after the other entries and
+  where `scrud_workflow` refuses, as the DRF route asks them
+  (`check_request_hooks`) once its own request check is over, and so are
+  those of an `AnyOf` option where the option's request check is paired
+  with its object check (`check_object`, so `validate_write`): the two
+  answer alike. A front end
+  runs `scrud_django.core.bodies.check_body` on a write's body before the
+  facade, as DRF answers a malformed body 400 before any 403.
+  `allowed_methods` lists the methods its route serves
+  (`scrud_django.core.resources.served_methods`: GET alone for a computed
+  type registered with `compute=`, else the item's GET, PUT and DELETE or
+  the list's GET and POST), or the `methods=` it is given.
+  `readable_queryset` and `list_last_modified`, which filter by a
+  resource's stored contexts, raise `ImproperlyConfigured` for a
+  requirement with a leaf that may read others: one whose `contexts_for`
+  is not its class's (`GrantsLeaf`, a type's hooks, the DRF `ViewLeaf`
+  whose permission keeps scoped-rbac's), or of any other class unless
+  registered with
+  `scrud_django.core.requirements.register_stored_contexts_leaf`. A
+  requirement is a `scrud_django.core.requirements.Requirement`, frozen,
+  whose `AnyOf` is the core's own (frozen, each option a tuple; one of no
+  option, or with an empty option, is a `ValueError`):
+  `Requirement.of(entries)` converts scoped-rbac's `access.AnyOf` and
+  raises `ImproperlyConfigured` for one that asks no grants, and
+  `core.types.requirement_for` returns one. Every facade entry point
+  (`load_for_read`, `check_object`, `allowed_methods`, `readable_queryset`,
+  `list_last_modified`, `check_request`, `readable_content`,
+  `validate_write`, `create`, `update`, `destroy`, `save_checked` without a
+  `recheck`) takes a `Requirement` or its entries, through
+  `Requirement.of`: `list_last_modified` now refuses one that asks no
+  grants too. `scrud_django.drf_requirements.requirement_of` returns one
+  built `Requirement.unchecked` (a DRF view with no `IsAuthorized` asks no
+  grants and is still served); `core.requirements.to_scoped_rbac` gives an
+  `AnyOf` back as scoped-rbac's. `scrud_django.core.lists.list_queryset`
+  gives the list a front end serves (for a GET or HEAD: any other method is
+  a `ValueError`, as `readable_queryset` asks the list grant for those two
+  alone): `readable_queryset`, then, for a type
+  registered with `content_filter=`, the content filter on its query
+  parameters (`content_filtered`, but the `ignored=` ones, which default to the
+  list routes' ignored parameters, as for `create_list_validators`), in
+  `Resource.Meta.ordering`; `page_of` gives a page of it and the count, as
+  Django's `Paginator` pages it (`EmptyPage` past the last page). On MySQL
+  `page_of` finds the page among the keys alone and reads its rows by key
+  (`rows_by_keys`, which `StandardResultsSetPagination` calls too), so a
+  row whose content is over MySQL's `sort_buffer_size` is never sorted
+  (error 1038). It is the base for other front ends.
+  `update` raises `TypeError` for a `None` instance, and `allowed_methods`'
+  `methods=` are upper-cased and checked in `ALLOW_ORDER`, whatever the
+  caller's order or case.
+* Per-type hooks, honoured by every front end, on `json_resource_type`
+  (`checks=`, `object_checks=`, `content_filter=`) and
+  `computed_resource_type` (`compute=`). They can only refuse what the grants
+  allow, and refuse superusers too (as an `IsAuthorized` subclass does). A
+  hook allows only by returning `True`: any other return (`None`, `"no"`,
+  `1`) refuses. The hooks of a body with `rbac_context: []` are asked in
+  the default context, and a hook given an object that is neither a mapping
+  nor a `Resource` raises `TypeError`; `TypeOptions` refuses a hook that is
+  not callable (`TypeError`).
+  `checks` govern writes only: asked of a write in each context it writes, of
+  the stored resource of a PUT, PATCH or DELETE in each of its contexts, of
+  the saved resource in each of its contexts and of a workflow transition in
+  each context it is authorized in; a type with only `checks` lists by SQL.
+  Unlike an `IsAuthorized` subclass, whose object check allows a PUT or
+  DELETE when any context the resource is stored in allows it, `checks`
+  must allow in every one: a resource in `["a", "b"]` whose check refuses
+  `"b"` can be neither updated (not even moved to `"a"`) nor deleted (403,
+  and `Allow` leaves those methods out).
+  `object_checks` govern reads and objects (the detail route of every method,
+  each listed resource); a refused resource is hidden (404), and a write of a
+  resource they would hide is refused (403 after the save, which is rolled
+  back). `content_filter` makes the list filter on its query parameters; it
+  is read when the routes are built, so registering a slug again swaps the
+  other hooks but not an already built route's filter. `compute` supplies a
+  computed type's content without a viewset subclass. A type's hooks are
+  keyed by its type IRI: registering a type again replaces its hooks (a
+  different set logs a warning on `scrud_django.core.types`; another slug
+  registering the same IRI must carry the very same hook objects, else
+  `ImproperlyConfigured`: use module-level functions, as closures a
+  factory builds in the URLconf are new objects on each import), and
+  `requirement_for` takes the slug from the resource type (a different one
+  is `ImproperlyConfigured`) and imports `ROOT_URLCONF` once per process,
+  so a worker that never served a request still has the hooks.
+
+* New in the core and registration, public but meant for the front ends:
+  `core.resources.allowed_methods_for`, the modules `core.collections` and
+  `core.computed`, `core.urls.first_absolute_reverse` and
+  `absolute_reverse(namespace=)`, `ScrudServices.add_service` taking a
+  sequence of route prefixes, `ResourceTypeRegistration(build_urls=)`,
+  `registration.register_role_services` and `exceptions.ContentFilterError`.
+  `core.create` and `core.update` take `type_iri`, which names the post-save
+  check and the workflow mark. `core.resources.load_for_read`, locking for a
+  write, takes a `WorkflowPolicy`'s type lock before the row lock, as the DRF
+  views do, so a ninja write of a policy and a server-side write of it
+  (`ResourceRegistration.update`, a bulk delete, a sync repair) lock in one
+  order.
+* UI branches in `scrud_django.ui`. A branch is a named set of UI components,
+  stylesheets and (new) CSS items that overrides its parent branch, live or
+  pinned to a version. Branches are resources (`ui-branches`, with read-only
+  `ui-branch-versions` and `ui-pushes`), authorized by scoped RBAC in their own
+  context. A branch can be published at a URL prefix
+  (`scrud_django.ui.branches.middleware.PublishedBranchMiddleware`, after
+  `AuthenticationMiddleware`), where the resource views serve the same resources
+  with the branch's presentation; working branches are browsed with a header,
+  a parameter or a cookie, a banner and a confirmation step. Pushes (which a
+  `WorkflowPolicy` can gate), pulls with conflict detection, restores and
+  per-branch versions move changes between branches. See the Branches chapter
+  of the UI page and the `seed_todo_demo` command.
+* The bootstrap studio, `scrud_django.ui.studio` (add the app after
+  `scrud_django.ui` and include `scrud_django.ui.studio.urls`). It is a page for
+  authoring a type's presentation on a working branch: a preview in a sandboxed
+  iframe (no scripts), an inspector that explains which rule chose a node's
+  component, "New component for this node" (a component and its rule in one
+  step, in the branch's `studio` stylesheet), an editor for the branch's items,
+  and pull and push. It is built on a JSON API (`sample`, `preview`, `explain`,
+  `new-component`, `item`, `save-item`, `revert-item`, `pull`, `push`) that a
+  self-hosted studio could use, adds no rights (every write is a request to a
+  resource view as the user), and needs a signed-in user (401 otherwise). New
+  problem types: `ui-studio-branch-read-only`, `ui-studio-context-unavailable`,
+  `ui-pointer-not-found`. See the Studio chapter of the UI page. The demo
+  mounts it at `/studio/` and seeds a working branch `alice-wip`, and the
+  self-hosted studio's tree: the published root `studio` at `/workbench/`
+  (`SCRUD_UI_STUDIO_BRANCH`) and its working branch `studio-wip`, with grants
+  for the demo users.
+* `ui-js` items in `scrud_django.ui`: a new item type shaped like `ui-css`
+  (`name`, `js`, `order`, the branch fields), served at versioned, immutable
+  same-origin URLs (`ui-js-files/<name>/<etag>.js`, also under a published
+  branch's prefix) and linked by the page component from its `scripts` list.
+  Write access is granted on `ui-js` separately from `ui-components`, and the
+  branch machinery (effective items, versions, push, pull, restore, conflicts,
+  revert) covers it as it covers CSS.
+* A scope chain in the URL (`?ui-scope=a,b`, the header `Scrud-UI-Scope` wins)
+  and a requested view mode (`?ui-mode=view`, or the header `Scrud-UI-Mode:
+  view`, which wins), which can only downgrade edit mode to view mode, never
+  grant it; any other mode value is a 400.
+* List chrome through the cascade: the collection wrapper is chosen by a
+  stylesheet rule like any node (stylesheets in context `""` only; view
+  mode), so a rule can restyle a type's lists. With no matching rule
+  `scrud:collection` is used as before.
+* Remove and reorder array items in edit mode, with validation errors shown
+  next to the item and field they belong to. The operation travels with the
+  one `PUT` its click triggers; one that cannot be applied cancels it with
+  "This action is misconfigured." in the frame.
+* Packaged, overridable UI layers: an installed app can ship components,
+  stylesheets, CSS and JS items as package files, below every root branch and
+  above the `scrud:*` built-ins. A branch overrides a layer item by name;
+  deleting the override reverts to the packaged item. An override whose `base`
+  differs from the installed layer item's ETag is a layer conflict, shown in
+  the branch's effective items and reported by the new check
+  `scrud_django_ui.W002` (a database check, a Warning, which also names a
+  branch it could not check: a broken chain or a missing pinned snapshot); an
+  invalid layer declaration or file is the check Error `scrud_django_ui.E002`,
+  also logged at ERROR when the layers are read, and is left out. A file is
+  invalid when its item's viewset would refuse it too: its JSON Schema, a
+  missing field, a template that does not compile, a selector that does not
+  parse. Layer
+  items are not rows and are not in the item lists. Without a layer installed,
+  `W002` costs one query per database unless an item is named with a layer
+  prefix (an orphan of an uninstalled layer, which it still reports).
+* Safe mode: `?ui-safe=1` (or the header `Scrud-UI-Safe: 1`) renders from
+  packaged layers, built-ins and the default stylesheet only, ignoring every
+  branch's stored items, and says so in a notice on the page. A safe page marks
+  its frames and its `.scrud-branch-page` element with `data-scrud-safe="1"`,
+  and `scrud-ui.js` sends the header on that page's own requests (a frame's
+  `PUT`, the 412 reload, refreshes), so edits stay in safe mode. Safe mode is
+  render-only: what an embedded view reads as data (a list of UI items, the
+  studio's computed types) is the stored state. It reveals nothing new and
+  changes no authorization.
+* Computed, read-only resource types (`GET`, `HEAD` and `OPTIONS`; other
+  methods 405): an app can register a type whose content Python computes per
+  request, with a schema, JSON-LD, an ETag and rendering through the cascade.
+  They are not listed in the service catalog. Authorization stays with scoped
+  RBAC.
+* Server-side embeds: a stored Jinja component (a node's, a list's or the
+  page's) can embed another resource URL rendered on the server as the same
+  user (RBAC, workflow and masking apply), in a given scope chain and view
+  mode, with depth and per-response count limits, and cycles refused, as are
+  a scope that is not a scope chain and a mode other than `"view"`. Without a
+  `scope` (or with `none`), the embedded path's own `?ui-scope=` applies. An
+  embedded view that raises is logged at ERROR (with `got_request_exception`
+  sent) and runs in a savepoint, so a database error in it leaves the page's
+  transaction usable. Because the signal is sent, Django's test `Client`
+  (`raise_request_exception=True`, its default) re-raises that exception in a
+  project's tests, as it does for a view that raises; the page itself shows
+  "This embed failed.".
+* JSON bodies from the browser for any method: `scrud-ui.js` can POST a
+  collection (`data-scrud-json="form"`), send a fixed body
+  (`data-scrud-json="fixed"`) and DELETE with JSON, keeping `If-Match`, the
+  CSRF token, `Scrud-UI-Branch` and `Scrud-UI-Safe` (not a frame's scope or
+  pointer). A write from inside a frame sends the frame's
+  ETag as `If-Match` only when it goes to the frame's own URL; otherwise only
+  the element's own `data-scrud-etag` (an empty one sends none).
+* Studio additions in `scrud_django.ui.studio`: a live preview that renders
+  unsaved drafts of items layered over a branch, marks the nodes a rule
+  wins or loses, and runs in an opaque-origin sandbox (htmx's indicator
+  rules come from a static file there, since its CSP allows no inline style
+  without the nonce); and computed studio
+  data, `ui-branch-items/<branch>/`, `ui-branch-status/<branch>/`,
+  `ui-type-catalog/all/`, `ui-selectable-branches/mine/` and
+  `ui-push-previews/<source>/?target=<name>` (what a push would change,
+  without writing, and the studio's endpoints as the branch status has
+  them), each listing only what the user may GET (a branch's
+  status names a published ancestor above its published root only when the
+  user may GET it). A packaged layer's items are public everywhere in the
+  studio: the inspector's rules, the live preview's mark, the computed data,
+  New component and the push preview's changes and conflicts read them with
+  one check (`scrud_django.ui.branches.reads.may_read_item`); a packaged item
+  is one with no stored row. Live-preview drafts are render-only too: an
+  embedded list of the branch's items lists the stored item a draft
+  replaces, and embedded studio data shows the stored items.
+* The self-hosted studio, in `scrud_django.ui.studio`: a studio made of the
+  UI itself, so that the studio can be edited with the studio. Its pages are
+  the UI types' own resources rendered in the scope `studio`
+  (`?ui-scope=studio`) by the app's packaged UI layer, `studio:`
+  (`scrud_django.ui.studio.layer`): a branch's `ui-branches` detail at
+  `?ui-scope=studio&ui-mode=view` is its workbench, a component, CSS or JS
+  item its editor, a stylesheet its rule editor, a push its review, a branch
+  version its page. The layer's page component `studio:page` is selected only
+  in that scope. Every page links the layer's CSS item `studio:studio`, which
+  selects only under `.studio` or `[data-studio…]`, and its JS items
+  (`studio:studio`, `studio:rules`, `studio:inspector`, `studio:promote`,
+  `studio:branch`, orders 0 to 4), which do nothing on a page without a
+  workbench (on a push's page `studio:promote` only stops the `change` of
+  its state input and its preview controls, and previews the target after
+  the push). So the bodies of pages outside the studio render as
+  before, but every HTML page of a site with the studio app installed, on
+  every branch, links the layer's CSS item and its five JS items, unless the
+  new setting `SCRUD_UI_STUDIO_LAYER` (default `True`; `studio_layer_enabled()`)
+  is false (see Upgrading). It adds no rights: every write is an ordinary request to a
+  resource view, and a control is shown only where the studio data offers
+  its action. The setting `SCRUD_UI_STUDIO_BRANCH` (default `None`;
+  `studio_branch()`) names the published root branch that hosts it, a tree of
+  its own so that the app's CSS and JS don't load under the studio's prefix.
+  See the "Self-hosted studio" chapter of the UI page.
+* The workbench (`studio:workbench`): a branch picker in its top bar
+  (`studio:branch-picker`, the embedded `ui-selectable-branches/mine/`: each
+  branch the user may select, linked to its workbench when they may `GET`
+  it), Items, Editor and Preview panes (Items
+  and Editor collapse to rails, remembered per viewer in `localStorage`), the
+  branch's items as a tree (`studio:items`: own, inherited and packaged
+  items, the packaged ones in a collapsed "Packaged (N)" group per kind,
+  conflicts, "Override on this branch"; the panes scroll on their own within
+  a viewport-bounded row), a strip (`studio:status`:
+  chain, counts, Pull, promote panels, pushes, history, the browse link) and
+  a live preview in a sandboxed frame. The workbench's state (type, item,
+  node, preview controls) is in the URL's query, so a link reproduces the
+  view. A refused write shows the server's text in the workbench's notice.
+* The editors: `studio:component-editor` and `studio:component-view`
+  (`UIComponent`), `studio:text-editor` and `studio:text-view` (`UICss` and
+  `UIJs`), selected in the scope `studio studio-editor`. An item opens in view
+  mode when the branch is published or does not own it (an item with no URL
+  shows its content as text, a Django-engine component is read-only). An own
+  item's editor is its frame's form: Save is the frame's `PUT` with
+  `If-Match` (a stale one gets the 412 reload), and the frame's Delete button
+  deletes the branch's row, relabelled "Revert to inherited" when the branch
+  then shows an ancestor's or a packaged item (the items entry's new
+  `reverts_to`), else left "Delete" with a confirmation that nothing is
+  inherited. Typing sends the editor's content to the live preview as a
+  draft (300 ms after the last key; none on a published branch), and the
+  drafts the preview leaves out are listed under the editor, as text.
+* The rule editor: a stylesheet opens as its fields (`name` read-only,
+  `applies_to`, `order` (its default, 0, as the placeholder when it is
+  unset), `prefixes` as key/value rows, with one new prefix at
+  a time) and its rules as rows of selector -> component inputs, each with
+  Remove, Move up and Move down (they save at once) and an append row; every
+  field is an input named by its JSON Pointer, saved only by Save, and a
+  refused selector is shown beside its row (`studio:stylesheet-editor`,
+  `studio:rules-editor`, `studio:rule-row`, `studio:field` and the view twins
+  `studio:stylesheet-view`, `studio:rules-view`, `studio:rule-row-view`).
+  Focus on a row marks its rule's matches in the live preview, with the
+  stylesheet as the form shows it as a draft (the mark only on a published
+  branch or in view mode), and shows "matches N nodes, wins on M" under the
+  rows; leaving the rows clears the mark.
+* The preview pane and the inspector: a type picker (`studio:type-picker`,
+  the embedded `ui-type-catalog`) and mode, data context, scope, instance and
+  pinned controls, each of which sets the URL state and submits the live
+  preview again; and an inspector that explains the node clicked in the
+  preview (from the preview's own window only) as text, with the preview's
+  parameters and the exact pointer, and names the embedded resource a click
+  inside one was in rather than explaining it, and explains the node again
+  after a successful write from the workbench (a rule below the winner is
+  shown as not tried). On a working branch it offers
+  "Edit this component" and "New rule for this node" (the bootstrap studio's
+  form, posted to `new-component` as JSON with the CSRF token; off while
+  pinned).
+* Publishing in the workbench. Promote: a "Promote to <target>…" panel for
+  each entry of `actions.promote` (the parent, then the ancestors in the
+  chain) loads the push preview (`studio:push-preview`, in the scope
+  `studio studio-push`): the changes, each with its item before and after,
+  the conflicts, and those on items the user can't read, counted. "Preview
+  after push" shows the target with the branch pushed. Apply and Propose are
+  the entry's own actions, above the review and kept in view while it
+  scrolls; Apply stays off, with the reason, until the review
+  has loaded and shows no conflict, readable or not. A push's page
+  (`studio:push`, or `studio:push-view` for a user who may not `PUT` it)
+  shows its source, target, state, label (a dash when it has none) and
+  result, the preview of a push
+  not yet applied with "Preview after push" (`studio:push-after`, when the
+  studio's URLs are included: a type picker, and the target as it renders
+  after the push in a sandboxed frame), and a state input (`proposed`, `applied`) saved only on
+  Save, whose refusal (a workflow policy's, for example) is re-rendered with
+  the server's message. History: the strip lists the branch's versions, each
+  linked to its page in a new tab (`studio:version`: the ancestors' versions
+  and the branch's own items then, as text), with "Restore to version N" when
+  the user may `POST` that restore push (on published branches too). Branch
+  settings: the branch itself embedded in the scope `studio studio-branch`
+  (`studio:branch-form`, or `studio:branch-view`): label, description and
+  base on a working branch, saved only on Save, the prefix as an input only
+  for a user who may publish (in the scope `studio studio-branch
+  studio-publish`), with "Remove the prefix" on a published branch, and the
+  frame's Delete for a user who may delete the branch. "New branch" creates a
+  branch (`name`, `parent` and `rbac_context`, defaulting to the
+  workbench's) and links its workbench.
+* Ways out when a change breaks the studio itself. With the studio app
+  installed, the pages of the UI types and of the studio's computed types
+  carry studio links (`<nav class="scrud-studio-links">`): to the studio
+  root's workbench in view mode (when the setting names a branch with a
+  prefix), to the same page in safe mode, and to the bootstrap studio. They
+  are page chrome: a page component that leaves them out, or fails, is
+  replaced by the built-in page. In safe mode the whole workbench renders
+  from the layer, its panes included. The bootstrap studio is unchanged.
+* The bootstrap studio reverts on published branches, so that it can undo a
+  broken override on the studio root (the first of the ways out). `POST
+  revert-item` accepts a published branch, `main` included: it is the
+  `DELETE` of the branch's own row of the item through its resource view,
+  with `If-Match` required and the API's checks and grants, no others. The
+  strip lists a published branch's own items, and the editor shows them
+  read-only with a revert control and no Save; an inherited item has none.
+  The editor's item (`GET item`) gains `reverts_to`, as `ui-branch-items` has
+  it, which labels the control "Revert to inherited", "Revert to packaged" or,
+  with nothing readable beneath, "Delete from `<branch>`", which asks
+  first. A revert answers an own row the user may not `GET` as a
+  missing one (404), so that it reveals nothing. Every other
+  studio write on a published branch (`save-item`, `new-component`, `pull`,
+  `push`, drafts in a live preview) is still refused with
+  `ui-studio-branch-read-only`.
+* For the studio's components and scripts, and usable by any: stored Jinja
+  components get `in_mount(href)` (an API URL mapped into the page's
+  published prefix) and `api_url(slug, key=None)` (the API path of a
+  registered type's list or detail; an unknown slug, or one whose route is
+  not that type's resource view, fails the component)
+  beside `embed`. The computed studio data gains *actions* (`{"method",
+  "href", "body", "etag"}`, what a control sends unchanged, offered only when
+  the user's grants allow it): each item of `ui-branch-items` has `override`
+  (the `POST` that creates the branch's override of an item it shows but
+  does not own) and `reverts_to`; `ui-branch-status` has `may_write`,
+  `may_publish`, the latest 20 `pushes` and `versions` the user may read
+  (each version with its `restore` action, or `null`), `actions` (`pull`, and
+  `promote`: apply or propose a push to each ancestor) and the bootstrap
+  studio's `endpoints` (`null` when its URLs are not included; with `sample`,
+  a template with `{slug}`). On a published branch no write is offered but
+  a restore. The live preview's bridge (`preview-bridge.js`) also posts
+  `{"type": "scrud-preview:marks", "wins": M, "loses": L}` on load, after the
+  errors message: the counts of the nodes marked as the marked rule winning
+  and losing, read before the branch's scripts run (0 and 0 without a mark).
+  The workbench's script exposes `window.ScrudStudio` for the layer's other
+  scripts and a branch's overrides of them.
+
+### Changed
+
+* Links now reverse within the URL namespace the request was resolved under:
+  `href`, `Location`, the schema and context `Link`s, the service URLs and the
+  stored-policy URL of a workflow error. A DRF app that mounts scrud's routes
+  under a namespaced `include()` gets namespaced links; before, those reverses
+  only worked if the routes were also mounted globally. Without a namespace
+  the links are as before.
+* `services/` leaves out a registered type that no route of the serving
+  URLconf names (another API's type, a UI type on a ninja API), where it
+  answered 500 (`NoReverseMatch`). `ScrudServices.catalog` and `etag_for`
+  leave it out too.
+* A `ui-branches` write refused for its `prefix` (malformed, taken, or
+  overlapping another branch's or the API's URLs) now has `name: "prefix"` in
+  its 400 `ui-branch-invalid` problem, as a JSON Schema error names its field,
+  so a refused PUT's HTML re-render shows the message beside the prefix.
+* A requested view mode (`?ui-mode=view`, `Scrud-UI-Mode: view`, or an
+  embed's `mode="view"`) also leaves out the frame's Delete button, even for
+  a user who may DELETE the resource. A user in view mode because they may
+  not PUT still gets it when they may DELETE.
+* A UI item whose name starts with `scrud:` is refused with 400
+  `ui-layer-name-reserved`.
+* The built-in `array-edit` now shows Remove and Move controls in edit mode.
+* In `scrud_django.ui`, writing a component or stylesheet is authorized by RBAC
+  in the item's branch context instead of a global trusted role; on `main`
+  (context `""`) the rules are the same as before. Viewing a branch means
+  trusting everyone who can write to it: read the Security section.
+* A JSON list of UI items that names a branch (`Scrud-UI-Branch` header or
+  `ui-branch` parameter) it may not show answers 400 (`ui-branch-unavailable`).
+* With `scrud_django.ui` installed, the lists of `ResourceViewSetGenericFilter`
+  no longer read the UI's URL parameters (`ui-branch`, `ui-branch-confirm`,
+  `ui-scope`, `ui-mode`, `ui-safe`) as content filters, which emptied them.
+* The UI's `Vary` header adds `Scrud-UI-Mode`, `Scrud-UI-Branch`,
+  `Scrud-UI-Safe` and `Cookie`. `scrud:page`
+  gets a `css` list of the CSS file URLs; a custom page component should link
+  them.
+* Setting, changing or removing a branch's prefix (publishing it at site
+  URLs), and deleting a published branch, need PUT on `ui-branches` in the
+  context `""`. Setting or changing one refuses a prefix that overlaps
+  another, hides the project's URLs or lies under the API's. A system check,
+  `scrud_django_ui.W001` (a Warning), reports stored prefixes with those
+  problems.
+* Each change in a `ui-push-previews` response gains `changed`: the names of
+  the fields the push changes in that row (JSON-LD term `UIPushChanged`). The
+  self-hosted studio's push review marks those fields.
+
+Behaviour for a site that creates no branch, and without the middleware, is
+unchanged. The middleware costs one query per request outside the API's URLs.
+
+### Fixed
+
+* A frame's request made while its previous one is in flight (Move up
+  clicked twice during a save of the rule editor, a change made during a
+  save) was queued by htmx and dropped without a word when the save's answer
+  replaced the frame. `scrud-ui.js` now refuses such a request and shows "Your
+  change was not sent: an earlier save of this item was still in progress.
+  Make the change again." in the frame that answers the save (follow-up
+  `ui-inflight-edit-dropped`, reproduced in the self-hosted studio's
+  acceptance run). A
+  refused request that would have sent nothing new says nothing: Enter in a
+  field, or typing and then a click on Save, fires the field's change and
+  then the form's submit, and the change's save already carries the edit
+  (array operations always count). A frame whose response handling throws
+  (htmx's `htmx:onLoadError`) is no longer left refusing its requests.
+* An embed in a studio preview requested in view mode (`preview` and
+  `live-preview` with `mode` `view`, their default) renders in view mode, as
+  with `mode="view"`: an embedded resource the user may `PUT` no longer shows
+  its edit inputs and array operations there (the `embed-preview-mode`
+  follow-up).
+* On MySQL, a resource whose JSON content is larger than the server's
+  `sort_buffer_size` (256 KB by default) no longer breaks the reads that
+  sorted it (error 1038, "Out of sort memory"): UI rendering, CSS files, item
+  lists, versions, pull, push, restore and branch deletion read such rows
+  unsorted and sort them in Python, and the resource list's page is found
+  among the keys alone, then read by key (one more query per list page, on
+  MySQL only). See `mysql-sort-buffer` in the follow-ups for what remains.
+* In the self-hosted studio, an applied push's page renders as a view, with
+  no state form and no Delete button: the API refuses a PUT (400) and a
+  DELETE (409) of an applied push, so the controls could only fail.
+* The self-hosted studio's push review no longer marks a field changed when
+  both sides are empty (null, "" and a missing key are equal). A real change,
+  such as a row's `rbac_context` moving from main's "" to the target
+  branch's context, stays marked.
+* The rule editor's prefix rows wrap inside the Editor pane instead of
+  running past it.
+* The component editor's header reads "<engine> · mode: <mode>", the
+  component's own `mode` field, instead of an unlabelled pair.
+* The branch picker keeps the workbench state (type, item, instance, mode,
+  context, scope and pointer, but not pinned) across a switch of branch. An
+  item the new branch lacks shows an informational notice ("... is not on
+  this branch.") instead of an empty editor.
+* The self-hosted studio's workbench is bounded by the viewport, so the strip
+  (Promote, Pushes, History) stays on the first screen with the editor open;
+  the panes scroll inside it.
+
+### Upgrading
+
+* `json_resource_type` and `computed_resource_type` (with `compute`) now
+  build a `TypeSpec`, which refuses (`ImproperlyConfigured`) what could never
+  have worked: an empty or non-string slug or IRI, a slug or IRI of a
+  built-in type (JSON Schema, JSON-LD, indexing and workflow policies) on a
+  type that is not one. A hand-built `TypeSpec` (the ninja and neutral API;
+  `computed_resource_type` takes none of these) also refuses a computed
+  type's `checks`, `object_checks` or `content_filter`. `json_resource_type` also raises `TypeError` for a
+  `schema_func`, `context_func` or `indexing_policy_func` that is not
+  callable, when it is called rather than when the type registers. The
+  slug's shape is not checked on DRF (a slug with a dot still registers);
+  `scrud_django.ninja.api()` refuses one that is not a single URL segment of
+  letters, digits, hyphens and underscores.
+* A DRF view whose own `rbac_requirement()` returns an empty `access.AnyOf`,
+  or one with an empty option, now raises (`ValueError`, a 500) instead of
+  refusing or allowing every object.
+* `ScrudException` and its subclasses are no longer DRF `APIException`s (they
+  are neutral, `scrud_django.exceptions`). The DRF views wrap them
+  (`scrud_django.exceptions.as_drf`), so the status and body of every answer
+  are unchanged, including under an adopter's own `EXCEPTION_HANDLER`. That
+  handler now receives a `scrud_django.exceptions.ScrudAPIException` for a
+  scrud error, with the original on `.scrud`: one that branches on
+  `isinstance(exc, WorkflowTransitionError)` (or any scrud class) must check
+  `exc.scrud` instead (`scrud_exception_handler` accepts either). Code that
+  catches `APIException` around a direct call into scrud-django must catch
+  `ScrudException`. (The note under 0.12.0 that scrud errors are
+  `APIException`s describes that release.)
+* `scrud_django.reverse` is scrud-django's own function, no longer DRF's
+  `rest_framework.reverse.reverse` re-exported. It has DRF's signature
+  (`viewname, args=None, kwargs=None, request=None, format=None, **extra`)
+  and gives the same URLs: through the request's DRF versioning scheme when
+  it has one (`DEFAULT_VERSIONING_CLASS`), with the `?format=` override
+  kept. Patching `rest_framework.reverse.reverse` no longer changes the URLs
+  scrud-django builds (Link headers, a list envelope's `link`, the
+  `services/` catalog).
+* `ScrudAPIException`, the `APIException` that carries a scrud error through
+  DRF, is defined once, at import, as `scrud_django.exceptions.ScrudAPIException`
+  (`None` without DRF). `ScrudException.get_full_details()` answers as
+  `APIException`'s did: `{"message": ..., "code": ...}`.
+* Names moved into `scrud_django.core` stay importable from their old
+  modules, as the same objects. The third-party and standard library names
+  those modules happened to import are not re-exported.
+* `WorkflowValidator` subclass overrides of `transition_for`, `authorize`,
+  `allowed`, `allowed_on`, `authorize_without_policy` and
+  `errors_hidden_unless_readable` no longer affect `__call__`, which runs the
+  core's workflow check once.
+* The internal view helpers `recheck_saved`, `cache_resource_type` and
+  `check_every_context_of_policy` (on DELETE) are no longer called by the
+  save and destroy paths, so overriding them no longer takes effect. Nor does
+  an override of `write_checks` affect the post-save check or a DELETE's
+  every-context check of a `WorkflowPolicy`: the core runs them in
+  `authorizing_write(covered=self.checks_workflow(...))` itself. Overrides
+  of `checks_workflow`, `check_post_save_permissions`, `object_for_checks`
+  and `resource_type_iri_for` still take effect.
+* On DRF, the workflow check's authorization now covers one save of one
+  resource (`(type IRI, pk)`, none for a create), and that save consumes
+  it. A grant conditioned on `scrud_workflow` now gets 403 for a view
+  subclass that saves twice per validation, that calls `save_checked`
+  without `instance=` on an update, whose `resource_type_iri_for`
+  differs between the validation and the save, or that validates several
+  resources before saving them (two serializers, a `many=True` create).
+
+Behaviour without `scrud_django.ui` in `INSTALLED_APPS` is unchanged.
+* Installing (or keeping) `scrud_django.ui.studio` now installs its packaged
+  UI layer, `studio:`: every HTML page the UI renders, on every branch and
+  outside the studio too, links the layer's CSS item `studio:studio` and
+  its five JS items (immutable, privately cached files; the scripts do
+  nothing without a workbench, the CSS selects only under `.studio` and
+  `[data-studio…]`), and every item listing and branch's items include the
+  layer's. To keep the bootstrap studio without the self-hosted one and
+  without those files, turn the layer off in your settings:
+  `SCRUD_UI_STUDIO_LAYER = False` (default `True`). Pages then link no
+  `studio:` item and no item listing has one; the bootstrap studio, the
+  studio's computed types and the studio links are unchanged. No config
+  subclass is needed (see "Setting up the self-hosted studio" in the UI
+  page).
+
 ## 0.15.0
 
 This release fixes the workflow authorization and post-write notification

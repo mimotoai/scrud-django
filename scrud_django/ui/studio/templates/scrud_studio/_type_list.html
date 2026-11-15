@@ -1,0 +1,4 @@
+<ul id="studio-types" class="studio-types">
+{% for t in types %}<li><a href="{% url 'scrud-studio:type' t.slug %}"><strong>{{ t.slug }}</strong></a> <span>{{ t.title }}</span> <code>{{ t.type_uri }}</code></li>
+{% empty %}<li class="studio-empty">No types match.</li>
+{% endfor %}</ul>

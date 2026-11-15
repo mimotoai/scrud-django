@@ -48,11 +48,72 @@ def django_db_setup(django_db_setup, django_db_blocker):
     context document) for every later test.
     """
     from scrud_django import registration
+    from scrud_django.ui import types as ui_types
+    from scrud_django.ui.studio.computed import studio_computed_type_urls
     from tests import resource_types
 
     with django_db_blocker.unblock():
         resource_types.json_resource_types()
         registration.workflow_policy_resource_type()
+        ui_types.ui_component_resource_type()
+        ui_types.ui_stylesheet_resource_type()
+        ui_types.ui_branch_resource_type()
+        ui_types.ui_branch_version_resource_type()
+        ui_types.ui_push_resource_type()
+        ui_types.ui_css_resource_type()
+        ui_types.ui_js_resource_type()
+        # The studio's computed types (registered with their routes).
+        studio_computed_type_urls()
+
+
+#: `tests.front_ends.FRONT_ENDS`, which this module cannot import (it imports
+#: Django models, before ``pytest_configure`` sets Django up): the
+#: ``front_end`` fixture checks the two are alike.
+FRONT_END_PARAMS = ("drf", "ninja")
+
+
+@pytest.fixture(params=FRONT_END_PARAMS)
+def front_end(request):
+    """The front end a generic test runs on, once for each of
+    `tests.front_ends.FRONT_ENDS`: ``"drf"`` on ``tests.urls`` (the
+    settings' URLconf), ``"ninja"`` on ``tests.ninja_urls``, whose types are
+    registered first (`tests.front_ends.serve_ninja`). Paths come from
+    `tests.front_ends.api_url`. ``override_settings`` sends
+    ``setting_changed``, on which Django forgets its URL caches and scrudful
+    the HTTP Schema Resources it built, as the test starts and ends; the
+    caches are cleared here too, so that no resolver of one URLconf serves
+    the other."""
+    from django.test import override_settings
+    from django.urls import clear_url_caches, set_urlconf
+
+    from tests.front_ends import FRONT_ENDS, serve_ninja
+
+    assert FRONT_END_PARAMS == FRONT_ENDS, (FRONT_END_PARAMS, FRONT_ENDS)
+    if request.param == "drf":
+        yield request.param
+        return
+    with override_settings(ROOT_URLCONF="tests.ninja_urls"):
+        clear_url_caches()
+        set_urlconf(None)
+        serve_ninja()
+        try:
+            yield request.param
+        finally:
+            clear_url_caches()
+            set_urlconf(None)
+    clear_url_caches()
+    set_urlconf(None)
+
+
+@pytest.fixture
+def studio_layer():
+    """The studio's UI layer (``studio:``), which the suite turns off
+    (``SCRUD_UI_STUDIO_LAYER = False``), on for the test. The layers are
+    read again on the settings change (and after it)."""
+    from django.test import override_settings
+
+    with override_settings(SCRUD_UI_STUDIO_LAYER=True):
+        yield
 
 
 # The built-in resource types `scrud_django.registration` caches at module
@@ -82,14 +143,26 @@ def committed_types():
     pytest-django runs transactional tests after the other database tests
     (with ``--reverse`` too), so those never see the flushed database."""
     from scrud_django import registration
+    from scrud_django.ui import types as ui_types
+    from scrud_django.ui.studio.computed import studio_computed_type_urls
     from tests import resource_types
 
     def forget():
         for name in REGISTRATION_CACHES:
             setattr(registration, name, None)
+        for name in ui_types.REGISTRATION_CACHES:
+            setattr(ui_types, name, None)
 
     forget()
     resource_types.json_resource_types()
     registration.workflow_policy_resource_type()
+    ui_types.ui_component_resource_type()
+    ui_types.ui_stylesheet_resource_type()
+    ui_types.ui_branch_resource_type()
+    ui_types.ui_branch_version_resource_type()
+    ui_types.ui_push_resource_type()
+    ui_types.ui_css_resource_type()
+    ui_types.ui_js_resource_type()
+    studio_computed_type_urls()
     yield
     forget()

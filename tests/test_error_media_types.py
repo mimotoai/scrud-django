@@ -12,7 +12,6 @@ from uuid import uuid4
 import pytest
 from django.conf import settings
 from django.test import override_settings
-from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import quote_etag
 from rest_framework.test import APIClient
@@ -21,20 +20,22 @@ from scoped_rbac.models import Role, RoleAssignment
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
+from .front_ends import api_url
 from .rbac_defaults import TYPE_URI_PARTNER_PROFILES as PP
 
 PROBLEM_SCHEMA = "https://w3id.org/semantic-http/0.1/problem-details.schema.json"
 
 
-def error_responses():
-    """One response for each error status, from the partner-profiles views."""
-    reverse("partner-profiles-list")
+def error_responses(front_end):
+    """One response for each error status, from the partner-profiles routes
+    of `front_end`."""
+    api_url(front_end, "partner-profiles-list")
     resource = ResourceRegistration.register(
         {"name": "x", "rbac_context": "a"}, "partner-profiles"
     )
-    url = reverse("partner-profiles-detail", args=[resource.pk])
+    url = api_url(front_end, "partner-profiles-detail", args=[resource.pk])
     superuser = APIClient()
-    superuser.force_authenticate(UserFactory(is_superuser=True, is_staff=True))
+    superuser.force_login(UserFactory(is_superuser=True, is_staff=True))
     reader_user = UserFactory()
     role = Role(
         definition={"http.GET": [PP]}, etag=uuid4().hex, modified_at=timezone.now()
@@ -48,14 +49,16 @@ def error_responses():
         modified_at=timezone.now(),
     ).save()
     reader = APIClient()
-    reader.force_authenticate(reader_user)
+    reader.force_login(reader_user)
     return {
         401: APIClient().get(url),
         403: reader.delete(url, HTTP_IF_MATCH=quote_etag(resource.etag)),
-        404: superuser.get(reverse("partner-profiles-detail", args=[999999])),
+        404: superuser.get(
+            api_url(front_end, "partner-profiles-detail", args=[999999])
+        ),
         412: superuser.put(url, {"name": "y"}, format="json", HTTP_IF_MATCH='"no"'),
         415: superuser.post(
-            reverse("partner-profiles-list"),
+            api_url(front_end, "partner-profiles-list"),
             "a=b",
             content_type="application/x-www-form-urlencoded",
         ),
@@ -64,8 +67,8 @@ def error_responses():
 
 
 @pytest.mark.django_db
-def test_errors_are_problem_details_with_uniform_errors_on():
-    for status, response in error_responses().items():
+def test_errors_are_problem_details_with_uniform_errors_on(front_end):
+    for status, response in error_responses(front_end).items():
         assert response.status_code == status, response.content
         assert response["Content-Type"] == "application/problem+json", status
         assert PROBLEM_SCHEMA in response.get("Link", ""), status
@@ -76,10 +79,10 @@ def test_errors_are_problem_details_with_uniform_errors_on():
 
 
 @pytest.mark.django_db
-def test_errors_keep_their_native_shape_with_uniform_errors_off():
+def test_errors_keep_their_native_shape_with_uniform_errors_off(front_end):
     off = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=False)
     with override_settings(SCOPED_RBAC=off):
-        responses = error_responses()
+        responses = error_responses(front_end)
     for status, response in responses.items():
         assert response.status_code == status, response.content
         assert response["Content-Type"] == "application/json", status
@@ -91,11 +94,12 @@ def test_errors_keep_their_native_shape_with_uniform_errors_off():
 
 
 @pytest.mark.django_db
-def test_the_service_lists_conditional_400_follows_uniform_errors():
+def test_the_service_lists_conditional_400_follows_uniform_errors(front_end):
     # services/ is a scrudful function view: its malformed-precondition 400
     # is problem details while uniform errors are on, as the resource views'.
-    reverse("partner-profiles-list")
-    response = APIClient().get(reverse("services"), HTTP_IF_NONE_MATCH="abc")
+    api_url(front_end, "partner-profiles-list")
+    services_url = api_url(front_end, "services")
+    response = APIClient().get(services_url, HTTP_IF_NONE_MATCH="abc")
     assert response.status_code == 400, response.content
     assert response["Content-Type"] == "application/problem+json"
     assert PROBLEM_SCHEMA in response.get("Link", "")
@@ -104,7 +108,7 @@ def test_the_service_lists_conditional_400_follows_uniform_errors():
     assert isinstance(body["code"], str), body
     off = dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=False)
     with override_settings(SCOPED_RBAC=off):
-        response = APIClient().get(reverse("services"), HTTP_IF_NONE_MATCH="abc")
+        response = APIClient().get(services_url, HTTP_IF_NONE_MATCH="abc")
     assert response.status_code == 400, response.content
     assert response["Content-Type"] == "application/json"
     assert response.json() == {"detail": "Malformed If-None-Match header."}

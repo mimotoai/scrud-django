@@ -1,0 +1,34 @@
+{
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://api.openteams.com/json-ld/UIBranch",
+  "rbac_context": {
+    "@id": "openteams:AccessControlContext"
+  },
+  "name": {
+    "@id": "openteams:UIBranchName"
+  },
+  "parent": {
+    "@id": "openteams:UIBranchParent"
+  },
+  "base": {
+    "@id": "openteams:UIBranchBase"
+  },
+  "branching_point": {
+    "@id": "openteams:UIBranchingPoint"
+  },
+  "prefix": {
+    "@id": "openteams:UIBranchPrefix"
+  },
+  "conflicts": {
+    "@id": "openteams:UIBranchConflicts"
+  },
+  "pull": {
+    "@id": "openteams:UIBranchPull"
+  },
+  "label": {
+    "@id": "openteams:UILabel"
+  },
+  "description": {
+    "@id": "openteams:UIDescription"
+  }
+}

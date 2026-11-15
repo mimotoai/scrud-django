@@ -1,0 +1,21 @@
+{
+  "ex": "http://example.org/todo#",
+  "openteams": "http://api.openteams.com/json-ld/",
+  "@type": "http://example.org/todo#TodoList",
+  "rbac_context": {
+    "@id": "openteams:RBACContext"
+  },
+  "title": {
+    "@id": "ex:title"
+  },
+  "items": {
+    "@id": "ex:items",
+    "@type": "ex:TodoItem"
+  },
+  "text": {
+    "@id": "ex:text"
+  },
+  "done": {
+    "@id": "ex:done"
+  }
+}

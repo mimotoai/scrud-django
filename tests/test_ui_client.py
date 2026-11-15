@@ -1,0 +1,1136 @@
+"""scrud-ui.js as the browser runs it: the request headers of its
+``htmx:configRequest`` handler on a stub DOM, and a round trip from the
+rendered edit form through ``buildBody`` to a JSON PUT."""
+
+import json
+import subprocess
+from html.parser import HTMLParser
+
+import pytest
+from django.urls import reverse
+from safetydance_django.test import *  # noqa: F403, F401
+
+from .fixtures import *  # noqa
+from .steps import *  # noqa: F403, F401
+from .test_ui_static import SCRUD_UI, STUB_DOM, require_node
+
+HTML = "text/html"
+
+HEADERS_SCRIPT = (
+    STUB_DOM
+    + r"""
+document.querySelector = (sel) =>
+  sel === 'meta[name=csrf-token]' ? el('META', {content: 'csrf-123'}) : null;
+const root = frame('/l/1/');
+root.attrs['data-scrud-etag'] = '"root-etag"';
+root.attrs['data-scrud-scope'] = 'outer';
+root.attrs['hx-put'] = '/l/1/';
+el('SCRIPT', {class: 'scrud-content'}, root, {textContent: '{"items": [{"done": false}]}'});
+const node = el('DIV', {class: 'scrud-resource', 'data-scrud-href': '/l/1/',
+  'data-scrud-etag': 'inner-etag', 'data-scrud-scope': 'outer inner',
+  'data-scrud-pointer': '/items/0', 'hx-put': '/l/1/'}, root);
+el('SCRIPT', {class: 'scrud-content'}, node, {textContent: '{"items": [{"done": false}]}'});
+const input = el('INPUT', {name: '/items/0/done'}, node, {type: 'checkbox', checked: true});
+const fire = (elt, verb, headers) => {
+  const detail = {elt, verb, headers: headers || {}};
+  handlers['htmx:configRequest']({detail, preventDefault() { detail.prevented = true; }});
+  return {headers: detail.headers, prevented: !!detail.prevented};
+};
+out.put = fire(node, 'put');
+out.putFromInput = fire(input, 'put');
+out.putRoot = fire(root, 'put');
+out.get = fire(node, 'get');
+out.getAccept = fire(node, 'GET', {Accept: 'application/json'});
+out.putOwnAccept = fire(node, 'put', {accept: 'application/json', 'if-match': '"mine"'});
+out.delete = fire(el('BUTTON', {'hx-delete': '/l/1/'}, node), 'delete');
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def run_node(script, *args, stdin=None):
+    done = subprocess.run(
+        ["node", "-e", script, str(SCRUD_UI), *args],
+        capture_output=True,
+        text=True,
+        input=stdin,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_config_request_headers_come_from_the_innermost_frame():
+    require_node()
+    out = run_node(HEADERS_SCRIPT)
+    # a PUT from an input in a node frame in a root frame (the node frame
+    # carries the hx-put htmx fires from)
+    for key in ("put", "putFromInput"):
+        headers = out[key]["headers"]
+        assert headers["If-Match"] == '"inner-etag"', key
+        assert headers["X-CSRFToken"] == "csrf-123"
+        assert headers["Scrud-UI-Scope"] == "outer inner"
+        assert headers["Scrud-UI-Pointer"] == "/items/0"
+        assert headers["Accept"] == "text/html"
+        assert not out[key].get("prevented")
+    assert out["put"]["headers"]["Content-Type"] == "application/json"
+    # an input is no hx-put element: nothing is sent as JSON for it
+    assert "Content-Type" not in out["putFromInput"]["headers"]
+    # the root frame's own request uses its own etag
+    assert out["putRoot"]["headers"]["If-Match"] == '"root-etag"'
+    assert out["putRoot"]["headers"]["Scrud-UI-Scope"] == "outer"
+    # DELETE from the button inside the node frame, to the frame's own URL:
+    # the frame's ETag, and no body type
+    assert out["delete"]["headers"]["If-Match"] == '"inner-etag"'
+    assert out["delete"]["headers"]["X-CSRFToken"] == "csrf-123"
+    assert "Content-Type" not in out["delete"]["headers"]
+
+
+def test_get_requests_get_no_write_headers():
+    require_node()
+    out = run_node(HEADERS_SCRIPT)
+    assert out["get"]["headers"] == {"Accept": "text/html"}
+    # an Accept the page set itself is kept, in any case
+    assert out["getAccept"]["headers"] == {"Accept": "application/json"}
+    assert out["putOwnAccept"]["headers"]["accept"] == "application/json"
+    assert "Accept" not in out["putOwnAccept"]["headers"]
+    assert out["putOwnAccept"]["headers"]["if-match"] == '"mine"'
+    assert "If-Match" not in out["putOwnAccept"]["headers"]
+
+
+BRANCH_SCRIPT = (
+    STUB_DOM
+    + r"""
+const page = el('MAIN', {});
+const wip = frame('/l/1/', page);
+wip.attrs['data-scrud-branch'] = 'wip';
+const node = el('DIV', {class: 'scrud-resource', 'data-scrud-href': '/l/1/',
+  'data-scrud-pointer': '/items/0'}, wip);
+const button = el('BUTTON', {'hx-delete': '/l/1/'}, node);
+const published = frame('/l/2/', page);
+published.attrs['data-scrud-branch'] = '';
+const plain = frame('/l/3/', page);
+const fire = (elt, verb, headers) => {
+  const detail = {elt, verb, headers: headers || {}};
+  handlers['htmx:configRequest']({detail, preventDefault() {}});
+  return detail.headers;
+};
+out.get = fire(node, 'get');
+out.delete = fire(button, 'delete');
+out.published = fire(published, 'get');
+out.plain = fire(plain, 'get');
+out.own = fire(node, 'get', {'scrud-ui-branch': 'mine'});
+// An element outside any frame (a pager link, a stored page component's nav)
+// uses the page's branch, which a frame's own attribute overrides.
+const nav = el('A', {'hx-get': '/l/?page=2'}, el('NAV', {}));
+out.outsideBare = fire(nav, 'get');
+const marker = el('DIV', {class: 'scrud-branch-page', 'data-scrud-branch': 'wip@pinned'});
+document.querySelector = (sel) =>
+  sel === '.scrud-branch-page[data-scrud-branch]' ? marker : null;
+out.outside = fire(nav, 'get');
+out.insideFrame = fire(node, 'get');
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_config_request_sends_the_frames_branch():
+    require_node()
+    out = run_node(BRANCH_SCRIPT)
+    # from the closest element carrying data-scrud-branch, GET and writes alike
+    assert out["get"]["Scrud-UI-Branch"] == "wip"
+    assert out["delete"]["Scrud-UI-Branch"] == "wip"
+    # "" names the published branch explicitly
+    assert out["published"]["Scrud-UI-Branch"] == ""
+    # none without the attribute (a page on the published branch)
+    assert out["plain"] == {"Accept": "text/html"}
+    # a header the page set itself is kept, in any case
+    assert out["own"] == {"Accept": "text/html", "scrud-ui-branch": "mine"}
+    # outside any frame: the page's branch (.scrud-branch-page), else none
+    assert out["outsideBare"] == {"Accept": "text/html"}
+    assert out["outside"]["Scrud-UI-Branch"] == "wip@pinned"
+    assert out["insideFrame"]["Scrud-UI-Branch"] == "wip"
+
+
+BUILD_SCRIPT = r"""
+const vm = require('vm'), fs = require('fs');
+const window = {};
+const ctx = vm.createContext({window, htmx: {config: {}, defineExtension() {}}});
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const errors = [];
+const body = window.ScrudUI.buildBody(input.content, input.fields, errors);
+console.log(JSON.stringify({body, errors}));
+"""
+
+
+class EditForm(HTMLParser):
+    """The root frame of rendered HTML: its attributes, embedded content and
+    named inputs, read as a browser's DOM would give them (a textarea's first
+    newline dropped)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.frame = None
+        self.content = None
+        self.fields = []
+        self._in = None
+        self._text = ""
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = (attrs.get("class") or "").split()
+        if self.frame is None and "scrud-resource" in classes:
+            self.frame = attrs
+        elif tag == "script" and "scrud-content" in classes:
+            self._in, self._text = "script", ""
+        elif tag == "textarea" and (attrs.get("name") or "").startswith("/"):
+            self._in, self._text = ("textarea", attrs), ""
+        elif tag == "input" and (attrs.get("name") or "").startswith("/"):
+            kind = attrs.get("type", "text")
+            self.fields.append(
+                {
+                    "name": attrs["name"],
+                    "type": kind,
+                    "value": attrs.get("value", ""),
+                    "checked": "checked" in attrs,
+                }
+            )
+
+    def handle_data(self, data):
+        if self._in is not None:
+            self._text += data
+
+    def handle_endtag(self, tag):
+        if self._in == "script" and tag == "script":
+            if self.content is None:
+                self.content = json.loads(self._text)
+            self._in = None
+        elif isinstance(self._in, tuple) and tag == "textarea":
+            _, attrs = self._in
+            text = self._text[1:] if self._text.startswith("\n") else self._text
+            self.fields.append(
+                {
+                    "name": attrs["name"],
+                    "type": "textarea",
+                    "value": text,
+                    "checked": False,
+                }
+            )
+            self._in = None
+
+
+def parse_form(output):
+    form = EditForm()
+    form.feed(output)
+    return form
+
+
+@pytest.mark.django_db
+@test_context
+def test_edit_form_round_trip_through_build_body(todo_list, todo_owner_login):
+    """Render the owner's edit form, apply what the client applies (tick the
+    first item, add one, rename the second), PUT the body it builds with the
+    frame's ETag: 200, and everything untouched is kept exactly, a multi-line
+    string among it."""
+    require_node()
+    url = reverse("todo-lists-detail", args=[todo_list.pk])
+    todo_list.content = {**todo_list.content, "notes": "line 1\nline 2\n\nline 4"}
+    todo_list.save()
+    Given.http.force_authenticate(todo_owner_login)
+    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    Then.http.status_code_is(200)
+    form = parse_form(Http.response.content.decode())
+    assert form.frame["hx-put"] == url and form.content["notes"].count("\n") == 3
+
+    fields = form.fields
+    by_name = {f["name"]: f for f in fields}
+    assert "/title" in by_name and "/items/-/text" in by_name
+    by_name["/items/0/done"]["checked"] = True
+    by_name["/items/1/text"]["value"] = "Buy eggs and flour"
+    by_name["/items/-/text"]["value"] = "Buy bread"
+    by_name["/items/-/done"]["checked"] = True
+    built = run_node(
+        BUILD_SCRIPT, stdin=json.dumps({"content": form.content, "fields": fields})
+    )
+    assert built["errors"] == []
+    body = built["body"]
+    assert body["items"] == [
+        {"text": "Buy milk", "done": True},
+        {"text": "Buy eggs and flour", "done": True},
+        {"text": "Buy bread", "done": True},
+    ]
+    assert body["title"] == "Groceries"
+    assert body["rbac_context"] == "project-a"
+
+    etag = form.frame["data-scrud-etag"]
+    When.http.put(
+        url,
+        data=json.dumps(body),
+        content_type="application/json",
+        HTTP_IF_MATCH=etag,
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+    )
+    Then.http.status_code_is(200)
+    todo_list.refresh_from_db()
+    assert todo_list.content == body
+    assert todo_list.content["notes"] == "line 1\nline 2\n\nline 4"
+
+
+APPLY_OP_SCRIPT = (
+    STUB_DOM
+    + r"""
+const rules = () => [{select: 'a'}, {select: 'b'}, {select: 'c'}];
+const rows = (body) => body.rules.map((r) => r.select).join('');
+const doc = () => ({rules: rules(), keep: 1});
+out.remove = rows(U.applyArrayOp(doc(), {op: 'remove', pointer: '/rules/1'}));
+out.removeKeeps = U.applyArrayOp(doc(), {op: 'remove', pointer: '/rules/1'}).keep;
+out.down = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/0', to: 1}));
+out.downEnd = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/0', to: 2}));
+out.up = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/2', to: '1'}));
+out.same = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/1', to: 1}));
+out.nested = U.applyArrayOp({a: {b: [1, 2, 3]}}, {op: 'remove', pointer: '/a/b/0'}).a.b;
+out.root = U.applyArrayOp([1, 2], {op: 'remove', pointer: '/1'});
+// never a throw or a change for what is not an array element
+out.badIndex = rows(U.applyArrayOp(doc(), {op: 'remove', pointer: '/rules/9'}));
+out.badTo = rows(U.applyArrayOp(doc(), {op: 'move', pointer: '/rules/0', to: 7}));
+out.notArray = JSON.stringify(U.applyArrayOp({a: {b: 1}}, {op: 'remove', pointer: '/a/b'}));
+out.badOp = rows(U.applyArrayOp(doc(), {op: 'explode', pointer: '/rules/0'}));
+out.badPointer = rows(U.applyArrayOp(doc(), {op: 'remove', pointer: 'rules/0'}));
+// with an errors array: one reason for each operation that was not applied
+const errors = (op, body) => {
+  const found = [];
+  U.applyArrayOp(body || doc(), op, found);
+  return found.length;
+};
+out.errors = {
+  remove: errors({op: 'remove', pointer: '/rules/1'}),
+  move: errors({op: 'move', pointer: '/rules/0', to: 2}),
+  badIndex: errors({op: 'remove', pointer: '/rules/9'}),
+  badTo: errors({op: 'move', pointer: '/rules/0', to: 7}),
+  noTo: errors({op: 'move', pointer: '/rules/0'}),
+  notArray: errors({op: 'remove', pointer: '/a/b'}, {a: {b: 1}}),
+  badOp: errors({op: 'explode', pointer: '/rules/0'}),
+  badPointer: errors({op: 'remove', pointer: 'rules/0'}),
+};
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_apply_array_op_remove_and_move():
+    require_node()
+    out = run_node(APPLY_OP_SCRIPT)
+    assert out["remove"] == "ac" and out["removeKeeps"] == 1
+    assert out["down"] == "bac" and out["downEnd"] == "bca"
+    assert out["up"] == "acb" and out["same"] == "abc"
+    assert out["nested"] == [2, 3] and out["root"] == [1]
+    for unchanged in ("badIndex", "badTo", "badOp", "badPointer"):
+        assert out[unchanged] == "abc", unchanged
+    assert out["notArray"] == '{"a":{"b":1}}'
+    # ... and each is reported when the caller asks
+    assert out["errors"] == {
+        "remove": 0,
+        "move": 0,
+        "badIndex": 1,
+        "badTo": 1,
+        "noTo": 1,
+        "notArray": 1,
+        "badOp": 1,
+        "badPointer": 1,
+    }
+
+
+# A stub htmx whose ``trigger`` records the event it would dispatch, and
+# `request` / `encode`, which run a frame's PUT through the handlers as
+# htmx 2 does: ``htmx:configRequest`` (with the triggering event), then
+# ``htmx:beforeSend`` (with the request's xhr), then the extension's
+# ``encodeParameters`` with that xhr.
+ARRAY_OP_STUB = (
+    STUB_DOM.replace(
+        "const htmx = {config: {}, defineExtension() {}};",
+        "const exts = {}, triggered = [];"
+        "const htmx = {config: {}, defineExtension(n, e) { exts[n] = e; },"
+        " trigger(elt, name, detail) { triggered.push({elt, name, detail}); }};",
+    )
+    + r"""
+const logged = [];
+console.error = (m) => logged.push(m);
+console.debug = () => {};
+let prevented = 0;
+const click = (target) =>
+  handlers.click({target, preventDefault() { prevented++; }});
+// the event the last click dispatched, as htmx hands it to the request
+const clicked = () => {
+  const t = triggered[triggered.length - 1];
+  return {type: t.name, target: t.elt, detail: Object.assign({elt: t.elt}, t.detail)};
+};
+const request = (elt, triggeringEvent) => {
+  const detail = {elt, verb: 'put', headers: {}, triggeringEvent};
+  handlers['htmx:configRequest']({detail, preventDefault() { detail.prevented = true; }});
+  detail.xhr = {};
+  if (!detail.prevented && handlers['htmx:beforeSend']) {
+    handlers['htmx:beforeSend']({detail: {elt, xhr: detail.xhr, requestConfig: detail}});
+  }
+  return detail;
+};
+const encode = (elt, sent) =>
+  JSON.parse(exts['scrud-json'].encodeParameters(sent.xhr, {}, elt));
+const after = (elt) =>
+  handlers['htmx:afterRequest']({detail: {elt, successful: true,
+    requestConfig: {verb: 'put'}}});
+const putFrame = (href, content, parent, pointer) => {
+  const f = frame(href, parent, pointer);
+  f.attrs['hx-put'] = href;
+  el('SCRIPT', {class: 'scrud-content'}, f, {textContent: JSON.stringify(content)});
+  return f;
+};
+const op = (parent, name, pointer, to) => {
+  const attrs = {'data-scrud-array-op': name, 'data-scrud-pointer': pointer};
+  if (to !== undefined) attrs['data-scrud-to'] = to;
+  return el('BUTTON', attrs, parent);
+};
+"""
+)
+
+ARRAY_OP_SCRIPT = (
+    ARRAY_OP_STUB
+    + r"""
+const root = putFrame('/l/1/', {rules: [{select: 'a'}, {select: 'b'}, {select: 'c'}]});
+root.attrs['data-scrud-etag'] = '"e1"';
+const li = el('LI', {}, root);
+const input = el('INPUT', {name: '/rules/1/select'}, li, {type: 'text', value: 'B2'});
+// an input's own change: a save with no operation
+const edited = () => ({type: 'change', target: input, detail: undefined});
+// something that is no array button does nothing
+click(el('SPAN', {}, li));
+out.idle = triggered.length;
+click(op(li, 'remove', '/rules/0'));
+out.triggers = triggered.map((t) => [t.elt === root, t.name]);
+out.prevented = prevented;
+const sent = request(root, clicked());
+out.headers = sent.headers;
+out.sentPrevented = !!sent.prevented;
+out.body = encode(root, sent).rules.map((r) => r.select);
+// the operation is its request's: the next PUT is an ordinary one
+out.next = encode(root, request(root, edited())).rules.map((r) => r.select);
+click(op(li, 'move', '/rules/0', '2'));
+out.moved = encode(root, request(root, clicked())).rules.map((r) => r.select);
+// a PUT that is refused (an invalid input) leaves no operation behind
+click(op(li, 'remove', '/rules/2'));
+el('INPUT', {name: '/rules/__proto__/x'}, li, {type: 'text', value: 'z'});
+out.refused = request(root, clicked()).prevented === true;
+li.children = li.children.filter((c) => c.name !== '/rules/__proto__/x');
+out.afterRefused = encode(root, request(root, edited())).rules.map((r) => r.select);
+out.responseHandling = htmx.config.responseHandling.find((h) => new RegExp('^' + h.code + '$').test('412'));
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_array_op_sends_put_with_if_match():
+    require_node()
+    out = run_node(ARRAY_OP_SCRIPT)
+    assert out["idle"] == 0
+    # the click triggers the frame's own PUT, through htmx
+    assert out["triggers"] == [[True, "change"]] and out["prevented"] == 1
+    assert out["headers"]["If-Match"] == '"e1"'
+    assert out["headers"]["Content-Type"] == "application/json"
+    assert not out["sentPrevented"]
+    # the input is applied at its pre-operation pointer, then rule 0 removed
+    assert out["body"] == ["B2", "c"]
+    assert out["next"] == ["a", "B2", "c"]
+    assert out["moved"] == ["B2", "c", "a"]
+    assert out["refused"] is True
+    assert out["afterRefused"] == ["a", "B2", "c"]
+
+
+ARRAY_OP_REQUEST_SCRIPT = (
+    ARRAY_OP_STUB
+    + r"""
+const rows = (body) => body.rules.map((r) => r.select).join('');
+const root = putFrame('/l/1/', {title: 't', rules: [{select: 'a'}, {select: 'b'}, {select: 'c'}]});
+const li = el('LI', {}, root);
+const input = el('INPUT', {name: '/title'}, li, {type: 'text', value: 't'});
+const edited = () => ({type: 'change', target: input, detail: undefined});
+
+// A save in flight when the button is clicked: its afterRequest comes
+// before the click's own request is configured. The operation is kept.
+const inFlight = request(root, edited());
+click(op(li, 'remove', '/rules/0'));
+const clickEvent = clicked();
+after(root);
+out.inFlight = rows(encode(root, request(root, clickEvent)));
+out.earlier = rows(encode(root, inFlight));
+
+// A click whose request htmx drops (hx-sync, a request in flight): never
+// configured. The next, unrelated save carries no operation.
+click(op(li, 'remove', '/rules/1'));
+out.dropped = rows(encode(root, request(root, edited())));
+
+// An operation that cannot be applied cancels its request, with the
+// misconfigured notice in the frame: never a PUT that changes nothing.
+out.bad = {};
+const bad = {
+  index: ['remove', '/rules/9'],
+  notArray: ['remove', '/title'],
+  notElement: ['remove', '/rules'],
+  pointer: ['remove', 'rules/0'],
+  to: ['move', '/rules/0', '7'],
+  noTo: ['move', '/rules/0'],
+  op: ['explode', '/rules/0'],
+};
+for (const name of Object.keys(bad)) {
+  root.children = root.children.filter((c) => c.attrs.role !== 'alert');
+  click(op(li, ...bad[name]));
+  const sent = request(root, clicked());
+  out.bad[name] = {prevented: !!sent.prevented,
+                   notice: root.children[0].attrs.role === 'alert' ? root.children[0].textContent : null};
+}
+root.children = root.children.filter((c) => c.attrs.role !== 'alert');
+
+// A button outside a frame that PUTs: logged, no request.
+const before = triggered.length, loggedBefore = logged.length;
+const loose = el('DIV', {});
+click(op(loose, 'remove', '/rules/0'));
+const viewFrame = frame('/v/1/', loose);
+click(op(viewFrame, 'remove', '/rules/0'));
+out.loose = {triggered: triggered.length - before, logged: logged.slice(loggedBefore)};
+
+// Nested frames: the inner frame's PUT carries the operation, applied to its
+// own content; the outer frame's request (cancelled by htmx:confirm) never
+// does.
+const outer = putFrame('/o/1/', {rules: [{select: 'x'}, {select: 'y'}]});
+const inner = putFrame('/i/1/', {rules: [{select: 'p'}, {select: 'q'}, {select: 'r'}]},
+                       el('DIV', {}, outer));
+click(op(inner, 'remove', '/rules/1'));
+const nested = clicked();
+out.nestedTarget = nested.target === inner;
+out.inner = rows(encode(inner, request(inner, nested)));
+out.outer = rows(encode(outer, request(outer, nested)));
+let cancelled = false;
+handlers['htmx:confirm']({detail: {elt: outer, triggeringEvent: nested},
+                          preventDefault() { cancelled = true; }});
+out.outerCancelled = cancelled;
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_array_op_rides_on_its_own_request():
+    """The operation a button asks for travels with the request its click
+    triggers (the triggering event's detail), never in a per-frame slot: a
+    save in flight never takes it, a dropped request cannot leave it for
+    the next save, and only the frame it was clicked in applies it. (A
+    request made while the frame's save is in flight is refused with a
+    notice: test_request_refused_while_frame_save_in_flight_says_not_sent.)"""
+    require_node()
+    out = run_node(ARRAY_OP_REQUEST_SCRIPT)
+    assert out["inFlight"] == "bc"
+    assert out["earlier"] == "abc"
+    assert out["dropped"] == "abc"
+    assert out["inner"] == "pr"
+    assert out["outer"] == "xy"
+    assert out["nestedTarget"] is True and out["outerCancelled"] is True
+
+
+def test_array_op_that_cannot_be_applied_cancels_with_a_notice():
+    require_node()
+    out = run_node(ARRAY_OP_REQUEST_SCRIPT)
+    for name, sent in out["bad"].items():
+        assert sent == {
+            "prevented": True,
+            "notice": "This action is misconfigured.",
+        }, name
+
+
+def test_array_op_button_outside_a_put_frame_is_logged():
+    require_node()
+    out = run_node(ARRAY_OP_REQUEST_SCRIPT)
+    assert out["loose"]["triggered"] == 0
+    assert (
+        out["loose"]["logged"]
+        == [
+            "scrud-ui: an array operation button outside a frame that saves"
+            " (hx-put) does nothing.",
+        ]
+        * 2
+    )
+
+
+IN_FLIGHT_SCRIPT = (
+    ARRAY_OP_STUB
+    + r"""
+const content = {rules: [{select: 'a'}, {select: 'b'}, {select: 'c'}]};
+const page = el('DIV', {});
+const root = putFrame('/l/1/', content, page);
+root.attrs['data-scrud-scope'] = 'studio';
+root.isConnected = true;
+const li = el('LI', {}, root);
+const notices = (f) =>
+  f.children.filter((c) => c.attrs.role === 'alert').map((c) => c.textContent);
+const confirm = (elt, triggeringEvent) => {
+  let cancelled = false;
+  handlers['htmx:confirm']({detail: {elt, triggeringEvent},
+                            preventDefault() { cancelled = true; }});
+  return cancelled;
+};
+const finish = (elt, sent) =>
+  handlers['htmx:afterRequest']({detail: {elt, xhr: sent.xhr, successful: true,
+    requestConfig: {verb: 'put'}}});
+
+// Nothing in flight: the click's request goes ahead.
+click(op(li, 'move', '/rules/2', '1'));
+out.idle = confirm(root, clicked());
+
+// A save in flight; Move up clicked twice meanwhile. htmx would queue the
+// second behind the save (replacing the first) and then drop it, since the
+// save's answer replaces the frame: both are refused here instead.
+const save = request(root, {type: 'submit', target: root});
+click(op(li, 'move', '/rules/2', '1'));
+out.first = confirm(root, clicked());
+click(op(li, 'move', '/rules/2', '1'));
+out.second = confirm(root, clicked());
+out.noticeBefore = notices(root);
+
+// The save's answer replaces the frame; htmx dispatches afterRequest on the
+// parent, with the parent as elt. The new frame says the change was not sent.
+root.isConnected = false;
+page.children = [];
+const fresh = putFrame('/l/1/', content, page);
+fresh.attrs['data-scrud-scope'] = 'studio';
+fresh.isConnected = true;
+const other = putFrame('/l/1/', content);
+other.attrs['data-scrud-scope'] = 'studio sidebar';
+document.querySelectorAll = (sel) => (sel === '.scrud-resource' ? [other, fresh] : []);
+finish(page, save);
+out.noticeAfter = notices(fresh);
+out.otherNotices = notices(other);
+
+// The new frame is not in flight: its next request goes ahead, and a save
+// that ends with nothing refused meanwhile adds no notice.
+const freshLi = el('LI', {}, fresh);
+click(op(freshLi, 'move', '/rules/2', '1'));
+out.afterwards = confirm(fresh, clicked());
+fresh.children = fresh.children.filter((c) => c.attrs.role !== 'alert');
+const quiet = request(fresh, {type: 'submit', target: fresh});
+finish(fresh, quiet);
+out.quiet = notices(fresh);
+
+// A frame still in the page when its save fails gets the notice itself,
+// beside the save's own failure notice, in the order htmx 2.0.4 reports
+// them. A network failure: afterRequest, then sendError.
+const failedSave = (name, elt, sent) =>
+  handlers[name]({detail: {elt, xhr: sent.xhr, requestConfig: {verb: 'put'}}});
+// (The refused requests are array operations: something new, which a
+// refused request with the save's own body is not.)
+const kept = request(fresh, {type: 'submit', target: fresh});
+click(op(freshLi, 'move', '/rules/2', '1'));
+out.keptRefused = confirm(fresh, clicked());
+kept.xhr.status = 0;
+finish(fresh, kept);
+failedSave('htmx:sendError', fresh, kept);
+out.kept = notices(fresh);
+
+// An error response that is not swapped (a 500): responseError, then
+// afterRequest.
+fresh.children = fresh.children.filter((c) => c.attrs.role !== 'alert');
+const broken = request(fresh, {type: 'submit', target: fresh});
+click(op(freshLi, 'move', '/rules/2', '1'));
+out.brokenRefused = confirm(fresh, clicked());
+broken.xhr.status = 500;
+failedSave('htmx:responseError', fresh, broken);
+finish(fresh, broken);
+out.broken = notices(fresh);
+
+// A refused request with the failed save's own body: only the save's
+// failure notice.
+fresh.children = fresh.children.filter((c) => c.attrs.role !== 'alert');
+const same = request(fresh, {type: 'submit', target: fresh});
+out.sameRefused = confirm(fresh, {type: 'change', target: fresh});
+same.xhr.status = 0;
+finish(fresh, same);
+failedSave('htmx:sendError', fresh, same);
+out.same = notices(fresh);
+
+// The next request clears both.
+const next = request(fresh, {type: 'submit', target: fresh});
+out.cleared = notices(fresh);
+finish(fresh, next);
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_request_refused_while_frame_save_in_flight_says_not_sent():
+    """MR 1 carry-over, reproduced in the acceptance run: a click on Move up
+    while the rule editor's save is in flight was queued by htmx (`last`)
+    and dropped without a word when the save's answer replaced the frame.
+    Such a request is refused, and the frame that replaces the one in flight
+    says the change was not sent."""
+    require_node()
+    out = run_node(IN_FLIGHT_SCRIPT)
+    not_sent = (
+        "Your change was not sent: an earlier save of this item was still in"
+        " progress. Make the change again."
+    )
+    assert out["idle"] is False
+    assert out["first"] is True and out["second"] is True
+    assert out["noticeBefore"] == []
+    assert out["noticeAfter"] == [not_sent]
+    assert out["otherNotices"] == []
+    assert out["afterwards"] is False
+    assert out["quiet"] == []
+    # A failed save keeps its own notice beside the not-sent one: the user
+    # must not read the not-sent notice as "the earlier save went through".
+    assert out["keptRefused"] is True
+    assert sorted(out["kept"]) == sorted(
+        [not_sent, "Your change was not saved (network error)."]
+    )
+    assert out["brokenRefused"] is True
+    assert sorted(out["broken"]) == sorted(
+        [not_sent, "Something went wrong (HTTP 500). Reload to see the current state."]
+    )
+    # A refused request that would have sent the save's own body is not
+    # "not sent" (test_request_refused_in_flight_with_the_same_body_says_nothing).
+    assert out["sameRefused"] is True
+    assert out["same"] == ["Your change was not saved (network error)."]
+    assert out["cleared"] == []
+
+
+SAME_BODY_SCRIPT = (
+    ARRAY_OP_STUB
+    + r"""
+const notices = (f) =>
+  f.children.filter((c) => c.attrs.role === 'alert').map((c) => c.textContent);
+const confirm = (elt, triggeringEvent) => {
+  let cancelled = false;
+  handlers['htmx:confirm']({detail: {elt, triggeringEvent},
+                            preventDefault() { cancelled = true; }});
+  return cancelled;
+};
+const finish = (elt, sent) =>
+  handlers['htmx:afterRequest']({detail: {elt, xhr: sent.xhr, successful: true,
+    requestConfig: {verb: 'put'}}});
+// A frame with one text field (Enter in it) or two (typing in one, then a
+// click on Save): the browser fires the field's change, then the form's
+// submit, in a row. The change's PUT is in flight when the submit comes.
+const form = (fields) => {
+  const f = putFrame('/l/1/', {title: 't', note: 'n', rules: [{select: 'a'}, {select: 'b'}]});
+  f.isConnected = true;
+  const inputs = fields.map((name) =>
+    el('INPUT', {name: '/' + name}, f, {type: 'text', value: name.charAt(0)}));
+  return {f, inputs};
+};
+const changed = (input) => ({type: 'change', target: input});
+const submitted = (f) => ({type: 'submit', target: f});
+
+// Enter in a one-field form: change, then submit, the same body.
+let s = form(['title']);
+s.inputs[0].value = 'typed';
+let save = request(s.f, changed(s.inputs[0]));
+out.enter = {refused: confirm(s.f, submitted(s.f))};
+finish(s.f, save);
+out.enter.notices = notices(s.f);
+
+// Typing, then a click on Save: change on blur, then submit.
+s = form(['title', 'note']);
+s.inputs[1].value = 'typed';
+save = request(s.f, changed(s.inputs[1]));
+out.save = {refused: confirm(s.f, submitted(s.f))};
+finish(s.f, save);
+out.save.notices = notices(s.f);
+
+// Save clicked twice: the second would send what the first sent.
+s = form(['title']);
+save = request(s.f, submitted(s.f));
+out.twice = {refused: confirm(s.f, submitted(s.f))};
+finish(s.f, save);
+out.twice.notices = notices(s.f);
+
+// The field changed again while the first save is in flight: the refused
+// request would have sent something new.
+s = form(['title', 'note']);
+s.inputs[0].value = 'first';
+save = request(s.f, changed(s.inputs[0]));
+s.inputs[1].value = 'second';
+out.different = {refused: confirm(s.f, changed(s.inputs[1]))};
+finish(s.f, save);
+out.different.notices = notices(s.f);
+
+// An array operation always counts, even with the inputs unchanged.
+s = form(['title']);
+save = request(s.f, submitted(s.f));
+click(op(s.f, 'remove', '/rules/0'));
+out.arrayOp = {refused: confirm(s.f, clicked())};
+finish(s.f, save);
+out.arrayOp.notices = notices(s.f);
+
+// An array operation in flight, then a submit with the inputs as they were
+// sent: nothing new (the operation was the request's own).
+s = form(['title']);
+click(op(s.f, 'remove', '/rules/0'));
+save = request(s.f, clicked());
+out.afterOp = {refused: confirm(s.f, submitted(s.f))};
+finish(s.f, save);
+out.afterOp.notices = notices(s.f);
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_request_refused_in_flight_with_the_same_body_says_nothing():
+    """The browser fires a field's change and then the form's submit in a
+    row (Enter in a one-field form; typing, then a click on Save): the
+    change's PUT sends the edit, and the submit, refused while it is in
+    flight, would have sent the same body. No "not sent" notice then (htmx
+    used to drop it harmlessly); a refused request that would have sent
+    something new, or an array operation, still gets it."""
+    require_node()
+    out = run_node(SAME_BODY_SCRIPT)
+    not_sent = (
+        "Your change was not sent: an earlier save of this item was still in"
+        " progress. Make the change again."
+    )
+    for name in ("enter", "save", "twice", "afterOp"):
+        assert out[name] == {"refused": True, "notices": []}, name
+    for name in ("different", "arrayOp"):
+        assert out[name] == {"refused": True, "notices": [not_sent]}, name
+
+
+LOAD_ERROR_SCRIPT = (
+    ARRAY_OP_STUB
+    + r"""
+const notices = (f) =>
+  f.children.filter((c) => c.attrs.role === 'alert').map((c) => c.textContent);
+const confirm = (elt, triggeringEvent) => {
+  let cancelled = false;
+  handlers['htmx:confirm']({detail: {elt, triggeringEvent},
+                            preventDefault() { cancelled = true; }});
+  return cancelled;
+};
+const root = putFrame('/l/1/', {rules: [{select: 'a'}, {select: 'b'}]});
+root.isConnected = true;
+// htmx 2.0.4 skips afterRequest when handling the response throws (its
+// onload catch fires only htmx:onLoadError, with the request's xhr).
+const save = request(root, {type: 'submit', target: root});
+click(op(root, 'remove', '/rules/0'));
+out.during = confirm(root, clicked());
+handlers['htmx:onLoadError']({detail: {elt: root, xhr: save.xhr, error: {},
+  requestConfig: {verb: 'put'}}});
+out.notices = notices(root);
+root.children = root.children.filter((c) => c.attrs.role !== 'alert');
+click(op(root, 'remove', '/rules/0'));
+out.after = confirm(root, clicked());
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_in_flight_cleared_when_response_handling_throws():
+    """A frame whose response handling threw (htmx fires htmx:onLoadError,
+    not htmx:afterRequest) is no longer in flight: its next request goes
+    ahead instead of being refused forever. A request refused meanwhile is
+    said not sent."""
+    require_node()
+    out = run_node(LOAD_ERROR_SCRIPT)
+    assert out["during"] is True
+    assert out["notices"] == [
+        "Your change was not sent: an earlier save of this item was still in"
+        " progress. Make the change again."
+    ]
+    assert out["after"] is False
+
+
+@pytest.mark.django_db
+@test_context
+def test_array_op_after_stale_etag_gets_reload(todo_list, todo_owner_login):
+    """Review Focus 4: a removal built from a stale page sends If-Match, gets
+    the 412 and the reload frame, and is never saved."""
+    require_node()
+    out = run_node(ARRAY_OP_SCRIPT)
+    # the client swaps the 412 (the reload notice) in
+    assert out["responseHandling"]["swap"] is True
+    url = reverse("todo-lists-detail", args=[todo_list.pk])
+    Given.http.force_authenticate(todo_owner_login)
+    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    form = parse_form(Http.response.content.decode())
+    stale = form.frame["data-scrud-etag"]
+    body = run_node(
+        APPLY_ITEMS_SCRIPT,
+        stdin=json.dumps({"content": form.content, "pointer": "/items/0"}),
+    )
+    # another tab saves the same list first
+    When.http.put(
+        url,
+        data=json.dumps({**form.content, "title": "Other tab"}),
+        content_type="application/json",
+        HTTP_IF_MATCH=stale,
+    )
+    Then.http.status_code_is(200)
+    When.http.put(
+        url,
+        data=json.dumps(body),
+        content_type="application/json",
+        HTTP_IF_MATCH=stale,
+        HTTP_ACCEPT=HTML,
+        HTTP_HX_REQUEST="true",
+    )
+    Then.http.status_code_is(412)
+    output = Http.response.content.decode()
+    assert 'class="scrud-reload"' in output and 'hx-trigger="load"' in output
+    todo_list.refresh_from_db()
+    assert todo_list.content["title"] == "Other tab"
+    assert len(todo_list.content["items"]) == len(form.content["items"])
+
+
+APPLY_ITEMS_SCRIPT = (
+    STUB_DOM
+    + r"""
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+console.log(JSON.stringify(U.applyArrayOp(input.content, {op: 'remove', pointer: input.pointer})));
+"""
+)
+
+
+JSON_SCRIPT = (
+    STUB_DOM
+    + r"""
+const page = el('MAIN', {});
+const marker = el('DIV', {class: 'scrud-branch-page', 'data-scrud-branch': 'wip'}, page);
+document.querySelector = (sel) =>
+  sel === 'meta[name=csrf-token]' ? el('META', {content: 'csrf-123'})
+  : sel === '.scrud-branch-page[data-scrud-branch]' ? marker : null;
+const exts = {};
+htmx.defineExtension = (name, ext) => { exts[name] = ext; };
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const fire = (elt, verb) => {
+  const detail = {elt, verb, headers: {}};
+  handlers['htmx:configRequest']({detail, preventDefault() { detail.prevented = true; }});
+  return {headers: detail.headers, prevented: !!detail.prevented};
+};
+const encode = (elt) => exts['scrud-json'].encodeParameters({}, {}, elt);
+const logged = [];
+console.error = (m) => logged.push(m);
+
+// a create form outside any frame
+const form = el('FORM', {'hx-ext': 'scrud-json', 'hx-post': '/l/', 'data-scrud-json': 'form'}, page);
+el('INPUT', {name: '/title'}, form, {type: 'text', value: 'Groceries'});
+el('INPUT', {name: '/items/-/text'}, form, {type: 'text', value: 'milk'});
+el('INPUT', {name: '/items/-/done'}, form, {type: 'checkbox', checked: true});
+el('INPUT', {name: '/count', 'data-scrud-type': 'number'}, form, {type: 'text', value: '3'});
+el('INPUT', {name: '/off'}, form, {type: 'text', value: 'x', disabled: true});
+out.form = {sent: fire(form, 'post'), body: JSON.parse(encode(form))};
+
+// a fixed body, unchanged byte for byte
+const fixedText = '{"source":"a",  "target":"b","state":"x"}';
+const push = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-post': '/push/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': fixedText}, page);
+out.fixed = {sent: fire(push, 'post'), body: encode(push), same: encode(push) === fixedText};
+
+// DELETE with If-Match from the element, and from its frame
+const revert = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/1/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}', 'data-scrud-etag': 'W/"abc"'}, page);
+out.deleteOwn = fire(revert, 'delete');
+const fr = frame('/o/2/', page);
+fr.attrs['data-scrud-etag'] = '"frame-tag"';
+const inFrame = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/2/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}'}, fr);
+out.deleteFrame = fire(inFrame, 'delete');
+out.deleteNoTag = fire(push, 'delete');
+
+// bad JSON: cancelled, notice in the frame, or logged outside one
+const badIn = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-post': '/x/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{nope'}, fr);
+out.badFrame = fire(badIn, 'post');
+out.notice = fr.children[0].textContent;
+const badOut = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-post': '/x/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{nope'}, page);
+out.badOutside = fire(badOut, 'post');
+out.logged = logged.slice();
+const noBody = el('BUTTON', {'hx-post': '/x/', 'data-scrud-json': 'fixed'}, page);
+out.noBody = fire(noBody, 'post').prevented;
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_form_json_post_builds_body_from_pointers():
+    require_node()
+    out = run_node(JSON_SCRIPT)["form"]
+    assert out["body"] == {
+        "title": "Groceries",
+        "items": [{"text": "milk", "done": True}],
+        "count": 3,
+    }
+    headers = out["sent"]["headers"]
+    assert not out["sent"]["prevented"]
+    assert headers["Content-Type"] == "application/json"
+    assert headers["X-CSRFToken"] == "csrf-123"
+    assert headers["Scrud-UI-Branch"] == "wip"
+    assert headers["Accept"] == "text/html"
+    assert "If-Match" not in headers
+
+
+def test_fixed_json_post_sends_body_unchanged():
+    require_node()
+    out = run_node(JSON_SCRIPT)["fixed"]
+    assert out["same"] is True
+    assert out["sent"]["headers"]["Content-Type"] == "application/json"
+    assert out["sent"]["headers"]["X-CSRFToken"] == "csrf-123"
+
+
+def test_json_delete_with_if_match():
+    require_node()
+    out = run_node(JSON_SCRIPT)
+    assert out["deleteOwn"]["headers"]["If-Match"] == 'W/"abc"'
+    assert out["deleteOwn"]["headers"]["Content-Type"] == "application/json"
+    assert out["deleteFrame"]["headers"]["If-Match"] == '"frame-tag"'
+    assert "If-Match" not in out["deleteNoTag"]["headers"]
+
+
+def test_bad_fixed_body_cancels_with_notice():
+    require_node()
+    out = run_node(JSON_SCRIPT)
+    assert out["badFrame"]["prevented"] is True
+    assert out["notice"] == "This action is misconfigured."
+    # outside any frame: logged, still cancelled
+    assert out["badOutside"]["prevented"] is True
+    assert out["logged"] == ["scrud-ui: This action is misconfigured."]
+    # a fixed element with no body at all is misconfigured too
+    assert out["noBody"] is True
+
+
+def test_existing_put_unchanged():
+    """A PUT from a frame without data-scrud-json takes the old path."""
+    require_node()
+    out = run_node(HEADERS_SCRIPT)
+    assert out["put"]["headers"]["Content-Type"] == "application/json"
+    assert out["put"]["headers"]["If-Match"] == '"inner-etag"'
+    assert out["put"]["headers"]["Scrud-UI-Pointer"] == "/items/0"
+    script = (
+        STUB_DOM
+        + r"""
+const exts = {};
+htmx.defineExtension = (n, e) => { exts[n] = e; };
+vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), ctx);
+const root = frame('/l/1/');
+root.attrs['hx-put'] = '/l/1/';
+el('SCRIPT', {class: 'scrud-content'}, root, {textContent: '{"title": "a", "keep": 1}'});
+el('INPUT', {name: '/title'}, root, {type: 'text', value: 'b'});
+out.body = JSON.parse(exts['scrud-json'].encodeParameters({}, {}, root));
+out.notPut = exts['scrud-json'].encodeParameters({}, {}, el('DIV', {}, root));
+console.log(JSON.stringify(out));
+"""
+    )
+    got = run_node(script)
+    assert got["body"] == {"title": "b", "keep": 1} and got["notPut"] is None
+
+
+IF_MATCH_SCRIPT = (
+    STUB_DOM
+    + r"""
+document.querySelector = (sel) =>
+  sel === 'meta[name=csrf-token]' ? el('META', {content: 'csrf-123'}) : null;
+const fire = (elt, verb, path) => {
+  const detail = {elt, verb, headers: {}};
+  if (path !== undefined) detail.path = path;
+  handlers['htmx:configRequest']({detail, preventDefault() { detail.prevented = true; }});
+  return {headers: detail.headers, prevented: !!detail.prevented};
+};
+const fr = frame('/o/2/', el('MAIN', {}));
+fr.attrs['data-scrud-etag'] = '"frame-tag"';
+// a create form inside the frame posts to the list: never the frame's tag
+const create = el('FORM', {'hx-ext': 'scrud-json', 'hx-post': '/o/',
+  'data-scrud-json': 'form'}, fr);
+el('INPUT', {name: '/title'}, create, {type: 'text', value: 'x'});
+out.create = fire(create, 'post', '/o/');
+// a fixed DELETE of another resource inside the frame
+const other = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/9/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}'}, fr);
+out.deleteOther = fire(other, 'delete', '/o/9/');
+out.deleteOtherNoPath = fire(other, 'delete');
+// ... with its own tag: that one
+const otherOwn = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/9/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}', 'data-scrud-etag': '"nine"'}, fr);
+out.deleteOtherOwn = fire(otherOwn, 'delete', '/o/9/');
+// the frame's own href still sends the frame's tag
+const mine = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/2/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}'}, fr);
+out.deleteMine = fire(mine, 'delete', '/o/2/');
+// an empty own attribute: no If-Match at all
+const none = el('BUTTON', {'hx-ext': 'scrud-json', 'hx-delete': '/o/2/',
+  'data-scrud-json': 'fixed', 'data-scrud-body': '{}', 'data-scrud-etag': ''}, fr);
+out.deleteEmpty = fire(none, 'delete', '/o/2/');
+// a plain (non-JSON) DELETE of another URL inside the frame
+const plain = el('BUTTON', {'hx-delete': '/o/9/'}, fr);
+out.plainOther = fire(plain, 'delete', '/o/9/');
+const plainMine = el('BUTTON', {'hx-delete': '/o/2/'}, fr);
+out.plainMine = fire(plainMine, 'delete', '/o/2/');
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_if_match_comes_from_the_frame_only_for_its_own_href():
+    """A write inside a frame to another URL (a create posting to the list,
+    a DELETE of another resource) must not send the frame's ETag: the server
+    would answer 412."""
+    require_node()
+    out = run_node(IF_MATCH_SCRIPT)
+    assert not out["create"]["prevented"]
+    assert "If-Match" not in out["create"]["headers"]
+    assert out["create"]["headers"]["Content-Type"] == "application/json"
+    assert "If-Match" not in out["deleteOther"]["headers"]
+    assert "If-Match" not in out["deleteOtherNoPath"]["headers"]
+    assert out["deleteOtherOwn"]["headers"]["If-Match"] == '"nine"'
+    assert out["deleteMine"]["headers"]["If-Match"] == '"frame-tag"'
+    assert "If-Match" not in out["deleteEmpty"]["headers"]
+    assert not out["deleteEmpty"]["prevented"]
+    assert "If-Match" not in out["plainOther"]["headers"]
+    assert out["plainMine"]["headers"]["If-Match"] == '"frame-tag"'
+
+
+SAFE_SCRIPT = (
+    STUB_DOM
+    + r"""
+let marker = null;
+document.querySelector = (sel) =>
+  sel === 'meta[name=csrf-token]' ? el('META', {content: 'csrf-123'})
+  : sel === '.scrud-branch-page[data-scrud-safe]' ? marker : null;
+const fire = (elt, verb) => {
+  const detail = {elt, verb, headers: {}};
+  handlers['htmx:configRequest']({detail, preventDefault() {}});
+  return detail.headers;
+};
+const page = el('MAIN', {});
+const safe = frame('/l/1/', page);
+safe.attrs['data-scrud-safe'] = '1';
+safe.attrs['hx-put'] = '/l/1/';
+const input = el('INPUT', {name: '/title'}, safe, {type: 'text', value: 'x'});
+const plain = frame('/l/2/', page);
+const reload = el('DIV', {class: 'scrud-reload', 'hx-get': '/l/2/'}, page);
+out.put = fire(safe, 'put');
+out.get = fire(safe, 'get');
+out.input = fire(input, 'put');
+out.plain = fire(plain, 'get');
+out.reload = fire(reload, 'get');
+// a safe page marks its chrome: elements outside a frame send it too
+marker = el('DIV', {class: 'scrud-branch-page', 'data-scrud-safe': '1'});
+out.reloadOnSafePage = fire(reload, 'get');
+out.plainOnSafePage = fire(plain, 'delete');
+console.log(JSON.stringify(out));
+"""
+)
+
+
+def test_requests_from_a_safe_page_send_the_safe_header():
+    """A safe page's own requests target URLs without ``?ui-safe=1``: they
+    carry ``Scrud-UI-Safe: 1`` instead, from the frame's or the page's
+    ``data-scrud-safe``."""
+    require_node()
+    out = run_node(SAFE_SCRIPT)
+    for key in ("put", "get", "input", "reloadOnSafePage", "plainOnSafePage"):
+        assert out[key]["Scrud-UI-Safe"] == "1", key
+    for key in ("plain", "reload"):
+        assert "Scrud-UI-Safe" not in out[key], key

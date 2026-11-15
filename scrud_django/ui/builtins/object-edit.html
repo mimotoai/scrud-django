@@ -1,0 +1,1 @@
+<div class="scrud-object scrud-object-edit">{% for name, child in child_items %}<div class="scrud-row"><span class="scrud-row-label">{{ name }}</span>{{ child }}</div>{% endfor %}</div>{% if errors %}<ul class="scrud-errors" role="alert">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}

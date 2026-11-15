@@ -1,0 +1,1113 @@
+"""The render tree: a resource's content rendered as HTML, node by node, through
+the components its stylesheets resolve, in the mode the viewing user may act in.
+
+A node is the resource, or a value in it reached by walking its JSON Schema
+(``properties`` and ``items``, through local ``$ref``). Content the schema does
+not describe is not rendered: an unknown key is ignored, a missing property
+renders nothing, and a value whose JSON type is not the schema's renders as
+JSON (``scrud:json``, read-only). So does a node nested deeper than
+`max_body_depth`, or one whose ``$ref`` cannot be resolved or loops.
+
+Each node is given plain JSON and its children's HTML (the node context
+contract of the built-ins); a stored component that fails while rendering is
+replaced by the built-in for its node and mode, after an HTML comment naming it.
+"""
+
+import contextlib
+import contextvars
+import copy
+import hashlib
+import json
+import logging
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+
+from django.core.serializers.json import DjangoJSONEncoder
+from django.utils.html import format_html
+from django.utils.safestring import SafeString, mark_safe
+
+from scrud_django import collection_type_uri_for
+from scrud_django.exceptions import UIPointerNotFoundError
+from scrud_django.mixins.resource_mixin import rbac_contexts_of
+from scrud_django.mixins.view_mixins import max_body_depth
+from scrud_django.ui import ld
+from scrud_django.ui.authz import ALLOWED, POSSIBLY, decisions_for
+from scrud_django.ui.branches.effective import safe_mode
+from scrud_django.ui.branches.selection import frame_branch, in_mount
+from scrud_django.ui.cascade import (
+    BUILTIN_PREFIX,
+    Component,
+    Rule,
+    builtin_component,
+    effective_rules,
+    rank_rules,
+    request_memo,
+    resolve_component,
+    rule_outcome,
+)
+from scrud_django.ui.embed import component_globals
+from scrud_django.ui.selectors import TypeTerm
+
+logger = logging.getLogger(__name__)
+
+# The engine whose stored components get ``embed``, ``in_mount`` and
+# ``api_url`` in their context (`embed.component_globals`).
+JINJA_ENGINE = "jinja2"
+
+_preview: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "scrud_ui_preview", default=False
+)
+
+
+@contextlib.contextmanager
+def using_preview(on: bool = True):
+    """Render in preview mode inside the block (`on`): `render_resource`
+    and `render_collection` render as with ``preview=True``. A context
+    variable, so that an embed (`embed`), rendered in process, renders in
+    the preview it is in."""
+    token = _preview.set(on)
+    try:
+        yield
+    finally:
+        _preview.reset(token)
+
+
+def in_preview() -> bool:
+    """Whether a render in progress is a preview (`using_preview`)."""
+    return _preview.get()
+
+
+_preview_in_view: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "scrud_ui_preview_in_view", default=False
+)
+
+
+@contextlib.contextmanager
+def using_view_preview(on: bool = True):
+    """Inside the block, a preview (`using_preview`) was requested in view
+    mode (`on`): an embed in it renders in view mode, as one with
+    ``mode="view"`` does (`embed`), whatever the user's own mode. A context
+    variable, so that an embed in an embed is in view mode too."""
+    token = _preview_in_view.set(on)
+    try:
+        yield
+    finally:
+        _preview_in_view.reset(token)
+
+
+def in_view_preview() -> bool:
+    """Whether a render in progress is a preview requested in view mode
+    (`using_view_preview` inside `using_preview`)."""
+    return _preview.get() and _preview_in_view.get()
+
+
+@dataclass(frozen=True)
+class Mark:
+    """A rule a preview marks the matches of (`using_mark`): rule `index`
+    (the last part of its cascade rank) of the stylesheet `stylesheet` that
+    applies to `applies_to`, from branch `branch` (as the previewed branch
+    resolves it: ``""`` for the default stylesheet)."""
+
+    stylesheet: str
+    applies_to: str
+    index: int
+    branch: str
+
+    def matches(self, rule: Rule) -> bool:
+        source = rule.source
+        return (
+            source is not None
+            and source.name == self.stylesheet
+            and source.applies_to == self.applies_to
+            and source.branch == self.branch
+            and rule.rank[-1] == self.index
+        )
+
+
+_mark: contextvars.ContextVar[Mark | None] = contextvars.ContextVar(
+    "scrud_ui_mark", default=None
+)
+
+
+@contextlib.contextmanager
+def using_mark(mark: Mark | None):
+    """Inside the block, a preview's ``<scrud-node>`` markers say how `mark`
+    fares at their node (`_Walk.match_of`). A context variable, so that a
+    preview's embeds are marked too."""
+    token = _mark.set(mark)
+    try:
+        yield
+    finally:
+        _mark.reset(token)
+
+
+# What a ``<script>`` element must not contain raw (as Django's `json_script`).
+_JSON_SCRIPT_ESCAPES = {
+    ord(">"): "\\u003E",
+    ord("<"): "\\u003C",
+    ord("&"): "\\u0026",
+}
+
+# Keywords that make a schema's node more than its type says: without a
+# ``type`` of its own it has no schema terms (and renders as JSON unless an
+# IRI rule styles it).
+_COMPOSITION = ("oneOf", "anyOf", "allOf", "not")
+
+
+def render_resource(
+    content: dict,
+    *,
+    resource_type,
+    href: str,
+    etag: str | None,
+    request,
+    scope_chain: tuple[str, ...] = (),
+    pointer: str = "",
+    errors: dict[str, list[str]] | None = None,
+    mode: str | None = None,
+    decisions: dict[str, str] | None = None,
+    contexts: list[str] | None = None,
+    preview: bool = False,
+) -> SafeString:
+    """`content` (a resource of `resource_type` at `href`) rendered for the
+    user of `request`, in a resource frame: the node at `pointer` (the
+    resource itself when ``""``), resolved in `scope_chain`, the scope chain
+    of the resource. `errors` maps JSON Pointers to messages (``""``: the
+    resource's, shown at the top of the frame). `mode` is ``"view"`` or
+    ``"edit"``; ``None`` is ``"edit"`` when the user may (or possibly may)
+    PUT the resource. A `mode` of ``"view"`` (a requested view mode) also
+    leaves out the Delete button; with ``None`` a user who may DELETE gets
+    it in either mode.
+
+    `decisions` (as `decisions_for` gives them) and `contexts` (whose
+    stylesheets apply) are those of `content` unless given: for content that
+    is not the stored resource (a refused PUT's body), pass the stored
+    resource's, so that nothing the request sent decides them.
+
+    A `preview` (the studio's) has no write attributes: no ``hx-*`` and no
+    Delete button, and its root is a ``div``, never a form. Each node's HTML
+    is wrapped in ``<scrud-node data-pointer="<its JSON Pointer>">``. Inside
+    a preview (`using_preview`, which a preview enters for what it embeds)
+    every render is one."""
+    preview = preview or in_preview()
+    with request_memo(), using_preview(preview):
+        return _render_resource(
+            content,
+            resource_type=resource_type,
+            href=href,
+            etag=etag,
+            request=request,
+            scope_chain=tuple(scope_chain),
+            pointer=pointer,
+            errors=errors,
+            mode=mode,
+            rules_cache={},
+            decisions=decisions,
+            contexts=contexts,
+            preview=preview,
+        )
+
+
+def render_collection(
+    envelope: dict,
+    *,
+    resource_type,
+    href: str,
+    request,
+    scope_chain=(),
+    mode: str | None = None,
+) -> SafeString:
+    """A page of a list (`envelope`, as the list route returns it: ``count``,
+    ``next``, ``previous`` and the ``content`` envelopes): each resource in
+    its own frame and its own contexts' stylesheets, in the wrapper the
+    cascade chooses. The wrapper is the component of the winning rule for
+    the list's terms, most specific first: the collection IRI of
+    `resource_type`, then ``scrud:collection``; from the stylesheets in
+    ``""`` only (a list has no contexts of its own), in `scope_chain`, in
+    view mode. With no rule, the built-in ``scrud:collection``. A stored
+    wrapper gets the built-in's context plus ``href`` and ``scope`` (and
+    ``embed``, for a Jinja one), and falls back to the built-in if it fails.
+    Under a published branch's prefix, the items' and the pager's links are
+    its (`selection.in_mount`). `mode` is each item's (see
+    `render_resource`); inside a preview (`using_preview`) each item renders
+    as a preview."""
+    scope_chain = tuple(scope_chain)
+    preview = in_preview()
+    envelope = envelope if isinstance(envelope, Mapping) else {}
+    items = envelope.get("content")
+    children = []
+    with request_memo():
+        rules_cache = {}
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, Mapping) or not isinstance(
+                item.get("content"), Mapping
+            ):
+                continue
+            children.append(
+                _render_resource(
+                    item["content"],
+                    resource_type=resource_type,
+                    href=in_mount(request, str(item.get("href", ""))),
+                    etag=item.get("etag"),
+                    request=request,
+                    scope_chain=scope_chain,
+                    pointer="",
+                    errors=None,
+                    mode=mode,
+                    rules_cache=rules_cache,
+                    preview=preview,
+                )
+            )
+    schema = _document(resource_type.schema)
+    title = schema.get("title")
+    context = {
+        "children": children,
+        "count": envelope.get("count", len(children)),
+        "next": _pager_link(request, envelope.get("next")),
+        "previous": _pager_link(request, envelope.get("previous")),
+        "label": title if isinstance(title, str) else "",
+    }
+    ranking = rank_rules(
+        effective_rules([]),
+        scope_chain,
+        [
+            TypeTerm(iri=collection_type_uri_for(resource_type.type_uri)),
+            TypeTerm(iri="scrud:collection"),
+        ],
+        "view",
+    )
+    if ranking.winner is None:
+        body = _render_builtin("scrud:collection", context)
+    else:
+        component = ranking.components[ranking.ranked[ranking.winner][1].component]
+        if component.name.startswith(BUILTIN_PREFIX):
+            body = component.compiled().render(context)
+        else:
+            body = _render_stored(
+                component,
+                {**context, "href": href, "scope": list(scope_chain)},
+                href,
+                lambda: builtin_component("scrud:collection"),
+                request,
+            )
+    return format_html(
+        '<div class="scrud-collection-frame" data-scrud-href="{}"'
+        ' data-scrud-scope="{}">{}</div>',
+        href,
+        " ".join(scope_chain),
+        body,
+    )
+
+
+def _pager_link(request, href):
+    return in_mount(request, href) if isinstance(href, str) else href
+
+
+def _render_resource(
+    content,
+    *,
+    resource_type,
+    href,
+    etag,
+    request,
+    scope_chain,
+    pointer,
+    errors,
+    mode,
+    rules_cache,
+    decisions=None,
+    contexts=None,
+    preview=False,
+):
+    walk, root = _walk_of(
+        content,
+        resource_type=resource_type,
+        href=href,
+        etag=etag,
+        request=request,
+        scope_chain=scope_chain,
+        errors=errors,
+        mode=mode,
+        rules_cache=rules_cache,
+        decisions=decisions,
+        contexts=contexts,
+        preview=preview,
+    )
+    node = walk.find(root, pointer)
+    body = walk.render(node)
+    return _frame(
+        content=content,
+        body=body,
+        notices=walk.top_errors(),
+        href=href,
+        etag=etag,
+        scope_chain=scope_chain,
+        pointer=node.pointer,
+        mode=walk.mode,
+        # A requested view mode (`mode` given as "view": the header, the
+        # parameter, an embed's) is a view: no Delete button either.
+        deletable=not preview
+        and mode != "view"
+        and node.pointer == ""
+        and walk.resource["decisions"]["DELETE"] == ALLOWED,
+        branch=None if preview else frame_branch(request),
+        preview=preview,
+    )
+
+
+def _walk_of(
+    content,
+    *,
+    resource_type,
+    href,
+    etag,
+    request,
+    scope_chain,
+    errors,
+    mode,
+    rules_cache,
+    decisions=None,
+    contexts=None,
+    preview=False,
+):
+    """``(walk, root node)`` of `content`, as `render_resource` takes its
+    arguments: the one way a render, and `node_at`, start the walk."""
+    type_uri = resource_type.type_uri
+    if decisions is None:
+        decisions = decisions_for(request, type_uri, content)
+    if mode is None:
+        mode = "edit" if decisions["PUT"] in (ALLOWED, POSSIBLY) else "view"
+    contexts = rbac_contexts_of(content) if contexts is None else list(contexts)
+    ld_context = _ld_context(resource_type.context)
+    walk = _Walk(
+        root_schema=_document(resource_type.schema),
+        contexts=contexts,
+        mode=mode,
+        resource={
+            "href": href,
+            "etag": etag,
+            "type": type_uri,
+            "contexts": contexts,
+            "decisions": decisions,
+        },
+        errors=_clean_errors(errors),
+        max_depth=max_body_depth(),
+        id_prefix="scrud-" + hashlib.sha256(href.encode()).hexdigest()[:8],
+        rules_cache=rules_cache,
+        preview=preview,
+        request=request,
+    )
+    root_classes = [
+        _keyword_free(ld.expand(t, ld_context)) if isinstance(t, str) else None
+        for t in (
+            content.get("@type") if isinstance(content, Mapping) else None,
+            ld_context.get("@type"),
+        )
+    ] + [type_uri]
+    root = walk.node(
+        value=content,
+        schema=walk.root_schema,
+        pointer="",
+        scope_chain=scope_chain,
+        ld_ctx=ld_context,
+        property_iri=None,
+        term_class=None,
+        classes=tuple(dict.fromkeys(c for c in root_classes if c)),
+        depth=0,
+        linked=(),
+        name=None,
+    )
+    return walk, root
+
+
+@dataclass(frozen=True)
+class NodeInfo:
+    """What decides a node's component: its JSON `pointer`, its `terms`
+    (most specific first), its `scope_chain`, the stylesheets its ancestors'
+    components link (`linked`), and the `rules` that apply to it (the
+    cascade's `effective_rules` in its contexts with `linked`). `as_json`:
+    the node renders as JSON (``scrud:json``) whatever the rules say (its
+    value is not of its schema's type, its ``$ref`` does not resolve, or it
+    is nested too deep), so `rules` is empty."""
+
+    pointer: str
+    terms: list[TypeTerm]
+    scope_chain: tuple[str, ...]
+    linked: tuple[str, ...]
+    rules: tuple[Rule, ...]
+    as_json: bool = False
+
+
+def node_at(
+    content,
+    *,
+    resource_type,
+    request,
+    pointer: str,
+    scope_chain: tuple[str, ...] = (),
+    mode: str | None = None,
+    contexts: list[str] | None = None,
+) -> NodeInfo:
+    """The `NodeInfo` of the node at `pointer` (``""``: the resource) when
+    `content` (of `resource_type`) is rendered for the user of `request`
+    (`render_resource`, whose `scope_chain`, `mode` and `contexts` these
+    are), reached as the render reaches it. `UIPointerNotFoundError` when
+    the render has no node there."""
+    with request_memo():
+        walk, root = _walk_of(
+            content,
+            resource_type=resource_type,
+            href="",
+            etag=None,
+            request=request,
+            scope_chain=tuple(scope_chain),
+            errors=None,
+            mode=mode,
+            rules_cache={},
+            # Nothing but the mode reads them here.
+            decisions=None if mode is None else {},
+            contexts=contexts,
+        )
+        node = walk.find(root, pointer, rendered_only=True)
+        as_json = not node.ruled
+        return NodeInfo(
+            pointer=node.pointer,
+            terms=list(node.terms),
+            scope_chain=node.scope_chain,
+            linked=node.linked,
+            rules=() if as_json else walk.rules(node.linked),
+            as_json=as_json,
+        )
+
+
+@dataclass
+class _Node:
+    value: object
+    schema: dict
+    pointer: str
+    scope_chain: tuple[str, ...]
+    ld_ctx: dict
+    term_class: str | None  # the class its term definition names
+    depth: int
+    linked: tuple[str, ...]  # stylesheets its ancestors' components link
+    label: str
+    terms: list[TypeTerm] = field(default_factory=list)
+    component: Component | None = None
+    kind: str | None = None  # "object" or "array" when it has children to walk
+    ruled: bool = False  # its component was resolved from the rules
+
+
+@dataclass
+class _Walk:
+    root_schema: dict
+    contexts: list[str]
+    mode: str
+    resource: dict
+    errors: dict[str, list[str]]
+    max_depth: int
+    id_prefix: str
+    rules_cache: dict
+    preview: bool = False  # wrap each node in a `scrud-node` marker
+    rendered: set = field(default_factory=set)
+    request: object = None  # whose user a stored Jinja component embeds as
+
+    def rules(self, linked):
+        key = (tuple(self.contexts), linked)
+        if key not in self.rules_cache:
+            self.rules_cache[key] = effective_rules(self.contexts, linked)
+        return self.rules_cache[key]
+
+    def node(
+        self,
+        *,
+        value,
+        schema,
+        pointer,
+        scope_chain,
+        ld_ctx,
+        property_iri,
+        term_class,
+        depth,
+        linked,
+        name,
+        classes=None,
+        reachable=True,
+    ) -> _Node:
+        """The node for `value` described by `schema`, with its component
+        resolved."""
+        schema, resolved = _resolve_ref(self.root_schema, schema)
+        title = schema.get("title")
+        node = _Node(
+            value=value,
+            schema=schema,
+            pointer=pointer,
+            scope_chain=scope_chain,
+            ld_ctx=ld_ctx,
+            term_class=term_class,
+            depth=depth,
+            linked=linked,
+            label=title if isinstance(title, str) else (name or ""),
+        )
+        if classes is None:
+            classes = (_class_of(value, term_class, ld_ctx),)
+        iris = [c for c in (*classes, property_iri) if c]
+        iri_terms = [TypeTerm(iri=iri) for iri in dict.fromkeys(iris)]
+        actual = _json_type(value)
+        if not reachable or not resolved or depth > self.max_depth:
+            node.terms = [TypeTerm(schema_type=actual)] if actual else []
+            node.component = builtin_component("scrud:json")
+            return node
+        schema_type, matches = _schema_type(schema, value, actual)
+        if not matches:
+            node.terms = [TypeTerm(schema_type=actual)] if actual else []
+            node.component = builtin_component("scrud:json")
+            return node
+        node.kind = _walkable(schema, schema_type)
+        node.terms = iri_terms + _schema_terms(schema, schema_type, node.kind)
+        node.ruled = True
+        node.component = resolve_component(
+            self.rules(linked), scope_chain, node.terms, self.mode
+        )
+        return node
+
+    def children_of(self, node: _Node):
+        """``(key, child node)`` for each child of `node` that is rendered: a
+        property the schema and the value both have, or an array element."""
+        if node.kind == "object":
+            for prop, sub in node.schema["properties"].items():
+                if prop in node.value:
+                    yield prop, self.child(node, prop, node.value[prop], sub)
+        elif node.kind == "array":
+            for index, item in enumerate(node.value):
+                yield (
+                    index,
+                    self.child(node, index, item, _items_schema(node.schema, index)),
+                )
+
+    def child(self, node, key, value, schema, reachable=True) -> _Node:
+        """The child of `node` at `key` (a property name, or an array index),
+        under the scopes and stylesheets of `node`'s component."""
+        scopes = node.component.scopes
+        if isinstance(key, int):
+            # the term's class is its elements'
+            property_iri, class_iri, ld_ctx = None, node.term_class, node.ld_ctx
+            scope, name = scopes.get("*"), None
+        else:
+            property_iri, class_iri, ld_ctx = _term(node.ld_ctx, key)
+            scope, name = scopes.get(key), key
+        return self.node(
+            value=value,
+            schema=schema if isinstance(schema, dict) else {},
+            pointer=f"{node.pointer}/{_escape_segment(str(key))}",
+            scope_chain=node.scope_chain + ((scope,) if scope else ()),
+            ld_ctx=ld_ctx,
+            property_iri=property_iri,
+            term_class=class_iri,
+            depth=node.depth + 1,
+            linked=node.linked + node.component.stylesheets,
+            name=name,
+            reachable=reachable,
+        )
+
+    def find(self, root: _Node, pointer: str, rendered_only=False) -> _Node:
+        """The node at `pointer` below `root`, reached as the full render
+        reaches it (scopes and linked stylesheets included). A node the
+        schema does not describe there renders as JSON; but with
+        `rendered_only`, a pointer to a node the full render does not render
+        (`children_of`), or that is not a JSON Pointer, raises
+        `UIPointerNotFoundError`."""
+        node = root
+        if not pointer:
+            return node
+        if rendered_only and not pointer.startswith("/"):
+            raise UIPointerNotFoundError(pointer)
+        tokens = pointer[1:].split("/") if pointer.startswith("/") else [pointer]
+        for token in tokens:
+            key = token.replace("~1", "/").replace("~0", "~")
+            if rendered_only and not (
+                (
+                    node.kind == "object"
+                    and key in node.schema["properties"]
+                    and key in node.value
+                )
+                or (node.kind == "array" and _is_index(token, len(node.value)))
+            ):
+                raise UIPointerNotFoundError(pointer)
+            if node.kind == "object" and key in node.schema["properties"]:
+                node = self.child(
+                    node, key, node.value.get(key), node.schema["properties"][key]
+                )
+            elif node.kind == "array" and _is_index(token, len(node.value)):
+                index = int(token)
+                node = self.child(
+                    node, index, node.value[index], _items_schema(node.schema, index)
+                )
+            else:
+                value = node.value.get(key) if isinstance(node.value, Mapping) else None
+                node = self.child(node, key, value, {}, reachable=False)
+        return node
+
+    def render(self, node: _Node) -> SafeString:
+        html = self._render(node)
+        if not self.preview:
+            return html
+        match = self.match_of(node)
+        if match is None:
+            return format_html(
+                '<scrud-node data-pointer="{}">{}</scrud-node>', node.pointer, html
+            )
+        return format_html(
+            '<scrud-node data-pointer="{}" data-scrud-match="{}"'
+            ' data-scrud-match-outcome="{}">{}</scrud-node>',
+            node.pointer,
+            *match,
+            html,
+        )
+
+    def match_of(self, node: _Node) -> tuple[str, str] | None:
+        """How the rule a preview marks (`using_mark`) fares at `node`:
+        ``("wins", "wins")`` when it is the rule `resolve_component` picks;
+        ``("loses", <why>)`` when it matches the node but another wins (or
+        none does), `why` being the inspector's outcome of its best-ranked
+        match (`cascade.rule_outcome`); ``None`` when it does not match, or
+        there is no mark. Ranked with `rank_rules`, as `resolve_component`
+        ranks them."""
+        mark = _mark.get()
+        if mark is None or not node.ruled:
+            return None
+        ranking = rank_rules(
+            self.rules(node.linked), node.scope_chain, node.terms, self.mode
+        )
+        marked = [
+            index
+            for index, (_key, rule) in enumerate(ranking.ranked)
+            if mark.matches(rule)
+        ]
+        if not marked:
+            return None
+        if ranking.winner in marked:
+            return ("wins", "wins")
+        return ("loses", rule_outcome(ranking, marked[0]))
+
+    def _render(self, node: _Node) -> SafeString:
+        self.rendered.add(node.pointer)
+        child_items = [
+            [key, self.render(child)] for key, child in self.children_of(node)
+        ]
+        if node.kind == "object":
+            children = dict(child_items)
+        elif node.kind == "array":
+            children = [html for _, html in child_items]
+            child_items = []
+        else:
+            children, child_items = {}, []
+        context = {
+            "value": node.value,
+            "schema": node.schema,
+            "pointer": node.pointer,
+            "mode": self.mode,
+            "label": node.label,
+            "children": children,
+            "child_items": child_items,
+            "resource": self.resource,
+            "scope": list(node.scope_chain),
+            "errors": self.errors.get(node.pointer, []) if node.pointer else [],
+            "value_json": "",
+            "input_id": self.id_prefix + _id_part(node.pointer),
+            "append_fields": self.append_fields(node),
+            "append_item_type": self.append_item_type(node),
+        }
+        context["append_row"] = has_append_input(
+            context["append_fields"], context["append_item_type"]
+        )
+        component = node.component
+        builtin = component.name.startswith(BUILTIN_PREFIX)
+        if not builtin or component.name == "scrud:json":
+            # only these read it (a stored one may fall back to scrud:json)
+            context["value_json"] = json.dumps(
+                node.value, indent=2, sort_keys=True, ensure_ascii=False, default=str
+            )
+        if builtin:
+            return component.compiled().render(context)
+        return _render_stored(
+            component,
+            context,
+            node.pointer or "/",
+            lambda: resolve_component(
+                tuple(
+                    rule
+                    for rule in self.rules(node.linked)
+                    if rule.component.startswith(BUILTIN_PREFIX)
+                ),
+                node.scope_chain,
+                node.terms,
+                self.mode,
+            ),
+            self.request,
+        )
+
+    def append_fields(self, node):
+        """``[{"name", "type", "pointer_name"}]`` of the properties of an array
+        node's items: ``type`` is the property's schema type (the first
+        non-null one of a list, through its local ``$ref``), and
+        ``pointer_name`` the name escaped as a JSON Pointer reference token."""
+        if node.kind != "array":
+            return []
+        items, _ = _resolve_ref(self.root_schema, node.schema.get("items"))
+        properties = items.get("properties")
+        if not isinstance(properties, dict):
+            return []
+        return [
+            {
+                "name": name,
+                "type": _append_type(_resolve_ref(self.root_schema, sub)[0]),
+                "pointer_name": _escape_segment(name),
+            }
+            for name, sub in properties.items()
+        ]
+
+    def append_item_type(self, node):
+        """The schema type of an array node's items when they are not objects
+        (as `_append_type`), else ``None``: the type of the single append
+        input."""
+        if node.kind != "array":
+            return None
+        items, _ = _resolve_ref(self.root_schema, node.schema.get("items"))
+        properties = items.get("properties")
+        if isinstance(properties, dict):
+            # Items with properties are appended by field; with none, there is
+            # nothing to input (an object item, whatever its ``type``).
+            return None if properties else "object"
+        return _append_type(items)
+
+    def top_errors(self) -> list[str]:
+        """The messages for the resource, then those for nodes not rendered
+        (prefixed with their pointer), so that none is lost."""
+        messages = list(self.errors.get("", []))
+        for pointer, found in self.errors.items():
+            if pointer and pointer not in self.rendered:
+                messages.extend(f"{pointer}: {m}" for m in found)
+        return messages
+
+
+def _frame(
+    *,
+    content,
+    body,
+    notices,
+    href,
+    etag,
+    scope_chain,
+    pointer,
+    mode,
+    deletable,
+    branch=None,
+    preview=False,
+):
+    """The frame of a resource (or of a node of it). `branch`, unless
+    ``None``, is its ``data-scrud-branch`` (`selection.frame_branch`): the
+    branch its requests send (``Scrud-UI-Branch``). In safe mode it has
+    ``data-scrud-safe="1"``. A `preview`'s frame has no write attributes and
+    is a ``div``."""
+    attributes = [
+        ("class", "scrud-resource"),
+        ("data-scrud-href", href),
+        *([("data-scrud-etag", etag)] if etag is not None else []),
+        ("data-scrud-scope", " ".join(scope_chain)),
+        ("data-scrud-pointer", pointer),
+        *([("data-scrud-branch", branch)] if branch is not None else []),
+        # In safe mode: scrud-ui.js then sends `SAFE_HEADER` on the frame's
+        # requests, which target its URL without ``?ui-safe=1``.
+        *([("data-scrud-safe", "1")] if safe_mode() else []),
+    ]
+    writes = mode == "edit" and not preview
+    if writes:
+        attributes += [
+            ("hx-put", href),
+            ("hx-ext", "scrud-json"),
+            ("hx-trigger", "change, submit"),
+            ("hx-target", "this"),
+            ("hx-swap", "outerHTML"),
+        ]
+    # Only a root frame is a form: a node frame (a fragment of the resource)
+    # may be swapped into its root's form, and forms do not nest.
+    tag = "form" if writes and pointer == "" else "div"
+    if tag == "form":
+        # Server-side JSON Schema validation is the authority: the browser's
+        # constraint validation (a stored non-absolute URI in an
+        # `<input type="url">`) must not block the submit.
+        attributes.append(("novalidate", ""))
+    parts = [
+        mark_safe(f"<{tag}"),
+        *(format_html(' {}="{}"', name, value) for name, value in attributes),
+        mark_safe(">"),
+        mark_safe(
+            '<script type="application/json" class="scrud-content">'
+            + json.dumps(content, cls=DjangoJSONEncoder).translate(_JSON_SCRIPT_ESCAPES)
+            + "</script>"
+        ),
+        *(
+            _render_builtin("scrud:notice", {"message": m, "level": "error"})
+            for m in notices
+        ),
+        body,
+    ]
+    if deletable:
+        parts.append(
+            format_html(
+                '<button type="button" hx-delete="{}" hx-ext="scrud-json"'
+                ' hx-confirm="Delete?" hx-target="closest .scrud-resource"'
+                ' hx-swap="outerHTML">Delete</button>',
+                href,
+            )
+        )
+    parts.append(mark_safe(f"</{tag}>"))
+    return mark_safe("".join(parts))
+
+
+def _render_builtin(name, context):
+    return builtin_component(name).compiled().render(context)
+
+
+def _render_stored(component, context, where, fallback, request=None):
+    """A stored `component` rendered with an isolated copy of `context`, to
+    which a Jinja one's ``embed``, ``in_mount`` and ``api_url``
+    (`embed.component_globals` of `request`) are added. If
+    it raises, the failure is logged (naming `where`) and the built-in that
+    ``fallback()`` returns renders `context` after a comment naming it."""
+    isolated = _isolated(context)
+    if getattr(component, "engine", None) == JINJA_ENGINE and request is not None:
+        isolated.update(component_globals(request))
+    try:
+        return component.compiled().render(isolated)
+    except Exception:
+        logger.warning(
+            "scrud-ui: component %r failed to render %s",
+            component.name,
+            where,
+            exc_info=True,
+        )
+    return format_html(
+        '<!-- scrud-ui: component "{}" failed -->{}',
+        component.name,
+        fallback().compiled().render(context),
+    )
+
+
+def _isolated(context):
+    """`context` with copies of its JSON values, so that a stored template
+    cannot change the content, the schema or another node's context."""
+    return {
+        key: value if key in ("children", "child_items") else copy.deepcopy(value)
+        for key, value in context.items()
+    }
+
+
+def _document(resource):
+    """The content of the type's document `resource` (its schema or JSON-LD
+    context) when it is a JSON object, else ``{}``."""
+    content = getattr(resource, "content", None)
+    return content if isinstance(content, dict) else {}
+
+
+def _ld_context(resource):
+    """The term definitions of a JSON-LD context document: its ``@context``
+    when that is an object, else the document itself."""
+    document = _document(resource)
+    inner = document.get("@context")
+    return inner if isinstance(inner, dict) else document
+
+
+def _keyword_free(iri):
+    """`iri`, or ``None`` for a JSON-LD keyword (``@id``, ``@vocab``, ...),
+    which is no class or property."""
+    return iri if isinstance(iri, str) and iri and not iri.startswith("@") else None
+
+
+def _term(ld_ctx, key):
+    property_iri, class_iri, nested = ld.term_definition(ld_ctx, key)
+    return _keyword_free(property_iri), _keyword_free(class_iri), nested
+
+
+def _class_of(value, term_class, ld_ctx):
+    """The class IRI of a node: none for an array (its term's class is its
+    elements'), an object's own ``@type``, else its term definition's."""
+    if isinstance(value, list):
+        return None
+    if isinstance(value, Mapping) and isinstance(value.get("@type"), str):
+        return _keyword_free(ld.expand(value["@type"], ld_ctx))
+    return term_class
+
+
+def _resolve_ref(root, schema):
+    """``(schema, resolved)``: `schema` with its local ``$ref`` chain
+    followed. Not resolved for a reference that is not local, does not
+    resolve, or loops without descending."""
+    seen = set()
+    while isinstance(schema, dict) and "$ref" in schema:
+        ref = schema["$ref"]
+        if not isinstance(ref, str) or not ref.startswith("#") or ref in seen:
+            return {}, False
+        seen.add(ref)
+        schema = _pointer_get(root, ref[1:])
+    if not isinstance(schema, dict):
+        return {}, False
+    return schema, True
+
+
+def _pointer_get(document, pointer):
+    """The value at JSON Pointer `pointer` in `document`, or ``None``."""
+    if pointer == "":
+        return document
+    if not pointer.startswith("/"):
+        return None
+    for raw in pointer[1:].split("/"):
+        key = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(document, dict) and key in document:
+            document = document[key]
+        elif isinstance(document, list) and _is_index(raw, len(document)):
+            document = document[int(raw)]
+        else:
+            return None
+    return document
+
+
+def _json_type(value):
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, Mapping):
+        return "object"
+    return None
+
+
+def _type_matches(declared, actual, value):
+    if declared == actual:
+        return True
+    if declared == "number":
+        return actual == "integer"
+    if declared == "integer" and actual == "number":
+        return value.is_integer()
+    return False
+
+
+def _schema_type(schema, value, actual):
+    """``(type, matches)``: the schema's type that `value` has, or the value's
+    own when the schema has none; ``matches`` is False when the schema
+    declares types and the value has none of them."""
+    declared = schema.get("type")
+    declared = declared if isinstance(declared, list) else [declared]
+    declared = [t for t in declared if isinstance(t, str)]
+    if not declared:
+        if any(k in schema for k in _COMPOSITION):
+            return None, True
+        return actual, True
+    for schema_type in declared:
+        if _type_matches(schema_type, actual, value):
+            return schema_type, True
+    return None, False
+
+
+def _walkable(schema, schema_type):
+    if schema_type == "object" and isinstance(schema.get("properties"), dict):
+        return "object"
+    if schema_type == "array" and isinstance(schema.get("items"), (dict, list)):
+        return "array"
+    return None
+
+
+def _schema_terms(schema, schema_type, kind):
+    """A node's schema terms: format, enum, then the bare type (an integer is
+    a number too). An object or array with nothing to walk (no
+    ``properties`` or ``items``) has none, so it renders as JSON unless an
+    IRI rule styles it."""
+    if schema_type is None or (schema_type in ("object", "array") and kind is None):
+        return []
+    terms = []
+    if isinstance(schema.get("format"), str):
+        terms.append(TypeTerm(schema_type=schema_type, format=schema["format"]))
+    if isinstance(schema.get("enum"), list):
+        terms.append(TypeTerm(schema_type=schema_type, enum=True))
+    terms.append(TypeTerm(schema_type=schema_type))
+    if schema_type == "integer":
+        terms.append(TypeTerm(schema_type="number"))
+    return terms
+
+
+_NESTED = ("object", "array")
+
+
+def has_append_input(append_fields, append_item_type):
+    """Whether an array's append row has an input to render: one of the
+    items' properties that is not an object or array, or, for items without
+    properties, an item type that is not an object or array. The
+    ``append_row`` context key of ``scrud:array-edit``."""
+    if append_fields:
+        return any(field["type"] not in _NESTED for field in append_fields)
+    return append_item_type not in _NESTED
+
+
+def _append_type(schema):
+    """The schema type an append-row input is for: ``type``, or the first
+    non-null string of a ``type`` list; else ``None``."""
+    declared = schema.get("type")
+    for schema_type in declared if isinstance(declared, list) else [declared]:
+        if isinstance(schema_type, str) and schema_type != "null":
+            return schema_type
+    return None
+
+
+def _items_schema(schema, index):
+    items = schema.get("items")
+    if isinstance(items, list):
+        return items[index] if index < len(items) else {}
+    return items
+
+
+def _is_index(token, length):
+    """Whether `token` is an array index (RFC 6901: no leading zero) below
+    `length`."""
+    return (
+        token.isascii()
+        and token.isdigit()
+        and (token == "0" or not token.startswith("0"))
+        and int(token) < length
+    )
+
+
+def _escape_segment(segment):
+    """`segment` escaped as a JSON Pointer reference token (RFC 6901)."""
+    return segment.replace("~", "~0").replace("/", "~1")
+
+
+def _id_part(pointer):
+    """`pointer` as part of an HTML id, one to one: ASCII letters, digits,
+    ``_`` and ``~`` kept, ``/`` as ``-``, anything else as ``.<hex>.``."""
+    out = []
+    for char in pointer:
+        if char == "/":
+            out.append("-")
+        elif (char.isascii() and char.isalnum()) or char in "_~":
+            out.append(char)
+        else:
+            out.append(f".{ord(char):x}.")
+    return "".join(out)
+
+
+def _clean_errors(errors):
+    """`errors` as ``{pointer: [message, ...]}`` of strings."""
+    cleaned = {}
+    for pointer, messages in (errors or {}).items():
+        if not isinstance(messages, (list, tuple)):
+            messages = [messages]
+        cleaned[str(pointer)] = [str(m) for m in messages]
+    return cleaned

@@ -1884,3 +1884,38 @@ def test_a_412_of_list_precondition_response_the_handler_drops_is_not_detected()
     assert view.response.data == {"failed": 412}
     assert view.list_preconditions_evaluated()
     assert created("audit") == 1
+
+
+@pytest.mark.django_db
+def test_get_object_inside_unlocked_lookups_locks_no_row():
+    # Inside a locked write, get_object() locks the row first; inside
+    # unlocked_lookups it reads the row, on the write database, with no lock
+    # (neither the row's lock query nor FOR UPDATE on the lookup).
+    from rest_framework.request import Request
+
+    from .urls import NoteViewSet
+
+    note = a_note("abc")
+
+    def look_up(unlocked):
+        view = NoteViewSet()
+        request = APIRequestFactory().get(detail(note))
+        user = UserFactory(is_staff=True, is_superuser=True)
+        view.request = Request(request)
+        view.request.user = user
+        view.kwargs = {"slug": note.pk}
+        view.format_kwarg = None
+        view.locked_write_db = "default"
+        with evaluated_note_queries() as events:
+            if unlocked:
+                with view.unlocked_lookups():
+                    assert view.get_object().pk == note.pk
+            else:
+                assert view.get_object().pk == note.pk
+        assert view.lookups_unlocked is False
+        return events
+
+    assert any(locked for _, locked, _ in look_up(unlocked=False))
+    events = look_up(unlocked=True)
+    assert events and not any(locked for _, locked, _ in events), events
+    assert {db for db, _, _ in events} == {"default"}

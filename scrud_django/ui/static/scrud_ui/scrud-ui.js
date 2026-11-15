@@ -1,0 +1,927 @@
+/*
+ * scrud-ui.js: the browser side of scrud-django's server-rendered UI.
+ *
+ * Requires htmx 2.0.4, vendored next to this file as htmx.min.js
+ * (https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js):
+ *   sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+
+ *
+ * The `scrud-json` extension builds the full JSON body of a PUT from the
+ * content embedded in the rendered frame (script.scrud-content) and the
+ * inputs named by JSON Pointer. The server's write path is unchanged: an
+ * ordinary JSON PUT with If-Match.
+ *
+ * Plain ES2017, no modules, no dependencies besides htmx.
+ */
+(function () {
+  'use strict';
+
+  var FRAME = '.scrud-resource';
+  var UNSAFE = ['__proto__', 'constructor', 'prototype'];
+
+  // ---- pure helpers (exposed as window.ScrudUI) -------------------------
+
+  /** Split a JSON Pointer ("" or "/a/b") into unescaped segments. */
+  function parsePointer(pointer) {
+    if (pointer === '' || pointer == null) return [];
+    if (pointer.charAt(0) !== '/') {
+      throw new Error('invalid JSON Pointer: ' + pointer);
+    }
+    return pointer
+      .slice(1)
+      .split('/')
+      .map(function (s) {
+        return s.replace(/~1/g, '/').replace(/~0/g, '~');
+      });
+  }
+
+  function isIndex(segment) {
+    return /^(0|[1-9][0-9]*)$/.test(segment);
+  }
+
+  function own(container, key) {
+    return Object.prototype.hasOwnProperty.call(container, key);
+  }
+
+  /**
+   * Set `value` at `pointer` in `doc` (mutating it, creating containers on
+   * the way). A `-` segment on an array appends. `undefined` removes the key
+   * of an object (never an array element) and leaves `doc` as it is for the
+   * root pointer. A pointer with an unsafe segment (`__proto__`,
+   * `constructor`, `prototype`) is ignored: `doc` is returned unchanged.
+   * Throws an Error for an array index that is not a number or is past the
+   * end of the array. Returns `doc` (or `value` for the root pointer).
+   */
+  function applyPointer(doc, pointer, value) {
+    var segs = parsePointer(pointer);
+    if (!segs.length) return value === undefined ? doc : value;
+    var node = doc;
+    for (var i = 0; i < segs.length; i++) {
+      var seg = segs[i];
+      if (UNSAFE.indexOf(seg) >= 0) return doc;
+      var last = i === segs.length - 1;
+      var key = seg;
+      if (Array.isArray(node)) {
+        if (seg === '-') {
+          key = node.length;
+        } else if (!isIndex(seg)) {
+          throw new Error('invalid array index "' + seg + '" in ' + pointer);
+        } else if (Number(seg) > node.length) {
+          throw new Error('array index out of range in ' + pointer);
+        } else {
+          key = Number(seg);
+        }
+      }
+      if (last) {
+        if (value === undefined) {
+          // never remove array elements by index; objects lose the key
+          if (!Array.isArray(node) && own(node, key)) delete node[key];
+        } else {
+          node[key] = value;
+        }
+        return doc;
+      }
+      var child = own(node, key) ? node[key] : undefined;
+      if (child === null || typeof child !== 'object') {
+        if (value === undefined) return doc;
+        child = isIndex(segs[i + 1]) || segs[i + 1] === '-' ? [] : {};
+        node[key] = child;
+      }
+      node = child;
+    }
+    return doc;
+  }
+
+  function escapeSegment(seg) {
+    return seg.replace(/~/g, '~0').replace(/\//g, '~1');
+  }
+
+  function joinPointer(segs) {
+    return segs.map(function (s) { return '/' + escapeSegment(s); }).join('');
+  }
+
+  function warn(field, err) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('scrud-ui: skipped input ' + field.name + ': ' + err.message);
+    }
+  }
+
+  function isEmpty(field) {
+    if (field.type === 'checkbox') return !field.checked;
+    return field.value === '' || field.value == null;
+  }
+
+  /** The value an input contributes, or undefined to omit/remove the key. */
+  function fieldValue(field) {
+    if (field.type === 'checkbox') return !!field.checked;
+    if (field.type === 'number') {
+      if (field.value === '' || field.value == null) return undefined;
+      var n = Number(field.value);
+      return isNaN(n) ? undefined : n;
+    }
+    return field.value;
+  }
+
+  /** The value at `pointer` in `doc`, or undefined (never throws). */
+  function valueAt(doc, pointer) {
+    var segs;
+    try {
+      segs = parsePointer(pointer);
+    } catch (err) {
+      return undefined;
+    }
+    var node = doc;
+    for (var i = 0; i < segs.length; i++) {
+      if (node === null || typeof node !== 'object') return undefined;
+      var seg = segs[i];
+      if (Array.isArray(node)) {
+        if (!isIndex(seg) || Number(seg) >= node.length) return undefined;
+        node = node[Number(seg)];
+      } else {
+        if (!own(node, seg)) return undefined;
+        node = node[seg];
+      }
+    }
+    return node;
+  }
+
+  var TEXT_LIKE = ['text', 'textarea', 'url', 'date', 'number'];
+
+  /**
+   * Whether `field` (a text-like input) still shows the value embedded at its
+   * pointer. A text input's value has lost CR and LF (the browser strips
+   * them), and a textarea's line breaks are LF: compared accordingly, so that
+   * an untouched field leaves the embedded value exactly as it is. An embedded
+   * number is compared numerically (`Number(value) === embedded`, so "3.0"
+   * matches 3), and an empty input never matches a number. An empty input
+   * over `null` or a missing value is untouched (it is how the browser shows
+   * them), while an empty input over a string is a change to "". Any other
+   * embedded type (boolean, object) is never untouched. Non-text-like fields
+   * are never untouched.
+   */
+  function untouched(field, embedded) {
+    if (TEXT_LIKE.indexOf(field.type) < 0) return false;
+    var value = field.value == null ? '' : String(field.value);
+    // An empty input over null or a missing value is how the browser shows
+    // them: leave them as they are rather than writing "".
+    if (value === '' && (embedded === null || embedded === undefined)) return true;
+    if (typeof embedded === 'number') {
+      return value !== '' && Number(value) === embedded;
+    }
+    if (typeof embedded !== 'string') return false;
+    if (field.type === 'textarea') {
+      return embedded.replace(/\r\n?/g, '\n') === value.replace(/\r\n?/g, '\n');
+    }
+    return embedded.replace(/[\r\n]/g, '') === value.replace(/[\r\n]/g, '');
+  }
+
+  /**
+   * Build the JSON body: a deep copy of `content` with every field applied at
+   * its pointer. `fields` are {name, type, value, checked} (DOM inputs fit).
+   * A text-like field that still shows the embedded value is skipped
+   * (`untouched`). Fields sharing a `<prefix>/-` become one new element
+   * appended to the array at <prefix>; a group whose fields are all empty is
+   * dropped.
+   *
+   * Pure: when `errors` (an array) is given, the name of every field that
+   * could not be applied is pushed on it: an invalid pointer, an unsafe
+   * segment (`__proto__`, `constructor`, `prototype`), or an empty or
+   * non-numeric number input over a stored number. The body is still computed
+   * from the other fields, and such a field leaves the content as it is; the
+   * caller decides what to do with the errors.
+   */
+  function buildBody(content, fields, errors) {
+    var body = JSON.parse(JSON.stringify(content));
+    var groups = [];
+    var byPrefix = {};
+    function fail(field, err) {
+      if (err) warn(field, err);
+      if (errors) errors.push(field.name);
+    }
+    fields.forEach(function (field) {
+      var segs;
+      try {
+        segs = parsePointer(field.name);
+      } catch (err) {
+        fail(field, err);
+        return;
+      }
+      if (segs.some(function (s) { return UNSAFE.indexOf(s) >= 0; })) {
+        fail(field, new Error('unsafe pointer segment'));
+        return;
+      }
+      var dash = segs.indexOf('-');
+      if (dash < 0) {
+        var embedded = valueAt(content, field.name);
+        if (untouched(field, embedded)) return;
+        var value = fieldValue(field);
+        if (value === undefined && field.type === 'number' && typeof embedded === 'number') {
+          // cleared or half-typed (the browser reports "1e" as ""): never
+          // delete the stored number
+          fail(field);
+          return;
+        }
+        try {
+          applyPointer(body, field.name, value);
+        } catch (err) {
+          fail(field, err);
+        }
+        return;
+      }
+      var prefix = joinPointer(segs.slice(0, dash));
+      var group = byPrefix[prefix];
+      if (!group) {
+        group = byPrefix[prefix] = { prefix: prefix, fields: [] };
+        groups.push(group);
+      }
+      var rest = joinPointer(segs.slice(dash + 1));
+      group.fields.push({ rest: rest, field: field });
+    });
+    groups.forEach(function (group) {
+      if (group.fields.every(function (g) { return isEmpty(g.field); })) return;
+      var element;
+      group.fields.forEach(function (g) {
+        var value = fieldValue(g.field);
+        if (g.rest === '') {
+          element = value;
+        } else {
+          if (element === null || typeof element !== 'object') element = {};
+          try {
+            applyPointer(element, g.rest, value);
+          } catch (err) {
+            fail(g.field, err);
+          }
+        }
+      });
+      if (element !== undefined) {
+        try {
+          applyPointer(body, group.prefix + '/-', element);
+        } catch (err) {
+          fail(group.fields[0].field, err);
+        }
+      }
+    });
+    return body;
+  }
+
+  /**
+   * Apply an array operation to `body` (mutating it): `op.op` is "remove" (the
+   * element at `op.pointer`) or "move" (the element at `op.pointer` to index
+   * `op.to`, the others keeping their order). A pointer that is not an element
+   * of an array, an index out of range or another operation leaves `body` as it
+   * is, and, when `errors` (an array) is given, pushes why on it. Returns
+   * `body`.
+   */
+  function applyArrayOp(body, op, errors) {
+    function fail(reason) {
+      if (errors) errors.push(reason);
+      return body;
+    }
+    var segs;
+    try {
+      segs = parsePointer(op.pointer);
+    } catch (err) {
+      return fail(err.message);
+    }
+    if (!segs.length || !isIndex(segs[segs.length - 1])) {
+      return fail('not an array element: ' + op.pointer);
+    }
+    var array = valueAt(body, joinPointer(segs.slice(0, -1)));
+    var from = Number(segs[segs.length - 1]);
+    if (!Array.isArray(array) || from >= array.length) {
+      return fail('not an array element: ' + op.pointer);
+    }
+    if (op.op === 'remove') {
+      array.splice(from, 1);
+    } else if (op.op === 'move') {
+      var to = String(op.to);
+      if (!isIndex(to) || Number(to) >= array.length) {
+        return fail('not an index of the array: ' + op.to);
+      }
+      array.splice(Number(to), 0, array.splice(from, 1)[0]);
+    } else {
+      return fail('not an array operation: ' + op.op);
+    }
+    return body;
+  }
+
+  function frameOf(el) {
+    return el && el.closest ? el.closest(FRAME) : null;
+  }
+
+  /**
+   * The inputs a PUT from `frame` applies: those named by a JSON Pointer whose
+   * own frame is of the same resource (the same data-scrud-href: the frame,
+   * or a node frame of it), never those of an embedded resource's frame.
+   * Disabled inputs and unchecked radios are left out.
+   */
+  function fieldsOf(frame) {
+    var href = frame.getAttribute('data-scrud-href');
+    return Array.prototype.filter.call(
+      frame.querySelectorAll('[name^="/"]'),
+      function (el) {
+        if (el.disabled) return false;
+        if (el.type === 'radio' && !el.checked) return false;
+        var own = frameOf(el);
+        return !!own && own.getAttribute('data-scrud-href') === href;
+      }
+    );
+  }
+
+  var NOTICE_CLASS = 'scrud-client-notice';
+
+  /**
+   * The notice for a request that failed: `status` is the HTTP status, or
+   * falsy for a network failure; `verb` is the request's. A GET is a failed
+   * load; a 5xx for a write may come after the change was committed (the
+   * response failed to render), so it does not claim the change was lost.
+   */
+  function noticeText(status, verb) {
+    verb = String(verb).toLowerCase();
+    var where = status ? ' (HTTP ' + status + ').' : ' (network error).';
+    if (verb === 'get') return 'This item could not be loaded' + where;
+    if (status >= 500) {
+      return (
+        'Something went wrong (HTTP ' + status + '). Reload to see the current state.'
+      );
+    }
+    var what =
+      verb === 'delete'
+        ? 'The item was not deleted'
+        : 'Your change was not saved';
+    return what + where;
+  }
+
+  function invalidFieldsText(names) {
+    return (
+      'This form could not be saved: invalid field' +
+      (names.length === 1 ? ' ' : 's ') +
+      names.join(', ') +
+      '.'
+    );
+  }
+
+  /**
+   * Whether a failed request needs a client-side notice: not when the server
+   * answers with a body that is swapped in. A refused PUT (400, 403) is
+   * re-rendered by the server, a 412 or a 409 DELETE is a notice with a frame
+   * that reloads the current state; any other failed DELETE is not swapped
+   * (see `htmx:beforeSwap`).
+   */
+  function showsClientNotice(verb, status) {
+    if (String(verb).toLowerCase() === 'delete') {
+      return !(status === 409 || status === 412);
+    }
+    return [400, 403, 409, 412, 428].indexOf(status) < 0;
+  }
+
+  // The notice that a request was refused while the frame's save was in flight
+  // (see `inFlight`): it stands beside the save's own notice, never replaces it.
+  var NOT_SENT_CLASS = 'scrud-client-notice-not-sent';
+
+  function hasClass(el, name) {
+    return String(el.className || '').split(' ').indexOf(name) >= 0;
+  }
+
+  /**
+   * Remove the client notices of `frame`: all of them, or those `only`
+   * chooses (a function of the notice element).
+   */
+  function clearNotice(frame, only) {
+    Array.prototype.slice.call(frame.children || []).forEach(function (child) {
+      if (hasClass(child, NOTICE_CLASS) && (!only || only(child))) {
+        frame.removeChild(child);
+      }
+    });
+  }
+
+  /**
+   * Insert a notice (the markup of the server's `scrud:notice`) at the top of
+   * `frame`, replacing a previous client notice of its kind. The text is set
+   * as text. `kind` is 'not-sent' for the notice of a request refused while a
+   * save was in flight, which is kept beside the other client notice (the
+   * save's failure, which htmx may report before or after it): neither
+   * replaces the other.
+   */
+  function showNotice(frame, text, kind) {
+    var notSent = kind === 'not-sent';
+    clearNotice(frame, function (child) {
+      return hasClass(child, NOT_SENT_CLASS) === notSent;
+    });
+    var notice = document.createElement('div');
+    notice.className =
+      'scrud-notice scrud-notice-error ' +
+      NOTICE_CLASS +
+      (notSent ? ' ' + NOT_SENT_CLASS : '');
+    notice.setAttribute('role', 'alert');
+    notice.textContent = text;
+    frame.insertBefore(notice, frame.firstChild);
+  }
+
+  window.ScrudUI = {
+    applyArrayOp: applyArrayOp,
+    applyPointer: applyPointer,
+    buildBody: buildBody,
+    fieldsOf: fieldsOf,
+    invalidFieldsText: invalidFieldsText,
+    noticeText: noticeText,
+    parsePointer: parsePointer,
+    showNotice: showNotice,
+    showsClientNotice: showsClientNotice
+  };
+
+  // ---- htmx integration -------------------------------------------------
+
+  var htmx = window.htmx;
+  if (typeof document === 'undefined') return;
+  if (!htmx) {
+    console.error('scrud-ui: htmx is not loaded; scrud-ui.js is inactive');
+    return;
+  }
+
+  htmx.config.selfRequestsOnly = true;
+  // htmx 2.0.4 also sends DELETE's form values as URL params, and the Delete
+  // button sits inside the root edit form.
+  htmx.config.methodsThatUseUrlParams = ['get'];
+  htmx.config.responseHandling = [
+    { code: '204', swap: false },
+    { code: '2..', swap: true },
+    { code: '(400|403|409|412|428)', swap: true, error: true },
+    { code: '.*', swap: false, error: true }
+  ];
+
+  function quoteEtag(etag) {
+    return /^(W\/)?"/.test(etag) ? etag : '"' + etag + '"';
+  }
+
+  function csrfToken() {
+    var meta = document.querySelector('meta[name=csrf-token]');
+    return (meta && meta.getAttribute('content')) || null;
+  }
+
+  function hasHeader(headers, name) {
+    var lower = name.toLowerCase();
+    return Object.keys(headers).some(function (k) {
+      return k.toLowerCase() === lower;
+    });
+  }
+
+  function setDefault(headers, name, value) {
+    if (value != null && !hasHeader(headers, name)) headers[name] = value;
+  }
+
+  /**
+   * The URL a request goes to: htmx's `path`, else (when a caller gives none)
+   * the closest hx-<verb> attribute's value.
+   */
+  function requestPath(detail, verb) {
+    if (detail.path != null) return String(detail.path);
+    var elt = detail.elt;
+    if (!elt || !elt.closest) return null;
+    var names = ['hx-' + verb, 'data-hx-' + verb];
+    for (var i = 0; i < names.length; i++) {
+      var found = elt.closest('[' + names[i] + ']');
+      if (found) return found.getAttribute(names[i]);
+    }
+    return null;
+  }
+
+  /** `url` without this page's origin, so a path and a full URL compare. */
+  function localPath(url) {
+    var origin = typeof location !== 'undefined' && location.origin;
+    url = String(url);
+    return origin && url.indexOf(origin + '/') === 0 ? url.slice(origin.length) : url;
+  }
+
+  /**
+   * The If-Match tag of a write from `elt` (in `frame`) to `path`: the
+   * element's own data-scrud-etag (present but empty: none), else the frame's
+   * when the request goes to the frame's own data-scrud-href, else none. A
+   * write to another URL from inside a frame (a create posting to a list, the
+   * DELETE of another resource) never sends the frame's tag: it would be
+   * refused with 412.
+   */
+  function ifMatchTag(elt, frame, path) {
+    if (elt && elt !== frame && elt.hasAttribute && elt.hasAttribute('data-scrud-etag')) {
+      return elt.getAttribute('data-scrud-etag') || null;
+    }
+    if (!frame || path == null) return null;
+    var href = frame.getAttribute('data-scrud-href');
+    if (href == null || localPath(path) !== localPath(href)) return null;
+    return frame.getAttribute('data-scrud-etag') || null;
+  }
+
+  function isPut(elt) {
+    return elt.hasAttribute('hx-put') || elt.hasAttribute('data-hx-put');
+  }
+
+  var MISCONFIGURED = 'This action is misconfigured.';
+
+  /** "form" or "fixed" for an element that sends JSON for any method; else null. */
+  function jsonMode(elt) {
+    var mode = elt && elt.getAttribute ? elt.getAttribute('data-scrud-json') : null;
+    return mode === null ? null : mode || 'form';
+  }
+
+  /**
+   * The inputs a `data-scrud-json="form"` element sends: the named-by-pointer
+   * inputs inside it (not disabled, radios only when checked), as the
+   * {name, type, value, checked} buildBody reads. `data-scrud-type` on an
+   * input overrides its type.
+   */
+  function jsonFormFields(elt) {
+    return Array.prototype.filter
+      .call(elt.querySelectorAll('[name^="/"]'), function (input) {
+        return !input.disabled && !(input.type === 'radio' && !input.checked);
+      })
+      .map(function (input) {
+        return {
+          name: input.name,
+          type: input.getAttribute('data-scrud-type') || input.type,
+          value: input.value,
+          checked: !!input.checked
+        };
+      });
+  }
+
+  /** The parsed body of a `fixed` element, or undefined when it does not parse. */
+  function fixedBody(elt) {
+    var text = elt.getAttribute('data-scrud-body');
+    if (text === null) return undefined;
+    try {
+      JSON.parse(text);
+      return text;
+    } catch (err) {
+      return undefined;
+    }
+  }
+
+  /** The notice goes to the element's frame; outside any, it is logged. */
+  function refuse(evt, elt, text) {
+    evt.preventDefault();
+    var frame = frameOf(elt);
+    if (frame) showNotice(frame, text);
+    else console.error('scrud-ui: ' + text);
+  }
+
+  /** The frame's own scrud-content (not a nested frame's). */
+  function contentOf(frame) {
+    var scripts = frame.querySelectorAll('script.scrud-content');
+    for (var i = 0; i < scripts.length; i++) {
+      if (frameOf(scripts[i]) === frame) return JSON.parse(scripts[i].textContent);
+    }
+    return null;
+  }
+
+  // An array operation (Remove, Move up, Move down) travels with the request
+  // its click triggers: in the triggered event's detail (`scrudArrayOp`), which
+  // htmx hands to that request as its triggeringEvent. It is applied to the
+  // body that PUT builds (`encodeParameters`), so it goes the way of every
+  // change: the frame's headers, If-Match among them. Another request of the
+  // frame (a save in flight, the next one) never sees it.
+  document.addEventListener('click', function (evt) {
+    var button =
+      evt.target && evt.target.closest
+        ? evt.target.closest('[data-scrud-array-op]')
+        : null;
+    if (!button) return;
+    var frame = frameOf(button);
+    if (!frame || !isPut(frame)) {
+      console.error(
+        'scrud-ui: an array operation button outside a frame that saves' +
+          ' (hx-put) does nothing.'
+      );
+      return;
+    }
+    evt.preventDefault();
+    htmx.trigger(frame, 'change', {
+      scrudArrayOp: {
+        op: button.getAttribute('data-scrud-array-op'),
+        pointer: button.getAttribute('data-scrud-pointer'),
+        to: button.getAttribute('data-scrud-to')
+      }
+    });
+  });
+
+  /**
+   * The array operation a request of `frame` carries: its triggering event's,
+   * when that event was triggered on `frame` itself (an outer frame the event
+   * bubbled to never applies an inner frame's operation); else null.
+   */
+  function arrayOpOf(frame, triggering) {
+    var detail = triggering && triggering.detail;
+    var op = detail && detail.scrudArrayOp;
+    return op && triggering.target === frame ? op : null;
+  }
+
+  // The array operation of each request, by its xhr: what encodeParameters
+  // (which is handed the xhr) applies.
+  var requestOps = new WeakMap();
+
+  // The frames with a request in flight, and those that refused a request
+  // meanwhile. htmx 2.0.4 queues an element's request behind its request in
+  // flight (the `last` strategy: a newer one replaces a queued one, with no
+  // event) and, when the request in flight ends, runs the queued one only if
+  // the element is still in the page. A frame's PUT is answered with the
+  // frame, which replaces it, so the queued request (an array operation, a
+  // change, a save) would be dropped without a word. It is refused instead
+  // (`htmx:confirm`), and the frame that answers the request in flight says
+  // the change was not sent (`htmx:afterRequest`, which htmx dispatches on
+  // the replaced frame's parent, with that parent as `elt`: the request's
+  // frame is found by its xhr). That notice stands beside a failure notice
+  // of the save itself (`failed`, before afterRequest for an error response,
+  // after it for a network error). When the save is answered with a
+  // reload (a 412, or a DELETE's 409), what replaces the frame is not a
+  // frame: no notice is shown, and the stale notice and the reloaded frame
+  // follow. A refused request that would have sent nothing new says nothing:
+  // the browser fires a field's change and then the form's submit in a row
+  // (Enter in a field, or typing and then a click on Save), and the change's
+  // PUT already carries the edit. "Nothing new" is the frame's inputs built
+  // onto its content (`inputsBody`) as the request in flight sent them; an
+  // array operation is always new. htmx 2.0.4 skips afterRequest when
+  // handling the response throws (it fires only htmx:onLoadError): the frame
+  // is settled on either, so it never refuses forever.
+  var inFlight = new WeakSet();
+  var frameOfXhr = new WeakMap();
+  var refusedInFlight = new WeakSet();
+  // The body a frame's PUT in flight was built from (`inputsBody`), by frame.
+  var sentBody = new WeakMap();
+  var NOT_SENT =
+    'Your change was not sent: an earlier save of this item was still in' +
+    ' progress. Make the change again.';
+
+  /**
+   * The JSON of `frame`'s inputs built onto its content, as its PUT builds
+   * them before an array operation; null when that can't be built (no
+   * content, an invalid field).
+   */
+  function inputsBody(frame) {
+    try {
+      var content = contentOf(frame);
+      if (!content) return null;
+      var invalid = [];
+      var body = buildBody(content, fieldsOf(frame), invalid);
+      return invalid.length ? null : JSON.stringify(body);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  document.addEventListener('htmx:beforeSend', function (evt) {
+    var detail = evt.detail || {};
+    var config = detail.requestConfig || {};
+    var elt = detail.elt;
+    if (elt && detail.xhr && !evt.defaultPrevented && elt.matches && elt.matches(FRAME)) {
+      inFlight.add(elt);
+      frameOfXhr.set(detail.xhr, elt);
+      var sent = isPut(elt) ? inputsBody(elt) : null;
+      if (sent === null) sentBody.delete(elt);
+      else sentBody.set(elt, sent);
+    }
+    if (!elt || !detail.xhr || !isPut(elt)) return;
+    var op = arrayOpOf(elt, config.triggeringEvent);
+    if (op) requestOps.set(detail.xhr, op);
+  });
+
+  /**
+   * The frame in the page now for `frame`: itself while it is in the page,
+   * else the frame of the same resource, scope and pointer that replaced it
+   * (the answer to its request); null when there is none.
+   */
+  function frameNow(frame) {
+    if (frame.isConnected) return frame;
+    var keys = ['data-scrud-href', 'data-scrud-scope', 'data-scrud-pointer'];
+    var all = document.querySelectorAll ? document.querySelectorAll(FRAME) : [];
+    for (var i = 0; i < all.length; i++) {
+      var same = keys.every(function (key) {
+        return all[i].getAttribute(key) === frame.getAttribute(key);
+      });
+      if (same) return all[i];
+    }
+    return null;
+  }
+
+  // Innermost frame only: an event inside nested frames is acted on by the
+  // frame that encloses its target; outer frames' requests are cancelled.
+  document.addEventListener('htmx:confirm', function (evt) {
+    var detail = evt.detail || {};
+    var elt = detail.elt;
+    var triggering = detail.triggeringEvent;
+    if (!elt || !elt.matches || !elt.matches(FRAME)) return;
+    if (!triggering || !triggering.target) return;
+    if (frameOf(triggering.target) !== elt) {
+      // Expected: the inner frame handles it, so this is debug, not a warning.
+      console.debug(
+        'scrud-ui: cancelled request of outer frame ' +
+          elt.getAttribute('data-scrud-href') +
+          '; the event target belongs to an inner frame'
+      );
+      evt.preventDefault();
+      return;
+    }
+    if (inFlight.has(elt)) {
+      // htmx would queue it and then drop it silently (see `inFlight`).
+      evt.preventDefault();
+      // Nothing new: the request in flight sends this very body.
+      var sent = sentBody.get(elt);
+      if (!arrayOpOf(elt, triggering) && sent != null && inputsBody(elt) === sent) {
+        return;
+      }
+      refusedInFlight.add(elt);
+    }
+  });
+
+  /**
+   * The branch the page was rendered on, so that a page never changes branch
+   * halfway: the data-scrud-branch of the closest element carrying one (the
+   * frame), else the page's (.scrud-branch-page, for elements outside any
+   * frame), else null. "" names the published branch.
+   */
+  function branchOf(elt) {
+    var own = elt && elt.closest ? elt.closest('[data-scrud-branch]') : null;
+    if (!own) own = document.querySelector('.scrud-branch-page[data-scrud-branch]');
+    return own ? own.getAttribute('data-scrud-branch') : null;
+  }
+
+  /**
+   * Whether `elt` is on a page rendered in safe mode: it or an ancestor (its
+   * frame) has data-scrud-safe, or the page's .scrud-branch-page does. Its
+   * requests target URLs without ?ui-safe=1, so they send Scrud-UI-Safe.
+   */
+  function safeOf(elt) {
+    if (elt && elt.closest && elt.closest('[data-scrud-safe]')) return true;
+    return !!document.querySelector('.scrud-branch-page[data-scrud-safe]');
+  }
+
+  document.addEventListener('htmx:configRequest', function (evt) {
+    var detail = evt.detail;
+    var headers = detail.headers;
+    var verb = String(detail.verb).toLowerCase();
+    setDefault(headers, 'Accept', 'text/html');
+    setDefault(headers, 'Scrud-UI-Branch', branchOf(detail.elt));
+    if (safeOf(detail.elt)) setDefault(headers, 'Scrud-UI-Safe', '1');
+    if (verb === 'get') return;
+    setDefault(headers, 'X-CSRFToken', csrfToken());
+    var mode = jsonMode(detail.elt);
+    if (mode) {
+      var own = frameOf(detail.elt);
+      if (own) clearNotice(own);
+      if (mode === 'fixed' ? fixedBody(detail.elt) === undefined : mode !== 'form') {
+        refuse(evt, detail.elt, MISCONFIGURED);
+        return;
+      }
+      if (mode === 'form') {
+        var bad = [];
+        buildBody({}, jsonFormFields(detail.elt), bad);
+        if (bad.length) {
+          refuse(evt, detail.elt, invalidFieldsText(bad));
+          return;
+        }
+      }
+      var tag = ifMatchTag(detail.elt, own, requestPath(detail, verb));
+      if (tag) setDefault(headers, 'If-Match', quoteEtag(tag));
+      headers['Content-Type'] = 'application/json';
+      return;
+    }
+    var frame = frameOf(detail.elt);
+    if (!frame) return;
+    if (verb === 'put' && isPut(detail.elt)) {
+      // An input that cannot be applied would be silently lost by a PUT that
+      // otherwise succeeds: send nothing and say so. So would an array
+      // operation that cannot be applied (a button that names no element).
+      clearNotice(frame);
+      var content = contentOf(frame);
+      var invalid = [];
+      var body = content ? buildBody(content, fieldsOf(frame), invalid) : null;
+      if (invalid.length) {
+        evt.preventDefault();
+        showNotice(frame, invalidFieldsText(invalid));
+        return;
+      }
+      var op = detail.elt === frame ? arrayOpOf(frame, detail.triggeringEvent) : null;
+      if (op) {
+        var failures = [];
+        if (body) applyArrayOp(body, op, failures);
+        else failures.push('the frame has no content');
+        if (failures.length) {
+          console.error('scrud-ui: array operation not applied: ' + failures[0]);
+          evt.preventDefault();
+          showNotice(frame, MISCONFIGURED);
+          return;
+        }
+      }
+    }
+    var etag = ifMatchTag(detail.elt, frame, requestPath(detail, verb));
+    if (etag) setDefault(headers, 'If-Match', quoteEtag(etag));
+    setDefault(headers, 'Scrud-UI-Scope', frame.getAttribute('data-scrud-scope'));
+    setDefault(headers, 'Scrud-UI-Pointer', frame.getAttribute('data-scrud-pointer'));
+    if (verb === 'put' && isPut(detail.elt)) {
+      headers['Content-Type'] = 'application/json';
+    }
+  });
+
+  /**
+   * The request of `detail.xhr` has ended: its frame is no longer in flight,
+   * and says the change was not sent when it refused one meanwhile (see
+   * `inFlight`). Once per request: on htmx:afterRequest, or on
+   * htmx:onLoadError when handling the response threw.
+   */
+  function settle(detail) {
+    var sender = detail.xhr ? frameOfXhr.get(detail.xhr) : undefined;
+    if (!sender) return;
+    frameOfXhr.delete(detail.xhr);
+    inFlight.delete(sender);
+    sentBody.delete(sender);
+    if (refusedInFlight.has(sender)) {
+      refusedInFlight.delete(sender);
+      var now = frameNow(sender);
+      if (now) showNotice(now, NOT_SENT, 'not-sent');
+    }
+  }
+
+  document.addEventListener('htmx:onLoadError', function (evt) {
+    settle(evt.detail || {});
+  });
+
+  /**
+   * After a successful DELETE of a frame's resource (its Delete button), remove
+   * the frame from the page (and the list item that held only it), and
+   * dispatch `scrud:deleted` on the document with the resource's href. The
+   * 204 itself swaps nothing.
+   */
+  document.addEventListener('htmx:afterRequest', function (evt) {
+    var detail = evt.detail || {};
+    var config = detail.requestConfig || {};
+    var verb = String(config.verb).toLowerCase();
+    settle(detail);
+    if (!detail.successful || verb !== 'delete') {
+      return;
+    }
+    var frame = frameOf(detail.elt);
+    if (!frame || !frame.parentNode) return;
+    var href = frame.getAttribute('data-scrud-href');
+    var path = detail.pathInfo && detail.pathInfo.requestPath;
+    if (path && path !== href) return; // something else in the frame was deleted
+    var parent = frame.parentNode;
+    parent.removeChild(frame);
+    if (
+      parent.tagName === 'LI' &&
+      parent.parentNode &&
+      !parent.children.length &&
+      !String(parent.textContent || '').trim()
+    ) {
+      parent.parentNode.removeChild(parent);
+    }
+    if (typeof CustomEvent === 'function') {
+      document.dispatchEvent(
+        new CustomEvent('scrud:deleted', { detail: { href: href } })
+      );
+    }
+  });
+
+  // A failed DELETE is never swapped in, except the 409 and 412 that the server
+  // answers with a notice and a frame that reloads the current state: swapping
+  // a bare notice would make the item look deleted.
+  document.addEventListener('htmx:beforeSwap', function (evt) {
+    var detail = evt.detail || {};
+    var config = detail.requestConfig || {};
+    var status = detail.xhr && detail.xhr.status;
+    if (String(config.verb).toLowerCase() !== 'delete' || !(status >= 400)) return;
+    if (!showsClientNotice('delete', status)) return;
+    detail.shouldSwap = false;
+    detail.isError = true;
+  });
+
+  // A failure nothing is swapped in for (401, 404, 415, 5xx, no network) is
+  // shown in the frame that made the request.
+  function failed(evt) {
+    var detail = evt.detail || {};
+    var config = detail.requestConfig || {};
+    var status = detail.xhr && detail.xhr.status;
+    var verb = String(config.verb).toLowerCase();
+    if (verb !== 'get' && status && !showsClientNotice(verb, status)) return;
+    var frame = frameOf(detail.elt);
+    if (frame) showNotice(frame, noticeText(status, verb));
+  }
+  document.addEventListener('htmx:responseError', failed);
+  document.addEventListener('htmx:sendError', failed);
+
+  htmx.defineExtension('scrud-json', {
+    // htmx 2.0.4 calls it after htmx:beforeSend, with the request's xhr.
+    encodeParameters: function (xhr, parameters, elt) {
+      var mode = jsonMode(elt);
+      if (mode === 'fixed') return fixedBody(elt) || null;
+      if (mode === 'form') return JSON.stringify(buildBody({}, jsonFormFields(elt)));
+      if (!isPut(elt)) return null;
+      var frame = frameOf(elt);
+      var content = frame && contentOf(frame);
+      if (!content) return null;
+      var body = buildBody(content, fieldsOf(frame));
+      var op = xhr ? requestOps.get(xhr) : undefined;
+      if (op) {
+        requestOps.delete(xhr);
+        applyArrayOp(body, op);
+      }
+      return JSON.stringify(body);
+    }
+  });
+})();

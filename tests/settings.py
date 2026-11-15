@@ -85,6 +85,7 @@ SETTINGS: dict[str, Any] = dict(
         "django.contrib.sessions.middleware.SessionMiddleware",
         "django.middleware.csrf.CsrfViewMiddleware",
         "django.contrib.auth.middleware.AuthenticationMiddleware",
+        "scrud_django.ui.branches.middleware.PublishedBranchMiddleware",
         "django.contrib.messages.middleware.MessageMiddleware",
     ),
     INSTALLED_APPS=(
@@ -100,7 +101,10 @@ SETTINGS: dict[str, Any] = dict(
         "rest_framework.authtoken",
         "scoped_rbac",
         "scrud_django",
+        "scrud_django.ui",
+        "scrud_django.ui.studio",
         "tests",
+        "tests.apps.UILayerTestConfig",
         "reversion",
     ),
     PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"],
@@ -128,4 +132,8 @@ SETTINGS: dict[str, Any] = dict(
     },
     HAYSTACK_SIGNAL_PROCESSOR="scrud_django.search.OnCommitSignalProcessor",
     SCRUD_WORKFLOW_ACTIONS=["tests.workflow_actions.actions"],
+    # The studio app without its UI layer (``studio:``), whose page component,
+    # CSS and JS every page would link and every item listing would list. The
+    # tests that need it turn it on with the ``studio_layer`` fixture.
+    SCRUD_UI_STUDIO_LAYER=False,
 )
