@@ -1,9 +1,258 @@
 # Change Log
 
-## Unreleased
+## 0.16.0
+
+This release adds the optional UI app, `scrud_django.ui` (components,
+branches and the studio), a framework-neutral core, `scrud_django.core`,
+and a django-ninja front end, `scrud_django.ninja` (a preview; DRF stays the
+default). Some changes refuse configurations or requests 0.15.0 accepted:
+work through Upgrading before you deploy it.
 
 ### Added
 
+* An additive django-ninja front end, `scrud_django.ninja` (a preview; the new
+  optional extra `ninja`, `scrud-django[ninja]`).
+  `scrud_django.ninja.api(types=[...])` returns a `NinjaAPI` serving the
+  built-in types, your types, the service catalog, scoped-rbac's role routes
+  and the collection documents, with the statuses, headers and bodies of the
+  DRF routes (DRF's content negotiation with its default renderers included:
+  its 406, its `?format=` 404 and `Accept: ...; indent=N`, but never HTML), errors included whatever
+  `SCOPED_RBAC["UNIFORM_ERRORS"]` is, when the API is built or for a request:
+  problem details while it is on, DRF's native `{"detail": ...}` bodies (a
+  computed type's `compute` refusing with an empty message, or a list or dict,
+  included) while it is off, but for a role or role assignment body failing
+  validation, which stays a problem (follow-up
+  `ninja-role-validation-native`). It serves no `docs/` or `openapi.json`
+  unless given `docs_url=` and `openapi_url=`. It takes no `auth=`, takes a
+  `urls_namespace` (distinct for each API in a process), and needs
+  `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. A router you
+  add to it carries its own `auth=` or scrud's entry checks
+  (`router.add_decorator(scrud_django.ninja.entry.entry, mode="view")`). UI
+  and studio types are not served on it yet, and `scrud_django.urls` is still
+  DRF. See "django-ninja (preview)" in the README.
+* `registration.TypeSpec` and the functions `json_resource_type_spec`,
+  `computed_resource_type_spec` and `built_in_type_specs`: a resource type as
+  every front end registers it, without a front end's routes.
+  `json_resource_type` and `computed_resource_type` are unchanged. A
+  `TypeSpec` is keyword-only, frozen and hashable, with five public fields
+  (`kind`, `resource_type_uri`, `slug`, `options`, `document_media_type`);
+  the rest of what stores its row is private, so the IRI and slug are
+  single-sourced and `dataclasses.replace(spec, slug=...)` cannot split a
+  spec's hooks from its stored row. A spec that contradicts itself (an
+  unknown `kind`, a computed type without `options.compute` or a json one
+  with it, a computed type with a hook but `compute`, an empty or non-string
+  slug or IRI, a plain type with a built-in type's IRI or slug, a
+  `document_media_type` outside `registration.DOCUMENT_MEDIA_TYPES`, hooks
+  on a built-in type) raises
+  `ImproperlyConfigured`, and `TypeOptions.compute` must be callable. The
+  helper functions return a private subclass (its `repr` shows
+  `_BuiltTypeSpec`); two specs are equal only when built the same way.
+  `json_resource_type_spec(uri, slug, *, ...)` takes its other arguments by
+  keyword only and no `indexing_policy_resource` (see
+  `json-resource-type-indexing-policy` in the follow-ups).
+  `ResourceTypeRegistration(build_urls=False, viewset_class=...)` raises
+  `TypeError`, and so does
+  `ResourceTypeRegistration(build_urls=False).register_urls()` (it was
+  `AttributeError`); `core.lists.ListPage` refuses a size or number below 1 or a
+  negative count; `core.urls.first_absolute_reverse` refuses a bare route
+  name given as a string.
+* `scrud_django.ninja.api()` refuses, before registering anything
+  process-wide, an element of `types=` that is not a `TypeSpec`, two types
+  with one slug or IRI, and a slug that is one of the API's own route
+  prefixes (`ImproperlyConfigured`/`TypeError`). `entry` refuses
+  `mode="operation"` when the router is mounted (`add_router`), and resolves the user of a real
+  OPTIONS (not of a CORS preflight). Importing `scrud_django.ninja` with
+  django-ninja installed but failing to import raises ninja's own error,
+  not "needs django-ninja".
+* How ninja authenticates: scoped-rbac's `resolve_user` (the
+  `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`, which only a router
+  you add with its own `auth=` sets, else the session),
+  not DRF's `DEFAULT_AUTHENTICATION_CLASSES`. A Basic or token client of a
+  DRF project is the anonymous user on ninja unless a `NINJA_USER` hook maps
+  it; the README has an example for Basic credentials.
+* `scrud_django.ui`, an optional app (add it to `INSTALLED_APPS` and install
+  the new `ui` extra, `scrud-django[ui]`, which adds Jinja2) that serves every
+  resource URL as `text/html`, chosen by `Accept: text/html`, rendered on the
+  server exactly as the viewer is authorized. Templates (UI components, Django
+  or sandboxed Jinja2) and CSS-like stylesheets that select them, layered per
+  RBAC context, are stored as resources of two new types, `UIComponent` and
+  `UIStylesheet`. Resources are edited in the browser with htmx 2.0.4 and
+  `scrud-ui.js` through ordinary JSON PUTs. See the new UI page of the
+  documentation, and the `seed_todo_demo` command of the demo project.
+  The known limitations are in the follow-ups under the `ui-` names.
+* A framework-neutral core, `scrud_django.core`: the domain logic of the
+  resource views (authorization requirements, workflow checks, body checks,
+  URLs, list queries and preconditions, writes, post-save checks, reads and
+  `Allow`) as functions of a plain Django request, with no import of
+  `rest_framework`, `django_filters` or scoped-rbac's DRF modules (a test
+  enforces it; `scrud_django.exceptions`, which it imports, loads
+  `rest_framework.exceptions` when DRF is installed). The DRF views are
+  adapters that delegate to it for the pieces they call, and every status,
+  header and body they answer is unchanged, but for the overrides listed
+  under Upgrading. The item-level facade of `scrud_django.core.resources`
+  (`check_request`, `load_for_read`, `object_readable`, `readable_content`,
+  `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
+  `create`, `update`, `destroy`) is not called by the DRF views; its tests
+  (`tests/test_core_*`, with a parity harness, `tests/test_core_parity.py`)
+  pin it against the DRF routes. It asks a route's request check
+  (`check_request`) before it looks anything up, as the DRF route asks its
+  permissions before `get_object()`: `readable_queryset` of a GET or HEAD
+  the list grant (each grants leaf asked as its list type, `http.GET` on
+  it, as DRF names the list type; a write's list validators are governed
+  by the write's own check), `load_for_read` the method's check (with the `body=` it is given,
+  else as `Allow` checks a PUT, without one), and `validate_write` the
+  write's check with its body, each refusing with `AccessDenied` (403):
+  for a missing item and an existing one alike, and before any validation
+  of the body. Those of its functions that decide access by a requirement
+  (`check_request`, `load_for_read`, `object_readable`,
+  `readable_content`, `allowed_methods`, `check_object`,
+  `readable_queryset`, `validate_write`, `create`, `update`, `destroy`
+  without a `check`, and
+  `scrud_django.core.writes.save_checked` without a `recheck`) raise
+  `ImproperlyConfigured` for one that asks no grants (empty, a type's hooks
+  only, or an `AnyOf` with an option of hooks only) rather than allow every
+  requester. Only a leaf of a trusted class (`GrantsLeaf`, the DRF
+  adapter's `ViewLeaf`, a subclass of either that overrides neither
+  `has_context_permission` nor `reads_each_context`, or one registered with
+  `scrud_django.core.requirements.register_grant_asking_leaf`) counts as
+  asking the grants; beside a leaf of any other class but a type's hooks
+  (which count as asking none, and get none asked beside them; a subclass
+  of `HookLeaf`, or an instance, overriding `contexts_for` or a `has_*`
+  check is no type's hooks) the core asks them itself, whatever that
+  leaf's `reads_each_context` says. And
+  `validate_write` requires a `requirement=`, whose type's hooks are the
+  checks that may refuse a transition. The workflow check
+  (`scrud_django.core.workflow.workflow_check`) takes its write as a
+  `Create(proposed)` or an `Update(prior, proposed, readable, stored_pk)`
+  (`write=`; anything else, a delete included, is a `TypeError`): an
+  update's stored content is a mapping or `NULL_CONTENT` (`prior_from`;
+  `prior_of` for a `Resource`, whose content that is JSON null or not an
+  object is `NULL_CONTENT`), never `None`, so null content is never
+  checked as a create. An `Update` requires `readable`, whether the
+  requester may read the stored resource: an update's workflow error is
+  hidden when it says not (`validate_write` of an update raises
+  `TypeError` without one). `validate_write` (so `create` and `update`)
+  refuses a body that is not a JSON object once the request and object
+  checks pass, as the DRF routes do: a 400
+  (`scrud_django.exceptions.RequestBodyNotAnObjectError`, with the body
+  DRF answers). The workflow check first removes any mark an
+  earlier check left on the request, so one that fails leaves none, on DRF
+  too. The facade's `create` and `update` always validate the body they
+  save themselves (`validate_write`, an update's errors hidden
+  unless the stored resource is readable). One validation authorizes one
+  write: the workflow check's mark names the type the post-save check
+  names and the resource written (none for a create), and the save that
+  uses it consumes it, whether it succeeds or fails, so a grant
+  conditioned on `scrud_workflow` allows neither a second save on the
+  request nor a save of another resource. An `AnyOf` option of the
+  facade's (DRF's `|`) allows an object only when each of its entries
+  allows the request (`has_permission`) and then the object, as DRF's `|`
+  asks them (`check_object`, and the object checks of `readable_content`
+  and `readable_queryset`; the DRF views' own are unchanged), and
+  `validate_write` (so `update`) of an update asks the object check of the
+  stored resource with the body, as DRF's `get_object()` asks it, whether
+  or not the caller loaded it with `load_for_read`: a writer cannot move a
+  resource out of a context where they may not write it, nor, through an
+  `AnyOf`, where only another option's request check allows. For a
+  `WorkflowPolicy`, `validate_write` (so `update`) also asks the
+  every-context check (`core.writes.check_every_context_of_policy`). A
+  `validate_write` first removes any mark an earlier validation left on
+  the request, so one that fails leaves none for a save to use. A type's
+  hooks are asked in a route's request check after the other entries and
+  where `scrud_workflow` refuses, as the DRF route asks them
+  (`check_request_hooks`) once its own request check is over, and so are
+  those of an `AnyOf` option where the option's request check is paired
+  with its object check (`check_object`, so `validate_write`): the two
+  answer alike. A front end
+  runs `scrud_django.core.bodies.check_body` on a write's body before the
+  facade, as DRF answers a malformed body 400 before any 403.
+  `allowed_methods` lists the methods its route serves
+  (`scrud_django.core.resources.served_methods`: GET alone for a computed
+  type registered with `compute=`, else the item's GET, PUT and DELETE or
+  the list's GET and POST), or the `methods=` it is given.
+  `readable_queryset` and `list_last_modified`, which filter by a
+  resource's stored contexts, raise `ImproperlyConfigured` for a
+  requirement with a leaf that may read others: one whose `contexts_for`
+  is not its class's (`GrantsLeaf`, a type's hooks, the DRF `ViewLeaf`
+  whose permission keeps scoped-rbac's), or of any other class unless
+  registered with
+  `scrud_django.core.requirements.register_stored_contexts_leaf`. A
+  requirement is a `scrud_django.core.requirements.Requirement`, frozen,
+  whose `AnyOf` is the core's own (frozen, each option a tuple; one of no
+  option, or with an empty option, is a `ValueError`):
+  `Requirement.of(entries)` converts scoped-rbac's `access.AnyOf` and
+  raises `ImproperlyConfigured` for one that asks no grants, and
+  `core.types.requirement_for` returns one. Every facade entry point
+  (`load_for_read`, `check_object`, `allowed_methods`, `readable_queryset`,
+  `list_last_modified`, `check_request`, `readable_content`,
+  `validate_write`, `create`, `update`, `destroy`, `save_checked` without a
+  `recheck`) takes a `Requirement` or its entries, through
+  `Requirement.of`: `list_last_modified` now refuses one that asks no
+  grants too. `scrud_django.drf_requirements.requirement_of` returns one
+  built `Requirement.unchecked` (a DRF view with no `IsAuthorized` asks no
+  grants and is still served); `core.requirements.to_scoped_rbac` gives an
+  `AnyOf` back as scoped-rbac's. `scrud_django.core.lists.list_queryset`
+  gives the list a front end serves (for a GET or HEAD: any other method is
+  a `ValueError`, as `readable_queryset` asks the list grant for those two
+  alone): `readable_queryset`, then, for a type
+  registered with `content_filter=`, the content filter on its query
+  parameters (`content_filtered`, but the `ignored=` ones, which default to the
+  list routes' ignored parameters, as for `create_list_validators`), in
+  `Resource.Meta.ordering`; `page_of` gives a page of it and the count, as
+  Django's `Paginator` pages it (`EmptyPage` past the last page). On MySQL
+  `page_of` finds the page among the keys alone and reads its rows by key
+  (`rows_by_keys`, which `StandardResultsSetPagination` calls too), so a
+  row whose content is over MySQL's `sort_buffer_size` is never sorted
+  (error 1038). It is the base for other front ends.
+  `update` raises `TypeError` for a `None` instance, and `allowed_methods`'
+  `methods=` are upper-cased and checked in `ALLOW_ORDER`, whatever the
+  caller's order or case.
+* Per-type hooks, honoured by every front end, on `json_resource_type`
+  (`checks=`, `object_checks=`, `content_filter=`) and
+  `computed_resource_type` (`compute=`). They can only refuse what the grants
+  allow, and refuse superusers too (as an `IsAuthorized` subclass does). A
+  hook allows only by returning `True`: any other return (`None`, `"no"`,
+  `1`) refuses. The hooks of a body with `rbac_context: []` are asked in
+  the default context, and a hook given an object that is neither a mapping
+  nor a `Resource` raises `TypeError`; `TypeOptions` refuses a hook that is
+  not callable (`TypeError`).
+  `checks` govern writes only: asked of a write in each context it writes, of
+  the stored resource of a PUT, PATCH or DELETE in each of its contexts, of
+  the saved resource in each of its contexts and of a workflow transition in
+  each context it is authorized in; a type with only `checks` lists by SQL.
+  Unlike an `IsAuthorized` subclass, whose object check allows a PUT or
+  DELETE when any context the resource is stored in allows it, `checks`
+  must allow in every one: a resource in `["a", "b"]` whose check refuses
+  `"b"` can be neither updated (not even moved to `"a"`) nor deleted (403,
+  and `Allow` leaves those methods out).
+  `object_checks` govern reads and objects (the detail route of every method,
+  each listed resource); a refused resource is hidden (404), and a write of a
+  resource they would hide is refused (403 after the save, which is rolled
+  back). `content_filter` makes the list filter on its query parameters; it
+  is read when the routes are built, so registering a slug again swaps the
+  other hooks but not an already built route's filter. `compute` supplies a
+  computed type's content without a viewset subclass. A type's hooks are
+  keyed by its type IRI: registering a type again replaces its hooks (a
+  different set logs a warning on `scrud_django.core.types`; another slug
+  registering the same IRI must carry the very same hook objects, else
+  `ImproperlyConfigured`: use module-level functions, as closures a
+  factory builds in the URLconf are new objects on each import), and
+  `requirement_for` takes the slug from the resource type (a different one
+  is `ImproperlyConfigured`) and imports `ROOT_URLCONF` once per process,
+  so a worker that never served a request still has the hooks.
+
+* New in the core and registration, public but meant for the front ends:
+  `core.resources.allowed_methods_for`, the modules `core.collections` and
+  `core.computed`, `core.urls.first_absolute_reverse` and
+  `absolute_reverse(namespace=)`, `ScrudServices.add_service` taking a
+  sequence of route prefixes, `ResourceTypeRegistration(build_urls=)`,
+  `registration.register_role_services` and `exceptions.ContentFilterError`.
+  `core.create` and `core.update` take `type_iri`, which names the post-save
+  check and the workflow mark. `core.resources.load_for_read`, locking for a
+  write, takes a `WorkflowPolicy`'s type lock before the row lock, as the DRF
+  views do, so a ninja write of a policy and a server-side write of it
+  (`ResourceRegistration.update`, a bulk delete, a sync repair) lock in one
+  order.
 * UI branches in `scrud_django.ui`. A branch is a named set of UI components,
   stylesheets and (new) CSS items that overrides its parent branch, live or
   pinned to a version. Branches are resources (`ui-branches`, with read-only
@@ -268,6 +517,16 @@
 
 ### Changed
 
+* Links now reverse within the URL namespace the request was resolved under:
+  `href`, `Location`, the schema and context `Link`s, the service URLs and the
+  stored-policy URL of a workflow error. A DRF app that mounts scrud's routes
+  under a namespaced `include()` gets namespaced links; before, those reverses
+  only worked if the routes were also mounted globally. Without a namespace
+  the links are as before.
+* `services/` leaves out a registered type that no route of the serving
+  URLconf names (another API's type, a UI type on a ninja API), where it
+  answered 500 (`NoReverseMatch`). `ScrudServices.catalog` and `etag_for`
+  leave it out too.
 * A `ui-branches` write refused for its `prefix` (malformed, taken, or
   overlapping another branch's or the API's URLs) now has `name: "prefix"` in
   its 400 `ui-branch-invalid` problem, as a JSON Schema error names its field,
@@ -353,283 +612,6 @@ unchanged. The middleware costs one query per request outside the API's URLs.
 
 ### Upgrading
 
-* Installing (or keeping) `scrud_django.ui.studio` now installs its packaged
-  UI layer, `studio:`: every HTML page the UI renders, on every branch and
-  outside the studio too, links the layer's CSS item `studio:studio` and
-  its five JS items (immutable, privately cached files; the scripts do
-  nothing without a workbench, the CSS selects only under `.studio` and
-  `[data-studio…]`), and every item listing and branch's items include the
-  layer's. To keep the bootstrap studio without the self-hosted one and
-  without those files, turn the layer off in your settings:
-  `SCRUD_UI_STUDIO_LAYER = False` (default `True`). Pages then link no
-  `studio:` item and no item listing has one; the bootstrap studio, the
-  studio's computed types and the studio links are unchanged. No config
-  subclass is needed (see "Setting up the self-hosted studio" in the UI
-  page).
-
-## 0.16.0
-
-### Added
-
-* An additive django-ninja front end, `scrud_django.ninja` (a preview; the new
-  optional extra `ninja`, `scrud-django[ninja]`).
-  `scrud_django.ninja.api(types=[...])` returns a `NinjaAPI` serving the
-  built-in types, your types, the service catalog, scoped-rbac's role routes
-  and the collection documents, with the statuses, headers and bodies of the
-  DRF routes (DRF's content negotiation with its default renderers included:
-  its 406, its `?format=` 404 and `Accept: ...; indent=N`, but never HTML), errors included whatever
-  `SCOPED_RBAC["UNIFORM_ERRORS"]` is, when the API is built or for a request:
-  problem details while it is on, DRF's native `{"detail": ...}` bodies (a
-  computed type's `compute` refusing with an empty message, or a list or dict,
-  included) while it is off, but for a role or role assignment body failing
-  validation, which stays a problem (follow-up
-  `ninja-role-validation-native`). It serves no `docs/` or `openapi.json`
-  unless given `docs_url=` and `openapi_url=`. It takes no `auth=`, takes a
-  `urls_namespace` (distinct for each API in a process), and needs
-  `include("scoped_rbac.semantic_urls")` in a ninja-only URLconf. A router you
-  add to it carries its own `auth=` or scrud's entry checks
-  (`router.add_decorator(scrud_django.ninja.entry.entry, mode="view")`). UI
-  and studio types are not served on it yet, and `scrud_django.urls` is still
-  DRF. See "django-ninja (preview)" in the README.
-* `registration.TypeSpec` and the functions `json_resource_type_spec`,
-  `computed_resource_type_spec` and `built_in_type_specs`: a resource type as
-  every front end registers it, without a front end's routes.
-  `json_resource_type` and `computed_resource_type` are unchanged. A
-  `TypeSpec` is keyword-only, frozen and hashable, with five public fields
-  (`kind`, `resource_type_uri`, `slug`, `options`, `document_media_type`);
-  the rest of what stores its row is private, so the IRI and slug are
-  single-sourced and `dataclasses.replace(spec, slug=...)` cannot split a
-  spec's hooks from its stored row. A spec that contradicts itself (an
-  unknown `kind`, a computed type without `options.compute` or a json one
-  with it, a computed type with a hook but `compute`, an empty or non-string
-  slug or IRI, a plain type with a built-in type's IRI or slug, a
-  `document_media_type` outside `registration.DOCUMENT_MEDIA_TYPES`, hooks
-  on a built-in type) raises
-  `ImproperlyConfigured`, and `TypeOptions.compute` must be callable. The
-  helper functions return a private subclass (its `repr` shows
-  `_BuiltTypeSpec`); two specs are equal only when built the same way.
-  `json_resource_type_spec(uri, slug, *, ...)` takes its other arguments by
-  keyword only and no `indexing_policy_resource` (see
-  `json-resource-type-indexing-policy` in the follow-ups).
-  `ResourceTypeRegistration(build_urls=False, viewset_class=...)` raises
-  `TypeError`, and so does
-  `ResourceTypeRegistration(build_urls=False).register_urls()` (it was
-  `AttributeError`); `core.lists.ListPage` refuses a size or number below 1 or a
-  negative count; `core.urls.first_absolute_reverse` refuses a bare route
-  name given as a string.
-* `scrud_django.ninja.api()` refuses, before registering anything
-  process-wide, an element of `types=` that is not a `TypeSpec`, two types
-  with one slug or IRI, and a slug that is one of the API's own route
-  prefixes (`ImproperlyConfigured`/`TypeError`). `entry` refuses
-  `mode="operation"` when the router is mounted (`add_router`), and resolves the user of a real
-  OPTIONS (not of a CORS preflight). Importing `scrud_django.ninja` with
-  django-ninja installed but failing to import raises ninja's own error,
-  not "needs django-ninja".
-* How ninja authenticates: scoped-rbac's `resolve_user` (the
-  `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`, which only a router
-  you add with its own `auth=` sets, else the session),
-  not DRF's `DEFAULT_AUTHENTICATION_CLASSES`. A Basic or token client of a
-  DRF project is the anonymous user on ninja unless a `NINJA_USER` hook maps
-  it; the README has an example for Basic credentials.
-* `scrud_django.ui`, an optional app (add it to `INSTALLED_APPS` and install
-  the new `ui` extra, `scrud-django[ui]`, which adds Jinja2) that serves every
-  resource URL as `text/html`, chosen by `Accept: text/html`, rendered on the
-  server exactly as the viewer is authorized. Templates (UI components, Django
-  or sandboxed Jinja2) and CSS-like stylesheets that select them, layered per
-  RBAC context, are stored as resources of two new types, `UIComponent` and
-  `UIStylesheet`. Resources are edited in the browser with htmx 2.0.4 and
-  `scrud-ui.js` through ordinary JSON PUTs. See the new UI page of the
-  documentation, and the `seed_todo_demo` command of the demo project.
-  The known limitations are in the follow-ups under the `ui-` names.
-* A framework-neutral core, `scrud_django.core`: the domain logic of the
-  resource views (authorization requirements, workflow checks, body checks,
-  URLs, list queries and preconditions, writes, post-save checks, reads and
-  `Allow`) as functions of a plain Django request, with no import of
-  `rest_framework`, `django_filters` or scoped-rbac's DRF modules (a test
-  enforces it; `scrud_django.exceptions`, which it imports, loads
-  `rest_framework.exceptions` when DRF is installed). The DRF views are
-  adapters that delegate to it for the pieces they call, and every status,
-  header and body they answer is unchanged, but for the overrides listed
-  under Upgrading. The item-level facade of `scrud_django.core.resources`
-  (`check_request`, `load_for_read`, `object_readable`, `readable_content`,
-  `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
-  `create`, `update`, `destroy`) is not called by the DRF views; its tests
-  (`tests/test_core_*`, with a parity harness, `tests/test_core_parity.py`)
-  pin it against the DRF routes. It asks a route's request check
-  (`check_request`) before it looks anything up, as the DRF route asks its
-  permissions before `get_object()`: `readable_queryset` of a GET or HEAD
-  the list grant (each grants leaf asked as its list type, `http.GET` on
-  it, as DRF names the list type; a write's list validators are governed
-  by the write's own check), `load_for_read` the method's check (with the `body=` it is given,
-  else as `Allow` checks a PUT, without one), and `validate_write` the
-  write's check with its body, each refusing with `AccessDenied` (403):
-  for a missing item and an existing one alike, and before any validation
-  of the body. Those of its functions that decide access by a requirement
-  (`check_request`, `load_for_read`, `object_readable`,
-  `readable_content`, `allowed_methods`, `check_object`,
-  `readable_queryset`, `validate_write`, `create`, `update`, `destroy`
-  without a `check`, and
-  `scrud_django.core.writes.save_checked` without a `recheck`) raise
-  `ImproperlyConfigured` for one that asks no grants (empty, a type's hooks
-  only, or an `AnyOf` with an option of hooks only) rather than allow every
-  requester. Only a leaf of a trusted class (`GrantsLeaf`, the DRF
-  adapter's `ViewLeaf`, a subclass of either that overrides neither
-  `has_context_permission` nor `reads_each_context`, or one registered with
-  `scrud_django.core.requirements.register_grant_asking_leaf`) counts as
-  asking the grants; beside a leaf of any other class but a type's hooks
-  (which count as asking none, and get none asked beside them; a subclass
-  of `HookLeaf`, or an instance, overriding `contexts_for` or a `has_*`
-  check is no type's hooks) the core asks them itself, whatever that
-  leaf's `reads_each_context` says. And
-  `validate_write` requires a `requirement=`, whose type's hooks are the
-  checks that may refuse a transition. The workflow check
-  (`scrud_django.core.workflow.workflow_check`) takes its write as a
-  `Create(proposed)` or an `Update(prior, proposed, readable, stored_pk)`
-  (`write=`; anything else, a delete included, is a `TypeError`): an
-  update's stored content is a mapping or `NULL_CONTENT` (`prior_from`;
-  `prior_of` for a `Resource`, whose content that is JSON null or not an
-  object is `NULL_CONTENT`), never `None`, so null content is never
-  checked as a create. An `Update` requires `readable`, whether the
-  requester may read the stored resource: an update's workflow error is
-  hidden when it says not (`validate_write` of an update raises
-  `TypeError` without one). `validate_write` (so `create` and `update`)
-  refuses a body that is not a JSON object once the request and object
-  checks pass, as the DRF routes do: a 400
-  (`scrud_django.exceptions.RequestBodyNotAnObjectError`, with the body
-  DRF answers). The workflow check first removes any mark an
-  earlier check left on the request, so one that fails leaves none, on DRF
-  too. The facade's `create` and `update` always validate the body they
-  save themselves (`validate_write`, an update's errors hidden
-  unless the stored resource is readable). One validation authorizes one
-  write: the workflow check's mark names the type the post-save check
-  names and the resource written (none for a create), and the save that
-  uses it consumes it, whether it succeeds or fails, so a grant
-  conditioned on `scrud_workflow` allows neither a second save on the
-  request nor a save of another resource. An `AnyOf` option of the
-  facade's (DRF's `|`) allows an object only when each of its entries
-  allows the request (`has_permission`) and then the object, as DRF's `|`
-  asks them (`check_object`, and the object checks of `readable_content`
-  and `readable_queryset`; the DRF views' own are unchanged), and
-  `validate_write` (so `update`) of an update asks the object check of the
-  stored resource with the body, as DRF's `get_object()` asks it, whether
-  or not the caller loaded it with `load_for_read`: a writer cannot move a
-  resource out of a context where they may not write it, nor, through an
-  `AnyOf`, where only another option's request check allows. For a
-  `WorkflowPolicy`, `validate_write` (so `update`) also asks the
-  every-context check (`core.writes.check_every_context_of_policy`). A
-  `validate_write` first removes any mark an earlier validation left on
-  the request, so one that fails leaves none for a save to use. A type's
-  hooks are asked in a route's request check after the other entries and
-  where `scrud_workflow` refuses, as the DRF route asks them
-  (`check_request_hooks`) once its own request check is over, and so are
-  those of an `AnyOf` option where the option's request check is paired
-  with its object check (`check_object`, so `validate_write`): the two
-  answer alike. A front end
-  runs `scrud_django.core.bodies.check_body` on a write's body before the
-  facade, as DRF answers a malformed body 400 before any 403.
-  `allowed_methods` lists the methods its route serves
-  (`scrud_django.core.resources.served_methods`: GET alone for a computed
-  type registered with `compute=`, else the item's GET, PUT and DELETE or
-  the list's GET and POST), or the `methods=` it is given.
-  `readable_queryset` and `list_last_modified`, which filter by a
-  resource's stored contexts, raise `ImproperlyConfigured` for a
-  requirement with a leaf that may read others: one whose `contexts_for`
-  is not its class's (`GrantsLeaf`, a type's hooks, the DRF `ViewLeaf`
-  whose permission keeps scoped-rbac's), or of any other class unless
-  registered with
-  `scrud_django.core.requirements.register_stored_contexts_leaf`. A
-  requirement is a `scrud_django.core.requirements.Requirement`, frozen,
-  whose `AnyOf` is the core's own (frozen, each option a tuple; one of no
-  option, or with an empty option, is a `ValueError`):
-  `Requirement.of(entries)` converts scoped-rbac's `access.AnyOf` and
-  raises `ImproperlyConfigured` for one that asks no grants, and
-  `core.types.requirement_for` returns one. Every facade entry point
-  (`load_for_read`, `check_object`, `allowed_methods`, `readable_queryset`,
-  `list_last_modified`, `check_request`, `readable_content`,
-  `validate_write`, `create`, `update`, `destroy`, `save_checked` without a
-  `recheck`) takes a `Requirement` or its entries, through
-  `Requirement.of`: `list_last_modified` now refuses one that asks no
-  grants too. `scrud_django.drf_requirements.requirement_of` returns one
-  built `Requirement.unchecked` (a DRF view with no `IsAuthorized` asks no
-  grants and is still served); `core.requirements.to_scoped_rbac` gives an
-  `AnyOf` back as scoped-rbac's. `scrud_django.core.lists.list_queryset`
-  gives the list a front end serves (for a GET or HEAD: any other method is
-  a `ValueError`, as `readable_queryset` asks the list grant for those two
-  alone): `readable_queryset`, then, for a type
-  registered with `content_filter=`, the content filter on its query
-  parameters (`content_filtered`, but the `ignored=` ones, which default to the
-  list routes' ignored parameters, as for `create_list_validators`), in
-  `Resource.Meta.ordering`; `page_of` gives a page of it and the count, as
-  Django's `Paginator` pages it (`EmptyPage` past the last page). On MySQL
-  `page_of` finds the page among the keys alone and reads its rows by key
-  (`rows_by_keys`, which `StandardResultsSetPagination` calls too), so a
-  row whose content is over MySQL's `sort_buffer_size` is never sorted
-  (error 1038). It is the base for other front ends.
-  `update` raises `TypeError` for a `None` instance, and `allowed_methods`'
-  `methods=` are upper-cased and checked in `ALLOW_ORDER`, whatever the
-  caller's order or case.
-* Per-type hooks, honoured by every front end, on `json_resource_type`
-  (`checks=`, `object_checks=`, `content_filter=`) and
-  `computed_resource_type` (`compute=`). They can only refuse what the grants
-  allow, and refuse superusers too (as an `IsAuthorized` subclass does). A
-  hook allows only by returning `True`: any other return (`None`, `"no"`,
-  `1`) refuses. The hooks of a body with `rbac_context: []` are asked in
-  the default context, and a hook given an object that is neither a mapping
-  nor a `Resource` raises `TypeError`; `TypeOptions` refuses a hook that is
-  not callable (`TypeError`).
-  `checks` govern writes only: asked of a write in each context it writes, of
-  the stored resource of a PUT, PATCH or DELETE in each of its contexts, of
-  the saved resource in each of its contexts and of a workflow transition in
-  each context it is authorized in; a type with only `checks` lists by SQL.
-  Unlike an `IsAuthorized` subclass, whose object check allows a PUT or
-  DELETE when any context the resource is stored in allows it, `checks`
-  must allow in every one: a resource in `["a", "b"]` whose check refuses
-  `"b"` can be neither updated (not even moved to `"a"`) nor deleted (403,
-  and `Allow` leaves those methods out).
-  `object_checks` govern reads and objects (the detail route of every method,
-  each listed resource); a refused resource is hidden (404), and a write of a
-  resource they would hide is refused (403 after the save, which is rolled
-  back). `content_filter` makes the list filter on its query parameters; it
-  is read when the routes are built, so registering a slug again swaps the
-  other hooks but not an already built route's filter. `compute` supplies a
-  computed type's content without a viewset subclass. A type's hooks are
-  keyed by its type IRI: registering a type again replaces its hooks (a
-  different set logs a warning on `scrud_django.core.types`; another slug
-  registering the same IRI must carry the very same hook objects, else
-  `ImproperlyConfigured`: use module-level functions, as closures a
-  factory builds in the URLconf are new objects on each import), and
-  `requirement_for` takes the slug from the resource type (a different one
-  is `ImproperlyConfigured`) and imports `ROOT_URLCONF` once per process,
-  so a worker that never served a request still has the hooks.
-
-* New in the core and registration, public but meant for the front ends:
-  `core.resources.allowed_methods_for`, the modules `core.collections` and
-  `core.computed`, `core.urls.first_absolute_reverse` and
-  `absolute_reverse(namespace=)`, `ScrudServices.add_service` taking a
-  sequence of route prefixes, `ResourceTypeRegistration(build_urls=)`,
-  `registration.register_role_services` and `exceptions.ContentFilterError`.
-  `core.create` and `core.update` take `type_iri`, which names the post-save
-  check and the workflow mark. `core.resources.load_for_read`, locking for a
-  write, takes a `WorkflowPolicy`'s type lock before the row lock, as the DRF
-  views do, so a ninja write of a policy and a server-side write of it
-  (`ResourceRegistration.update`, a bulk delete, a sync repair) lock in one
-  order.
-
-### Changed
-
-* Links now reverse within the URL namespace the request was resolved under:
-  `href`, `Location`, the schema and context `Link`s, the service URLs and the
-  stored-policy URL of a workflow error. A DRF app that mounts scrud's routes
-  under a namespaced `include()` gets namespaced links; before, those reverses
-  only worked if the routes were also mounted globally. Without a namespace
-  the links are as before.
-* `services/` leaves out a registered type that no route of the serving
-  URLconf names (another API's type, a UI type on a ninja API), where it
-  answered 500 (`NoReverseMatch`). `ScrudServices.catalog` and `etag_for`
-  leave it out too.
-
-### Upgrading
-
 * `json_resource_type` and `computed_resource_type` (with `compute`) now
   build a `TypeSpec`, which refuses (`ImproperlyConfigured`) what could never
   have worked: an empty or non-string slug or IRI, a slug or IRI of a
@@ -692,6 +674,19 @@ unchanged. The middleware costs one query per request outside the API's URLs.
   resources before saving them (two serializers, a `many=True` create).
 
 Behaviour without `scrud_django.ui` in `INSTALLED_APPS` is unchanged.
+* Installing (or keeping) `scrud_django.ui.studio` now installs its packaged
+  UI layer, `studio:`: every HTML page the UI renders, on every branch and
+  outside the studio too, links the layer's CSS item `studio:studio` and
+  its five JS items (immutable, privately cached files; the scripts do
+  nothing without a workbench, the CSS selects only under `.studio` and
+  `[data-studio…]`), and every item listing and branch's items include the
+  layer's. To keep the bootstrap studio without the self-hosted one and
+  without those files, turn the layer off in your settings:
+  `SCRUD_UI_STUDIO_LAYER = False` (default `True`). Pages then link no
+  `studio:` item and no item listing has one; the bootstrap studio, the
+  studio's computed types and the studio links are unchanged. No config
+  subclass is needed (see "Setting up the self-hosted studio" in the UI
+  page).
 
 ## 0.15.0
 
