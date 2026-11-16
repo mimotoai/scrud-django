@@ -412,7 +412,7 @@ def destroy_article(request, pk: str, obj):
   management command, an endpoint that forgot the check) is not refused: each
   context where it is invalid is logged as a warning on the
   `scrud_django.workflow` logger, as for a resource. Whether such saves should
-  be refused is open (issue #56). Server code that has done the check itself
+  be refused is open (scrud-django's GitLab issue #56, https://gitlab.com/dcharbon/scrud-django/-/issues/56). Server code that has done the check itself
   wraps its saves in `scrud_django.core.transitions.checked_save(Model)`.
 * Deletes are not checked against the workflow, only authorized (follow-up
   `delete-no-workflow-check`).
