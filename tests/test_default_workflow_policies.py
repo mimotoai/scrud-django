@@ -188,7 +188,16 @@ def test_one_workflow_policy_object_may_be_the_default_of_two_types():
 def test_test_defaults_are_policy_content():
     from tests.workflow_defaults import workflow_policies
 
-    assert workflow_policies() == {TODO: todo_policy()}
+    article_policy = json.loads(
+        importlib.resources.files("tests.static.article_flow")
+        .joinpath("workflow.json")
+        .read_text()
+    )
+    assert workflow_policies() == {
+        TODO: todo_policy(),
+        # The own model's (tests.test_core_governed).
+        "tests://Article": article_policy,
+    }
 
 
 def test_a_callable_setting_is_called_once():

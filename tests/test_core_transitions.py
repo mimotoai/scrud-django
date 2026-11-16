@@ -5,9 +5,14 @@ import logging
 import pytest
 
 from scrud_django.core.transitions import log_skipped_check, transitions_between
+from scrud_django.registration import (
+    ResourceRegistration,
+    workflow_policy_resource_type,
+)
 from scrud_django.workflow import INITIALIZE, LEAVE, WorkflowTransitionError
 
 TYPE_IRI = "tests://ToDo"
+NO_DEFAULT = "tests://NoDefault"
 NOT_STARTED = {"status": "not started"}
 DONE = {"status": "done", "priority": "high", "assignee": "me"}
 
@@ -73,3 +78,35 @@ def test_log_skipped_check_keeps_the_resource_wording(caplog):
         .getMessage()
         .startswith("Saving resource pk 7 of tests://ToDo skipped the workflow check")
     )
+
+
+@pytest.mark.django_db
+def test_leaving_into_a_context_without_a_policy():
+    # A type with no settings default: only its stored policy, in "a", applies.
+    workflow_policy_resource_type()
+    ResourceRegistration.register(
+        {
+            "resource_type": NO_DEFAULT,
+            "initial_states": {"any": "true"},
+            "states": {},
+            "transitions": {},
+            "rbac_context": "a",
+        },
+        "workflow-policies",
+    )
+    result = transitions_between(
+        NO_DEFAULT,
+        prior={"rbac_context": "a"},
+        proposed={"rbac_context": "b"},
+        contexts_before=["a"],
+        contexts_after=["b"],
+    )
+    left = result.transitions["a"]
+    assert (left.proposed_state, left.prior_state, left.transition) == (
+        None,
+        "any",
+        LEAVE,
+    )
+    assert "b" not in result.transitions
+    assert result.transition_data is None
+    assert result.errors == {}

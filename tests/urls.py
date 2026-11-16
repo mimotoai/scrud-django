@@ -16,6 +16,7 @@ from scoped_rbac.rest import AccessControlledAPIView, RbacJSONParser
 from scrudful.rest_framework import hsr_urls, scrudful, scrudful_viewset
 
 from scrud_django import registration
+from scrud_django.core.transitions import govern
 from scrud_django.filters import ResourceRbacFilter
 from scrud_django.mixins.view_mixins import (
     GenericViewMixin,
@@ -27,8 +28,9 @@ from scrud_django.models import ResourceType
 from scrud_django.permissions import current_transition
 from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
 
-from .models import Note
+from .models import Article, Note
 from .resource_types import hooked_resource_types, json_resource_types
+from .workflow_defaults import ARTICLE, article_contexts, article_state
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -39,6 +41,12 @@ urlpatterns = [
 urlpatterns.extend(registration.resource_types(*json_resource_types()))
 # The types registered with per-type hooks (tests.test_type_hooks).
 urlpatterns.extend(registration.resource_types(*hooked_resource_types()))
+
+# The test settings' SCRUD_WORKFLOW_ACTIONS has actions for tests://Article, an
+# own model: it is governed where an app governs one, on the import of its
+# URLconf, which the system checks import first (scrud_django.W006 accepts its
+# IRI). Its own router's workflow_check governs it again, alike.
+govern(Article, ARTICLE, state_of=article_state, contexts_for=article_contexts)
 
 # The partner profiles list again, served by ResourceViewSetGenericFilter, whose
 # list filters on query parameters.

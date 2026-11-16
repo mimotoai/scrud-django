@@ -1,12 +1,23 @@
 """The workflow transitions ``scrud_post_save`` reports, on plain mappings and
 a type IRI: `ResourceMixin` (a ``Resource``) and an app's own models both
 compute them here, so a resource and an own model report the same way.
+
+An app's own model is governed by a workflow once it is recorded with
+`govern` (``scrud_django.ninja.workflow_check`` does it): a save of it that
+skips the workflow check, any save but the toolkit's (`checked_save`), is
+logged as a resource's is (`log_skipped_check`), not refused.
 """
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from types import MappingProxyType
 from typing import NamedTuple
+
+from django.core.exceptions import ImproperlyConfigured
+from django.db.models import Model
+from django.db.models.signals import post_save, pre_save
 
 from scrud_django.workflow import (
     LEAVE,
@@ -179,3 +190,115 @@ def log_skipped_check(errors: Mapping, *, subject: str, type_iri: str) -> None:
                 else ""
             ),
         )
+
+
+class Governed(NamedTuple):
+    """A governed model's entry in the registry (`govern`)."""
+
+    # The model's type IRI: its policies' ``resource_type``.
+    iri: str
+    # The content its workflow reads, of an instance.
+    state_of: Callable[[Model], Mapping]
+    # The contexts an instance is in.
+    contexts_for: Callable[[Model], Sequence[str]]
+
+
+# The governed models: model class -> `Governed`. The receivers `govern`
+# connects read it at each save, so a model no longer in it is left alone.
+_GOVERNED: dict[type[Model], Governed] = {}
+
+# The models whose saves are the toolkit's own (`checked_save`) in this
+# context (thread, task).
+_CHECKED: ContextVar[frozenset[type[Model]]] = ContextVar(
+    "scrud_django_checked_saves", default=frozenset()
+)
+
+# The attribute a governed instance's pre-save stashes ``(iri, Transitions)``
+# under for its post-save.
+_PENDING = "_scrud_governed_transitions"
+
+
+def govern(
+    model: type[Model],
+    iri: str,
+    *,
+    state_of: Callable[[Model], Mapping],
+    contexts_for: Callable[[Model], Sequence[str]],
+) -> None:
+    """Record `model` (an app's own model, not a resource) as governed by
+    the workflow policies of the type `iri`: the content they read of an
+    instance is `state_of` it, its contexts `contexts_for` it. A save of it
+    outside `checked_save` (the admin, server code) skipped the workflow
+    check: it is saved, and each context where it is invalid is logged as a
+    WARNING on the ``scrud_django.workflow`` logger (`log_skipped_check`),
+    as a resource's is. Its pre-save and post-save receivers are connected
+    once per model.
+
+    Governing the same model under the same `iri` again (a URLconf imported
+    twice) replaces `state_of` and `contexts_for`; under another IRI it is
+    ``ImproperlyConfigured``: a model has one type."""
+    governed = _GOVERNED.get(model)
+    if governed is not None and governed.iri != iri:
+        raise ImproperlyConfigured(
+            f"{model._meta.label} is governed as {governed.iri!r}; it cannot "
+            f"also be governed as {iri!r}."
+        )
+    _GOVERNED[model] = Governed(iri, state_of, contexts_for)
+    uid = f"scrud_django.governed.{model._meta.label}"
+    pre_save.connect(_governed_pre_save, sender=model, dispatch_uid=uid)
+    post_save.connect(_governed_post_save, sender=model, dispatch_uid=uid)
+
+
+def governed_type_iris() -> frozenset[str]:
+    """The type IRIs of the governed models (`govern`)."""
+    return frozenset(governed.iri for governed in _GOVERNED.values())
+
+
+@contextmanager
+def checked_save(model: type[Model]) -> Iterator[None]:
+    """While open, the saves of `model` (that class only: a save of another
+    governed model it makes is still logged) are the toolkit's, which
+    checked them against the workflow first: none is logged."""
+    token = _CHECKED.set(_CHECKED.get() | {model})
+    try:
+        yield
+    finally:
+        _CHECKED.reset(token)
+
+
+def _governed_pre_save(sender, instance, raw=False, using=None, **kwargs):
+    """Before a save of a governed model that skipped the workflow check:
+    stash its `Transitions` on the instance, from the stored row (re-read on
+    the database the save writes to, `using`; a create or a row not there
+    has no prior state and no contexts) to the instance. A raw save
+    (``loaddata``) is not logged, as a resource's is not."""
+    # One a save that raised before its post-save left behind is dropped.
+    instance.__dict__.pop(_PENDING, None)
+    governed = _GOVERNED.get(sender)
+    if governed is None or raw or sender in _CHECKED.get():
+        return
+    stored = (
+        None
+        if instance._state.adding
+        else sender._base_manager.using(using).filter(pk=instance.pk).first()
+    )
+    found = transitions_between(
+        governed.iri,
+        prior=None if stored is None else governed.state_of(stored),
+        proposed=governed.state_of(instance),
+        contexts_before=[] if stored is None else governed.contexts_for(stored),
+        contexts_after=governed.contexts_for(instance),
+    )
+    setattr(instance, _PENDING, (governed.iri, found))
+
+
+def _governed_post_save(sender, instance, **kwargs):
+    """Once the row is written: log the workflow errors its pre-save found
+    (`log_skipped_check`)."""
+    pending = instance.__dict__.pop(_PENDING, None)
+    if pending is None:
+        return
+    iri, found = pending
+    log_skipped_check(
+        found.errors, subject=f"{sender._meta.label} pk {instance.pk}", type_iri=iri
+    )

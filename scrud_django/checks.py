@@ -769,8 +769,12 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
     ``SCRUD_WORKFLOW_ACTIONS`` that is not a registered resource type on the
     database ``ResourceType`` is written to (``router.db_for_write``), if it
     is among `databases`, migrated and holds the tables (`not_checked`): a
-    misspelled type URI runs nothing. Resource types are registered when the
-    URLconf is imported, which this does first (as Django's URL checks do).
+    misspelled type URI runs nothing. A type URI an app's own model is
+    governed as (`scrud_django.core.transitions.governed_type_iris`) is not
+    reported: its actions run for that model's writes. Resource types are
+    registered, and own models governed (``scrud_django.ninja.workflow_check``,
+    at the import of the module of an app's router), when the URLconf is
+    imported, which this does first (as Django's URL checks do).
     A setting that cannot be loaded is `check_workflow_actions`'s to
     report. A URLconf that cannot be imported, or a database error reading
     the migrated database, is reported (`could_not_run`,
@@ -781,6 +785,7 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
     from django.urls import get_resolver
 
     from scrud_django.conf import workflow_actions
+    from scrud_django.core.transitions import governed_type_iris
     from scrud_django.models import ResourceType
 
     alias = router.db_for_write(ResourceType)
@@ -810,13 +815,16 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
         )
     except (OperationalError, ProgrammingError) as error:
         return [could_not_run("scrud_django.W006", alias, error_text(error))]
+    registered |= governed_type_iris()
     return [
         checks.Warning(
             f"SCRUD_WORKFLOW_ACTIONS has actions for {type_uri!r}, which is not a "
-            f"resource type registered on database {alias!r}: they never run.",
+            f"resource type registered on database {alias!r} nor the IRI of a "
+            "governed model: they never run.",
             hint=(
                 "Fix the type URI (it is the resource type's type_uri, as "
-                "registered with ResourceTypeRegistration), or remove the entry."
+                "registered with ResourceTypeRegistration, or the IRI a model "
+                "is governed as with workflow_check), or remove the entry."
             ),
             obj=type_uri,
             id="scrud_django.W006",
