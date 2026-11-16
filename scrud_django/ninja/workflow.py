@@ -30,7 +30,12 @@ from scoped_rbac.ninja import save_checked as rbac_save_checked
 from scrud_django.core.authz import _consume_workflow_mark
 from scrud_django.core.resources import COVERED_ITEM_METHOD, COVERED_LIST_METHOD
 from scrud_django.core.signals import scrud_post_delete, scrud_post_save
-from scrud_django.core.transitions import checked_save, govern, transitions_between
+from scrud_django.core.transitions import (
+    checked_save,
+    govern,
+    log_skipped_check,
+    transitions_between,
+)
 from scrud_django.core.workflow import Create, Update, authorizing_write
 from scrud_django.core.workflow import workflow_check as check_write
 
@@ -69,7 +74,13 @@ class ModelWorkflow:
         ``COVERED_ITEM_METHOD``, which ``check_request``, ``check_object``
         and ``allowed_methods`` use). For a PUT or POST, `save_checked` then
         authorizes the transition itself. Wrap the create's
-        ``authorize_write`` in it; scoped-rbac's hooks take `covered`."""
+        ``authorize_write`` in it; scoped-rbac's hooks take `covered`.
+
+        A covered check is allowed on the promise that the workflow check
+        follows: wrap only the checks of a POST to the list or a PUT to an
+        item whose write goes through `save_checked`. A covered route that
+        saves any other way lets those ``scrud_workflow`` grants write
+        unchecked."""
         covered = COVERED_ITEM_METHOD if item else COVERED_LIST_METHOD
         return authorizing_write(request, covered=request.method == covered)
 
@@ -81,7 +92,8 @@ class ModelWorkflow:
         ``item_check(load=...)`` reads) are kept. scrudful's OPTIONS checks
         each method on a copy of the request with that method, so a PUT a
         ``scrud_workflow`` grant allows is listed in ``Allow``, as on the
-        resource routes."""
+        resource routes. As for `covering`: wrap only the hooks of routes
+        whose POST or PUT writes through `save_checked`."""
 
         @functools.wraps(hook)
         def run(request, *args, **kwargs):
@@ -126,8 +138,16 @@ class ModelWorkflow:
            write (``authorizing_write``); the save is not logged as skipping
            the workflow check (``checked_save``);
         3. ``scrud_post_save``, with the transitions from the stored state to
-           ``state(saved)`` (``core.transitions.transitions_between``), whose
-           workflow actions run once the write commits.
+           ``state(saved)`` (``core.transitions.transitions_between``; in the
+           settings default's context ``None`` for an object in no context,
+           as the workflow check applied it), whose workflow actions run once
+           the write commits. `save` must return one instance of the model
+           (``TypeError`` otherwise: a list of many is scoped-rbac's, not a
+           workflow write). Should it have written other than the checked
+           values (a ``Model.save`` override, say), each context where the
+           saved state is invalid is logged as a WARNING on the
+           ``scrud_django.workflow`` logger (``log_skipped_check``), as an
+           unchecked save is.
 
         Any failure rolls the write back and sends nothing. The request's
         workflow mark is removed however it ends. Returns what
@@ -181,12 +201,29 @@ class ModelWorkflow:
                         contexts_for=self.contexts_for,
                         queryset=queryset,
                     )
+                if not isinstance(obj, model):
+                    # scoped-rbac takes a list for a create of many objects;
+                    # a workflow write is of one.
+                    raise TypeError(
+                        f"save must return one {model._meta.label}, not "
+                        f"{type(obj).__name__} (save_checked writes one object)."
+                    )
                 found = transitions_between(
                     self.iri,
                     prior=prior,
                     proposed=self.state(obj),
                     contexts_before=contexts_before,
-                    contexts_after=self.contexts_for(obj),
+                    # In no context: the settings default under None, as the
+                    # workflow check applied it (as for a resource).
+                    contexts_after=list(self.contexts_for(obj)) or [None],
+                )
+                # The checked values were valid; a `save` (or a Model.save
+                # override) that wrote another state is logged, as an
+                # unchecked save is (checked_save kept the receiver quiet).
+                log_skipped_check(
+                    found.errors,
+                    subject=f"{model._meta.label} pk {obj.pk}",
+                    type_iri=self.iri,
                 )
                 scrud_post_save.send(
                     sender=model,
@@ -227,12 +264,17 @@ class ModelWorkflow:
         """Delete `instance` with `delete` (default ``instance.delete``), then
         send ``scrud_post_delete`` (``pk`` the one it had), in one transaction
         on the model's write database, whose workflow actions run once it
-        commits. A delete runs no workflow check (follow-up
-        ``delete-no-workflow-check``), as a resource's does not; the route
-        authorizes it (``scoped_rbac.ninja.rbac_load``)."""
+        commits. The row is first read again on that database with
+        ``select_for_update()`` (its stored values set on `instance`), held
+        until the delete commits, as a resource delete locks it;
+        ``scoped_rbac.access.ObjectNotFound`` (404) when another request
+        deleted it meanwhile, and nothing is sent. A delete runs no workflow
+        check (follow-up ``delete-no-workflow-check``), as a resource's does
+        not; the route authorizes it (``scoped_rbac.ninja.rbac_load``)."""
         db = router.db_for_write(self.model, instance=instance)
         pk = instance.pk
         with transaction.atomic(using=db):
+            self._lock_current(instance, db)
             (instance.delete if delete is None else delete)()
             scrud_post_delete.send(
                 sender=self.model,

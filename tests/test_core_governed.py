@@ -231,3 +231,20 @@ def test_w006_accepts_a_governed_models_iri(governed_article, monkeypatch):
         del transitions._GOVERNED[Article]
         found = check_workflow_action_types(None, databases=["default"])
         assert [obj for (_, _, obj) in w006(found)] == [ARTICLE, "tests://NoSuchType"]
+
+
+@pytest.mark.django_db
+def test_a_model_in_no_context_is_checked_under_the_default_policy(registry, caplog):
+    # contexts_for gives none: the settings default applies under context
+    # None, as for a resource in no context.
+    govern(Article, ARTICLE, state_of=article_state, contexts_for=lambda obj: [])
+    article = draft_in_a()
+    article.state = "archived"
+    with caplog.at_level(logging.WARNING, logger="scrud_django.workflow"):
+        article.save()
+    found = warnings_logged(caplog)
+    assert len(found) == 1
+    assert found[0].startswith(
+        f"Saving tests.Article pk {article.pk} of tests://Article skipped the "
+        "workflow check, which it fails in context None"
+    )

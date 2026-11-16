@@ -113,14 +113,15 @@ def transitions_between(
       context the stored content or the proposed content is in (stored ones
       first, as the ``WorkflowValidator`` checks them) where a policy applies
       (`workflow_policies_for`), the write there. (A ``None`` context, which
-      `contexts_after` has only when the content names none, is defensive: it
-      is reported with the settings default, as the ``WorkflowValidator``
-      checks it.) A context it stays in: the transition under its policy
-      (``None`` if invalid); one it enters (or a create's): its
-      ``__INITIALIZE__`` (``None`` if the content is in no initial state
-      there); one it leaves: ``TransitionData(None, <the state it was in
-      there>, "__LEAVE__")`` (`LEAVE`); ``None`` in any of them where the
-      state is ambiguous. A context without a policy is left out.
+      callers pass in `contexts_after` when the content is in none, is
+      reported with the settings default, as the ``WorkflowValidator``
+      checks it: for a resource it is defensive; an own model's
+      ``contexts_for`` may give none.) A context it stays in: the
+      transition under its policy (``None`` if invalid); one it enters (or
+      a create's): its ``__INITIALIZE__`` (``None`` if the content is in no
+      initial state there); one it leaves: ``TransitionData(None, <the
+      state it was in there>, "__LEAVE__")`` (`LEAVE`); ``None`` in any of
+      them where the state is ambiguous. A context without a policy is left out.
 
     Each context's policy is read once."""
     stored_contexts = list(contexts_before)
@@ -231,9 +232,12 @@ def govern(
     outside `checked_save` (the admin, server code) skipped the workflow
     check: it is saved, and each context where it is invalid is logged as a
     WARNING on the ``scrud_django.workflow`` logger (`log_skipped_check`),
-    as a resource's is. Its pre-save and post-save receivers are connected
-    once per model. `state_of` and `contexts_for` must not raise: an
-    exception fails the save, as a resource's transition computation does.
+    as a resource's is; an instance in no context (`contexts_for` gives
+    none) is checked under the settings default, in context ``None``, as
+    the workflow check applies it. Its pre-save and post-save receivers are
+    connected once per model. `state_of` and `contexts_for` must not raise:
+    an exception fails the save, as a resource's transition computation
+    does.
 
     Governing the same model under the same `iri` again (a URLconf imported
     twice) replaces `state_of` and `contexts_for`; under another IRI it is
@@ -288,7 +292,9 @@ def _governed_pre_save(sender, instance, raw=False, using=None, **kwargs):
         prior=None if stored is None else governed.state_of(stored),
         proposed=governed.state_of(instance),
         contexts_before=[] if stored is None else governed.contexts_for(stored),
-        contexts_after=governed.contexts_for(instance),
+        # In no context: the settings default under None, as the workflow
+        # check applies it (as for a resource).
+        contexts_after=list(governed.contexts_for(instance)) or [None],
     )
     setattr(instance, _PENDING, (governed.iri, found))
 

@@ -23,6 +23,7 @@ from scrud_django.registration import (
     workflow_policy_resource_type,
 )
 
+from .factories import UserFactory
 from .fixtures import assign_role
 from .models import Article
 from .workflow_actions import article_calls
@@ -520,3 +521,111 @@ def test_a_save_that_raises_rolls_back(calls, django_capture_on_commit_callbacks
     assert not Article.objects.exists()
     assert calls == []
     assert not _workflow_authorized(request, type_iri=ARTICLE, stored_pk=None)
+
+
+def test_a_delete_of_a_row_deleted_meanwhile_is_missing(
+    calls, django_capture_on_commit_callbacks
+):
+    # The route loaded the row; another request deleted it before this
+    # delete's transaction began.
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a"), method="delete")
+    stale = draft_in_a()
+    Article.objects.filter(pk=stale.pk).delete()
+    db = db_router.db_for_write(Article)
+    with django_capture_on_commit_callbacks(execute=True):
+        with CaptureQueriesContext(connections[db]) as queries:
+            with pytest.raises(access.ObjectNotFound):
+                workflow.delete_checked(request, instance=stale)
+    # No scrud_post_delete, so no workflow action, for a delete of nothing.
+    assert calls == []
+    if connections[db].features.has_select_for_update:
+        # Read again under a lock held until the delete commits.
+        assert any("FOR UPDATE" in query["sql"] for query in queries), [
+            query["sql"] for query in queries
+        ]
+
+
+def test_a_model_in_no_context_reports_under_the_default_policy(
+    registry, calls, django_capture_on_commit_callbacks
+):
+    # contexts_for gives none: the workflow check applies the settings
+    # default under context None, and the transitions are reported there,
+    # as a resource's in no context are.
+    workflow = workflow_check(
+        ARTICLE, model=Article, state_of=article_state, contexts_for=lambda obj: []
+    )
+    request = put_request(UserFactory(is_staff=True, is_superuser=True), "post")
+    values = {"title": "t", "state": "draft", "rbac_context": "a"}
+    with django_capture_on_commit_callbacks(execute=True):
+        workflow.save_checked(
+            request,
+            instance=None,
+            values=values,
+            save=lambda: Article.objects.create(**values),
+        )
+    [(kind, kwargs)] = calls
+    assert kind == "on_save"
+    data = kwargs["transition_data"]
+    assert data is not None
+    assert (data.proposed_state, data.transition) == ("draft", "__INITIALIZE__")
+    assert dict(kwargs["transitions"]) == {None: data}
+    assert kwargs["transition_error"] is None
+
+
+def test_a_save_writing_other_than_the_checked_values_warns(
+    calls, django_capture_on_commit_callbacks, caplog
+):
+    # The workflow check passed draft -> published; the router's save (or a
+    # Model.save override) writes archived instead, which the checked save
+    # does not log at pre-save: the toolkit logs it once the row is saved.
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a"))
+    article = draft_in_a()
+
+    def archived():
+        article.state = "archived"
+        article.save()
+        return article
+
+    with caplog.at_level(logging.WARNING, logger="scrud_django.workflow"):
+        with django_capture_on_commit_callbacks(execute=True):
+            workflow.save_checked(
+                request,
+                instance=article,
+                values={"state": "published"},
+                save=archived,
+            )
+    found = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "scrud_django.workflow" and record.levelno == logging.WARNING
+    ]
+    assert len(found) == 1, found
+    assert found[0].startswith(
+        f"Saving tests.Article pk {article.pk} of tests://Article skipped the "
+        "workflow check, which it fails in context 'a'"
+    )
+    # Saved, and reported as for a resource: the signal names the error.
+    assert Article.objects.get(pk=article.pk).state == "archived"
+    [(_, kwargs)] = calls
+    assert kwargs["transition_data"] is None
+    assert kwargs["transition_error"] is not None
+
+
+def test_a_save_must_return_one_instance(calls, django_capture_on_commit_callbacks):
+    # scoped-rbac's save_checked takes a list for a create of many objects;
+    # a workflow write is of one.
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a"), method="post")
+    values = {"title": "t", "state": "draft", "rbac_context": "a"}
+    with django_capture_on_commit_callbacks(execute=True):
+        with pytest.raises(TypeError, match="save must return one tests.Article"):
+            workflow.save_checked(
+                request,
+                instance=None,
+                values=values,
+                save=lambda: [Article.objects.create(**values)],
+            )
+    assert not Article.objects.exists()
+    assert calls == []
