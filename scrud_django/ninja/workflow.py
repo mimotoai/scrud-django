@@ -7,21 +7,28 @@ ninja blocks.
 the settings default, as for scrud's own types) and returns a
 `ModelWorkflow`, whose `ModelWorkflow.save_checked` a hand-written router's
 create and update call in place of ``scoped_rbac.ninja.save_checked``, and
-whose `ModelWorkflow.delete_checked` its delete calls.
+whose `ModelWorkflow.delete_checked` its delete calls. The router's request
+and object checks run inside `ModelWorkflow.covering` (scoped-rbac's hooks
+wrapped with `ModelWorkflow.covered`), so that a grant conditioned on the
+``scrud_workflow`` operator allows the writes the workflow check covers, as
+on scrud's resource routes.
 """
 
 import copy
+import functools
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import ninja
+import pydantic
 from django.db import router, transaction
 from django.db.models import Model, QuerySet
 from scoped_rbac import access
 from scoped_rbac.ninja import save_checked as rbac_save_checked
 
 from scrud_django.core.authz import _consume_workflow_mark
+from scrud_django.core.resources import COVERED_ITEM_METHOD, COVERED_LIST_METHOD
 from scrud_django.core.signals import scrud_post_delete, scrud_post_save
 from scrud_django.core.transitions import checked_save, govern, transitions_between
 from scrud_django.core.workflow import Create, Update, authorizing_write
@@ -52,6 +59,37 @@ class ModelWorkflow:
             )
         return found
 
+    def covering(self, request, *, item: bool):
+        """The block in which a request or object check of `request` (on an
+        item route with `item`, else on the list route) runs: with the
+        ``scrud_workflow`` operator allowing for the writes the workflow
+        check covers, a POST to the list or a PUT to an item, and refusing
+        for any other method (GET, HEAD, PATCH, DELETE), as scrud's resource
+        routes decide it (``core.resources``' ``COVERED_LIST_METHOD`` and
+        ``COVERED_ITEM_METHOD``, which ``check_request``, ``check_object``
+        and ``allowed_methods`` use). For a PUT or POST, `save_checked` then
+        authorizes the transition itself. Wrap the create's
+        ``authorize_write`` in it; scoped-rbac's hooks take `covered`."""
+        covered = COVERED_ITEM_METHOD if item else COVERED_LIST_METHOD
+        return authorizing_write(request, covered=request.method == covered)
+
+    def covered(self, hook: Callable[..., Any], *, item: bool) -> Callable[..., Any]:
+        """`hook` (``(request, **params)``: scoped-rbac's ``rbac_load``, or
+        the ``before`` of ``item_check`` or ``list_check``) run inside
+        `covering` (on an item route with `item`). The hook's attributes
+        (``rbac_load``'s ``contexts_from`` and ``post_save_checked``, which
+        ``item_check(load=...)`` reads) are kept. scrudful's OPTIONS checks
+        each method on a copy of the request with that method, so a PUT a
+        ``scrud_workflow`` grant allows is listed in ``Allow``, as on the
+        resource routes."""
+
+        @functools.wraps(hook)
+        def run(request, *args, **kwargs):
+            with self.covering(request, item=item):
+                return hook(request, *args, **kwargs)
+
+        return run
+
     def save_checked(
         self,
         request,
@@ -64,7 +102,15 @@ class ModelWorkflow:
         """Write `values` (the validated body) by calling `save`, a create
         (`instance` ``None``) or an update of `instance` (the stored row, as
         the route loaded it), checked as a resource write is, in one
-        transaction on the model's write database:
+        transaction on the model's write database.
+
+        For an update the row is first read again on that database with
+        ``select_for_update()`` and its stored values set on `instance`, so
+        that the check and the save start from the current row, held until
+        the write commits, not from the one the route loaded before the
+        transaction (a write committed meanwhile is not reverted);
+        ``scoped_rbac.access.ObjectNotFound`` (404) when it was deleted
+        meanwhile. Then:
 
         1. the workflow check (``core.workflow.workflow_check``) of a
            `Create`, or an `Update` from ``state(instance)``, of
@@ -90,6 +136,8 @@ class ModelWorkflow:
         db = router.db_for_write(model, instance=instance)
         try:
             with transaction.atomic(using=db):
+                if instance is not None:
+                    self._lock_current(instance, db)
                 applied = model() if instance is None else copy.copy(instance)
                 for name, value in values.items():
                     setattr(applied, name, value)
@@ -155,6 +203,20 @@ class ModelWorkflow:
         finally:
             _consume_workflow_mark(request)
 
+    def _lock_current(self, instance: Model, db: str) -> None:
+        """Read `instance`'s row again on `db`, locked until the transaction
+        ends (``select_for_update``), and set its stored values on
+        `instance`; ``access.ObjectNotFound`` when it is gone."""
+        model = self.model
+        try:
+            current = (
+                model._base_manager.using(db).select_for_update().get(pk=instance.pk)
+            )
+        except model.DoesNotExist:
+            raise access.ObjectNotFound() from None
+        for field in model._meta.concrete_fields:
+            setattr(instance, field.attname, getattr(current, field.attname))
+
     def delete_checked(
         self,
         request,
@@ -184,10 +246,27 @@ class ModelWorkflow:
 
 def _dumped(schema_out: type[ninja.Schema]) -> Callable[[Model], Mapping]:
     """The default ``state_of``: the JSON `schema_out` gives of an instance,
-    what the API answers with."""
+    what the API answers with. A create's proposed state is that of an
+    unsaved instance, which has no primary key yet (nor any value the
+    database sets): a schema that requires one cannot give it, a
+    ``TypeError`` naming the model, the schema and pydantic's first error."""
 
     def state_of(obj: Model) -> Mapping:
-        return schema_out.from_orm(obj).model_dump(mode="json")
+        try:
+            found = schema_out.from_orm(obj)
+        except pydantic.ValidationError as error:
+            if not obj._state.adding:
+                raise
+            first = error.errors()[0]
+            where = ".".join(str(part) for part in first["loc"])
+            raise TypeError(
+                f"{schema_out.__name__} cannot give the workflow state of an "
+                f"unsaved {type(obj)._meta.label} (a create's proposed state): "
+                f"{where}: {first['msg']}. Make those fields optional in "
+                f"{schema_out.__name__} (e.g. id: int | None = None), or pass "
+                "state_of= to workflow_check."
+            ) from error
+        return found.model_dump(mode="json")
 
     return state_of
 
@@ -207,6 +286,9 @@ def workflow_check(
     instance is ``state_of(instance)``, or, with `schema_out` instead, the
     JSON the API answers with (``schema_out.from_orm(instance)
     .model_dump(mode="json")``): pass exactly one (``TypeError`` otherwise).
+    A create's state is that of an unsaved instance, without a primary key:
+    `schema_out`'s fields the database fills in must be optional (``id: int
+    | None = None``), else the create is a ``TypeError`` saying so.
     Its contexts are ``contexts_for(instance)``, by default
     ``scoped_rbac.access.object_contexts`` (its ``rbac_contexts``, else its
     ``rbac_context``), as for scoped-rbac's blocks: pass the same

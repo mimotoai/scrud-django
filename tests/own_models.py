@@ -46,6 +46,8 @@ class ArticleIn(Schema):
 
 
 class ArticleOut(Schema):
+    # Optional: the workflow reads ArticleOut's JSON of a create's unsaved
+    # instance too, which has no primary key yet.
     id: int | None = None
     title: str
     state: str
@@ -67,9 +69,32 @@ def rows():
     return QUERYSET.order_by("pk")
 
 
-load = rbac_load(Article, ARTICLE, queryset=QUERYSET, post_save_checked=True)
-check = item_check(ARTICLE, load=load)
+# The request and object checks run inside ARTICLE_WORKFLOW.covering: a grant
+# conditioned on scrud_workflow allows a POST to the list and a PUT to an item
+# (the workflow check then decides the transition), and refuses anything
+# else, as on scrud's resource routes. A list's GET is never covered.
+load = ARTICLE_WORKFLOW.covered(
+    rbac_load(Article, ARTICLE, queryset=QUERYSET, post_save_checked=True),
+    item=True,
+)
+before = item_check(ARTICLE, load=load)["before"]
+create_check = {"before": ARTICLE_WORKFLOW.covered(before, item=False)}
+item_hooks = {"load": load, "before": ARTICLE_WORKFLOW.covered(before, item=True)}
 listing = list_check(ARTICLE, lambda request, **path_params: rows())
+
+
+def updater(obj, values):
+    """The save of an update: `values` set on `obj` (the row as
+    ``save_checked`` locked it), then saved."""
+
+    def save():
+        for name, value in values.items():
+            setattr(obj, name, value)
+        obj.save()
+        return obj
+
+    return save
+
 
 router = ScrudfulRouter()
 
@@ -92,7 +117,7 @@ def list_articles(request):
     url_name="article-list",
     operation_id="article_create",
 )
-@scrudful_create(location_func=href, **check)
+@scrudful_create(location_func=href, **create_check)
 def create_article(request):
     resolve_user(request)
     content = request_json(request)
@@ -101,7 +126,8 @@ def create_article(request):
         access.contexts_body(content),
         where=f"create of {ARTICLE}",
     )
-    authorize_write(request, ARTICLE, contexts, access.body_mapping(content))
+    with ARTICLE_WORKFLOW.covering(request, item=False):
+        authorize_write(request, ARTICLE, contexts, access.body_mapping(content))
     values = validate_body(request, ArticleIn, content)
     return ARTICLE_WORKFLOW.save_checked(
         request,
@@ -119,7 +145,7 @@ def create_article(request):
     url_name=DETAIL,
     operation_id="article_retrieve",
 )
-@scrudful(load=load, **check)
+@scrudful(**item_hooks)
 def retrieve_article(request, pk: str, obj):
     return obj
 
@@ -127,25 +153,22 @@ def retrieve_article(request, pk: str, obj):
 @router.put(
     "/{pk}/", response=ArticleOut, url_name=DETAIL, operation_id="article_replace"
 )
-@scrudful(load=load, **check)
+@scrudful(**item_hooks)
 def replace_article(request, pk: str, obj):
     values = validate_body(request, ArticleIn, request_json(request))
-
-    def save():
-        for name, value in values.items():
-            setattr(obj, name, value)
-        obj.save()
-        return obj
-
     return ARTICLE_WORKFLOW.save_checked(
-        request, instance=obj, values=values, save=save, queryset=QUERYSET
+        request,
+        instance=obj,
+        values=values,
+        save=updater(obj, values),
+        queryset=QUERYSET,
     )
 
 
 @router.delete(
     "/{pk}/", response={204: None}, url_name=DETAIL, operation_id="article_destroy"
 )
-@scrudful(load=load, **check)
+@scrudful(**item_hooks)
 def destroy_article(request, pk: str, obj):
     ARTICLE_WORKFLOW.delete_checked(request, instance=obj)
     # No content, so no Content-Type (ninja's would be application/json).

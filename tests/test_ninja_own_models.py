@@ -5,9 +5,12 @@ workflow check, its signals and its workflow actions, as a resource does."""
 import logging
 
 import pytest
+from django.db import connections
 from django.db import router as db_router
 from django.test import RequestFactory
+from django.test.utils import CaptureQueriesContext
 from django.urls import get_resolver
+from ninja import Schema
 from scoped_rbac import access
 
 from scrud_django.core import transitions
@@ -39,6 +42,19 @@ WRITER = {
     "http.DELETE": [ARTICLE],
 }
 READER = {"http.GET": [ARTICLE, f"{ARTICLE}/list"]}
+
+
+def scrud_workflow(*transitions):
+    """A grant conditioned on the ``scrud_workflow`` operator (the README's
+    syntax): the workflow transitions it lists, and nothing else."""
+    return {
+        ARTICLE: {
+            "condition": {
+                "operator": "scrud_workflow",
+                "authorized_transitions": list(transitions),
+            }
+        }
+    }
 
 
 def item(pk):
@@ -224,8 +240,8 @@ def test_signals_and_actions_fire_on_commit(
     assert isinstance(kwargs["instance"], Article)
 
 
-def put_request(user):
-    request = RequestFactory().put("/api/articles/")
+def put_request(user, method="put"):
+    request = getattr(RequestFactory(), method)("/api/articles/")
     request.user = user
     # As Django's test client does: the session's CSRF check passes.
     request._dont_enforce_csrf_checks = True
@@ -351,3 +367,156 @@ def test_options_allow(writer, client):
     assert response.status_code == 204, response.content
     allowed = {method.strip() for method in response["Allow"].split(",")}
     assert allowed == {"GET", "HEAD", "OPTIONS"}
+
+
+def test_a_stale_put_applies_to_the_current_row(
+    calls, django_capture_on_commit_callbacks
+):
+    # Two writers load a draft; the first publishes and commits; the second
+    # PUTs only a title, from the row it loaded before.
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a"))
+    stale = Article.objects.get(pk=draft_in_a().pk)
+    Article.objects.filter(pk=stale.pk).update(state="published")
+    values = {"title": "x"}
+    db = db_router.db_for_write(Article)
+    with django_capture_on_commit_callbacks(execute=True):
+        with CaptureQueriesContext(connections[db]) as queries:
+            saved = workflow.save_checked(
+                request,
+                instance=stale,
+                values=values,
+                save=own_models().updater(stale, values),
+            )
+    stored = Article.objects.get(pk=stale.pk)
+    # Not reverted to the draft the second writer loaded.
+    assert (stored.state, stored.title) == ("published", "x")
+    assert saved.state == "published"
+    [(kind, kwargs)] = calls
+    assert kind == "on_save"
+    data = kwargs["transition_data"]
+    assert (data.prior_state, data.proposed_state) == ("published", "published")
+    assert data.transition == "__SAME_STATE__"
+    if connections[db].features.has_select_for_update:
+        # Read again under a lock held until the write commits (SQLite
+        # ignores FOR UPDATE, and Django leaves it out there).
+        assert any("FOR UPDATE" in query["sql"] for query in queries), [
+            query["sql"] for query in queries
+        ]
+
+
+def test_a_row_deleted_meanwhile_is_missing(calls, django_capture_on_commit_callbacks):
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a"))
+    stale = draft_in_a()
+    Article.objects.filter(pk=stale.pk).delete()
+    values = {"state": "published"}
+    with django_capture_on_commit_callbacks(execute=True):
+        with pytest.raises(access.ObjectNotFound):
+            workflow.save_checked(
+                request,
+                instance=stale,
+                values=values,
+                save=own_models().updater(stale, values),
+            )
+    assert not Article.objects.exists()
+    assert calls == []
+
+
+def test_a_scrud_workflow_grant_allows_its_transitions(client):
+    # The README's per-transition grants, for an own model: a create into
+    # the initial state, and the publish transition, nothing else.
+    client.force_login(
+        assign_role(
+            {
+                "http.GET": [ARTICLE, f"{ARTICLE}/list"],
+                "http.POST": scrud_workflow("__INITIALIZE__"),
+                "http.PUT": scrud_workflow("publish"),
+            },
+            "a",
+        )
+    )
+    response = client.post(
+        LIST,
+        {"title": "t", "state": "draft", "rbac_context": "a"},
+        content_type="application/json",
+    )
+    assert response.status_code == 201, response.content
+    pk = response.json()["id"]
+
+    response = client.options(item(pk))
+    allowed = {method.strip() for method in response["Allow"].split(",")}
+    # As on the resource routes: a PUT the grant may allow is listed; a
+    # DELETE, which the workflow check does not cover, is not.
+    assert allowed == {"GET", "PUT", "HEAD", "OPTIONS"}
+
+    response = client.put(
+        item(pk), {"state": "published"}, content_type="application/json"
+    )
+    assert response.status_code == 200, response.content
+    assert Article.objects.get(pk=pk).state == "published"
+
+    # The policy allows published -> archived; the grant does not.
+    response = client.put(
+        item(pk), {"state": "archived"}, content_type="application/json"
+    )
+    body = assert_workflow_error(response)
+    assert body["message"] == (
+        "The user isn't authorized to perform this state transition on this resource."
+    )
+    assert (body["prior_state"], body["proposed_state"]) == ("published", "archived")
+    assert Article.objects.get(pk=pk).state == "published"
+    assert client.delete(item(pk)).status_code == 403
+
+
+class StrictArticleOut(Schema):
+    id: int
+    title: str
+    state: str
+    rbac_context: str
+
+
+def test_a_schema_requiring_the_key_says_so_on_a_create(registry):
+    workflow = workflow_check(ARTICLE, model=Article, schema_out=StrictArticleOut)
+    request = put_request(assign_role(WRITER, "a"), method="post")
+    values = {"title": "t", "state": "draft", "rbac_context": "a"}
+    with pytest.raises(TypeError) as raised:
+        workflow.save_checked(
+            request,
+            instance=None,
+            values=values,
+            save=lambda: Article.objects.create(**values),
+        )
+    message = str(raised.value)
+    assert "StrictArticleOut" in message
+    assert "tests.Article" in message
+    assert "id: " in message
+    assert "state_of=" in message
+    assert not Article.objects.exists()
+    # A saved row has its key: its state is the schema's JSON.
+    article = draft_in_a()
+    assert workflow.state(article) == article_state(article)
+
+
+def test_a_save_that_raises_rolls_back(calls, django_capture_on_commit_callbacks):
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a"), method="post")
+    values = {"title": "t", "state": "draft", "rbac_context": "a"}
+    marked = []
+
+    def failing_save():
+        # The workflow check passed and marked the request; the row is
+        # written, then the save fails.
+        marked.append(_workflow_authorized(request, type_iri=ARTICLE, stored_pk=None))
+        Article.objects.create(**values)
+        raise RuntimeError("the save failed")
+
+    with django_capture_on_commit_callbacks(execute=True):
+        with pytest.raises(RuntimeError, match="the save failed"):
+            workflow.save_checked(
+                request, instance=None, values=values, save=failing_save
+            )
+    assert marked == [True]
+    assert not Article.objects.exists()
+    assert calls == []
+    assert not _workflow_authorized(request, type_iri=ARTICLE, stored_pk=None)
