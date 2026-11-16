@@ -1,5 +1,30 @@
 # Change Log
 
+## Unreleased
+
+### Added
+
+* An app's own Django models can be served through ninja with scrud's
+  workflow: `scrud_django.ninja.workflow_check(iri, *, model, schema_out=None,
+  state_of=None, contexts_for=None)` returns a `ModelWorkflow` (`save_checked`,
+  `delete_checked`, `covering`, `covered`) that composes with scoped-rbac's
+  ninja blocks in a hand-written router. A write locks the row, checks the
+  workflow policies of the model's IRI, and sends `scrud_post_save` (and a
+  delete `scrud_post_delete`) and runs `SCRUD_WORKFLOW_ACTIONS` on commit. A
+  save of the model outside the toolkit logs a warning on
+  `scrud_django.workflow`, as a resource's does. The system check W006
+  accepts such an IRI. See "Your own models with workflow (ninja)" in the
+  README and `demo/articles/`.
+* `scrud_django.core.signals` (the signals and `WorkflowActionCall`) and
+  `scrud_django.core.transitions` (`Transitions`, `transition_in`,
+  `transitions_between`, `log_skipped_check`, `govern`, `governed_type_iris`,
+  `checked_save`), framework neutral and not tied to `Resource`.
+
+### Changed
+
+* `scrud_django.scrud_signals` is now an alias of `scrud_django.core.signals`:
+  the same objects, so existing imports and receivers keep working.
+
 ## 0.16.0
 
 This release adds the optional UI app, `scrud_django.ui` (components,

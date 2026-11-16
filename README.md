@@ -196,6 +196,236 @@ urlpatterns = [
 * `scrud_django.urls` stays DRF until the release that switches it; include
   it as before for a DRF project.
 
+## Your own models with workflow (ninja)
+
+An app's own Django models (not scrud resources) can be served through ninja
+with scrud's workflow: its policies, its `scrud_post_save` and
+`scrud_post_delete` signals and its `SCRUD_WORKFLOW_ACTIONS`. A model needs no
+scrud base class. You write the router from scoped-rbac's public ninja blocks
+and add `scrud_django.ninja.workflow_check`, which returns a `ModelWorkflow`:
+
+```python
+workflow_check(iri, *, model, schema_out=None, state_of=None, contexts_for=None)
+```
+
+* `iri` is the model's type IRI, the `resource_type` of its policies.
+* Pass exactly one of `schema_out` (the state a policy's conditions read is the
+  JSON the API answers with, `schema_out`'s `model_dump(mode="json")`) or
+  `state_of` (a function of the instance returning a mapping); anything else is
+  a `TypeError`. The default state reads an unsaved instance on a create, so
+  `schema_out`'s fields the database fills in must be optional (`id: int | None
+  = None`), else a create is a `TypeError` that says so; or pass `state_of=`.
+* `contexts_for` is the instance's contexts, by default scoped-rbac's
+  `object_contexts` (`rbac_contexts`, else `rbac_context`). Pass the same
+  function to scoped-rbac's blocks.
+* Call it once per model, where the router is built. It also governs the
+  model (below).
+
+The router below is the one `tests/own_models.py` runs (the test suite checks
+that the README shows it):
+
+```python
+from django.http import HttpResponse
+from ninja import Schema
+from scoped_rbac import access
+from scoped_rbac.ninja import (
+    authorize_write,
+    checked_list,
+    default_contexts_from,
+    detail_iri,
+    item_check,
+    list_check,
+    rbac_load,
+    request_json,
+    resolve_user,
+    validate_body,
+)
+from scrudful.ninja import ScrudfulRouter, scrudful, scrudful_create, scrudful_list
+
+from scrud_django.ninja import workflow_check
+
+from .models import Article
+
+
+class ArticleIn(Schema):
+    title: str = ""
+    state: str = "draft"
+    rbac_context: str = ""
+
+
+class ArticleOut(Schema):
+    # Optional: the workflow reads ArticleOut's JSON of a create's unsaved
+    # instance too, which has no primary key yet.
+    id: int | None = None
+    title: str
+    state: str
+    rbac_context: str
+
+
+ARTICLE = "myapp://Article"
+
+# Its workflow reads the JSON the API answers with (ArticleOut's).
+ARTICLE_WORKFLOW = workflow_check(ARTICLE, model=Article, schema_out=ArticleOut)
+
+DETAIL = "article-detail"
+QUERYSET = Article.objects.all()
+
+
+def href(request, obj):
+    return detail_iri(request, DETAIL, obj.pk)
+
+
+def rows():
+    return QUERYSET.order_by("pk")
+
+
+# The request and object checks run inside ARTICLE_WORKFLOW.covering: a grant
+# conditioned on scrud_workflow allows a POST to the list and a PUT to an item
+# (the workflow check then decides the transition), and refuses anything
+# else, as on scrud's resource routes. A list's GET is never covered.
+load = ARTICLE_WORKFLOW.covered(
+    rbac_load(Article, ARTICLE, queryset=QUERYSET, post_save_checked=True),
+    item=True,
+)
+before = item_check(ARTICLE, load=load)["before"]
+create_check = {"before": ARTICLE_WORKFLOW.covered(before, item=False)}
+item_hooks = {"load": load, "before": ARTICLE_WORKFLOW.covered(before, item=True)}
+listing = list_check(ARTICLE, lambda request, **path_params: rows())
+
+
+def updater(obj, values):
+    """The save of an update: `values` set on `obj` (the row as
+    ``save_checked`` locked it), then saved."""
+
+    def save():
+        for name, value in values.items():
+            setattr(obj, name, value)
+        obj.save()
+        return obj
+
+    return save
+
+
+router = ScrudfulRouter()
+
+
+@router.api_operation(
+    ["GET", "HEAD"],
+    "/",
+    response=list[ArticleOut],
+    url_name="article-list",
+    operation_id="article_list",
+)
+@scrudful_list(href_func=href, page_size=100, max_page_size=1000, **listing)
+def list_articles(request):
+    return checked_list(request)
+
+
+@router.post(
+    "/",
+    response={201: ArticleOut},
+    url_name="article-list",
+    operation_id="article_create",
+)
+@scrudful_create(location_func=href, **create_check)
+def create_article(request):
+    resolve_user(request)
+    content = request_json(request)
+    contexts = access.call_contexts_from(
+        default_contexts_from,
+        access.contexts_body(content),
+        where=f"create of {ARTICLE}",
+    )
+    with ARTICLE_WORKFLOW.covering(request, item=False):
+        authorize_write(request, ARTICLE, contexts, access.body_mapping(content))
+    values = validate_body(request, ArticleIn, content)
+    return ARTICLE_WORKFLOW.save_checked(
+        request,
+        instance=None,
+        values=values,
+        save=lambda: Article.objects.create(**values),
+        queryset=QUERYSET,
+    )
+
+
+@router.api_operation(
+    ["GET", "HEAD"],
+    "/{pk}/",
+    response=ArticleOut,
+    url_name=DETAIL,
+    operation_id="article_retrieve",
+)
+@scrudful(**item_hooks)
+def retrieve_article(request, pk: str, obj):
+    return obj
+
+
+@router.put(
+    "/{pk}/", response=ArticleOut, url_name=DETAIL, operation_id="article_replace"
+)
+@scrudful(**item_hooks)
+def replace_article(request, pk: str, obj):
+    values = validate_body(request, ArticleIn, request_json(request))
+    return ARTICLE_WORKFLOW.save_checked(
+        request,
+        instance=obj,
+        values=values,
+        save=updater(obj, values),
+        queryset=QUERYSET,
+    )
+
+
+@router.delete(
+    "/{pk}/", response={204: None}, url_name=DETAIL, operation_id="article_destroy"
+)
+@scrudful(**item_hooks)
+def destroy_article(request, pk: str, obj):
+    ARTICLE_WORKFLOW.delete_checked(request, instance=obj)
+    # No content, so no Content-Type (ninja's would be application/json).
+    response = HttpResponse(status=204)
+    del response["Content-Type"]
+    return response
+```
+
+* `save_checked` runs the whole write in one transaction: for an update it
+  locks the stored row (`select_for_update`) and copies the row's stored fields
+  onto `instance`, then runs the workflow check against the stored and the
+  proposed state, scoped-rbac's `save_checked` under `authorizing_write`, and
+  your `save`. So a router must pass every change through `values` and `save`:
+  a field set on the instance beforehand is overwritten. The transaction
+  commits, and `scrud_post_save` and the `SCRUD_WORKFLOW_ACTIONS` for the IRI
+  run on commit, with `sender` the model class, `instance`, `resource_type_uri`
+  the IRI, `using` the write's database, and `transitions`, `transition_data`
+  and `transition_error` computed from `state_of`, as for a resource.
+  `delete_checked` sends `scrud_post_delete` the same way.
+* Per-transition grants (conditioned on `scrud_workflow`) work because the
+  router wraps its request and object checks with `covering` and `covered`,
+  which run them inside `authorizing_write`: a grant conditioned on
+  `scrud_workflow` then allows a POST to the list and a PUT to an item, and the
+  workflow check decides the transition, as on scrud's resource routes. Without
+  the wrapper such a grant allows nothing.
+* The policies for a model are `WorkflowPolicy` resources whose `resource_type`
+  is the model's IRI, or `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`, as for
+  a scrud type (see Workflow policies). The system checks E002, E003, E005 and
+  W001 cover them, and W006 accepts a governed model's IRI.
+* A save of a governed model outside `save_checked` (the admin, the shell, a
+  management command, an endpoint that forgot the check) is not refused: each
+  context where it is invalid is logged as a warning on the
+  `scrud_django.workflow` logger, as for a resource. Whether such saves should
+  be refused is open (issue #56). Server code that has done the check itself
+  wraps its saves in `scrud_django.core.transitions.checked_save(Model)`.
+* Deletes are not checked against the workflow, only authorized (follow-up
+  `delete-no-workflow-check`).
+* The router is written by hand because scoped-rbac 0.12.1's `crud_router`
+  takes no extra checks (follow-up `scoped-rbac-crud-router-checks`). The
+  example lists what `crud_router` does that it leaves out. The router's own
+  checks run before the write transaction, on the row as loaded (follow-up
+  `own-model-router-checks-before-transaction`).
+
+The demo's `articles` app (`demo/articles/`) is a working copy: a model whose
+policy has a draft and a published state.
+
+
 ## Configuration
 
 ### Required

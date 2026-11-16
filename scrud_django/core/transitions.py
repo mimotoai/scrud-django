@@ -232,7 +232,8 @@ def govern(
     check: it is saved, and each context where it is invalid is logged as a
     WARNING on the ``scrud_django.workflow`` logger (`log_skipped_check`),
     as a resource's is. Its pre-save and post-save receivers are connected
-    once per model.
+    once per model. `state_of` and `contexts_for` must not raise: an
+    exception fails the save, as a resource's transition computation does.
 
     Governing the same model under the same `iri` again (a URLconf imported
     twice) replaces `state_of` and `contexts_for`; under another IRI it is

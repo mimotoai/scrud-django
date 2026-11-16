@@ -86,6 +86,14 @@ and `tests/test_front_end_parity.py` is the proof (the same exchanges
 replayed against both, compared exactly); the generic suites take the
 `front_end` fixture and run on both. It serves no UI or studio types yet.
 
+An app's own models get the workflow through `scrud_django/core/signals.py`
+(the signals and action runner, neutral of `Resource`),
+`scrud_django/core/transitions.py` (`Transitions`, `govern`, `checked_save`,
+and the receivers logging unchecked saves of governed models) and
+`scrud_django/ninja/workflow.py` (`workflow_check` and `ModelWorkflow`, which
+composes with scoped-rbac's ninja blocks). `tests/own_models.py` is the tested
+router the README shows (`tests/test_readme_own_models.py`).
+
 ## Commands
 
 Python 3.13 is pinned in `.python-version`; CI covers 3.11-3.13, not 3.14 (the

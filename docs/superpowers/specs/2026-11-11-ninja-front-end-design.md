@@ -587,6 +587,7 @@ take the request and the page (§3.2).
   subclasses or `viewset_class=`.
 
 **Versioning (owner): fold it into 0.16.0.**
+- Update: released as 0.16.0 after part A; phases 2 and 3C ship in 0.17.0.
 - 0.16.0 is the unreleased version held on `develop`, and it already holds the
   UI components work.
 - All three phases merge to `develop` with no version bump, and 0.16.0's release

@@ -1600,10 +1600,13 @@ record.
 `entry` opens its write transaction on `write_db` (scrud's resource
 database, `core.writes.write_transaction`). An app's own models, routed to
 another database (part B's), are not in that transaction: a rollback on a
-400 does not undo their writes. Part B decides whether `entry` takes the
-database as an argument (`entry_for(using=...)`) or an app router opens its
-own. Test: a probe route writing a model of a second database and answering
-400; the row should be rolled back.
+400 does not undo their writes. Part B's ruling: an own-model router built
+from scoped-rbac's blocks does not use `entry` (the README's example has no
+`entry` decorator), and `ModelWorkflow.save_checked` opens its transaction on
+the model's write database (`router.db_for_write(model)`), so its write and its
+workflow check roll back together there. `entry` stays on scrud's write
+database for routes that use it. Test: a probe route under `entry` writing a
+model of a second database and answering 400; the row should be rolled back.
 
 <a id="ninja-computed-link-none"></a>
 ## ninja-computed-link-none: `computed_link` accepts "no type"
@@ -2143,3 +2146,41 @@ Both front ends answer `Vary: Cookie` (68022e6): `authenticate_first`
 resolves the user, which touches the session, on the `scoped-rbac-*` routes.
 scoped-rbac's ninja router alone sends none. Pinned by
 `tests/test_front_end_parity.py::test_role_routes_vary_alike`.
+
+<a id="own-model-governance-edges"></a>
+## own-model-governance-edges: three saves a governed model's receivers misjudge
+
+`core.transitions.govern` connects `pre_save` and `post_save` receivers for the
+model class itself, which leaves three edges:
+
+* A multi-table-inheritance child of a governed model is not governed: the
+  `pre_save` sender is the child class, which has no receiver, so its saves
+  are never logged as skipping the check. Test: govern a parent, save a child
+  instance outside `checked_save`; a WARNING on `scrud_django.workflow` is
+  expected and none is logged.
+* A save with `update_fields` is judged on the whole instance, not on the
+  fields it writes: a transition (or an invalid state) in a field the save
+  does not write is still logged. Test: load a governed instance, set its
+  `state` in memory to a value the policy refuses, save with
+  `update_fields=["title"]`; the row's state is unchanged, yet a WARNING is
+  logged for the unsaved state.
+* A thread started inside `checked_save` starts with an empty context
+  (`contextvars`), so its saves of the model warn although the toolkit checked
+  them. Test: inside `checked_save(Model)`, start a `threading.Thread` that
+  saves an instance; its save logs a WARNING.
+
+<a id="own-model-router-checks-before-transaction"></a>
+## own-model-router-checks-before-transaction: the router's checks run before the write transaction
+
+An own-model router built from scoped-rbac's blocks runs its request and
+object checks (`rbac_load`, `item_check`, as `crud_router` does) before
+`save_checked` opens its transaction, on the row as loaded. A concurrent
+write that moves the row's `rbac_context` between the load and the lock lets
+a stale PUT that sends the old context pass the object check on the old
+context. `save_checked` locks the row and runs the workflow check on the
+stored state, but the object check is not repeated on it. The routes have no
+`entry` decorator either (see `ninja-entry-write-db`). Test: two clients;
+the first moves an article to another `rbac_context` after the second's
+load but before its PUT is saved (a `before` hook that pauses); the second,
+who may write only the old context, sends the old context: it should get
+403 and gets 200.
