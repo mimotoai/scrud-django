@@ -1,7 +1,5 @@
 import logging
 from collections.abc import Mapping
-from types import MappingProxyType
-from typing import NamedTuple
 
 from django.db import models, router
 from django.db.models import JSONField
@@ -10,55 +8,25 @@ from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.models.resource_type import ResourceType
 from scrud_django.workflow import (
-    LEAVE,
     WORKFLOW_POLICY_TYPE_URI,
-    TransitionData,
-    WorkflowAmbiguousStateError,
-    WorkflowInvalidInitialStateError,
-    WorkflowInvalidStateError,
-    WorkflowTransitionError,
     default_workflow_policy_for,
     workflow_policies_for,
 )
 
 from ..core.signals import scrud_post_delete, scrud_post_save
+from ..core.transitions import (  # noqa: F401  (re-exported)
+    WORKFLOW_ERRORS,
+    Transitions,
+    log_skipped_check,
+    transition_in,
+    transitions_between,
+)
 
 workflow_policy_type_uri = WORKFLOW_POLICY_TYPE_URI
 
 # The workflow errors of saves that skipped the ``WorkflowValidator``
 # (`ResourceMixin.save`).
 logger = logging.getLogger("scrud_django.workflow")
-
-# The workflow errors a report of a transition (`ResourceMixin.get_transitions`)
-# catches: a write that skipped the ``WorkflowValidator`` is still saved.
-WORKFLOW_ERRORS = (
-    WorkflowAmbiguousStateError,
-    WorkflowInvalidInitialStateError,
-    WorkflowInvalidStateError,
-    WorkflowTransitionError,
-)
-
-
-class Transitions(NamedTuple):
-    """A save's workflow transitions (`ResourceMixin.get_transitions`):
-    ``scrud_post_save`` sends the first three as its keyword arguments of
-    the same names; `ResourceMixin.save` logs `errors`. Its mappings are
-    read-only views (``MappingProxyType``): the same one reaches every
-    receiver, and none can change what the others are given."""
-
-    # Under the policy of the first context the content names that has one
-    # (`ResourceMixin.workflow_context_and_policy`); ``None`` when no policy
-    # applies or the transition is invalid there.
-    transition_data: TransitionData | None
-    # The workflow error that made `transition_data` ``None``, else ``None``.
-    transition_error: WorkflowTransitionError | None
-    # Context -> `TransitionData` (``None``: invalid there), for every
-    # context the stored resource or the content is in under a policy.
-    transitions: Mapping[str | None, TransitionData | None]
-    # Context -> the workflow error that made its `transitions` entry
-    # ``None``, for each such context (not sent with the signal: `save`
-    # logs them).
-    errors: Mapping[str | None, WorkflowTransitionError]
 
 
 def rbac_contexts_of(content):
@@ -185,24 +153,11 @@ class ResourceMixin(ScrudfulMixin):
         a save that skipped it (the admin, ``ResourceRegistration``, server
         code) would otherwise be invalid silently in every context but the
         one ``transition_error`` reports."""
-        for context, error in errors.items():
-            logger.warning(
-                "Saving resource pk %s of %s skipped the workflow check, which "
-                "it fails in context %r (policy %r): %s (prior state %r, "
-                "proposed state %r%s).",
-                self.pk,
-                self.resource_type.type_uri,
-                context,
-                error.policy,
-                error.message,
-                error.prior_state,
-                error.proposed_state,
-                (
-                    f", matching states {error.matching_states!r}"
-                    if isinstance(error, WorkflowAmbiguousStateError)
-                    else ""
-                ),
-            )
+        log_skipped_check(
+            errors,
+            subject=f"resource pk {self.pk}",
+            type_iri=self.resource_type.type_uri,
+        )
 
     def delete(self, using=None, keep_parents=False) -> tuple[int, dict[str, int]]:
         """``Model.delete()``, then ``scrud_post_delete``, sent with ``using``
@@ -274,74 +229,22 @@ class ResourceMixin(ScrudfulMixin):
 
         Each context's policy is read once."""
         prior_data = self.stored_content(using)
-        stored_contexts = rbac_contexts_of(prior_data) if prior_data is not None else []
-        # Defensive: `rbac_contexts_of` never gives no context.
-        contexts = list(self.rbac_contexts) or [None]
-        concerned = list(dict.fromkeys(stored_contexts + contexts))
-        named = [context for context in concerned if context is not None]
-        # The stored policies of every named context, read in one query.
-        found = dict(workflow_policies_for(self.resource_type, named)) if named else {}
-        policies = {
-            context: (
-                default_workflow_policy_for(self.resource_type)
-                if context is None
-                else found[context]
-            )
-            for context in concerned
-        }
-        reported = {
-            context: self.transition_in(
-                policy,
-                prior_data,
-                entering=context is not None and context not in stored_contexts,
-                leaving=context not in contexts,
-            )
-            for context, policy in policies.items()
-            if policy is not None
-        }
-        # transition_data's context: the first the content names with a
-        # policy (`workflow_context_and_policy`).
-        picked = next((c for c in contexts if policies[c] is not None), None)
-        transition_data, transition_error = reported.get(picked, (None, None))
-        return Transitions(
-            transition_data=transition_data,
-            transition_error=transition_error,
-            transitions=MappingProxyType(
-                {context: data for context, (data, _) in reported.items()}
+        return transitions_between(
+            self.resource_type.type_uri,
+            prior=prior_data,
+            proposed=self.content,
+            contexts_before=(
+                rbac_contexts_of(prior_data) if prior_data is not None else []
             ),
-            errors=MappingProxyType(
-                {
-                    context: error
-                    for context, (_, error) in reported.items()
-                    if error is not None
-                }
-            ),
+            # Defensive: `rbac_contexts_of` never gives no context.
+            contexts_after=list(self.rbac_contexts) or [None],
         )
 
     def transition_in(self, workflow, prior_data, entering=False, leaving=False):
-        """``(TransitionData or None, workflow error or None)``: this save
-        under `workflow` in a context the resource `entering` moves into,
-        `leaving` moves out of, or else stays in, from `prior_data` (``None``:
-        a create). An invalid transition, a create (or move in) whose
-        content is in no initial state (``WorkflowInvalidInitialStateError``)
-        and content that meets the conditions of more than one state
-        (``WorkflowAmbiguousStateError``) are reported as ``None`` with the
-        error, never raised."""
-        try:
-            if leaving:
-                prior_state = workflow.state(prior_data)
-                return TransitionData(None, prior_state, LEAVE), None
-            if prior_data is None or entering:
-                # A create has no prior state; its proposed state is the
-                # initial state the content is in. Content in none is an
-                # invalid create (``WorkflowInvalidInitialStateError``), as
-                # the `WorkflowValidator` checks it.
-                return workflow.initial_transition(self.content), None
-            return workflow.determine_transition(self.content, prior_data), None
-        except WORKFLOW_ERRORS as error:
-            # Workflow validation is the WorkflowValidator's: the error is
-            # reported, not raised.
-            return None, error
+        """`scrud_django.core.transitions.transition_in` of this content."""
+        return transition_in(
+            workflow, prior_data, self.content, entering=entering, leaving=leaving
+        )
 
     def get_workflow_policy(self):
         """The policy whose transition the ``scrud_post_save`` signal reports.
