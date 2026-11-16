@@ -4,16 +4,8 @@ as ``scoped_rbac.ninja.crud_router`` builds its own (scoped-rbac 0.12.1's
 ``crud_router`` takes no extra checks), its writes through the
 `ARTICLE_WORKFLOW` toolkit (``scrud_django.ninja.workflow_check``).
 
-What ``crud_router`` does that this router leaves out:
-
-- its OPTIONS ``allowed`` hook (the private ``_allowed_as_drf``): scrudful
-  decides ``Allow`` from each method's ``before`` and ``load`` instead;
-- its operation decorator running a conditional create in one transaction
-  (the private ``_conditional_create_atomic``): ``Article`` has no
-  validators, so a create takes no precondition;
-- the detail-route mark (``DETAIL_MARK``, not exported) and the PATCH route;
-- the schema and context links (``scoped_rbac.semantic``), which name a type
-  by an IRI without ``/`` (``tests://Article`` has some).
+What ``crud_router`` does that this router leaves out is listed in the
+README, after the example ("Your own models with workflow (ninja)").
 """
 
 from django.http import HttpResponse

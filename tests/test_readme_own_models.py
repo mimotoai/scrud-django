@@ -15,8 +15,10 @@ IN_THE_TEST_ONLY = ["from .workflow_defaults import ARTICLE"]
 
 
 def _lines(text, start, drop):
+    # Blank lines are skipped; indentation is pinned (only trailing space is
+    # stripped).
     text = text[text.index(start) :]
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     return [line for line in lines if line not in drop]
 
 

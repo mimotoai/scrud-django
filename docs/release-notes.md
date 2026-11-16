@@ -24,6 +24,11 @@
 
 * `scrud_django.scrud_signals` is now an alias of `scrud_django.core.signals`:
   the same objects, so existing imports and receivers keep working.
+* `ResourceMixin.get_transitions` computes each context's transition with
+  `scrud_django.core.transitions.transition_in` (through
+  `transitions_between`), no longer `ResourceMixin.transition_in`: a subclass
+  that overrides `transition_in` no longer changes the transitions
+  `scrud_post_save` reports.
 
 ## 0.16.0
 

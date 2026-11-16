@@ -396,14 +396,25 @@ def destroy_article(request, pk: str, obj):
   commits, and `scrud_post_save` and the `SCRUD_WORKFLOW_ACTIONS` for the IRI
   run on commit, with `sender` the model class, `instance`, `resource_type_uri`
   the IRI, `using` the write's database, and `transitions`, `transition_data`
-  and `transition_error` computed from `state_of`, as for a resource.
-  `delete_checked` sends `scrud_post_delete` the same way.
+  and `transition_error` computed from `state_of`, as for a resource (an
+  instance in no context, `contexts_for` giving none, is checked and reported
+  under the settings default, in context `None`). `save` must return the one
+  instance it saved (a `TypeError` otherwise). If it wrote something other
+  than the checked values (a `Model.save` override, say), each context where
+  the saved state is invalid is logged as a warning on the
+  `scrud_django.workflow` logger. `delete_checked` locks the row the same way
+  (a 404 when another request deleted it meanwhile, and no signal) and sends
+  `scrud_post_delete` on commit.
 * Per-transition grants (conditioned on `scrud_workflow`) work because the
   router wraps its request and object checks with `covering` and `covered`,
   which run them inside `authorizing_write`: a grant conditioned on
   `scrud_workflow` then allows a POST to the list and a PUT to an item, and the
   workflow check decides the transition, as on scrud's resource routes. Without
-  the wrapper such a grant allows nothing.
+  the wrapper such a grant allows nothing. A covered check is allowed on the
+  promise that the workflow check follows: wrap only the checks of a POST to
+  the list or a PUT to an item whose write goes through
+  `ModelWorkflow.save_checked`. A covered route that saves any other way lets
+  those grants write unchecked.
 * The policies for a model are `WorkflowPolicy` resources whose `resource_type`
   is the model's IRI, or `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`, as for
   a scrud type (see Workflow policies). The system checks E002, E003, E005 and
@@ -412,15 +423,26 @@ def destroy_article(request, pk: str, obj):
   management command, an endpoint that forgot the check) is not refused: each
   context where it is invalid is logged as a warning on the
   `scrud_django.workflow` logger, as for a resource. Whether such saves should
-  be refused is open (scrud-django's GitLab issue #56, https://gitlab.com/dcharbon/scrud-django/-/issues/56). Server code that has done the check itself
-  wraps its saves in `scrud_django.core.transitions.checked_save(Model)`.
+  be refused is open (scrud-django's GitLab issue #56,
+  https://gitlab.com/dcharbon/scrud-django/-/issues/56). Server code that has
+  done the check itself wraps its saves in
+  `scrud_django.core.transitions.checked_save(Model)`. As for a resource,
+  `QuerySet.update()`, `bulk_create()` and `bulk_update()` send no signals and
+  are not logged. The model's `state_of` and `contexts_for` run on every such
+  save too: one that raises fails it (in the admin, say).
 * Deletes are not checked against the workflow, only authorized (follow-up
   `delete-no-workflow-check`).
 * The router is written by hand because scoped-rbac 0.12.1's `crud_router`
-  takes no extra checks (follow-up `scoped-rbac-crud-router-checks`). The
-  example lists what `crud_router` does that it leaves out. The router's own
-  checks run before the write transaction, on the row as loaded (follow-up
-  `own-model-router-checks-before-transaction`).
+  takes no extra checks (follow-up `scoped-rbac-crud-router-checks`). It
+  leaves out what `crud_router` does beyond these blocks: its OPTIONS
+  `allowed` hook (the private `_allowed_as_drf`; scrudful decides `Allow`
+  from each method's `before` and `load` instead), its running a conditional
+  create in one transaction (the private `_conditional_create_atomic`; the
+  example's model has no validators, so a create takes no precondition), the
+  detail-route mark (`DETAIL_MARK`, not exported), the PATCH route, and the
+  schema and context links (`scoped_rbac.semantic`, which needs a type IRI
+  without `/`). The router's own checks run before the write transaction, on
+  the row as loaded (follow-up `own-model-router-checks-before-transaction`).
 
 The demo's `articles` app (`demo/articles/`) is a working copy: a model whose
 policy has a draft and a published state.
@@ -1067,9 +1089,10 @@ and never fails the write. Neither does an action that raises: it is logged,
 with its traceback, on the `scrud_django.workflow_actions` logger, naming
 the action, the type URI, `on_save` or `on_delete` and the resource's pk.
 
-The actions are run by a `scrud_django.scrud_signals.ScrudSignalProcessor`,
-which reads the setting again when it changes (`override_settings` in
-tests). One processor receives the signals at a time (a fixed
+The signals and the actions' runner live in `scrud_django.core.signals`
+(`scrud_django.scrud_signals` remains an alias of it). The actions are run by
+a `scrud_django.core.signals.ScrudSignalProcessor`, which reads the setting
+again when it changes (`override_settings` in tests). One processor receives the signals at a time (a fixed
 `dispatch_uid`, held strongly): building another one, such as an instance
 of a subclass in the `ready()` of an app listed after `scrud_django`,
 replaces the default one instead of running each action twice.
@@ -1101,7 +1124,7 @@ from contextvars import ContextVar
 from django.db import router, transaction
 from django.dispatch import receiver
 from django.utils import timezone
-from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save
+from scrud_django.core.signals import scrud_post_delete, scrud_post_save
 
 from .models import OutboxEvent
 
