@@ -45,7 +45,11 @@ urlpatterns.extend(registration.resource_types(*hooked_resource_types()))
 # The test settings' SCRUD_WORKFLOW_ACTIONS has actions for tests://Article, an
 # own model: it is governed where an app governs one, on the import of its
 # URLconf, which the system checks import first (scrud_django.W006 accepts its
-# IRI). Its own router's workflow_check governs it again, alike.
+# IRI). Its own router's workflow_check governs it again, alike
+# (tests.own_models; article_state is its ArticleOut's JSON). Governing at
+# import is a deliberate exception to CLAUDE.md's "never connect receivers at
+# import": it is the adopter mechanism under test, and the receivers it
+# connects act only for the models registered with it.
 govern(Article, ARTICLE, state_of=article_state, contexts_for=article_contexts)
 
 # The partner profiles list again, served by ResourceViewSetGenericFilter, whose

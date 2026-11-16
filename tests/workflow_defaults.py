@@ -14,8 +14,11 @@ def workflow_policies():
 
 
 def article_state(article):
-    """The content ``tests://Article``'s policies read of a ``tests.Article``."""
+    """The content ``tests://Article``'s policies read of a ``tests.Article``:
+    the JSON its ninja router answers with (``tests.own_models.ArticleOut``),
+    which governs it too (``workflow_check``), alike."""
     return {
+        "id": article.pk,
         "title": article.title,
         "state": article.state,
         "rbac_context": article.rbac_context,

@@ -35,12 +35,15 @@ NOTE_FLOW = "tests://NoteFlow"
 @pytest.fixture
 def registry(monkeypatch, db):
     """The registry of governed models as the test found it, restored
-    afterwards (``Article`` is governed already: the URLconf governs it).
-    The URLconf is imported first, so that its own ``govern`` is not undone
-    with the test's: it is imported once. The receivers ``govern`` connects
-    stay connected: they consult the registry, so a model it no longer
-    holds is left alone."""
+    afterwards (``Article`` is governed already: the URLconfs govern it).
+    The URLconfs that govern it (``tests.urls``, and ``tests.own_model_urls``
+    through ``tests.own_models``) are imported first, so that their own
+    ``govern`` is not undone with the test's: each is imported once. The
+    receivers ``govern`` connects stay connected: they consult the registry,
+    so a model it no longer holds is left alone."""
     get_resolver().url_patterns  # noqa: B018 (governs the URLconf's models)
+    import tests.own_model_urls  # noqa: F401 (tests.own_models governs Article)
+
     monkeypatch.setattr(transitions, "_GOVERNED", dict(transitions._GOVERNED))
 
 

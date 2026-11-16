@@ -14,5 +14,6 @@ except ImportError as error:
     ) from error
 
 from scrud_django.ninja.api import api  # noqa: E402
+from scrud_django.ninja.workflow import ModelWorkflow, workflow_check  # noqa: E402
 
-__all__ = ["api"]
+__all__ = ["ModelWorkflow", "api", "workflow_check"]
