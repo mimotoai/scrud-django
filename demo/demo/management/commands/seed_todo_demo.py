@@ -498,6 +498,11 @@ class Command(BaseCommand):
                 "?ui-scope=studio&ui-mode=view"
             )
 
+        self.stdout.write(
+            "articles, an app's own model with a draft -> published workflow"
+            " on ninja (needs a role on demo://Article): /ninja/articles/"
+        )
+
     def seed_user(self, username, roles):
         user, created = get_user_model().objects.get_or_create(username=username)
         if created or not user.check_password(username):

@@ -1,11 +1,13 @@
 import importlib.resources
 
+from articles.api import router as articles_router
 from django.contrib import admin
 from django.urls import include, path
 from scoped_rbac.rest import UserViewSet
 from scoped_rbac.urls import OpenRouter
 from scrudful.rest_framework import hsr_urls
 
+import scrud_django.ninja
 from scrud_django import registration
 
 app_name = "scrud_django-demo"
@@ -52,11 +54,19 @@ api_urlpatterns.extend(
     )
 )
 
+# An app's own model through ninja, with its workflow: the router is added
+# before the API's URL patterns are read, which happens once.
+ninja_api = scrud_django.ninja.api(types=[], urls_namespace="demo-ninja")
+ninja_api.add_router("articles/", articles_router)
+
 urlpatterns = [
     path("api/", include(api_urlpatterns)),
     # Log in to the browsable API (its "Log in" link) and to the admin.
     path("api-auth/", include("rest_framework.urls")),
     path("admin/", admin.site.urls),
+    path("ninja/", ninja_api.urls),
+    # The schema and context links of the ninja API name types by IRI.
+    path("semantic/", include("scoped_rbac.semantic_urls")),
     # The bootstrap studio; needs a signed-in user.
     path("studio/", include("scrud_django.ui.studio.urls")),
     # Serves each scrudful view's HTTP Schema Resource (OPTIONS links to it);

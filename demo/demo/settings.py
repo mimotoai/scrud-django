@@ -79,6 +79,8 @@ INSTALLED_APPS = [
     'reversion',
     # The demo itself: its seed_todo_demo management command.
     'demo',
+    # An app's own model with a two-state workflow, served by ninja at /ninja/.
+    'articles',
 ]
 
 MIDDLEWARE = [
@@ -182,3 +184,8 @@ STATIC_URL = '/static/'
 
 # After logging in at /api-auth/login/ without a ?next= page.
 LOGIN_REDIRECT_URL = "/api/"
+
+# The demo's own workflow policies (articles.Article, demo://Article).
+SCRUD_WORKFLOW = {
+    "DEFAULT_WORKFLOW_POLICIES": "articles.workflow.policies",
+}
