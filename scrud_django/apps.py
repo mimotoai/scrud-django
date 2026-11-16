@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
-from scrud_django.scrud_signals import ScrudSignalProcessor
+from scrud_django.core.signals import ScrudSignalProcessor
 
 
 class ScrudConfig(AppConfig):

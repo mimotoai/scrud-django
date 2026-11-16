@@ -21,7 +21,7 @@ from scrud_django.workflow import (
     workflow_policies_for,
 )
 
-from ..scrud_signals import scrud_post_delete, scrud_post_save
+from ..core.signals import scrud_post_delete, scrud_post_save
 
 workflow_policy_type_uri = WORKFLOW_POLICY_TYPE_URI
 

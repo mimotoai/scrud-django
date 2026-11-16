@@ -18,10 +18,10 @@ from django.dispatch import receiver
 from django.utils import timezone
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
+from scrud_django.core.signals import scrud_post_delete
 from scrud_django.mixins.resource_mixin import ResourceMixin, rbac_contexts_of
 from scrud_django.models.fields import ContextField
 from scrud_django.models.resource_type import ResourceType
-from scrud_django.scrud_signals import scrud_post_delete
 
 # Deletions a queryset delete could not send ``scrud_post_delete`` for
 # (`ResourceQuerySet.delete`): their ``on_delete`` actions do not run.
