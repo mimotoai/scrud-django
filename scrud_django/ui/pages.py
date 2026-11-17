@@ -129,6 +129,13 @@ def served_memo():
         _served_memo.reset(token)
 
 
+# The slugs `served` is deciding in this context, each with whether its
+# decision was entered again (``None`` outside one).
+_resolving: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "scrud_ui_resolving", default=None
+)
+
+
 def served(slug: str) -> ServedSlug | None:
     """`slug` with its type (`ServedSlug`) when the UI serves pages of it: a
     type the API serves (`routed`) whose authorization the core asks in
@@ -139,11 +146,36 @@ def served(slug: str) -> ServedSlug | None:
     ``None``. A database error reading it is logged and serves
     nothing, so that the project's other URLs still answer
     (``scrud_django.ui.urls``' slug converter asks it). In a `served_memo`
-    block, what it found for `slug` before."""
+    block, what it found for `slug` before.
+
+    Deciding resolves the API's routes of `slug` (`route_views`). When the
+    UI app is routed before them at the same URLs (included first under
+    the API's prefix), that resolving reaches the UI's own pattern for
+    `slug`, whose converter asks `served(slug)` again: that inner call
+    answers ``None`` (the UI's pattern does not match, so the API's route
+    resolves), and the outer one answers ``None`` too: the UI does not
+    serve a type whose API routes it would shadow, and never recurses."""
     memo = _served_memo.get()
     if memo is not None and slug in memo:
         return memo[slug]
-    found = _served(slug)
+    resolving = _resolving.get()
+    if resolving is not None and slug in resolving:
+        resolving[slug] = True
+        return None
+    token = None
+    if resolving is None:
+        resolving = {}
+        token = _resolving.set(resolving)
+    resolving[slug] = False
+    try:
+        found = _served(slug)
+        if resolving[slug]:
+            # The API's routes of `slug` resolve through the UI's own.
+            found = None
+    finally:
+        del resolving[slug]
+        if token is not None:
+            _resolving.reset(token)
     if memo is not None:
         memo[slug] = found
     return found
@@ -192,7 +224,11 @@ def refusal(slug: str) -> str | None:
     custom ``viewset_class``'s, or a view no trusted builder marked, unless
     the type opts in); ``None`` when it does not, or the API does not serve
     the type."""
-    views = route_views(slug)
+    return _refusal_of(slug, route_views(slug))
+
+
+def _refusal_of(slug, views) -> str | None:
+    """`refusal` of `slug`, whose `route_views` are `views`."""
     for view in views or ():
         found = drf_only_authorization(slug, view)
         if found is not None:
@@ -201,7 +237,8 @@ def refusal(slug: str) -> str | None:
 
 
 def _served(slug):
-    if not routed(slug) or refusal(slug) is not None:
+    views = route_views(slug)
+    if views is None or _refusal_of(slug, views) is not None:
         return None
     try:
         resource_type = get_resource_type_for(slug)
