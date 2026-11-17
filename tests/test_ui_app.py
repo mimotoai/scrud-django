@@ -992,3 +992,14 @@ def test_studio_json_is_written_as_drfs_renderer_writes_it():
     assert b"\\u2028" in response.content and b"\\u2029" in response.content
     with pytest.raises(ValueError):
         json_response({"x": float("nan")})
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_file_view_s_refusal_is_written_as_the_api_writes_json():
+    from rest_framework.renderers import JSONRenderer
+
+    When.http.get("/ui-css-files/no-such-file/0123abcd.css")
+    Then.http.status_code_is(404)
+    assert Http.response["Content-Type"] == "application/problem+json"
+    assert Http.response.content == JSONRenderer().render(Http.response.json())

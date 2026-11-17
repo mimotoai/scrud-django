@@ -8,14 +8,13 @@ what gates a file is the branch the request selects (`choose`, which refuses
 a working branch the viewer may not GET) and, under a prefix, GET on the
 prefix's branch."""
 
-import json
-
 from django.http import Http404, HttpResponse
 
 from scrud_django.core.errors import error_answer
 from scrud_django.ui.branches.effective import safe_mode_requested, using_safe_mode
 from scrud_django.ui.branches.file_urls import css_files, js_files
 from scrud_django.ui.branches.selection import check_mount_access, choose
+from scrud_django.ui.studio.answers import json_response
 
 MAX_AGE = 31536000  # a year: the URL holds the ETag
 
@@ -71,7 +70,8 @@ def _served(request, files, name, etag, content_type):
     refuses it, 401 for the anonymous user, else 403); any other method is
     a 405 naming the `FILE_METHODS` in ``Allow``, for anyone, as the API's
     file view answers one (it asks no grant). A refusal is answered as the
-    API answers it (`error_answer`: problem details)."""
+    API answers it (`error_answer`: problem details, written as the API
+    writes JSON: `json_response`)."""
     if request.method not in FILE_METHODS:
         response = HttpResponse(status=405)
         del response["Content-Type"]
@@ -85,7 +85,4 @@ def _served(request, files, name, etag, content_type):
         if answered is None:
             raise
         status, body, headers = answered
-        response = HttpResponse(json.dumps(body), status=status)
-        for header, value in headers.items():
-            response[header] = value
-        return response
+        return json_response(body, status=status, headers=dict(headers))

@@ -6,6 +6,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory
 from django.urls import reverse
+from rest_framework.renderers import JSONRenderer
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
@@ -46,6 +47,25 @@ def test_get_as_an_authorized_user(todo_list, todo_reader_login):
     assert rendered.content.startswith(b"{")
     assert rendered["ETag"] == f'"{todo_list.etag}"'
     assert "HX-Trigger" not in rendered
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_read_is_written_as_the_api_writes_it(todo_list, todo_reader_login):
+    """Stored content with U+2028 and U+2029: the studio's JSON escapes
+    them, as the API's renderer does, byte for byte."""
+    todo_list.content["title"] = "line\u2028para\u2029end é"
+    todo_list.save()
+    answer = write(
+        studio_request(todo_reader_login), "todo-lists", "GET", pk=todo_list.pk
+    )
+    rendered = as_response(answer, saved_trigger=False)
+    assert b"\\u2028" in rendered.content and b"\\u2029" in rendered.content
+    assert "\u2028".encode() not in rendered.content
+    Given.http.force_login(todo_reader_login)
+    api = api_get(reverse("todo-lists-detail", args=[todo_list.pk]))
+    assert api.content == rendered.content
+    assert rendered.content == JSONRenderer().render(answer.body)
 
 
 @pytest.mark.django_db

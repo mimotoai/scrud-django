@@ -251,9 +251,11 @@ def _internal(request, slug, method, pk, body, if_match):
     return internal
 
 
-def json_response(data, *, status=200, headers=None) -> HttpResponse:
-    """`data` as a JSON response, written as DRF's ``JSONRenderer`` writes
-    it (compact, not ASCII-escaped), with `headers`."""
+def json_response(data, *, status=200, headers=None, content_type=JSON) -> HttpResponse:
+    """`data` as a JSON response of `content_type`, written as DRF's
+    ``JSONRenderer`` writes it (compact, not ASCII-escaped, U+2028 and
+    U+2029 escaped, NaN and the infinities refused: ``ValueError``), with
+    `headers` (a ``Content-Type`` among them replaces `content_type`)."""
     text = json.dumps(
         data,
         separators=(",", ":"),
@@ -263,7 +265,7 @@ def json_response(data, *, status=200, headers=None) -> HttpResponse:
     )
     # Fully escaped, so that the JSON is a strict JavaScript subset.
     text = text.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-    response = HttpResponse(text, status=status, content_type=JSON)
+    response = HttpResponse(text, status=status, content_type=content_type)
     for name, value in (headers or {}).items():
         response[name] = value
     return response
@@ -278,8 +280,8 @@ def as_response(answer: Answer, *, saved_trigger: bool) -> HttpResponse:
         response = HttpResponse(status=answer.status)
         del response["Content-Type"]
     else:
-        response = HttpResponse(
-            json.dumps(body, separators=(",", ":"), ensure_ascii=False),
+        response = json_response(
+            body,
             status=answer.status,
             content_type=answer.problem_type if answer.problem is not None else JSON,
         )
