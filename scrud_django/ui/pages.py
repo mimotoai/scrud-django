@@ -7,8 +7,8 @@ HTML answers today: a page or an htmx fragment, a write's re-rendered
 frame, a refused PUT's edit form with its errors, a 412 (or a 409 DELETE)
 notice with a frame that reloads itself, an error's notice.
 
-The user is Django's session user (``request.user``); a write is checked by
-Django's ``CsrfViewMiddleware``, as any Django view's. A page serves GET
+The user is Django's session user (``request.user``); a write is checked for CSRF
+by ``csrf_protect``, whether or not ``CsrfViewMiddleware`` is installed. A page serves GET
 and HEAD, and the writes of the type's route: POST on a list, PUT and
 DELETE on an item (a computed type's items are read only). Any other
 method is a 405 naming the page's in ``Allow``.

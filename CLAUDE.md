@@ -86,6 +86,20 @@ and `tests/test_front_end_parity.py` is the proof (the same exchanges
 replayed against both, compared exactly); the generic suites take the
 `front_end` fixture and run on both. It serves no UI or studio types yet.
 
+`scrud_django/ui/` is the third front end of the core, the htmx UI: plain
+Django views (`scrud_django/ui/pages.py`), routed by `scrud_django.ui.urls`
+(the app includes it last at `/` with no namespace argument; it is
+`scrud_ui:list` (`slug`) and `scrud_ui:detail` (`slug`, `pk`), the CSS and JS
+files, and the studio at `studio/`, namespace `scrud-studio`), read and write
+through the core and answer HTML through the neutral `render_html`
+(`scrud_django/ui/html.py`). `/api/` is JSON only (DRF's browsable API still
+answers a browser's `Accept` on DRF); a published branch's prefix maps to the
+UI views and serves no JSON, and a branch cannot be published at `/`. htmx
+writes go to the UI URLs and answer HTML. Pages and the studio authenticate
+with Django's session user only (tests use `force_login`, not DRF's
+`force_authenticate`) and enforce CSRF with `csrf_protect`. Embeds and the
+studio call the core too; nothing dispatches a DRF viewset in process.
+
 An app's own models get the workflow through `scrud_django/core/signals.py`
 (the signals and action runner, neutral of `Resource`),
 `scrud_django/core/transitions.py` (`Transitions`, `govern`, `checked_save`,
@@ -164,9 +178,10 @@ MariaDB suite in CI's image instead
 default-libmysqlclient-dev pkg-config`, on a docker network with the server),
 as the `test-mysql` job does.
 
-Demo app (API root at http://127.0.0.1:8000/api/; resource routes need a
-login, at `/api-auth/login/` or with DRF's Basic auth; ninja does not read it
-without a `NINJA_USER` hook, see the README):
+Demo app (API root at http://127.0.0.1:8000/api/ and the UI's pages at
+`/<slug>/<pk>/`, such as `/todo-lists/<pk>/`; the pages and the studio need a
+session login at `/api-auth/login/`, while `/api/` also takes DRF's Basic auth;
+ninja does not read it without a `NINJA_USER` hook, see the README):
 
 ```bash
 cd demo
@@ -176,8 +191,8 @@ uv run python manage.py createsuperuser
 uv run python manage.py runserver
 ```
 
-The seed prints the self-hosted studio's workbench URLs (sign in as
-`author`/`author`): `/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`.
+The seed prints the list's UI URL (`/todo-lists/<pk>/`) and the self-hosted
+studio's workbench URLs (sign in as `author`/`author`): `/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`.
 
 CI is `.gitlab-ci.yml`: lint, migrations check, docs build, tests with
 coverage on 3.11-3.13 (then again with `--reverse`), the suite on PostgreSQL

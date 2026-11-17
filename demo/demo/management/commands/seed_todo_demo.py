@@ -191,7 +191,7 @@ body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
 </head>
 <body>
 <div class="todo-layout">
-<aside class="todo-sidebar" hx-get="/api/todo-lists/" hx-trigger="load" hx-headers='{"Scrud-UI-Scope": "sidebar", "Accept": "text/html"}'>Loading lists&hellip;</aside>
+<aside class="todo-sidebar" hx-get="/todo-lists/" hx-trigger="load" hx-headers='{"Scrud-UI-Scope": "sidebar"}'>Loading lists&hellip;</aside>
 <main>{{ body }}</main>
 </div>
 </body>
@@ -479,7 +479,8 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"Seeded: log in as owner/owner, reader/reader or author/author;"
-                f" the list is /api/{TODO_LIST_SLUG}/{groceries.pk}/"
+                f" the list is /{TODO_LIST_SLUG}/{groceries.pk}/"
+                f" (JSON at /api/{TODO_LIST_SLUG}/{groceries.pk}/)"
             )
         )
         for content in BRANCHES:

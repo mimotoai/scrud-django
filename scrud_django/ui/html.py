@@ -2,13 +2,14 @@
 reads of a plain Django request.
 
 `render_html` answers a request with a page, or with a fragment for an htmx
-request (the fragment protocol,
-`scrud_django.ui.renderer`): a resource, a page of a list or an error as a
-notice, through the render tree. It takes plain arguments (the resource type,
-the kind of answer, the data, the ETag, the stored content of a refused PUT)
-and a Django ``HttpRequest``, and imports no DRF; the DRF renderer derives
-its arguments from the view and the response. `html_headers` is what any HTML
-response carries: ``Vary``, ``no-store`` and the branch cookie.
+request (the fragment protocol, documented in docs/ui.md): a resource, a page
+of a list or an error as a notice, through the render tree. It takes plain
+arguments (the resource type, the kind of answer, the data, the ETag, the
+stored content of a refused PUT) and a Django ``HttpRequest``, and imports no
+DRF; the page views (`scrud_django.ui.pages`) and the embeds
+(`scrud_django.ui.embed`) call it after their core reads and writes.
+`html_headers` is what any HTML response carries: ``Vary``, ``no-store`` and
+the branch cookie.
 """
 
 import json

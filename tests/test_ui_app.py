@@ -893,17 +893,19 @@ def test_invalid_ui_headers_are_answered_after_the_request_check(
     page_status = send(method, ui_url(api), todo_list, body, **headers)
     assert_html()
     assert 'class="scrud-notice' in html() and FRAME not in html()
+    assert stored(todo_list).etag == todo_list.etag
     if page_status == 400:
-        # Past the request check: the user may ask this of the API (a GET
-        # stands in for a write, which would write).
-        api_status = send("GET", api, todo_list, body, HTTP_ACCEPT=JSON)
+        # Past the request check: the user may ask this of the API, which
+        # reads no UI header, so it answers the same method (last: a PUT
+        # then writes) with its success, 200.
+        api_status = send(method, api, todo_list, body, HTTP_ACCEPT=JSON, **headers)
         assert api_status == 200, api_status
     else:
         # Refused: the API refuses the same request the same way, writing
         # nothing.
         api_status = send(method, api, todo_list, body, HTTP_ACCEPT=JSON)
         assert page_status == api_status, (page_status, api_status)
-    assert stored(todo_list).etag == todo_list.etag
+        assert stored(todo_list).etag == todo_list.etag
 
 
 @pytest.mark.django_db

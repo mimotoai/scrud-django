@@ -297,8 +297,11 @@ A module `scrud_django.core.workflow` **(call)**:
   - `finalize_html`, `note_negotiation`, `check_ui_headers` and `check_mount`
     leave the API views.
 - A request to `/api/...` with `Accept: text/html` gets what an API gives for
-  that `Accept` today. On DRF that is JSON, or `?format=api` for the browsable
-  API (a DRF-only feature); there is no redirect to the UI **(call)**.
+  that `Accept` today. On DRF that is JSON, or DRF's browsable API
+  (`BrowsableAPIRenderer`, in DRF's default renderers, so a browser's
+  `Accept: text/html` or `?format=api` gets it: a DRF-only feature, never the
+  scrud UI's markup); ninja answers JSON; there is no redirect to the UI
+  **(call)**.
 - `Vary: Accept` and the shared-ETag concerns go away
   (`ui-json-vary-accept`, `ui-html-shared-etag` follow-ups close).
 - The UI's resource types (`ui-components`, `ui-stylesheets`, `ui-css`, `ui-js`,
@@ -324,17 +327,27 @@ A module `scrud_django.core.workflow` **(call)**:
     UI CSS/JS files, and the studio.
   - It claims only registered slugs and its own segments, like prefixes do today,
     so it does not swallow the app's other URLs.
-  - Route names are namespaced (`scrud_ui:<slug>-list`, `scrud_ui:<slug>-detail`)
-    **(call)**.
+  - Route names are namespaced and not per slug: `scrud_ui:list` (kwarg
+    `slug`) and `scrud_ui:detail` (kwargs `slug`, `pk`) **(call)**. This
+    replaces `scrud_ui:<slug>-list`: a type registered after the URLconf
+    loads (`register_or_defer`) cannot get a per-slug pattern, so a path
+    converter claims a slug only when the UI serves it.
+  - It includes the studio at `studio/` (namespace `scrud-studio`) when
+    `scrud_django.ui.studio` is installed, so a project drops its own
+    `include("scrud_django.ui.studio.urls")` **(call)**.
 - **Views.** Pages are plain Django views.
   - They read through the core (`load_for_read`, `list_queryset`, the item and
     list validators for their own ETag/304), with Django's session user.
   - Embeds call the core instead of `ui/dispatch.py`'s in-process viewset calls,
     and `dispatch.py` goes away.
 - **Writes.**
-  - htmx writes keep going to the JSON API (`PUT`/`POST`/`DELETE` on `/api/...`)
-    as plain JSON. The rendered HTML carries API URLs for writes and UI URLs for
-    navigation. This is already the browser's model ("plain JSON `PUT`s").
+  - htmx writes go to the UI URLs **(owner, 2026-11-16)**: the UI views also
+    accept the writes the API route serves (`POST` on a list, `PUT` and
+    `DELETE` on an item), write through the same core functions as the API,
+    and answer HTML (the re-rendered frame, the refused-PUT form with its
+    field errors, the 412/409 reloading notice). A frame's write href and
+    navigation href are the same value, the UI URL. This replaces the first
+    draft ("htmx writes keep going to the JSON API").
   - The studio's form endpoints (`studio/views.py`, `@api_view` with
     `FormParser`) become plain Django views under the UI mount. They call the
     core for their writes, with Django's CSRF protection.
@@ -346,7 +359,9 @@ A module `scrud_django.core.workflow` **(call)**:
     - no trailing-slash redirect;
     - links and htmx requests stay under the prefix.
   - `/` is the `main` branch's UI, the site's normal presentation, like any
-    Django app. Other branches stay reachable by prefix and by today's
+    Django app. A branch cannot be published at `/` (400; check W001 warns
+    about a stored one) **(call)**, so `/` is always main's: a site that used a
+    restricted branch at `/` as a whole-site gate loses that gate. Other branches stay reachable by prefix and by today's
     `ui-branch` selection, confirmation included **(owner)**.
 - **JSON under a prefix goes away (call).** Today `<prefix><slug>/` also serves
   JSON (canonical `/api/` hrefs; item lists default to the prefix's branch).

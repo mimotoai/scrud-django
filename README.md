@@ -20,10 +20,13 @@ uv add "scrud-django[search]"
 ## Server-rendered UI
 
 The optional `scrud_django.ui` app (`pip install "scrud-django[ui]"`) serves
-every resource URL as `text/html` as well, rendered on the server through
+a `text/html` page for every resource type at the site's own URLs
+(`/todo-lists/7/`; `/api/` stays JSON only), rendered on the server through
 templates and stylesheets stored as resources, layered per RBAC context and
-shown exactly as the viewer is authorized, with htmx for editing. See the
-[UI documentation](docs/ui.md).
+shown exactly as the viewer is authorized, with htmx for editing. Include it
+last in the root URLconf: `path("", include("scrud_django.ui.urls"))`. See the
+[UI documentation](docs/ui.md) and
+[Migrating to 0.17.0](#migrating-to-0170-the-ui-app).
 
 ## django-ninja (preview)
 
@@ -916,8 +919,9 @@ each type's list URL) and adds no revision history. A GET answers the content wi
 does. The view requires an authenticated
 user and applies no authorization of its own to the content: `compute` must ask
 the same checks the stored resources' views do. The type is registered, so a
-published branch's prefix claims its slug, and HTML negotiation renders it
-through the UI cascade as view-only content.
+published branch's prefix claims its slug, and the UI's page for it renders it
+through the UI cascade as view-only content (only when registered with
+`compute=`: one with only a DRF `viewset_class` has no UI page).
 
 Instead of subclassing, pass `compute=` to `computed_resource_type`: a
 callable `(request, key) -> Mapping` (raise `Http404` or `PermissionDenied`)
@@ -1176,6 +1180,61 @@ def send_events(deliver, batch=100):
             event.sent_at = timezone.now()
             event.save(using=using, update_fields=["sent_at"])
 ```
+
+### Migrating to 0.17.0: the UI app
+
+The UI is now its own Django app, served at the site root, and `/api/` serves
+JSON only. If you use `scrud_django.ui`:
+
+```python
+# urls.py (the root URLconf)
+urlpatterns = [
+    path("api/", include("scrud_django.urls")),
+    ...,  # your own URLs
+    path("", include("scrud_django.ui.urls")),  # last, no namespace argument
+]
+```
+
+Add that last line, **last** (it claims only the slugs of the types it serves,
+so it does not swallow your other URLs), and delete your own
+`path("studio/", include("scrud_django.ui.studio.urls"))`: the UI's URLconf
+includes the studio at `studio/` (namespace `scrud-studio`) itself. The pages'
+route names are `scrud_ui:list` (`slug`) and `scrud_ui:detail` (`slug`, `pk`).
+What changes:
+
+* **HTML is no longer served under `/api/`.** `/api/<slug>/` answers JSON for
+  every `Accept` (DRF's browsable API still answers a browser's `Accept` on a
+  DRF route; ninja answers JSON). A resource's page is at `/<slug>/<pk>/`.
+  Links, bookmarks and `hx-get`s that expected HTML at `/api/...` need the UI
+  path (`/todo-lists/7/`).
+* **htmx writes go to the UI's URLs** and answer HTML (the re-rendered frame,
+  the refused-PUT form, the 412 and 409 reload).
+* **Prefixes are UI only.** A published branch's prefix serves the UI's pages;
+  there is no JSON under it. JSON is at `/api/`, where `Scrud-UI-Branch` or
+  `ui-branch` selects a branch within `main`'s tree only.
+* **A branch cannot be published at the UI's base `/`** (a 400; the system check
+  `scrud_django_ui.W001` warns about a stored one). `/` is always `main`'s UI,
+  so a site that used a restricted branch at `/` as a gate for the whole site
+  loses that gate.
+* **Pages and the studio authenticate with Django's session user only.** DRF's
+  Basic and Token authentication no longer apply to them (they still apply to
+  `/api/`). CSRF is enforced on their writes even without `CsrfViewMiddleware`,
+  an anonymous tokenless POST gets Django's CSRF 403, and `OPTIONS` on a page or
+  a studio endpoint is a 405 with `Allow`. A page sends no `Link` header, and
+  the JSON body of a page's write is subject to `DATA_UPLOAD_MAX_MEMORY_SIZE`.
+* **Types the UI cannot serve.** A computed type registered only with a DRF
+  `viewset_class` (no `compute=`) has no UI page and cannot be embedded. The
+  pages read through the core, which asks a type's grants and its neutral
+  `checks=` and `object_checks=` hooks, not the permission classes of a custom
+  `viewset_class` or `IsAuthorized` subclasses (DRF-only authorization): a type
+  whose rules live only there must declare them as those hooks to have the UI
+  honour them.
+* **Stored component templates.** `in_mount(...)`, `embed(...)` and `api_url(...)`
+  with `/api/` paths keep working (they are mapped to the UI), but a raw
+  `hx-get="/api/..."` that expects HTML now gets JSON: use `in_mount`, `embed`
+  or the UI path.
+* **Tests of UI pages** sign in with a session (`client.force_login(user)`), not
+  DRF's `force_authenticate`, which pages do not read.
 
 ### Upgrading
 

@@ -1,15 +1,16 @@
 # Server-rendered UI
 
-`scrud_django.ui` is an optional app that serves every resource URL as
-`text/html` as well as JSON. The HTML is rendered on the server, node by node,
+`scrud_django.ui` is an optional app that serves a page for every resource
+type, as `text/html`, at the site's own URLs (`/todo-lists/7/`), while `/api/`
+serves JSON only. The HTML is rendered on the server, node by node,
 through templates (UI components) that are themselves stored as resources, and
 chosen by CSS-like rules (UI stylesheets) layered per RBAC context. A page is
 rendered exactly as the viewer is authorized: it offers editing only where the
 policy lets that user PUT, and it never includes content the user cannot read.
 The browser side is [htmx](https://htmx.org/) and a small script, `scrud-ui.js`.
 
-Without `scrud_django.ui` in `INSTALLED_APPS`, scrud-django behaves exactly as
-before.
+Without `scrud_django.ui` in `INSTALLED_APPS`, scrud-django serves JSON only,
+as it always has.
 
 This is phase 1 of the UI, with branches. The later phases are planned, not
 built:
@@ -17,7 +18,7 @@ built:
 * **Phase 1** (this release): server-rendered HTML for every resource, stored
   components and stylesheets, [branches](#branches) of them written by anyone
   the policy lets write there, and the browser writing whole resources with
-  plain JSON `PUT`s.
+  plain JSON `PUT`s to the UI's own URLs.
 * **Phase 2**: per-field editability, and policy evaluation in the browser
   through js-scoped-rbac.
 * **Phase 3**: components written by untrusted authors, in a sandbox.
@@ -41,7 +42,7 @@ INSTALLED_APPS = [
 ]
 ```
 
-`scrud_django.urls` then serves more resource types, each with its own schema,
+`scrud_django.urls` (the API) then serves more resource types, each with its own schema,
 JSON-LD context and collection, written and read like any other resource under
 the same policy:
 
@@ -55,8 +56,43 @@ the same policy:
 | UI branch version (read-only) | `http://api.openteams.com/json-ld/UIBranchVersion` | `ui-branch-versions` |
 | UI push | `http://api.openteams.com/json-ld/UIPush` | `ui-pushes` |
 
-HTML is chosen by content negotiation (`Accept: text/html`) at the resource's
-own URL. `?format=api` still reaches DRF's browsable API.
+The pages are served by the UI app's URLconf, which you include **last**, at
+the site root, after the API and your own URLs (it claims only the slugs of the
+types it serves, so it does not swallow the rest of the site):
+
+```python
+urlpatterns = [
+    path("api/", include("scrud_django.urls")),
+    ...,  # your own URLs
+    path("", include("scrud_django.ui.urls")),
+]
+```
+
+Include it with no `namespace` argument: its routes are already in the
+`scrud_ui` namespace, `scrud_ui:list` (kwarg `slug`: `/todo-lists/`) and
+`scrud_ui:detail` (kwargs `slug`, `pk`: `/todo-lists/7/`), beside
+`scrud_ui:ui-css-file` and `scrud_ui:ui-js-file`. There is one route name for
+all slugs, so a type registered after the URLconf loads is served too. Its
+URLconf also includes the [studio](#studio) at `studio/` (namespace
+`scrud-studio`) when `scrud_django.ui.studio` is installed.
+
+`/api/` is JSON only: it never answers the UI's HTML, whatever `Accept` says
+(DRF's browsable API still answers a browser's `Accept: text/html` or
+`?format=api` on a DRF route, as DRF does; ninja answers JSON). The UI does not
+negotiate: its URLs answer HTML, and a type's JSON is at `/api/<slug>/`.
+
+The pages are plain Django views. They read and write through the same core as
+the API, so they refuse what the API refuses, at the same status, and they
+authenticate with Django's **session user only**: DRF's Basic or Token
+authentication does not apply to pages or to the studio (sign in at your
+login, `/api-auth/login/` in the demo). A type served by the UI needs its
+authorization to be expressed to the core: a page asks the type's grants and
+its neutral `checks=` and `object_checks=` hooks, never the permission classes
+of a custom `viewset_class` (DRF-only authorization), so a type whose rules
+live only there must declare them as hooks to have the UI honour them (see the
+README's migration notes), and a computed
+type registered only with a DRF `viewset_class` (no `compute=`) has no page and
+cannot be embedded.
 
 ## UI components
 
@@ -109,7 +145,8 @@ A stored Jinja component also gets three functions: `embed` (see
 
 - `in_mount(href)` is `href`, an API URL, as the page's published prefix
   serves it: on a page under a branch's prefix, `in_mount("/api/todo-lists/7/")`
-  is that prefix's `todo-lists/7/`; at the API's URLs it is `href` unchanged.
+  is that prefix's `todo-lists/7/`; on a page at the UI's own URLs it is
+  `/todo-lists/7/`; outside the UI's pages it is `href` unchanged.
   It maps links as the server maps a frame's own (`selection.in_mount`), so an
   API path found in the data (an item's `href` in the studio's computed types)
   links within the page's prefix. A value that is not a string is returned
@@ -118,7 +155,8 @@ A stored Jinja component also gets three functions: `embed` (see
   list (`api_url("todo-lists")` is `/api/todo-lists/`), or of its detail for
   `key` (`api_url("todo-lists", 7)`), computed types included
   (`api_url("ui-branch-items", "main")`; a computed type has no list). It is
-  always the API's path, which `embed` maps into the page's prefix, so
+  always the API's path, which `embed` maps to the UI (under the page's prefix
+  when it has one), so
   `embed(api_url("ui-branch-items", value.name))` works under a prefix too.
   A `slug` that is not a registered type's (no `<slug>-list` or
   `<slug>-detail` route serving that type) raises, so the component fails and
@@ -201,7 +239,7 @@ with its own contexts' stylesheets.
 
 A stored Jinja component (a node's, a list's or the page's) can render another
 resource in its place on the server: `embed(path, scope=(), mode=None)`
-returns that resource's HTML, the fragment its own URL answers.
+returns that resource's HTML, the fragment its own UI URL answers.
 
 ```jinja
 <aside>{{ embed(value.sidebar, "sidebar") }}</aside>
@@ -217,13 +255,15 @@ returns that resource's HTML, the fragment its own URL answers.
   stripped, and the path and query it checks are the ones it requests. The
   path is decoded as the server decodes a request's (`%2F` is `/`) and is not
   normalized (a `..` segment matches no route).
-- A path under a published branch's prefix is served as that prefix serves it:
-  at the API's URL, with the prefix's checks (`check_mount`), and the embedded
-  frame's links stay in the prefix. On a page under a prefix, an API path
-  (`/api/...`) is embedded under that prefix, as the page's links are
-  (`selection.in_mount`), so it renders on the prefix's branch with the
-  prefix's checks; an API path the prefix doesn't serve (the API root) is
-  refused.
+- `path` is a UI path (`/todo-lists/7/`), a path under a published branch's
+  prefix, or an API path (`/api/...`), which is mapped to the UI as the page's
+  links are (`selection.in_mount`): a stored template that embeds
+  `/api/todo-lists/7/` keeps working. A path under a published branch's prefix
+  is served as that prefix serves it, with the prefix's checks
+  (`check_mount_access`), and the embedded frame's links stay in the prefix. On
+  a page under a prefix, an API path is embedded under that prefix, so it
+  renders on the prefix's branch with the prefix's checks; an API path the
+  prefix doesn't serve (the API root) is refused.
 - `scope` is the scope chain to render it in: a string of space- or
   comma-separated names, or a list of names; `none` is no scope, as the
   default `()` is. One that is not a scope chain (not a string or a list of
@@ -239,9 +279,10 @@ returns that resource's HTML, the fragment its own URL answers.
   refused (below), as any other `Scrud-UI-Mode` is a 400 at the resource's
   URL: a typo never puts edit controls in a card meant to be read-only.
 
-The embed is a GET made in process as the same user
-(`scrud_django.ui.dispatch.dispatch_path`), so the resource's view, its RBAC,
-workflow, masking and `check_mount` apply unchanged. It sends `HX-Request:
+The embed is a read made in process as the same user, by the UI pages' own
+render functions (`scrud_django.ui.pages.render_list` and `render_item`, which
+read through the core), so the resource's RBAC, workflow, masking and the
+prefix's checks apply unchanged. It behaves as a GET with `HX-Request:
 true`, `Scrud-UI-Scope` when a scope is given, `Scrud-UI-Mode: view` when asked, and
 `Scrud-UI-Branch` with the embedding render's branch (as `name` or
 `name@pinned`), so the embed renders on the same branch, and the embedded
@@ -258,9 +299,9 @@ whatever the user's own mode on it; in an edit-mode preview an embed with no
 embedded view reads as data (a list of UI items, a studio computed type) is the
 stored state, as its URL answers it, so an embedded list of UI items in safe mode lists the
 stored items, and one in a live preview lists the stored item a draft replaces.
-This holds by construction: `dispatch_path` runs the embedded view in
-`stored_state()` and renders its response after, outside it, so that the
-embedded presentation still sees safe mode and the drafts.
+This holds by construction: the embed reads its data in `stored_state()` and
+renders after, outside it, so that the embedded presentation still sees safe
+mode and the drafts.
 Django components have no `embed`. Build an embed's path with `api_url`
 (`embed(api_url("todo-lists", value.list_id))`) rather than by hand, and link
 an API path from the data with `in_mount` (see
@@ -276,10 +317,11 @@ in the embed's place (each refusal is logged as a warning by
   (`https://other.example/...`, `//other.example/...`, `ftp://...`,
   `http:/api/...`, or a backslash such as `/\other.example/...`, which is
   a path that resolves to nothing);
-- a path that doesn't resolve to a resource view: a stored or computed resource
-  type's list or detail route. A project's page, the studio, the API root and
-  the CSS and JavaScript file routes are refused, and so is a response that
-  isn't the UI's HTML (`?format=json`, `?format=api`);
+- a path that doesn't resolve to a UI page: a stored type's list or detail
+  page, or a computed type's (one registered with `compute=`; a computed type
+  with only a DRF `viewset_class` has no page). A project's page, the studio,
+  the API root and the CSS and JavaScript file routes are refused, and so is a
+  request for another format (`?format=json`, `?format=api`);
 - a `scope` that is not a scope chain, and a `mode` other than `"view"`;
 - a path and scope chain already being rendered, which would be a cycle: the
   top-level request (its URL and its scope chain: `Scrud-UI-Scope`, else
@@ -552,8 +594,12 @@ The whole resource renders in one mode: edit when PUT is `allowed`, or
 `scrud_workflow` condition, and the workflow check decides on submit), else
 view. Components of the other mode are skipped.
 
-The server's write path is unchanged. In edit mode the browser sends an
-ordinary JSON `PUT` with `If-Match`, built client-side by `scrud-ui.js` from the
+The server's write path is the core's, the same one the API's routes call. In
+edit mode the browser sends an ordinary JSON `PUT` with `If-Match` to the
+frame's own URL, a UI URL (`/todo-lists/7/`, not `/api/todo-lists/7/`): the
+UI's pages accept the writes the API route serves (`POST` on a list, `PUT` and
+`DELETE` on an item) and answer HTML (the re-rendered frame, the refused-PUT
+form, a reloading notice). The body is built client-side by `scrud-ui.js` from the
 content embedded in the frame (`<script class="scrud-content">`) and the inputs
 named by JSON Pointer (`name="/items/0/text"`):
 
@@ -664,7 +710,9 @@ their JSON Pointer inside the frame.
 ### Writes from the browser
 
 Besides the frame's own `PUT`, any element can send a JSON body with any
-method (POST, PUT, PATCH or DELETE) to an existing resource route. It needs
+method (POST, PUT, PATCH or DELETE) to an existing resource route, a UI page
+for the pages' types (a method the page does not serve is a 405; a write
+answers HTML), or an API route (a write answers JSON). It needs
 `hx-ext="scrud-json"` (inherited from an ancestor works), an `hx-<method>`
 attribute with the URL, and `data-scrud-json`. The element may sit outside any
 `.scrud-resource` frame, in a stored page component for example.
@@ -712,7 +760,12 @@ inside a frame. The frame's `PUT` is otherwise unchanged. An unparsable or missi
 applied cancels the request: the element's frame shows "This action is
 misconfigured." (or the invalid-field notice), and outside a frame the message
 is logged with `console.error`. Forms are never sent as form bodies: the server
-answers those with 415.
+answers those with 415. A page's write is checked for CSRF (`X-CSRFToken`)
+whether or not `CsrfViewMiddleware` is installed: a POST, PUT or DELETE with no
+valid token gets Django's CSRF 403, an anonymous one included. The JSON body
+of a write to a page is subject to Django's `DATA_UPLOAD_MAX_MEMORY_SIZE`; a
+larger one gets Django's plain 400, where the API answers a 413 (follow-up
+[ui-page-body-size-limit](follow-ups.md#ui-page-body-size-limit)).
 
 ### Refused writes
 
@@ -736,8 +789,10 @@ the frame with the current state, and so does a 409 DELETE.
 A computed type (`scrud_django.computed.ComputedResourceViewSet`, registered
 with `registration.computed_resource_type`; see the README) renders through
 the same cascade as a stored resource: a stylesheet rule on its type's IRI
-selects a component, and negotiating HTML at its URL, under a published
-branch's prefix too, renders it. Its content is view-only: components get the
+selects a component, and its UI page, under a published
+branch's prefix too, renders it. The UI serves a computed type registered with
+`compute=`; one registered only with a DRF `viewset_class` has no page and
+cannot be embedded. Its content is view-only: components get the
 decisions `{"GET": "allowed", "PUT": "denied", "DELETE": "denied"}`, whatever
 the user's grants, so edit controls never show. Its contexts, whose
 stylesheets apply, are those of the content's `rbac_context` when it has one,
@@ -756,10 +811,13 @@ writes: PUT, POST and DELETE are a 405.
 
 These select presentation only, never what is authorized. HTML responses carry
 `Vary: Accept, HX-Request, Scrud-UI-Scope, Scrud-UI-Pointer, Scrud-UI-Mode,
-Scrud-UI-Branch, Scrud-UI-Safe, Cookie` (the branch a page browses comes from a header or a cookie) and
+Scrud-UI-Branch, Scrud-UI-Safe, Cookie` (the branch a page browses comes from a header or a cookie; `Accept` is in the list, though the UI does not negotiate) and
 `Cache-Control: private, no-cache, no-store` (a page and its fragments share
 one ETag, so a cache must not keep either; the ETag stays, and the client sends
-it as `If-Match`). An error is the same status as JSON (401, 403, 404, ...) with
+it as `If-Match`). The headers apply to the UI's pages (the JSON API reads none
+of them). A page sends no `Link` header (the API's answers carry the schema and
+context links), and `OPTIONS` on a page or a studio endpoint is a 405 with
+`Allow`. An error is the same status the API answers (401, 403, 404, ...) with
 a `text/html` notice, and never includes stored resource content: a refused 400
 or 403 PUT may echo the body the user submitted as the edit form, and a 412 adds
 a frame that reloads the current state with the viewer's rights (see Refused
@@ -780,8 +838,8 @@ the same rendering, no banner and no extra queries.
 
 ### Concepts
 
-* **`main`** is the published branch at the API's URLs (`/api/...`), in the
-  RBAC context `""`, holding every item written before branches. The name is
+* **`main`** is the published branch at the UI's own URLs (`/`) and the API's
+  (`/api/...`), in the RBAC context `""`, holding every item written before branches. The name is
   reserved: `main` has no parent and no prefix, cannot be deleted, and has no
   stored row until something is written on it.
 * A **published** branch has a `prefix` and is served at it (see
@@ -841,11 +899,12 @@ resource.
   An item that comes from an ancestor is read-checked as it is on the branch it
   comes from, and a version shows only the items its reader may read. The
   branch a JSON list shows is chosen with the `Scrud-UI-Branch` header or the
-  `ui-branch` parameter (the header first; the cookie is not read for JSON).
-  Without either it is `main`, or, under a prefix, the prefix's branch. A
+  `ui-branch` parameter at `/api/` (the header first; the cookie is not read
+  for JSON), within `main`'s tree. Without either it is `main`: JSON is at
+  `/api/` only, never under a prefix. A
   JSON list whose header or parameter names a branch that is refused (one
   that does not exist, that you may not GET with its working ancestors, that
-  is not in the tree of the URL's published branch, or that is pinned to a
+  is not in `main`'s tree, or that is pinned to a
   missing version) is refused with 400, problem type `ui-branch-unavailable`,
   with the same text whatever the reason; it never lists another branch's
   items instead. (An HTML page renders the published branch and says so in
@@ -986,7 +1045,7 @@ shown in a page comes from, in order:
 1. the `Scrud-UI-Branch` request header (htmx requests inside a page always
    send it, so a page never changes branch halfway);
 2. the `ui-branch` query parameter of a link;
-3. the cookie of the prefix, set by confirming a switch;
+3. the cookie of the prefix (or of the UI's own URLs), set by confirming a switch;
 4. none: the published branch itself.
 
 A value is `<name>`, or `<name>@pinned` to view the branch at its branching
@@ -1024,7 +1083,7 @@ secret signed it (any other is asked again). Confirming sets the cookie. The
 confirmation page is only for full-page HTML GETs, never for htmx requests, and
 a request from another site (`Sec-Fetch-Site`) is always asked.
 
-**The cookie** is `scrud_ui_branch` at the API URLs, and
+**The cookie** is `scrud_ui_branch` at the UI's own URLs, and
 `scrud_ui_branch_<first 12 hex digits of sha256(prefix)>` under a prefix, with
 the path set to the prefix. (A cookie for `/` is sent to every prefix; its own
 name keeps it from being read, or shadowing another, there.) It is only a
@@ -1044,20 +1103,29 @@ MIDDLEWARE = [
 ```
 
 With it, a request for `<prefix><type slug>/...` (or for the CSS files), where
-`prefix` is a published branch's, reaches **the same resource views, with the
-same authorization, preconditions, workflow and write path** as
-`/api/<type slug>/...`. Only the presentation differs. A prefix claims nothing
-else: `/` does not swallow the rest of the site. The longest matching prefix
-wins. Under a prefix:
+`prefix` is a published branch's, is routed to **the UI's page of the same
+URL** (`scrud_django.ui.urls`), with the same authorization, preconditions,
+workflow and write path as `/<type slug>/...` (and so as the API). Only the
+presentation differs. A prefix claims nothing else: `/` does not swallow the
+rest of the site. The longest matching prefix wins. Under a prefix:
 
-* a viewer needs GET on the prefix's branch, in HTML and JSON alike, or gets
-  the refusal a refused GET gets (401 or 403), with no fallback presentation;
-* HTML links and htmx requests stay under the prefix; JSON keeps the canonical
-  `/api/` hrefs; JSON item lists default to the prefix's branch;
+* **only the UI answers**: there is no JSON under a prefix, and a request that
+  asks for it gets the page's HTML. JSON is at `/api/`, where the branch is
+  chosen by `Scrud-UI-Branch` or `ui-branch`, within `main`'s tree only (see
+  [Concepts](#concepts)); the API's own hrefs are `/api/` URLs;
+* a viewer needs GET on the prefix's branch, or gets the refusal a refused GET
+  gets (401 or 403), with no fallback presentation;
+* HTML links and htmx requests (and writes) stay under the prefix;
 * there is no trailing-slash redirect: `<prefix><slug>` without the slash is
   not a mount URL (a 404 unless your URLconf serves it);
 * a project that serves its API at `/` gets no prefixes: the API's URLs are
-  never mounted.
+  never mounted;
+* **a branch cannot be published at the UI's base** (`/`, where the UI app is
+  included): `/` is always `main`'s UI, so setting that prefix is a 400, and
+  the system check `scrud_django_ui.W001` warns about a stored one (the
+  middleware never mounts it). A site that used a restricted branch at `/` as
+  a gate for the whole site loses that gate: publish the branch at a prefix, or
+  gate the site with your own middleware.
 
 **Cost:** the middleware reads the stored branches, **one extra query**, on
 every request outside the API's URLs, to find out whether the path is under a
@@ -1075,11 +1143,11 @@ branch's own context; without it the request is refused (403). A grant in a
 branch's own context lets you write, push to, pull and delete a working
 branch, never publish or unpublish one.
 
-A prefix is refused (400) when it is set or changed if it lies under the API's
-URLs; overlaps another branch's (the URLs one claims, `<prefix><type
+A prefix is refused (400) when it is set or changed if it is the UI's base
+(`/`) or lies under the API's URLs; overlaps another branch's (the URLs one claims, `<prefix><type
 slug>/...`, include the other's: `/shop/` and `/shop/todo-lists/` do; `/` and
 `/admin/resources/` do not); or claims URLs your URLconf serves with another
-view, which it would hide. A project that serves its API at `/` can set no
+view, which it would hide (the UI's own pages, under another slug, included). A project that serves its API at `/` can set no
 prefix. Django's admin has a catch-all route, so a prefix under `/admin/` is
 refused; the demo uses `/manage/`.
 
@@ -1141,7 +1209,7 @@ rendered with a sample (or a real instance). Click a node in the preview and
 the inspector says which rule chose its component, which rules matched and
 lost, and why. Write a new component for the node and its rule in one action,
 edit an item on the branch, and pull or push the branch. The studio is a
-client of the resource API: every write goes through the resource viewsets
+client of the resource API: every write goes through the core's writes
 in-process, as the signed-in user, so scoped RBAC, the `base` checks and
 versions apply as they do for a direct API call. It adds no rights.
 
@@ -1152,8 +1220,7 @@ way out.
 
 ### Setup
 
-Add the app after `scrud_django.ui` (a system check fails without it) and
-include its URLs at a path you choose:
+Add the app after `scrud_django.ui` (a system check fails without it):
 
 ```python
 INSTALLED_APPS = [
@@ -1161,12 +1228,12 @@ INSTALLED_APPS = [
     "scrud_django.ui",
     "scrud_django.ui.studio",
 ]
-
-urlpatterns = [
-    ...
-    path("studio/", include("scrud_django.ui.studio.urls")),
-]
 ```
+
+The studio is served at `studio/` by the UI app's URLconf
+(`path("", include("scrud_django.ui.urls"))`, see
+[Enabling the app](#enabling-the-app)), in the `scrud-studio` namespace: a
+project no longer includes `scrud_django.ui.studio.urls` itself.
 
 The studio's pages, scripts and styles are its own templates and static files
 (`scrud_studio/`), with no inline scripts, so a `script-src 'self'` policy
@@ -1178,10 +1245,13 @@ out (see [Setting up the self-hosted studio](#setting-up-the-self-hosted-studio)
 
 ### Signing in
 
-Every studio view is a DRF view that needs an authenticated user. An anonymous
-request gets a 401, not a redirect to a login page. Sign in first at your API's
-login (the demo has `/api-auth/login/`), then open the studio; API clients
-send their usual credentials.
+Every studio view is a plain Django view that needs an authenticated user. An
+anonymous request gets a 401, not a redirect to a login page. Sign in first at
+your login (the demo has `/api-auth/login/`), then open the studio. The studio
+authenticates with Django's session user only: DRF's Basic or Token
+authentication does not apply to it. Its writes are checked for CSRF even
+without `CsrfViewMiddleware` (an anonymous tokenless POST gets Django's CSRF
+403), and `OPTIONS` on a studio endpoint is a 405 with `Allow`.
 
 ### What the studio shows
 
@@ -1247,12 +1317,8 @@ preview, so a rule on it can report `wins: true` and change nothing visible; in
 the demo, `/items/0/text` is such a node (the item template prints
 `value.text` itself).
 
-The `preview` endpoint is negotiated by DRF and answers 406 to a request that
-accepts only `text/html`; browsers send `*/*`, so iframes are fine.
-
 A branch-browsing confirmation token (`ui-branch-confirm`) needs the
-`csrftoken` cookie, including for HTTP Basic clients: keep the cookie from the
-first response.
+`csrftoken` cookie: keep the cookie from the first response.
 
 ### The editor
 
@@ -1278,8 +1344,9 @@ branch").
 
 ### The studio API
 
-The studio page is built on a JSON API, which the
-[self-hosted studio](#self-hosted-studio) uses too. Paths are relative to where you include the URLs.
+The studio page is built on a small JSON API (its endpoints are plain Django
+views, not DRF's), which the
+[self-hosted studio](#self-hosted-studio) uses too. Paths are relative to the studio's root, `/studio/`.
 A studio write runs the core's write in-process (`studio.answers.write`), not
 through a new HTTP request, so the site's middleware does not run for that
 inner call: a middleware-only check on the API's URLs (an IP allowlist on
@@ -1288,7 +1355,7 @@ through the middleware as any request does; put such a check on it too, or
 leave the studio out of the deployment that needs it.
 Every endpoint needs an authenticated user (401 otherwise). The writes are
 `POST` with a JSON object body (a body that is not an object is a 400) and are
-protected by CSRF when a session is used. A success from a write also carries
+protected by CSRF. A success from a write also carries
 `HX-Trigger: scrud-studio-saved`. `live-preview` is a `POST` too, but
 form-encoded, and it writes nothing. Errors are problem documents (the API's
 `application/problem+json`) and a refusal by the resource view is passed
@@ -1314,7 +1381,7 @@ for every cause.
 
 | Endpoint | Response |
 |---|---|
-| `GET` on the include's root (e.g. `/studio/`) | the type browser (HTML); `?q=` filters by slug, title or type IRI; with `HX-Request` only the list |
+| `GET` on the studio's root (`/studio/`) | the type browser (HTML); `?q=` filters by slug, title or type IRI; with `HX-Request` only the list |
 | `GET types/<slug>/` | the studio page for the type, from the query above plus `pinned=1`; unknown slug gives 404 |
 | `GET types/<slug>/strip` | the branch strip alone (HTML): `?branch=` names the branch; `UIBranchUnavailableError` for one the user may not select |
 
@@ -1353,7 +1420,7 @@ The body is form-encoded (`application/x-www-form-urlencoded`) with one field,
 `request`, holding JSON, so that a `<form method="post" target="<iframe
 name>">` can submit it into the preview frame together with the CSRF token
 (`csrfmiddlewaretoken`; the session's CSRF check applies). It is not a
-resource view, so the API's JSON-only rule does not apply.
+resource page, and it answers HTML.
 
 ```text
 {"type": "todo-lists",          // the type's slug (required)
@@ -2929,20 +2996,28 @@ and `studio:items` on S and takes each of these ways back.
   its body in a hidden element, can hide it (see the follow-up
   [ui-banner-hideable](follow-ups.md#ui-banner-hideable)). Trust the writers
   of the branches you let people browse.
-* A branch never changes what a viewer may read or write through the API's
-  views: under a prefix the same views answer with the same checks. A prefix
+* A branch never changes what a viewer may read or write: the UI's pages (at
+  `/` and under a prefix) read and write through the same core as the API's
+  routes, with the same checks. A prefix
   does add one: its URLs need GET on its branch. So publishing a prefix can
   put URLs behind a branch's grants, and is site-level: it needs PUT on
   `ui-branches` in the context `""` (see [Prefixes](#prefixes)), and a prefix
   that would hide the project's own URLs, overlap another or lie under the
   API's is refused. Grant it to the site's administrators only. A mount that
   hides a field is presentation, not access control.
+* The UI's pages and the studio authenticate with Django's session user only
+  (not DRF's Basic or Token authentication, which still apply to `/api/`).
+  Their writes are checked for CSRF even without `CsrfViewMiddleware`
+  (`csrf_protect`): an anonymous POST with no token gets Django's CSRF 403.
+  `OPTIONS` on a page or a studio endpoint is a 405 with `Allow`.
 * Stored Jinja templates run in Jinja's sandbox; stored Django templates run on
   a restricted engine (no loaders, no tag libraries), which is not a sandbox.
   Both escape everything they are given.
 * Components are presentation, not access control. A component is only given
   what the viewer may read, so it cannot reveal more; but hiding a field in a
   component does not keep it from the viewer, who can read it as JSON.
+* A stored component that hard-codes a raw `hx-get="/api/..."` and expects HTML
+  gets JSON now: use `in_mount(...)`, `embed(...)` or the UI's own path.
 * The page loads only its own scripts. Recommended Content-Security-Policy:
   `script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self';
   frame-ancestors 'self'`. `scrud-ui.js` sets htmx's `selfRequestsOnly`.
@@ -2977,8 +3052,11 @@ uv run python manage.py seed_todo_demo
 uv run python manage.py runserver
 ```
 
-Sign in at `/api-auth/login/` and open `/api/todo-lists/` with a browser (or
-use HTTP Basic auth). The users are `owner`/`owner` (reads and edits the list),
+Sign in at `/api-auth/login/` (a session: the UI pages and the studio do not read
+HTTP Basic auth) and open `/todo-lists/` with a browser; the JSON is at
+`/api/todo-lists/` (there, HTTP Basic auth works too). The demo's URLconf ends
+with `path("", include("scrud_django.ui.urls"))`, which also serves its studio
+at `/studio/`. The users are `owner`/`owner` (reads and edits the list),
 `reader`/`reader` (reads it) and `author`/`author` (writes the UI components
 and stylesheets); these passwords are for the demo only. `author` writes the UI
 in the four branches' contexts (`ui-admin`, `ui-customer`, `ui-testing`,
@@ -2996,7 +3074,9 @@ of a `ui-components` item with `"branch": "testing-admin"` and
 POST a `ui-pushes` item with `source` `testing-admin`, `target` `admin`,
 `rbac_context` `ui-admin` and `state` `applied`.
 
-The command prints the self-hosted studio's workbench URLs, as `author`:
+The command prints the list's UI URL (`/todo-lists/<id>/`, its JSON at
+`/api/todo-lists/<id>/`), the admin and customer URLs, and the self-hosted
+studio's workbench URLs, as `author`:
 `/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`, for `alice-wip`
 and for `studio-wip` (see [Self-hosted studio](#self-hosted-studio); to edit
 the studio itself, work on `studio-wip` and push it to `studio`).

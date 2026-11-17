@@ -67,9 +67,10 @@ urlpatterns = [
     path("ninja/", ninja_api.urls),
     # The schema and context links of the ninja API name types by IRI.
     path("semantic/", include("scoped_rbac.semantic_urls")),
-    # The bootstrap studio; needs a signed-in user.
-    path("studio/", include("scrud_django.ui.studio.urls")),
     # Serves each scrudful view's HTTP Schema Resource (OPTIONS links to it);
     # once, in the root URLconf.
     path("", include(hsr_urls())),
+    # The UI app (its pages at /<slug>/, the studio at /studio/), last: it
+    # claims only the slugs it serves.
+    path("", include("scrud_django.ui.urls")),
 ]

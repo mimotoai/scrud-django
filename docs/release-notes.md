@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Breaking changes
+
+* **The UI is its own app, served at the site root, and `/api/` is JSON only.**
+  Include `scrud_django.ui.urls` last in the root URLconf with no namespace
+  argument (`path("", include("scrud_django.ui.urls"))`): it serves a page at
+  `/<slug>/` and `/<slug>/<pk>/` for each type the UI serves (route names
+  `scrud_ui:list` and `scrud_ui:detail`), the CSS and JS files, and the studio
+  at `studio/` (namespace `scrud-studio`): drop your own
+  `include("scrud_django.ui.studio.urls")`. `/api/` no longer answers the UI's
+  HTML (DRF's browsable API still answers a browser's `Accept` on DRF; ninja
+  answers JSON). See "Migrating to 0.17.0: the UI app" in the README.
+* The UI's htmx writes go to the UI's URLs and answer HTML (the re-rendered
+  frame, the refused-PUT form, the 412 and 409 reload), not to `/api/`.
+* A published branch's prefix serves only the UI: there is no JSON under a
+  prefix. JSON is at `/api/`, where `Scrud-UI-Branch` or `ui-branch` selects a
+  branch within `main`'s tree only.
+* A branch cannot be published at the UI's base `/` (400; the check
+  `scrud_django_ui.W001` warns about a stored one). `/` is always `main`'s UI,
+  so a site that used a restricted branch at `/` as a whole-site gate loses it.
+* UI pages and the studio authenticate with Django's session user only: DRF's
+  Basic and Token authentication no longer apply to them. Tests of pages use
+  `client.force_login(user)`, not DRF's `force_authenticate`.
+* CSRF is enforced on page and studio writes even without `CsrfViewMiddleware`;
+  an anonymous tokenless POST gets Django's CSRF 403. `OPTIONS` on a page or a
+  studio endpoint is a 405 with `Allow`. A page sends no `Link` header. The
+  JSON body of a page's write is subject to `DATA_UPLOAD_MAX_MEMORY_SIZE`
+  (follow-up `ui-page-body-size-limit`).
+* A computed type registered only with a DRF `viewset_class` (no `compute=`)
+  has no UI page and cannot be embedded. The pages read through the core, so a
+  custom `viewset_class`'s permission classes are not consulted: declare such
+  rules as `checks=` and `object_checks=`.
+* In stored component templates, `in_mount(...)`, `embed(...)` and `api_url(...)`
+  with `/api/` paths keep working (they are mapped to the UI), but a raw
+  `hx-get="/api/..."` expecting HTML now gets JSON.
+
 ### Added
 
 * An app's own Django models can be served through ninja with scrud's
@@ -19,6 +54,13 @@
   `scrud_django.core.transitions` (`Transitions`, `transition_in`,
   `transitions_between`, `log_skipped_check`, `govern`, `governed_type_iris`,
   `checked_save`), framework neutral and not tied to `Resource`.
+* The UI app's pages (`scrud_django.ui.pages`, routed by
+  `scrud_django.ui.urls`): plain Django views reading and writing through the
+  framework-neutral core, which the embeds and the studio's endpoints use too
+  (no more in-process viewset dispatch). `render_html` is the neutral renderer
+  they call; `ScrudHTMLRenderer` and `scrud_django.ui.dispatch` are gone.
+* The UI's types' viewset behaviour is core hooks on `core.types.TypeOptions`,
+  so the core alone can read and write them.
 
 ### Changed
 
