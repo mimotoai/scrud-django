@@ -2,10 +2,11 @@
 list and items, with a Django request, the `ResourceType` and a neutral
 requirement (`scrud_django.core.requirements`), as the DRF routes answer
 (``ResourceViewMixin``): an item's lookup and object check (`load_for_read`),
-whether it is readable (`object_readable`), its validators and Links, and
-the ``Allow`` of an OPTIONS (`allowed_methods`, and `allowed_methods_for`,
-given the key, which looks nothing up for a requester refused every
-method). The list's and the writes' functions are re-exported from
+whether it is readable (`object_readable`), what its reader gets
+(`item_read`), its validators and Links, the status of its preconditions
+(`item_preconditions`), and the ``Allow`` of an OPTIONS (`allowed_methods`,
+and `allowed_methods_for`, given the key, which looks nothing up for a
+requester refused every method). The list's and the writes' functions are re-exported from
 `scrud_django.core.lists` and `scrud_django.core.writes`.
 
 A refusal of an object the requester cannot read is a 404 (``Http404``),
@@ -39,6 +40,8 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404
 from scoped_rbac import access
 from scoped_rbac.policy import Permission
+from scrudful._django import aware, precondition_headers
+from scrudful.conditional import evaluate_preconditions, http_timestamp, quote_etag
 
 from scrud_django import collection_type_uri_for
 from scrud_django.core.authz import _not_checking_write, content_of
@@ -47,6 +50,7 @@ from scrud_django.core.lists import (  # noqa: F401  (re-exported)
     evaluate_list_preconditions,
     list_etag,
     list_last_modified,
+    read_view,
     readable_queryset,
 )
 from scrud_django.core.requirements import (
@@ -101,6 +105,11 @@ LIST_METHODS = ("GET", "POST")
 # The methods `allowed_methods` lists without checking them: HEAD with GET,
 # OPTIONS always.
 DERIVED_METHODS = ("HEAD", "OPTIONS")
+
+# The methods whose preconditions scrudful does not evaluate
+# (``scrudful._adapter.NO_PRECONDITION_METHODS``): their answer is no
+# representation of the item (`item_preconditions`).
+NO_PRECONDITION_METHODS = frozenset({"CONNECT", "OPTIONS", "TRACE"})
 
 
 def served_methods(resource_type, *, item: bool) -> tuple[str, ...]:
@@ -391,6 +400,50 @@ def item_validators(obj: Resource) -> tuple[str, datetime]:
     """`obj`'s ``(etag, last_modified)``: its ``etag`` (unquoted) and
     ``modified_at``, as ``ScrudfulMeta`` gives scrudful."""
     return (obj.etag, obj.modified_at)
+
+
+def item_read(request, resource_type, obj: Resource) -> tuple[Mapping, str, datetime]:
+    """``(content, etag, last_modified)`` of `obj` (of `resource_type`, loaded
+    for `request` by `load_for_read`) as its reader gets it, as the detail
+    route answers a GET: the content and ETag (unquoted) the type's
+    ``TypeOptions.read_view`` gives (a UI branch version narrowed to the
+    items its reader may read), else its stored ones (`content_of`,
+    `item_validators`), and its ``modified_at``."""
+    content, etag = read_view(request, resource_type, obj)
+    return content, etag, obj.modified_at
+
+
+def item_preconditions(
+    request,
+    *,
+    etag: str | None,
+    last_modified: datetime | None,
+    method: str,
+) -> int | None:
+    """The status a request of `method` to an item route answers for its
+    preconditions (``If-Match``, ``If-Unmodified-Since``,
+    ``If-None-Match``, ``If-Modified-Since`` of `request`), against the
+    item's `etag` (unquoted) and `last_modified` (`item_read`'s), as
+    scrudful's DRF viewset evaluates them on the detail route
+    (``scrudful.conditional.evaluate_preconditions`` of an existing
+    resource, `require_precondition`): ``None`` to proceed, else 304 (a GET
+    or HEAD whose ``If-None-Match`` or ``If-Modified-Since`` matches), 412
+    (a precondition that fails), 428 (a PUT, PATCH or DELETE without
+    ``If-Match`` or ``If-Unmodified-Since``) or 400 (a malformed
+    ``If-Match`` or ``If-None-Match``). An OPTIONS (or TRACE, CONNECT) has
+    none evaluated."""
+    method = method.upper()
+    if method in NO_PRECONDITION_METHODS:
+        return None
+    result = evaluate_preconditions(
+        method,
+        precondition_headers(request),
+        etag=None if etag is None else quote_etag(etag),
+        last_modified=http_timestamp(aware(last_modified)),
+        exists=True,
+        require_precondition=True,
+    )
+    return None if result is None else result.status
 
 
 def item_link_targets(

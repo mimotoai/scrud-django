@@ -310,10 +310,13 @@ def list_queryset(
     requirement: Requirement | Sequence,
     ignored: frozenset[str] | None = None,
     using: str | None = None,
+    html: bool = False,
 ) -> QuerySet[Resource]:
     """The list of `resource_type` `request`'s user gets, as the DRF list
     route lists it: `readable_queryset` (its request check, its refusals,
-    `requirement` and `using` as it takes them), then, when the type's
+    `requirement` and `using` as it takes them), then the rows the type's
+    ``TypeOptions.list_rows`` shows of them, when it has one (`html`: the
+    list is asked for as HTML), then, when the type's
     ``TypeOptions.content_filter`` is set (`scrud_django.core.types.type_options`
     of its ``type_uri``), filtered on the query parameters `params` but those
     `ignored` (`content_filtered`; by default, for ``None``, those the list
@@ -330,6 +333,9 @@ def list_queryset(
             f"list_queryset lists for a GET or HEAD, not a {request.method}"
         )
     queryset = readable_queryset(request, resource_type, requirement, using=using)
+    list_rows = type_options(resource_type.type_uri).list_rows
+    if list_rows is not None:
+        queryset = list_rows(request, resource_type, queryset, html=html)
     return _listed(queryset, resource_type, params, ignored)
 
 
@@ -521,21 +527,32 @@ def page_url(request, number: int, *, param: str = PAGE_PARAMETER) -> str:
     return mount.canonical(url) if mount is not None else url
 
 
+def read_view(request, resource_type, obj: Resource) -> tuple[object, str]:
+    """``(content, etag)`` (unquoted) of `obj` as `request`'s reader gets it:
+    the type's ``TypeOptions.read_view``, else as stored."""
+    hook = type_options(resource_type.type_uri).read_view
+    if hook is not None:
+        return hook(request, resource_type, obj)
+    content = obj.content
+    if isinstance(content, str):
+        content = json.loads(content)
+    return content, obj.etag
+
+
 def resource_envelope(request, resource_type, obj: Resource) -> dict:
     """The envelope of `obj` (of `resource_type`) in a list's ``content``, as
     the DRF list serializes it: its absolute URL (``href``, its detail route
     within the URL namespace `request` was resolved under), ``last_modified``
     (an HTTP date), its quoted ``etag``, its ``link`` (the Link field value
-    of its schema and JSON-LD context) and its ``content``."""
-    content = obj.content
-    if isinstance(content, str):
-        content = json.loads(content)
+    of its schema and JSON-LD context) and its ``content``, the last two as
+    its reader gets them (`read_view`)."""
+    content, etag = read_view(request, resource_type, obj)
     return {
         "href": absolute_reverse(
             resource_type.route_name_detail(), args=[obj.pk], request=request
         ),
         "last_modified": http_date_for(obj.modified_at),
-        "etag": quote_django_etag(obj.etag),
+        "etag": quote_django_etag(etag),
         "link": get_link_header_for(resource_type, request),
         "content": content,
     }
@@ -563,11 +580,17 @@ def list_etag(
     items: Sequence[Resource],
     count: int,
     query: list[tuple[str, list[str]]],
+    request=None,
 ) -> str:
     """The list's ETag (unquoted): a hash of what the requester gets, the
-    page's `items` (key and ETag, in page order), the list's `count`, the
-    query parameters `query` (``QueryDict.lists()``, sorted here) and
+    page's `items` (key and ETag, in page order; each ETag as `request`'s
+    reader gets it, `read_view`, given a `request`), the list's `count`,
+    the query parameters `query` (``QueryDict.lists()``, sorted here) and
     `resource_type`'s link targets. Nothing else changes it."""
+    if request is None:
+        etags = [obj.etag for obj in items]
+    else:
+        etags = [read_view(request, resource_type, obj)[1] for obj in items]
     parts = [
         resource_type.pk,
         resource_type.revision,
@@ -577,7 +600,7 @@ def list_etag(
         resource_type.context_uri,
         count,
         urlencode(sorted(query), doseq=True),
-        *(f"{obj.pk}:{obj.etag}" for obj in items),
+        *(f"{obj.pk}:{etag}" for obj, etag in zip(items, etags, strict=True)),
     ]
     digest = hashlib.sha256("\n".join(map(str, parts)).encode("utf-8"))
     return digest.hexdigest()
@@ -621,6 +644,7 @@ def list_validators(
         items=page.items,
         count=page.count,
         query=sorted(request.GET.lists()),
+        request=request,
     )
     return etag, list_last_modified(request, resource_type, queryset, requirement)
 

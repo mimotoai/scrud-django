@@ -14,11 +14,19 @@ from unittest import mock
 
 import fastjsonschema
 import pytest
+from django.http import Http404
+from django.test import RequestFactory
 from django.urls import resolve, reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.core.computed import computed_answer, served_content
+from scrud_django.core.types import type_options
 from scrud_django.models import Resource
-from scrud_django.registration import ResourceRegistration, write_db
+from scrud_django.registration import (
+    ResourceRegistration,
+    get_resource_type_for,
+    write_db,
+)
 from scrud_django.ui.branches import (
     UI_BRANCH_TYPE_URI,
     UI_BRANCH_VERSION_TYPE_URI,
@@ -28,6 +36,7 @@ from scrud_django.ui.branches import (
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.branches.versions import record_version
 from scrud_django.ui.layers import layer_item
+from scrud_django.ui.studio.computed import STUDIO_COMPUTED_TYPES
 from scrud_django.ui.studio.views import registered_types
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
@@ -1032,3 +1041,55 @@ def test_override_null_on_a_pinned_view(ui_alice_login):
     # The status of a pinned view keeps its actions: they act on the
     # branch's stored rows, not on what the snapshot shows.
     assert status("wip@pinned")["actions"] == status()["actions"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_studio_computed_types_register_their_compute():
+    """The studio's computed types are ``compute=`` types
+    (follow-up ``studio-computed-to-compute``): any front end gets their
+    content from the core."""
+    reverse("todo-lists-list")  # the URLconf registers the types
+    for name, slug, compute in STUDIO_COMPUTED_TYPES:
+        resource_type = get_resource_type_for(slug)
+        assert resource_type.type_uri == OT + name
+        assert type_options(resource_type.type_uri).compute is compute, slug
+        # Their routes are named as before.
+        assert reverse(f"{slug}-detail", args=["k"]).endswith(f"/{slug}/k/")
+
+
+def core_answer(user, slug, key, **params):
+    """`computed_answer` of `slug`'s `key` for `user` (a plain Django GET
+    with `params`), as the DRF route serves it (`served_content`)."""
+    request = RequestFactory().get(url(slug, key), params)
+    request.user = user
+    content, etag = computed_answer(request, get_resource_type_for(slug), key)
+    return served_content(content), etag
+
+
+@pytest.mark.django_db
+@test_context
+def test_studio_computed_types_answer_through_the_core(ui_alice_login):
+    setup_branches(ui_alice_login)
+    grant(ui_alice_login, {"http.GET": [UI_PUSH_TYPE_URI]}, "alice")
+    store_push("wip", "main", "alice", label="p")
+    Given.http.force_authenticate(ui_alice_login)
+    cases = [
+        ("ui-branch-items", "wip", {}),
+        ("ui-branch-items", "wip@pinned", {}),
+        ("ui-branch-status", "wip", {}),
+        ("ui-branch-status", "wip", {"type": SLUG}),
+        ("ui-type-catalog", "all", {}),
+        ("ui-selectable-branches", "mine", {}),
+        ("ui-push-previews", "wip", {}),
+        ("ui-push-previews", "wip", {"target": "main"}),
+    ]
+    for slug, key, params in cases:
+        drf = get(slug, key, **params)
+        content, etag = core_answer(ui_alice_login, slug, key, **params)
+        assert content == drf, (slug, key, params)
+        assert etag == Http.response["ETag"], (slug, key, params)
+    # A branch alice may not select: the same Http404 the DRF route answers.
+    get("ui-branch-items", "bobs", status=404)
+    with pytest.raises(Http404):
+        core_answer(ui_alice_login, "ui-branch-items", "bobs")

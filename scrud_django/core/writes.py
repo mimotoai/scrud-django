@@ -629,8 +629,10 @@ def save_checked(
     given the resource the save wrote (``created``: `instance` is
     ``None``), which it may change; the resource returned is then read
     again. A mapping it returns is kept as the write's answer, on both
-    (`written_answer`, `answered_content`). The write's `hook_state` is cleared once the save
-    is over, however it ends.
+    (`written_answer`, `answered_content`); an answer an earlier write left
+    on either is dropped first, so that a caller writing the same object
+    twice never reads the first write's. The write's `hook_state` is
+    cleared once the save is over, however it ends.
 
     The check refreshes the saved resource from its row, which empties its
     cache of related objects: `resource_type` is cached on it again, and on
@@ -705,15 +707,17 @@ def save_checked(
             else:
                 result = check.update(instance, run, db=using)
             cache_resource_type(resource_type, *saved, result)
+            # The object the save wrote: a create's is the one its caller
+            # holds (DRF's serializer.instance, whose validators a 201
+            # sends); the result is read again once the hook ran.
+            written = saved[-1] if saved and isinstance(saved[-1], Resource) else result
+            # This write's answer only: not one an earlier write of the same
+            # object left on it.
+            for obj in (written, result):
+                obj.__dict__.pop(ANSWER_ATTR, None)
             if after_write is not None:
                 # What follows the save authorizes nothing by the mark.
                 _consume_workflow_mark(request)
-                # The object the save wrote: a create's is the one its caller
-                # holds (DRF's serializer.instance, whose validators a 201
-                # sends); the result is read again once the hook ran.
-                written = (
-                    saved[-1] if saved and isinstance(saved[-1], Resource) else result
-                )
                 answered = after_write(
                     request,
                     resource_type,

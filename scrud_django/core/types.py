@@ -10,7 +10,9 @@ those hooks (`HookLeaf`), so a hook can narrow what the grants allow, never
 allow what they refuse. The write hooks (``prepare_write``,
 ``around_save``, ``after_write``, ``before_destroy``, ``after_destroy``)
 and ``methods`` are a type's own write behaviour, which
-`scrud_django.core.writes` runs: they authorize nothing, and make no
+`scrud_django.core.writes` runs, and the read hooks (``list_rows``,
+``read_view``) its own read behaviour, which `scrud_django.core.lists` and
+`scrud_django.core.resources` run: they authorize nothing, and make no
 `HookLeaf` (`has_hooks`).
 """
 
@@ -110,6 +112,20 @@ class DestroyHook(Protocol):
     ) -> None: ...
 
 
+class ListRows(Protocol):
+    """The rows a type's list shows, given those the requester may list."""
+
+    def __call__(self, request, resource_type, queryset, *, html: bool) -> Any: ...
+
+
+class ReadView(Protocol):
+    """The content and ETag (unquoted) a reader of a resource gets."""
+
+    def __call__(
+        self, request, resource_type, obj: Resource
+    ) -> tuple[Mapping, str]: ...
+
+
 # The write hooks of `TypeOptions`, each a callable or ``None``.
 WRITE_HOOKS = (
     "prepare_write",
@@ -118,6 +134,9 @@ WRITE_HOOKS = (
     "before_destroy",
     "after_destroy",
 )
+
+# The read hooks of `TypeOptions`, each a callable or ``None``.
+READ_HOOKS = ("list_rows", "read_view")
 
 
 @dataclass(frozen=True)
@@ -161,7 +180,20 @@ class TypeOptions:
       refusal raises) and after it;
     - ``methods``: the HTTP methods the type's routes serve, ``None`` for
       all (`scrud_django.core.resources.served_methods`); `create`,
-      `update` and `destroy` refuse a write by another (405).
+      `update` and `destroy` refuse a write by another (405);
+
+    and its read behaviour (no authorization hooks either: the grants and
+    the object checks have decided what the requester may read before
+    them):
+
+    - ``list_rows``: ``(request, resource_type, queryset, *, html) ->
+      QuerySet``, the rows the type's list shows, given those the requester
+      may list (`scrud_django.core.lists.list_queryset`, before its content
+      filter and order); `html` says whether the list is asked for as HTML;
+    - ``read_view``: ``(request, resource_type, obj) -> (content, etag)``,
+      the content and ETag (unquoted) a reader of `obj` gets, in place of
+      its stored ones (`scrud_django.core.resources.item_read`, a list's
+      envelopes and ETag).
 
     The hooks of one write share `scrud_django.core.writes.hook_state`."""
 
@@ -175,6 +207,8 @@ class TypeOptions:
     before_destroy: DestroyHook | None = None
     after_destroy: DestroyHook | None = None
     methods: frozenset[str] | None = None
+    list_rows: ListRows | None = None
+    read_view: ReadView | None = None
 
     def __post_init__(self):
         # Any sequence given is kept as a tuple of the same hook objects
@@ -185,7 +219,7 @@ class TypeOptions:
                 if not callable(hook):
                     raise TypeError(f"TypeOptions.{name}: {hook!r} is not callable")
             object.__setattr__(self, name, hooks)
-        for name in ("compute", *WRITE_HOOKS):
+        for name in ("compute", *WRITE_HOOKS, *READ_HOOKS):
             hook = getattr(self, name)
             if hook is not None and not callable(hook):
                 raise TypeError(f"TypeOptions.{name}: {hook!r} is not callable")
@@ -265,7 +299,7 @@ def _same_hooks(old: TypeOptions, new: TypeOptions, *, same) -> bool:
         and old.content_filter == new.content_filter
         and all(
             optional(getattr(old, name), getattr(new, name))
-            for name in ("compute", *WRITE_HOOKS)
+            for name in ("compute", *WRITE_HOOKS, *READ_HOOKS)
         )
         and old.methods == new.methods
     )
@@ -360,7 +394,8 @@ def ensure_hooks_loaded() -> None:
 
 def has_hooks(options: TypeOptions) -> bool:
     """Whether `options` hold an authorization hook (``checks`` or
-    ``object_checks``): the write hooks and ``methods`` are none."""
+    ``object_checks``): the write and read hooks and ``methods`` are
+    none."""
     return bool(options.checks or options.object_checks)
 
 

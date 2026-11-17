@@ -1,7 +1,8 @@
-"""The UI resource types' write behaviour, as the hooks of their
+"""The UI resource types' write and read behaviour, as the hooks of their
 `TypeOptions` (`UI_TYPE_OPTIONS`, registered by
 `scrud_django.ui.types.ui_resource_type_urls`), which
-`scrud_django.core.writes` runs for every front end; the DRF viewsets
+`scrud_django.core.writes`, `scrud_django.core.lists` and
+`scrud_django.core.resources` run for every front end; the DRF viewsets
 (`scrud_django.ui.views`, `scrud_django.ui.branches.views`) call the same
 functions.
 
@@ -18,11 +19,16 @@ a push (whose stored and answered content then carries its ``result``).
 ``before_destroy`` refuses a delete (or discards a branch), and
 ``after_destroy`` resolves a dropped override's conflict.
 
+An item's list shows the selected branch's effective items
+(``list_rows``: `list_item_rows`), and a branch version only the items its
+reader may read (``read_view``: `read_version`).
+
 Refusals are ``ScrudException``s, and ``scoped_rbac.access.AccessDenied``
 (403) for a grant missing: each front end answers them as it answers its
 own."""
 
 import dataclasses
+import hashlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -31,7 +37,12 @@ from fastjsonschema import JsonSchemaValueException
 from scoped_rbac import access
 from scoped_rbac.policy import Permission
 
-from scrud_django.core.authz import content_of, may_act_in_context
+from scrud_django.core.authz import (
+    content_of,
+    may_act_in_context,
+    may_read_in_context,
+    resource_contexts,
+)
 from scrud_django.core.types import TypeOptions
 from scrud_django.core.writes import hook_state
 from scrud_django.exceptions import (
@@ -39,6 +50,7 @@ from scrud_django.exceptions import (
     UIBranchContextError,
     UIBranchInUseError,
     UIBranchInvalidError,
+    UIBranchUnavailableError,
     UIComponentNameTakenError,
     UICssInvalidError,
     UICssNameTakenError,
@@ -65,7 +77,11 @@ from scrud_django.ui.branches import (
     UI_PUSH_SLUG,
 )
 from scrud_django.ui.branches.checks import prefix_problems
-from scrud_django.ui.branches.effective import parent_state
+from scrud_django.ui.branches.effective import (
+    effective_rows,
+    parent_state,
+    stored_state,
+)
 from scrud_django.ui.branches.model import (
     MAIN_BRANCH,
     Branch,
@@ -75,7 +91,13 @@ from scrud_django.ui.branches.model import (
     item_key,
     kind_of,
 )
-from scrud_django.ui.branches.selection import branch_content, may_get_stored
+from scrud_django.ui.branches.selection import (
+    HEADER,
+    PARAM,
+    branch_content,
+    choose,
+    may_get_stored,
+)
 from scrud_django.ui.branches.store import (
     BranchChainError,
     _read_branches,
@@ -889,31 +911,125 @@ def before_push_destroy(request, resource_type, instance, *, using):
         raise UIPushAppliedError()
 
 
-# The write behaviour of each UI type, by slug.
+# Reads.
+
+# Where a selection that a JSON list refuses came from (ruling R40).
+EXPLICIT = (HEADER, PARAM)
+
+
+def list_item_rows(request, resource_type, queryset, *, html: bool):
+    """The ``list_rows`` of the UI items (`ITEM_KINDS`): of `queryset` (the
+    rows the requester may list), the effective items of the selected
+    branch (main's without a selection), deletion markers included. A type
+    that is no item kind (a branch, a push) lists `queryset` as it is. The
+    browsing cookie selects only for a list asked for as HTML (`html`):
+    JSON is not affected by browsing. A list not asked for as HTML whose
+    header or parameter names a branch that is refused is refused too
+    (`UIBranchUnavailableError`, 400; ruling R40), never answered with the
+    published branch's items; HTML renders the published branch and says
+    so in its banner. The rows are the stored ones (`stored_state`): an
+    embedded list shows neither its embedder's safe mode nor its
+    drafts."""
+    type_uri = resource_type.type_uri
+    if kind_of(type_uri) is None:
+        return queryset
+    chosen = choose(request, cookie=html)
+    if not html and chosen.refused is not None and chosen.source in EXPLICIT:
+        raise UIBranchUnavailableError(chosen.refused)
+    # The stored items, as the list's URL answers them: not the safe mode
+    # nor the drafts of a render this request is embedded in.
+    with stored_state():
+        rows = effective_rows(
+            type_uri, chosen.selection, include_deleted=True, authorized_only=False
+        )
+    # Not the packaged layers' items, which are no rows (pk None).
+    return queryset.filter(
+        pk__in=[pk for pk, _etag, _content in rows if pk is not None]
+    )
+
+
+def readable_version(request, version):
+    """`version` (a version `Resource`, read for `request`) as `request` may
+    see it, in memory only: its ``items`` without those the requester may
+    not GET live (``http.GET`` on the item's type in the item's contexts,
+    as the list filter checks a stored item; ruling R9), and ``etags``
+    without theirs. When any is left out, its ``etag`` becomes one for what
+    is left (the stored ETag and the positions left out), so that two
+    requesters seeing different items get different ETags. Done once per
+    instance."""
+    if getattr(version, "_scrud_readable", False):
+        return version
+    version._scrud_readable = True
+    content = version.content
+    items = content.get("items") if isinstance(content, Mapping) else None
+    if not isinstance(items, Mapping):
+        return version
+    etags = content.get("etags")
+    etags = etags if isinstance(etags, Mapping) else None
+    shown, shown_etags, hidden = {}, {}, []
+    for kind, listed in items.items():
+        type_uri = ITEM_KINDS.get(kind)
+        tags = etags.get(kind) if etags is not None else None
+        tags = tags if isinstance(tags, list) else []
+        shown[kind], shown_etags[kind] = [], []
+        for index, item in enumerate(listed if isinstance(listed, list) else []):
+            if (
+                type_uri is not None
+                and isinstance(item, Mapping)
+                and may_read_in_context(
+                    request, type_uri, item, resource_contexts(item)
+                )
+            ):
+                shown[kind].append(item)
+                shown_etags[kind].append(tags[index] if index < len(tags) else None)
+            else:
+                hidden.append(f"{kind}:{index}")
+    if hidden:
+        digest = hashlib.sha256("\n".join(hidden).encode("utf-8")).hexdigest()
+        version.content = {**content, "items": shown}
+        if etags is not None:
+            version.content["etags"] = shown_etags
+        version.etag = f"{version.etag}-{digest[:16]}"
+    return version
+
+
+def read_version(request, resource_type, version) -> tuple[Mapping, str]:
+    """The ``read_view`` of UI branch versions: ``(content, etag)`` of
+    `version` as `request`'s reader may see it (`readable_version`, which
+    the DRF views serialize)."""
+    readable_version(request, version)
+    return content_of(version), version.etag
+
+
+# The write and read behaviour of each UI type, by slug.
 UI_TYPE_OPTIONS: dict[str, TypeOptions] = {
     UI_COMPONENT_SLUG: TypeOptions(
         prepare_write=prepare_component,
         around_save=around_item_save,
         after_write=after_item_write,
         after_destroy=after_item_destroy,
+        list_rows=list_item_rows,
     ),
     UI_STYLESHEET_SLUG: TypeOptions(
         prepare_write=prepare_stylesheet,
         around_save=around_item_save,
         after_write=after_item_write,
         after_destroy=after_item_destroy,
+        list_rows=list_item_rows,
     ),
     UI_CSS_SLUG: TypeOptions(
         prepare_write=prepare_css,
         around_save=around_item_save,
         after_write=after_item_write,
         after_destroy=after_item_destroy,
+        list_rows=list_item_rows,
     ),
     UI_JS_SLUG: TypeOptions(
         prepare_write=prepare_js,
         around_save=around_item_save,
         after_write=after_item_write,
         after_destroy=after_item_destroy,
+        list_rows=list_item_rows,
     ),
     UI_BRANCH_SLUG: TypeOptions(
         prepare_write=prepare_branch,
@@ -925,5 +1041,7 @@ UI_TYPE_OPTIONS: dict[str, TypeOptions] = {
         after_write=after_push_write,
         before_destroy=before_push_destroy,
     ),
-    UI_BRANCH_VERSION_SLUG: TypeOptions(methods=READ_ONLY_METHODS),
+    UI_BRANCH_VERSION_SLUG: TypeOptions(
+        methods=READ_ONLY_METHODS, read_view=read_version
+    ),
 }

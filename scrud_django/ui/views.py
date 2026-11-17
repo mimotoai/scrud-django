@@ -1,4 +1,4 @@
-"""Viewsets of the UI resource types: the DRF adapter of their write
+"""Viewsets of the UI resource types: the DRF adapter of their write and read
 behaviour, which is their hooks (`scrud_django.ui.hooks`)."""
 
 from contextlib import contextmanager
@@ -8,17 +8,10 @@ from scoped_rbac.permissions import drf_error
 from scrudful.rest_framework import scrudful_viewset
 
 from scrud_django.core import writes as core_writes
-from scrud_django.exceptions import UIBranchUnavailableError
 from scrud_django.registration import write_db
 from scrud_django.ui import hooks
-from scrud_django.ui.branches.effective import effective_rows, stored_state
-from scrud_django.ui.branches.model import kind_of
-from scrud_django.ui.branches.selection import HEADER, PARAM, choose
 from scrud_django.ui.renderer import negotiated_html
 from scrud_django.views import ResourceViewSet
-
-# Where a selection that a JSON list refuses came from (ruling R40).
-EXPLICIT = (HEADER, PARAM)
 
 
 @contextmanager
@@ -45,35 +38,19 @@ class UIContentValidationMixin:
     saved = None
 
     def filter_queryset(self, queryset):
-        """A list shows the effective items of the selected branch (main's
-        without a selection), deletion markers included; the RBAC list
-        filter then applies to each row. A type that is no item kind (a
-        branch, a push) lists every resource. The browsing cookie selects
-        only for a list asked for as HTML: JSON is not affected by
-        browsing. A list not asked for as HTML whose header or parameter
-        names a branch that is refused is refused too
-        (`UIBranchUnavailableError`, 400; ruling R40), never answered with
-        the published branch's items; HTML renders the published branch
-        and says so in its banner. The rows are the stored ones
-        (`stored_state`): an embedded list shows neither its embedder's
-        safe mode nor its drafts."""
+        """A list shows the rows the type's ``list_rows`` shows
+        (`scrud_django.ui.hooks.list_item_rows`: an item kind's, the
+        effective items of the selected branch), then the RBAC list filter
+        applies to each row; the browsing cookie selects only for a list
+        asked for as HTML."""
         queryset = super().filter_queryset(queryset)
-        type_uri = self.get_resource_type().type_uri
-        if getattr(self, "action", None) != "list" or kind_of(type_uri) is None:
+        if getattr(self, "action", None) != "list":
             return queryset
-        html = negotiated_html(self.request) is not None
-        chosen = choose(self.request, cookie=html)
-        if not html and chosen.refused is not None and chosen.source in EXPLICIT:
-            raise UIBranchUnavailableError(chosen.refused)
-        # The stored items, as the list's URL answers them: not the safe
-        # mode nor the drafts of a render this request is embedded in.
-        with stored_state():
-            rows = effective_rows(
-                type_uri, chosen.selection, include_deleted=True, authorized_only=False
-            )
-        # Not the packaged layers' items, which are no rows (pk None).
-        return queryset.filter(
-            pk__in=[pk for pk, _etag, _content in rows if pk is not None]
+        return hooks.list_item_rows(
+            self.request,
+            self.get_resource_type(),
+            queryset,
+            html=negotiated_html(self.request) is not None,
         )
 
     def validate_content(self, content, instance=None):

@@ -780,6 +780,32 @@ class MethodNotAllowedError(ScrudException):
         return {"detail": str(self.detail)}
 
 
+class RequestBodyMalformedError(ScrudException):
+    """A request body that is not JSON (or not in its charset), as the DRF
+    routes answer it (DRF's ``ParseError``, through scoped-rbac's handler):
+    400. While uniform errors are on, scoped-rbac's problem
+    (`response_data`: ``error_problem`` of a 400 coded ``parse_error``,
+    whose ``detail`` is the reason phrase) with its problem-details Links;
+    off, DRF's native body (`native_response_data`) as ``application/json``.
+    Its message is DRF's ``JSONParser``'s
+    (`scrud_django.core.errors.parse_error_detail` gives it for a
+    request)."""
+
+    status_code = 400
+    default_detail = "Malformed request."
+    default_code = "parse_error"
+    problem_links = True
+
+    def response_data(self, context):
+        from scoped_rbac.problems import error_problem
+
+        return error_problem(self.status_code, code=self.default_code)
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off."""
+        return {"detail": str(self.detail)}
+
+
 class RequestBodyNotAnObjectError(ScrudException):
     """A POST or PUT body that is not a JSON object (a list, a string, a
     number): a resource is one. Its body is the 400 the DRF routes answer

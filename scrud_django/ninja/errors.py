@@ -7,11 +7,11 @@ import functools
 import json
 import threading
 
-from django.conf import settings
 from django.utils.translation import gettext
 from scoped_rbac import conf, problems
 from scoped_rbac.ninja import install_error_handlers
 
+from scrud_django.core.errors import parse_error_detail, scrud_error_answer
 from scrud_django.exceptions import ScrudException
 
 PROBLEM_JSON = "application/problem+json"
@@ -46,7 +46,8 @@ def uniform_errors() -> bool:
 
 def install(api) -> None:
     """Answer `api`'s `ScrudException`s as
-    `scrud_django.exceptions.scrud_exception_handler` does on DRF: the
+    `scrud_django.exceptions.scrud_exception_handler` does on DRF
+    (`scrud_django.core.errors.scrud_error_answer`): the
     error's status, its `ScrudException.response_data` with that ``status``,
     written as DRF's JSON (scoped-rbac's renderer, which
     `install_error_handlers` sets), as ``application/problem+json``, without
@@ -65,17 +66,12 @@ def install(api) -> None:
     ``"Unauthorized"``), not DRF's."""
 
     def scrud_error(request, exc):
-        native = exc.problem_links and not uniform_errors()
-        if native:
-            data = exc.native_response_data()
-        else:
-            data = exc.response_data({"request": request})
-            data["status"] = exc.status_code
-        response = api.create_response(request, data, status=exc.status_code)
-        if not native:
-            response["Content-Type"] = PROBLEM_JSON
-            if exc.problem_links:
-                response["Link"] = problems.PROBLEM_LINKS
+        status, data, headers = scrud_error_answer(
+            exc, request, uniform=uniform_errors()
+        )
+        response = api.create_response(request, data, status=status)
+        for name, value in headers.items():
+            response[name] = value
         setattr(response, OWN_ERROR_ATTR, True)
         return response
 
@@ -152,22 +148,6 @@ def _answering_natively(view, api):
     return answered
 
 
-def _parse_error_detail(request):
-    """DRF's ``JSONParser`` message for `request`'s body, which is not JSON:
-    the error of decoding it with its charset (else ``DEFAULT_CHARSET``) and
-    parsing it strictly (no ``NaN`` or infinities)."""
-    try:
-        text = request.body.decode(request.encoding or settings.DEFAULT_CHARSET)
-        json.loads(text, parse_constant=_strict_constant)
-    except ValueError as exc:
-        return f"JSON parse error - {exc}"
-    return gettext("Malformed request.")
-
-
-def _strict_constant(value):
-    raise ValueError(f"Out of range float values are not JSON compliant: {value!r}")
-
-
 #: The ``detail`` DRF's own exception gives, with uniform errors off, where a
 #: problem (by its ``code``) words it otherwise: the reason phrase of a 401
 #: and a 405, a parse error's.
@@ -178,7 +158,7 @@ NATIVE_DETAILS = {
     "method_not_allowed": lambda request: gettext(
         'Method "{method}" not allowed.'
     ).format(method=request.method),
-    "parse_error": _parse_error_detail,
+    "parse_error": parse_error_detail,
 }
 
 

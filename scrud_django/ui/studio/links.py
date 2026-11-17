@@ -46,7 +46,7 @@ def has_studio_links(resource_type) -> bool:
 
     type_uri = getattr(resource_type, "type_uri", None)
     return type_uri in UI_TYPE_URIS or type_uri in {
-        TYPE_URI_BASE + name for name, _slug, _viewset in STUDIO_COMPUTED_TYPES
+        TYPE_URI_BASE + name for name, _slug, _compute in STUDIO_COMPUTED_TYPES
     }
 
 

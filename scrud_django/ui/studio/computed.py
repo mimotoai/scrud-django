@@ -35,7 +35,6 @@ from django.http import Http404
 from django.urls import NoReverseMatch, reverse
 
 from scrud_django import registration
-from scrud_django.computed import ComputedResourceViewSet
 from scrud_django.exceptions import UIBranchInvalidError
 from scrud_django.models import Resource
 from scrud_django.permissions import may_read_in_context, resource_contexts
@@ -192,36 +191,34 @@ def _conflicts(request, branch) -> list[dict]:
     return found
 
 
-class BranchItemsViewSet(ComputedResourceViewSet):
+def branch_items(request, key):
     """``ui-branch-items/<branch>/``: the items `branch` shows (live, or
     pinned with ``@pinned``)."""
-
-    def compute(self, request, key):
-        with _stored_state():
-            selection, branch, all_branches = _selected(request, key)
-            on = {**all_branches, LAYER_BRANCH_NAME: LAYER_BRANCH}
-            conflicts = {}  # the first listed for a key: parent, then layer
-            for conflict in _conflicts(request, branch):
-                key = (conflict["kind"], conflict_key(conflict))
-                conflicts.setdefault(key, conflict["with"])
-            items = []
-            for kind in ITEM_KINDS:
-                rows = readable_rows(request, kind, selection)
-                beneath = _beneath(request, kind, branch, all_branches) if rows else {}
-                for pk, etag, content in rows:
-                    items.append(
-                        _item(
-                            request,
-                            kind,
-                            (pk, etag, content),
-                            selection,
-                            branch,
-                            on,
-                            conflicts,
-                            beneath,
-                        )
+    with _stored_state():
+        selection, branch, all_branches = _selected(request, key)
+        on = {**all_branches, LAYER_BRANCH_NAME: LAYER_BRANCH}
+        conflicts = {}  # the first listed for a key: parent, then layer
+        for conflict in _conflicts(request, branch):
+            key = (conflict["kind"], conflict_key(conflict))
+            conflicts.setdefault(key, conflict["with"])
+        items = []
+        for kind in ITEM_KINDS:
+            rows = readable_rows(request, kind, selection)
+            beneath = _beneath(request, kind, branch, all_branches) if rows else {}
+            for pk, etag, content in rows:
+                items.append(
+                    _item(
+                        request,
+                        kind,
+                        (pk, etag, content),
+                        selection,
+                        branch,
+                        on,
+                        conflicts,
+                        beneath,
                     )
-            return {"branch": selection_value(selection), "items": items}
+                )
+        return {"branch": selection_value(selection), "items": items}
 
 
 def _action(method: str, href: str, body: dict, etag: str | None = None) -> dict:
@@ -308,50 +305,46 @@ def _item(request, kind, row, selection, branch, on, conflicts, beneath) -> dict
     return item
 
 
-class BranchStatusViewSet(ComputedResourceViewSet):
+def branch_status(request, key):
     """``ui-branch-status/<branch>/``: `branch`'s chain, changes, conflicts
     and, with ``?type=<slug>``, the URL of that type's list on it."""
-
-    def compute(self, request, key):
-        with _stored_state():
-            selection, branch, all_branches = _selected(request, key)
-            try:
-                root = published_root(branch.name, all_branches)
-            except BranchChainError as error:
-                # `selectable` refuses such a branch: not expected, so said.
-                logger.warning(
-                    "scrud-ui: the status of branch %r has no published root: %s",
-                    branch.name,
-                    error,
-                )
-                root = None
-            slug = request.query_params.get(TYPE_PARAMETER)
-            chain = _named_chain(request, branch, root, all_branches)
-            content, etag = _branch_row(branch)
-            may_write = (
-                not branch.published
-                and branch.pk is not None
-                and may_send(request, "PUT", UI_BRANCH_TYPE_URI, content)
+    with _stored_state():
+        selection, branch, all_branches = _selected(request, key)
+        try:
+            root = published_root(branch.name, all_branches)
+        except BranchChainError as error:
+            # `selectable` refuses such a branch: not expected, so said.
+            logger.warning(
+                "scrud-ui: the status of branch %r has no published root: %s",
+                branch.name,
+                error,
             )
-            return {
-                "branch": selection_value(selection),
-                "published": branch.published,
-                "chain": [
-                    {"name": b.name, "published": b.published, "prefix": b.prefix}
-                    for b in chain
-                ],
-                "changed": own_items(request, branch),
-                "conflicts": _conflicts(request, branch),
-                "browse_url": browse_url(slug, root, selection) if slug else None,
-                "may_write": may_write,
-                "may_publish": may_send(
-                    request, "PUT", UI_BRANCH_TYPE_URI, content, [""]
-                ),
-                "pushes": _pushes(request, branch),
-                "versions": _versions(request, branch),
-                "actions": _actions(request, branch, content, etag, chain, may_write),
-                "endpoints": _endpoints(),
-            }
+            root = None
+        slug = request.GET.get(TYPE_PARAMETER)
+        chain = _named_chain(request, branch, root, all_branches)
+        content, etag = _branch_row(branch)
+        may_write = (
+            not branch.published
+            and branch.pk is not None
+            and may_send(request, "PUT", UI_BRANCH_TYPE_URI, content)
+        )
+        return {
+            "branch": selection_value(selection),
+            "published": branch.published,
+            "chain": [
+                {"name": b.name, "published": b.published, "prefix": b.prefix}
+                for b in chain
+            ],
+            "changed": own_items(request, branch),
+            "conflicts": _conflicts(request, branch),
+            "browse_url": browse_url(slug, root, selection) if slug else None,
+            "may_write": may_write,
+            "may_publish": may_send(request, "PUT", UI_BRANCH_TYPE_URI, content, [""]),
+            "pushes": _pushes(request, branch),
+            "versions": _versions(request, branch),
+            "actions": _actions(request, branch, content, etag, chain, may_write),
+            "endpoints": _endpoints(),
+        }
 
 
 def _branch_row(branch) -> tuple[dict, str | None]:
@@ -516,39 +509,35 @@ def _endpoints() -> dict | None:
         return None
 
 
-class TypeCatalogViewSet(ComputedResourceViewSet):
+def type_catalog(request, key):
     """``ui-type-catalog/all/``: every registered type, as the bootstrap
     studio lists them (`registered_types`: unfiltered)."""
-
-    def compute(self, request, key):
-        if key != CATALOG_KEY:
-            raise Http404("No such catalog.")
-        return {"types": registered_types()}
+    if key != CATALOG_KEY:
+        raise Http404("No such catalog.")
+    return {"types": registered_types()}
 
 
-class SelectableBranchesViewSet(ComputedResourceViewSet):
+def selectable_branches(request, key):
     """``ui-selectable-branches/mine/``: the branches the user may select
     (`studio_branches`), each with the URL of its resource when they may
     GET it."""
-
-    def compute(self, request, key):
-        if key != SELECTABLE_KEY:
-            raise Http404("No such list.")
-        with _stored_state():
-            all_branches = branches()
-            found = []
-            for choice in studio_branches(request, all_branches):
-                branch = all_branches[choice.name]
-                href = None
-                if branch.pk is not None and may_get(request, branch):
-                    href = reverse(f"{UI_BRANCH_SLUG}-detail", args=[branch.pk])
-                found.append(
-                    {"name": choice.name, "published": choice.published, "href": href}
-                )
-            return {"branches": found}
+    if key != SELECTABLE_KEY:
+        raise Http404("No such list.")
+    with _stored_state():
+        all_branches = branches()
+        found = []
+        for choice in studio_branches(request, all_branches):
+            branch = all_branches[choice.name]
+            href = None
+            if branch.pk is not None and may_get(request, branch):
+                href = reverse(f"{UI_BRANCH_SLUG}-detail", args=[branch.pk])
+            found.append(
+                {"name": choice.name, "published": choice.published, "href": href}
+            )
+        return {"branches": found}
 
 
-class PushPreviewViewSet(ComputedResourceViewSet):
+def push_preview(request, key):
     """``ui-push-previews/<source>/?target=<name>``: what a push of branch
     `source` into branch ``target`` (default: `source`'s parent) would
     change there (`plan_push`, `push_changes`) and the conflicts it would
@@ -558,51 +547,48 @@ class PushPreviewViewSet(ComputedResourceViewSet):
     server would refuse (`refuse_push_between`) could describe it. Writes
     on items the user may not read are only counted. ``endpoints`` are the
     studio's (`_endpoints`), as the branch status has them."""
+    with _stored_state():
+        all_branches = branches()
 
-    def compute(self, request, key):
-        with _stored_state():
-            all_branches = branches()
+        def known(name):
+            return name in all_branches and _may_get_branch(request, all_branches[name])
 
-            def known(name):
-                return name in all_branches and _may_get_branch(
-                    request, all_branches[name]
-                )
-
-            if not known(key):
-                raise Http404("No such branch.")
-            source = all_branches[key]
-            name = request.query_params.get(TARGET_PARAMETER, source.parent)
-            if name is not None and not known(name):
-                raise Http404("No such branch.")
-            # A source with no parent and no target is refused as a push
-            # from a root is.
-            refuse_push_between(source.name, name or source.name, all_branches)
-            try:
-                plan = plan_push(
-                    request, source.name, name, lock=False, all_branches=all_branches
-                )
-                changes, unreadable = push_changes(
-                    request, plan, name, all_branches=all_branches
-                )
-            except BranchChainError as error:  # a pinned snapshot is gone
-                raise UIBranchInvalidError(str(error)) from error
-            return {
-                "source": source.name,
-                "target": name,
-                "changes": changes,
-                "unreadable_changes": unreadable,
-                "conflicts": plan.conflicts,
-                "unreadable_conflicts": plan.hidden_conflicts,
-                "endpoints": _endpoints(),
-            }
+        if not known(key):
+            raise Http404("No such branch.")
+        source = all_branches[key]
+        name = request.GET.get(TARGET_PARAMETER, source.parent)
+        if name is not None and not known(name):
+            raise Http404("No such branch.")
+        # A source with no parent and no target is refused as a push
+        # from a root is.
+        refuse_push_between(source.name, name or source.name, all_branches)
+        try:
+            plan = plan_push(
+                request, source.name, name, lock=False, all_branches=all_branches
+            )
+            changes, unreadable = push_changes(
+                request, plan, name, all_branches=all_branches
+            )
+        except BranchChainError as error:  # a pinned snapshot is gone
+            raise UIBranchInvalidError(str(error)) from error
+        return {
+            "source": source.name,
+            "target": name,
+            "changes": changes,
+            "unreadable_changes": unreadable,
+            "conflicts": plan.conflicts,
+            "unreadable_conflicts": plan.hidden_conflicts,
+            "endpoints": _endpoints(),
+        }
 
 
+# ``(name, slug, compute)`` of each studio computed type.
 STUDIO_COMPUTED_TYPES = (
-    ("UIBranchItems", UI_BRANCH_ITEMS_SLUG, BranchItemsViewSet),
-    ("UIBranchStatus", UI_BRANCH_STATUS_SLUG, BranchStatusViewSet),
-    ("UITypeCatalog", UI_TYPE_CATALOG_SLUG, TypeCatalogViewSet),
-    ("UISelectableBranches", UI_SELECTABLE_BRANCHES_SLUG, SelectableBranchesViewSet),
-    ("UIPushPreview", UI_PUSH_PREVIEWS_SLUG, PushPreviewViewSet),
+    ("UIBranchItems", UI_BRANCH_ITEMS_SLUG, branch_items),
+    ("UIBranchStatus", UI_BRANCH_STATUS_SLUG, branch_status),
+    ("UITypeCatalog", UI_TYPE_CATALOG_SLUG, type_catalog),
+    ("UISelectableBranches", UI_SELECTABLE_BRANCHES_SLUG, selectable_branches),
+    ("UIPushPreview", UI_PUSH_PREVIEWS_SLUG, push_preview),
 )
 
 
@@ -616,17 +602,21 @@ def _document(name):
 
 def studio_computed_type_urls():
     """The routes of the studio's computed types (``<slug>/<key>/``), each
-    type registered first (`registration.computed_resource_type`): served
-    by ``scrud_django.urls`` when ``scrud_django.ui.studio`` is installed."""
+    type registered first with its ``compute`` (`registration
+    .computed_resource_type(..., compute=)`, which
+    ``ComputedResourceViewSet`` serves on DRF and
+    `scrud_django.core.computed.computed_answer` answers for any front
+    end): served by ``scrud_django.urls`` when ``scrud_django.ui.studio``
+    is installed."""
     urls = []
-    for name, slug, viewset_class in STUDIO_COMPUTED_TYPES:
+    for name, slug, compute in STUDIO_COMPUTED_TYPES:
         urls.extend(
             registration.computed_resource_type(
                 TYPE_URI_BASE + name,
                 slug,
                 schema_func=lambda name=name: _document(f"{name}-schema.json"),
                 context_func=lambda name=name: _document(f"{name}-ld.json"),
-                viewset_class=viewset_class,
+                compute=compute,
             )
         )
     return urls

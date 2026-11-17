@@ -2,14 +2,9 @@
 versions, and of UI pushes: their write behaviour is their hooks
 (`scrud_django.ui.hooks`)."""
 
-import hashlib
-from collections.abc import Mapping
-
 from scrudful.rest_framework import scrudful_viewset
 
-from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.ui import hooks
-from scrud_django.ui.branches import ITEM_KINDS
 from scrud_django.ui.views import UIContentValidationMixin
 from scrud_django.views import ResourceViewSet
 
@@ -19,70 +14,30 @@ class UIBranchViewSet(UIContentValidationMixin, ResourceViewSet):
     prepare_write = staticmethod(hooks.prepare_branch)
 
 
-def readable_version(request, version):
-    """`version` (a version `Resource`, read for `request`) as `request` may
-    see it, in memory only: its ``items`` without those the requester may
-    not GET live (``http.GET`` on the item's type in the item's contexts,
-    as the list filter checks a stored item; ruling R9), and ``etags``
-    without theirs. When any is left out, its ``etag`` becomes one for what
-    is left (the stored ETag and the positions left out), so that two
-    requesters seeing different items get different ETags. Done once per
-    instance."""
-    if getattr(version, "_scrud_readable", False):
-        return version
-    version._scrud_readable = True
-    content = version.content
-    items = content.get("items") if isinstance(content, Mapping) else None
-    if not isinstance(items, Mapping):
-        return version
-    etags = content.get("etags")
-    etags = etags if isinstance(etags, Mapping) else None
-    shown, shown_etags, hidden = {}, {}, []
-    for kind, listed in items.items():
-        type_uri = ITEM_KINDS.get(kind)
-        tags = etags.get(kind) if etags is not None else None
-        tags = tags if isinstance(tags, list) else []
-        shown[kind], shown_etags[kind] = [], []
-        for index, item in enumerate(listed if isinstance(listed, list) else []):
-            if (
-                type_uri is not None
-                and isinstance(item, Mapping)
-                and may_read_in_context(
-                    request, type_uri, item, resource_contexts(item)
-                )
-            ):
-                shown[kind].append(item)
-                shown_etags[kind].append(tags[index] if index < len(tags) else None)
-            else:
-                hidden.append(f"{kind}:{index}")
-    if hidden:
-        digest = hashlib.sha256("\n".join(hidden).encode("utf-8")).hexdigest()
-        version.content = {**content, "items": shown}
-        if etags is not None:
-            version.content["etags"] = shown_etags
-        version.etag = f"{version.etag}-{digest[:16]}"
-    return version
-
-
 @scrudful_viewset
 class UIBranchVersionViewSet(ResourceViewSet):
     """Branch versions are recorded by the server
     (`scrud_django.ui.branches.versions`) and never changed: a POST, PUT or
     DELETE is 405. A version is read in its branch's context, and shows only
-    the items its reader may read (`readable_version`): its ETag, and the
-    list's, follow what the reader gets."""
+    the items its reader may read (the type's ``read_view``,
+    `scrud_django.ui.hooks.read_version`): its ETag, and the list's, follow
+    what the reader gets."""
 
     # The type's ``methods`` (`scrud_django.ui.hooks.READ_ONLY_METHODS`).
     http_method_names = sorted(method.lower() for method in hooks.READ_ONLY_METHODS)
 
     def get_object(self):
-        return readable_version(self.request, super().get_object())
+        version = super().get_object()
+        hooks.read_version(self.request, self.get_resource_type(), version)
+        return version
 
     def listed(self):
-        """Every version the list shows (its page, else all), readable."""
+        """Every version the list shows (its page, else all), as its reader
+        gets it."""
         page = self.list_page()
+        resource_type = self.get_resource_type()
         for version in page if page is not None else self.list_queryset():
-            readable_version(self.request, version)
+            hooks.read_version(self.request, resource_type, version)
 
     def list_etag(self, request):
         self.listed()

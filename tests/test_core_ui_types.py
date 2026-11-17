@@ -10,11 +10,17 @@ from django.test import RequestFactory, override_settings
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
-from scoped_rbac.problems import uniform_errors
 
-from scrud_django.core import writes
+from scrud_django.core import lists, writes
+from scrud_django.core.errors import error_answer
 from scrud_django.core.requirements import requirement_leaves
-from scrud_django.core.resources import allowed_methods_for, served_methods
+from scrud_django.core.resources import (
+    allowed_methods_for,
+    item_preconditions,
+    item_read,
+    load_for_read,
+    served_methods,
+)
 from scrud_django.core.types import (
     HookLeaf,
     TypeOptions,
@@ -26,6 +32,7 @@ from scrud_django.exceptions import (
     MethodNotAllowedError,
     UIBranchInUseError,
     UIBranchInvalidError,
+    UIBranchUnavailableError,
     UIComponentNameTakenError,
     UIPushAppliedError,
 )
@@ -41,7 +48,9 @@ from scrud_django.ui.branches import (
     UI_JS_SLUG,
     UI_PUSH_SLUG,
 )
+from scrud_django.ui.branches.effective import BRANCH_HEADER
 from scrud_django.ui.branches.model import MAIN_BRANCH, applies_to
+from scrud_django.ui.hooks import UI_TYPE_OPTIONS, list_item_rows, read_version
 from scrud_django.ui.types import (
     UI_COMPONENT_SLUG,
     UI_COMPONENT_TYPE_URI,
@@ -49,10 +58,12 @@ from scrud_django.ui.types import (
 )
 
 from .fixtures import *  # noqa
+from .fixtures import UI_TYPE_URIS, assign_ui_role
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_pull import conflicted
 from .test_ui_branch_push import (
     WIP,
+    create,
     created,
     make_wip,
     own_rows,
@@ -60,7 +71,8 @@ from .test_ui_branch_push import (
     wip_overrides_row,
 )
 from .test_ui_branch_types import component, make_branch, stylesheet
-from .test_ui_branch_versions import versions_of
+from .test_ui_branch_versions import store, versions_of
+from .test_ui_http import make_component
 
 WRITTEN_SLUGS = (
     UI_COMPONENT_SLUG,
@@ -336,15 +348,35 @@ def test_ui_type_options_are_registered_for_every_ui_type():
 @pytest.mark.django_db
 @test_context
 def test_ui_type_options_are_no_authorization_hooks():
-    """The write hooks and ``methods`` authorize nothing: no `HookLeaf` in
-    the UI types' requirements, whose grants alone decide."""
+    """The write and read hooks and ``methods`` authorize nothing: no
+    `HookLeaf` in the UI types' requirements, whose grants alone decide."""
+    read_hooks = 0
     for slug in UI_SLUGS:
         resource_type = rtype(slug)
-        assert not has_hooks(type_options_for_slug(slug)), slug
+        options = type_options_for_slug(slug)
+        read_hooks += sum(
+            hook is not None for hook in (options.list_rows, options.read_view)
+        )
+        assert not has_hooks(options), slug
         assert not any(
             isinstance(leaf, HookLeaf)
             for leaf in requirement_leaves(requirement_for(resource_type))
         ), slug
+    # The four item kinds' list_rows and the versions' read_view.
+    assert read_hooks == 5
+
+
+@pytest.mark.django_db
+@test_context
+def test_ui_read_hooks_are_registered_for_their_types():
+    for slug in (UI_COMPONENT_SLUG, UI_STYLESHEET_SLUG, UI_CSS_SLUG, UI_JS_SLUG):
+        rtype(slug)
+        assert type_options_for_slug(slug).list_rows is list_item_rows, slug
+        assert type_options_for_slug(slug).read_view is None, slug
+    for slug in (UI_BRANCH_SLUG, UI_PUSH_SLUG):
+        assert UI_TYPE_OPTIONS[slug].list_rows is None, slug
+    rtype(UI_BRANCH_VERSION_SLUG)
+    assert type_options_for_slug(UI_BRANCH_VERSION_SLUG).read_view is read_version
 
 
 def test_type_options_refuse_a_write_hook_that_is_not_callable():
@@ -354,6 +386,8 @@ def test_type_options_refuse_a_write_hook_that_is_not_callable():
         "after_write",
         "before_destroy",
         "after_destroy",
+        "list_rows",
+        "read_view",
     ):
         with pytest.raises(TypeError, match=name):
             TypeOptions(**{name: "not callable"})
@@ -427,15 +461,10 @@ def a_version():
 
 def answered_body(exc):
     """The body a front end answers the `ScrudException` `exc` with, uniform
-    errors as they are now (as `scrud_django.ninja.errors.install` renders
-    it): one standing for a DRF error answered by scoped-rbac's handler
-    (``problem_links``) is DRF's native body with them off; else its
-    problem, with its ``status``."""
-    if exc.problem_links and not uniform_errors("drf"):
-        return exc.native_response_data()
-    data = exc.response_data({})
-    data["status"] = exc.status_code
-    return data
+    errors as they are now (`scrud_django.core.errors.error_answer`)."""
+    status, body, _headers = error_answer(exc)
+    assert status == exc.status_code
+    return body
 
 
 def uniform_errors_set(uniform):
@@ -599,3 +628,212 @@ def test_drf_refuses_a_prepare_write_that_returns_another_body(
             reverse(f"{UI_COMPONENT_SLUG}-list"), data=component(), format="json"
         )
     assert count(UI_COMPONENT_TYPE_URI) == before
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_rewrite_of_one_object_drops_the_earlier_answer(admin_login):
+    """`save_checked` drops an answer an earlier write left on the object it
+    writes: the second write of one object answers its own content."""
+    saved, _ = core_create(admin_login, UI_COMPONENT_SLUG, component())
+    setattr(saved, writes.ANSWER_ATTR, {"stale": True})
+    rewritten, answered = core_update(
+        admin_login, UI_COMPONENT_SLUG, saved, component(template="<i>new</i>")
+    )
+    assert writes.written_answer(saved) is None
+    assert writes.written_answer(rewritten) is None
+    assert answered == rewritten.content
+    assert answered["template"] == "<i>new</i>"
+
+
+def get_request(user, *, headers=None):
+    """A plain Django GET by `user`, with `headers`."""
+    request = RequestFactory().get("/", headers=headers or {})
+    request.user = user
+    return request
+
+
+def core_list(user, slug, *, headers=None, html=False):
+    """`lists.list_queryset` of `slug` for `user`, with `headers`."""
+    resource_type = rtype(slug)
+    request = get_request(user, headers=headers)
+    return request, lists.list_queryset(
+        request,
+        resource_type,
+        request.GET,
+        requirement=requirement_for(resource_type),
+        html=html,
+    )
+
+
+def key_of(href):
+    return int(href.rstrip("/").rsplit("/", 1)[1])
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_list_of_components_shows_the_chosen_branch_rows(admin_login):
+    """`list_queryset` runs the type's ``list_rows``: with ``Scrud-UI-Branch:
+    wip``, wip's effective rows (its override and its deletion marker), as
+    the DRF list answers them."""
+    wip_overrides_row(admin_login)
+    make_component("other", "<b>other</b>")
+    create(UI_COMPONENT_SLUG, {"name": "other", "deleted": True, **WIP})
+    _request, rows = core_list(
+        admin_login, UI_COMPONENT_SLUG, headers={BRANCH_HEADER: "wip"}
+    )
+    core_rows = {obj.pk: obj.content for obj in rows}
+    Given.http.force_authenticate(admin_login)
+    When.http.get(reverse(f"{UI_COMPONENT_SLUG}-list"), headers={BRANCH_HEADER: "wip"})
+    Then.http.status_code_is(200)
+    drf_rows = {
+        key_of(entry["href"]): entry["content"]
+        for entry in Http.response.json()["content"]
+    }
+    assert core_rows == drf_rows
+    assert sorted(
+        (c["name"], c["branch"], c.get("deleted", False)) for c in core_rows.values()
+    ) == [("other", "wip", True), ("row", "wip", False)]
+    # Without a selection, main's (stored as is: no branch field).
+    _request, rows = core_list(admin_login, UI_COMPONENT_SLUG)
+    assert sorted(
+        (obj.content["name"], obj.content.get("branch", MAIN)) for obj in rows
+    ) == [("other", MAIN), ("row", MAIN)]
+    # A JSON list naming a branch it may not have is refused, as on DRF.
+    with pytest.raises(UIBranchUnavailableError):
+        core_list(admin_login, UI_COMPONENT_SLUG, headers={BRANCH_HEADER: "nope"})
+    When.http.get(reverse(f"{UI_COMPONENT_SLUG}-list"), headers={BRANCH_HEADER: "nope"})
+    Then.http.status_code_is(400)
+
+
+def a_narrowed_version():
+    """Version 3 of main, holding the component ``row`` and the stylesheets
+    ``theme`` (in "") and ``acme-theme`` (in "acme"), and a reader who may
+    read the items in "" only."""
+    make_component("row", "<b/>")
+    store("ui-stylesheets", stylesheet(rbac_context=""))
+    store("ui-stylesheets", stylesheet(name="acme-theme", rbac_context="acme"))
+    version = Resource.objects.get(
+        resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI, content__number=3
+    )
+    reader = assign_ui_role((UI_BRANCH_VERSION_TYPE_URI, *UI_TYPE_URIS), "")
+    return version, reader
+
+
+def core_item_read(user, version):
+    versions_type = rtype(UI_BRANCH_VERSION_SLUG)
+    request = get_request(user)
+    obj = load_for_read(
+        request,
+        versions_type,
+        str(version.pk),
+        requirement=requirement_for(versions_type),
+        method="GET",
+    )
+    return item_read(request, versions_type, obj)
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_item_read_of_a_version_is_narrowed_per_reader(admin_login):
+    version, reader = a_narrowed_version()
+    content, etag, last_modified = core_item_read(reader, version)
+    assert [item["name"] for item in content["items"]["stylesheet"]] == ["theme"]
+    assert etag != version.etag
+    assert last_modified == version.modified_at
+    Given.http.force_authenticate(reader)
+    When.http.get(reverse(f"{UI_BRANCH_VERSION_SLUG}-detail", args=[version.pk]))
+    Then.http.status_code_is(200)
+    assert content == Http.response.json()
+    assert f'"{etag}"' == Http.response["ETag"]
+    # A reader of everything gets the stored version.
+    content, etag, _ = core_item_read(admin_login, version)
+    assert content == version.content
+    assert etag == version.etag
+    assert Resource.objects.get(pk=version.pk).content == version.content
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_list_of_versions_is_narrowed_per_reader(admin_login):
+    """The list's envelopes and ETag follow ``read_view``, as the DRF list's
+    do."""
+    version, reader = a_narrowed_version()
+    versions_type = rtype(UI_BRANCH_VERSION_SLUG)
+    request, queryset = core_list(reader, UI_BRANCH_VERSION_SLUG)
+    page = lists.requested_page(queryset, request.GET)
+    body = lists.list_body(request, versions_type, page)
+    etag, _ = lists.list_validators(
+        request, versions_type, queryset, page, requirement_for(versions_type)
+    )
+    Given.http.force_authenticate(reader)
+    When.http.get(reverse(f"{UI_BRANCH_VERSION_SLUG}-list"))
+    Then.http.status_code_is(200)
+    assert body == Http.response.json()
+    assert f'"{etag}"' == Http.response["ETag"]
+    narrowed = next(
+        entry for entry in body["content"] if key_of(entry["href"]) == version.pk
+    )
+    assert narrowed["etag"] != f'"{version.etag}"'
+    # Another reader's list ETag differs.
+    request, queryset = core_list(admin_login, UI_BRANCH_VERSION_SLUG)
+    page = lists.requested_page(queryset, request.GET)
+    full, _ = lists.list_validators(
+        request, versions_type, queryset, page, requirement_for(versions_type)
+    )
+    assert full != etag
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "method, header, value",
+    [
+        ("GET", "If-None-Match", "current"),
+        ("GET", "If-Match", "stale"),
+        ("GET", None, None),
+        ("PUT", "If-Match", "stale"),
+        ("PUT", "If-Match", "current"),
+        ("PUT", None, None),
+        ("DELETE", "If-Match", "stale"),
+        ("DELETE", None, None),
+        ("PUT", "If-Match", "malformed"),
+    ],
+)
+@test_context
+def test_item_preconditions_match_the_api(
+    admin_login, todo_list, method, header, value
+):
+    """`item_preconditions` answers the status the DRF item route answers for
+    the request's preconditions (``None`` where it goes on: a 200)."""
+    resource_type = get_resource_type_for("todo-lists")
+    values = {
+        "current": f'"{todo_list.etag}"',
+        "stale": '"stale"',
+        "malformed": "not-an-etag",
+    }
+    headers = {} if header is None else {header: values[value]}
+    request = getattr(RequestFactory(), method.lower())("/", headers=headers)
+    request.user = admin_login
+    obj = load_for_read(
+        request,
+        resource_type,
+        str(todo_list.pk),
+        requirement=requirement_for(resource_type),
+        method=method,
+    )
+    _content, etag, last_modified = item_read(request, resource_type, obj)
+    status = item_preconditions(
+        request, etag=etag, last_modified=last_modified, method=method
+    )
+    Given.http.force_authenticate(admin_login)
+    send = getattr(When.http, method.lower())
+    url = reverse("todo-lists-detail", args=[todo_list.pk])
+    if method == "PUT":
+        send(url, data=todo_list.content, format="json", headers=headers)
+    else:
+        send(url, headers=headers)
+    drf = Http.response.status_code
+    if status is None:
+        assert drf == 200
+    else:
+        assert status == drf
