@@ -625,8 +625,10 @@ def mark_core_routes(api, url_names) -> None:
     .mark_route`): their handlers call only the core, so they authorize
     nothing beyond its checks. Call it last, after every other wrapping
     of them, before ``api.urls`` is read: the mark names the view it is
-    set on."""
-    _wrap_patterns(api, url_names, mark_route)
+    set on, and the type's slug (the route name less ``-list``/``-detail``)."""
+    for name in url_names:
+        slug = name.removesuffix("-list").removesuffix("-detail")
+        _wrap_patterns(api, [name], functools.partial(mark_route, slug=slug))
 
 
 def _wrap_patterns(api, url_names, wrap):

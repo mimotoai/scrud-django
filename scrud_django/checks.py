@@ -632,12 +632,16 @@ def list_filter_errors(patterns, prefix=""):
     from django.urls import URLPattern, URLResolver
 
     try:
-        from scoped_rbac.filters import RbacFilter
-
-        from scrud_django.mixins.view_mixins import ListValidatorsMixin
-    except ImportError:
-        # Without DRF no route is a DRF viewset.
+        import rest_framework  # noqa: F401
+    except ModuleNotFoundError as error:
+        if error.name != "rest_framework":
+            raise
+        # Without DRF no route is a DRF viewset. (Only its absence: an import
+        # error inside DRF or scrud's DRF modules raises.)
         return []
+    from scoped_rbac.filters import RbacFilter
+
+    from scrud_django.mixins.view_mixins import ListValidatorsMixin
 
     errors = []
     for entry in patterns:

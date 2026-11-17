@@ -412,18 +412,29 @@ class RouteAuthorization:
 
     view: Any = field(repr=False, compare=False)
     drf_only: str | None = None
+    slug: str | None = None
 
 
-def mark_route(view, drf_only: str | None = None):
+def mark_route(view, drf_only: str | None = None, slug: str | None = None):
     """Mark `view`, a route's view a trusted builder built (DRF's
     ``registration.resource_type_urls`` and ``computed_urls``, the ninja
     ``api()``), with what of it authorizes beyond the core's checks
     (`drf_only`, a description naming it; ``None`` for nothing), and return
     it. The mark names `view` itself: a view wrapping it (whose
     ``functools.wraps`` copies the mark) is not marked, as it may authorize
-    on its own."""
-    setattr(view, ROUTE_AUTHORIZATION_ATTR, RouteAuthorization(view, drf_only))
+    on its own. `slug` is the type the route was built for (``None``: not
+    recorded)."""
+    setattr(view, ROUTE_AUTHORIZATION_ATTR, RouteAuthorization(view, drf_only, slug))
     return view
+
+
+def route_slug(view) -> str | None:
+    """The slug of the type `view` was marked as built for (`mark_route`), or
+    ``None`` for a view unmarked or marked without one."""
+    mark = getattr(view, ROUTE_AUTHORIZATION_ATTR, None)
+    if not isinstance(mark, RouteAuthorization) or mark.view is not view:
+        return None
+    return mark.slug
 
 
 def route_authorization(view) -> str | None:

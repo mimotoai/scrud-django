@@ -414,11 +414,13 @@ def resource_type_urls(slug, viewset_class):
     )
     return [
         path(
-            f'{slug}/', mark_route(scrud_list, drf_only), name=names.route_name_list()
+            f'{slug}/',
+            mark_route(scrud_list, drf_only, slug),
+            name=names.route_name_list(),
         ),
         path(
             f'{slug}/<str:slug>/',
-            mark_route(scrud_detail, drf_only),
+            mark_route(scrud_detail, drf_only, slug),
             name=names.route_name_detail(),
         ),
     ]
@@ -1483,6 +1485,7 @@ def computed_urls(slug, viewset_class):
             {'get': 'retrieve', 'head': 'retrieve'}, resource_type_name=slug
         ),
         drf_only_authorization_of(viewset_class),
+        slug,
     )
     name = ResourceType(slug=slug).route_name_detail()
     return [path(f'{slug}/<str:slug>/', detail, name=name)]

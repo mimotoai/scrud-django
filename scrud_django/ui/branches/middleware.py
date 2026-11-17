@@ -160,12 +160,17 @@ def routes_to_ui(path_info: str, rest: str) -> bool:
 
 def is_resource_view(view, slug: str) -> bool:
     """Whether `view` is a scrud resource view serving the type `slug`: a
-    view a trusted builder marked (`scrud_django.core.types.mark_route`:
-    registration's DRF routes, ninja's ``api()``), and, for a DRF view, one
-    built for `slug` (its ``resource_type_name``)."""
-    from scrud_django.core.types import UNRECORDED_ROUTE, route_authorization
+    view a trusted builder marked as built for `slug`
+    (`scrud_django.core.types.mark_route`: registration's DRF routes,
+    ninja's ``api()``), and, for a DRF view, one whose ``resource_type_name``
+    is `slug` too."""
+    from scrud_django.core.types import (
+        UNRECORDED_ROUTE,
+        route_authorization,
+        route_slug,
+    )
 
-    if route_authorization(view) == UNRECORDED_ROUTE:
+    if route_authorization(view) == UNRECORDED_ROUTE or route_slug(view) != slug:
         return False
     initkwargs = getattr(view, "initkwargs", None) or {}
     return initkwargs.get("resource_type_name", slug) == slug

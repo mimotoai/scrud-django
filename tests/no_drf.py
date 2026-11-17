@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 PRELUDE = """
-import importlib.abc, sys
+import importlib, importlib.abc, importlib.util, sys, tempfile
 
 BLOCKED = (
     "rest_framework",
@@ -36,6 +36,14 @@ class Blocker(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, Blocker())
 
+for blocked in ("rest_framework", "django_filters"):
+    try:
+        importlib.import_module(blocked)
+    except ModuleNotFoundError:
+        pass
+    else:
+        raise SystemExit(f"the blocker let {blocked} import")
+
 from django.conf import settings
 from tests.settings import SETTINGS
 
@@ -48,6 +56,13 @@ config["SCRUD_UI_STUDIO_LAYER"] = True  # its packaged stylesheet is served
 config["ROOT_URLCONF"] = "tests.no_drf_urls"
 config["DATABASES"] = {
     "default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
+}
+# Never the shared tests/whoosh_index.
+config["HAYSTACK_CONNECTIONS"] = {
+    "default": {
+        "ENGINE": "haystack.backends.whoosh_backend.WhooshEngine",
+        "PATH": tempfile.mkdtemp(),
+    },
 }
 settings.configure(**config)
 
