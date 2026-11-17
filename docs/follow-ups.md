@@ -1191,18 +1191,6 @@ resource, and its detail GET answers 403. It should leave the resource out
 and answer 404, as the facade does
 (`test_anyof_option_refused_at_request_level_is_not_satisfied`).
 
-<a id="studio-computed-to-compute"></a>
-## studio-computed-to-compute: the studio's computed types still register a viewset class
-
-The ninja front-end design
-(`docs/superpowers/specs/2026-11-11-ninja-front-end-design.md`, §1.4) moves
-the studio's computed types to the neutral `compute=` hook, but
-`scrud_django/ui/studio/computed.py` (`studio_computed_type_urls`) still
-registers each with `viewset_class=`, so a non-DRF front end gets no content
-for them. Test: in `tests/test_studio_computed.py`, assert that
-`core.types.type_options(slug).compute` is set for each slug of
-`STUDIO_COMPUTED_TYPES` (it is `None` today).
-
 <a id="core-save-checked-mark-body"></a>
 ## core-save-checked-mark-body: `save_checked` trusts the workflow mark, not the body
 
@@ -2081,6 +2069,19 @@ scrudful's automatic OPTIONS. The collection documents
 
 Follow-ups fixed since they were recorded, each with the commit that fixed
 it.
+
+<a id="studio-computed-to-compute"></a>
+## studio-computed-to-compute: the studio's computed types still registered a viewset class
+
+Fixed in 6224a24. `studio_computed_type_urls` registered each studio
+computed type with `viewset_class=`, so a non-DRF front end got no content
+for them, and the facade's `served_methods` listed PUT and DELETE for them.
+Each now registers a `compute=` function (reading `request.GET`), served on
+DRF by `ComputedResourceViewSet` with the same URLs and route names, and by
+`scrud_django.core.computed.computed_answer` for any front end. Pinned by
+`tests/test_studio_computed.py::test_studio_computed_types_register_their_compute`,
+`::test_studio_computed_types_answer_through_the_core` and
+`tests/test_core_parity.py::test_studio_computed_allow_parity`.
 
 <a id="services-unrouted-types"></a>
 ## services-unrouted-types: `services/` failed when the serving URLconf did not route every registered type
