@@ -21,6 +21,10 @@ from rest_framework.exceptions import NotAuthenticated, PermissionDenied
 
 from scrud_django import ui
 from scrud_django.ui.branches import PREFIX
+from scrud_django.ui.branches.file_urls import (  # noqa: F401
+    CSS_FILE_URL_NAME,
+    JS_FILE_URL_NAME,
+)
 from scrud_django.ui.branches.selection import (
     MOUNT_ATTR,
     Mount,
@@ -39,9 +43,7 @@ __all__ = ["Mount", "PublishedBranchMiddleware", "check_mount", "mount_of"]
 # ``<api>ui-js-files/...``), which a prefix claims too, and the name of each
 # one's route.
 CSS_FILES_SEGMENT = "ui-css-files"
-CSS_FILE_URL_NAME = "ui-css-file"
 JS_FILES_SEGMENT = "ui-js-files"
-JS_FILE_URL_NAME = "ui-js-file"
 FILE_ROUTES = {
     CSS_FILES_SEGMENT: CSS_FILE_URL_NAME,
     JS_FILES_SEGMENT: JS_FILE_URL_NAME,

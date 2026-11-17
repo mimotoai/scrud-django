@@ -2185,3 +2185,14 @@ the first moves an article to another `rbac_context` after the second's
 load but before its PUT is saved (a `before` hook that pauses); the second,
 who may write only the old context, sends the old context: it should get
 403 and gets 200.
+
+<a id="context-limits-test-alone"></a>
+## context-limits-test-alone: a test that fails when run by itself
+
+`uv run pytest -q tests/test_context_limits.py::test_a_context_over_2048_bytes_is_400`
+fails on its own (`assert 49 == 37`, the `Resource` count after the request
+against the count before it), on the base branch too, and passes in a full
+run. The test counts `Resource` rows before its first `reverse(...)`, which is
+what imports the URLconf and registers the types (12 rows); nothing earlier in
+a lone run has done that. Fix: take `before` after the `reverse`, or register
+the types in a fixture. Not fixed here.

@@ -38,6 +38,7 @@ from scrud_django.ui.branches.effective import (
     using_safe_mode,
     using_selection,
 )
+from scrud_django.ui.branches.file_urls import css_urls, js_urls
 from scrud_django.ui.branches.selection import (
     CONFIRM_PARAMETER,
     PARAM,
@@ -515,11 +516,6 @@ def _page(
     chrome = mark_safe("".join(chrome)) if chrome else None
     if chrome is not None:
         body = mark_safe(chrome + body)
-
-    # Not at the top: the file modules still hold DRF views (until the file
-    # routes are plain views), and this module must import without DRF.
-    from scrud_django.ui.branches.css import css_urls
-    from scrud_django.ui.branches.js import js_urls
 
     css = css_urls(request)
     scripts = js_urls(request)

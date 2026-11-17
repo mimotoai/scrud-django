@@ -405,3 +405,23 @@ def test_scrudfuls_early_response_is_what_a_list_precondition_response_renders_w
         "setting_error",
         "with_error_body",
     )
+
+
+@pytest.mark.django_db
+def test_scoped_rbacs_policy_cache_attribute_is_on_the_request_object():
+    """``ScrudHTMLRenderer`` carries scoped-rbac's cached policy from a DRF
+    request to the Django one under it (``_django_request``), and the plain
+    views of the UI rely on the cache of a plain ``HttpRequest``: both read
+    the private ``access._POLICY_CACHE_ATTR``, under which
+    ``policy_for`` caches ``(user, policy)`` on the request object."""
+    from django.contrib.auth.models import AnonymousUser
+    from django.http import HttpRequest
+    from rest_framework.request import Request
+
+    assert isinstance(access._POLICY_CACHE_ATTR, str)
+    for request in (HttpRequest(), Request(HttpRequest())):
+        request.user = AnonymousUser()
+        policy = access.policy_for(request)
+        cached = request.__dict__[access._POLICY_CACHE_ATTR]
+        assert cached[0] is request.user and cached[1] is policy
+        assert access.policy_for(request) is policy
