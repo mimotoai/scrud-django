@@ -4,11 +4,13 @@ is their `TypeOptions` hooks (`scrud_django.ui.hooks`), and answers as the
 DRF routes do."""
 
 import pytest
+from django.conf import settings
 from django.db import transaction
-from django.test import RequestFactory
+from django.test import RequestFactory, override_settings
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
+from scoped_rbac.problems import uniform_errors
 
 from scrud_django.core import writes
 from scrud_django.core.requirements import requirement_leaves
@@ -423,20 +425,45 @@ def a_version():
     ).first()
 
 
+def answered_body(exc):
+    """The body a front end answers the `ScrudException` `exc` with, uniform
+    errors as they are now (as `scrud_django.ninja.errors.install` renders
+    it): one standing for a DRF error answered by scoped-rbac's handler
+    (``problem_links``) is DRF's native body with them off; else its
+    problem, with its ``status``."""
+    if exc.problem_links and not uniform_errors("drf"):
+        return exc.native_response_data()
+    data = exc.response_data({})
+    data["status"] = exc.status_code
+    return data
+
+
+def uniform_errors_set(uniform):
+    return override_settings(
+        SCOPED_RBAC=dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
+    )
+
+
 @pytest.mark.django_db
+@pytest.mark.parametrize("uniform", [True, False])
 @test_context
-def test_core_create_of_a_version_is_405(admin_login):
+def test_core_create_of_a_version_answers_the_drf_405(admin_login, uniform):
     make_wip(admin_login)  # records main's first version
     body = dict(a_version().content)
     before = versions()
-    with pytest.raises(MethodNotAllowedError) as refused:
-        core_create(admin_login, UI_BRANCH_VERSION_SLUG, body)
+    with uniform_errors_set(uniform):
+        with pytest.raises(MethodNotAllowedError) as refused:
+            core_create(admin_login, UI_BRANCH_VERSION_SLUG, body)
+        core_body = answered_body(refused.value)
+        Given.http.force_authenticate(admin_login)
+        When.http.post(
+            reverse(f"{UI_BRANCH_VERSION_SLUG}-list"), data=body, format="json"
+        )
+    Then.http.status_code_is(405)
     assert refused.value.status_code == 405
     assert str(refused.value.detail) == 'Method "POST" not allowed.'
+    assert core_body == Http.response.json()
     assert versions() == before
-    When.http.post(reverse(f"{UI_BRANCH_VERSION_SLUG}-list"), data=body, format="json")
-    Then.http.status_code_is(405)
-    assert Http.response.json()["code"] == refused.value.detail.code
 
 
 @pytest.mark.django_db
@@ -452,33 +479,44 @@ def test_core_create_of_a_version_asks_the_request_check_first(
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("uniform", [True, False])
 @test_context
-def test_core_update_of_a_version_is_405(admin_login):
+def test_core_update_of_a_version_answers_the_drf_405(admin_login, uniform):
     make_wip(admin_login)
     version = a_version()
-    with pytest.raises(MethodNotAllowedError) as refused:
-        core_update(admin_login, UI_BRANCH_VERSION_SLUG, version, dict(version.content))
-    assert str(refused.value.detail) == 'Method "PUT" not allowed.'
-    assert Resource.objects.get(pk=version.pk).etag == version.etag
-    When.http.put(
-        reverse(f"{UI_BRANCH_VERSION_SLUG}-detail", args=[version.pk]),
-        data=version.content,
-        format="json",
-        HTTP_IF_MATCH=f'"{version.etag}"',
-    )
+    with uniform_errors_set(uniform):
+        with pytest.raises(MethodNotAllowedError) as refused:
+            core_update(
+                admin_login, UI_BRANCH_VERSION_SLUG, version, dict(version.content)
+            )
+        core_body = answered_body(refused.value)
+        Given.http.force_authenticate(admin_login)
+        When.http.put(
+            reverse(f"{UI_BRANCH_VERSION_SLUG}-detail", args=[version.pk]),
+            data=version.content,
+            format="json",
+            HTTP_IF_MATCH=f'"{version.etag}"',
+        )
     Then.http.status_code_is(405)
+    assert str(refused.value.detail) == 'Method "PUT" not allowed.'
+    assert core_body == Http.response.json()
+    assert Resource.objects.get(pk=version.pk).etag == version.etag
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("uniform", [True, False])
 @test_context
-def test_core_destroy_of_a_version_is_405(admin_login):
+def test_core_destroy_of_a_version_answers_the_drf_405(admin_login, uniform):
     make_wip(admin_login)
     version = a_version()
-    with pytest.raises(MethodNotAllowedError) as refused:
-        core_destroy(admin_login, UI_BRANCH_VERSION_SLUG, version)
+    with uniform_errors_set(uniform):
+        with pytest.raises(MethodNotAllowedError) as refused:
+            core_destroy(admin_login, UI_BRANCH_VERSION_SLUG, version)
+        core_body = answered_body(refused.value)
+        assert drf_delete(admin_login, UI_BRANCH_VERSION_SLUG, version) == 405
     assert str(refused.value.detail) == 'Method "DELETE" not allowed.'
+    assert core_body == Http.response.json()
     assert Resource.objects.filter(pk=version.pk).exists()
-    assert drf_delete(admin_login, UI_BRANCH_VERSION_SLUG, version) == 405
 
 
 @pytest.mark.django_db

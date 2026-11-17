@@ -753,16 +753,31 @@ class RequestBodyNulError(ScrudException):
 
 class MethodNotAllowedError(ScrudException):
     """A write by a method its type does not serve (``TypeOptions.methods``,
-    as `scrud_django.core.writes` refuses it): 405, its detail DRF's
-    ``MethodNotAllowed``'s."""
+    as `scrud_django.core.writes` refuses it): 405, answered as the DRF
+    route answers the method (DRF's ``MethodNotAllowed``, through
+    scoped-rbac's handler). While uniform errors are on, scoped-rbac's
+    problem (`response_data`: ``error_problem`` of a 405, whose ``detail`` is
+    the reason phrase) with its problem-details Links; off, DRF's native
+    body (`native_response_data`: ``Method "PUT" not allowed.``) as
+    ``application/json``. The message (``detail``) is DRF's."""
 
     status_code = 405
     default_detail = "Method not allowed."
     default_code = "method_not_allowed"
+    problem_links = True
 
     def __init__(self, method):
         super().__init__(f'Method "{method}" not allowed.')
         self.method = method
+
+    def response_data(self, context):
+        from scoped_rbac.problems import error_problem
+
+        return error_problem(self.status_code, code=self.default_code)
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off."""
+        return {"detail": str(self.detail)}
 
 
 class RequestBodyNotAnObjectError(ScrudException):
