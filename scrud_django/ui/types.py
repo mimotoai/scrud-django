@@ -194,8 +194,12 @@ def ui_js_resource_type(force=False):
 
 def ui_resource_type_urls():
     """The routes of the UI resource types, each registered first, or its
-    registration left pending on a database error (`register_or_defer`).
+    registration left pending on a database error (`register_or_defer`),
+    once its write behaviour is recorded as its hooks
+    (`scrud_django.core.types.register_type_options` of
+    `scrud_django.ui.hooks.UI_TYPE_OPTIONS`), whatever the database says.
     ``scrud_django.urls`` serves them when ``scrud_django.ui`` is installed."""
+    from scrud_django.core.types import register_type_options
     from scrud_django.ui.branches import (
         UI_BRANCH_SLUG,
         UI_BRANCH_TYPE_URI,
@@ -213,6 +217,7 @@ def ui_resource_type_urls():
         UIBranchViewSet,
         UIPushViewSet,
     )
+    from scrud_django.ui.hooks import UI_TYPE_OPTIONS
     from scrud_django.ui.views import (
         UIComponentViewSet,
         UICssViewSet,
@@ -280,6 +285,7 @@ def ui_resource_type_urls():
     )
     urls = []
     for register_type, registration_name, type_uri, slug, viewset_class in ui_types:
+        register_type_options(type_uri, UI_TYPE_OPTIONS[slug], slug=slug)
         register = registered(register_type, registration_name)
         urls.extend(
             register_or_defer(

@@ -349,9 +349,9 @@ in `"y"`: expect 200 (and 404 for one in `"x"`); get 403 today.
 ## ui-name-uniqueness-race: concurrent creates can duplicate a UI component or stylesheet name
 
 UI component names are unique site-wide and stylesheet names unique per
-context, but `UIContentValidationMixin` checks that with a query, without a
-lock or a database constraint, so two concurrent creates of the same name can
-both succeed. Resolution is deterministic: the lowest pk wins
+context, but the UI types' `prepare_write` hooks (`scrud_django.ui.hooks`)
+check that with a query, without a lock or a database constraint, so two
+concurrent creates of the same name can both succeed. Resolution is deterministic: the lowest pk wins
 (`scrud_django.ui.cascade`), so a duplicate is shadowed, not an error. Suggested
 fix: serialize the check as `serialized_policy_save` does for policies, or add a
 unique index on a generated name column. Test: two threads creating the same

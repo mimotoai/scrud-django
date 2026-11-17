@@ -98,13 +98,26 @@ ITEM_METHODS = ("GET", "PUT", "DELETE")
 LIST_METHODS = ("GET", "POST")
 
 
+# The methods `allowed_methods` lists without checking them: HEAD with GET,
+# OPTIONS always.
+DERIVED_METHODS = ("HEAD", "OPTIONS")
+
+
 def served_methods(resource_type, *, item: bool) -> tuple[str, ...]:
     """The methods the route of `resource_type` serves (`item`: its detail
     route, else its list): a computed type (``TypeOptions.compute``, by its
-    IRI) serves ``GET`` only; any other `ITEM_METHODS` or `LIST_METHODS`."""
-    if type_options(resource_type.type_uri).compute is not None:
+    IRI) serves ``GET`` only; a type whose ``TypeOptions.methods`` are set,
+    those of `ITEM_METHODS` or `LIST_METHODS`, then of `DERIVED_METHODS`,
+    that they name; any other `ITEM_METHODS` or `LIST_METHODS`."""
+    options = type_options(resource_type.type_uri)
+    if options.compute is not None:
         return ("GET",)
-    return ITEM_METHODS if item else LIST_METHODS
+    route = ITEM_METHODS if item else LIST_METHODS
+    if options.methods is not None:
+        return tuple(
+            method for method in route + DERIVED_METHODS if method in options.methods
+        )
+    return route
 
 
 # The order of the methods ``Allow`` lists, as scrudful's ``allow_value``
@@ -617,9 +630,15 @@ def _allowed_methods(
 def _checked_methods(resource_type, methods, *, item: bool) -> tuple[str, ...]:
     """The methods whose use OPTIONS checks, upper-cased, in `ALLOW_ORDER`
     (a method not in it after those, in the order given): `methods`, by
-    default those the route serves (`served_methods`)."""
-    given = methods if methods is not None else served_methods(resource_type, item=item)
-    upper = dict.fromkeys(method.upper() for method in given)
+    default those the route serves (`served_methods`) but `DERIVED_METHODS`,
+    which are not checked."""
+    if methods is None:
+        methods = [
+            method
+            for method in served_methods(resource_type, item=item)
+            if method not in DERIVED_METHODS
+        ]
+    upper = dict.fromkeys(method.upper() for method in methods)
     return tuple(
         [method for method in ALLOW_ORDER if method in upper]
         + [method for method in upper if method not in ALLOW_ORDER]

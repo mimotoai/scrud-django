@@ -201,9 +201,10 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
             obj = writes.create(
                 request, rtype, body, requirement=requirement, using=write_db()
             )
-        response = _serving_api(request).create_response(
-            request, obj.content, status=201
-        )
+            content = writes.answered_content(
+                request, rtype, obj, created=True, using=write_db()
+            )
+        response = _serving_api(request).create_response(request, content, status=201)
         response["Location"] = absolute_reverse(
             rtype.route_name_detail(), args=[obj.pk], request=request
         )
@@ -232,9 +233,12 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
             requirement=requirement_for(rtype),
             using=write_db(),
         )
+        content = writes.answered_content(
+            request, rtype, written, created=False, using=write_db()
+        )
         setattr(request, WRITTEN_ATTR, written)
         _as_document(request, response, spec)
-        return written.content
+        return content
 
     @router.api_operation(
         ["DELETE"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_destroy"

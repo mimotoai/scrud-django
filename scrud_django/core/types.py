@@ -4,17 +4,22 @@ content_filter=)``, ``registration.computed_resource_type(..., compute=)``):
 the front-end-neutral counterpart of an ``IsAuthorized`` subclass and of a
 ``ComputedResourceViewSet.compute``.
 
-The hooks only refuse: a type's requirement (`requirement_for`) is its
-grants (`GrantsLeaf`) **and** its hooks (`HookLeaf`), so a hook can narrow
-what the grants allow, never allow what they refuse.
+The authorization hooks (``checks``, ``object_checks``) only refuse: a
+type's requirement (`requirement_for`) is its grants (`GrantsLeaf`) **and**
+those hooks (`HookLeaf`), so a hook can narrow what the grants allow, never
+allow what they refuse. The write hooks (``prepare_write``,
+``around_save``, ``after_write``, ``before_destroy``, ``after_destroy``)
+and ``methods`` are a type's own write behaviour, which
+`scrud_django.core.writes` runs: they authorize nothing, and make no
+`HookLeaf` (`has_hooks`).
 """
 
 import importlib
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -52,6 +57,64 @@ class Compute(Protocol):
     def __call__(self, request, key: str) -> Mapping: ...
 
 
+class PrepareWrite(Protocol):
+    """A write's body as it is validated and saved: given the body (a copy
+    the core made), it returns it, completed; a ``ScrudException`` (or an
+    ``access.AccessDenied``) refuses the write."""
+
+    def __call__(
+        self,
+        request,
+        resource_type,
+        body: Any,
+        *,
+        instance: Resource | None,
+        using: str,
+    ) -> Any: ...
+
+
+class AroundSave(Protocol):
+    """The save of a write, wrapped: calls `save` (once) and returns what it
+    returned."""
+
+    def __call__(
+        self,
+        request,
+        resource_type,
+        save: Callable[[], Resource | None],
+        *,
+        instance: Resource | None,
+        using: str,
+    ) -> Resource | None: ...
+
+
+class AfterWrite(Protocol):
+    """What follows a saved write in its transaction: a mapping it returns
+    is the write's answered content (``None``: the saved content)."""
+
+    def __call__(
+        self, request, resource_type, saved: Resource, *, created: bool, using: str
+    ) -> Mapping | None: ...
+
+
+class DestroyHook(Protocol):
+    """What precedes (refusing it) or follows a delete in its transaction."""
+
+    def __call__(
+        self, request, resource_type, instance: Resource, *, using: str
+    ) -> None: ...
+
+
+# The write hooks of `TypeOptions`, each a callable or ``None``.
+WRITE_HOOKS = (
+    "prepare_write",
+    "around_save",
+    "after_write",
+    "before_destroy",
+    "after_destroy",
+)
+
+
 @dataclass(frozen=True)
 class TypeOptions:
     """A type's hooks, as registered:
@@ -71,12 +134,39 @@ class TypeOptions:
     - ``content_filter``: a list filters on its query parameters
       (``scrud_django.filters.ResourceContentFilter`` on DRF);
     - ``compute``: ``(request, key: str) -> Mapping``, a computed type's
-      content for `key`."""
+      content for `key`;
+
+    and its write behaviour, which `scrud_django.core.writes` runs (no
+    authorization hooks: `has_hooks` does not count them):
+
+    - ``prepare_write``: ``(request, resource_type, body, *, instance,
+      using) -> body``, given a copy of a create's (`instance` ``None``) or
+      update's body once the request and object checks passed, before the
+      body is validated (its JSON Schema, the workflow check): it returns
+      the body that is validated and saved, and refuses with a
+      ``ScrudException`` (or ``access.AccessDenied``);
+    - ``around_save``: ``(request, resource_type, save, *, instance, using)
+      -> Resource``, the save wrapped, inside `save_checked`'s transaction;
+    - ``after_write``: ``(request, resource_type, saved, *, created, using)
+      -> Mapping | None``, run by `answered_content` in the write's
+      transaction once the saved resource passed its post-save check: a
+      mapping returned is the content answered;
+    - ``before_destroy`` and ``after_destroy``: ``(request, resource_type,
+      instance, *, using) -> None``, run by `destroy` before the delete (a
+      refusal raises) and after it;
+    - ``methods``: the HTTP methods the type's routes serve, ``None`` for
+      all (`scrud_django.core.resources.served_methods`)."""
 
     checks: tuple[Check, ...] = ()
     object_checks: tuple[ObjectCheck, ...] = ()
     content_filter: bool = False
     compute: Compute | None = None
+    prepare_write: PrepareWrite | None = None
+    around_save: AroundSave | None = None
+    after_write: AfterWrite | None = None
+    before_destroy: DestroyHook | None = None
+    after_destroy: DestroyHook | None = None
+    methods: frozenset[str] | None = None
 
     def __post_init__(self):
         # Any sequence given is kept as a tuple of the same hook objects
@@ -87,8 +177,21 @@ class TypeOptions:
                 if not callable(hook):
                     raise TypeError(f"TypeOptions.{name}: {hook!r} is not callable")
             object.__setattr__(self, name, hooks)
-        if self.compute is not None and not callable(self.compute):
-            raise TypeError(f"TypeOptions.compute: {self.compute!r} is not callable")
+        for name in ("compute", *WRITE_HOOKS):
+            hook = getattr(self, name)
+            if hook is not None and not callable(hook):
+                raise TypeError(f"TypeOptions.{name}: {hook!r} is not callable")
+        if self.methods is not None:
+            if isinstance(self.methods, str) or not all(
+                isinstance(method, str) for method in self.methods
+            ):
+                raise TypeError(
+                    f"TypeOptions.methods: {self.methods!r} is not a set of "
+                    "method names"
+                )
+            object.__setattr__(
+                self, "methods", frozenset(method.upper() for method in self.methods)
+            )
 
 
 # The methods whose body the request check reads (the scrud views' own
@@ -145,15 +248,18 @@ def _same_hooks(old: TypeOptions, new: TypeOptions, *, same) -> bool:
     def pairs(a, b):
         return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b, strict=True))
 
+    def optional(a, b):
+        return a is b if a is None or b is None else same(a, b)
+
     return (
         pairs(old.checks, new.checks)
         and pairs(old.object_checks, new.object_checks)
         and old.content_filter == new.content_filter
-        and (
-            old.compute is new.compute
-            if old.compute is None or new.compute is None
-            else same(old.compute, new.compute)
+        and all(
+            optional(getattr(old, name), getattr(new, name))
+            for name in ("compute", *WRITE_HOOKS)
         )
+        and old.methods == new.methods
     )
 
 
@@ -246,7 +352,7 @@ def ensure_hooks_loaded() -> None:
 
 def has_hooks(options: TypeOptions) -> bool:
     """Whether `options` hold an authorization hook (``checks`` or
-    ``object_checks``)."""
+    ``object_checks``): the write hooks and ``methods`` are none."""
     return bool(options.checks or options.object_checks)
 
 
