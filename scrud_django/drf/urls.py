@@ -1,5 +1,6 @@
-"""The DRF front end's URLconf: scrud's DRF routes, which `scrud_django.urls`
-serves."""
+"""The DRF front end's URLconf: scrud's DRF routes. A project staying on DRF
+includes it (with the ``drf`` extra) where it included ``scrud_django.urls``,
+which serves the ninja API since 0.17.0."""
 
 from django.apps import apps
 from django.urls import include, path

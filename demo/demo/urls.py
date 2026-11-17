@@ -17,7 +17,7 @@ router.register(r"users", UserViewSet)
 
 api_urlpatterns = [
     path("", include(router.urls), name="api"),
-    path("", include("scrud_django.urls")),
+    path("", include("scrud_django.drf.urls")),
 ]
 api_urlpatterns.extend(
     registration.resource_types(

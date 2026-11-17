@@ -455,11 +455,12 @@ These are all re-tested at the new URLs:
 - **The type is looked up per request by slug,** as DRF does. Deferred
   registration (`register_or_defer`) works as today: routers are built at
   URLconf import, and types are read when requests arrive.
-- **The list envelope matches scrudful's on both front ends (call).**
-  - The DRF paginator adds `first` and `last`.
-  - Its `previous` for page 1 becomes `?page=1` (scrudful's `page_envelope`)
-    instead of DRF's URL without `page`. This changes an existing DRF answer, so
-    it is listed under **Breaking changes**.
+- **The list envelope is DRF's on both front ends.** Struck (ruling R1 of the
+  3A plan, owner-confirmed in the 3C plan, 2026-11-17): ~~the DRF paginator
+  adds `first` and `last`; its `previous` for page 1 becomes `?page=1`
+  (scrudful's `page_envelope`) instead of DRF's URL without `page`~~. scrud's
+  ninja list answers DRF's envelope (`count`, `next`, `previous`, `results`;
+  page 1's `previous` without `page`) from the core, so no DRF answer changes.
   - The MySQL key-first paging stays a core concern under both.
 - **The list ETag (call).** scrud's `list_etag` hashes the page's items and the
   query parameters, but `scrudful_list` calls `list_etag_func` with the queryset
@@ -597,8 +598,8 @@ take the request and the page (§3.2).
   Prefixes serve UI only.
 - The `scrud_django.views` and `scrud_django.exceptions.scrud_exception_handler`
   import paths are deprecated aliases.
-- The list envelope gains `first` and `last`, and page 1's `previous` link
-  carries `?page=1`.
+- ~~The list envelope gains `first` and `last`, and page 1's `previous` link
+  carries `?page=1`.~~ Struck: the envelope is unchanged (§3.2, ruling R1).
 - On DRF, the UI refuses types with DRF-only authorization unless they declare
   the neutral hooks (§1.4).
 - ninja apps with their own types build their API with

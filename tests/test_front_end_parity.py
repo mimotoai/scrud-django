@@ -2049,7 +2049,7 @@ ROLE_CASES = [
 ]
 
 #: Where scoped-rbac serves its schemas and contexts in `tests.parity_urls`:
-#: ``scoped_rbac.semantic_urls``, included once (``scrud_django.urls``, under
+#: ``scoped_rbac.semantic_urls``, included once (``scrud_django.drf.urls``, under
 #: the DRF mount), which both front ends link to.
 SEMANTIC = f"http://testserver{MOUNTS['drf']}semantic/"
 

@@ -150,7 +150,7 @@ def django_db_setup(django_db_setup, django_db_blocker):
     tests.
 
     The built-in WorkflowPolicy type is registered here too: otherwise it is only
-    created when ``scrud_django.urls`` is first imported, inside whichever test
+    created when ``scrud_django.drf.urls`` is first imported, inside whichever test
     first resolves a URL, and that test's rollback removes it (and its JSON-LD
     context document) for every later test.
     """

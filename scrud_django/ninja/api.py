@@ -76,7 +76,7 @@ def _check_specs(specs: Sequence[object]) -> None:
 
 
 def ui_specs() -> list[TypeSpec]:
-    """The `TypeSpec`s of the types the UI app brings, as ``scrud_django.urls``
+    """The `TypeSpec`s of the types the UI app brings, as ``scrud_django.drf.urls``
     serves them on DRF: the UI resource types
     (`scrud_django.ui.types.ui_type_specs`) when ``scrud_django.ui`` is
     installed, and the studio's computed types

@@ -11,12 +11,16 @@ uv add scrud-django
 # or: pip install scrud-django
 ```
 
-django-ninja is part of the base install. Projects that serve the API through
-Django REST Framework install the `drf` extra:
+django-ninja is part of the base install, and `scrud_django.urls` serves the
+API through it. Projects that serve the API through Django REST Framework
+install the `drf` extra (see [Staying on DRF](#staying-on-drf)):
 
 ```bash
 uv add "scrud-django[drf]"
 ```
+
+(The `ninja` extra of 0.16 stays as an empty alias, so existing requirement
+files keep working.)
 
 For haystack search support, install the `search` extra:
 
@@ -35,20 +39,16 @@ last in the root URLconf: `path("", include("scrud_django.ui.urls"))`. See the
 [UI documentation](docs/ui.md) and
 [Migrating to 0.17.0](#migrating-to-0170-the-ui-app).
 
-## django-ninja (preview)
+## The API (django-ninja)
 
-scrud-django can also serve its resource types through
-[django-ninja](https://django-ninja.dev), answering as the DRF routes do (the
+scrud-django serves its resource types through
+[django-ninja](https://django-ninja.dev), answering as its DRF routes do (the
 same statuses, headers and bodies; `tests/test_front_end_parity.py` replays
-the same exchanges against both). It is a preview.
-
-```bash
-uv add scrud-django
-# or: pip install scrud-django
-```
-
-(The `ninja` extra of 0.16 stays as an empty alias, so existing requirement
-files keep working.)
+the same exchanges against both). `include("scrud_django.urls")` mounts
+`scrud_django.ninja.api(types=[])`, in the URL namespace `scrud`, and
+scoped-rbac's semantic documents at `semantic/` (see
+[Configuration](#required)). To serve types of your own, build the API with
+them and include it **instead of** `scrud_django.urls`:
 
 ```python
 # urls.py
@@ -68,8 +68,8 @@ scrud_api = api(
 )
 
 urlpatterns = [
-    path("api/", scrud_api.urls),
-    path("", include("scoped_rbac.semantic_urls")),
+    path("api/", scrud_api.urls),  # in place of include("scrud_django.urls")
+    path("api/semantic/", include("scoped_rbac.semantic_urls")),
 ]
 ```
 
@@ -86,7 +86,7 @@ urlpatterns = [
   `ui-branch-versions/`, `ui-pushes/`, with their write and read behaviour)
   and the studio's computed types when `scrud_django.ui.studio` is too
   (`ui-branch-items/`, `ui-branch-status/`, `ui-type-catalog/`,
-  `ui-selectable-branches/`, `ui-push-previews/`), as `scrud_django.urls`
+  `ui-selectable-branches/`, `ui-push-previews/`), as `scrud_django.drf.urls`
   serves them on DRF; `ui_types=False` leaves them out (one API of several
   serves them). A type of yours cannot take one of their slugs.
   `json_resource_type_spec(..., options=TypeOptions(...))` gives a spec the
@@ -225,10 +225,16 @@ urlpatterns = [
 
 * Two APIs in one process need distinct `urls_namespace`s. Links (`href`,
   `Location`, `Link` headers, `services/`) are reversed within the namespace
-  the request was resolved under.
-* A ninja-only URLconf must also `include("scoped_rbac.semantic_urls")`: the
-  role routes' (`roles/`, `role-assignments/`, `user-rbac-policy/`) semantic
-  Links reverse those global names, and answer 500 without it.
+  the request was resolved under, and the UI finds a type's routes by it. An
+  API of your own in the default namespace `scrud` beside
+  `include("scrud_django.urls")` (also `scrud`) would take each other's
+  links: `manage.py check` warns of a namespace included more than once
+  (`scrud_django.W008`). Include your `api()` in its place, or give it
+  another `urls_namespace`.
+* A URLconf of your own `api()` must also `include("scoped_rbac.semantic_urls")`
+  once, as `scrud_django.urls` does: the role routes' (`roles/`,
+  `role-assignments/`, `user-rbac-policy/`) semantic Links reverse those
+  global names, and answer 500 without it.
 * `services/` lists the types the serving API routes. A type registered in
   the process that it does not route (another API's, or a UI type on an
   `api(ui_types=False)`) is left out, on both front ends.
@@ -248,8 +254,48 @@ urlpatterns = [
 * A studio computed type's answer links to the API serving the request, so
   its ETag (the hash of that content) is that API's own: with both front
   ends mounted, the two answers differ only in those links and their ETag.
-* `scrud_django.urls` stays DRF until the release that switches it; include
-  it as before for a DRF project.
+
+## Staying on DRF
+
+The Django REST Framework front end is the `drf` extra, in the
+`scrud_django.drf` package, and answers as it did before 0.17.0:
+
+```bash
+uv add "scrud-django[drf]"
+```
+
+Add `rest_framework` to `INSTALLED_APPS`, set scrud's exception handler, and
+include `scrud_django.drf.urls` where the ninja API's `scrud_django.urls`
+would go, with scrudful's HTTP Schema Resource route once in the root
+URLconf (see [Configuration](#required)):
+
+```python
+# settings.py
+REST_FRAMEWORK = {
+    ...,
+    "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
+}
+```
+
+```python
+# urls.py (the root URLconf)
+from scrudful.rest_framework import hsr_urls
+
+urlpatterns = [
+    path("api/", include("scrud_django.drf.urls")),
+    path("", include(hsr_urls())),
+]
+```
+
+`scrud_django.drf.urls` includes scoped-rbac's DRF role routes and its
+semantic documents (`semantic/`). Register types of your own on it with
+`registration.json_resource_type` (see
+[Registering resource types](#registering-resource-types)); the views,
+serializers, filters and permissions are in `scrud_django.drf` (see
+[Migrating to 0.17.0: the DRF adapter](#migrating-to-0170-the-drf-adapter)).
+DRF's authentication classes authenticate these routes as before; to keep
+the same clients on a ninja API, use the `scrud_django.drf.auth.drf_user`
+hook (see [The API (django-ninja)](#the-api-django-ninja)).
 
 ## Your own models with workflow (ninja)
 
@@ -507,15 +553,15 @@ policy has a draft and a published state.
 
 ### Required
 
-Add `django.contrib.auth`, `django.contrib.contenttypes`, `rest_framework`,
-`reversion`, `scoped_rbac` and `scrud_django` to `INSTALLED_APPS`:
+Add `django.contrib.auth`, `django.contrib.contenttypes`, `reversion`,
+`scoped_rbac` and `scrud_django` to `INSTALLED_APPS` (and `rest_framework`
+on DRF, see [Staying on DRF](#staying-on-drf)):
 
 ```python
 INSTALLED_APPS = [
   ...
   'django.contrib.auth',
   'django.contrib.contenttypes',
-  'rest_framework',
   'reversion',
   'scoped_rbac',
   'scrud_django',
@@ -523,7 +569,8 @@ INSTALLED_APPS = [
 ]
 ```
 
-Include the scrud-django URLs. They include scoped-rbac's semantic URLs
+Include the scrud-django URLs, the ninja API (`scrud_django.ninja.api`, in
+the URL namespace `scrud`). They include scoped-rbac's semantic URLs
 (`semantic/`), which serve the schemas and JSON-LD contexts of scoped-rbac's
 own Role, RoleAssignment and Policy resources (the role endpoints' `Link`
 headers point there); a scrud resource type's schema and context are its
@@ -535,11 +582,14 @@ urlpatterns = [
 ]
 ```
 
-If you mount URLs yourself, include `scoped_rbac.semantic_urls`, for example
+On DRF, include `scrud_django.drf.urls` instead (it includes the semantic
+URLs too). If you mount URLs yourself (your own `api()`), include
+`scoped_rbac.semantic_urls` once, for example
 `path("semantic/", include("scoped_rbac.semantic_urls"))`.
 
-Include scrudful's HTTP Schema Resource route once, in the root URLconf, and
-set the base URL the API is served at. An OPTIONS is a 204 without content
+Set the base URL the API is served at, and, on DRF, include scrudful's HTTP
+Schema Resource route once, in the root URLconf (the ninja API serves its
+routes' HTTP Schema Resources itself). An OPTIONS is a 204 without content
 whose `Link` names the path's HTTP Schema Resource (HSR), a JSON document
 describing its methods that a GET serves; scrudful builds it without a request,
 so its links, and the HSR link each response carries, resolve against
@@ -554,11 +604,11 @@ that method may not reach, is a 404; a requester who may use no method there
 gets 204 with `Allow: OPTIONS` whether or not it exists.
 
 ```python
-# urls.py (the root URLconf)
+# urls.py (the root URLconf), on DRF
 from scrudful.rest_framework import hsr_urls
 
 urlpatterns = [
-    path("api/", include("scrud_django.urls")),
+    path("api/", include("scrud_django.drf.urls")),
     path("", include(hsr_urls())),
 ]
 ```
@@ -568,7 +618,7 @@ urlpatterns = [
 SCRUDFUL = {"BASE_URL": "https://api.example.com"}
 ```
 
-Without the include, every request of a scrud view raises
+On DRF, without the include, every request of a scrud view raises
 `ImproperlyConfigured` (and `manage.py check` reports `scrudful.E003`).
 
 ### Databases
@@ -607,11 +657,16 @@ MySQL and MariaDB:
 
 ### Registering resource types
 
-`scrud_django.urls` serves the built-in types (JSON Schemas, JSON-LD
-contexts, indexing and workflow policies). Register each type of your own
-with `registration.json_resource_type`, which stores the type, its JSON
-Schema and its JSON-LD context (as resources) and returns the URLs of its
-list (`<slug>/`: GET, HEAD, POST) and detail (`<slug>/<pk>/`: GET, HEAD,
+Both front ends serve the built-in types (JSON Schemas, JSON-LD contexts,
+indexing and workflow policies). On ninja, a type of your own is a
+`registration.json_resource_type_spec(...)` (the same arguments as below,
+but `viewset_class` and `indexing_policy_resource`) passed to your own
+`scrud_django.ninja.api(types=[...])`, which takes the place of
+`scrud_django.urls` (see [The API (django-ninja)](#the-api-django-ninja)).
+On DRF (`scrud_django.drf.urls`, the `drf` extra), register each type of
+your own with `registration.json_resource_type`, which stores the type, its
+JSON Schema and its JSON-LD context (as resources) and returns the URLs of
+its list (`<slug>/`: GET, HEAD, POST) and detail (`<slug>/<pk>/`: GET, HEAD,
 PUT, DELETE) routes, named `<slug>-list` and `<slug>-detail`:
 
 ```python
@@ -621,7 +676,7 @@ from scrud_django import registration
 NOTE = "https://example.com/json-ld/Note"
 
 urlpatterns = [
-    path("api/", include("scrud_django.urls")),
+    path("api/", include("scrud_django.drf.urls")),
     path(
         "api/",
         include(
@@ -1275,6 +1330,43 @@ def send_events(deliver, batch=100):
             event.save(using=using, update_fields=["sent_at"])
 ```
 
+### Migrating to 0.17.0: the switch to django-ninja
+
+`include("scrud_django.urls")` serves the ninja API from 0.17.0 (see
+[The API (django-ninja)](#the-api-django-ninja)): the same routes, answering
+as the DRF ones did, from `scrud_django.ninja.api(types=[])` in the URL
+namespace `scrud`, and scoped-rbac's semantic documents at `semantic/`.
+What to do:
+
+* **To stay on DRF,** install `scrud-django[drf]` and include
+  `scrud_django.drf.urls` where you included `scrud_django.urls` (with
+  `hsr_urls()`, as before; see [Staying on DRF](#staying-on-drf)). Nothing
+  else changes for your DRF routes. A project that registers its own types
+  with `registration.resource_types(...)` beside `include("scrud_django.urls")`
+  is on DRF: switch that include, or move the types to
+  `api(types=[registration.json_resource_type_spec(...)])`.
+* **Old import paths** of the DRF adapter (`scrud_django.views`,
+  `scrud_django.exceptions.scrud_exception_handler`, ...) keep working for
+  this release with a `DeprecationWarning`: see
+  [Migrating to 0.17.0: the DRF adapter](#migrating-to-0170-the-drf-adapter).
+* **Authentication.** ninja does not run DRF's
+  `DEFAULT_AUTHENTICATION_CLASSES`: the session's user is the user, and a
+  Basic or token client is anonymous. To keep those clients as they are, set
+  `SCOPED_RBAC = {..., "NINJA_USER": "scrud_django.drf.auth.drf_user"}`
+  (DRF installed), which runs your DRF authenticators on each ninja request.
+* **One API per namespace.** An app that builds its own `api()` includes it
+  **instead of** `scrud_django.urls`, not beside it: both in the default
+  namespace `scrud` would take each other's links, and `manage.py check`
+  warns (`scrud_django.W008`). Give a second API its own `urls_namespace`.
+  Code that reverses scrud's route names on ninja qualifies them with the
+  namespace (`reverse("scrud:services")`, `"scrud:<slug>-list"`); on DRF
+  they are unqualified, as before.
+* **Renderers.** A ninja route never answers `text/html`: DRF's browsable
+  API is gone from `/api/`, which answers JSON whatever `Accept` asks.
+* **A branch's JSON,** which a published branch's prefix answered before
+  0.17.0, is the studio's `/api/ui-branch-items/<branch>/` (with
+  `scrud_django.ui.studio` installed); the prefix serves the UI's pages only.
+
 ### Migrating to 0.17.0: the UI app
 
 The UI is now its own Django app, served at the site root, and `/api/` serves
@@ -1305,7 +1397,8 @@ What changes:
   the refused-PUT form, the 412 and 409 reload).
 * **Prefixes are UI only.** A published branch's prefix serves the UI's pages;
   there is no JSON under it. JSON is at `/api/`, where `Scrud-UI-Branch` or
-  `ui-branch` selects a branch within `main`'s tree only.
+  `ui-branch` selects a branch within `main`'s tree only; every item a branch
+  shows is the studio's `/api/ui-branch-items/<branch>/`.
 * **A branch cannot be published at the UI's base `/`** (a 400; the system check
   `scrud_django_ui.W001` warns about a stored one). `/` is always `main`'s UI,
   so a site that used a restricted branch at `/` as a gate for the whole site
@@ -1373,13 +1466,15 @@ REST_FRAMEWORK = {
 }
 ```
 
-`include("scrud_django.urls")` still serves the DRF routes in this release
-(they are `scrud_django.drf.urls`). Importing `scrud_django.drf` without DRF
+The DRF routes are `scrud_django.drf.urls`; `include("scrud_django.urls")`
+serves the ninja API from this release (see
+[Migrating to 0.17.0: the switch to django-ninja](#migrating-to-0170-the-switch-to-django-ninja)).
+Importing `scrud_django.drf` without DRF
 installed raises an `ImportError` naming `scrud-django[drf]`. To find the old
 paths in your code, run your tests with
 `-W "error:scrud_django:DeprecationWarning"`. To serve DRF's Basic and token
 clients on ninja too, see `scrud_django.drf.auth.drf_user` in
-[django-ninja (preview)](#django-ninja-preview).
+[The API (django-ninja)](#the-api-django-ninja).
 
 ### Upgrading
 

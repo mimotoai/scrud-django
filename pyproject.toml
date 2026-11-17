@@ -1,7 +1,7 @@
 [project]
 name = "scrud-django"
 version = "0.16.0"
-description = "A Django REST Framework app for Semantic CRUD."
+description = "A Django app for Semantic CRUD APIs, served through django-ninja or Django REST Framework."
 readme = "README.md"
 authors = [{ name = "David Charboneau", email = "david@adadabase.com" }]
 license = "BSD-3-Clause"

@@ -4,6 +4,21 @@
 
 ### Breaking changes
 
+* **`scrud_django.urls` serves the ninja API.** `include("scrud_django.urls")`
+  now mounts `scrud_django.ninja.api(types=[])` (namespace `scrud`: the
+  built-in types, the UI's and the studio's when their apps are installed,
+  the service catalog, scoped-rbac's role routes and the collection
+  documents) and `scoped_rbac.semantic_urls` at `semantic/`. To stay on DRF,
+  install `scrud-django[drf]` and include `scrud_django.drf.urls` instead
+  (with `hsr_urls()`, as before). An app building its own `api()` includes
+  it instead of `scrud_django.urls`, not beside it: two scrud APIs in one URL
+  namespace reverse each other's links, and the new system check
+  `scrud_django.W008` warns of it. DRF's authentication classes do not run on
+  ninja: keep Basic and token clients with
+  `SCOPED_RBAC["NINJA_USER"] = "scrud_django.drf.auth.drf_user"`. A branch's
+  JSON, which a published prefix gave before 0.17.0, is the studio's
+  `/api/ui-branch-items/<branch>/`. See "Migrating to 0.17.0: the switch to
+  django-ninja" in the README.
 * **django-ninja is in the base install; DRF is the `drf` extra.** A project
   that serves the API through Django REST Framework installs
   `scrud-django[drf]` (django-scoped-rbac[drf], scrudful[drf],
@@ -61,7 +76,8 @@
   `scrud_django.mixins.view_mixins`), `.ui` (the UI types' viewsets, was
   `scrud_django.ui.views` and `scrud_django.ui.branches.views`),
   `.exceptions` (`scrud_exception_handler`, `as_drf`, `drf_errors`) and
-  `.urls` (the DRF routes, which `scrud_django.urls` still serves). The old
+  `.urls` (the DRF routes, which `scrud_django.urls` served until this
+  release). The old
   paths keep working for this release as deprecated aliases: importing one
   (or, for `scrud_django.exceptions` and `scrud_django.validators`, which keep
   their neutral names, reading one of the moved names) gives the moved

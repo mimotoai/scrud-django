@@ -631,7 +631,7 @@ def studio_computed_type_urls():
     """The DRF routes of the studio's computed types
     (`studio_computed_type_specs`, served by ``ComputedResourceViewSet``),
     each type registered first (`TypeSpec.register`): served by
-    ``scrud_django.urls`` when ``scrud_django.ui.studio`` is installed."""
+    ``scrud_django.drf.urls`` when ``scrud_django.ui.studio`` is installed."""
     from scrud_django.drf.computed import ComputedResourceViewSet
 
     urls = []

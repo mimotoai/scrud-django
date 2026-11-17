@@ -42,7 +42,8 @@ INSTALLED_APPS = [
 ]
 ```
 
-`scrud_django.urls` (the API) then serves more resource types, each with its own schema,
+The API (`scrud_django.urls`, the ninja API, or `scrud_django.drf.urls` on
+DRF) then serves more resource types, each with its own schema,
 JSON-LD context and collection, written and read like any other resource under
 the same policy:
 
@@ -62,7 +63,7 @@ types it serves, so it does not swallow the rest of the site):
 
 ```python
 urlpatterns = [
-    path("api/", include("scrud_django.urls")),
+    path("api/", include("scrud_django.urls")),  # or scrud_django.drf.urls on DRF
     ...,  # your own URLs
     path("", include("scrud_django.ui.urls")),
 ]
@@ -1768,7 +1769,8 @@ The problem `type` is `https://api.openteams.com/http-problem/<name>`.
 The studio's data that is not a stored resource is also served as
 [computed resource types](#computed-resource-types), so a studio built as a UI
 layer renders it through the cascade, and a branch can restyle it, like any
-resource. They are part of the API (under `scrud_django.urls`, not the
+resource. They are part of the API (under `scrud_django.urls`, or
+`scrud_django.drf.urls` on DRF, not the
 studio's include), registered when `scrud_django.ui.studio` is installed, and
 left out of the service catalog as every computed type is. Each is read-only
 (`GET`, `HEAD` and `OPTIONS`; any other method is a 405), needs an

@@ -207,7 +207,6 @@ def test_errors_with_a_html_accept_are_unchanged_without_the_ui_app(
     todo_list, todo_reader_login
 ):
     import scrud_django.drf.urls
-    import scrud_django.urls
 
     url = url_of(todo_list)
     Given.http.force_authenticate(todo_reader_login)
@@ -216,9 +215,8 @@ def test_errors_with_a_html_accept_are_unchanged_without_the_ui_app(
     try:
         with without_ui_app():
             clear_url_caches()
-            # scrud_django.urls re-exports the DRF URLconf's patterns.
+            # tests.urls includes the DRF URLconf, rebuilt without the app.
             importlib.reload(scrud_django.drf.urls)
-            importlib.reload(scrud_django.urls)
             for accept in ("text/html", JSON):
                 # 403 (a reader PUTs), 412 and 400 are the JSON problems, as
                 # before the app existed, whatever the client accepts
@@ -242,9 +240,7 @@ def test_errors_with_a_html_accept_are_unchanged_without_the_ui_app(
                 assert "scrud-notice" not in Http.response.content.decode()
     finally:
         clear_url_caches()
-        # scrud_django.urls re-exports the DRF URLconf's patterns.
         importlib.reload(scrud_django.drf.urls)
-        importlib.reload(scrud_django.urls)
     html_accept, json_accept = responses["text/html"], responses[JSON]
     assert html_accept["Content-Type"] == json_accept["Content-Type"]
     assert html_accept["Content-Type"] == "application/problem+json"

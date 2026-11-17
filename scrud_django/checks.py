@@ -690,6 +690,59 @@ def check_list_filters(app_configs, **kwargs):
     return list_filter_errors(get_resolver().url_patterns)
 
 
+def _namespace_counts(patterns, outer="", counts=None):
+    """How many includes of the URL `patterns` (walked recursively) are named
+    each namespace, qualified by the namespaces they are nested in
+    (``outer:inner``), as Django reverses them."""
+    from django.urls import URLResolver
+
+    counts = {} if counts is None else counts
+    for entry in patterns:
+        if not isinstance(entry, URLResolver):
+            continue
+        namespace = outer
+        if entry.namespace:
+            namespace = f"{outer}:{entry.namespace}" if outer else entry.namespace
+            counts[namespace] = counts.get(namespace, 0) + 1
+        _namespace_counts(entry.url_patterns, namespace, counts)
+    return counts
+
+
+def check_api_namespaces(app_configs, **kwargs):
+    """A Warning (``scrud_django.W008``) for each namespace a scrud ninja API
+    names its routes in (``api(urls_namespace=...)``, noted in
+    `scrud_django.core.urls.api_namespaces`) that the project's URLconf
+    (``ROOT_URLCONF``) includes more than once, as when an app's own
+    ``api()`` and ``include("scrud_django.urls")`` both keep the default
+    ``"scrud"``: a name in it reverses to one of them only, so links and the
+    UI would point at the other API's routes. Registered with Django's
+    ``urls`` tag."""
+    from django.urls import get_resolver
+
+    from scrud_django.core.urls import api_namespaces
+
+    # Read first: importing the URLconf builds its APIs, which note their
+    # namespaces.
+    counts = _namespace_counts(get_resolver().url_patterns)
+    noted = {namespace for namespace in api_namespaces() if namespace}
+    return [
+        checks.Warning(
+            f"The URL namespace {namespace!r} of a scrud API is included "
+            f"{count} times: its route names reverse to one of them only, so "
+            "links and the UI can point at another API's routes.",
+            hint=(
+                "Give each scrud_django.ninja.api() its own urls_namespace; an "
+                "app building its own api() in the default namespace 'scrud' "
+                'replaces include("scrud_django.urls") rather than adding to it.'
+            ),
+            obj=namespace,
+            id="scrud_django.W008",
+        )
+        for namespace, count in counts.items()
+        if count > 1 and namespace.rsplit(":", 1)[-1] in noted
+    ]
+
+
 ACTIONS_HINT = (
     "Each entry of a mapping SCRUD_WORKFLOW_ACTIONS names maps a type URI to "
     "{'on_save': callable, 'on_delete': callable} (either key may be left out, "

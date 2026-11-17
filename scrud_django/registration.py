@@ -1548,7 +1548,7 @@ ROLE_LIST_ROUTES = MappingProxyType(
 def register_role_services():
     """Add scoped-rbac's roles and role assignments to the service catalog
     (by their collection type URIs), each on the front end serving the
-    request (`ROLE_LIST_ROUTES`): ``scrud_django.urls`` and the ninja API
+    request (`ROLE_LIST_ROUTES`): ``scrud_django.drf.urls`` and the ninja API
     (``scrud_django.ninja.api``), which mount them, both call it."""
     from scoped_rbac.models import Role, RoleAssignment
 
@@ -1583,7 +1583,7 @@ def built_in_resource_type_urls():
     """The routes of the built-in resource types (JSON Schema, JSON-LD
     context, indexing policy and workflow policy documents), each registered
     first, or its registration left pending on a database error
-    (`register_or_defer`). ``scrud_django.urls`` serves them."""
+    (`register_or_defer`). ``scrud_django.drf.urls`` serves them."""
     from scrud_django.drf import views
 
     viewsets = {"json-schema": views.JsonSchemaViewSet, "json-ld": views.JsonLdViewSet}

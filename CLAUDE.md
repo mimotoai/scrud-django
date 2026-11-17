@@ -1,8 +1,10 @@
 # scrud-django
 
-scrud-django is a Django/DRF library for building SCRUD (Search, Create, Read,
+scrud-django is a Django library for building SCRUD (Search, Create, Read,
 Update, Delete) REST APIs whose resources and resource types are stored as data
-and described with JSON Schema and JSON-LD. It layers on django-scoped-rbac for
+and described with JSON Schema and JSON-LD, served through django-ninja by
+default (`scrud_django.urls`) or Django REST Framework (the `drf` extra,
+`scrud_django.drf.urls`). It layers on django-scoped-rbac for
 authorization. `README.md` covers usage; this file covers working in the repo.
 
 ## Upstream packages
@@ -29,7 +31,12 @@ neutral: it takes a plain Django request and imports nothing from
 DRF modules (`tests/test_core_imports.py` holds the deny list). It does import
 `scrud_django.exceptions`, which loads `rest_framework.exceptions` when DRF is
 installed (a scrud error's detail is then DRF's `ErrorDetail`), and works
-without it. The DRF views and mixins are adapters (the `scrud_django.drf`
+without it. Two front ends adapt it: django-ninja, the default
+(`scrud_django.urls` is `scrud_django.ninja.api(types=[])` in the URL
+namespace `scrud`, plus `scoped_rbac.semantic_urls`; the `checks.py` check
+`scrud_django.W008` warns of two scrud APIs in one namespace), and DRF, the
+`drf` extra (`scrud_django.drf.urls`, which `tests/urls.py` includes so that
+the DRF suites test DRF). The DRF views and mixins are adapters (the `scrud_django.drf`
 package; the old paths `scrud_django.views`, `.filters`, `.permissions`, ...
 are deprecated aliases, `scrud_django/_aliases.py`, and scrud's own code and
 tests import the new paths: `pyproject.toml`'s `filterwarnings` makes an
@@ -72,11 +79,19 @@ others (a `contexts_for` of its own, or a class not registered with
 options ask their request checks before their object checks, as DRF's `|`
 does; the DRF views' list and readability (`meets_object_checks` without
 `request_checks`) keep asking object checks alone.
+A write runs through `core.writes`' steps, shared by every front end:
+`check_write_request` (the body, then the route's request check),
+`create_answer` (a list's POST) or `item_write_answer` (an item's PUT or
+DELETE: the row looked up locked, its preconditions, then `write_item`,
+which ninja's item routes call themselves once scrudful has evaluated the
+preconditions), each answering a `WriteAnswer`; JSON is written as DRF's
+renderer writes it, without DRF, by `core/json.py`.
 Put new domain logic in `core`, not in a view; per-type hooks are
 `core.types.TypeOptions`.
 
-`scrud_django/ninja/` is the second adapter (the optional `ninja` extra,
-`scrud_django.ninja.api(types=[...])`). Its handlers call only the core
+`scrud_django/ninja/` is the default adapter (django-ninja is a base
+dependency; `scrud_django.ninja.api(types=[...])`, which `scrud_django.urls`
+builds with none of an app's own types). Its handlers call only the core
 (`scrud_django/core/`: the facade above, `core.lists`, `core.collections`,
 `core.computed`, `core.writes`, `core.urls`, `core.bodies`, `core.types`,
 `core.errors`) and the registration and service-catalog lookups (`scrud_django.registration`'s

@@ -588,7 +588,7 @@ def test_a_conditional_create_and_another_write_do_not_deadlock(
 @pytest.mark.django_db
 def test_scoped_rbacs_own_lists_evaluate_a_creates_preconditions():
     # scoped-rbac 0.12 (#62) evaluates them on its role and role-assignment
-    # lists, which scrud_django.urls mounts (formerly scrud's follow-up
+    # lists, which scrud_django.drf.urls mounts (formerly scrud's follow-up
     # scrudful-create-preconditions).
     client = APIClient()
     client.force_authenticate(UserFactory(is_superuser=True, is_staff=True))

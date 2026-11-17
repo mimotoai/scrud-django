@@ -12,6 +12,7 @@ class ScrudConfig(AppConfig):
         from scoped_rbac.conf import register_operator
 
         from scrud_django.checks import (
+            check_api_namespaces,
             check_context_drift,
             check_default_policy_conditions,
             check_default_workflow_policies,
@@ -34,6 +35,7 @@ class ScrudConfig(AppConfig):
         checks.register(check_write_routing)
         checks.register(check_isolation_level, checks.Tags.database)
         checks.register(check_list_filters, checks.Tags.urls)
+        checks.register(check_api_namespaces, checks.Tags.urls)
         checks.register(check_workflow_actions)
         checks.register(check_workflow_action_types, checks.Tags.database)
 

@@ -34,7 +34,7 @@ from .workflow_defaults import ARTICLE, article_contexts, article_state
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("", include("scrud_django.urls")),
+    path("", include("scrud_django.drf.urls")),
     # Serves each scrudful view's HTTP Schema Resource, which OPTIONS links to.
     path("", include(hsr_urls())),
 ]

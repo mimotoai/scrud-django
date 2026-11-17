@@ -1251,6 +1251,12 @@ routes answer 500 (`NoReverseMatch`). 0.16.0 documents the
 `scrud_django.urls`. Test: a URLconf of the ninja API alone; GET `roles/` as
 a superuser; assert 200 (a 500 without the include).
 
+Fixed in the commit "feat!: scrud_django.urls serves ninja": the default
+`scrud_django.urls` is the ninja API with `scoped_rbac.semantic_urls` at
+`semantic/` (`tests/test_default_urls.py` follows the role list's Links
+there). A URLconf of an app's own `api()` still includes it itself, as the
+README says.
+
 <a id="ninja-hsr-link-targets"></a>
 ## ninja-hsr-link-targets: an API included under an outer namespace cannot describe its links
 
