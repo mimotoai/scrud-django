@@ -1,10 +1,16 @@
-"""The test URLconf with a second, namespaced set of routes (`ns`), as a
-ninja API under its ``urls_namespace`` has: `tests/test_core_urls.py`."""
+"""The test URLconf (``tests.no_drf_urls`` without DRF) with a second,
+namespaced set of routes (`ns`), as a ninja API under its ``urls_namespace``
+has: `tests/test_core_urls.py`."""
 
 from django.http import HttpResponse
 from django.urls import include, path
 
-from . import urls
+from .settings import NO_DRF
+
+if NO_DRF:
+    from . import no_drf_urls as urls
+else:
+    from . import urls
 
 
 def profile(request, slug):

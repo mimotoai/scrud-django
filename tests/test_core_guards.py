@@ -401,6 +401,7 @@ def test_validate_write_narrows_by_the_requirements_hooks():
         validate(requirement=[GrantsLeaf(JSON_LD), refuses_a], narrow=())
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_validate_write_asks_a_registered_types_checks():
@@ -448,6 +449,7 @@ def test_validate_write_asks_a_registered_types_checks():
     validate({"text": "x", "rbac_context": "b"}, [GrantsLeaf(HOOKED_NOTE_TYPE_URI)])
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @pytest.mark.parametrize("with_view", [True, False], ids=["view", "no-view"])
 @test_context

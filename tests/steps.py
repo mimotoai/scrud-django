@@ -36,8 +36,13 @@ http_step = step_namespace("http")
 
 
 def drf_importable() -> bool:
-    """Whether DRF can be imported (the suite's check for it: tests patch it)."""
-    return find_spec("rest_framework") is not None
+    """Whether DRF can be imported (the suite's check for it: tests patch it).
+    The no-DRF run's blocker (`tests.no_drf.Blocker`) refuses it rather than
+    not finding it."""
+    try:
+        return find_spec("rest_framework") is not None
+    except ModuleNotFoundError:
+        return False
 
 
 #: DRF's multipart content type (its renderer adds the charset).

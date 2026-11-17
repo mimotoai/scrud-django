@@ -4,6 +4,8 @@ API path (`ui_url`). Plain helpers, not steps (`tests/steps.py` holds those)."""
 
 import re
 
+from .settings import NO_DRF
+
 HTML = "text/html"
 
 #: A page's CSRF token, masked anew for every response.
@@ -13,6 +15,10 @@ CSRF_META = re.compile(r'(<meta name="csrf-token" content=")[^"]*(")')
 UI_URLCONF = "tests.mounted_urls"
 
 API_PREFIX = "/api/"
+
+#: The suite's URLconf, the API at the root without the UI app's or the
+#: studio's URLs: ``tests.urls`` (``tests.no_drf_urls`` without DRF).
+API_URLCONF = "tests.no_drf_urls" if NO_DRF else "tests.urls"
 
 
 def ui_url(api_url: str) -> str:

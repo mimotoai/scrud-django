@@ -84,6 +84,14 @@ $ SCRUD_TEST_PG_HOST=localhost uv run pytest
 ```{sourceCode} console
 $ uv run pytest -q --reverse
 ```
+   CI's `test-no-drf` job runs the suite without Django REST framework, as the
+   default install (no `drf` extra) has it: DRF's imports are blocked, and the
+   tests marked `drf` (a module listed in `tests/conftest.py`'s `DRF_MODULES`,
+   or a test with `@pytest.mark.drf`) are skipped. A test that needs DRF must
+   carry that mark:
+```{sourceCode} console
+$ SCRUD_TEST_NO_DRF=1 uv run pytest -q
+```
 6. Commit your changes and push your branch to GitLab:
 ```{sourceCode} console
 $ git add .

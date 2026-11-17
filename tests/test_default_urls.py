@@ -109,6 +109,7 @@ def test_scrud_django_urls_serves_the_semantic_documents_roles_link_to(admin):
         assert document.status_code == 200, (url, document.content)
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @pytest.mark.urls("tests.default_drf_urls")
 @pytest.mark.parametrize(
@@ -151,6 +152,7 @@ def test_the_second_scrud_api_in_a_namespace_fails(admin):
         admin.get("/mine/services/")
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @pytest.mark.urls("tests.drf_types_beside_ninja_urls")
 def test_drf_registrations_beside_the_ninja_urls_are_an_error(admin):
@@ -173,6 +175,7 @@ def test_drf_registrations_beside_the_ninja_urls_are_an_error(admin):
     assert "scrud_django.E011" in {message.id for message in ran}, ran
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @pytest.mark.urls("tests.drf_types_beside_drf_urls")
 def test_drf_registrations_beside_the_drf_urls_are_not_an_error(admin):

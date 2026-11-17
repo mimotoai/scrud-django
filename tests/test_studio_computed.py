@@ -47,7 +47,7 @@ from .test_studio_page import CONFLICT, SLUG, section, setup_branches, store_ite
 from .test_ui_branch_push import make_wip, quoted
 from .test_ui_branch_types import make_branch
 from .test_ui_http import assert_html, grant, html, make_component
-from .ui import ui_url
+from .ui import API_URLCONF, ui_url
 
 JSON = "application/json"
 OT = "http://api.openteams.com/json-ld/"
@@ -1013,7 +1013,7 @@ def test_endpoints_in_status_reverse_correctly(ui_alice_login, settings):
         match = resolve(path.replace("{slug}", SLUG))
         assert match.namespace == "scrud-studio", name
     # Without the studio's URLs (tests.urls), there are none.
-    settings.ROOT_URLCONF = "tests.urls"
+    settings.ROOT_URLCONF = API_URLCONF
     found = status()
     assert found["endpoints"] is None
     conforms("UIBranchStatus", found)

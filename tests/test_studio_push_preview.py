@@ -39,7 +39,7 @@ from .test_ui_http import (
 )
 from .test_ui_layer_conflicts import css_body, wip_body
 from .test_ui_layers import MORE_APP, installed
-from .ui import UI_URLCONF, ui_url
+from .ui import API_URLCONF, UI_URLCONF, ui_url
 
 JSON = "application/json"
 OT = "http://api.openteams.com/json-ld/"
@@ -560,7 +560,7 @@ def test_push_preview_carries_the_studio_endpoints(admin_login, settings):
     Then.http.status_code_is(200)
     assert Http.response.json()["endpoints"] == body["endpoints"]
     # Without the studio's URLs (tests.urls), none.
-    settings.ROOT_URLCONF = "tests.urls"
+    settings.ROOT_URLCONF = API_URLCONF
     body = preview()
     assert body["endpoints"] is None
     assert body["changes"] and body["target"] == "main"

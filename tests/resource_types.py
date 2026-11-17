@@ -6,31 +6,13 @@ from django.core.exceptions import PermissionDenied
 from django.http import Http404
 
 from scrud_django import registration
-from scrud_django.drf.computed import ComputedResourceViewSet
-from scrud_django.drf.permissions import may_read_in_context
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
-from scrud_django.models import Resource
+
+# No DRF here (the suite without DRF registers `ninja_type_specs` in its
+# session setup): the DRF registrations import it when called.
 
 TODO_SUMMARY_TYPE_URI = "tests://TodoSummary"
 TODO_LIST_TYPE_URI = "tests://TodoList"
-
-
-class TodoSummaryViewSet(ComputedResourceViewSet):
-    """The titles of the to-do lists in the context `key` that the requesting
-    user may read: computed, never stored."""
-
-    def compute(self, request, key):
-        titles = []
-        lists = Resource.objects.filter(resource_type__type_uri=TODO_LIST_TYPE_URI)
-        for stored in lists:
-            content = stored.content
-            if content.get("rbac_context", "") != key:
-                continue
-            if may_read_in_context(
-                request, TODO_LIST_TYPE_URI, content, rbac_contexts_of(content)
-            ):
-                titles.append(content["title"])
-        return {"context": key, "titles": sorted(titles)}
 
 
 def static_text(package, name):
@@ -75,6 +57,8 @@ def json_resource_types():
     may be recreated in `conftest.py`, otherwise they're wiped on each clean of the
     database!.
     """
+    from .todo_summaries import TodoSummaryViewSet
+
     return [
         registration.json_resource_type(**PARTNER_PROFILES_TYPE),
         registration.json_resource_type(**TODOS_TYPE),

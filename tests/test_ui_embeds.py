@@ -35,6 +35,7 @@ from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .fixtures import *  # noqa
 from .fixtures import TYPE_URI_TODO_LIST, assign_role, assign_ui_role
+from .settings import NO_DRF
 from .steps import *  # noqa: F403, F401
 from .test_studio_page import setup_branches
 from .test_ui_branch_prefixes import ADMIN, mounted, publish
@@ -179,9 +180,11 @@ def test_embed_renders_resource_with_viewers_rights(
     assert not any("hx-put" in frame for frame in frames(page, ui_of(other)))
     # A computed type is a resource view too (ruling 3).
     assert len(frames(page, ui_url(summary))) == 1
-    # One that is served by a viewset class alone has no UI page: refused.
-    viewset_only = reverse("todo-summaries-detail", args=["project-a"])
-    assert str(embed_for(RequestFactory().get("/x/"))(viewset_only)) == REFUSED
+    # One that is served by a viewset class alone has no UI page: refused
+    # (a DRF viewset's: the suite without DRF has none).
+    if not NO_DRF:
+        viewset_only = reverse("todo-summaries-detail", args=["project-a"])
+        assert str(embed_for(RequestFactory().get("/x/"))(viewset_only)) == REFUSED
     assert "Chores" in page and "Groceries" in page
     assert REFUSED_MESSAGE not in page
     # The owner may PUT: the embedded frame is the edit form, at its URL.

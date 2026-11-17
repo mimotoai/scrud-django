@@ -22,6 +22,7 @@ from scrud_django.utils import http_date_for
 
 from .factories import UserFactory
 from .rbac_defaults import TYPE_URI_PARTNER_PROFILES
+from .settings import NO_DRF
 
 __all__ = [
     'ROOT_PATH',
@@ -118,6 +119,21 @@ def serialize_resource_envelope(resource, front_end="drf"):
 
 def serialize_resource(resource):
     return resource.content
+
+
+def register_test_types():
+    """Register the test types, whichever URLconf the test serves (the
+    front_end fixture's included): with DRF by importing ``tests.urls``,
+    whose registrations store them; without (``SCRUD_TEST_NO_DRF``) from the
+    specs of those ninja serves (`tests.resource_types.ninja_type_specs`).
+    A type already stored is not written again."""
+    if NO_DRF:
+        from .resource_types import ninja_type_specs
+
+        for spec in ninja_type_specs():
+            spec.register()
+    else:
+        reverse("todo-lists-list", urlconf="tests.urls")
 
 
 @pytest.fixture
@@ -273,9 +289,7 @@ def todo_reader_login(db):
 @pytest.fixture
 def todo_list(db):
     """A to-do list in "project-a" with two items, the second one done."""
-    # Importing tests.urls registers the types (whichever URLconf the test
-    # serves, the front_end fixture's included).
-    reverse("todo-lists-list", urlconf="tests.urls")
+    register_test_types()
     return ResourceRegistration.register(
         {
             "title": "Groceries",
@@ -360,9 +374,7 @@ TYPE_URI_TODO = "tests://ToDo"
 @pytest.fixture
 def todo_item(db):
     """A workflow-governed to-do in the default context, "not started"."""
-    # Importing tests.urls registers the types (whichever URLconf the test
-    # serves, the front_end fixture's included).
-    reverse("todos-list", urlconf="tests.urls")
+    register_test_types()
     return ResourceRegistration.register(
         {
             "title": "Buy milk",
@@ -429,9 +441,7 @@ def partner_profile_post_data():
 
 @pytest.fixture
 def partner_profiles(db, partner_profile_post_data):
-    # force registration of resource types (importing tests.urls, whichever
-    # URLconf the test serves, the front_end fixture's included)
-    reverse(RESOURCE_ENDPOINT_LIST_NAME, urlconf="tests.urls")
+    register_test_types()
     return ResourceRegistration.register(
         content=partner_profile_post_data, register_type='partner-profiles'
     )

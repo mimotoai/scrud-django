@@ -246,6 +246,7 @@ def context_defaulted_type(db):
         clear_url_caches()
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_schema_default_context_is_not_stored(context_defaulted_type):
@@ -354,6 +355,7 @@ def partner_profile_writer(*contexts):
     return user
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_the_post_save_check_of_a_create_goes_through_the_permission_class():
@@ -386,6 +388,7 @@ def test_the_post_save_check_of_a_create_goes_through_the_permission_class():
     Then.http.status_code_is(HTTPStatus.CREATED)
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_the_post_save_check_of_an_update_goes_through_the_permission_class():
@@ -415,6 +418,7 @@ def test_the_post_save_check_of_an_update_goes_through_the_permission_class():
 JSON_LD_TYPE = "http://www.w3.org/ns/json-ld#context"
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_the_post_save_check_asks_an_overridden_has_object_permission():

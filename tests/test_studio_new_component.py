@@ -138,6 +138,7 @@ def odd_type():
         ),
         context_func=lambda: json.dumps({"@type": "urn:x:Item"}),
         register_service=False,
+        build_urls=False,
     )
 
 

@@ -8,9 +8,9 @@ from django.urls import include, path
 from scrud_django.ui import UI_NAMESPACE
 from scrud_django.ui.urls import ui_urlpatterns
 
-from . import urls
+from .mounted_urls import api_patterns
 
 urlpatterns = [
-    path("api/", include(urls.urlpatterns)),
+    path("api/", include(api_patterns)),
     path("", include((ui_urlpatterns, UI_NAMESPACE))),
 ]

@@ -166,10 +166,12 @@ a single test, which is the usual way to run one while working:
 ```bash
 uv run pytest tests/test_rest.py::test_resource_get_list
 uv run pytest -q --reverse
+SCRUD_TEST_NO_DRF=1 uv run pytest -q
 ```
 
 `--reverse` (from `tests/conftest.py`) runs the suite in reverse order, as CI
-also does.
+also does. `SCRUD_TEST_NO_DRF=1` runs it without DRF (`tests/no_drf.py` blocks
+its imports, `tests/settings.py::without_drf`), skipping the `drf`-marked tests.
 
 These write files or touch the environment, so they prompt. Run them on the
 files you touched only; `ruff format .` and `ruff check --fix .` over the whole
@@ -220,7 +222,8 @@ The seed prints the list's UI URL (`/todo-lists/<pk>/`) and the self-hosted
 studio's workbench URLs (sign in as `author`/`author`): `/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`.
 
 CI is `.gitlab-ci.yml`: lint, migrations check, docs build, tests with
-coverage on 3.11-3.13 (then again with `--reverse`), the suite on PostgreSQL
+coverage on 3.11-3.13 (then again with `--reverse`), the suite without DRF
+(`test-no-drf`, `SCRUD_TEST_NO_DRF=1`), the suite on PostgreSQL
 14 via `SCRUD_TEST_PG_*` (`test-postgres`) and on MySQL 8.4 and MariaDB 11.4
 via `SCRUD_TEST_MYSQL_*` (`test-mysql`), a package build/README/installed-
 wheel check, and a version check on release merge requests into `main`. Run the lint and test

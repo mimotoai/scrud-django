@@ -1,7 +1,8 @@
 """The ``Http`` steps over ``django.test.Client`` (`tests.steps.PlainClient`),
 which they use where DRF is not installed or a test opts in (the
 ``plain_client`` fixture), on the ninja URLconf; and the ``drf`` marker's
-skipping when DRF cannot be imported (`tests.conftest.mark_drf_modules`)."""
+skipping when DRF cannot be imported (`tests.conftest.mark_drf_modules`),
+and what the suite without DRF may skip (`tests.conftest.skip_kind`)."""
 
 import json
 from copy import copy
@@ -156,6 +157,33 @@ def test_every_drf_module_name_is_a_test_module():
     assert not set(conftest.DRF_MODULES) - tests
 
 
+def test_the_no_drf_run_may_skip_drf_marked_tests_and_the_drf_front_end():
+    """`conftest.skip_kind`: what the suite without DRF may skip for want of
+    it (a skip of anything else whose reason names DRF fails there)."""
+    marked = FakeItem("test_models", pytest.mark.drf.mark)
+    drf_front_end = FakeItem("test_rest")
+    drf_front_end.callspec = SimpleNamespace(params={"front_end": "drf"})
+    ninja_front_end = FakeItem("test_rest")
+    ninja_front_end.callspec = SimpleNamespace(params={"front_end": "ninja"})
+
+    assert conftest.skip_kind(marked) == "drf-marked"
+    assert conftest.skip_kind(drf_front_end) == "front_end drf parameter"
+    assert conftest.skip_kind(ninja_front_end) is None
+    assert conftest.skip_kind(FakeItem("test_models")) is None
+
+
+def test_a_skip_reason_naming_drf_is_told_apart():
+    for reason in (
+        conftest.NEEDS_DRF,
+        "could not import 'rest_framework': blocked: rest_framework",
+        "needs django_filters",
+        "Skipped: drf only",
+    ):
+        assert conftest.NAMES_DRF.search(reason), reason
+    for reason in ("PostgreSQL, MySQL and MariaDB", "needs node", ""):
+        assert not conftest.NAMES_DRF.search(reason), reason
+
+
 # the private factory the steps' client comes from
 
 
@@ -204,6 +232,7 @@ def test_an_unknown_format_is_a_value_error():
         PlainClient().post("/x/", {"a": 1}, format="xml")
 
 
+@pytest.mark.drf
 def test_requests_match_apiclients_in_method_content_type_and_body():
     """The requests of `tests.test_context_smuggling` (and a JSON one) are
     the same for both clients."""

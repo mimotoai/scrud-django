@@ -227,6 +227,7 @@ def test_html_detail_page_and_fragment(todo_list, todo_owner_login):
     assert_not_cached()
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_json_unchanged_and_browsable_api_reachable(todo_list, todo_owner_login):

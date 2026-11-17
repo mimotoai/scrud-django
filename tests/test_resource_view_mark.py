@@ -30,6 +30,7 @@ def test_a_view_marked_without_a_slug_is_refused():
     assert not is_resource_view(mark_route(lambda request: None), "todos")
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 def test_api_url_serves_a_drf_list_a_detail_and_a_computed_detail():
     assert api_url("todo-lists") == "/todo-lists/"
@@ -38,6 +39,7 @@ def test_api_url_serves_a_drf_list_a_detail_and_a_computed_detail():
     assert api_url("summaries", "project-a") == "/summaries/project-a/"
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 def test_a_drf_view_is_a_resource_view_of_its_own_type_only():
     match = resolve(api_url("todo-lists"))

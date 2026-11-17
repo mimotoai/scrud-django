@@ -2922,6 +2922,7 @@ def test_pointer_with_tilde_explained_exactly(ui_alice_login, settings):
         ),
         context_func=lambda: json.dumps({"@type": "urn:x:Tilde"}),
         register_service=False,
+        build_urls=False,
     )
     reverse("todo-lists-list")
     make_branch("alice-wip", "alice")

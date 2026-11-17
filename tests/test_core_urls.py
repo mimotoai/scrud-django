@@ -241,6 +241,7 @@ def test_a_type_route_follows_the_api_serving_the_request():
     )
 
 
+@pytest.mark.drf
 @pytest.mark.urls("tests.drf_and_ninja_urls")
 def test_a_link_from_a_drf_route_stays_on_drf():
     """A request DRF's routes serve (outside any namespace, which DRF's
@@ -283,6 +284,7 @@ def test_a_link_from_a_drf_route_stays_on_drf():
     assert api_route_name("partner-profiles", "list", request=ninja) is None
 
 
+@pytest.mark.drf
 def test_a_registry_of_its_own_loses_no_api_for_later_tests():
     """The `api_routes` tests, first in a fresh process (their URLconfs not
     imported yet), then a parity case whose links follow the serving API

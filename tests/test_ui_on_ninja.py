@@ -62,10 +62,12 @@ JSON = "application/json"
 ADMIN = "/admin/resources/"
 
 
-@pytest.fixture(params=(DRF_UI_URLCONF, NINJA_UI_URLCONF))
+@pytest.fixture(
+    params=(pytest.param(DRF_UI_URLCONF, marks=pytest.mark.drf), NINJA_UI_URLCONF)
+)
 def ui_urlconf(request, settings, db):
-    """The URLconf a test runs on: the DRF routes or the ninja API under
-    ``/api/``, the UI at ``/``. The ninja API's types are stored again (an
+    """The URLconf a test runs on: the DRF routes (``drf``-marked) or the
+    ninja API under ``/api/``, the UI at ``/``. The ninja API's types are stored again (an
     earlier test's rollback may have removed the rows its import stored)."""
     settings.ROOT_URLCONF = request.param
     if request.param == NINJA_UI_URLCONF:
@@ -119,6 +121,7 @@ def path_of(url):
     return urlsplit(url).path
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 def test_the_registry_names_each_front_ends_routes(ui_urlconf):
     """Each front end's routes are found where it named them: DRF's outside
@@ -301,6 +304,7 @@ def test_a_studio_preview_of_an_instance(ui_urlconf, todo_list, todo_owner_login
     assert frame_hrefs(html()) == [expected]
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 def test_the_ui_checks_name_no_type_it_serves(ui_urlconf):
     """W003 and W004 name none of the types the ninja API routes (the test

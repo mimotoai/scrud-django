@@ -68,6 +68,7 @@ def unreachable(execute, sql, params, many, context):
     raise OperationalError("could not connect to server: Connection refused")
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_json_resource_type_returns_todays_paths():
@@ -96,6 +97,7 @@ def test_spec_register_twice_is_idempotent(caplog):
     assert TYPE_URI in services.services
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_spec_register_builds_no_drf_views(monkeypatch):
@@ -359,6 +361,7 @@ def test_json_spec_configuration_is_keyword_only():
         registration.json_resource_type_spec(TYPE_URI, SLUG, "2")
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_ninja_type_specs_share_the_drf_registrations_hooks(caplog):
@@ -522,6 +525,7 @@ def test_register_urls_without_routes_is_a_type_error(db):
         row.register_urls()
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 def test_the_drf_path_still_registers_a_slug_with_a_dot():
     # The slug's shape is ninja's to check (`api()`); a DRF route takes it.
@@ -598,6 +602,7 @@ def test_a_json_spec_refuses_options_that_are_not_type_options_or_compute():
         )
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_the_ui_type_specs_carry_the_ui_hooks(caplog):
