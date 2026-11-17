@@ -151,7 +151,10 @@ def absolute_reverse(name, *, args=(), kwargs=None, request=None, namespace=None
     (``NoReverseMatch`` then: a link always points at the API that served
     the request, never into another): a UI page (resolved in the UI's
     namespace) or a request with no route links to the API that routes the
-    name, a ninja ``api()``'s in a ninja-only project."""
+    name, a ninja ``api()``'s in a ninja-only project. A request resolved
+    outside any namespace counts as DRF's API once DRF's registration noted
+    it (``None``), so an app's own un-namespaced view that is no API gets no
+    fallback either: a name only a ninja API routes raises there."""
     match = getattr(request, "resolver_match", None)
     namespace = getattr(match, "namespace", "") or namespace
     if namespace and ":" not in name:

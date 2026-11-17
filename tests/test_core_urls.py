@@ -3,6 +3,11 @@ under (R5), falling back to the global route, then to the namespaces the
 APIs noted; `api_route_name` and `api_reverse` find a type's API routes by
 their bare names, then in those namespaces (follow-up ``ui-ninja-routes``)."""
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from django.test import RequestFactory
 from django.urls import NoReverseMatch, resolve, reverse
@@ -91,9 +96,17 @@ def test_first_absolute_reverse_refuses_a_bare_name():
 @pytest.fixture
 def api_routes(monkeypatch):
     """A registry of the API routes of its own (`note_api_routes`), so that
-    what a test notes is forgotten after it."""
+    what a test notes is forgotten after it, the process's restored. The
+    test's URLconf is imported first, into the process's registry: its APIs
+    note their routes once, when their module is first imported, and an
+    import inside the test would note them in the test's registry alone,
+    lost for every later test (whose links would then not follow those APIs'
+    namespaces)."""
+    from django.urls import get_resolver
+
     from scrud_django.core import urls
 
+    get_resolver().url_patterns  # noqa: B018 (imports the URLconf)
     monkeypatch.setattr(urls, "_api_routes", {})
     return urls
 
@@ -264,3 +277,42 @@ def test_a_link_from_a_drf_route_stays_on_drf():
     ninja = resolved_request("/ninja/ninja-only-things/")
     assert ninja.resolver_match.namespace == "ninja-beside-drf"
     assert api_route_name("partner-profiles", "list", request=ninja) is None
+
+
+def test_a_registry_of_its_own_loses_no_api_for_later_tests():
+    """The `api_routes` tests, first in a fresh process (their URLconfs not
+    imported yet), then a parity case whose links follow the serving API
+    (each front end's studio links its own, so their ETags differ): the
+    APIs those URLconfs build are noted in the process's registry, not in
+    the tests' own, which would lose them for the parity case."""
+    tests = [
+        "tests/test_core_urls.py::test_the_bare_name_wins_then_each_noted_namespace",
+        "tests/test_core_urls.py::test_a_type_routed_in_a_noted_namespace_only",
+        "tests/test_front_end_parity.py::test_studio_computed_types_answer_alike"
+        "[ui-selectable-branches-mine]",
+    ]
+    # On a database server, a test database of its own: this session's is
+    # open, and a second session creating it would clash.
+    env = dict(os.environ)
+    for engine in ("PG", "MYSQL"):
+        name = os.environ.get(f"SCRUD_TEST_{engine}_NAME", "scrud")
+        env[f"SCRUD_TEST_{engine}_NAME"] = f"{name}_registry_of_its_own"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--create-db",
+            *tests,
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "3 passed" in result.stdout, result.stdout
