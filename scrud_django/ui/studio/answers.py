@@ -26,7 +26,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ImproperlyConfigured
 from django.http import Http404, HttpResponse
 from django.test.client import RequestFactory
-from django.urls import NoReverseMatch, reverse
+from django.urls import NoReverseMatch
 from scrudful.conditional import quote_etag
 
 from scrud_django.core import resources, writes
@@ -34,6 +34,7 @@ from scrud_django.core.bodies import check_body
 from scrud_django.core.errors import error_answer
 from scrud_django.core.json import JSON, json_response
 from scrud_django.core.types import requirement_for
+from scrud_django.core.urls import api_reverse
 from scrud_django.models import ResourceType
 from scrud_django.registration import get_resource_type_for, type_db, write_db
 
@@ -83,9 +84,11 @@ def write(
 ) -> Answer:
     """The answer of the resource route of type `slug` (its list, or with
     `pk` one item) to a `method` request made for the user of `request`:
-    ``POST`` creates (from `body`), ``PUT`` updates item `pk` to `body`
-    with `if_match` (an ETag in quotes, as sent), ``DELETE`` deletes it and
-    ``GET`` reads it. A write runs in one transaction on the write
+    ``POST`` creates (from `body`; with an `if_match`, a conditional create:
+    412 when it matches none of the list's validators, evaluated under the
+    type's lock, `core.writes.create_answer`), ``PUT`` updates item `pk` to
+    `body` with `if_match` (an ETag in quotes, as sent), ``DELETE`` deletes
+    it and ``GET`` reads it. A write runs in one transaction on the write
     database, which any refusal rolls back; the refusal is answered, not
     raised (`Answer.problem`).
 
@@ -213,9 +216,9 @@ def _internal(request, slug, method, pk, body, if_match):
     only precondition."""
     try:
         if pk is None:
-            url = reverse(f"{slug}-list")
+            url = api_reverse(slug, "list")
         else:
-            url = reverse(f"{slug}-detail", args=[pk])
+            url = api_reverse(slug, "detail", args=[pk])
     except NoReverseMatch:
         url = request.path
     extra = {"HTTP_ACCEPT": JSON}

@@ -7,7 +7,7 @@ with no API route it can serve (`check_unrouted_types`,
 
 from django.core import checks
 from django.db import DatabaseError
-from django.urls import NoReverseMatch, get_resolver, reverse
+from django.urls import NoReverseMatch, get_resolver
 
 DRF_ONLY_ID = "scrud_django_ui.W003"
 UNROUTED_ID = "scrud_django_ui.W004"
@@ -123,19 +123,21 @@ def check_unrouted_types(app_configs, **kwargs):
     this process (`scrud_django.core.types.type_slugs`) and stored
     (`stored_slugs`: the UI would be asked to serve it) that has no API
     route the UI app can serve: no route named ``<slug>-list`` nor
-    ``<slug>-detail`` outside a URL namespace, as registration names them.
-    Its pages answer 404, as for a slug the UI does not serve. scrud's ninja
-    ``api()`` routes a type only in its URL namespace (``urls_namespace``),
-    which the UI does not read yet (follow-up ``ui-ninja-routes``). Nothing
-    when the project does not include the UI app."""
+    ``<slug>-detail`` outside a URL namespace, as registration names them,
+    nor in the ``urls_namespace`` of a ninja ``api()`` routing it
+    (`scrud_django.core.urls.api_route_name`). Its pages answer 404, as for
+    a slug the UI does not serve. Nothing when the project does not include
+    the UI app."""
     from scrud_django.core.types import type_slugs
+    from scrud_django.core.urls import api_route_name
 
     if not _ui_included():
         return []
     unrouted = {
         slug
         for slug in type_slugs()
-        if not _reverses(f"{slug}-list") and not _reverses(f"{slug}-detail", "key")
+        if api_route_name(slug, "list") is None
+        and api_route_name(slug, "detail") is None
     }
     found = []
     for slug in sorted(stored_slugs(unrouted)):
@@ -144,27 +146,19 @@ def check_unrouted_types(app_configs, **kwargs):
                 f"The UI app does not serve the type {slug!r} (its pages, "
                 "embeds and prefixes answer 404): it has no API route named "
                 f"{slug + '-list'!r} or {slug + '-detail'!r} outside a URL "
-                "namespace, which is where the UI looks for a type's routes.",
+                "namespace or in a ninja api()'s urls_namespace, which is "
+                "where the UI looks for a type's routes.",
                 hint=(
                     "Route the type with registration (resource_type_urls, "
                     "json_resource_type, computed_resource_type) without a "
-                    "namespace. The routes of scrud's ninja api() are in its "
-                    "urls_namespace: the UI does not serve ninja-routed types "
-                    "yet."
+                    "namespace, or pass its spec to scrud's ninja "
+                    "api(types=...), included without an outer namespace."
                 ),
                 obj=slug,
                 id=UNROUTED_ID,
             )
         )
     return found
-
-
-def _reverses(name, *args) -> bool:
-    try:
-        reverse(name, args=args)
-    except NoReverseMatch:
-        return False
-    return True
 
 
 def check_reserved_slugs(app_configs, **kwargs):

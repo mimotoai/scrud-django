@@ -11,9 +11,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
-from django.urls import NoReverseMatch, reverse
+from django.urls import NoReverseMatch
 
 from scrud_django.core.authz import may_read_in_context
+from scrud_django.core.urls import api_reverse
 from scrud_django.ui.branches import ITEM_KINDS, MAIN
 from scrud_django.ui.branches.effective import Selection, effective_rows
 from scrud_django.ui.branches.model import Branch, branch_of, item_key
@@ -241,7 +242,7 @@ def browse_url(slug: str, root: Branch | None, selection: Selection) -> str | No
     under the prefix of the branch's published `root`, with
     ``?ui-branch=<selection>``, so that the switch is confirmed."""
     try:
-        canonical = reverse(f"{slug}-list")
+        canonical = api_reverse(slug, "list")
     except NoReverseMatch:
         return None
     mount = mount_at(root) if root is not None and root.name != MAIN else None

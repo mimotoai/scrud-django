@@ -80,14 +80,18 @@
   `api()` mark the views they build, `core.types.drf_only_authorization(slug,
   view)`, what of a route's view the core does not ask (`None` when nothing,
   or when the type opts in), and `scrud_django.ui.pages.refusal(slug)`; and
-  the system check `scrud_django_ui.W003`. The UI's types declare it. The
-  ninja `api()` marks its views, but the UI does not serve ninja-routed types
-  yet: it reads a type's routes (`<slug>-list`, `<slug>-detail`) outside any
-  URL namespace, and `api()` routes them in its `urls_namespace` (phase 3C,
-  follow-up `ui-ninja-routes`).
+  the system check `scrud_django_ui.W003`. The UI's types declare it.
+* The UI serves the types a scrud ninja `api()` routes, as it serves DRF's: a
+  registry of where each front end named a type's API routes
+  (`scrud_django.core.urls.note_api_routes`, which registration fills with no
+  namespace and `api()` with its `urls_namespace`; `api_route_name`,
+  `api_reverse`, `api_namespaces`, `api_slugs`) gives the UI its pages,
+  embeds, prefixes, studio links and the API's base in a ninja-only project.
+  `core.urls.absolute_reverse` falls back to those namespaces, so a UI page's
+  `Location` and item hrefs reverse there too.
 * The system checks `scrud_django_ui.W004`, naming each registered type with
   no API route the UI reads (none named `<slug>-list` or `<slug>-detail`
-  outside a URL namespace, as a ninja-only project's), and
+  outside a URL namespace or in a ninja `api()`'s), and
   `scrud_django_ui.W005`, naming each type whose slug is one of the UI app's
   own route segments (`ui-css-files`, `ui-js-files`, and `studio` with the
   studio installed), whose routes shadow its pages.

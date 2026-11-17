@@ -36,6 +36,7 @@ from django.urls import NoReverseMatch, reverse
 
 from scrud_django import registration
 from scrud_django.core.authz import may_read_in_context, resource_contexts
+from scrud_django.core.urls import api_reverse
 from scrud_django.exceptions import UIBranchInvalidError
 from scrud_django.models import Resource
 from scrud_django.rows import unsorted
@@ -244,7 +245,7 @@ def _override(request, kind, key, content, selection, branch) -> dict | None:
     body = item_content(kind, key[0], target, kept, branch)
     if not may_post(request, ITEM_KINDS[kind], body):
         return None
-    return _action("POST", reverse(f"{KIND_SLUGS[kind]}-list"), body)
+    return _action("POST", api_reverse(KIND_SLUGS[kind], "list"), body)
 
 
 def _beneath(request, kind, branch, all_branches) -> dict:
@@ -291,7 +292,7 @@ def _item(request, kind, row, selection, branch, on, conflicts, beneath) -> dict
     item["origin"] = "packaged" if packaged else "own" if own else "inherited"
     item["from"] = None if packaged else source
     item["href"] = (
-        reverse(f"{KIND_SLUGS[kind]}-detail", args=[pk])
+        api_reverse(KIND_SLUGS[kind], "detail", args=[pk])
         if pk is not None and not packaged
         else None
     )
@@ -397,7 +398,7 @@ def _pushes(request, branch) -> list[dict]:
         label = content.get("label")
         found.append(
             {
-                "href": reverse(f"{UI_PUSH_SLUG}-detail", args=[pk]),
+                "href": api_reverse(UI_PUSH_SLUG, "detail", args=[pk]),
                 "source": content.get("source"),
                 "target": content.get("target"),
                 "state": content.get("state"),
@@ -418,7 +419,7 @@ def _versions(request, branch) -> list[dict]:
         resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI,
         content__branch=branch.name,
     )
-    pushes = reverse(f"{UI_PUSH_SLUG}-list")
+    pushes = api_reverse(UI_PUSH_SLUG, "list")
     found = []
     for pk, content in _latest_readable(request, UI_BRANCH_VERSION_TYPE_URI, rows):
         if content.get("branch") != branch.name:
@@ -434,7 +435,7 @@ def _versions(request, branch) -> list[dict]:
         found.append(
             {
                 "number": number,
-                "href": reverse(f"{UI_BRANCH_VERSION_SLUG}-detail", args=[pk]),
+                "href": api_reverse(UI_BRANCH_VERSION_SLUG, "detail", args=[pk]),
                 "restore": (
                     _action("POST", pushes, body)
                     if may_post(request, UI_PUSH_TYPE_URI, body)
@@ -461,11 +462,11 @@ def _actions(request, branch, content, etag, chain, may_write) -> dict:
     if branch.parent is not None and may_write and etag is not None:
         pull = _action(
             "PUT",
-            reverse(f"{UI_BRANCH_SLUG}-detail", args=[branch.pk]),
+            api_reverse(UI_BRANCH_SLUG, "detail", args=[branch.pk]),
             {**content, "pull": True},
             f'"{etag}"',
         )
-    pushes = reverse(f"{UI_PUSH_SLUG}-list")
+    pushes = api_reverse(UI_PUSH_SLUG, "list")
     promote = []
     for target in chain[1:]:
         entry = {"target": target.name}
@@ -530,7 +531,7 @@ def selectable_branches(request, key):
             branch = all_branches[choice.name]
             href = None
             if branch.pk is not None and may_get(request, branch):
-                href = reverse(f"{UI_BRANCH_SLUG}-detail", args=[branch.pk])
+                href = api_reverse(UI_BRANCH_SLUG, "detail", args=[branch.pk])
             found.append(
                 {"name": choice.name, "published": choice.published, "href": href}
             )

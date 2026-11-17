@@ -13,6 +13,7 @@ from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from scrud_django.core.bodies import request_json
 from scrud_django.core.computed import check_authenticated
 from scrud_django.core.errors import error_answer
+from scrud_django.core.urls import api_reverse
 from scrud_django.exceptions import (
     MethodNotAllowedError,
     RequestBodyMediaTypeError,
@@ -438,7 +439,7 @@ def _shown(request, slug, resource_type, params=None) -> "_Shown | HttpResponse"
         return answers.as_response(read, saved_trigger=False)
     return _Shown(
         content=read.content,
-        href=reverse(f"{slug}-detail", args=[instance]),
+        href=api_reverse(slug, "detail", args=[instance]),
         selection=selection,
         mode=mode,
         scope_chain=scope_chain,

@@ -8,6 +8,7 @@ from django.utils.encoding import escape_uri_path
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import SafeString
 
+from scrud_django.core.urls import api_reverse
 from scrud_django.ui.branches import (
     UI_BRANCH_SLUG,
     UI_BRANCH_TYPE_URI,
@@ -86,7 +87,7 @@ def studio_href() -> str | None:
     mount = mount_at(branch)
     if mount is None:
         return None
-    detail = reverse(f"{UI_BRANCH_SLUG}-detail", args=[branch.pk])
+    detail = api_reverse(UI_BRANCH_SLUG, "detail", args=[branch.pk])
     return (
         f"{mount.href(detail)}?{SCOPE_PARAMETER}={STUDIO_SCOPE}"
         f"&{MODE_PARAMETER}={VIEW_MODE}"

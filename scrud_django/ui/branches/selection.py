@@ -26,6 +26,7 @@ from django.utils.crypto import constant_time_compare, salted_hmac
 from scoped_rbac import access
 
 from scrud_django.core.authz import may_read_in_context, resource_contexts
+from scrud_django.core.urls import api_route_name, api_slugs
 from scrud_django.models import Resource
 from scrud_django.ui import UI_NAMESPACE
 from scrud_django.ui.branches import MAIN, UI_BRANCH_TYPE_URI
@@ -81,10 +82,20 @@ class Chosen:
 
 def api_base() -> str:
     """The path the API's type URLs start with (``/api/``): the path of the
-    UI components' list without its slug."""
-    path = reverse("ui-components-list")
-    suffix = UI_COMPONENT_SLUG + "/"
-    return path[: -len(suffix)] if path.endswith(suffix) else path
+    UI components' list without its slug, else (a project whose API does
+    not route the UI's types: a ninja-only one, for now) of the first type
+    whose list the URLconf routes, among those a front end built routes of
+    (`scrud_django.core.urls.api_slugs`), outside any URL namespace or in a
+    ninja ``api()``'s (`scrud_django.core.urls.api_route_name`).
+    ``NoReverseMatch`` when it routes none."""
+    for slug in (UI_COMPONENT_SLUG, *api_slugs()):
+        name = api_route_name(slug, "list")
+        if name is None:
+            continue
+        path = reverse(name)
+        suffix = slug + "/"
+        return path[: -len(suffix)] if path.endswith(suffix) else path
+    raise NoReverseMatch("The URLconf routes no type's list.")
 
 
 def ui_base() -> str:
@@ -108,7 +119,7 @@ def as_path_info(path: str, script: str | None = None) -> str:
 
 def api_base_info() -> str | None:
     """The API's base (`api_base`) as a ``path_info``; ``None`` when the
-    project does not serve the UI's types."""
+    project routes no type's list."""
     try:
         return as_path_info(api_base())
     except NoReverseMatch:

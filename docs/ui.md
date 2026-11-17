@@ -100,11 +100,12 @@ a studio preview of one of its resources is a 404, and the system check
 views the type's API routes resolve to in the URLconf serving the request, and
 serves only views built by registration: a type routed by hand (`as_view(...)`
 named `<slug>-list`, or a registration's view wrapped in a decorator) is
-refused too, since nothing tells what authorizes it. It reads those routes by
-their names (`<slug>-list`, `<slug>-detail`) outside any URL namespace, so it
-does not serve ninja-routed types yet: scrud's ninja `api()` marks the views
-it builds as the core's, but routes them in its `urls_namespace` (phase 3C;
-follow-up `ui-ninja-routes`). The system check `scrud_django_ui.W004` names
+refused too, since nothing tells what authorizes it. It finds those routes by
+their names (`<slug>-list`, `<slug>-detail`) outside any URL namespace, as
+registration names them, or in the `urls_namespace` of a scrud ninja `api()`,
+which notes it (`scrud_django.core.urls.api_route_name`): the UI serves
+ninja-routed types as it serves DRF's (not under a namespace an outer
+`include` adds). The system check `scrud_django_ui.W004` names
 each registered type with no route the UI reads, and `scrud_django_ui.W005`
 each type whose slug is a segment of the UI app's own routes (`ui-css-files`,
 `ui-js-files`, and `studio` with the studio installed), which answer before

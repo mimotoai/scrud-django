@@ -19,12 +19,12 @@ from uuid import uuid4
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.urls import reverse
 from django.utils.timezone import now
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django import collection_type_uri_for
+from scrud_django.core.urls import api_reverse
 from scrud_django.models import Resource
 from scrud_django.registration import (
     ResourceRegistration,
@@ -448,7 +448,7 @@ class Command(BaseCommand):
     def handle(self, *args, reset=False, **options):
         # Importing the URLconf registers the resource types.
         for name in (TODO_LIST_SLUG, UI_COMPONENT_SLUG, UI_STYLESHEET_SLUG):
-            reverse(f"{name}-list")
+            api_reverse(name, "list")
         with transaction.atomic():
             for username, roles in USERS.items():
                 self.seed_user(username, roles)

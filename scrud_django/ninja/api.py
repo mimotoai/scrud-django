@@ -9,6 +9,7 @@ from scoped_rbac.ninja.api import router as scoped_rbac_router
 from scrudful.ninja import ScrudfulRouter
 
 from scrud_django import registration
+from scrud_django.core.urls import note_api_routes
 from scrud_django.ninja import computed, entry, errors, negotiation, routers, services
 from scrud_django.registration import TypeSpec, built_in_type_specs
 
@@ -128,7 +129,11 @@ def api(
     `services.as_drf_api_view_function`). More routers may be added before
     its ``urls`` are read; they get none of this, so each carries its own
     ``auth=`` or scrud's entry checks (``router.add_decorator(entry,
-    mode="view")``, `scrud_django.ninja.entry.entry`)."""
+    mode="view")``, `scrud_django.ninja.entry.entry`).
+
+    Its types' routes are noted in `urls_namespace`
+    (`scrud_django.core.urls.note_api_routes`), so that the UI app finds
+    and serves them (`scrud_django.core.urls.api_route_name`)."""
     if "auth" in ninja_kwargs:
         raise TypeError(
             "scrud_django.ninja.api() takes no auth: scrud resolves the user of "
@@ -226,6 +231,8 @@ def api(
     services.as_drf_api_view_function(
         scrud_api, [services.SERVICES_ROUTE], services.SERVICES_METHODS
     )
-    # Last: the views the URLconf serves are marked as the core's.
+    # Last: the views the URLconf serves are marked as the core's, and the
+    # types' routes noted in the API's namespace (where the UI finds them).
     routers.mark_core_routes(scrud_api, route_slugs)
+    note_api_routes(route_slugs.values(), namespace=urls_namespace)
     return scrud_api

@@ -1,8 +1,9 @@
 """Which API routes the UI app serves pages of, and what the system checks
-say of those it does not: the UI included before the API at the same URLs,
-a type routed only under a URL namespace (scrud's ninja ``api()``), mixed
-marked and hand-built routes, a type stored but not registered in this
-process, and type slugs the UI's own routes shadow."""
+say of those it does not: the UI included before the API at the same URLs
+(DRF's or a ninja ``api()``'s), a type routed only under a ninja ``api()``'s
+URL namespace (served), mixed marked and hand-built routes, a type stored
+but not registered in this process, and type slugs the UI's own routes
+shadow."""
 
 from uuid import uuid4
 
@@ -172,38 +173,52 @@ def test_a_stored_type_routed_by_hand_without_registration_is_named(
 
 
 @pytest.mark.django_db
-def test_a_type_routed_only_in_a_namespace_is_named(settings, monkeypatch):
+def test_a_type_routed_only_in_a_namespace_is_served(settings, monkeypatch):
     """``tests.ninja_ui_urls``: scrud's ninja ``api()`` routes its types in
-    its URL namespace, where the UI does not look for them (follow-up
-    ``ui-ninja-routes``): the UI serves none of them, and W004 says so."""
+    its URL namespace, which it notes (`core.urls.note_api_routes`), and the
+    UI finds them there (follow-up ``ui-ninja-routes``): it serves them, and
+    W003 and W004 name none of them. A type the URLconf does not route
+    (``todo-summaries``, DRF's alone) is still not served, and W004 names
+    it."""
     from django.core import checks
 
     from .front_ends import serve_ninja
 
     settings.ROOT_URLCONF = "tests.ninja_ui_urls"
-    assert reverse("scrud-ninja:partner-profiles-list")
+    list_url = reverse("scrud-ninja:partner-profiles-list")
+    detail_url = reverse("scrud-ninja:partner-profiles-detail", args=["key"])
     # Its types stored again (an earlier test's rollback may have removed
     # the rows the API's import stored).
     serve_ninja()
-    assert pages.route_views("partner-profiles") is None
-    assert pages.served("partner-profiles") is None
-    named = {w.obj: w for w in check_unrouted_types(None)}
-    warning = named["partner-profiles"]
-    assert warning.id == UNROUTED_ID
-    assert "'partner-profiles-list'" in warning.msg
-    assert "'partner-profiles-detail'" in warning.msg
-    assert "outside a URL namespace" in warning.msg
-    assert "ninja api()" in warning.hint
+    views = pages.route_views("partner-profiles")
+    assert views == (resolve(list_url).func, resolve(detail_url).func)
+    assert pages.refusal("partner-profiles") is None
+    served = pages.served("partner-profiles")
+    assert served == "partner-profiles"
+    assert served.resource_type.slug == "partner-profiles"
     # A computed type with a compute= has a detail route only: no list.
-    assert "summaries" in named
+    summary = reverse("scrud-ninja:summaries-detail", args=["key"])
+    assert pages.route_views("summaries") == (resolve(summary).func,)
+    assert pages.served("summaries") == "summaries"
+    named = {w.obj: w for w in check_unrouted_types(None)}
+    assert "partner-profiles" not in named and "summaries" not in named
+    assert "partner-profiles" not in {w.obj for w in check_drf_only_authorization(None)}
+    # A type registered and stored that this URLconf does not route.
+    assert pages.served("todo-summaries") is None
+    warning = named["todo-summaries"]
+    assert warning.id == UNROUTED_ID
+    assert "'todo-summaries-list'" in warning.msg
+    assert "'todo-summaries-detail'" in warning.msg
+    assert "outside a URL namespace or in a ninja api()'s" in warning.msg
+    assert "api(types=...)" in warning.hint
     assert [w for w in checks.run_checks() if w.id == UNROUTED_ID] == list(
         named.values()
     )
-    # Where the DRF routes are, unnamespaced, it is not named.
+    # Where the DRF routes are, unnamespaced, they are not named either.
     settings.ROOT_URLCONF = "tests.mounted_urls"
     named = {w.obj for w in check_unrouted_types(None)}
     assert "partner-profiles" not in named and "todo-lists" not in named
-    assert "summaries" not in named
+    assert "summaries" not in named and "todo-summaries" not in named
     # Nor a type registered in this process but not stored (another test's
     # rolled back): the UI would not be asked to serve it.
     from scrud_django.core import types
@@ -214,6 +229,37 @@ def test_a_type_routed_only_in_a_namespace_is_named(settings, monkeypatch):
     # Nor when the project does not include the UI app.
     settings.ROOT_URLCONF = "tests.urls"
     assert check_unrouted_types(None) == []
+
+
+@pytest.mark.django_db
+@test_context
+def test_the_ui_included_before_a_ninja_api_does_not_shadow_it(
+    settings, todo_list, todo_owner_login
+):
+    """``tests.ninja_ui_first_urls``: the UI's patterns come first at the
+    ninja API's URLs. Deciding whether the UI serves a type resolves its
+    namespaced API routes, which reach the UI's own pattern for it: that
+    does not recurse, and the UI does not serve the type there, so the
+    API's routes answer."""
+    from .front_ends import serve_ninja
+
+    settings.ROOT_URLCONF = "tests.ninja_ui_first_urls"
+    serve_ninja()
+    list_url = reverse("scrud-ninja:todo-lists-list")
+    detail_url = reverse("scrud-ninja:todo-lists-detail", args=[todo_list.pk])
+    assert (list_url, detail_url) == ("/todo-lists/", f"/todo-lists/{todo_list.pk}/")
+    assert pages.served("todo-lists") is None
+    with pages.served_memo():
+        assert pages.served("todo-lists") is None
+    for url in (list_url, detail_url):
+        match = resolve(url)
+        assert match.namespaces == ["scrud-ninja"], url
+        assert match.func is pages.route_views("todo-lists")[url == detail_url]
+    Given.http.force_login(todo_owner_login)
+    When.http.get(detail_url, HTTP_ACCEPT=JSON)
+    Then.http.status_code_is(200)
+    assert Http.response["Content-Type"] == JSON
+    assert "Groceries" in Http.response.content.decode()
 
 
 @pytest.mark.django_db

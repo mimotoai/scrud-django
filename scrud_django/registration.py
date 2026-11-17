@@ -27,6 +27,7 @@ from scrud_django.core.types import (
     note_type_slug,
     register_type_options,
 )
+from scrud_django.core.urls import note_api_routes
 from scrud_django.models import Resource, ResourceType
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_HELD,
@@ -392,8 +393,11 @@ def resource_type_urls(slug, viewset_class):
     `viewset_class`. They need no database: the views read the type by its
     slug (`get_resource_type_for`) on each request. Each view is marked
     with what `viewset_class` authorizes beyond the core's checks
-    (`scrud_django.core.types.mark_route`, `drf_only_authorization_of`)."""
+    (`scrud_django.core.types.mark_route`, `drf_only_authorization_of`).
+    The routes are noted outside any URL namespace
+    (`scrud_django.core.urls.note_api_routes`), where the UI finds them."""
     drf_only = drf_only_authorization_of(viewset_class)
+    note_api_routes([slug], namespace=None)
     names = ResourceType(slug=slug)
     scrud_list = viewset_class.as_view(
         {
@@ -1479,7 +1483,9 @@ def computed_resource_type(
 def computed_urls(slug, viewset_class):
     """The detail route of a computed type: ``<slug>/<str:slug>/``, its view
     marked with what `viewset_class` authorizes beyond the core's checks
-    (`scrud_django.core.types.mark_route`, `drf_only_authorization_of`)."""
+    (`scrud_django.core.types.mark_route`, `drf_only_authorization_of`),
+    noted outside any URL namespace (`scrud_django.core.urls.note_api_routes`)."""
+    note_api_routes([slug], namespace=None)
     detail = mark_route(
         viewset_class.as_view(
             {'get': 'retrieve', 'head': 'retrieve'}, resource_type_name=slug

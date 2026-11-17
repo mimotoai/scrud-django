@@ -1718,27 +1718,6 @@ that it answers a UI notice. A fix maps `RequestDataTooBig` to the 413 in
 fix round 1: recorded only; the review's premise that the API accepts the
 larger body did not hold).
 
-<a id="ui-ninja-routes"></a>
-## ui-ninja-routes: the UI does not serve ninja-routed types
-
-The UI app decides whether it serves a type by the views its API routes
-resolve to (`scrud_django.ui.pages.route_views`), which it finds by
-reversing `<slug>-list` and `<slug>-detail` outside any URL namespace, as
-DRF's registration names them. scrud's ninja `api()` marks the views it
-builds as the core's (`core.types.mark_route`), but names its routes in its
-`urls_namespace` (`"scrud"` by default), so in a ninja-only project the UI
-finds no route for any type: every page is the 404 of a slug it does not
-serve, and every embed of one is refused. The system check
-`scrud_django_ui.W004` names each such type (it said nothing before), and
-the README and `docs/ui.md` say so. The test that would expose it: with
-`tests.ninja_ui_urls` (the test types' ninja API under `/api/`, the UI at
-`/`), `pages.served("partner-profiles")` should be the type, and a signed-in
-GET of `/partner-profiles/` should answer the list's page (it answers 404;
-`tests/test_ui_routes.py::test_a_type_routed_only_in_a_namespace_is_named`
-pins today's behaviour). A fix (phase 3C) finds a type's routes under the
-namespaces of the ninja APIs the project serves too, and maps API hrefs to
-the UI from them (`selection.in_mount`, `embed._resolve`).
-
 <a id="ui-included-before-api"></a>
 ## ui-included-before-api: no check names a URLconf that includes the UI first
 

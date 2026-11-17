@@ -35,7 +35,6 @@ from django.core.paginator import InvalidPage
 from django.db import DatabaseError, transaction
 from django.http import Http404, HttpResponse
 from django.urls import (
-    NoReverseMatch,
     Resolver404,
     get_script_prefix,
     resolve,
@@ -62,6 +61,7 @@ from scrud_django.core.types import (
     requirement_for,
     type_options_for_slug,
 )
+from scrud_django.core.urls import api_route_name
 from scrud_django.exceptions import MethodNotAllowedError, ScrudException
 from scrud_django.registration import get_resource_type_for, type_db, write_db
 from scrud_django.ui import UI_NAMESPACE
@@ -186,17 +186,20 @@ def route_views(slug: str) -> tuple | None:
     detail's (``<slug>-detail``; ``None`` when it has none, or it resolves to
     nothing), or for a computed type, one with a registered ``compute``, its
     detail's; ``None`` when the type has no list route (no computed detail
-    route), which the API does not serve."""
+    route), which the API does not serve. Each route is found by its name
+    outside any URL namespace or in a ninja ``api()``'s
+    (`scrud_django.core.urls.api_route_name`); its view's mark says who
+    built it (`refusal`)."""
     names = ("detail",) if is_computed(slug) else ("list", "detail")
     views = []
     for kind in names:
-        try:
-            url = reverse(f"{slug}-{kind}", args=["key"] if kind == "detail" else ())
-        except NoReverseMatch:
+        name = api_route_name(slug, kind)
+        if name is None:
             if kind == names[0]:
                 return None
             views.append(None)
             continue
+        url = reverse(name, args=["key"] if kind == "detail" else ())
         views.append(_resolved_view(url))
     return tuple(views)
 

@@ -65,10 +65,10 @@ from django.urls import (
     Resolver404,
     get_script_prefix,
     resolve,
-    reverse,
 )
 from markupsafe import Markup
 
+from scrud_django.core.urls import api_namespaces, api_reverse
 from scrud_django.ui import UI_NAMESPACE
 from scrud_django.ui.branches.effective import BRANCH_HEADER, active_selection
 from scrud_django.ui.branches.selection import (
@@ -149,20 +149,21 @@ def component_globals(request) -> dict:
 def api_url(slug, key=None) -> str:
     """The API path of the list of the registered resource type `slug` (its
     route ``<slug>-list``), or of its detail for `key` (``<slug>-detail``;
-    a computed type has only that one), as `reverse` gives it: under the
-    API's base, never a published branch's prefix (`embed` maps an API path
-    into the page's prefix). `ValueError` (or `NoReverseMatch`) for a `slug`
-    that is not a string, that has no such route, or whose route is not a
-    resource view of the type `slug`, so that a component calling it fails
-    and falls back."""
+    a computed type has only that one), outside any URL namespace or in a
+    ninja ``api()``'s (`scrud_django.core.urls.api_reverse`), as `reverse`
+    gives it: under the API's base, never a published branch's prefix
+    (`embed` maps an API path into the page's prefix). `ValueError` (or
+    `NoReverseMatch`) for a `slug` that is not a string, that has no such
+    route, or whose route is not a resource view of the type `slug`, so
+    that a component calling it fails and falls back."""
     from scrud_django.ui.branches.middleware import is_resource_view
 
     if not isinstance(slug, str) or not slug:
         raise ValueError(f"api_url: {slug!r} is not a type's slug")
     if key is None:
-        path = reverse(f"{slug}-list")
+        path = api_reverse(slug, "list")
     else:
-        path = reverse(f"{slug}-detail", args=[key])
+        path = api_reverse(slug, "detail", args=[key])
     script = get_script_prefix()
     if not path.startswith(script):
         raise ValueError(f"api_url: {path!r} is not under {script!r}")
@@ -278,9 +279,10 @@ def _resolve(path) -> _Target | None:
     be routed: a path under a published branch's prefix to the UI's page
     the prefix serves it with (`find_mount`), the UI's list and detail
     pages (`UI_NAMESPACE`) and the API's of a registered type
-    (``<slug>-list``, ``<slug>-detail``) as they are. ``None`` for any other
-    path, a type the UI does not serve, and a computed type's list path
-    (it has none)."""
+    (``<slug>-list``, ``<slug>-detail``, outside any URL namespace or in a
+    ninja ``api()``'s: `scrud_django.core.urls.api_namespaces`) as they
+    are. ``None`` for any other path, a type the UI does not serve, and a
+    computed type's list path (it has none)."""
     from scrud_django import ui
     from scrud_django.ui import pages
     from scrud_django.ui.branches.middleware import find_mount
@@ -303,10 +305,10 @@ def _resolve(path) -> _Target | None:
         slug, pk = match.kwargs["slug"], match.kwargs.get("pk")
     elif mount is not None:
         return None  # a prefix serves the UI's pages only
-    else:
+    elif not match.namespaces or match.namespace in api_namespaces():
         name = match.url_name or ""
         for suffix in ("-list", "-detail"):
-            if name.endswith(suffix) and not match.namespaces:
+            if name.endswith(suffix):
                 slug = name[: -len(suffix)]
                 # The detail's one kwarg is the resource's key (the API's
                 # lookup: ``slug`` for DRF's routes, ``pk`` for others).
@@ -327,8 +329,8 @@ def _resolve(path) -> _Target | None:
 
 def _api_path(slug, pk) -> str:
     if pk is None:
-        return reverse(f"{slug}-list")
-    return reverse(f"{slug}-detail", args=[pk])
+        return api_reverse(slug, "list")
+    return api_reverse(slug, "detail", args=[pk])
 
 
 def _url_of(request, target, mount) -> str:
