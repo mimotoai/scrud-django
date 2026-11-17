@@ -7,7 +7,9 @@ functions.
 
 A write's ``prepare_write`` checks and completes its body before the
 type's JSON Schema validates it, and notes what the hooks after it need
-(`UIWrite`, on the request: `write_state`): the item's branch, whether it
+(`UIWrite`, in the write's `hook_state`: `write_state`), which the core
+clears before each ``prepare_write`` and once the save is over: the
+item's branch, whether it
 keeps its override (``rebase``), pulls (a branch's ``pull``) or applies (a
 push moved into ``applied``). ``around_save`` stores the virtual ``main``
 first, in the save's transaction (`ensure_main`); ``after_write`` resolves
@@ -31,6 +33,7 @@ from scoped_rbac.policy import Permission
 
 from scrud_django.core.authz import content_of, may_act_in_context
 from scrud_django.core.types import TypeOptions
+from scrud_django.core.writes import hook_state
 from scrud_django.exceptions import (
     JsonValidationError,
     UIBranchContextError,
@@ -122,22 +125,22 @@ class UIWrite:
     applying: bool = False
 
 
-# The request attribute holding the `UIWrite` of its write.
-STATE_ATTR = "_scrud_ui_write"
+# The key of the `UIWrite` in the write's `hook_state`.
+STATE_KEY = "ui"
 
 
 def _begin(request) -> UIWrite:
-    """A new `UIWrite` for the write `request` makes, replacing any earlier
-    one's."""
+    """A new `UIWrite` for the write `request` makes, in its `hook_state`
+    (which the core cleared before this ``prepare_write``)."""
     state = UIWrite()
-    setattr(request, STATE_ATTR, state)
+    hook_state(request)[STATE_KEY] = state
     return state
 
 
 def write_state(request) -> UIWrite:
-    """The `UIWrite` the last ``prepare_write`` on `request` left; an empty
-    one when none ran."""
-    state = getattr(request, STATE_ATTR, None)
+    """The `UIWrite` the ``prepare_write`` of the write `request` makes left
+    (`hook_state`); an empty one when none ran for it."""
+    state = hook_state(request).get(STATE_KEY)
     return state if isinstance(state, UIWrite) else UIWrite()
 
 
@@ -156,13 +159,16 @@ def other_resources(resource_type, using, instance=None):
 # Items (``ITEM_KINDS``): components, stylesheets, CSS and JS.
 
 
-def prepare_item(request, resource_type, body, *, instance, using):
+def check_item(request, resource_type, body, *, instance, using):
     """Refuse (a ``ScrudException``) `body`, the body of a write of a UI
     item (a type in ``ITEM_KINDS``; `instance` is the resource an update
     replaces), when its branch fields are refused, and complete them;
-    return it. It runs before the type's JSON Schema validates the body,
-    so it must accept a body of any shape: what it cannot check (a value
-    of the wrong type) it leaves to the schema, which refuses it (400).
+    return the item's branch (`validate_branch`; ``None`` for a body the
+    schema refuses), recorded in a new `UIWrite` with whether the write
+    rebases. Each item's ``prepare_write`` runs it first. It runs before
+    the type's JSON Schema validates the body, so it must accept a body of
+    any shape: what it cannot check (a value of the wrong type) it leaves
+    to the schema, which refuses it (400).
 
     It first checks and completes the item's branch fields
     (`validate_branch`). `body` is changed in place: what this sets in it
@@ -178,20 +184,19 @@ def prepare_item(request, resource_type, body, *, instance, using):
     its ``base`` becomes the parent's current item's (`base_of`)."""
     state = _begin(request)
     kind = kind_of(resource_type.type_uri)
-    if kind is not None and isinstance(body, dict):
-        state.item_branch = validate_branch(
-            request, resource_type, kind, body, instance, using
-        )
-        if not may_use_name(kind, body) and not keeps_key(
-            kind, body, instance, state.item_branch
-        ):
-            raise UILayerNameReservedError(body["name"])
-        state.rebased = validate_rebase(
-            resource_type, body, instance, state.item_branch
-        )
-        if state.rebased:
-            body["base"] = base_of(resource_type, kind, body, state.item_branch, using)
-    return body
+    if kind is None or not isinstance(body, dict):
+        return None
+    state.item_branch = validate_branch(
+        request, resource_type, kind, body, instance, using
+    )
+    if not may_use_name(kind, body) and not keeps_key(
+        kind, body, instance, state.item_branch
+    ):
+        raise UILayerNameReservedError(body["name"])
+    state.rebased = validate_rebase(resource_type, body, instance, state.item_branch)
+    if state.rebased:
+        body["base"] = base_of(resource_type, kind, body, state.item_branch, using)
+    return state.item_branch
 
 
 def validate_branch(request, resource_type, kind, content, instance, using):
@@ -357,12 +362,11 @@ def same_item(others, kind, content, branch):
     return None
 
 
-def _same_named(request, resource_type, kind, body, instance, using):
-    """Another stored item of `kind` that is the item `body` on its branch
-    (`same_item`), or ``None``; ``None`` too for a body without a name or
-    branch."""
+def _same_named(resource_type, kind, body, branch, instance, using):
+    """Another stored item of `kind` that is the item `body` on `branch`
+    (`same_item`), or ``None``; ``None`` too for a body without a name, or
+    no branch."""
     name = body.get("name")
-    branch = write_state(request).item_branch
     if name is None or branch is None:
         return None
     return same_item(
@@ -374,15 +378,15 @@ def _same_named(request, resource_type, kind, body, instance, using):
 
 
 def prepare_component(request, resource_type, body, *, instance, using):
-    """A UI component's `prepare_item`; then its ``engine``, ``mode`` and
+    """A UI component's `check_item`; then its ``engine``, ``mode`` and
     ``template`` are required (but on a deletion marker), its name is
     unique on its branch (`UIComponentNameTakenError`), and its template
     compiles (`UITemplateInvalidError`)."""
-    body = prepare_item(request, resource_type, body, instance=instance, using=using)
+    branch = check_item(request, resource_type, body, instance=instance, using=using)
     if not isinstance(body, dict):
         return body
     require_unless_deleted(body, ("engine", "mode", "template"))
-    if _same_named(request, resource_type, "component", body, instance, using):
+    if _same_named(resource_type, "component", body, branch, instance, using):
         raise UIComponentNameTakenError(body["name"])
     if "template" in body:
         try:
@@ -393,16 +397,16 @@ def prepare_component(request, resource_type, body, *, instance, using):
 
 
 def prepare_stylesheet(request, resource_type, body, *, instance, using):
-    """A UI stylesheet's `prepare_item`; then its ``rules`` are required
+    """A UI stylesheet's `check_item`; then its ``rules`` are required
     (but on a deletion marker), each rule's selector parses
     (`validate_selectors`), and its name is unique on its branch for its
     ``applies_to`` (`UIStylesheetNameTakenError`)."""
-    body = prepare_item(request, resource_type, body, instance=instance, using=using)
+    branch = check_item(request, resource_type, body, instance=instance, using=using)
     if not isinstance(body, dict):
         return body
     require_unless_deleted(body, ("rules",))
     validate_selectors(body)
-    if _same_named(request, resource_type, "stylesheet", body, instance, using):
+    if _same_named(resource_type, "stylesheet", body, branch, instance, using):
         raise UIStylesheetNameTakenError(body["name"], body["applies_to"])
     return body
 
@@ -435,18 +439,18 @@ def _prepare_text_item(
     invalid_error,
     name_taken_error,
 ):
-    """For the CSS and JS items: `prepare_item`; then the text
+    """For the CSS and JS items: `check_item`; then the text
     (`text_field`) is required unless the item is a deletion marker, may
     not contain `closing_tag` (any case; `invalid_error`), and the name is
     unique on the branch (`name_taken_error`)."""
-    body = prepare_item(request, resource_type, body, instance=instance, using=using)
+    branch = check_item(request, resource_type, body, instance=instance, using=using)
     if not isinstance(body, dict):
         return body
     require_unless_deleted(body, (text_field,))
     text = body.get(text_field)
     if isinstance(text, str) and closing_tag in text.lower():
         raise invalid_error()
-    if _same_named(request, resource_type, text_field, body, instance, using):
+    if _same_named(resource_type, text_field, body, branch, instance, using):
         raise name_taken_error(body["name"])
     return body
 

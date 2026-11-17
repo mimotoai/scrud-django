@@ -751,6 +751,20 @@ class RequestBodyNulError(ScrudException):
         self.title = "NUL character in request body"
 
 
+class MethodNotAllowedError(ScrudException):
+    """A write by a method its type does not serve (``TypeOptions.methods``,
+    as `scrud_django.core.writes` refuses it): 405, its detail DRF's
+    ``MethodNotAllowed``'s."""
+
+    status_code = 405
+    default_detail = "Method not allowed."
+    default_code = "method_not_allowed"
+
+    def __init__(self, method):
+        super().__init__(f'Method "{method}" not allowed.')
+        self.method = method
+
+
 class RequestBodyNotAnObjectError(ScrudException):
     """A POST or PUT body that is not a JSON object (a list, a string, a
     number): a resource is one. Its body is the 400 the DRF routes answer

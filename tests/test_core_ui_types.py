@@ -8,6 +8,7 @@ from django.db import transaction
 from django.test import RequestFactory
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
+from scoped_rbac import access
 
 from scrud_django.core import writes
 from scrud_django.core.requirements import requirement_leaves
@@ -20,6 +21,7 @@ from scrud_django.core.types import (
     type_options_for_slug,
 )
 from scrud_django.exceptions import (
+    MethodNotAllowedError,
     UIBranchInUseError,
     UIBranchInvalidError,
     UIComponentNameTakenError,
@@ -38,12 +40,25 @@ from scrud_django.ui.branches import (
     UI_PUSH_SLUG,
 )
 from scrud_django.ui.branches.model import MAIN_BRANCH, applies_to
-from scrud_django.ui.types import UI_COMPONENT_SLUG, UI_STYLESHEET_SLUG
+from scrud_django.ui.types import (
+    UI_COMPONENT_SLUG,
+    UI_COMPONENT_TYPE_URI,
+    UI_STYLESHEET_SLUG,
+)
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
-from .test_ui_branch_push import created, make_wip, stored_branch, wip_overrides_row
-from .test_ui_branch_types import component, stylesheet
+from .test_ui_branch_pull import conflicted
+from .test_ui_branch_push import (
+    WIP,
+    created,
+    make_wip,
+    own_rows,
+    stored_branch,
+    wip_overrides_row,
+)
+from .test_ui_branch_types import component, make_branch, stylesheet
+from .test_ui_branch_versions import versions_of
 
 WRITTEN_SLUGS = (
     UI_COMPONENT_SLUG,
@@ -69,11 +84,13 @@ def request_by(method, user):
     return request
 
 
-def core_create(user, slug, body):
-    """`writes.create` of `body` as `slug` by `user`, then its answer
-    (`writes.answered_content`), in one transaction; returns both."""
+def core_create(user, slug, body, *, request=None):
+    """`writes.create` of `body` as `slug` by `user` (or on `request`), then
+    its answer (`writes.answered_content`), in one transaction; returns
+    both."""
     resource_type = rtype(slug)
-    request = request_by("post", user)
+    if request is None:
+        request = request_by("post", user)
     using = write_db()
     with transaction.atomic(using=using):
         saved = writes.create(
@@ -341,3 +358,206 @@ def test_type_options_refuse_a_write_hook_that_is_not_callable():
     with pytest.raises(TypeError, match="methods"):
         TypeOptions(methods="GET")
     assert TypeOptions(methods=["get", "Head"]).methods == frozenset({"GET", "HEAD"})
+
+
+def push_body(**fields):
+    return {
+        "source": "wip",
+        "target": "main",
+        "restore": None,
+        "state": "applied",
+        "rbac_context": "",
+        **fields,
+    }
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_create_alone_applies_a_push(admin_login):
+    """The push is applied by the save (``after_write`` in `save_checked`),
+    not by the caller's `answered_content`."""
+    wip_overrides_row(admin_login)
+    main_versions = versions_of("main")
+    resource_type = rtype(UI_PUSH_SLUG)
+    using = write_db()
+    with transaction.atomic(using=using):
+        saved = writes.create(
+            request_by("post", admin_login),
+            resource_type,
+            push_body(),
+            requirement=requirement_for(resource_type),
+            using=using,
+        )
+    assert [row["template"] for row in own_rows(UI_COMPONENT_TYPE_URI, "main")] == [
+        "<i>wip</i>"
+    ]
+    assert own_rows(UI_COMPONENT_TYPE_URI, "wip") == []
+    assert versions_of("main") == [*main_versions, main_versions[-1] + 1]
+    # What create returns is the push as stored, with its result.
+    assert saved.content["result"] == {"version": versions_of("main")[-1]}
+    assert Resource.objects.get(pk=saved.pk).content == saved.content
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_update_alone_records_a_pulled_version(admin_login):
+    make_wip(admin_login)
+    before = versions_of("wip")
+    resource_type = rtype(UI_BRANCH_SLUG)
+    using = write_db()
+    with transaction.atomic(using=using):
+        writes.update(
+            request_by("put", admin_login),
+            resource_type,
+            stored_branch("wip"),
+            {"name": "wip", "rbac_context": "alice", "parent": "main", "pull": True},
+            requirement=requirement_for(resource_type),
+            using=using,
+        )
+    assert len(versions_of("wip")) == len(before) + 1
+
+
+def a_version():
+    return Resource.objects.filter(
+        resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI
+    ).first()
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_create_of_a_version_is_405(admin_login):
+    make_wip(admin_login)  # records main's first version
+    body = dict(a_version().content)
+    before = versions()
+    with pytest.raises(MethodNotAllowedError) as refused:
+        core_create(admin_login, UI_BRANCH_VERSION_SLUG, body)
+    assert refused.value.status_code == 405
+    assert str(refused.value.detail) == 'Method "POST" not allowed.'
+    assert versions() == before
+    When.http.post(reverse(f"{UI_BRANCH_VERSION_SLUG}-list"), data=body, format="json")
+    Then.http.status_code_is(405)
+    assert Http.response.json()["code"] == refused.value.detail.code
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_create_of_a_version_asks_the_request_check_first(
+    admin_login, login_no_roles
+):
+    """As DRF answers 405 once ``initial()`` passed: a requester the request
+    check refuses gets its 403."""
+    make_wip(admin_login)
+    with pytest.raises(access.AccessDenied):
+        core_create(login_no_roles, UI_BRANCH_VERSION_SLUG, dict(a_version().content))
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_update_of_a_version_is_405(admin_login):
+    make_wip(admin_login)
+    version = a_version()
+    with pytest.raises(MethodNotAllowedError) as refused:
+        core_update(admin_login, UI_BRANCH_VERSION_SLUG, version, dict(version.content))
+    assert str(refused.value.detail) == 'Method "PUT" not allowed.'
+    assert Resource.objects.get(pk=version.pk).etag == version.etag
+    When.http.put(
+        reverse(f"{UI_BRANCH_VERSION_SLUG}-detail", args=[version.pk]),
+        data=version.content,
+        format="json",
+        HTTP_IF_MATCH=f'"{version.etag}"',
+    )
+    Then.http.status_code_is(405)
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_destroy_of_a_version_is_405(admin_login):
+    make_wip(admin_login)
+    version = a_version()
+    with pytest.raises(MethodNotAllowedError) as refused:
+        core_destroy(admin_login, UI_BRANCH_VERSION_SLUG, version)
+    assert str(refused.value.detail) == 'Method "DELETE" not allowed.'
+    assert Resource.objects.filter(pk=version.pk).exists()
+    assert drf_delete(admin_login, UI_BRANCH_VERSION_SLUG, version) == 405
+
+
+@pytest.mark.django_db
+@test_context
+def test_successive_core_writes_on_one_request_each_use_their_own_state(
+    admin_login,
+):
+    """The hook state of a write is its own: cleared before its
+    ``prepare_write``, consumed by its save. A write on the stored ``wip``
+    then one on the virtual ``main``, on one request object: the second
+    stores ``main`` (its own ``around_save`` state), and none is left."""
+    make_branch("wip", "alice")
+    assert MAIN not in {
+        row.content["name"]
+        for row in Resource.objects.filter(resource_type__type_uri=UI_BRANCH_TYPE_URI)
+    }
+    request = request_by("post", admin_login)
+    on_wip, _ = core_create(
+        admin_login, UI_COMPONENT_SLUG, component(**WIP), request=request
+    )
+    assert on_wip.content["branch"] == "wip"
+    assert writes.hook_state(request) == {}
+    assert MAIN not in {
+        row.content["name"]
+        for row in Resource.objects.filter(resource_type__type_uri=UI_BRANCH_TYPE_URI)
+    }
+    on_main, _ = core_create(
+        admin_login, UI_COMPONENT_SLUG, component(), request=request
+    )
+    assert on_main.content["branch"] == MAIN
+    assert stored_branch(MAIN).content["name"] == MAIN
+    assert writes.hook_state(request) == {}
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_rebase_resolves_the_conflict(admin_login):
+    _first, current, override = conflicted(admin_login)
+    assert [c["key"] for c in stored_branch("wip").content["conflicts"]] == [["row"]]
+    saved, _ = core_update(
+        admin_login,
+        UI_COMPONENT_SLUG,
+        override,
+        component(name="row", template="<i>kept</i>", rebase=True, **WIP),
+    )
+    assert "rebase" not in saved.content
+    assert saved.content["base"] == current
+    assert stored_branch("wip").content["conflicts"] == []
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_destroy_of_an_override_resolves_the_conflict(admin_login):
+    _first, _current, override = conflicted(admin_login)
+    assert [c["key"] for c in stored_branch("wip").content["conflicts"]] == [["row"]]
+    core_destroy(admin_login, UI_COMPONENT_SLUG, override)
+    assert not Resource.objects.filter(pk=override.pk).exists()
+    assert stored_branch("wip").content["conflicts"] == []
+
+
+@pytest.mark.django_db
+@test_context
+def test_drf_refuses_a_prepare_write_that_returns_another_body(
+    admin_login, monkeypatch
+):
+    """The DRF views save ``request.data`` itself: a ``prepare_write`` that
+    returns another body would have it checked, and this one saved."""
+    from scrud_django.ui.views import UIComponentViewSet
+
+    rtype(UI_COMPONENT_SLUG)
+    monkeypatch.setattr(
+        UIComponentViewSet,
+        "prepare_write",
+        staticmethod(lambda request, resource_type, body, **kwargs: dict(body)),
+    )
+    before = count(UI_COMPONENT_TYPE_URI)
+    Given.http.force_authenticate(admin_login)
+    with pytest.raises(TypeError, match="request.data itself"):
+        When.http.post(
+            reverse(f"{UI_COMPONENT_SLUG}-list"), data=component(), format="json"
+        )
+    assert count(UI_COMPONENT_TYPE_URI) == before

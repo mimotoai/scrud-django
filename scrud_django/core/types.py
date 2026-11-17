@@ -58,9 +58,13 @@ class Compute(Protocol):
 
 
 class PrepareWrite(Protocol):
-    """A write's body as it is validated and saved: given the body (a copy
-    the core made), it returns it, completed; a ``ScrudException`` (or an
-    ``access.AccessDenied``) refuses the write."""
+    """A write's body as it is validated and saved: given the body, it
+    returns it, completed; a ``ScrudException`` (or an
+    ``access.AccessDenied``) refuses the write. The core gives it a copy of
+    the body; the DRF views give it ``request.data`` itself, which they then
+    validate and save: a hook must change the body it is given in place and
+    return that very object (the DRF views refuse any other with
+    ``TypeError``)."""
 
     def __call__(
         self,
@@ -89,7 +93,8 @@ class AroundSave(Protocol):
 
 
 class AfterWrite(Protocol):
-    """What follows a saved write in its transaction: a mapping it returns
+    """What follows a saved write in its transaction (`save_checked`), given
+    the resource the save wrote (which it may change): a mapping it returns
     is the write's answered content (``None``: the saved content)."""
 
     def __call__(
@@ -148,14 +153,17 @@ class TypeOptions:
     - ``around_save``: ``(request, resource_type, save, *, instance, using)
       -> Resource``, the save wrapped, inside `save_checked`'s transaction;
     - ``after_write``: ``(request, resource_type, saved, *, created, using)
-      -> Mapping | None``, run by `answered_content` in the write's
-      transaction once the saved resource passed its post-save check: a
-      mapping returned is the content answered;
+      -> Mapping | None``, run by `save_checked` in the save's transaction
+      once the saved resource passed its post-save check: a mapping
+      returned is the content answered (`answered_content`);
     - ``before_destroy`` and ``after_destroy``: ``(request, resource_type,
       instance, *, using) -> None``, run by `destroy` before the delete (a
       refusal raises) and after it;
     - ``methods``: the HTTP methods the type's routes serve, ``None`` for
-      all (`scrud_django.core.resources.served_methods`)."""
+      all (`scrud_django.core.resources.served_methods`); `create`,
+      `update` and `destroy` refuse a write by another (405).
+
+    The hooks of one write share `scrud_django.core.writes.hook_state`."""
 
     checks: tuple[Check, ...] = ()
     object_checks: tuple[ObjectCheck, ...] = ()

@@ -5,7 +5,6 @@ versions, and of UI pushes: their write behaviour is their hooks
 import hashlib
 from collections.abc import Mapping
 
-from django.db import transaction
 from scrudful.rest_framework import scrudful_viewset
 
 from scrud_django.permissions import may_read_in_context, resource_contexts
@@ -98,9 +97,10 @@ class UIBranchVersionViewSet(ResourceViewSet):
 class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
     """A push writes its source branch's overrides into its target branch
     (`apply_push`), or restores version ``restore`` of its target
-    (`apply_restore`), in the transaction of the write that moves it into
-    ``applied`` (a create in ``applied`` included); its ``result`` is then
-    the target's new version (`scrud_django.ui.hooks.after_push_write`). A
+    (`apply_restore`), in the save's transaction of the write that moves it
+    into ``applied`` (a create in ``applied`` included); its ``result`` is
+    then the target's new version (`scrud_django.ui.hooks.after_push_write`,
+    run by the core's ``save_checked``). A
     refused push writes nothing, the push included. Workflow policies on
     the type gate the move as on any resource."""
 
@@ -108,15 +108,3 @@ class UIPushViewSet(UIContentValidationMixin, ResourceViewSet):
     # An applied push is a record: it accepts neither a PUT nor a DELETE, so
     # its HTML page is a view (no form, no Delete button).
     is_record = staticmethod(hooks.applied_content)
-
-    def create_resource(self, request):
-        """Create the push and, created in ``applied``, apply it, in one
-        transaction (a POST runs in none of its own)."""
-        with transaction.atomic(using=self.write_database()):
-            return super().create_resource(request)
-
-    def update(self, request, slug: str):
-        """Update the push and, moved into ``applied``, apply it, in the
-        request's transaction."""
-        with transaction.atomic(using=self.write_database()):
-            return super().update(request, slug)

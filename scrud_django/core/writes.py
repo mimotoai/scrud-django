@@ -18,11 +18,15 @@ which body was validated. Access errors (`scoped_rbac.access.AccessError`)
 are raised for the front end to answer as it answers them.
 
 They run the type's write hooks (`scrud_django.core.types.TypeOptions`):
-`create` and `update` its ``prepare_write`` on the body, `save_checked`
-its ``around_save`` around the save, `destroy` its ``before_destroy`` and
-``after_destroy``; and `answered_content`, which a front end calls once
-`create` or `update` returned, inside the same transaction, its
-``after_write``.
+`create` and `update` its ``prepare_write`` on the body (`prepared_body`),
+`save_checked` its ``around_save`` around the save and its
+``after_write`` once the saved resource passed its check, in the save's
+transaction, `destroy` its ``before_destroy`` and ``after_destroy``. The
+hooks of one write share `hook_state`, which the core clears before the
+``prepare_write`` and once the save is over. A front end answers a
+`create` or `update` with `answered_content`. A write by a method the
+type does not serve (``TypeOptions.methods``) is refused
+(`MethodNotAllowedError`, 405) once the request check passed.
 """
 
 import copy
@@ -66,6 +70,7 @@ from scrud_django.core.workflow import (
 from scrud_django.exceptions import (
     JsonSchemaInvalidError,
     JsonValidationError,
+    MethodNotAllowedError,
     RequestBodyNotAnObjectError,
     ResourceInUseError,
 )
@@ -240,6 +245,68 @@ def write_hooks(resource_type) -> TypeOptions:
     return type_options(resource_type.type_uri)
 
 
+# The request attribute holding the state the write hooks of one write
+# share (`hook_state`).
+HOOK_STATE_ATTR = "_scrud_write_hook_state"
+# The attribute of a saved resource holding what its type's ``after_write``
+# answered (`written_answer`).
+ANSWER_ATTR = "_scrud_written_answer"
+
+
+def hook_state(request) -> dict:
+    """The state the write hooks of the write `request` makes share (a
+    ``dict``, keyed as the hooks choose): the core clears it before the
+    type's ``prepare_write`` (`prepared_body`) and once the save is over
+    (`save_checked`, however it ends), so one ``prepare_write`` covers at
+    most one save; a save with no ``prepare_write`` before it finds it
+    empty. Its hooks must be given the same `request` object."""
+    state = getattr(request, HOOK_STATE_ATTR, None)
+    if not isinstance(state, dict):
+        state = {}
+        setattr(request, HOOK_STATE_ATTR, state)
+    return state
+
+
+def _clear_hook_state(request) -> None:
+    setattr(request, HOOK_STATE_ATTR, None)
+
+
+def prepared_body(
+    request,
+    resource_type,
+    body,
+    *,
+    instance: Resource | None,
+    using: str,
+    prepare_write: Callable | None,
+):
+    """`body` as `prepare_write` (the type's ``prepare_write`` hook, or
+    ``None``: `body` itself) returns it for the write `request` makes over
+    `instance` (``None`` for a create) on `using`, the write's
+    `hook_state` cleared first. `create` and `update` give it a copy of the
+    body; the DRF views give it ``request.data`` itself."""
+    _clear_hook_state(request)
+    if prepare_write is None:
+        return body
+    return prepare_write(request, resource_type, body, instance=instance, using=using)
+
+
+def refuse_unserved(resource_type, method: str) -> None:
+    """Refuse (`MethodNotAllowedError`, 405) a write by `method` when the
+    type's ``TypeOptions.methods`` (`write_hooks`) are set and do not name
+    it, as DRF answers a method a view does not serve once ``initial()``
+    passed."""
+    methods = write_hooks(resource_type).methods
+    if methods is not None and method not in methods:
+        raise MethodNotAllowedError(method)
+
+
+def written_answer(saved) -> Mapping | None:
+    """What the type's ``after_write`` answered for the write that saved
+    `saved` (`save_checked`), or ``None``."""
+    return getattr(saved, ANSWER_ATTR, None)
+
+
 def validate_write(
     request,
     resource_type,
@@ -282,7 +349,10 @@ def validate_write(
     in every context the stored policy applies to, ``access.AccessDenied``
     otherwise), as DRF's ``update`` asks it after ``get_object()``, with
     `covered` (by default, as the object check, whether the request is the
-    PUT the workflow check covers). Then `prepare`, when given, is called
+    PUT the workflow check covers). Right after the request check, a write
+    by a method the type does not serve (``POST`` for a create, ``PUT`` for
+    an update) is refused (`refuse_unserved`, 405), as DRF answers it once
+    ``initial()`` passed. Then `prepare`, when given, is called
     with the body, and the body it returns is the one validated from there
     on (`create` and `update` give the type's ``prepare_write``, as the DRF
     views run it after the request and object checks, before the
@@ -340,6 +410,7 @@ def validate_write(
     check_request(
         request, resource_type, requirement, list_route=stored is None, body=body
     )
+    refuse_unserved(resource_type, "POST" if stored is None else "PUT")
     if stored is not None:
         # DRF's get_object() asks the object check of the stored resource:
         # a caller that looked it up itself must not skip it. With the body,
@@ -552,7 +623,14 @@ def save_checked(
 
     A ``WorkflowPolicy``'s save is serialised (`serialize`, by default
     `serialized_policy_save`). The type's ``around_save`` hook
-    (`write_hooks`), if any, wraps `save`, inside the transaction.
+    (`write_hooks`), if any, wraps `save`, inside the transaction. Its
+    ``after_write``, if any, runs in the same transaction once the saved
+    resource passed its check (and the workflow check's mark is consumed),
+    given the resource the save wrote (``created``: `instance` is
+    ``None``), which it may change; the resource returned is then read
+    again. A mapping it returns is kept as the write's answer, on both
+    (`written_answer`, `answered_content`). The write's `hook_state` is cleared once the save
+    is over, however it ends.
 
     The check refreshes the saved resource from its row, which empties its
     cache of related objects: `resource_type` is cached on it again, and on
@@ -620,16 +698,41 @@ def save_checked(
         )
         if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
             run = (serialize or serialized_policy_save)(run, using)
+        after_write = write_hooks(resource_type).after_write
         with transaction.atomic(using=using):
             if instance is None:
                 result = check.create(run, db=using)
             else:
                 result = check.update(instance, run, db=using)
             cache_resource_type(resource_type, *saved, result)
+            if after_write is not None:
+                # What follows the save authorizes nothing by the mark.
+                _consume_workflow_mark(request)
+                # The object the save wrote: a create's is the one its caller
+                # holds (DRF's serializer.instance, whose validators a 201
+                # sends); the result is read again once the hook ran.
+                written = (
+                    saved[-1] if saved and isinstance(saved[-1], Resource) else result
+                )
+                answered = after_write(
+                    request,
+                    resource_type,
+                    written,
+                    created=instance is None,
+                    using=using,
+                )
+                if written is not result:
+                    result.refresh_from_db(using=using)
+                    cache_resource_type(resource_type, result)
+                if answered is not None:
+                    setattr(written, ANSWER_ATTR, answered)
+                    setattr(result, ANSWER_ATTR, answered)
         return result
     finally:
-        # One validation authorizes at most one save, however it ends.
+        # One validation authorizes at most one save, however it ends; one
+        # prepare_write covers at most one save.
         _consume_workflow_mark(request)
+        _clear_hook_state(request)
 
 
 @contextmanager
@@ -661,7 +764,8 @@ def _validated(
     readable (`object_readable`) telling whether its errors are hidden:
     what `create` and `update` run on the body they save, always. The
     type's ``prepare_write`` (`write_hooks`), if any, is given a copy of
-    `body` (a shallow one, of a mapping) as `validate_write`'s `prepare`.
+    `body` (a shallow one, of a mapping) as `validate_write`'s `prepare`
+    (`prepared_body`, which clears the write's `hook_state` first).
     Returns the body to save: the one validated."""
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import object_readable
@@ -673,16 +777,20 @@ def _validated(
             return object_readable(request, resource_type, stored, requirement)
 
     validated = [body]
-    prepare = None
     prepare_write = write_hooks(resource_type).prepare_write
-    if prepare_write is not None:
 
-        def prepare(sent):
-            copied = dict(sent) if isinstance(sent, Mapping) else sent
-            validated[0] = prepare_write(
-                request, resource_type, copied, instance=stored, using=using
-            )
-            return validated[0]
+    def prepare(sent):
+        if prepare_write is not None and isinstance(sent, Mapping):
+            sent = dict(sent)
+        validated[0] = prepared_body(
+            request,
+            resource_type,
+            sent,
+            instance=stored,
+            using=using,
+            prepare_write=prepare_write,
+        )
+        return validated[0]
 
     validate_write(
         request,
@@ -723,6 +831,7 @@ def create(
     `requirement` is taken through `Requirement.of` (once any earlier mark
     is removed, as `validate_write` removes it)."""
     _consume_workflow_mark(request)
+    _clear_hook_state(request)
     requirement = Requirement.of(requirement, caller="create")
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
@@ -794,6 +903,7 @@ def update(
     if instance is None:
         raise TypeError("update needs the stored instance to write to, not None")
     _consume_workflow_mark(request)
+    _clear_hook_state(request)
     requirement = Requirement.of(requirement, caller="update")
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
@@ -846,9 +956,11 @@ def destroy(
     `scrud_django.core.resources.load_for_read` with ``method="DELETE"``
     first (DRF's ``get_object()``), which asks it.
 
-    The type's ``before_destroy`` (`write_hooks`), if any, runs first (a
-    refusal raises, nothing deleted), and its ``after_destroy`` once
-    `instance` is deleted.
+    A type that does not serve DELETE (``TypeOptions.methods``) refuses it
+    (`refuse_unserved`, 405) first: its caller asked the request check
+    already (`load_for_read`). Then the type's ``before_destroy``
+    (`write_hooks`), if any, runs (a refusal raises, nothing deleted), and
+    its ``after_destroy`` once `instance` is deleted.
 
     Without a `check`, `requirement` is taken through `Requirement.of`: one
     that asks no grants (empty, or hooks only) is ``ImproperlyConfigured``,
@@ -857,6 +969,7 @@ def destroy(
     view's own check.)"""
     if check is None:
         requirement = Requirement.of(requirement, caller="destroy")
+    refuse_unserved(resource_type, "DELETE")
     hooks = write_hooks(resource_type)
     if hooks.before_destroy is not None:
         hooks.before_destroy(request, resource_type, instance, using=using)
@@ -882,18 +995,11 @@ def answered_content(
     request, resource_type, saved: Resource, *, created: bool, using: str
 ) -> Mapping:
     """The content a front end answers a write with, once `create` (`created`
-    true) or `update` returned `saved`, called inside the same transaction:
-    the type's ``after_write`` (`write_hooks`) runs, and the mapping it
-    returns is the answer; without one (or given ``None``), the saved
-    content (`content_of`)."""
-    after_write = write_hooks(resource_type).after_write
-    if after_write is not None:
-        answered = after_write(
-            request, resource_type, saved, created=created, using=using
-        )
-        if answered is not None:
-            return answered
-    return content_of(saved)
+    true) or `update` returned `saved`: what the type's ``after_write``
+    answered for it (`written_answer`; it ran in `save_checked`), else the
+    saved content (`content_of`). It has no effect: the write is done."""
+    answered = written_answer(saved)
+    return content_of(saved) if answered is None else answered
 
 
 @contextmanager

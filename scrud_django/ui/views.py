@@ -34,17 +34,15 @@ def drf_access_errors(request):
 class UIContentValidationMixin:
     """The write behaviour of a UI resource type on DRF: `validate_content`
     (the type's ``prepare_write``) runs ahead of `create_resource` and
-    `update` saving, the core's save runs its ``around_save``, `answered`
-    its ``after_write``, and the core's delete its ``before_destroy`` and
-    ``after_destroy`` (`scrud_django.ui.hooks.UI_TYPE_OPTIONS`)."""
+    `update` saving, the core's save runs its ``around_save`` and
+    ``after_write`` (whose answer `answered` sends), and the core's delete
+    its ``before_destroy`` and ``after_destroy``
+    (`scrud_django.ui.hooks.UI_TYPE_OPTIONS`)."""
 
     # The type's ``prepare_write`` (a function of `scrud_django.ui.hooks`).
     prepare_write = None
-    # The resource as saved by the write being served (`save_checked`), and,
-    # for a create, the instance the serializer created (`perform_create`),
-    # which the response describes.
+    # The resource as saved by the write being served (`save_checked`).
     saved = None
-    created = None
 
     def filter_queryset(self, queryset):
         """A list shows the effective items of the selected branch (main's
@@ -82,34 +80,36 @@ class UIContentValidationMixin:
         """Raise a ``ScrudException`` when `content` (the request body) is
         refused: the type's ``prepare_write`` (`prepare_write`, one of
         `scrud_django.ui.hooks`), given `instance`, the resource an update
-        replaces. `content` is the request body itself (``request.data``,
-        the ``dict`` the JSON parser made), which `create_resource` and
-        `update` then save: what it sets in it is stored. An
+        replaces (`scrud_django.core.writes.prepared_body`, which clears
+        the write's hook state first). `content` is the request body itself
+        (``request.data``, the ``dict`` the JSON parser made), which
+        `create_resource` and `update` then validate and save: the hook
+        changes it in place, and must return it (``TypeError`` otherwise:
+        another body would be checked, and this one saved). An
         ``access.AccessError`` it raises is answered as DRF's
         (`drf_error`)."""
         with drf_access_errors(self.request):
-            self.prepare_write(
+            prepared = core_writes.prepared_body(
                 self.request,
                 self.get_resource_type(),
                 content,
                 instance=instance,
                 using=self.write_database(),
+                prepare_write=self.prepare_write,
+            )
+        if prepared is not content:
+            raise TypeError(
+                f"{type(self).__name__}.prepare_write returned another body than "
+                "the one it was given: the DRF views save request.data itself."
             )
 
     def save_checked(self, save, instance=None):
         """Save as `ResourceViewMixin.save_checked` does (the core runs the
-        type's ``around_save``: an item written to ``main`` while it is
-        virtual stores ``main`` first, in the same transaction), keeping
-        the saved resource for `answered`."""
+        type's ``around_save``, an item written to ``main`` while it is
+        virtual storing ``main`` first, and its ``after_write``, in the same
+        transaction), keeping the saved resource for `answered`."""
         self.saved = super().save_checked(save, instance=instance)
         return self.saved
-
-    def perform_create(self, serializer):
-        """Create as `ResourceViewMixin.perform_create` does, keeping the
-        instance the serializer created, which the response describes."""
-        result = super().perform_create(serializer)
-        self.created = serializer.instance
-        return result
 
     def write_database(self):
         """The database this request writes: its locked write's, else the
@@ -118,29 +118,20 @@ class UIContentValidationMixin:
 
     def create_resource(self, request):
         self.validate_content(request.data)
-        response = super().create_resource(request)
-        return self.answered(request, response, self.created, created=True)
+        return self.answered(super().create_resource(request))
 
     def update(self, request, slug: str):
         instance = self.get_instance(request, slug)
         self.validate_content(request.data, instance=instance)
-        response = super().update(request, slug)
-        return self.answered(request, response, self.saved, created=False)
+        return self.answered(super().update(request, slug))
 
-    def answered(self, request, response, saved, *, created):
-        """`response` to the write that saved `saved`, answering what the
-        type's ``after_write`` answers, which runs first in the request's
-        transaction (`scrud_django.core.writes.answered_content`; a
-        rebased item's conflict resolved, a pulled branch's version
-        recorded, a push applied)."""
-        with drf_access_errors(request):
-            response.data = core_writes.answered_content(
-                request,
-                self.get_resource_type(),
-                saved,
-                created=created,
-                using=self.write_database(),
-            )
+    def answered(self, response):
+        """`response` to the write that saved `saved` (`save_checked`); when
+        the type's ``after_write`` answered for it (`scrud_django.core
+        .writes.written_answer`: an applied push, with its ``result``), the
+        saved resource as it is now, serialized."""
+        if core_writes.written_answer(self.saved) is not None:
+            response.data = self.get_serializer(instance=self.saved, many=False).data
         return response
 
 
