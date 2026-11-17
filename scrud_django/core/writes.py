@@ -27,12 +27,24 @@ hooks of one write share `hook_state`, which the core clears before the
 `create` or `update` with `answered_content`. A write by a method the
 type does not serve (``TypeOptions.methods``) is refused
 (`MethodNotAllowedError`, 405) once the request check passed.
+
+The whole sequence of a route's write, in the DRF route's order, is
+written once here, for every front end but DRF's viewsets (which keep
+their own): `create_answer` and `item_write_answer` (the body and request
+checks, `check_write_request`, unless the front end asked them already;
+the preconditions, under the conditional-create lock for a create that
+needs the list's validators; the write and its answer), and `write_item`
+(an item's write and answer, once the front end's route looked it up and
+evaluated its preconditions). Each answers a `WriteAnswer` the front end
+only renders.
 """
 
 import copy
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
+from datetime import datetime
 
 import fastjsonschema
 import reversion
@@ -40,12 +52,16 @@ from django.db import transaction
 from django.db.models import ProtectedError
 from scoped_rbac import access
 from scoped_rbac.policy import Permission
+from scrudful._django import precondition_headers
 
+from scrud_django.core import lists
 from scrud_django.core.authz import (
     _consume_workflow_mark,
     content_of,
     may_act_in_context,
 )
+from scrud_django.core.bodies import check_body
+from scrud_django.core.errors import precondition_answer
 from scrud_django.core.requirements import (
     Requirement,
     asks_grants_itself,
@@ -53,11 +69,13 @@ from scrud_django.core.requirements import (
     requirement_leaves,
 )
 from scrud_django.core.types import (
+    BODY_METHODS,
     HookLeaf,
     TypeOptions,
     ensure_hooks_loaded,
     type_options,
 )
+from scrud_django.core.urls import absolute_reverse
 from scrud_django.core.workflow import (
     Create,
     Update,
@@ -1019,3 +1037,235 @@ def conditional_create_lock(resource_type, using: str):
     that two conditional creates of the type run one at a time and the
     second is evaluated against the list the first left."""
     return type_locked(resource_type, using)
+
+
+@dataclass(frozen=True)
+class WriteAnswer:
+    """What a resource route answers a write with, for a front end to
+    render: its `status`, the `content` of its body (``None``: no body), the
+    written resource's validators (`etag` unquoted, `last_modified`), a
+    create's `location` (the API URL of the created item, absolute), and
+    `written`, the resource the write saved (``None`` for a delete). A
+    failed precondition is the `problem` ``(status, body, headers)`` of
+    `scrud_django.core.errors.precondition_answer` (nothing written; its
+    `status` is the answer's)."""
+
+    status: int
+    content: Mapping | None = None
+    etag: str | None = None
+    last_modified: datetime | None = None
+    location: str | None = None
+    problem: tuple[int, Mapping | list, Mapping[str, str]] | None = None
+    written: Resource | None = None
+
+
+def _failed(problem) -> WriteAnswer:
+    return WriteAnswer(problem[0], problem=problem)
+
+
+def check_write_request(
+    request,
+    resource_type,
+    body,
+    *,
+    requirement: Requirement | Sequence,
+    list_route: bool,
+    present: bool = True,
+) -> None:
+    """The checks a write's route asks first, as DRF's ``initial()`` asks
+    them: the body of a POST or PUT (`scrud_django.core.bodies.check_body`,
+    `present` saying whether the request carried one: a malformed body is a
+    400 before any 403), then the route's request check with it
+    (`scrud_django.core.resources.check_request` of the list's POST, for
+    `list_route`, else of the item's route; ``access.AccessDenied``). A
+    front end with checks of its own after these (a UI page's prefix and
+    headers) asks them next, then answers with `create_answer` or
+    `item_write_answer` given ``request_checked=True``."""
+    # Imported here: scrud_django.core.resources imports this module.
+    from scrud_django.core.resources import check_request
+
+    if request.method in BODY_METHODS:
+        check_body(body, present=present)
+    check_request(request, resource_type, requirement, list_route=list_route, body=body)
+
+
+def create_answer(
+    request,
+    resource_type,
+    body,
+    *,
+    requirement: Requirement | Sequence,
+    using: str,
+    request_checked: bool = False,
+    present: bool = True,
+    ignored: frozenset[str] | None = None,
+    uniform: bool | None = None,
+) -> WriteAnswer:
+    """The answer of the POST `request` of `body` to `resource_type`'s
+    list, as the DRF list route creates, inside the write's transaction on
+    `using` (the caller's, `write_transaction`), its steps in the route's
+    order:
+
+    1. unless `request_checked` (the caller asked it, `check_write_request`),
+       the body and request checks (`check_write_request`, with `present`);
+    2. the list's preconditions (`scrud_django.core.lists
+       .evaluate_list_preconditions`, against the list's validators read on
+       `using` with `ignored` as `create_list_validators` takes it): a
+       conditional create, whose preconditions need those validators, first
+       takes the type's lock (`conditional_create_lock`), held until the
+       caller's transaction ends. A failed one is answered (`WriteAnswer
+       .problem`, `precondition_answer` with `uniform`), nothing written;
+    3. the create (`create`) and its answer: 201, `answered_content`, the
+       created item's validators and its ``Location``.
+
+    A page of the list that is not one of its pages (the POST's query asks
+    it) raises ``django.core.paginator.InvalidPage``, for the front end to
+    answer as its paginator answers it (404 ``"Invalid page."``). Refusals
+    are raised, as `create` raises them."""
+    if not request_checked:
+        check_write_request(
+            request,
+            resource_type,
+            body,
+            requirement=requirement,
+            list_route=True,
+            present=present,
+        )
+    headers = precondition_headers(request)
+    with ExitStack() as locks:
+        # Inside the caller's transaction, which holds it until it ends:
+        # conditional creates of the type run one at a time, each evaluated
+        # against the list the previous one left.
+        if lists.list_validators_needed(headers):
+            locks.enter_context(conditional_create_lock(resource_type, using))
+        failed = lists.evaluate_list_preconditions(
+            request.method,
+            headers,
+            lambda: lists.create_list_validators(
+                request,
+                resource_type,
+                requirement=requirement,
+                ignored=ignored,
+                using=using,
+            ),
+        )
+        if failed is not None:
+            return _failed(precondition_answer(request, failed, uniform=uniform))
+        obj = create(request, resource_type, body, requirement=requirement, using=using)
+        content = answered_content(
+            request, resource_type, obj, created=True, using=using
+        )
+    location = absolute_reverse(
+        resource_type.route_name_detail(), args=[obj.pk], request=request
+    )
+    return WriteAnswer(
+        201,
+        content,
+        etag=obj.etag,
+        last_modified=obj.modified_at,
+        location=location,
+        written=obj,
+    )
+
+
+def item_write_answer(
+    request,
+    resource_type,
+    pk,
+    method: str,
+    body,
+    *,
+    requirement: Requirement | Sequence,
+    using: str,
+    request_checked: bool = False,
+    present: bool = True,
+    loaded: Callable[[Resource], None] | None = None,
+) -> WriteAnswer:
+    """The answer of the `method` request `request` (``PUT`` of `body`, or
+    ``DELETE``) to the item `pk` of `resource_type`, as the DRF detail
+    route writes, inside the write's transaction on `using` (the
+    caller's, `write_transaction`), its steps in the route's order:
+
+    1. unless `request_checked` (the caller asked it, `check_write_request`),
+       the body and request checks (`check_write_request`, with `present`);
+    2. the item looked up for `method` with its row locked on `using`, and
+       checked (`scrud_django.core.resources.load_for_read`, given `body`,
+       ``request_checked``), then given to `loaded` when one is (a UI page
+       keeps it to render a refused PUT's form);
+    3. its preconditions (`scrud_django.core.resources
+       .item_precondition_answer`: 428 without ``If-Match``, 412 for a
+       stale one): a failed one is answered (`WriteAnswer.problem`),
+       nothing written;
+    4. the write and its answer (`write_item`).
+
+    Refusals are raised."""
+    # Imported here: scrud_django.core.resources imports this module.
+    from scrud_django.core.resources import item_precondition_answer, load_for_read
+
+    if method not in ("PUT", "DELETE"):
+        raise ValueError(f"item_write_answer writes with PUT or DELETE, not {method}.")
+    if not request_checked:
+        check_write_request(
+            request,
+            resource_type,
+            body,
+            requirement=requirement,
+            list_route=False,
+            present=present,
+        )
+    obj = load_for_read(
+        request,
+        resource_type,
+        pk,
+        requirement=requirement,
+        method=method,
+        lock_using=using,
+        body=body,
+        request_checked=True,
+    )
+    if loaded is not None:
+        loaded(obj)
+    failed = item_precondition_answer(
+        request, etag=obj.etag, last_modified=obj.modified_at, method=method
+    )
+    if failed is not None:
+        return _failed(failed)
+    return write_item(
+        request, resource_type, obj, method, body, requirement=requirement, using=using
+    )
+
+
+def write_item(
+    request,
+    resource_type,
+    obj: Resource,
+    method: str,
+    body,
+    *,
+    requirement: Requirement | Sequence,
+    using: str,
+) -> WriteAnswer:
+    """The `method` write of the item `obj` (looked up for it with its row
+    locked, its preconditions passed: `item_write_answer`, or a front end
+    whose route evaluated them, as scrudful's item decorator does on
+    ninja) and its answer: a ``PUT`` of `body` (`update`) answers 200 with
+    `answered_content` and the saved item's validators; a ``DELETE``
+    (`destroy`) answers 204. Refusals are raised."""
+    if method == "DELETE":
+        destroy(request, resource_type, obj, requirement=requirement, using=using)
+        return WriteAnswer(204)
+    if method != "PUT":
+        raise ValueError(f"write_item writes with PUT or DELETE, not {method}.")
+    saved = update(
+        request, resource_type, obj, body, requirement=requirement, using=using
+    )
+    content = answered_content(
+        request, resource_type, saved, created=False, using=using
+    )
+    return WriteAnswer(
+        200,
+        content,
+        etag=saved.etag,
+        last_modified=saved.modified_at,
+        written=saved,
+    )

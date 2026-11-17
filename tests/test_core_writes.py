@@ -8,8 +8,9 @@ from unittest import mock
 from uuid import uuid4
 
 import pytest
+from django.conf import settings
 from django.http import Http404
-from django.test import RequestFactory
+from django.test import RequestFactory, override_settings
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
@@ -19,19 +20,27 @@ from reversion.models import Version
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
+from scrudful._django import aware
+from scrudful.conditional import http_timestamp, validator_headers
 
 from scrud_django.core import workflow as core_workflow
 from scrud_django.core.authz import _WORKFLOW_AUTHORIZED, _workflow_authorized
+from scrud_django.core.errors import error_answer
 from scrud_django.core.requirements import GrantsLeaf
+from scrud_django.core.types import requirement_for
 from scrud_django.core.workflow import NoWorkflowPolicyDenied
 from scrud_django.core.writes import (
+    WriteAnswer,
     check_post_save,
     create,
+    create_answer,
     creating_revision,
     destroy,
+    item_write_answer,
     save_checked,
     update,
     validate_write,
+    write_transaction,
 )
 from scrud_django.exceptions import (
     RequestBodyNotAnObjectError,
@@ -1287,3 +1296,304 @@ def test_update_of_a_hidden_policy_without_a_load_is_404():
             using="default",
         )
     assert row_of(stored) == (dict(policy, rbac_context="a"), stored.etag)
+
+
+# The write orchestration (`create_answer`, `item_write_answer`): each
+# answer as the DRF route answers the same request.
+
+
+def uniform_errors_set(uniform):
+    return override_settings(
+        SCOPED_RBAC=dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
+    )
+
+
+def header_kwargs(headers):
+    return {f"HTTP_{k.upper().replace('-', '_')}": v for k, v in headers.items()}
+
+
+def core_request(method, url, user, body=None, headers=()):
+    sent = {}
+    if body is not None:
+        sent = {"data": json.dumps(body), "content_type": "application/json"}
+    request = getattr(RequestFactory(), method.lower())(
+        url, **sent, **header_kwargs(dict(headers))
+    )
+    request.user = user
+    return request
+
+
+def drf_response(method, url, user, body=None, headers=()):
+    Given.http.force_authenticate(user)
+    sent = {}
+    if body is not None:
+        sent = {"data": json.dumps(body), "content_type": "application/json"}
+    getattr(When.http, method.lower())(url, **sent, **header_kwargs(dict(headers)))
+    return Http.response
+
+
+def answered(call, request):
+    """``(answer, None)`` of `call` in a write transaction, or ``(None,
+    error_answer)`` of what it raised, rolled back."""
+    try:
+        with write_transaction("default"):
+            return call(), None
+    except Exception as exc:
+        found = error_answer(exc, request)
+        if found is None:
+            raise
+        return None, found
+
+
+def validators_of(etag, last_modified):
+    return dict(
+        validator_headers(quote_etag(etag), http_timestamp(aware(last_modified)))
+    )
+
+
+def assert_problem_as_drf(problem, response):
+    status_code, body, headers = problem
+    assert status_code == response.status_code
+    assert body == response.json()
+    assert headers["Content-Type"] == response["Content-Type"]
+
+
+PROFILE = {"name": "x", "rbac_context": "a"}
+
+
+def profiles_url(pk=None):
+    if pk is None:
+        return reverse("partner-profiles-list")
+    return reverse("partner-profiles-detail", args=[pk])
+
+
+def create_by(user, body=PROFILE, headers=()):
+    """The core's and the DRF route's answers to the same POST."""
+    rtype = profiles_type()
+    request = core_request("POST", profiles_url(), user, body, headers)
+    core = answered(
+        lambda: create_answer(
+            request,
+            rtype,
+            body,
+            requirement=requirement_for(rtype),
+            using="default",
+        ),
+        request,
+    )
+    return core, drf_response("POST", profiles_url(), user, body, headers)
+
+
+def item_write_by(user, method, pk, body=None, headers=()):
+    """The core's and the DRF route's answers to the same PUT or DELETE (the
+    core's rolled back, so that the route's finds the item as it was)."""
+    rtype = profiles_type()
+    request = core_request(method, profiles_url(pk), user, body, headers)
+
+    def write():
+        with write_transaction("default") as rollback:
+            try:
+                return item_write_answer(
+                    request,
+                    rtype,
+                    pk,
+                    method,
+                    body,
+                    requirement=requirement_for(rtype),
+                    using="default",
+                )
+            finally:
+                rollback()
+
+    core = answered(write, request)
+    return core, drf_response(method, profiles_url(pk), user, body, headers)
+
+
+@pytest.mark.django_db
+@test_context
+def test_create_answer_creates_as_the_drf_route():
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    (answer, refused), api = create_by(admin)
+    assert refused is None
+    assert answer.status == api.status_code == 201
+    assert answer.content == api.json() == PROFILE
+    assert answer.problem is None
+    # Each the validators and Location of the item it created.
+    created = Resource.objects.get(pk=answer.written.pk)
+    assert (answer.etag, answer.last_modified) == (created.etag, created.modified_at)
+    assert answer.location == f"http://testserver{profiles_url(created.pk)}"
+    theirs = latest_profile()
+    assert theirs.pk != created.pk
+    assert api["Location"] == f"http://testserver{profiles_url(theirs.pk)}"
+    assert {name: api[name] for name in ("ETag", "Last-Modified")} == validators_of(
+        theirs.etag, theirs.modified_at
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("uniform", [True, False])
+@pytest.mark.parametrize(
+    "headers",
+    [{"If-Match": '"stale"'}, {"If-None-Match": "*"}],
+    ids=["stale-if-match", "if-none-match-star"],
+)
+@test_context
+def test_create_answer_of_a_failed_conditional_create_is_the_drf_routes(
+    headers, uniform
+):
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    ResourceRegistration.register(
+        {"name": "y", "rbac_context": "a"}, "partner-profiles"
+    )
+    before = Resource.objects.filter(resource_type=profiles_type()).count()
+    with uniform_errors_set(uniform):
+        (answer, refused), api = create_by(admin, headers=headers)
+    assert refused is None
+    assert answer.status == answer.problem[0] == api.status_code == 412
+    assert (answer.content, answer.etag, answer.location) == (None, None, None)
+    assert_problem_as_drf(answer.problem, api)
+    assert Resource.objects.filter(resource_type=profiles_type()).count() == before
+
+
+@pytest.mark.django_db
+@test_context
+def test_create_answer_refuses_as_the_drf_route():
+    (answer, refused), api = create_by(UserFactory())
+    assert answer is None
+    assert refused[0] == 403
+    assert_problem_as_drf(refused, api)
+    assert latest_profile() is None
+
+
+@pytest.mark.django_db
+@test_context
+def test_item_write_answer_puts_as_the_drf_route():
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    stored = ResourceRegistration.register(PROFILE, "partner-profiles")
+    body = {"name": "new", "rbac_context": "a"}
+    rtype = profiles_type()
+    request = core_request(
+        "PUT",
+        profiles_url(stored.pk),
+        admin,
+        body,
+        {"If-Match": quote_etag(stored.etag)},
+    )
+    seen = []
+    answer, refused = answered(
+        lambda: item_write_answer(
+            request,
+            rtype,
+            stored.pk,
+            "PUT",
+            body,
+            requirement=requirement_for(rtype),
+            using="default",
+            loaded=lambda obj: seen.append((obj.pk, obj.etag)),
+        ),
+        request,
+    )
+    assert refused is None
+    # The item as looked up, before its preconditions and the write.
+    assert seen == [(stored.pk, stored.etag)]
+    row = Resource.objects.get(pk=stored.pk)
+    assert (answer.status, answer.content) == (200, body)
+    assert (answer.etag, answer.last_modified) == (row.etag, row.modified_at)
+    assert answer.written.pk == stored.pk
+    api = drf_response(
+        "PUT", profiles_url(stored.pk), admin, body, {"If-Match": quote_etag(row.etag)}
+    )
+    assert api.status_code == 200
+    assert api.json() == answer.content
+    row = Resource.objects.get(pk=stored.pk)
+    assert {name: api[name] for name in ("ETag", "Last-Modified")} == validators_of(
+        row.etag, row.modified_at
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("uniform", [True, False])
+@pytest.mark.parametrize(
+    "headers, status_code",
+    [({"If-Match": '"stale"'}, 412), ({}, 428)],
+    ids=["stale", "none"],
+)
+@test_context
+def test_item_write_answer_of_a_failed_precondition_is_the_drf_routes(
+    headers, status_code, uniform
+):
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    stored = ResourceRegistration.register(PROFILE, "partner-profiles")
+    with uniform_errors_set(uniform):
+        (answer, refused), api = item_write_by(
+            admin, "PUT", stored.pk, {"name": "new", "rbac_context": "a"}, headers
+        )
+    assert refused is None
+    assert answer.status == answer.problem[0] == api.status_code == status_code
+    assert answer.content is None
+    assert_problem_as_drf(answer.problem, api)
+    assert Resource.objects.get(pk=stored.pk).etag == stored.etag
+
+
+@pytest.mark.django_db
+@test_context
+def test_item_write_answer_of_a_delete_in_use_is_the_drf_routes():
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    schema = Resource.objects.get(pk=profiles_type().schema.pk)
+    rtype = schema.resource_type
+    url = reverse(f"{rtype.slug}-detail", args=[schema.pk])
+    headers = {"If-Match": quote_etag(schema.etag)}
+    request = core_request("DELETE", url, admin, headers=headers)
+    answer, refused = answered(
+        lambda: item_write_answer(
+            request,
+            rtype,
+            schema.pk,
+            "DELETE",
+            None,
+            requirement=requirement_for(rtype),
+            using="default",
+        ),
+        request,
+    )
+    api = drf_response("DELETE", url, admin, headers=headers)
+    assert answer is None
+    assert refused[0] == 409
+    assert_problem_as_drf(refused, api)
+    assert Resource.objects.filter(pk=schema.pk).exists()
+
+
+@pytest.mark.django_db
+@test_context
+def test_item_write_answer_deletes_as_the_drf_route():
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    stored = ResourceRegistration.register(PROFILE, "partner-profiles")
+    (answer, refused), api = item_write_by(
+        admin, "DELETE", stored.pk, headers={"If-Match": quote_etag(stored.etag)}
+    )
+    assert refused is None
+    assert answer == WriteAnswer(204)
+    assert api.status_code == 204
+    assert not Resource.objects.filter(pk=stored.pk).exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+@pytest.mark.parametrize("found", ["missing", "not-granted"])
+@test_context
+def test_item_write_answer_refuses_as_the_drf_route(method, found):
+    stored = ResourceRegistration.register(PROFILE, "partner-profiles")
+    if found == "missing":
+        user, pk = UserFactory(is_staff=True, is_superuser=True), stored.pk + 1000
+        expected = 404
+    else:
+        user, pk = UserFactory(), stored.pk
+        expected = 403
+    body = {"name": "new", "rbac_context": "a"} if method == "PUT" else None
+    (answer, refused), api = item_write_by(
+        user, method, pk, body, {"If-Match": quote_etag(stored.etag)}
+    )
+    assert answer is None
+    assert refused[0] == expected
+    assert_problem_as_drf(refused, api)
+    assert Resource.objects.get(pk=stored.pk).etag == stored.etag

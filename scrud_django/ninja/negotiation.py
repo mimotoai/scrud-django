@@ -24,6 +24,7 @@ from scoped_rbac import access, problems
 from scoped_rbac.ninja import DRFStyleJSONRenderer
 from scrudful._hsr import is_preflight
 
+from scrud_django.core.json import drf_json_text
 from scrud_django.ninja import entry
 from scrud_django.ninja.errors import PROBLEM_JSON, uniform_errors
 from scrud_django.registration import DOCUMENT_MEDIA_TYPES
@@ -40,9 +41,6 @@ ACCEPTED_ATTR = "_scrud_ninja_accepted"
 
 #: The largest indent DRF's ``JSONRenderer.get_indent`` gives.
 MAX_INDENT = 8
-
-#: The separators DRF's ``JSONRenderer`` writes indented JSON with.
-INDENT_SEPARATORS = (",", ": ")
 
 #: DRF's ``DefaultContentNegotiation`` limits on the ``Accept`` it reads.
 MAX_ACCEPT_HEADER_LENGTH = 8192
@@ -233,10 +231,11 @@ def accepted_indent(request):
 class IndentingJSONRenderer(DRFStyleJSONRenderer):
     """scoped-rbac's ``DRFStyleJSONRenderer`` (JSON as DRF's ``JSONRenderer``
     writes it), indented as DRF's indents it when the media type the
-    request accepted asks (`accepted_indent`): with DRF's indented
-    separators (`INDENT_SEPARATORS`). Not an error answered under a
-    document's renderer, which DRF writes with ``JSONRenderer`` and its own
-    media type (``DocumentMediaTypeMixin.finalize_response``)."""
+    request accepted asks (`accepted_indent`), with DRF's indented
+    separators (`scrud_django.core.json.drf_json_text`). Not an error
+    answered under a document's renderer, which DRF writes with
+    ``JSONRenderer`` and its own media type
+    (``DocumentMediaTypeMixin.finalize_response``)."""
 
     def render(self, request, data, *, response_status):
         indent = accepted_indent(request)
@@ -246,16 +245,7 @@ class IndentingJSONRenderer(DRFStyleJSONRenderer):
             indent = None
         if indent is None:
             return super().render(request, data, response_status=response_status)
-        text = json.dumps(
-            data,
-            cls=self.encoder_class,
-            **{
-                **self.json_dumps_params,
-                "indent": indent,
-                "separators": INDENT_SEPARATORS,
-            },
-        )
-        return text.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+        return drf_json_text(data, indent=indent, encoder=self.encoder_class)
 
 
 def indent_as_drf(api) -> None:

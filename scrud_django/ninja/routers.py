@@ -3,7 +3,7 @@ the core facade (`scrud_django.core`), answering as the DRF route does."""
 
 import functools
 import inspect
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 
 from django.core.exceptions import PermissionDenied
 from django.core.paginator import InvalidPage
@@ -174,41 +174,27 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         rtype = _resource_type(request, spec)
         requirement = requirement_for(rtype)
         body = request_json(request)
-        check_body(body, present=_body_present(request))
-        resources.check_request(request, rtype, requirement, list_route=True, body=body)
-        headers = precondition_headers(request)
-        with ExitStack() as locks:
-            # Inside the entry's transaction (`entry`), held until it ends:
-            # conditional creates of the type run one at a time, each
-            # evaluated against the list the previous one left.
-            if lists.list_validators_needed(headers):
-                locks.enter_context(writes.conditional_create_lock(rtype, write_db()))
-            failed = lists.evaluate_list_preconditions(
-                request.method,
-                headers,
-                lambda: _requested_page(
-                    lambda: lists.create_list_validators(
-                        request,
-                        rtype,
-                        requirement=requirement,
-                        ignored=lists.ignored_list_parameters(),
-                        using=write_db(),
-                    )
-                ),
+        # Inside the entry's transaction (`entry`), which holds a
+        # conditional create's lock until it ends.
+        answer = _requested_page(
+            lambda: writes.create_answer(
+                request,
+                rtype,
+                body,
+                requirement=requirement,
+                using=write_db(),
+                present=_body_present(request),
+                ignored=lists.ignored_list_parameters(),
+                uniform=True,
             )
-            if failed is not None:
-                return _precondition_response(request, failed)
-            obj = writes.create(
-                request, rtype, body, requirement=requirement, using=write_db()
-            )
-            content = writes.answered_content(
-                request, rtype, obj, created=True, using=write_db()
-            )
-        response = _serving_api(request).create_response(request, content, status=201)
-        response["Location"] = absolute_reverse(
-            rtype.route_name_detail(), args=[obj.pk], request=request
         )
-        _set_validators(response, *resources.item_validators(obj))
+        if answer.problem is not None:
+            return _problem_response(request, answer.problem)
+        response = _serving_api(request).create_response(
+            request, answer.content, status=answer.status
+        )
+        response["Location"] = answer.location
+        _set_validators(response, answer.etag, answer.last_modified)
         return response
 
     @router.api_operation(
@@ -224,35 +210,19 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
     )
     @scrudful(**item)
     def replace(request, slug: str, obj, response: HttpResponse):
-        rtype = _resource_type(request, spec)
-        written = writes.update(
-            request,
-            rtype,
-            obj,
-            request_json(request),
-            requirement=requirement_for(rtype),
-            using=write_db(),
-        )
-        content = writes.answered_content(
-            request, rtype, written, created=False, using=write_db()
-        )
-        setattr(request, WRITTEN_ATTR, written)
+        # scrudful's item decorator looked `obj` up and evaluated its
+        # preconditions.
+        answer = _item_write(request, spec, obj, request_json(request))
+        setattr(request, WRITTEN_ATTR, answer.written)
         _as_document(request, response, spec)
-        return content
+        return answer.content
 
     @router.api_operation(
         ["DELETE"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_destroy"
     )
     @scrudful(**item)
     def destroy(request, slug: str, obj):
-        rtype = _resource_type(request, spec)
-        writes.destroy(
-            request,
-            rtype,
-            obj,
-            requirement=requirement_for(rtype),
-            using=write_db(),
-        )
+        _item_write(request, spec, obj, None)
         return _no_content()
 
     # scrud's own OPTIONS, replacing scrudful's automatic one on each path.
@@ -492,17 +462,42 @@ def _serving_api(request):
 def _precondition_response(request, result):
     """scrudful's answer to the failed precondition `result`, as the DRF
     routes answer it (`scrud_django.core.errors.precondition_answer`): a bare
-    304, else problem details with their Links, written by the serving API's
-    renderer (answered natively while uniform errors are off,
-    `scrud_django.ninja.errors.answer_natively_when_off`)."""
-    status, body, headers = precondition_answer(request, result, uniform=True)
+    304, else its problem (`_problem_response`)."""
     if result.body is None:
         return conditional_response(result)
+    return _problem_response(
+        request, precondition_answer(request, result, uniform=True)
+    )
+
+
+def _problem_response(request, problem):
+    """The answer of a failed precondition other than a 304, `problem`
+    (``(status, body, headers)`` of `scrud_django.core.errors
+    .precondition_answer` with uniform errors): problem details with their
+    Links, written by the serving API's renderer (answered natively while
+    uniform errors are off, `scrud_django.ninja.errors
+    .answer_natively_when_off`)."""
+    status, body, headers = problem
     response = _serving_api(request).create_response(request, body, status=status)
     for name, value in headers.items():
         response[name] = value
     expose_headers(response)
     return response
+
+
+def _item_write(request, spec, obj, body):
+    """The write of the item `obj` of `spec`'s type by `request`'s method
+    (`scrud_django.core.writes.write_item`), on the write database."""
+    rtype = _resource_type(request, spec)
+    return writes.write_item(
+        request,
+        rtype,
+        obj,
+        request.method,
+        body,
+        requirement=requirement_for(rtype),
+        using=write_db(),
+    )
 
 
 def _item_operation_options(spec, urls_namespace):

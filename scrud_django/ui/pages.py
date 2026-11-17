@@ -27,7 +27,7 @@ import contextvars
 import copy
 import logging
 from collections.abc import Mapping
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from django.core.exceptions import PermissionDenied
@@ -50,7 +50,7 @@ from scrudful.conditional import http_timestamp, quote_etag, validator_headers
 
 from scrud_django.core import lists, resources, writes
 from scrud_django.core.authz import content_of
-from scrud_django.core.bodies import check_body, request_json
+from scrud_django.core.bodies import request_json
 from scrud_django.core.computed import (
     check_authenticated,
     computed_answer,
@@ -62,7 +62,6 @@ from scrud_django.core.types import (
     requirement_for,
     type_options_for_slug,
 )
-from scrud_django.core.urls import absolute_reverse
 from scrud_django.exceptions import MethodNotAllowedError, ScrudException
 from scrud_django.registration import get_resource_type_for, type_db, write_db
 from scrud_django.ui import UI_NAMESPACE
@@ -463,51 +462,44 @@ def _read_list(request, resource_type, slug, pk, allow) -> _Answer:
 
 def _create(request, resource_type, slug, pk, allow) -> _Answer:
     """A POST to the list, as the API's list route creates: the body read
-    and checked, the route's request check, the list's preconditions (a
-    conditional create holds the type's lock until it ends), the create, in
-    one transaction on the write database."""
+    and checked, the route's request check, then the page's checks
+    (`_entered`), then the list's preconditions (a conditional create holds
+    the type's lock until it ends) and the create, in one transaction on
+    the write database (`writes.create_answer`)."""
     requirement = requirement_for(resource_type, slug)
     using = write_db()
     body, present = request_json(request)
-    check_body(body, present=present)
-    resources.check_request(
-        request, resource_type, requirement, list_route=True, body=body
+    writes.check_write_request(
+        request,
+        resource_type,
+        body,
+        requirement=requirement,
+        list_route=True,
+        present=present,
     )
     _entered(request)
-    headers = precondition_headers(request)
-    with writes.write_transaction(using), ExitStack() as locks:
-        if lists.list_validators_needed(headers):
-            locks.enter_context(writes.conditional_create_lock(resource_type, using))
-        failed = lists.evaluate_list_preconditions(
-            request.method,
-            headers,
-            lambda: _requested(
-                lambda: lists.create_list_validators(
-                    request, resource_type, requirement=requirement, using=using
-                )
-            ),
+    with writes.write_transaction(using):
+        answer = _requested(
+            lambda: writes.create_answer(
+                request,
+                resource_type,
+                body,
+                requirement=requirement,
+                using=using,
+                request_checked=True,
+            )
         )
-        if failed is not None:
-            return _precondition(precondition_answer(request, failed), "create")
-        obj = writes.create(
-            request, resource_type, body, requirement=requirement, using=using
-        )
-        content = writes.answered_content(
-            request, resource_type, obj, created=True, using=using
-        )
-    location = absolute_reverse(
-        resource_type.route_name_detail(), args=[obj.pk], request=request
-    )
-    etag, last_modified = resources.item_validators(obj)
+    if answer.problem is not None:
+        return _precondition(answer.problem, "create")
     return _Answer(
         201,
-        content,
+        answer.content,
         "create",
-        etag=quote_etag(etag),
-        location=location,
+        etag=quote_etag(answer.etag),
+        location=answer.location,
         headers={
-            **_validators(etag, last_modified),
-            "Location": in_mount(request, location),
+            **_validators(answer.etag, answer.last_modified),
+            "Location": in_mount(request, answer.location),
         },
     )
 
@@ -543,10 +535,12 @@ def _read_item(request, resource_type, slug, pk, allow) -> _Answer:
 
 
 def _update(request, resource_type, slug, pk, allow) -> _Answer:
-    """A PUT of the item, as the API's detail route writes it, in one
-    transaction on the write database: the body read and checked, the item
+    """A PUT of the item, as the API's detail route writes it: the body read
+    and checked, the route's request check, then the page's checks
+    (`_entered`), then in one transaction on the write database the item
     looked up for the PUT (its row locked) and checked, its preconditions
-    (``If-Match``: 428 without one, 412 for a stale one), the update.
+    (``If-Match``: 428 without one, 412 for a stale one), the update
+    (`writes.item_write_answer`).
 
     A refusal (400, 403) carries what the edit form is rendered from: the
     stored resource as first looked up (else looked up now,
@@ -554,36 +548,33 @@ def _update(request, resource_type, slug, pk, allow) -> _Answer:
     requirement = requirement_for(resource_type, slug)
     using = write_db()
     body = stored = None
+
+    def loaded(obj):
+        nonlocal stored
+        stored = _stored(obj)
+
     try:
         body, present = request_json(request)
-        check_body(body, present=present)
-        resources.check_request(
-            request, resource_type, requirement, list_route=False, body=body
+        writes.check_write_request(
+            request,
+            resource_type,
+            body,
+            requirement=requirement,
+            list_route=False,
+            present=present,
         )
         _entered(request)
         with writes.write_transaction(using):
-            obj = resources.load_for_read(
+            answer = writes.item_write_answer(
                 request,
                 resource_type,
                 pk,
+                "PUT",
+                body,
                 requirement=requirement,
-                method="PUT",
-                lock_using=using,
-                body=body,
+                using=using,
                 request_checked=True,
-            )
-            stored = _stored(obj)
-            etag, last_modified = resources.item_validators(obj)
-            failed = resources.item_precondition_answer(
-                request, etag=etag, last_modified=last_modified, method="PUT"
-            )
-            if failed is not None:
-                return _precondition(failed, "item")
-            saved = writes.update(
-                request, resource_type, obj, body, requirement=requirement, using=using
-            )
-            content = writes.answered_content(
-                request, resource_type, saved, created=False, using=using
+                loaded=loaded,
             )
     except Exception as exc:
         answer = _refused(exc, request, "item", allow)
@@ -596,44 +587,42 @@ def _update(request, resource_type, slug, pk, allow) -> _Answer:
             answer.stored = stored
             answer.submitted = body if isinstance(body, Mapping) else None
         return answer
-    etag, last_modified = resources.item_validators(saved)
+    if answer.problem is not None:
+        return _precondition(answer.problem, "item")
     return _Answer(
         200,
-        content,
+        answer.content,
         "item",
-        etag=quote_etag(etag),
-        headers=_validators(etag, last_modified),
+        etag=quote_etag(answer.etag),
+        headers=_validators(answer.etag, answer.last_modified),
     )
 
 
 def _destroy(request, resource_type, slug, pk, allow) -> _Answer:
-    """A DELETE of the item, as the API's detail route deletes it, in one
-    transaction on the write database: looked up for the DELETE (its row
-    locked) and checked, its preconditions, the delete (a resource in use
-    is a 409)."""
+    """A DELETE of the item, as the API's detail route deletes it: the
+    route's request check, then the page's checks (`_entered`), then in one
+    transaction on the write database the item looked up for the DELETE
+    (its row locked) and checked, its preconditions, the delete (a resource
+    in use is a 409; `writes.item_write_answer`)."""
     requirement = requirement_for(resource_type, slug)
     using = write_db()
-    resources.check_request(request, resource_type, requirement, list_route=False)
+    writes.check_write_request(
+        request, resource_type, None, requirement=requirement, list_route=False
+    )
     _entered(request)
     with writes.write_transaction(using):
-        obj = resources.load_for_read(
+        answer = writes.item_write_answer(
             request,
             resource_type,
             pk,
+            "DELETE",
+            None,
             requirement=requirement,
-            method="DELETE",
-            lock_using=using,
+            using=using,
             request_checked=True,
         )
-        etag, last_modified = resources.item_validators(obj)
-        failed = resources.item_precondition_answer(
-            request, etag=etag, last_modified=last_modified, method="DELETE"
-        )
-        if failed is not None:
-            return _precondition(failed, "item")
-        writes.destroy(
-            request, resource_type, obj, requirement=requirement, using=using
-        )
+    if answer.problem is not None:
+        return _precondition(answer.problem, "item")
     return _Answer(204)
 
 

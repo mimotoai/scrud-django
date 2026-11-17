@@ -1739,48 +1739,6 @@ pins today's behaviour). A fix (phase 3C) finds a type's routes under the
 namespaces of the ninja APIs the project serves too, and maps API hrefs to
 the UI from them (`selection.in_mount`, `embed._resolve`).
 
-<a id="core-write-orchestration"></a>
-## core-write-orchestration: three front ends each orchestrate a write
-
-A write's steps, in their order, are written out three times: the UI pages'
-`_create` (`scrud_django/ui/pages.py`: the body read and checked, the
-route's request check, the list's preconditions under the conditional-create
-lock, `writes.create`, `writes.answered_content`, the `Location`) is the
-ninja router's `create` (`scrud_django/ninja/routers.py`) step for step; the
-pages' `_update` and `_destroy` (the item looked up for the method with its
-row locked, its validators and preconditions, `writes.update` or
-`writes.destroy`, the answered content) are the studio's `answers._write`
-(`scrud_django/ui/studio/answers.py`), and ninja's `replace` and `destroy`
-behind scrudful's item decorator. Each copy calls the core for every
-decision, so they agree today (`tests/test_front_end_parity.py`,
-`tests/test_ui_app.py`, `tests/test_studio_writes.py`), but a step added to
-one (a new check, a changed order) must be added to each by hand. Core
-helpers that would make it one copy: `core.writes.create_answer(request,
-resource_type, body, *, requirement, using)` (the checks, the locked
-preconditions and the create, returning the status, content, validators and
-`Location`, or the failed precondition's answer) and
-`core.writes.item_write_answer(request, resource_type, pk, method, body, *,
-requirement, using)` (the PUT or DELETE likewise), each front end keeping
-only how it renders the answer. The test that would expose a drift: a
-parity test replaying the same create, update and delete (including their
-refusals and failed preconditions) through a page, the studio's `write` and
-the ninja route, comparing status, validators and problem bodies. Not done
-in phase 2 (parked by the final review).
-
-<a id="core-json-response"></a>
-## core-json-response: DRF-identical JSON bytes are written in two places
-
-`scrud_django/ui/studio/answers.py`'s `json_response` (used by the studio's
-answers and by `scrud_django/ui/branches/file_views.py`'s refusals) and
-`scrud_django/ninja/negotiation.py` each escape U+2028 and U+2029 and refuse
-NaN to write the bytes DRF's `JSONRenderer` writes. The file views importing
-it from the optional studio package works (`ui/studio/` has no models and its
-`answers` imports only Django, scrudful and the core), but couples the UI's
-branches to the studio. One neutral helper in the core (`core.errors` or a
-new `core/json.py`, Django only, so the DRF deny list holds) would serve all
-three. The test that would expose a drift: the same content with U+2028 and a
-float rendered by each writer, compared byte for byte with `JSONRenderer`.
-
 <a id="ui-included-before-api"></a>
 ## ui-included-before-api: no check names a URLconf that includes the UI first
 
@@ -2158,6 +2116,50 @@ scrudful's automatic OPTIONS. The collection documents
 
 Follow-ups fixed since they were recorded, each with the commit that fixed
 it.
+
+<a id="core-write-orchestration"></a>
+## core-write-orchestration: three front ends each orchestrated a write
+
+Fixed in the commit "refactor(core): one write orchestration and one
+DRF-identical JSON writer". A write's steps, in the DRF route's order, are
+written once, in `scrud_django/core/writes.py`: `check_write_request` (the
+body check of a POST or PUT, then the route's request check with the body),
+`create_answer` (unless `request_checked`, those checks; then under the
+conditional-create lock when the list's preconditions need its validators,
+the preconditions, `create`, `answered_content`, the validators and the
+`Location`), `item_write_answer` (unless `request_checked`, those checks;
+the item looked up for the method with its row locked, given to an optional
+`loaded`, its preconditions, then `write_item`) and `write_item` (the
+`update` or `destroy` of an item already looked up, its preconditions
+passed, and its answer). Each answers a `WriteAnswer` (status, content,
+validators, `Location`, the written resource, or a failed precondition's
+`problem`) that the front end only renders. The UI pages ask
+`check_write_request`, then their prefix and header checks (`_entered`),
+then `create_answer` or `item_write_answer` with `request_checked=True`
+(the update keeping the item `loaded` for a refused PUT's form); the
+studio's `answers._write` calls `create_answer` and `item_write_answer`;
+ninja's `create` calls `create_answer` and its item writes `write_item`
+(scrudful's item decorator looked the item up and evaluated its
+preconditions). The DRF viewsets keep their own path. Pinned by
+`tests/test_core_writes.py::test_create_answer_*` and
+`::test_item_write_answer_*` (each answer, refusals and failed
+preconditions included, against the DRF route's), with
+`tests/test_front_end_parity.py`, `tests/test_ui_app.py`,
+`tests/test_studio_writes.py` and the `front_end` suites unchanged.
+
+<a id="core-json-response"></a>
+## core-json-response: DRF-identical JSON bytes were written in two places
+
+Fixed in the commit "refactor(core): one write orchestration and one
+DRF-identical JSON writer". `scrud_django/core/json.py` (Django only) writes
+JSON as DRF's `JSONRenderer` does (`drf_json_text`, `dumps_like_drf`,
+`json_response`): compact or DRF-indented separators, UTF-8, U+2028 and
+U+2029 escaped, NaN and the infinities refused. The studio's answers (its
+`answers.json_response` is the core's), the UI's file views (which no
+longer import the studio) and the ninja front end's indented JSON
+(`negotiation.IndentingJSONRenderer`) write through it. Pinned by
+`tests/test_core_json.py` (byte equality with `JSONRenderer`, compact and
+indented).
 
 <a id="studio-computed-to-compute"></a>
 ## studio-computed-to-compute: the studio's computed types still registered a viewset class

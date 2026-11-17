@@ -24,7 +24,6 @@ from dataclasses import dataclass
 
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ImproperlyConfigured
-from django.core.serializers.json import DjangoJSONEncoder
 from django.http import Http404, HttpResponse
 from django.test.client import RequestFactory
 from django.urls import NoReverseMatch, reverse
@@ -33,8 +32,8 @@ from scrudful.conditional import quote_etag
 from scrud_django.core import resources, writes
 from scrud_django.core.bodies import check_body
 from scrud_django.core.errors import error_answer
+from scrud_django.core.json import JSON, json_response
 from scrud_django.core.types import requirement_for
-from scrud_django.core.urls import absolute_reverse
 from scrud_django.models import ResourceType
 from scrud_django.registration import get_resource_type_for, type_db, write_db
 
@@ -45,7 +44,6 @@ SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 # The htmx event a successful write triggers (``HX-Trigger``).
 SAVED_EVENT = "scrud-studio-saved"
 
-JSON = "application/json"
 PROBLEM_JSON = "application/problem+json"
 
 
@@ -130,50 +128,34 @@ def _read(request, resource_type, requirement, pk) -> Answer:
 
 
 def _write(request, resource_type, requirement, method, pk, body) -> Answer:
+    """The answer of the `method` write, as the resource route writes it
+    (`writes.create_answer`, `writes.item_write_answer`), inside the
+    caller's transaction on the write database."""
     using = write_db()
     if method == "POST":
-        check_body(body, present=True)
-        obj = writes.create(
+        answer = writes.create_answer(
             request, resource_type, body, requirement=requirement, using=using
         )
-        content = writes.answered_content(
-            request, resource_type, obj, created=True, using=using
+    elif method in ("PUT", "DELETE"):
+        answer = writes.item_write_answer(
+            request,
+            resource_type,
+            pk,
+            method,
+            body,
+            requirement=requirement,
+            using=using,
         )
-        location = absolute_reverse(
-            resource_type.route_name_detail(), args=[obj.pk], request=request
-        )
-        return Answer(201, content, quote_etag(obj.etag), location)
-    if method not in ("PUT", "DELETE"):
+    else:
         raise ImproperlyConfigured(f"answers.write: no {method} of an item.")
-    if method == "PUT":
-        check_body(body, present=True)
-    obj = resources.load_for_read(
-        request,
-        resource_type,
-        pk,
-        requirement=requirement,
-        method=method,
-        lock_using=using,
-        body=body,
+    if answer.problem is not None:
+        return _failed(answer.problem)
+    return Answer(
+        answer.status,
+        answer.content,
+        None if answer.etag is None else quote_etag(answer.etag),
+        answer.location,
     )
-    etag, last_modified = resources.item_validators(obj)
-    failed = _precondition(
-        request, etag=etag, last_modified=last_modified, method=method
-    )
-    if failed is not None:
-        return failed
-    if method == "DELETE":
-        writes.destroy(
-            request, resource_type, obj, requirement=requirement, using=using
-        )
-        return Answer(204)
-    saved = writes.update(
-        request, resource_type, obj, body, requirement=requirement, using=using
-    )
-    content = writes.answered_content(
-        request, resource_type, saved, created=False, using=using
-    )
-    return Answer(200, content, quote_etag(resources.item_validators(saved)[0]))
 
 
 def _precondition(request, *, etag, last_modified, method) -> Answer | None:
@@ -183,8 +165,12 @@ def _precondition(request, *, etag, last_modified, method) -> Answer | None:
     found = resources.item_precondition_answer(
         request, etag=etag, last_modified=last_modified, method=method
     )
-    if found is None:
-        return None
+    return None if found is None else _failed(found)
+
+
+def _failed(found) -> Answer:
+    """The answer of the failed precondition `found`, ``(status, body,
+    headers)`` (`scrud_django.core.errors.precondition_answer`'s)."""
     status, body, headers = found
     return Answer(
         status,
@@ -249,26 +235,6 @@ def _internal(request, slug, method, pk, body, if_match):
     if internal.user is None:
         internal.user = AnonymousUser()
     return internal
-
-
-def json_response(data, *, status=200, headers=None, content_type=JSON) -> HttpResponse:
-    """`data` as a JSON response of `content_type`, written as DRF's
-    ``JSONRenderer`` writes it (compact, not ASCII-escaped, U+2028 and
-    U+2029 escaped, NaN and the infinities refused: ``ValueError``), with
-    `headers` (a ``Content-Type`` among them replaces `content_type`)."""
-    text = json.dumps(
-        data,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-        cls=DjangoJSONEncoder,
-    )
-    # Fully escaped, so that the JSON is a strict JavaScript subset.
-    text = text.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-    response = HttpResponse(text, status=status, content_type=content_type)
-    for name, value in (headers or {}).items():
-        response[name] = value
-    return response
 
 
 def as_response(answer: Answer, *, saved_trigger: bool) -> HttpResponse:

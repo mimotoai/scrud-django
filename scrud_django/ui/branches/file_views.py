@@ -11,10 +11,10 @@ prefix's branch."""
 from django.http import Http404, HttpResponse
 
 from scrud_django.core.errors import error_answer
+from scrud_django.core.json import json_response
 from scrud_django.ui.branches.effective import safe_mode_requested, using_safe_mode
 from scrud_django.ui.branches.file_urls import css_files, js_files
 from scrud_django.ui.branches.selection import check_mount_access, choose
-from scrud_django.ui.studio.answers import json_response
 
 MAX_AGE = 31536000  # a year: the URL holds the ETag
 
