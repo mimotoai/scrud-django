@@ -92,7 +92,7 @@ def create(slug, body):
 def make_wip(admin_login, name="wip", parent="main", context="alice"):
     """Branch `name` (in `context`, over `parent`) created through the API by
     the superuser."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     return create(
         "ui-branches", {"name": name, "rbac_context": context, "parent": parent}
     )
@@ -101,7 +101,7 @@ def make_wip(admin_login, name="wip", parent="main", context="alice"):
 def wip_overrides_row(admin_login):
     """main has ``row``; ``wip`` (over main) overrides it. Returns main's row
     and wip's override."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>main</b>")
     make_wip(admin_login)
     override = create(

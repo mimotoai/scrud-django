@@ -119,7 +119,7 @@ def strip_text(fragment):
 @test_context
 def test_type_page_wires_endpoints_and_sandbox(ui_alice_login):
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     shown = page(branch="wip")
     # The preview: exactly one iframe, sandboxed with no allow-scripts.
     (iframe,) = re.findall(r"<iframe[^>]*>", shown)
@@ -165,7 +165,7 @@ def test_type_page_controls_reach_the_preview_and_default_to_a_working_branch(
 ):
     setup_branches(ui_alice_login)
     grant(ui_alice_login, {"http.GET": [UI_STYLESHEET_TYPE_URI]}, "acme")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     # Without ?branch=, the first working branch alice may select.
     assert attr(page(), "data-branch") == "wip"
     shown = page(
@@ -195,7 +195,7 @@ def test_type_page_controls_reach_the_preview_and_default_to_a_working_branch(
 @test_context
 def test_unavailable_branch_or_context_shows_a_notice(ui_alice_login):
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     notices = {}
     for value in ("bobs", "nope"):
         shown = page(branch=value)
@@ -213,7 +213,7 @@ def test_unavailable_branch_or_context_shows_a_notice(ui_alice_login):
 @test_context
 def test_strip_shows_changes_conflicts_css_and_browse_link(ui_alice_login):
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     shown = page(branch="wip")
     strip = section(shown, "studio-strip-body")
     text = strip_text(strip)
@@ -262,7 +262,7 @@ def test_strip_hides_own_rows_the_user_may_not_read(ui_alice_login):
         template="<s>{{ value }}</s>",
     )
     store_item("ui-css", "wip", "", name="hidden", css="p { color: blue }")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     changes = section(page(branch="wip"), "studio-changes")
     assert re.search(r'data-kind="component"[^>]*data-name="row"', changes)
     assert 'data-name="secret"' not in changes and "secret" not in changes
@@ -279,7 +279,7 @@ def test_strip_hides_own_rows_the_user_may_not_read(ui_alice_login):
 @test_context
 def test_published_branch_is_read_only_and_browses_under_its_prefix(ui_alice_login):
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     shown = page(branch="shop")
     assert attr(shown, "data-editable") == "false"
     strip = section(shown, "studio-strip-body")
@@ -308,7 +308,7 @@ def test_published_branch_lists_its_own_items_to_revert(ui_alice_login):
         template="<u>{{ value }}</u>",
     )
     grant(ui_alice_login, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "project-a")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     shown = page(branch="shop")
     assert attr(shown, "data-editable") == "false"
     changes = section(shown, "studio-changes")
@@ -349,7 +349,7 @@ def test_item_says_what_a_revert_shows(studio_layer, ui_alice_login):
         mode="view",
         template="<i>main's</i>",
     )
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     url = reverse("scrud-studio:item")
 
     def reverts_to(branch, kind, name):
@@ -369,7 +369,7 @@ def test_item_says_what_a_revert_shows(studio_layer, ui_alice_login):
 @test_context
 def test_item_reads_the_effective_item_the_user_may_read(ui_alice_login):
     row = setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     url = reverse("scrud-studio:item")
 
     When.http.get(url, {"branch": "wip", "kind": "component", "name": "row"})

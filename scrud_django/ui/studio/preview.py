@@ -7,12 +7,12 @@ from urllib.parse import urlencode
 from django.urls import get_script_prefix, reverse
 from django.utils.safestring import SafeString
 
-from scrud_django.ui.branches.css import CSS_FILE_URL_NAME, css_files
 from scrud_django.ui.branches.effective import (
     BRANCH_PARAMETER,
     Selection,
     using_selection,
 )
+from scrud_django.ui.branches.file_urls import CSS_FILE_URL_NAME, css_files
 from scrud_django.ui.branches.selection import Mount, api_base, selection_value
 from scrud_django.ui.branches.store import BranchChainError, branches, published_root
 from scrud_django.ui.render import render_resource, using_view_preview

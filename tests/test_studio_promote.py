@@ -603,7 +603,7 @@ def test_refused_transition_shows_server_error(studio_layer, admin_login):
     user = component_writer()
     grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
     grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.post(
         reverse("ui-pushes-list"),
         data={
@@ -663,7 +663,7 @@ def test_push_page_without_label_shows_a_dash(studio_layer, admin_login):
     grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "alice")
     grant(reader, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
     for user, mode in ((admin_login, "edit"), (reader, "view")):
-        Given.http.force_authenticate(user)
+        Given.http.force_login(user)
         for push in (unlabelled, null_label, restore):
             page = get_page(push_page_url(reverse("ui-pushes-detail", args=[push.pk])))
             assert page.one("data-studio-push").attrs["data-studio-mode"] == mode
@@ -689,7 +689,7 @@ def test_push_page_view_mode_and_restore(studio_layer, admin_login):
     grant(reader, {"http.GET": [UI_PUSH_TYPE_URI]}, "")
     grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "alice")
     grant(reader, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     href = reverse("ui-pushes-detail", args=[proposed.pk])
     page = get_page(push_page_url(href))
     # A user who may not PUT the push: the view twin, no form.
@@ -711,7 +711,7 @@ def test_push_page_view_mode_and_restore(studio_layer, admin_login):
     assert text_of(page.one("data-studio-push-label")) == "ship it"
     assert counts(preview_of(page))["changes"] == "2"
     # A restore has no source: no review.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     href = reverse("ui-pushes-detail", args=[restore.pk])
     page = get_page(push_page_url(href))
     assert page.one("data-studio-push").attrs["data-studio-mode"] == "edit"
@@ -744,7 +744,7 @@ def test_apply_disabled_with_conflicts(studio_layer, admin_login):
             "alice": {"http.GET": [UI_COMPONENT_TYPE_URI, ITEM_KINDS["stylesheet"]]},
         }
     )
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     page = get_page(workbench_url(stored_branch("wip")))
     box = promote_boxes(page)["main"]
     apply = box_button(page, box, "studio-apply")
@@ -781,7 +781,7 @@ def test_apply_disabled_with_conflicts(studio_layer, admin_login):
 @pytest.mark.django_db
 @test_context
 def test_unreadable_counts_shown(studio_layer, admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     reverse("ui-components-list")
     make_component("row", "<b>main</b>")
     make_wip(admin_login)
@@ -792,7 +792,7 @@ def test_unreadable_counts_shown(studio_layer, admin_login):
     user = assign_ui_role((), "")
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
     grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     page = get_page(workbench_url(wip))
     # No grant to push: the panel offers the review only.
     box = promote_boxes(page)["main"]
@@ -819,7 +819,7 @@ def test_unreadable_counts_shown(studio_layer, admin_login):
 @pytest.mark.django_db
 @test_context
 def test_promote_to_ancestor_beyond_parent(studio_layer, admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>main</b>")
     make_wip(admin_login, "team")
     make_wip(admin_login, "mine", parent="team")

@@ -122,6 +122,7 @@ UI_APP = (
     ROOT / "scrud_django" / "ui" / "pages.py",
     ROOT / "scrud_django" / "ui" / "urls.py",
     ROOT / "scrud_django" / "ui" / "branches" / "file_views.py",
+    ROOT / "scrud_django" / "ui" / "studio" / "views.py",
 )
 
 
@@ -147,7 +148,8 @@ def test_ui_pages_import_no_drf():
         '"scrud_django",\n    ],', '"scrud_django",\n        "scrud_django.ui",\n    ],'
     ) + (
         "\nfor name in ('scrud_django.ui.pages', 'scrud_django.ui.urls',"
-        " 'scrud_django.ui.branches.file_views'):\n"
+        " 'scrud_django.ui.branches.file_views',"
+        " 'scrud_django.ui.studio.views'):\n"
         "    importlib.import_module(name)\n"
     )
     assert '"scrud_django.ui",' in script

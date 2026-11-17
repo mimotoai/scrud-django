@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ImproperlyConfigured
+from django.core.serializers.json import DjangoJSONEncoder
 from django.http import HttpResponse
 from django.test.client import RequestFactory
 from django.urls import NoReverseMatch, reverse
@@ -233,6 +234,21 @@ def _internal(request, slug, method, pk, body, if_match):
     if internal.user is None:
         internal.user = AnonymousUser()
     return internal
+
+
+def json_response(data, *, status=200, headers=None) -> HttpResponse:
+    """`data` as a JSON response, written as DRF's ``JSONRenderer`` writes
+    it (compact, not ASCII-escaped), with `headers`."""
+    response = HttpResponse(
+        json.dumps(
+            data, separators=(",", ":"), ensure_ascii=False, cls=DjangoJSONEncoder
+        ),
+        status=status,
+        content_type=JSON,
+    )
+    for name, value in (headers or {}).items():
+        response[name] = value
+    return response
 
 
 def as_response(answer: Answer, *, saved_trigger: bool) -> HttpResponse:

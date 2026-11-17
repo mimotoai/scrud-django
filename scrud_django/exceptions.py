@@ -267,6 +267,15 @@ class ContentFilterError(QueryParameterError):
         return {key: list(messages) for key, messages in self.errors.items()}
 
 
+class RequestFieldsInvalidError(ContentFilterError):
+    """A request's fields that the studio refuses (a missing name, a value of
+    the wrong type): 400, answered as DRF's ``ValidationError`` of ``errors``
+    (each field to its messages, code ``invalid``) was, as
+    `ContentFilterError` answers it."""
+
+    default_detail = "Invalid input."
+
+
 class RbacContextInvalidError(ScrudException):
     """A request body whose ``rbac_context`` cannot be stored: an empty list
     (which would put the resource in no context), or a context longer than

@@ -75,7 +75,7 @@ def test_save_inherited_item_creates_override_with_server_base(
     admin_login, ui_alice_login
 ):
     main_row = main_and_wip(admin_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     response = studio(
         "save-item",
         {
@@ -118,7 +118,7 @@ def test_save_inherited_item_creates_override_with_server_base(
 @test_context
 def test_save_own_item_needs_if_match_and_412s_on_stale(admin_login, ui_alice_login):
     main_row = main_and_wip(admin_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     first = save()
     Then.http.status_code_is(201)
     etag = first["ETag"]
@@ -170,7 +170,7 @@ def test_published_branch_is_read_only(admin_login):
         "push": {"target": "main"},
     }
     # Even for a superuser, and before anything is dispatched.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     with mock.patch(
         "scrud_django.ui.studio.answers.write",
         side_effect=AssertionError("dispatched"),
@@ -196,7 +196,7 @@ def test_published_branch_is_read_only(admin_login):
 def shop_override(admin_login, template="<u>shop</u>"):
     """``shop``'s override of main's ``row``, created through the API by the
     superuser: ``(pk, ETag)``."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.post(
         reverse("ui-components-list"),
         data=component(
@@ -236,7 +236,7 @@ def test_revert_on_a_published_branch(admin_login):
     read = [UI_COMPONENT_TYPE_URI, collection_type_uri_for(UI_COMPONENT_TYPE_URI)]
     grant(user, {"http.GET": read}, "project-a")
     before = stored_state()
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.delete(reverse("ui-components-detail", args=[pk]), HTTP_IF_MATCH=current)
     Then.http.status_code_is(403)
     api = (Http.response["Content-Type"], Http.response.json())
@@ -247,7 +247,7 @@ def test_revert_on_a_published_branch(admin_login):
     assert stored_state() == before
     # A user who may not select shop is refused as for an unknown branch,
     # before anything is dispatched.
-    Given.http.force_authenticate(assign_ui_role((UI_COMPONENT_TYPE_URI,), "alice"))
+    Given.http.force_login(assign_ui_role((UI_COMPONENT_TYPE_URI,), "alice"))
     with mock.patch(
         "scrud_django.ui.studio.answers.write",
         side_effect=AssertionError("dispatched"),
@@ -258,7 +258,7 @@ def test_revert_on_a_published_branch(admin_login):
     # With the DELETE grant: conditional as the API's DELETE (ruling S10),
     # 428 without If-Match and 412 with a stale one; nothing is deleted.
     grant(user, {"http.DELETE": [UI_COMPONENT_TYPE_URI]}, "project-a")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     for headers, status in (({}, 428), ({"HTTP_IF_MATCH": first}, 412)):
         response = studio("revert-item", revert, **headers)
         Then.http.status_code_is(status)
@@ -284,7 +284,7 @@ def test_revert_on_a_published_branch(admin_login):
         {"http.GET": read, "http.DELETE": [UI_COMPONENT_TYPE_URI]}, "project-a"
     )
     grant(deleter, {"http.GET": read}, "")
-    Given.http.force_authenticate(deleter)
+    Given.http.force_login(deleter)
     before = stored_state()
     When.http.delete(
         reverse("ui-components-detail", args=[main_row.pk]),
@@ -303,7 +303,7 @@ def test_revert_on_a_published_branch(admin_login):
     assert stored_state() == before
     # main too: its own row of an item is the item itself, so a revert
     # deletes it (as the API's DELETE of it would), If-Match required.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     on_main = {"kind": "component", "branch": "main", "name": "row"}
     studio("revert-item", on_main)
     Then.http.status_code_is(428)
@@ -332,7 +332,7 @@ def test_revert_reveals_no_row_the_user_may_not_read(admin_login):
     main_and_wip(admin_login)
     make_branch("shop", "project-a", parent="main", prefix="/shop/")
     _pk, etag = shop_override(admin_login)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.post(
         reverse("ui-components-list"),
         data=component(name="row", template="<i>wip</i>", **WIP),
@@ -343,7 +343,7 @@ def test_revert_reveals_no_row_the_user_may_not_read(admin_login):
     user = assign_ui_role((UI_BRANCH_TYPE_URI,), "project-a")
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
     before = stored_state()
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     with mock.patch(
         "scrud_django.ui.studio.answers.write",
         side_effect=AssertionError("dispatched"),
@@ -387,7 +387,7 @@ def test_studio_adds_no_rights(admin_login):
         "alice",
     )
     before = stored_state()
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.post(
         reverse("ui-components-list"),
         data=component(name="row", template="<i>mine</i>", **WIP),
@@ -401,7 +401,7 @@ def test_studio_adds_no_rights(admin_login):
     assert "HX-Trigger" not in response
     assert stored_state() == before
     # An own row: the PUT is refused as the API refuses it.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.post(
         reverse("ui-components-list"),
         data=component(name="row", template="<i>admin's</i>", **WIP),
@@ -411,7 +411,7 @@ def test_studio_adds_no_rights(admin_login):
     etag = Http.response["ETag"]
     pk = int(Http.response["Location"].rstrip("/").rsplit("/", 1)[1])
     before = stored_state()
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.put(
         reverse("ui-components-detail", args=[pk]),
         data=component(name="row", template="<i>mine</i>", **WIP),
@@ -435,7 +435,7 @@ def test_studio_adds_no_rights(admin_login):
     assert stored(main_row.pk).etag == main_row.etag
     # A branch the user may not GET is refused alike for every write, as
     # one that does not exist, and nothing is dispatched.
-    Given.http.force_authenticate(assign_ui_role((UI_COMPONENT_TYPE_URI,), "alice"))
+    Given.http.force_login(assign_ui_role((UI_COMPONENT_TYPE_URI,), "alice"))
     with mock.patch(
         "scrud_django.ui.studio.answers.write",
         side_effect=AssertionError("dispatched"),
@@ -460,7 +460,7 @@ def test_studio_adds_no_rights(admin_login):
 @test_context
 def test_revert_deletes_own_row_and_resolves_conflict(admin_login, ui_alice_login):
     main_row = main_and_wip(admin_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     first = save()["ETag"]
     Then.http.status_code_is(201)
     # A newer edit (another author's, on the shared branch).
@@ -546,7 +546,7 @@ def test_pull_and_push_through_existing_resources(admin_login, ui_alice_login):
         },
         "",
     )
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     save()
     Then.http.status_code_is(201)
     ResourceRegistration.update(
@@ -636,8 +636,10 @@ def test_internal_dispatch_keeps_csrf_for_the_studio_request(
         "content": {"engine": "django", "mode": "view", "template": "<i/>"},
     }
     response = client.post(url, data=body, format="json")
+    # Django's CSRF check refuses it (its failure page, no longer DRF's
+    # problem body).
     assert response.status_code == 403
-    assert "CSRF" in response.json()["detail"]
+    assert b"CSRF" in response.content
     assert own_rows(UI_COMPONENT_TYPE_URI, "wip") == []
     # With the token, the studio request passes the check, and its in-process
     # write (which carries none) is made.
@@ -655,7 +657,7 @@ def test_internal_dispatch_keeps_csrf_for_the_studio_request(
 def test_bad_bodies_are_refused(admin_login, ui_alice_login):
     main_and_wip(admin_login)
     before = stored_state()
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     for verb, body in (
         ("save-item", {"kind": "page", "branch": "wip", "name": "x", "content": {}}),
         ("save-item", {"kind": "component", "branch": "wip", "content": {}}),
@@ -674,6 +676,6 @@ def test_bad_bodies_are_refused(admin_login, ui_alice_login):
     # The write endpoints answer POST only, and need a login.
     When.http.get(reverse("scrud-studio:pull"))
     Then.http.status_code_is(405)
-    Given.http.force_authenticate(None)
+    Http.api_client.logout()
     studio("pull", {"branch": "wip"})
     Then.http.status_code_is(401)

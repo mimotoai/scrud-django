@@ -336,7 +336,7 @@ def test_publishing_is_fixed_while_stylesheets_apply_elsewhere(
 def version_as(user, version):
     """GET `version` as `user`: its body's items by kind, as names, and the
     response's ETag."""
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.get(reverse(f"{VERSIONS}-detail", args=[version.pk]))
     Then.http.status_code_is(200)
     items = Http.response.json()["items"]
@@ -349,7 +349,7 @@ def version_as(user, version):
 def listed_as(user):
     """GET the versions list as `user`: each entry's items as names, by
     version number, and the list's ETag."""
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.get(reverse(f"{VERSIONS}-list"))
     Then.http.status_code_is(200)
     entries = Http.response.json()["content"]

@@ -84,7 +84,7 @@ def setup_rule_editor(user):
         prefixes=THEME_PREFIXES,
         rules=THEME_RULES,
     )
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     classes, opened, _li, _page = workbench_entries(alice_wip)[("stylesheet", "theme")]
     return classes, opened
 
@@ -452,7 +452,7 @@ def test_marks_agree_with_explain_for_layer_and_stored_sheets(admin_login):
     )
     reverse("todo-lists-list")
     make_branch("wip", "alice")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     reordered = [
         rule("ex:TodoItem", "row-b"),
         rule("layertest ex:TodoList", "gone"),

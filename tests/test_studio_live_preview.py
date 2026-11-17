@@ -16,7 +16,6 @@ from urllib.parse import urlencode
 import pytest
 from django.test import RequestFactory
 from django.urls import reverse
-from rest_framework.test import force_authenticate
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
@@ -113,7 +112,7 @@ def wip_for(user):
     reverse("todo-lists-list")
     make_branch("wip", "alice")
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
 
 
 def main_row():
@@ -301,7 +300,7 @@ def test_draft_raising_at_render_falls_back(ui_alice_login, engine, template):
 def test_drafts_on_published_branch_refused(admin_login):
     main_row()
     make_branch("shop", "", parent="main", prefix="/shop/")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     before = stored_state()
     for branch in ("main", "shop"):
         live(400, branch=branch, drafts=[django_component("row", "<i>x</i>")])
@@ -333,7 +332,7 @@ def test_after_push_needs_get_only_and_shows_source_overrides(
     # May GET wip, and nothing else: no write anywhere.
     user = login_no_roles
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     before = stored_state()
     page = live(branch="main")
     assert "<b>main Lorem ipsum</b>" in page and "<em>SHOUT</em>" in page
@@ -343,7 +342,7 @@ def test_after_push_needs_get_only_and_shows_source_overrides(
     assert errors_of(page) == []
     assert stored_state() == before
     # Without GET on the source: 403, as for one that does not exist.
-    Given.http.force_authenticate(ui_bob_login)
+    Given.http.force_login(ui_bob_login)
     for source in ("wip", "nope"):
         live(403, branch="main", after_push={"source": source})
         assert Http.response["Content-Security-Policy"].startswith("sandbox ")
@@ -356,7 +355,7 @@ def test_after_push_needs_get_only_and_shows_source_overrides(
 def test_after_push_with_drafts_refused(admin_login):
     main_row()
     make_branch("wip", "alice")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     live(
         400,
         branch="main",
@@ -547,7 +546,7 @@ def test_match_markers_agree_with_resolve_component(case, admin_login):
     make_component("row-b", "<i>{{ value.text }}</i>")
     make_component("row-edit", "<u>{{ value.text }}</u>", mode="edit")
     setup()
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     if mark["stylesheet"] is None:
         # The default stylesheet's first rule, by its name.
         from scrud_django.ui.cascade import _default_stylesheet
@@ -581,7 +580,7 @@ def test_edit_rule_moved_up_reports_its_rank(admin_login):
     make_component("row", "<b>{{ value.text }}</b>")
     make_component("row-edit", "<u>{{ value.text }}</u>", mode="edit")
     sheet = make_stylesheet("s", [("ex:TodoItem", "row"), ("ex:TodoItem", "row-edit")])
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     edit_after = {"stylesheet": "s", "applies_to": "", "index": 1}
     found = nodes(live(branch="main", mode="view", mark=edit_after))["/items/0"]
     assert found == ("loses", "wrong mode")
@@ -735,7 +734,7 @@ def test_preview_configures_htmx_without_inline_indicator_styles(
         for tag in re.findall(r"<style[^>]*>", page)
     )
     # A real page: no htmx-config, no indicator stylesheet.
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     When.http.get(
         reverse("todo-lists-detail", args=[todo_list.pk]), HTTP_ACCEPT="text/html"
     )
@@ -791,7 +790,7 @@ def test_errors_django_answers_are_sandboxed_too(ui_alice_login, settings):
     answered as Django answers it, with the sandbox."""
     reverse("todo-lists-list")
     make_branch("wip", "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     settings.DATA_UPLOAD_MAX_NUMBER_FIELDS = 3
     When.http.post(
         reverse("scrud-studio:live-preview"),
@@ -810,7 +809,8 @@ def test_errors_django_answers_are_sandboxed_too(ui_alice_login, settings):
         data=urlencode({"request": json.dumps({"type": SLUG, "branch": "main"})}),
         content_type="application/x-www-form-urlencoded",
     )
-    force_authenticate(request, user=ui_alice_login)
+    request.user = ui_alice_login
+    request._dont_enforce_csrf_checks = True
     with mock.patch(
         "scrud_django.ui.studio.views.render_live_preview",
         side_effect=RuntimeError("boom"),
@@ -926,7 +926,7 @@ def test_studio_data_embedded_in_live_preview_shows_stored_items_not_drafts(
         {"http.GET": [TYPE_URI_TODO_LIST, collection_type_uri_for(TYPE_URI_TODO_LIST)]},
         todo_list.content["rbac_context"],
     )
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.get(items, HTTP_ACCEPT="application/json")
     Then.http.status_code_is(200)
     plain = Http.response.json()

@@ -8,10 +8,11 @@ import hashlib
 import json
 import re
 from html import unescape
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import pytest
 from django.db import connection
+from django.middleware.csrf import _get_new_csrf_string
 from django.test import Client, RequestFactory
 from django.test.utils import CaptureQueriesContext
 from django.urls import resolve, reverse
@@ -29,6 +30,7 @@ from scrud_django.ui.branches.selection import (
     cookie_path,
     in_mount,
 )
+from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .factories import UserFactory
 from .fixtures import *  # noqa
@@ -40,7 +42,9 @@ from .fixtures import (
 )
 from .resource_types import SUMMARIES_TYPE
 from .steps import *  # noqa: F403, F401
+from .test_studio_writes import main_and_wip, own_rows
 from .test_ui_branch_css import css_hrefs, make_css
+from .test_ui_branch_push import stored_state
 from .test_ui_branch_render import may_select_branches, setup_main_and_wip
 from .test_ui_http import (
     CONDITIONAL_PUT,
@@ -536,6 +540,97 @@ def test_a_ui_write_without_the_csrf_token_is_refused(todo_list, todo_owner_logi
     )
     assert response.status_code == 200
     assert stored(todo_list).content["title"] == "Forged"
+
+
+STUDIO_POSTS = {
+    "save-item": (
+        JSON,
+        {
+            "kind": "component",
+            "branch": "wip",
+            "name": "row",
+            "content": {"engine": "django", "mode": "view", "template": "<i/>"},
+        },
+    ),
+    "revert-item": (JSON, {"kind": "component", "branch": "wip", "name": "row"}),
+    "pull": (JSON, {"branch": "wip"}),
+    "push": (JSON, {"branch": "wip"}),
+    "new-component": (JSON, {"branch": "wip", "slug": "todo-lists"}),
+    "live-preview": (
+        "application/x-www-form-urlencoded",
+        {"request": json.dumps({"type": "todo-lists", "branch": "wip"})},
+    ),
+}
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_studio_post_without_the_csrf_token_is_refused(admin_login, ui_alice_login):
+    """Each studio POST endpoint, by the session user without the CSRF token,
+    answers 403 and writes nothing; with it, the request is made."""
+    main_and_wip(admin_login)
+    client = Client(enforce_csrf_checks=True)
+    client.force_login(ui_alice_login)
+    before = stored_state()
+    token = _get_new_csrf_string()
+    for name, (content_type, body) in STUDIO_POSTS.items():
+        url = reverse(f"scrud-studio:{name}")
+        sent = (
+            json.dumps(body)
+            if content_type == JSON
+            else "&".join(f"{k}={quote(v)}" for k, v in body.items())
+        )
+        response = client.post(url, sent, content_type=content_type)
+        assert response.status_code == 403, name
+        assert b"CSRF" in response.content, name
+        assert stored_state() == before, name
+        client.cookies["csrftoken"] = token
+        response = client.post(
+            url, sent, content_type=content_type, HTTP_X_CSRFTOKEN=token
+        )
+        assert b"CSRF" not in response.content, name
+        before = stored_state()
+    # The save, accepted: the write was made.
+    assert [r["template"] for r in own_rows(UI_COMPONENT_TYPE_URI, "wip")] == ["<i/>"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_the_studio_refuses_the_anonymous_and_other_methods_as_the_api_does():
+    """The anonymous user is 401 (a problem, as the API answers one), before
+    the method is looked at; a user may use the endpoint's method only."""
+    reverse("todo-lists-list")
+    unauthorized = {
+        "type": "about:blank",
+        "title": "Unauthorized",
+        "status": 401,
+        "detail": "Unauthorized",
+        "code": "not_authenticated",
+    }
+    for name, kwargs, method in (
+        ("types", {}, "GET"),
+        ("sample", {"slug": "todo-lists"}, "GET"),
+        ("item", {}, "GET"),
+        ("save-item", {}, "POST"),
+        ("live-preview", {}, "POST"),
+    ):
+        for verb in (method, "PUT"):
+            response = getattr(Client(), verb.lower())(
+                reverse(f"scrud-studio:{name}", kwargs=kwargs)
+            )
+            assert response.status_code == 401, (name, verb)
+            assert response["Content-Type"] == "application/problem+json"
+            assert (
+                response.content
+                == json.dumps(unauthorized, separators=(",", ":")).encode()
+            )
+            assert response["Allow"] == method
+    client = Client()
+    client.force_login(UserFactory())
+    for name, method in (("types", "GET"), ("live-preview", "POST")):
+        response = client.put(reverse(f"scrud-studio:{name}"))
+        assert response.status_code == 405
+        assert response["Allow"] == method
 
 
 @pytest.mark.django_db

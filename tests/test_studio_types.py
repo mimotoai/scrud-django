@@ -36,7 +36,7 @@ def test_studio_needs_login():
 @pytest.mark.django_db
 @test_context
 def test_types_lists_every_registered_type_and_searches(login_no_roles):
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     When.http.get(reverse("scrud-studio:types"))
     Then.http.status_code_is(200)
     found = slugs(html())
@@ -57,7 +57,7 @@ def test_types_lists_every_registered_type_and_searches(login_no_roles):
 @pytest.mark.django_db
 @test_context
 def test_type_page_shell(login_no_roles):
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     When.http.get(reverse("scrud-studio:type", args=["todo-lists"]))
     Then.http.status_code_is(200)
     assert "todo-lists" in html()
@@ -68,7 +68,7 @@ def test_type_page_shell(login_no_roles):
 @pytest.mark.django_db
 @test_context
 def test_studio_pages_have_no_inline_scripts(login_no_roles):
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     for url in (
         reverse("scrud-studio:types"),
         reverse("scrud-studio:type", args=["todo-lists"]),

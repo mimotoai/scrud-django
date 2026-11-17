@@ -86,7 +86,7 @@ def put_item(resource, body):
 def conflicted(admin_login):
     """`wip` overrides `row`, then main edits `row` and `wip` is pulled.
     Returns the main row's first and current ETags, and wip's override."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>1</b>")
     first_etag = main_row.etag
     When.http.post(

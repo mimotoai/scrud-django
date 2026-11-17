@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 
 from django.urls import NoReverseMatch, get_script_prefix, reverse
 
-from scrud_django.permissions import may_read_in_context
+from scrud_django.core.authz import may_read_in_context
 from scrud_django.ui.branches import ITEM_KINDS, MAIN
 from scrud_django.ui.branches.effective import Selection, effective_rows
 from scrud_django.ui.branches.model import Branch, branch_of, item_key

@@ -35,9 +35,9 @@ from django.http import Http404
 from django.urls import NoReverseMatch, reverse
 
 from scrud_django import registration
+from scrud_django.core.authz import may_read_in_context, resource_contexts
 from scrud_django.exceptions import UIBranchInvalidError
 from scrud_django.models import Resource
-from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.rows import unsorted
 from scrud_django.ui.authz import may_post, may_send
 from scrud_django.ui.branches import (

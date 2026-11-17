@@ -288,7 +288,7 @@ def studio_item_names(slug):
 def test_studio_layer_setting_toggles_at_runtime(admin_login):
     row = make_component("row", "<b>{{ value }}</b>")
     url = url_of(row)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     config = apps.get_app_config("scrud_django_ui_studio")
 
     def assert_off():
@@ -360,7 +360,7 @@ def test_studio_layer_on_by_default():
 @test_context
 def test_bootstrap_studio_and_computed_types_without_layer(admin_login):
     assert studio_layer_enabled() is False
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     # The bootstrap studio.
     When.http.get(reverse("scrud-studio:types"))
     Then.http.status_code_is(200)
@@ -383,7 +383,7 @@ def test_studio_names_with_layer_off(admin_login):
     installed: a new item may not have it, and an override made while it was
     on is an orphan (kept, rendering, and reported), as when a layer's app
     is uninstalled."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     body = {
         "name": "studio:page",
         "engine": "django",
@@ -437,7 +437,7 @@ def test_check_clean_with_layer_on_and_off():
 def test_studio_page_only_in_studio_scope(studio_layer, admin_login):
     row = make_component("row", "<b>{{ value }}</b>")
     url = url_of(row)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     with override_settings(SCRUD_UI_STUDIO_LAYER=False):
         assert STUDIO_LAYER not in installed_layers()
         without = without_csrf(get_page(url))
@@ -513,7 +513,7 @@ def test_component_globals_in_mount_and_api_url(todo_list, todo_reader_login):
         "</p>"
     )
     publish("admin", ADMIN)
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     # At the API's URLs, in_mount changes nothing.
     page = get_page(url_of(todo_list), HTTP_SCRUD_UI_SCOPE="host")
     assert (
@@ -533,7 +533,7 @@ def test_component_globals_in_mount_and_api_url(todo_list, todo_reader_login):
 @test_context
 def test_api_url_of_unknown_slug_fails_its_component(todo_list, todo_reader_login):
     host('<p class="host">{{ api_url("no-such-type") }}</p>')
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     page = get_page(url_of(todo_list), HTTP_SCRUD_UI_SCOPE="host")
     assert '<!-- scrud-ui: component "host" failed -->' in page
     assert '<p class="host">' not in page
@@ -566,7 +566,7 @@ def test_globals_in_list_and_page_components_not_django(todo_list, todo_reader_l
             ("plain ex:TodoList", "django-row"),
         ],
     )
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     page = get_page(reverse("todo-lists-list") + "?ui-scope=listing")
     assert '<ul data-list="/api/todo-lists/">/api/x/</ul>' in page
     assert '<body data-page="/api/todo-lists/">' in page
@@ -580,7 +580,7 @@ def test_studio_links_on_ui_type_pages_only(todo_list, admin_login):
     root = make_branch("studio-root", "project-a", parent=None, prefix=STUDIO_ROOT)
     make_branch("no-prefix", "project-a", parent=None)
     row = make_component("row", "<b>{{ value }}</b>")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     # The workbench in the scope studio, in view mode (the workbench is a view
     # of its branch, also for a user who may PUT it), the & escaped.
     studio_href = (
@@ -633,7 +633,7 @@ def test_studio_links_required_in_page(todo_list, admin_login):
     make_component("my-page", "<html><body>no body here</body></html>")
     make_stylesheet("pages", [("scrud:page", "my-page")])
     row = make_component("row", "<b>{{ value }}</b>")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     # On a page with no chrome, the page component is used.
     assert get_page(url_of(todo_list)) == "<html><body>no body here</body></html>"
     # The studio links are chrome: a page that leaves them out is replaced

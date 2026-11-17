@@ -150,7 +150,7 @@ def ours(explained, name):
 def alice_on_wip(admin_login, ui_alice_login):
     """``wip`` (in "alice", over main), and alice signed in."""
     make_wip(admin_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     return ui_alice_login
 
 
@@ -234,7 +234,7 @@ def test_options_most_specific_first_and_broad_labelled(admin_login, ui_alice_lo
     options(400, pointer="/nope")
     options(400, branch="no-such-branch")
     assert problem()["type"] == UNAVAILABLE
-    Given.http.force_authenticate(None)
+    Http.api_client.logout()
     options(401)
 
 
@@ -733,7 +733,7 @@ def test_an_iri_selector_must_round_trip(admin_login, ui_alice_login):
             "rbac_context": "alice",
         },
     )
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     assert options(slug="studio-odd", pointer="")["matches"][0]["select"] == (
         "urn:x:Item"
     )
@@ -770,7 +770,7 @@ def test_refused_last_step_rolls_everything_back(admin_login, ui_alice_login):
         "alice",
     )
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.post(
         reverse("ui-stylesheets-list"),
         data={
@@ -832,7 +832,7 @@ def test_new_component_adds_no_rights(admin_login, ui_alice_login):
         "alice",
     )
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.post(
         reverse("ui-components-list"),
         data=component(name="x", branch="wip", rbac_context="alice"),
@@ -855,7 +855,7 @@ def test_generated_name_is_unique(admin_login, ui_alice_login):
         "ui-components",
         component(name="todo-lists-items-view-2", branch="wip", rbac_context="alice"),
     )
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     assert options(pointer="/items/0")["name"] == "todo-lists-items-view-3"
     got = new_component()
     assert got["written"][0] == {"kind": "component", "name": "todo-lists-items-view-3"}
@@ -879,7 +879,7 @@ def test_published_branch_refused(admin_login):
     make_branch("shop", "", parent="main", prefix="/shop/")
     before = stored_state()
     # Even for a superuser, and before anything is dispatched.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     with mock.patch(
         "scrud_django.ui.studio.answers.write",
         side_effect=AssertionError("dispatched"),
@@ -915,5 +915,5 @@ def test_bad_requests_are_refused(admin_login, ui_alice_login):
     assert stored_state() == before
     When.http.get(reverse("scrud-studio:new-component"))
     Then.http.status_code_is(405)
-    Given.http.force_authenticate(None)
+    Http.api_client.logout()
     new_component(401)

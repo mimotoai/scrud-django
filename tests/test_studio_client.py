@@ -340,7 +340,7 @@ def setup_wip(user):
     reverse("todo-lists-list")  # the URLconf registers the types
     make_branch("wip", "alice")
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
 
 
 def studio_page(**params):
@@ -1156,7 +1156,7 @@ def test_new_component_is_off_while_the_preview_is_pinned(ui_alice_login):
     make_component("base-row", "<b>{{ value }}</b>")
     make_branch("wip", "alice", branching_point={"main": versions_of("main")[-1]})
     grant(ui_alice_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = studio_page(branch="wip", pinned="1")
     query = "branch=wip%40pinned&mode=view"
     assert f'data-query="{query.replace("&", "&amp;")}"' in page

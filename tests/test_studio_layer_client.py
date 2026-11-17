@@ -2924,7 +2924,7 @@ def test_pointer_with_tilde_explained_exactly(ui_alice_login, settings):
     reverse("todo-lists-list")
     make_branch("alice-wip", "alice")
     grant(ui_alice_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = live(type="studio-tilde", branch="alice-wip")
     pointer = "/a~1b~0c"
     assert f'<scrud-node data-pointer="{pointer}">' in page
@@ -4075,7 +4075,7 @@ def test_new_branch_form_body_from_main(studio_layer, admin_login, settings):
 
     settings.ROOT_URLCONF = "tests.mounted_urls"
     main = make_branch("main", "", parent=None)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.get(workbench_url(main), HTTP_ACCEPT="text/html")
     Then.http.status_code_is(200)
     page = Page(Http.response.content.decode())
@@ -4137,7 +4137,7 @@ def test_override_copy_sends_the_rendered_body(studio_layer, settings):
     settings.ROOT_URLCONF = "tests.mounted_urls"
     run_seed(load_seed())
     alice = seeded_branch("alice-wip")
-    Given.http.force_authenticate(get_user_model().objects.get(username="author"))
+    Given.http.force_login(get_user_model().objects.get(username="author"))
     page = Page(get_page(workbench_url(alice, STUDIO_ROOT)))
     classes, _row, li = page.entries()[("component", "todo-row")]
     assert "studio-own" not in classes
@@ -4241,7 +4241,7 @@ def test_new_rule_sends_what_the_server_offers(admin_login, ui_alice_login, sett
     reverse("todo-lists-list")
     make_wip(admin_login, name="alice-wip")
     grant(ui_alice_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.get(
         reverse("ui-branch-status-detail", args=["alice-wip"]),
         HTTP_ACCEPT="application/json",
@@ -4357,7 +4357,7 @@ def test_order_shows_its_default_and_saves_nothing_untouched(
         rules=[{"select": "string", "component": "scrud:string"}],
     )
     assert "order" not in sheet.content
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     classes, opened, _li, _page = workbench_entries(alice_wip)[("stylesheet", "plain")]
     assert "studio-own" in classes
     href = opened["href"]

@@ -26,11 +26,11 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.http import HttpResponse
-from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.response import Response
 
+from scrud_django.exceptions import RequestFieldsInvalidError
 from scrud_django.registration import write_db
 from scrud_django.ui import ld
 from scrud_django.ui.branches import ITEM_KINDS, MAIN
@@ -177,22 +177,24 @@ def create(
     pointer = body.get("pointer", "")
     template = body.get("template")
     if not isinstance(template, str):
-        raise ValidationError({"template": ["A template is required."]})
+        raise RequestFieldsInvalidError({"template": ["A template is required."]})
     plan = _plan(request, slug, resource_type, shown, pointer)
     term = _chosen_term(plan, body.get("match"))
     inside = body.get("inside_type", False)
     if not isinstance(inside, bool):
-        raise ValidationError({"inside_type": ["Must be true or false."]})
+        raise RequestFieldsInvalidError({"inside_type": ["Must be true or false."]})
     if inside and plan.inside is None:
-        raise ValidationError(
+        raise RequestFieldsInvalidError(
             {"inside_type": ["Only for a node with no IRI term, below the root."]}
         )
     where = body.get("where") or None
     if where is not None and where not in plan.where:
-        raise ValidationError({"where": ["Must be a scope of the node's chain."]})
+        raise RequestFieldsInvalidError(
+            {"where": ["Must be a scope of the node's chain."]}
+        )
     target = body.get("applies_to", "")
     if target not in plan.applies_to:
-        raise ValidationError(
+        raise RequestFieldsInvalidError(
             {"applies_to": ["Must be \"\" or the preview's data context."]}
         )
     mode = shown.mode
@@ -250,7 +252,7 @@ def create(
                 and ranking.ranked[ranking.winner][1].component == plan.name
             )
         explanation = explain(info, mode, readable=readable)
-    return Response(
+    return answers.json_response(
         {"written": written, "wins": wins, "explanation": explanation},
         status=201,
         headers={"HX-Trigger": SAVED_EVENT},
@@ -274,7 +276,7 @@ def _ok(answer):
 
 def _plan(request, slug, resource_type, shown, pointer) -> _Plan:
     if not isinstance(pointer, str):
-        raise ValidationError({"pointer": ["A JSON Pointer is required."]})
+        raise RequestFieldsInvalidError({"pointer": ["A JSON Pointer is required."]})
     with using_selection(shown.selection), rules_memo():
         info = _node(request, resource_type, shown, pointer)
         root = root_term = None
@@ -345,7 +347,9 @@ def _chosen_term(plan: _Plan, match) -> TypeTerm:
     if match is None and selects:
         match = selects[0]
     if not isinstance(match, str) or match not in selects:
-        raise ValidationError({"match": ["Must be one of the node's matches."]})
+        raise RequestFieldsInvalidError(
+            {"match": ["Must be one of the node's matches."]}
+        )
     return plan.info.terms[selects.index(match)]
 
 
@@ -547,7 +551,7 @@ def _term_token(term: TypeTerm, prefixes) -> str:
         return term_text(term)
     token = compact(term.iri, prefixes)
     if ld.expand(token, dict(prefixes)) != term.iri:
-        raise ValidationError(
+        raise RequestFieldsInvalidError(
             {
                 "match": [
                     f"{term.iri!r} can't be written in a selector of the "

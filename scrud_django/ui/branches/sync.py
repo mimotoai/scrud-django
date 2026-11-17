@@ -9,16 +9,16 @@ from dataclasses import dataclass
 from scoped_rbac import access
 from scoped_rbac.policy import Permission
 
+from scrud_django.core.authz import (
+    may_act_in_context,
+    resource_contexts,
+)
 from scrud_django.exceptions import (
     UIBranchInvalidError,
     UIPushConflictError,
     UIPushForbiddenError,
 )
 from scrud_django.models import Resource, ResourceType
-from scrud_django.permissions import (
-    may_act_in_context,
-    resource_contexts,
-)
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,

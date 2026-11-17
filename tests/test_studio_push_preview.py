@@ -111,7 +111,7 @@ def test_changed_fields_treats_empty_values_as_equal():
 def test_push_preview_changed_marks_a_real_rbac_context_change(admin_login):
     # Pushed into a branch in context "alice", an item of main's ("") is
     # created there with that context: rbac_context really changes.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_component("row", "<b>main</b>")
     make_wip(admin_login, "team", context="alice")
     make_wip(admin_login, "mine", parent="team", context="alice")
@@ -180,7 +180,7 @@ def test_push_preview_matches_what_apply_push_writes(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_push_preview_shows_marker_hiding_the_parents_item(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>main</b>")
     make_wip(admin_login, "team")
     make_wip(admin_login, "mine", parent="team")
@@ -238,7 +238,7 @@ def test_push_preview_lists_conflicts_readable_only(admin_login):
             "alice": {"http.GET": [UI_COMPONENT_TYPE_URI, ITEM_KINDS["stylesheet"]]},
         }
     )
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     body = preview()
     assert body["conflicts"] == [
         {
@@ -283,7 +283,7 @@ def test_push_preview_hides_items_the_user_may_not_read_in_the_source(
     # A write whose source row the user may not read is only counted,
     # though the target's row is readable: its after is the source's
     # content.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     reverse("ui-components-list")
     make_component("row", "<b>main</b>")
     make_wip(admin_login)
@@ -291,7 +291,7 @@ def test_push_preview_hides_items_the_user_may_not_read_in_the_source(
     user = assign_ui_role((), "")
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
     grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     body = preview()
     assert body["changes"] == [] and body["unreadable_changes"] == 1
     grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "alice")
@@ -304,14 +304,14 @@ def test_push_preview_hides_items_the_user_may_not_read_in_the_source(
 @pytest.mark.django_db
 @test_context
 def test_push_preview_needs_get_on_both(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_wip(admin_login)
     make_wip(admin_login, "other", context="bob")
     make_wip(admin_login, "sub", parent="wip")
     make_wip(admin_login, "osub", parent="other", context="bob")
     user = assign_ui_role((), "")
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     # main, which everyone may select, needs no grant.
     preview()
     preview("wip", target="main")
@@ -342,7 +342,7 @@ def test_push_preview_needs_get_on_both(admin_login):
     ):
         body = preview(source, status=400, **params)
         assert body["type"].endswith("/ui-branch-invalid")
-    Given.http.force_authenticate(None)
+    Http.api_client.logout()
     preview(status=401)
 
 
@@ -367,7 +367,7 @@ def test_push_preview_writes_nothing(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_push_preview_default_target_is_parent(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_component("row", "<b>main</b>")
     make_wip(admin_login, "team")
     make_wip(admin_login, "mine", parent="team")
@@ -390,7 +390,7 @@ def test_push_preview_default_target_is_parent(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_push_of_layer_override_previewed(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_wip(admin_login, context="project-a")
     with installed(MORE_APP):
         layer_etag, layer_component = layer_item("component", ("layermore:list",))
@@ -472,7 +472,7 @@ def test_push_preview_renders_through_the_cascade(admin_login):
 def test_push_preview_shows_a_packaged_item_as_before_to_any_reader(admin_login):
     # A packaged layer item is public: a user who may not read context ""
     # (the layer item's) sees it as the before of an override.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_wip(admin_login, "team", context="project-a")
     make_wip(admin_login, "wip", parent="team", context="project-a")
     user = assign_ui_role((), "project-a")
@@ -482,7 +482,7 @@ def test_push_preview_shows_a_packaged_item_as_before_to_any_reader(admin_login)
         assert layer_component["rbac_context"] == ""
         create("ui-components", wip_body())
         Then.http.status_code_is(201)
-        Given.http.force_authenticate(user)
+        Given.http.force_login(user)
         body = preview()
         assert body["target"] == "team" and body["unreadable_changes"] == 0
         [change_] = body["changes"]
@@ -498,7 +498,7 @@ def test_push_preview_conflicts_and_changes_agree_on_a_packaged_item(admin_login
     # A packaged layer item is public in the conflicts as in the changes: a
     # user who may not read context "" sees the conflict of an override with
     # the layer item the target shows.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_wip(admin_login, "team", context="project-a")
     make_wip(admin_login, "wip", parent="team", context="project-a")
     user = assign_ui_role((), "project-a")
@@ -514,7 +514,7 @@ def test_push_preview_conflicts_and_changes_agree_on_a_packaged_item(admin_login
         # Based on an older layer item (an upgrade changed it since).
         override.content = {**override.content, "base": "older"}
         override.save()
-        Given.http.force_authenticate(user)
+        Given.http.force_login(user)
         body = preview()
         [change_] = body["changes"]
         assert change_["before"] == layer_component
@@ -532,7 +532,7 @@ def test_push_preview_conflicts_and_changes_agree_on_a_packaged_item(admin_login
 @pytest.mark.django_db
 @test_context
 def test_push_preview_into_a_branch_pinned_to_a_missing_version(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("gap", "alice", branching_point={"main": 999}, base="pinned")
     make_wip(admin_login, "child", parent="gap")
     body = preview("child", status=400)

@@ -117,7 +117,7 @@ def studio_tree():
         },
         WIP_CONTEXT,
     )
-    Given.http.force_authenticate(author)
+    Given.http.force_login(author)
     return studio, studio_wip, author
 
 

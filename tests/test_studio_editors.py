@@ -176,7 +176,7 @@ def test_editor_rules_and_components(studio_layer):
 @test_context
 def test_own_component_editor_has_save_and_revert(studio_layer, ui_alice_login):
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     entries = workbench_entries(alice_wip)
     for key, field, kind in (
         (("component", "row"), "/template", "component"),
@@ -233,7 +233,7 @@ def test_inherited_item_view_mode_with_override_button(studio_layer, admin_login
     it): read-only even for a user who may PUT and DELETE it; the editor
     pane offers the items tree's "Override on this branch" instead."""
     _studio, alice_wip, _bobs = setup_editors(admin_login)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     entries = workbench_entries(alice_wip)
     classes, opened, li, tree = entries[("component", "card")]
     assert "studio-inherited" in classes and opened["href"]
@@ -279,7 +279,7 @@ def test_override_then_save_round_trip(studio_layer, ui_alice_login):
     the frame's PUT with the frame's ETag as ``If-Match``."""
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
     card = resource(UI_COMPONENT_TYPE_URI, "card", "main")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     _classes, opened, li, tree = workbench_entries(alice_wip)[("component", "card")]
     [button] = [e for e in tree.writes() if e.within(li)]
     body = button.attrs["data-scrud-body"]
@@ -340,7 +340,7 @@ def test_published_T_editor_view_only(studio_layer, admin_login, ui_alice_login)
     exactly what the API answers that user."""
     studio, _alice_wip, _bobs = setup_editors(ui_alice_login)
     main = make_branch("main", "", parent=None)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     for branch in (studio, main):
         entries = workbench_entries(branch)
         hrefs = [o["href"] for _c, o, _li, _p in entries.values() if o["href"]]
@@ -370,7 +370,7 @@ def test_published_T_editor_view_only(studio_layer, admin_login, ui_alice_login)
     body = {**stored.content, "template": "<b>crafted</b>"}
     etag = f'"{stored.etag}"'
     grant(ui_alice_login, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     refused = crafted_put(row["href"], body, etag)
     assert refused[0] == 403
     assert crafted_put(api_href, body, etag) == refused
@@ -378,7 +378,7 @@ def test_published_T_editor_view_only(studio_layer, admin_login, ui_alice_login)
     put_item(row["href"], body, etag=etag)
     assert Http.response.status_code == 403
     assert "crafted" not in Http.response.content.decode()
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     stale = crafted_put(row["href"], body, '"stale"')
     assert stale[0] == 412 and crafted_put(api_href, body, '"stale"') == stale
     assert resource(UI_COMPONENT_TYPE_URI, "row", "main").etag == stored.etag
@@ -395,7 +395,7 @@ def test_published_T_editor_view_only(studio_layer, admin_login, ui_alice_login)
 @test_context
 def test_django_engine_component_read_only(studio_layer, ui_alice_login):
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     entries = workbench_entries(alice_wip)
     classes, opened, _li, _page = entries[("component", "legacy")]
     assert "studio-own" in classes
@@ -432,7 +432,7 @@ def test_second_tab_save_gets_412_reload(studio_layer, ui_alice_login):
     and a frame that reloads the current state in the editor's scope. A
     live draft is never stored."""
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     _classes, opened, _li, _page = workbench_entries(alice_wip)[("component", "row")]
     href = opened["href"]
     tabs = []
@@ -526,7 +526,7 @@ def test_revert_offered_only_over_something(studio_layer, ui_alice_login, admin_
         (ui_alice_login, {}),
         (admin_login, {("css", "hidden"): "inherited"}),
     ):
-        Given.http.force_authenticate(user)
+        Given.http.force_login(user)
         When.http.get(
             reverse("ui-branch-items-detail", args=["alice-wip"]), HTTP_ACCEPT=JSON
         )
@@ -548,7 +548,7 @@ def test_component_header_labels_its_mode_field(studio_layer, ui_alice_login):
     read ``jinja2 · view`` above a live textarea. The label names the
     field, in edit and in view mode alike."""
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     entries = workbench_entries(alice_wip)
     _classes, opened, _li, _page = entries[("component", "card")]
     for view in (False, True):

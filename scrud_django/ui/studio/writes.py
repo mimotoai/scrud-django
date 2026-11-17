@@ -15,10 +15,10 @@ view authorizes as the API's DELETE of that row."""
 
 from collections.abc import Mapping
 
-from django.http import HttpResponse
-from rest_framework.exceptions import NotFound, ValidationError
+from django.http import Http404, HttpResponse
 
 from scrud_django.exceptions import (
+    RequestFieldsInvalidError,
     UIBranchUnavailableError,
     UIStudioBranchReadOnlyError,
 )
@@ -98,7 +98,7 @@ def save_item(request, body) -> HttpResponse:
     kind, name, target = _item(body)
     content = body.get("content")
     if not isinstance(content, dict):
-        raise ValidationError({"content": ["An object is required."]})
+        raise RequestFieldsInvalidError({"content": ["An object is required."]})
     branch = _working_branch(request, body.get("branch"))
     item = item_content(kind, name, target, content, branch)
     own = own_item(kind, branch, name, target)
@@ -144,7 +144,7 @@ def revert_item(request, body) -> HttpResponse:
     branch = _selected_branch(request, body.get("branch"))
     own = own_item(kind, branch, name, target)
     if own is None or not may_read_item(request, kind, own.pk, own.content):
-        raise NotFound(f"Branch {branch.name!r} has no row of its own for this item.")
+        raise Http404(f"Branch {branch.name!r} has no row of its own for this item.")
     return _passed(
         answers.write(
             request,
@@ -184,11 +184,13 @@ def push(request, body) -> HttpResponse:
     may not see."""
     target = body.get("target")
     if target is not None and not isinstance(target, str):
-        raise ValidationError({"target": ["A branch name is required."]})
+        raise RequestFieldsInvalidError({"target": ["A branch name is required."]})
     branch = _working_branch(request, body.get("branch"))
     target = target or branch.parent
     if target is None:
-        raise ValidationError({"target": [f"Branch {branch.name!r} has no parent."]})
+        raise RequestFieldsInvalidError(
+            {"target": [f"Branch {branch.name!r} has no parent."]}
+        )
     found = branches(write_db()).get(target)
     if found is None or (
         target not in (branch.parent, MAIN)
@@ -216,15 +218,17 @@ def _item(body) -> tuple[str, str, str]:
     stylesheet's only) an item write names."""
     kind = body.get("kind")
     if kind not in KIND_SLUGS:
-        raise ValidationError({"kind": [f"Must be one of {', '.join(KIND_SLUGS)}."]})
+        raise RequestFieldsInvalidError(
+            {"kind": [f"Must be one of {', '.join(KIND_SLUGS)}."]}
+        )
     name = body.get("name")
     if not isinstance(name, str) or not name:
-        raise ValidationError({"name": ["A name is required."]})
+        raise RequestFieldsInvalidError({"name": ["A name is required."]})
     target = body.get("applies_to")
     if target is None or kind != "stylesheet":
         target = ""
     if not isinstance(target, str):
-        raise ValidationError({"applies_to": ["Must be a context."]})
+        raise RequestFieldsInvalidError({"applies_to": ["Must be a context."]})
     return kind, name, target
 
 
@@ -242,7 +246,7 @@ def _selected_branch(request, name) -> Branch:
     """The branch named `name`, published or not, refused alike when it is
     unknown or the user may not select it (`selectable`)."""
     if not isinstance(name, str) or not name:
-        raise ValidationError({"branch": ["A branch name is required."]})
+        raise RequestFieldsInvalidError({"branch": ["A branch name is required."]})
     all_branches = branches(write_db())
     branch = all_branches.get(name)
     if branch is None or not selectable(
