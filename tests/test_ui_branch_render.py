@@ -44,28 +44,32 @@ def ui_urlconf(settings):
 # composition.
 MAIN_RENDER_QUERIES = 10
 SESSION_TABLES = ("django_session", "auth_user")
-#: The middleware's read of the stored branches (`store.stored_branches`): a
-#: ``values_list("pk", "content")`` of the UIBranch rows.
-BRANCHES_SELECT = (
-    'SELECT "scrud_django_resource"."id" AS "pk", '
-    '"scrud_django_resource"."content" AS "content" FROM'
-)
-TYPE_BY_ID = 'FROM "scrud_django_resourcetype" WHERE "scrud_django_resourcetype"."id"'
 
 
 def assert_main_render_queries(queries):
     """The queries of a UI page's render of main are the session's (one read
     of each of its tables), exactly one read of the UIBranch rows, the
-    middleware's, and no lookup of a resource type by its id; and there
-    are `MAIN_RENDER_QUERIES` of them."""
+    middleware's (`store.stored_branches`: a ``values_list("pk", "content")``,
+    so a select of the aliases ``pk`` and ``content``), and no lookup of a
+    resource type by its id; and there are `MAIN_RENDER_QUERIES` of them.
+    The SQL is matched with the database's own quoting."""
+    quote = connection.ops.quote_name
+    resource = quote("scrud_django_resource")
+    branches_select = (
+        f"SELECT {resource}.{quote('id')} AS {quote('pk')}, "
+        f"{resource}.{quote('content')} AS {quote('content')} FROM"
+    )
+    type_by_id = f"FROM {quote('scrud_django_resourcetype')} WHERE " + (
+        f"{quote('scrud_django_resourcetype')}.{quote('id')}"
+    )
     sqls = [q["sql"] for q in queries]
     for table in SESSION_TABLES:
-        assert len([q for q in sqls if f'FROM "{table}"' in q]) == 1, sqls
+        assert len([q for q in sqls if f"FROM {quote(table)}" in q]) == 1, sqls
     branch_reads = [q for q in sqls if "UIBranch" in q]
-    assert len(branch_reads) == 1 and branch_reads[0].startswith(BRANCHES_SELECT), (
+    assert len(branch_reads) == 1 and branch_reads[0].startswith(branches_select), (
         branch_reads
     )
-    assert not [q for q in sqls if TYPE_BY_ID in q], sqls
+    assert not [q for q in sqls if type_by_id in q], sqls
     assert len(sqls) == MAIN_RENDER_QUERIES, sqls
 
 
