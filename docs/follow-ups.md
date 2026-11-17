@@ -1239,24 +1239,6 @@ requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
 `has_permission` refuses, as a user holding the list grant; assert
 `AccessDenied` (today it allows).
 
-<a id="ninja-semantic-urls-include"></a>
-## ninja-semantic-urls-include: a ninja-only URLconf must include `scoped_rbac.semantic_urls`
-
-The role routes (`roles/`, `role-assignments/`, `user-rbac-policy/`) add
-semantic Links that scoped-rbac reverses by global name. A URLconf that
-mounts only `scrud_django.ninja.api().urls` lacks them, and those three
-routes answer 500 (`NoReverseMatch`). 0.16.0 documents the
-`include("scoped_rbac.semantic_urls")` in the README; a system check, or
-`api()` mounting them, belongs to the release that makes ninja the default
-`scrud_django.urls`. Test: a URLconf of the ninja API alone; GET `roles/` as
-a superuser; assert 200 (a 500 without the include).
-
-Fixed in the commit "feat!: scrud_django.urls serves ninja": the default
-`scrud_django.urls` is the ninja API with `scoped_rbac.semantic_urls` at
-`semantic/` (`tests/test_default_urls.py` follows the role list's Links
-there). A URLconf of an app's own `api()` still includes it itself, as the
-README says.
-
 <a id="ninja-hsr-link-targets"></a>
 ## ninja-hsr-link-targets: an API included under an outer namespace cannot describe its links
 
@@ -2137,6 +2119,66 @@ scrudful's automatic OPTIONS. The collection documents
 
 Follow-ups fixed since they were recorded, each with the commit that fixed
 it.
+
+<a id="ui-ninja-routes"></a>
+## ui-ninja-routes: the UI does not serve ninja-routed types
+
+The UI app decides whether it serves a type by the views its API routes
+resolve to (`scrud_django.ui.pages.route_views`), which it finds by
+reversing `<slug>-list` and `<slug>-detail` outside any URL namespace, as
+DRF's registration names them. scrud's ninja `api()` marks the views it
+builds as the core's (`core.types.mark_route`), but names its routes in its
+`urls_namespace` (`"scrud"` by default), so in a ninja-only project the UI
+finds no route for any type: every page is the 404 of a slug it does not
+serve, and every embed of one is refused. The system check
+`scrud_django_ui.W004` names each such type (it said nothing before), and
+the README and `docs/ui.md` say so. The test that would expose it: with
+`tests.ninja_ui_urls` (the test types' ninja API under `/api/`, the UI at
+`/`), `pages.served("partner-profiles")` should be the type, and a signed-in
+GET of `/partner-profiles/` should answer the list's page (it answers 404;
+`tests/test_ui_routes.py::test_a_type_routed_only_in_a_namespace_is_named`
+pins today's behaviour). A fix (phase 3C) finds a type's routes under the
+namespaces of the ninja APIs the project serves too, and maps API hrefs to
+the UI from them (`selection.in_mount`, `embed._resolve`).
+
+Fixed in 835331b ("feat(ui): the UI serves types routed by either front
+end"): `scrud_django.core.urls` keeps a registry both front ends fill
+(`note_api_routes(slugs, namespace=)`: DRF's registration with `None`,
+`api()` with its `urls_namespace`), and `api_route_name` / `api_reverse`
+find a type's route by its bare name, then in each noted namespace, as the
+current URLconf reverses it; `absolute_reverse` falls back to those
+namespaces too. The UI's route lookup (`pages.route_views`), embeds
+(`embed.api_url`, `_resolve`), the API base (`selection.api_base`), the
+studio's reverses and `scrud_django_ui.W004` use them. Pinned by
+`tests/test_ui_on_ninja.py` (pages, writes, embeds, `in_mount`, the cookie
+path, a published prefix and W003/W004 on `tests.mounted_urls` and
+`tests.ninja_ui_urls` alike), `tests/test_core_urls.py` and
+`tests/test_ui_routes.py::test_a_type_routed_only_in_a_namespace_is_served`.
+
+<a id="ninja-semantic-urls-include"></a>
+## ninja-semantic-urls-include: a ninja-only URLconf must include `scoped_rbac.semantic_urls`
+
+The role routes (`roles/`, `role-assignments/`, `user-rbac-policy/`) add
+semantic Links that scoped-rbac reverses by global name. A URLconf that
+mounts only `scrud_django.ninja.api().urls` lacks them, and those three
+routes answer 500 (`NoReverseMatch`). 0.16.0 documents the
+`include("scoped_rbac.semantic_urls")` in the README; a system check, or
+`api()` mounting them, belongs to the release that makes ninja the default
+`scrud_django.urls`. Test: a URLconf of the ninja API alone; GET `roles/` as
+a superuser; assert 200 (a 500 without the include).
+
+Fixed in ad9d847 ("feat!: scrud_django.urls serves ninja"): the default
+`scrud_django.urls` is the ninja API with `scoped_rbac.semantic_urls` at
+`semantic/` (`tests/test_default_urls.py` follows the role list's Links
+there). A URLconf of an app's own `api()` still includes it itself, as the
+README says; one that does not is reported by scoped-rbac's own system
+check, `scoped_rbac.E002` (`scoped_rbac.semantic_urls is not in the
+URLconf`), whenever a front end serves a scoped-rbac resource, which every
+scrud `api()` does. Pinned by
+`tests/test_default_urls.py::test_an_own_api_without_the_semantic_urls_is_an_error`
+(`tests.no_semantic_urls`: `roles/` raises `NoReverseMatch`, and the
+checks report `scoped_rbac.E002`) and
+`::test_the_default_urls_include_the_semantic_urls`.
 
 <a id="core-write-orchestration"></a>
 ## core-write-orchestration: three front ends each orchestrated a write

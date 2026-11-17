@@ -9,7 +9,8 @@ DRF registrations beside the ninja ``scrud_django.urls``
 a scrud ninja API warns about the ``REST_FRAMEWORK`` settings it does not
 read (``scrud_django.W008``: throttles, authentication classes) and about
 an unset ``SCRUDFUL["BASE_URL"]`` (``scrud_django.W009``: its HTTP Schema
-Resources fail)."""
+Resources fail); an API whose URLconf lacks ``scoped_rbac.semantic_urls`` is
+scoped-rbac's own ``scoped_rbac.E002``."""
 
 from urllib.parse import urlsplit
 
@@ -397,3 +398,24 @@ def test_an_unset_base_url_of_a_drf_only_urlconf_is_not_a_ninja_warning(settings
     own checks cover the DRF routes)."""
     settings.SCRUDFUL = {}
     assert check_base_url_for_ninja(None) == []
+
+
+@pytest.mark.django_db
+@pytest.mark.urls("tests.no_semantic_urls")
+def test_an_own_api_without_the_semantic_urls_is_an_error(admin):
+    """An app's own ``api()`` routed without
+    ``include("scoped_rbac.semantic_urls")``: its role routes cannot reverse
+    the schemas and contexts they link to (a 500 in production), and
+    scoped-rbac's own check, ``scoped_rbac.E002``, reports it (follow-up
+    ``ninja-semantic-urls-include``)."""
+    with pytest.raises(NoReverseMatch, match="scoped-rbac-"):
+        admin.get("/api/roles/")
+    ran = checks.run_checks()
+    assert "scoped_rbac.E002" in {message.id for message in ran}, ran
+
+
+@pytest.mark.django_db
+@pytest.mark.urls("tests.default_urls")
+def test_the_default_urls_include_the_semantic_urls():
+    ran = checks.run_checks()
+    assert "scoped_rbac.E002" not in {message.id for message in ran}, ran
