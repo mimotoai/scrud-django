@@ -97,3 +97,34 @@ def test_the_front_ends_write_through_the_core():
     assert answers.json_response is core_json.json_response
     assert file_views.json_response is core_json.json_response
     assert negotiation.drf_json_text is core_json.drf_json_text
+
+
+@pytest.mark.parametrize(
+    "accepted",
+    [
+        "application/json; indent=1",
+        "application/json; indent=4",
+        "application/json; indent=20",
+        "application/json; indent=0",
+        "application/json",
+    ],
+)
+@pytest.mark.parametrize("data", [CONTENT, DJANGO_VALUES])
+def test_ninjas_indented_json_is_drfs_bytes(accepted, data):
+    """The ninja front end's renderer (`negotiation.IndentingJSONRenderer`)
+    writes, for the media type a request accepted, the bytes DRF's
+    ``JSONRenderer`` writes for it (its indent clamped to 8, none for 0 or
+    none given)."""
+    from django.test import RequestFactory
+
+    from scrud_django.ninja import negotiation
+
+    request = RequestFactory().get("/")
+    setattr(request, negotiation.ACCEPTED_ATTR, accepted)
+    written = negotiation.IndentingJSONRenderer().render(
+        request, data, response_status=200
+    )
+    expected = JSONRenderer().render(data, accepted, {})
+    # Text, as ninja's renderers write it, encoded in the response's UTF-8.
+    assert isinstance(written, str)
+    assert written.encode("utf-8") == expected

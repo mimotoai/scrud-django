@@ -49,7 +49,10 @@ def dumps_like_drf(
     data, *, indent: int | None = None, encoder=DjangoJSONEncoder
 ) -> bytes:
     """The bytes DRF's ``JSONRenderer`` writes for `data` (`drf_json_text`,
-    as UTF-8)."""
+    as UTF-8), for JSON scrud stores: with the default `encoder`, a value
+    that is not JSON's own may be written otherwise than DRF writes it (see
+    this module's docstring). Only the tests call it, to compare with
+    DRF's bytes."""
     return drf_json_text(data, indent=indent, encoder=encoder).encode("utf-8")
 
 

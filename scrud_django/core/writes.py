@@ -1198,12 +1198,19 @@ def item_write_answer(
        nothing written;
     4. the write and its answer (`write_item`).
 
-    Refusals are raised."""
+    Refusals are raised. `method` must be `request`'s own (a ``ValueError``
+    otherwise): `check_write_request` decides from ``request.method``
+    whether there is a body to check."""
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import item_precondition_answer, load_for_read
 
     if method not in ("PUT", "DELETE"):
         raise ValueError(f"item_write_answer writes with PUT or DELETE, not {method}.")
+    if request.method != method:
+        raise ValueError(
+            f"item_write_answer: a {method} answering a {request.method} "
+            "request (its checks follow the request's method)."
+        )
     if not request_checked:
         check_write_request(
             request,

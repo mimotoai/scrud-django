@@ -1597,3 +1597,35 @@ def test_item_write_answer_refuses_as_the_drf_route(method, found):
     assert refused[0] == expected
     assert_problem_as_drf(refused, api)
     assert Resource.objects.get(pk=stored.pk).etag == stored.etag
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("sent", "method"), [("POST", "PUT"), ("PUT", "DELETE"), ("DELETE", "PUT")]
+)
+def test_item_write_answer_refuses_a_method_not_the_requests(sent, method):
+    """`check_write_request` decides from ``request.method`` whether a body is
+    checked: a `method` that is not the request's is a programming error,
+    refused before anything is checked or written."""
+    admin = UserFactory(is_staff=True, is_superuser=True)
+    stored = ResourceRegistration.register(PROFILE, "partner-profiles")
+    body = {"name": "new", "rbac_context": "a"}
+    request = core_request(
+        sent,
+        profiles_url(stored.pk),
+        admin,
+        body,
+        {"If-Match": quote_etag(stored.etag)},
+    )
+    rtype = profiles_type()
+    with pytest.raises(ValueError, match=f"a {method} answering a {sent} request"):
+        item_write_answer(
+            request,
+            rtype,
+            stored.pk,
+            method,
+            body,
+            requirement=requirement_for(rtype),
+            using="default",
+        )
+    assert Resource.objects.get(pk=stored.pk).etag == stored.etag
