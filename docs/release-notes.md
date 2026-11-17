@@ -18,18 +18,31 @@
   its first include only, so the second scrud API in one namespace fails
   every request (500), and the new system check `scrud_django.E010` reports
   it. `REST_FRAMEWORK` settings no longer apply to `/api/` (only
-  `URL_FORMAT_OVERRIDE` is read): `DEFAULT_AUTHENTICATION_CLASSES` (keep Basic
-  and token clients with
+  `URL_FORMAT_OVERRIDE` is read, and, with DRF installed,
+  `NON_FIELD_ERRORS_KEY`; `DEFAULT_VERSIONING_CLASS` stops applying):
+  `DEFAULT_AUTHENTICATION_CLASSES` (Basic and token clients are anonymous
+  and the session's user is the user, so a token-only API accepts session
+  cookies; keep those clients with
   `SCOPED_RBAC["NINJA_USER"] = "scrud_django.drf.auth.drf_user"`),
   `DEFAULT_THROTTLE_CLASSES` and `DEFAULT_THROTTLE_RATES` (the API is not
   rate limited: stay on DRF, or build your own `api(throttle=[...])` with
-  ninja's throttles), `DEFAULT_RENDERER_CLASSES` (no browsable API; JSON
+  ninja's throttles); while a scrud ninja API is routed, the new system
+  check `scrud_django.W008` warns about `DEFAULT_THROTTLE_CLASSES`, and
+  about authentication classes other than DRF's default pair without a
+  `NINJA_USER` hook. Nor do `DEFAULT_RENDERER_CLASSES` (no browsable API; JSON
   whatever `Accept` asks), `EXCEPTION_HANDLER` (scrud's problem details,
   not a handler of your own) and, on scoped-rbac's role routes,
   `DEFAULT_PERMISSION_CLASSES` (the grants are asked as `IsAuthorized`
-  asks them). A branch's JSON, which a published prefix gave before 0.17.0,
-  is the studio's `/api/ui-branch-items/<branch>/`. See "Migrating to
-  0.17.0: the switch to django-ninja" in the README.
+  asks them) apply. A branch's JSON, which a published prefix gave before 0.17.0,
+  is the studio's `/api/ui-branch-items/<branch>/`. The ninja API's HTTP
+  Schema Resources need `SCRUDFUL["BASE_URL"]` (those with relative links
+  fail, 500, without it), which the new system check `scrud_django.W009`
+  reports. Leaving DRF without the `drf` extra, remove `rest_framework`,
+  `rest_framework.authtoken` and `django_filters` from `INSTALLED_APPS`, the
+  `REST_FRAMEWORK` setting and the `include(hsr_urls())` of
+  `scrudful.rest_framework` (the ninja API serves its own HTTP Schema
+  Resources), or a clean install fails at startup (`ModuleNotFoundError`).
+  See "Migrating to 0.17.0: the switch to django-ninja" in the README.
 * **django-ninja is in the base install; DRF is the `drf` extra.** A project
   that serves the API through Django REST Framework installs
   `scrud-django[drf]` (django-scoped-rbac[drf], scrudful[drf],

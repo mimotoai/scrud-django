@@ -624,7 +624,10 @@ SCRUDFUL = {"BASE_URL": "https://api.example.com"}
 ```
 
 On DRF, without the include, every request of a scrud view raises
-`ImproperlyConfigured` (and `manage.py check` reports `scrudful.E003`).
+`ImproperlyConfigured` (and `manage.py check` reports `scrudful.E003`). On
+ninja, without `SCRUDFUL["BASE_URL"]`, the HTTP Schema Resources whose links
+are relative (those of each type's routes and of the role routes) fail (500,
+ninja's `ConfigError`), and `manage.py check` warns (`scrud_django.W009`).
 
 ### Databases
 
@@ -1358,21 +1361,39 @@ What to do:
   `scrud_django.exceptions.scrud_exception_handler`, ...) keep working for
   this release with a `DeprecationWarning`: see
   [Migrating to 0.17.0: the DRF adapter](#migrating-to-0170-the-drf-adapter).
-* **`REST_FRAMEWORK` settings no longer apply to `/api/`.** The ninja API
-  reads only `URL_FORMAT_OVERRIDE` (the `?format=` parameter) of them.
-  Those that change what scrud's DRF routes did:
+* **Leaving DRF without the `drf` extra,** remove what needs it, or a clean
+  install fails at startup (`ModuleNotFoundError`): `rest_framework`,
+  `rest_framework.authtoken` and `django_filters` from `INSTALLED_APPS`, the
+  `REST_FRAMEWORK` setting, and the `include(hsr_urls())` of
+  `scrudful.rest_framework` (the ninja API serves its own HTTP Schema
+  Resources). Keep `SCRUDFUL["BASE_URL"]`: the ninja API's HTTP Schema
+  Resources need it (`scrud_django.W009`).
+* **`REST_FRAMEWORK` settings no longer apply to `/api/`.** Of them, the
+  ninja API reads `URL_FORMAT_OVERRIDE` (the `?format=` parameter) and,
+  with DRF installed, `NON_FIELD_ERRORS_KEY` (the key of the 400 a body
+  that is not a JSON object gets with `UNIFORM_ERRORS` off, as DRF's
+  serializer answers it). `DEFAULT_VERSIONING_CLASS` stops applying: links
+  built through `scrud_django.reverse` follow `request.versioning_scheme`,
+  which only DRF's views set. Those that change what scrud's DRF routes
+  did:
   * `DEFAULT_AUTHENTICATION_CLASSES`: on ninja the session's user is the
-    user, and a Basic or token client is anonymous. To keep those clients
-    as they are, set
+    user, and a Basic or token client is anonymous; a token-only API now
+    accepts a session cookie. To keep those clients as they are, set
     `SCOPED_RBAC = {..., "NINJA_USER": "scrud_django.drf.auth.drf_user"}`
     (DRF installed), which runs your DRF authenticators on each ninja
-    request.
+    request. While a scrud ninja API is routed, `manage.py check` warns
+    (`scrud_django.W008`) about authentication classes other than DRF's
+    default pair (session, Basic) unless `NINJA_USER` is set.
   * `DEFAULT_THROTTLE_CLASSES` and `DEFAULT_THROTTLE_RATES`: the ninja API is
-    **not rate limited** unless you say so, and nothing warns. Stay on DRF,
+    **not rate limited** unless you say so; `manage.py check` warns
+    (`scrud_django.W008`) while a scrud ninja API is routed and
+    `DEFAULT_THROTTLE_CLASSES` is set. Stay on DRF,
     or build your own `api()` (in place of `scrud_django.urls`) with
     ninja's throttles, which `api()` passes to `NinjaAPI`:
     `api(types=[...], throttle=[UserRateThrottle("100/min")])`
-    (`ninja.throttling`; a 429 once the rate is spent). `UserRateThrottle`
+    (`ninja.throttling`; a 429 once the rate is spent), then silence
+    `scrud_django.W008` (`SILENCED_SYSTEM_CHECKS`) if you keep the setting
+    for DRF routes of your own. `UserRateThrottle`
     keys a request by Django's `request.user` (else the client's
     address); ninja's `AnonRateThrottle` and `AuthRateThrottle` key by
     `request.auth`, which scrud's routes never set, so they treat every
