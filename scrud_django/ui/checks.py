@@ -7,7 +7,6 @@ with no API route it can serve (`check_unrouted_types`,
 
 from django.core import checks
 from django.db import DatabaseError
-from django.http import Http404
 from django.urls import NoReverseMatch, get_resolver, reverse
 
 DRF_ONLY_ID = "scrud_django_ui.W003"
@@ -88,19 +87,21 @@ def asked_slugs() -> list[str]:
 
 
 def stored_slugs(slugs) -> set[str]:
-    """Those of `slugs` whose type is stored
-    (``registration.get_resource_type_for`` finds it, as the UI asks before
-    serving one); none when the database cannot be read."""
-    from scrud_django.registration import get_resource_type_for
+    """Those of `slugs` whose type is stored (a ``ResourceType`` row has the
+    slug, as ``registration.get_resource_type_for`` finds it before the UI
+    serves one); none when the database cannot be read. One read, and no
+    write: unlike ``get_resource_type_for`` it retries no pending
+    registration, which a system check must not do."""
+    from scrud_django.models import ResourceType
 
-    found = set()
-    for slug in sorted(slugs):
-        try:
-            get_resource_type_for(slug)
-        except (Http404, DatabaseError):
-            continue
-        found.add(slug)
-    return found
+    try:
+        return set(
+            ResourceType.objects.filter(slug__in=sorted(slugs)).values_list(
+                "slug", flat=True
+            )
+        )
+    except DatabaseError:
+        return set()
 
 
 def routed_slugs() -> set[str]:

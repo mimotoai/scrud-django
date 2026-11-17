@@ -1767,6 +1767,35 @@ refusals and failed preconditions) through a page, the studio's `write` and
 the ninja route, comparing status, validators and problem bodies. Not done
 in phase 2 (parked by the final review).
 
+<a id="core-json-response"></a>
+## core-json-response: DRF-identical JSON bytes are written in two places
+
+`scrud_django/ui/studio/answers.py`'s `json_response` (used by the studio's
+answers and by `scrud_django/ui/branches/file_views.py`'s refusals) and
+`scrud_django/ninja/negotiation.py` each escape U+2028 and U+2029 and refuse
+NaN to write the bytes DRF's `JSONRenderer` writes. The file views importing
+it from the optional studio package works (`ui/studio/` has no models and its
+`answers` imports only Django, scrudful and the core), but couples the UI's
+branches to the studio. One neutral helper in the core (`core.errors` or a
+new `core/json.py`, Django only, so the DRF deny list holds) would serve all
+three. The test that would expose a drift: the same content with U+2028 and a
+float rendered by each writer, compared byte for byte with `JSONRenderer`.
+
+<a id="ui-included-before-api"></a>
+## ui-included-before-api: no check names a URLconf that includes the UI first
+
+When a project includes `scrud_django.ui.urls` before its API under the same
+prefix, the UI declines every type it would shadow (a re-entered decision
+answers "not served"; `tests/test_ui_routes.py`), so the API's JSON stays
+reachable, but those types have no UI pages and no system check says why:
+W003 asks `refusal`, which resolves to the API's views, and W004 sees the
+routes. The docs say to include the UI last. A check could call
+`pages.served(slug)` for each asked slug whose `refusal` is `None` and name
+those a re-entry declined. Also: W005's message says a slug's pages are among
+the UI's own routes; for the CSS/JS file segments that holds under a
+published prefix (the middleware takes that segment for the file route), not
+at the unprefixed UI, where only `<segment>/<name>/<etag>.css` is taken.
+
 # Decided
 
 <a id="core-allowed-methods-existence-leak"></a>
