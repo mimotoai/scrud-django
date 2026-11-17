@@ -15,9 +15,9 @@ from django.test import RequestFactory
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django import collection_type_uri_for
+from scrud_django import collection_type_uri_for, registration
 from scrud_django.registration import ResourceRegistration
-from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, middleware
+from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, selection
 from scrud_django.ui.branches.effective import (
     Draft,
     Selection,
@@ -35,6 +35,7 @@ from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .fixtures import *  # noqa
 from .fixtures import TYPE_URI_TODO_LIST, assign_role, assign_ui_role
+from .resource_types import SUMMARIES_TYPE
 from .steps import *  # noqa: F403, F401
 from .test_studio_page import setup_branches
 from .test_ui_branch_prefixes import ADMIN, mounted, publish
@@ -140,7 +141,10 @@ def test_embed_renders_resource_with_viewers_rights(
     todo_list, todo_reader_login, todo_owner_login
 ):
     other = make_list("Chores", items=["Sweep"])
-    summary = reverse("todo-summaries-detail", args=["project-a"])
+    # A computed type with a registered ``compute``: the UI serves its pages.
+    summary = reverse("summaries-detail", args=["project-a"])
+    # Its row, which an earlier test's import may have rolled back.
+    registration.computed_resource_type(**SUMMARIES_TYPE)
     lists = reverse("todo-lists-list")
     host(
         '<section class="host">{{ embed("' + url_of(other) + '") }}'
@@ -158,6 +162,9 @@ def test_embed_renders_resource_with_viewers_rights(
     assert not any("hx-put" in frame for frame in frames(page, url_of(other)))
     # A computed type is a resource view too (ruling 3).
     assert len(frames(page, summary)) == 1
+    # One that is served by a viewset class alone has no UI page: refused.
+    viewset_only = reverse("todo-summaries-detail", args=["project-a"])
+    assert str(embed_for(RequestFactory().get("/x/"))(viewset_only)) == REFUSED
     assert "Chores" in page and "Groceries" in page
     assert REFUSED_MESSAGE not in page
     # The owner may PUT: the embedded frame is the edit form, at its URL.
@@ -495,7 +502,7 @@ def test_embed_of_an_api_path_under_a_published_prefix(
         checked.append(request.path)
         return request.path != mounted(ADMIN, other)
 
-    monkeypatch.setattr(middleware, "may_get_mount", may_get_mount)
+    monkeypatch.setattr(selection, "may_get_mount", may_get_mount)
     page = get_page(mounted(ADMIN, todo_list), scope="host")
     assert mounted(ADMIN, other) in checked
     assert "Chores" not in page and not frames(page, mounted(ADMIN, other))
@@ -676,10 +683,10 @@ def test_embedded_view_database_error_leaves_the_transaction_usable(
     from django.db import DatabaseError, connection, transaction
 
     from scrud_django.models import Resource
+    from scrud_django.ui import pages
     from scrud_django.ui.embed import FAILED_MESSAGE
-    from scrud_django.views import ResourceViewSet
 
-    def broken(self, request, *args, **kwargs):
+    def broken(request, resource_type, slug, pk, allow):
         # No savepoint of its own: the failure reaches the caller's
         # transaction, as a failed query does on PostgreSQL.
         with transaction.atomic(savepoint=False):
@@ -687,7 +694,7 @@ def test_embedded_view_database_error_leaves_the_transaction_usable(
                 cursor.execute("SELECT * FROM scrud_no_such_table")
         raise AssertionError("unreachable")
 
-    monkeypatch.setattr(ResourceViewSet, "retrieve", broken)
+    monkeypatch.setitem(pages._HANDLERS, ("item", "GET"), broken)
     sent = []
 
     def receiver(sender, request=None, **kwargs):
@@ -774,7 +781,7 @@ def test_embedded_studio_data_reads_stored_items_in_safe_mode_and_under_drafts(
     ui_alice_login,
 ):
     """Safe mode and drafts are render-only, cut at the embed boundary
-    (`dispatch.dispatch_path` runs the view in `stored_state`): the
+    (`pages` reads in `stored_state`): the
     studio's computed data embedded in a safe-mode render or a render
     under drafts is what its URL answers as JSON, never the layers alone
     nor the drafts."""
@@ -812,3 +819,63 @@ def test_embedded_studio_data_reads_stored_items_in_safe_mode_and_under_drafts(
             drafted = str(embed(path))
         assert embedded_content(drafted) == plain, path
         assert "DRAFT" not in drafted, path
+
+
+@pytest.mark.django_db
+@test_context
+def test_embed_accepts_an_api_a_ui_and_a_prefix_path(todo_list, todo_reader_login):
+    other = make_list("Chores", items=["Sweep"])
+    publish("admin", ADMIN)
+    api, ui = url_of(other), f"/todo-lists/{other.pk}/"
+    prefixed = mounted(ADMIN, other)
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    request = RequestFactory().get("/somewhere/")
+    request.user = todo_reader_login
+    embed = embed_for(request)
+    # An API or a UI path, from the API's HTML: the same fragment.
+    assert str(embed(api)) == str(embed(ui)) != REFUSED
+    assert len(frames(str(embed(ui)), api)) == 1
+    # A prefix path: the same frame content, its links in the prefix.
+    under_prefix = str(embed(prefixed))
+    assert under_prefix == str(embed(api)).replace(api, prefixed)
+    assert len(frames(under_prefix, prefixed)) == 1 and "Sweep" in under_prefix
+
+
+@pytest.mark.django_db
+@test_context
+def test_embed_in_a_ui_page_carries_ui_hrefs(todo_list, todo_reader_login):
+    other = make_list("Chores", items=["Sweep"])
+    ui = f"/todo-lists/{other.pk}/"
+    # An API path and a UI path, and the list: all in the UI's links.
+    host(
+        '<section class="a">{{ embed("' + url_of(other) + '") }}</section>'
+        '<section class="b">{{ embed("' + ui + '") }}</section>'
+        '<section class="c">{{ embed("' + reverse("todo-lists-list") + '") }}'
+        "</section>"
+    )
+    Given.http.force_login(todo_reader_login)
+    page = get_page(f"/todo-lists/{todo_list.pk}/", scope="host")
+    for name in "ab":
+        section = re.search(rf'<section class="{name}">(.*?)</section>', page, re.S)
+        assert len(frames(section.group(1), ui)) == 1
+        assert "Sweep" in section.group(1)
+    assert 'data-scrud-href="/todo-lists/"' in page
+    assert not frames(page, url_of(other))
+    assert REFUSED_MESSAGE not in page
+
+
+@pytest.mark.django_db
+@test_context
+def test_embed_authorization_equals_the_page_get(todo_list):
+    """An embed shows what a GET of its page shows the same user: a user
+    who may not read it gets the page's refusal, never the content."""
+    stranger = reader_of("project-b")
+    host('<section class="host">{{ embed("' + url_of(todo_list) + '") }}</section>')
+    request = RequestFactory().get("/somewhere/")
+    request.user = stranger
+    Given.http.force_login(stranger)
+    When.http.get(f"/todo-lists/{todo_list.pk}/", HTTP_ACCEPT=HTML)
+    status = Http.response.status_code
+    assert status >= 400
+    notice = str(embed_for(request)(url_of(todo_list)))
+    assert "Groceries" not in notice and 'class="scrud-notice' in notice

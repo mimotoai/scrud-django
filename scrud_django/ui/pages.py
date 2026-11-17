@@ -56,7 +56,9 @@ from scrud_django.exceptions import MethodNotAllowedError, ScrudException
 from scrud_django.registration import get_resource_type_for, type_db, write_db
 from scrud_django.ui import UI_NAMESPACE
 from scrud_django.ui.branches import is_record
+from scrud_django.ui.branches.effective import stored_state
 from scrud_django.ui.branches.selection import (
+    MOUNT_ATTR,
     UI_BASE_ATTR,
     check_mount_access,
     in_mount,
@@ -189,26 +191,80 @@ def _page(request, slug, pk) -> HttpResponse:
     the slug converter read (`ServedSlug`) for a GET or HEAD; a write reads
     it on the type database, as the API's route does."""
     setattr(request, UI_BASE_ATTR, _ui_base(request, slug))
-    if pk is None:
-        kind = "list"
-    else:
-        kind = "computed" if is_computed(slug) else "item"
+    kind = _kind(slug, pk)
     method = request.method
-    resource_type = getattr(slug, "resource_type", None)
-    if resource_type is None or method not in SAFE_METHODS:
-        resource_type = get_resource_type_for(
-            slug, using=None if method in SAFE_METHODS else type_db()
-        )
+    if method in SAFE_METHODS:
+        resource_type = _type_of(slug)
+    else:
+        resource_type = get_resource_type_for(slug, using=type_db())
     allow = _allowed(resource_type, kind)
     if method not in allow:
         answer = _refused(MethodNotAllowedError(method), request, kind, allow)
         return _respond(request, resource_type, answer)
-    handler = _HANDLERS[kind, "GET" if method == "HEAD" else method]
+    if method in SAFE_METHODS:
+        answer = _read_answer(request, resource_type, slug, pk, kind, allow)
+        return _respond(request, resource_type, answer)
+    handler = _HANDLERS[kind, method]
     try:
         answer = handler(request, resource_type, slug, pk, allow)
     except Exception as exc:
         answer = _refused(exc, request, _error_kind(kind, method), allow)
     return _respond(request, resource_type, answer)
+
+
+def render_list(request, slug, *, query, mount=None) -> tuple[int, str]:
+    """The status and HTML a GET of the page of the list of `slug` answers
+    (`list_page`'s own read and render, without the HTTP response around
+    them): for `request`, whose GET is `query`, under the prefix `mount`
+    (``None``: as `request` is). A computed type has no list: ``Http404``.
+    The user is `request`'s; every check of the page applies (and a refusal
+    is its notice, with its status). An embed (`scrud_django.ui.embed`)
+    renders through it."""
+    if is_computed(slug):
+        raise Http404
+    return _render_read(request, slug, None, query, mount)
+
+
+def render_item(request, slug, pk, *, mount=None) -> tuple[int, str]:
+    """The status and HTML a GET of the page of the resource `pk` of `slug`
+    (of a computed type, its content for the key `pk`) answers, as
+    `render_list` does for a list."""
+    return _render_read(request, slug, pk, request.GET, mount)
+
+
+def _render_read(request, slug, pk, query, mount) -> tuple[int, str]:
+    if mount is not None:
+        setattr(request, MOUNT_ATTR, mount)
+    request.GET = query
+    kind = _kind(slug, pk)
+    resource_type = _type_of(slug)
+    allow = _allowed(resource_type, kind)
+    answer = _read_answer(request, resource_type, slug, pk, kind, allow)
+    return _rendered(request, resource_type, answer)
+
+
+def _kind(slug, pk) -> str:
+    if pk is None:
+        return "list"
+    return "computed" if is_computed(slug) else "item"
+
+
+def _type_of(slug):
+    """The type of `slug`: the one its `ServedSlug` carries, else read."""
+    resource_type = getattr(slug, "resource_type", None)
+    return resource_type or get_resource_type_for(slug)
+
+
+def _read_answer(request, resource_type, slug, pk, kind, allow) -> _Answer:
+    """The answer of a GET (or HEAD) of the page `kind` of `slug`: what its
+    handler reads, in the stored state (the safe mode and drafts of an
+    embedding render are render-only, and its rendering keeps them), a
+    refusal answered as the API answers it."""
+    try:
+        with stored_state():
+            return _HANDLERS[kind, "GET"](request, resource_type, slug, pk, allow)
+    except Exception as exc:
+        return _refused(exc, request, kind, allow)
 
 
 def _entered(request) -> None:
@@ -557,41 +613,47 @@ def _refused(exc, request, kind, allow) -> _Answer:
     return _Answer(status, body, kind, headers=headers)
 
 
-def _respond(request, resource_type, answer: _Answer) -> HttpResponse:
-    """`answer` as an HTML response (`render_html`; no body for a 204, a
-    304 or a HEAD), with its headers (but its ``Content-Type``) and those of
-    any HTML response (`html_headers`). A success that fails to render is a
-    500 with a notice; an error that fails keeps its status."""
+def _rendered(request, resource_type, answer: _Answer) -> tuple[int, str]:
+    """`answer`'s status and HTML (`render_html`; no body for a 204 or a
+    304). A success that fails to render is a 500 with a notice; an error
+    that fails keeps its status."""
     status = answer.status
     if status < 400 and (answer.data is None or status in (204, 304)):
-        body = ""
-    else:
-        try:
-            body = render_html(
-                request,
-                resource_type=resource_type,
-                kind=answer.kind,
-                data=answer.data,
-                status=status,
-                etag=answer.etag,
-                href=request.path,
-                location=answer.location,
-                is_record=(
-                    status < 400
-                    and answer.kind in ("item", "create")
-                    and is_record(resource_type.type_uri, answer.data)
-                ),
-                stored=answer.stored,
-                submitted=answer.submitted,
-            )
-        except Exception:
-            # The last resort: a notice, with no content (nor a traceback).
-            logger.exception(
-                "scrud-ui: rendering %s (status %s) failed", request.path, status
-            )
-            if status < 400:
-                status = 500
-            body = str(_notices([RENDER_FAILED_MESSAGE]))
+        return status, ""
+    try:
+        body = render_html(
+            request,
+            resource_type=resource_type,
+            kind=answer.kind,
+            data=answer.data,
+            status=status,
+            etag=answer.etag,
+            href=request.path,
+            location=answer.location,
+            is_record=(
+                status < 400
+                and answer.kind in ("item", "create")
+                and is_record(resource_type.type_uri, answer.data)
+            ),
+            stored=answer.stored,
+            submitted=answer.submitted,
+        )
+    except Exception:
+        # The last resort: a notice, with no content (nor a traceback).
+        logger.exception(
+            "scrud-ui: rendering %s (status %s) failed", request.path, status
+        )
+        if status < 400:
+            status = 500
+        body = str(_notices([RENDER_FAILED_MESSAGE]))
+    return status, body
+
+
+def _respond(request, resource_type, answer: _Answer) -> HttpResponse:
+    """`answer` as an HTML response (`_rendered`; no body for a HEAD), with
+    its headers (but its ``Content-Type``) and those of any HTML response
+    (`html_headers`)."""
+    status, body = _rendered(request, resource_type, answer)
     response = HttpResponse(
         "" if request.method == "HEAD" else body,
         status=status,

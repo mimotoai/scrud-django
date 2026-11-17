@@ -161,6 +161,7 @@ def test_ui_html_imports_no_drf():
         SCRIPT
         + """
 import scrud_django.ui.branches.file_urls
+import scrud_django.ui.embed
 import scrud_django.ui.html
 import scrud_django.ui.render
 """
