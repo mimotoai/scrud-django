@@ -822,10 +822,12 @@ the frame with the current state, and so does a 409 DELETE.
 
 ## Computed resource types
 
-A computed type (`scrud_django.drf.computed.ComputedResourceViewSet`, registered
-with `registration.computed_resource_type`; see the README) renders through
-the same cascade as a stored resource: a stylesheet rule on its type's IRI
-selects a component, and its UI page, under a published
+A computed type (`registration.computed_resource_type_spec(..., compute=)`
+given to `scrud_django.ninja.api(types=[...])`, or, on DRF,
+`registration.computed_resource_type`, served by
+`scrud_django.drf.computed.ComputedResourceViewSet`; see the README) renders
+through the same cascade as a stored resource: a stylesheet rule on its
+type's IRI selects a component, and its UI page, under a published
 branch's prefix too, renders it. The UI serves a computed type registered with
 `compute=`; one registered only with a DRF `viewset_class` has no page and
 cannot be embedded. Its content is view-only: components get the

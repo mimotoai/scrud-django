@@ -1042,49 +1042,67 @@ write there bypasses scoped-rbac, the workflow and JSON Schema validation.
 
 A computed type has a schema and a JSON-LD context like any resource type, but
 its content is computed per request, never stored: a read-only view of data
-the server derives for the requesting user. Subclass
-`scrud_django.drf.computed.ComputedResourceViewSet`, implement
-`compute(request, key)` (return a mapping; raise `Http404` or
-`PermissionDenied`), and register it with `computed_resource_type`:
+the server derives for the requesting user. Write its `compute(request, key)`
+(return a mapping; raise `Http404` or `PermissionDenied`) and give the API
+its spec, `registration.computed_resource_type_spec`:
 
 ```python
 from scrud_django import registration
-from scrud_django.drf.computed import ComputedResourceViewSet
+from scrud_django.ninja import api
 
 
-class BranchSummaryViewSet(ComputedResourceViewSet):
-    def compute(self, request, key):
-        # Return only what request.user may read as JSON.
-        return {"name": key, "items": []}
+def branch_summary(request, key):
+    # Return only what request.user may read as JSON.
+    return {"name": key, "items": []}
 
 
+scrud_api = api(
+    types=[
+        registration.computed_resource_type_spec(
+            resource_type_uri="http://example.org/BranchSummary",
+            slug="branch-summaries",
+            schema_func=lambda: SCHEMA_JSON,
+            context_func=lambda: CONTEXT_JSON,
+            compute=branch_summary,
+        ),
+    ],
+)
+```
+
+It routes `branch-summaries/<key>/` only (route name `branch-summaries-detail`,
+in the API's namespace: `scrud:branch-summaries-detail`; no list route, so a
+computed type is not in the service catalog, which gives each type's list URL)
+and adds no revision history. A GET answers the content with an
+`ETag` (the SHA-256 of its canonical JSON) and a 304 for a matching
+`If-None-Match`; any method other than GET, HEAD and OPTIONS is a 405. The response carries the
+`Link` headers to the type's schema and JSON-LD context, as a stored resource's
+does. The route requires an authenticated
+user and applies no authorization of its own to the content: `compute` must ask
+the same checks the stored resources' views do. The type is registered, so a
+published branch's prefix claims its slug, and the UI's page for it renders it
+through the UI cascade as view-only content. Registering a slug again replaces
+its `compute`.
+
+On DRF (the `drf` extra), register it with
+`registration.computed_resource_type` instead, which takes the same
+arguments and returns the URL patterns to add (route name
+`branch-summaries-detail`, outside any namespace), served by
+`scrud_django.drf.computed.ComputedResourceViewSet`:
+
+```python
 urlpatterns += registration.computed_resource_type(
     resource_type_uri="http://example.org/BranchSummary",
     slug="branch-summaries",
     schema_func=lambda: SCHEMA_JSON,
     context_func=lambda: CONTEXT_JSON,
-    viewset_class=BranchSummaryViewSet,
+    compute=branch_summary,
 )
 ```
 
-It routes `branch-summaries/<key>/` only (route name `branch-summaries-detail`;
-no list route, so a computed type is not in the service catalog, which gives
-each type's list URL) and adds no revision history. A GET answers the content with an
-`ETag` (the SHA-256 of its canonical JSON) and a 304 for a matching
-`If-None-Match`; any method other than GET, HEAD and OPTIONS is a 405. The response carries the
-`Link` headers to the type's schema and JSON-LD context, as a stored resource's
-does. The view requires an authenticated
-user and applies no authorization of its own to the content: `compute` must ask
-the same checks the stored resources' views do. The type is registered, so a
-published branch's prefix claims its slug, and the UI's page for it renders it
-through the UI cascade as view-only content (only when registered with
-`compute=`: one with only a DRF `viewset_class` has no UI page).
-
-Instead of subclassing, pass `compute=` to `computed_resource_type`: a
-callable `(request, key) -> Mapping` (raise `Http404` or `PermissionDenied`)
-that supplies the content for the default `ComputedResourceViewSet`. One of
-`compute=` and `viewset_class=` is needed; registering a slug again replaces
-its `compute`.
+In place of `compute=`, it takes a `viewset_class=`: a subclass of
+`ComputedResourceViewSet` implementing `compute(self, request, key)`. One of
+the two is needed; a type registered with only a DRF `viewset_class` has no
+UI page and is served on DRF alone.
 
 ### Search (optional)
 
