@@ -239,13 +239,16 @@ def _internal(request, slug, method, pk, body, if_match):
 def json_response(data, *, status=200, headers=None) -> HttpResponse:
     """`data` as a JSON response, written as DRF's ``JSONRenderer`` writes
     it (compact, not ASCII-escaped), with `headers`."""
-    response = HttpResponse(
-        json.dumps(
-            data, separators=(",", ":"), ensure_ascii=False, cls=DjangoJSONEncoder
-        ),
-        status=status,
-        content_type=JSON,
+    text = json.dumps(
+        data,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+        cls=DjangoJSONEncoder,
     )
+    # Fully escaped, so that the JSON is a strict JavaScript subset.
+    text = text.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    response = HttpResponse(text, status=status, content_type=JSON)
     for name, value in (headers or {}).items():
         response[name] = value
     return response

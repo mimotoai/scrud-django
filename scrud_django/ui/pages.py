@@ -36,6 +36,7 @@ from django.http import Http404, HttpResponse
 from django.urls import NoReverseMatch, reverse
 from django.utils.translation import gettext
 from django.views.decorators.common import no_append_slash
+from django.views.decorators.csrf import csrf_protect
 from scoped_rbac import access
 from scrudful._django import aware, precondition_headers
 from scrudful.conditional import http_timestamp, quote_etag, validator_headers
@@ -133,6 +134,7 @@ def is_computed(slug: str) -> bool:
 
 
 @no_append_slash
+@csrf_protect
 def list_page(request, slug: str) -> HttpResponse:
     """The page of the list of the type `slug` (a page of it, as the API's
     list pages it): GET and HEAD; POST creates a resource of it and answers
@@ -143,6 +145,7 @@ def list_page(request, slug: str) -> HttpResponse:
 
 
 @no_append_slash
+@csrf_protect
 def item_page(request, slug: str, pk: str) -> HttpResponse:
     """The page of the resource `pk` of the type `slug` (of a computed type,
     its content for the key `pk`): GET and HEAD; PUT replaces it and answers

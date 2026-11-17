@@ -30,7 +30,6 @@ from scrud_django.ui.branches.selection import (
     cookie_path,
     in_mount,
 )
-from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .factories import UserFactory
 from .fixtures import *  # noqa
@@ -42,7 +41,7 @@ from .fixtures import (
 )
 from .resource_types import SUMMARIES_TYPE
 from .steps import *  # noqa: F403, F401
-from .test_studio_writes import main_and_wip, own_rows
+from .test_studio_writes import main_and_wip
 from .test_ui_branch_css import css_hrefs, make_css
 from .test_ui_branch_push import stored_state
 from .test_ui_branch_render import may_select_branches, setup_main_and_wip
@@ -542,56 +541,102 @@ def test_a_ui_write_without_the_csrf_token_is_refused(todo_list, todo_owner_logi
     assert stored(todo_list).content["title"] == "Forged"
 
 
-STUDIO_POSTS = {
-    "save-item": (
-        JSON,
-        {
-            "kind": "component",
-            "branch": "wip",
-            "name": "row",
-            "content": {"engine": "django", "mode": "view", "template": "<i/>"},
-        },
-    ),
-    "revert-item": (JSON, {"kind": "component", "branch": "wip", "name": "row"}),
-    "pull": (JSON, {"branch": "wip"}),
-    "push": (JSON, {"branch": "wip"}),
-    "new-component": (JSON, {"branch": "wip", "slug": "todo-lists"}),
-    "live-preview": (
-        "application/x-www-form-urlencoded",
-        {"request": json.dumps({"type": "todo-lists", "branch": "wip"})},
-    ),
-}
+def studio_posts(etag):
+    """Each studio POST endpoint's request, in an order that lets each
+    succeed: ``(name, content type, body, headers, status, written)``."""
+    form = {"request": json.dumps({"type": "todo-lists", "branch": "wip"})}
+    item = {"kind": "component", "branch": "wip", "name": "row"}
+    save = {
+        **item,
+        "content": {"engine": "django", "mode": "view", "template": "<i/>"},
+    }
+    new = {
+        "branch": "wip",
+        "slug": "todo-lists",
+        "pointer": "/items/0",
+        "mode": "view",
+        "applies_to": "",
+        "template": "<em>{{ value.text }}</em>",
+    }
+    return (
+        ("save-item", JSON, save, {}, 201, True),
+        ("revert-item", JSON, item, {"HTTP_IF_MATCH": etag}, 204, True),
+        ("pull", JSON, {"branch": "wip"}, {}, 200, True),
+        ("new-component", JSON, new, {}, 201, True),
+        ("push", JSON, {"branch": "wip"}, {}, 201, True),
+        ("live-preview", "application/x-www-form-urlencoded", form, {}, 200, False),
+    )
+
+
+def post_studio(client, name, content_type, body, token=None, **headers):
+    sent = (
+        json.dumps(body)
+        if content_type == JSON
+        else "&".join(f"{k}={quote(v)}" for k, v in body.items())
+    )
+    if token:
+        client.cookies["csrftoken"] = token
+        headers["HTTP_X_CSRFTOKEN"] = token
+    return client.post(
+        reverse(f"scrud-studio:{name}"), sent, content_type=content_type, **headers
+    )
 
 
 @pytest.mark.django_db
 @test_context
-def test_a_studio_post_without_the_csrf_token_is_refused(admin_login, ui_alice_login):
+def test_a_studio_post_without_the_csrf_token_is_refused(admin_login):
     """Each studio POST endpoint, by the session user without the CSRF token,
-    answers 403 and writes nothing; with it, the request is made."""
+    answers 403 and writes nothing; with it, it succeeds (and the writes
+    are made)."""
     main_and_wip(admin_login)
     client = Client(enforce_csrf_checks=True)
-    client.force_login(ui_alice_login)
-    before = stored_state()
+    client.force_login(admin_login)
     token = _get_new_csrf_string()
-    for name, (content_type, body) in STUDIO_POSTS.items():
-        url = reverse(f"scrud-studio:{name}")
-        sent = (
-            json.dumps(body)
-            if content_type == JSON
-            else "&".join(f"{k}={quote(v)}" for k, v in body.items())
-        )
-        response = client.post(url, sent, content_type=content_type)
+    for name, content_type, body, headers, *_ in studio_posts("*"):
+        before = stored_state()
+        response = post_studio(client, name, content_type, body, **headers)
         assert response.status_code == 403, name
         assert b"CSRF" in response.content, name
         assert stored_state() == before, name
-        client.cookies["csrftoken"] = token
-        response = client.post(
-            url, sent, content_type=content_type, HTTP_X_CSRFTOKEN=token
-        )
-        assert b"CSRF" not in response.content, name
+    for name, content_type, body, headers, status, written in studio_posts("*"):
         before = stored_state()
-    # The save, accepted: the write was made.
-    assert [r["template"] for r in own_rows(UI_COMPONENT_TYPE_URI, "wip")] == ["<i/>"]
+        response = post_studio(client, name, content_type, body, token, **headers)
+        assert response.status_code == status, (name, response.content)
+        assert b"CSRF" not in response.content, name
+        assert (stored_state() != before) is written, name
+
+
+@pytest.mark.django_db
+@test_context
+def test_studio_and_page_writes_are_protected_without_the_csrf_middleware(
+    admin_login, todo_list, settings
+):
+    """Not left to the middleware: with ``CsrfViewMiddleware`` not installed,
+    a write without the token is still 403 and writes nothing."""
+    settings.MIDDLEWARE = tuple(
+        m for m in settings.MIDDLEWARE if "CsrfViewMiddleware" not in m
+    )
+    main_and_wip(admin_login)
+    client = Client(enforce_csrf_checks=True)
+    client.force_login(admin_login)
+    before = stored_state()
+    for name, content_type, body, headers, *_ in studio_posts("*"):
+        response = post_studio(client, name, content_type, body, **headers)
+        assert response.status_code == 403, name
+    assert stored_state() == before
+    url = ui_detail(todo_list)
+    count = Resource.objects.count()
+    sent = json.dumps({**todo_list.content, "title": "Forged"})
+    for response in (
+        client.put(
+            url, sent, content_type=JSON, HTTP_IF_MATCH=quote_etag(todo_list.etag)
+        ),
+        client.delete(url, HTTP_IF_MATCH=quote_etag(todo_list.etag)),
+        client.post(ui_list(), json.dumps(NEW_LIST), content_type=JSON),
+    ):
+        assert response.status_code == 403
+    assert stored(todo_list).etag == todo_list.etag
+    assert Resource.objects.count() == count
 
 
 @pytest.mark.django_db
@@ -942,3 +987,16 @@ def test_a_page_reads_its_type_once(todo_list, todo_reader_login):
         if f"FROM {table}" in q["sql"] and f"{slug} =" in q["sql"]
     ]
     assert len(by_slug) == 1, by_slug
+
+
+def test_studio_json_is_written_as_drfs_renderer_writes_it():
+    from rest_framework.renderers import JSONRenderer
+
+    from scrud_django.ui.studio.answers import json_response
+
+    data = {"text": "line para  é ü", "n": [1, 2.5, None, True], "k": {}}
+    response = json_response(data)
+    assert response.content == JSONRenderer().render(data)
+    assert b"\\u2028" in response.content and b"\\u2029" in response.content
+    with pytest.raises(ValueError):
+        json_response({"x": float("nan")})

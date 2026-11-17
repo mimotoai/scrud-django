@@ -91,6 +91,10 @@ def studio_view(*methods):
             response["Allow"] = allow
             return response
 
+        # Not left to the middleware alone: an unsafe method is refused
+        # without the CSRF token whether or not it is installed.
+        if any(method not in ("GET", "HEAD") for method in methods):
+            studio = csrf_protect(studio)
         return studio
 
     return decorate
