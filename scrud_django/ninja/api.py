@@ -148,6 +148,8 @@ def api(
     )
     type_routes = []
     computed_routes = []
+    # Each marked route's type slug, by route name.
+    route_slugs = {}
     # The renderers each route's DRF view negotiates among, by route name.
     offers = {
         services.SERVICES_ROUTE: negotiation.api_view_renderers(),
@@ -168,6 +170,8 @@ def api(
                 routers.type_router(spec, urls_namespace=urls_namespace),
             )
             type_routes.extend((f"{spec.slug}-list", f"{spec.slug}-detail"))
+            route_slugs[f"{spec.slug}-list"] = spec.slug
+            route_slugs[f"{spec.slug}-detail"] = spec.slug
             offers[f"{spec.slug}-list"] = negotiation.resource_renderers()
             offers[f"{spec.slug}-detail"] = negotiation.resource_renderers(
                 spec.document_media_type, routers.DOCUMENT_METHODS
@@ -187,6 +191,7 @@ def api(
                 computed.computed_router(spec, urls_namespace=urls_namespace),
             )
             computed_routes.append(f"{spec.slug}-detail")
+            route_slugs[f"{spec.slug}-detail"] = spec.slug
             offers[f"{spec.slug}-detail"] = negotiation.resource_renderers()
         elif spec.kind != "json":
             raise ImproperlyConfigured(
@@ -222,5 +227,5 @@ def api(
         scrud_api, [services.SERVICES_ROUTE], services.SERVICES_METHODS
     )
     # Last: the views the URLconf serves are marked as the core's.
-    routers.mark_core_routes(scrud_api, [*type_routes, *computed_routes])
+    routers.mark_core_routes(scrud_api, route_slugs)
     return scrud_api

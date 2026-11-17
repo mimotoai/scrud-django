@@ -619,15 +619,14 @@ def vary_on_accept(api, url_names, *, described=frozenset()) -> None:
     )
 
 
-def mark_core_routes(api, url_names) -> None:
-    """Mark `api`'s URL patterns named in `url_names` (the types' and the
-    computed types' routes) as the core's (`scrud_django.core.types
-    .mark_route`): their handlers call only the core, so they authorize
-    nothing beyond its checks. Call it last, after every other wrapping
-    of them, before ``api.urls`` is read: the mark names the view it is
-    set on, and the type's slug (the route name less ``-list``/``-detail``)."""
-    for name in url_names:
-        slug = name.removesuffix("-list").removesuffix("-detail")
+def mark_core_routes(api, slugs) -> None:
+    """Mark `api`'s URL patterns named in `slugs` (a mapping of route name to
+    the slug of its type: the types' and the computed types' routes) as the
+    core's (`scrud_django.core.types.mark_route`): their handlers call only
+    the core, so they authorize nothing beyond its checks. Call it last,
+    after every other wrapping of them, before ``api.urls`` is read: the
+    mark names the view it is set on, and the type's slug."""
+    for name, slug in slugs.items():
         _wrap_patterns(api, [name], functools.partial(mark_route, slug=slug))
 
 
