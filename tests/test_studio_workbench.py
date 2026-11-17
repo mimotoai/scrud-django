@@ -32,7 +32,8 @@ from .test_studio_page import CONFLICT, store_item
 from .test_ui_branch_css import make_css
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import HTML, grant, html, make_component
+from .test_ui_http import grant, html, make_component
+from .ui import page_request, ui_url
 
 STUDIO_ROOT = "/workbench/"
 STUDIO_CONTEXT = "ui-studio"
@@ -109,7 +110,8 @@ def workbench_url(branch, prefix=None):
 
 
 def get_page(url, status=200):
-    When.http.get(url, HTTP_ACCEPT=HTML)
+    url, headers = page_request(url)
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
     return html()
 
@@ -242,8 +244,8 @@ def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login)
     notice = page.one("data-studio-notice")
     assert "hidden" in notice.attrs and notice.attrs["role"] == "alert"
     # The items and the strip are embedded: T's studio data in their scopes.
-    items_url = reverse("ui-branch-items-detail", args=["alice-wip"])
-    status_url = reverse("ui-branch-status-detail", args=["alice-wip"])
+    items_url = ui_url(reverse("ui-branch-items-detail", args=["alice-wip"]))
+    status_url = ui_url(reverse("ui-branch-status-detail", args=["alice-wip"]))
     embeds = {
         e.attrs["data-studio-embed"]: (
             e.tag,
@@ -257,8 +259,8 @@ def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login)
     # final review adds the top bar's branch picker: the user's selectable
     # branches in the scope studio studio-branches
     # (test_workbench_branch_picker_links_readable_branches).
-    branch_url = reverse("ui-branches-detail", args=[alice_wip.pk])
-    branches_url = reverse("ui-selectable-branches-detail", args=["mine"])
+    branch_url = ui_url(reverse("ui-branches-detail", args=[alice_wip.pk]))
+    branches_url = ui_url(reverse("ui-selectable-branches-detail", args=["mine"]))
     assert embeds == {
         "branches": ("div", branches_url, "studio studio-branches"),
         "branch": ("div", branch_url, "studio studio-branch"),
@@ -481,10 +483,13 @@ def test_workbench_branch_picker_links_readable_branches(studio_layer, ui_alice_
     assert name.tag == "span" and name.text == "main"
     # The picker writes nothing.
     assert not [e for e in page.writes() if e.within(picker)]
-    # At the API's URLs the links stay there.
+    # At the UI app's URLs the links stay there.
     page = Page(get_page(workbench_url(alice_wip)))
     links = [href for _n, _c, href, _b, _cur in picker_entries(page) if href]
-    assert links == [workbench_url(alice_wip), workbench_url(studio)]
+    assert links == [
+        ui_url(workbench_url(alice_wip)),
+        ui_url(workbench_url(studio)),
+    ]
     # Each link is the workbench of its branch.
     for href in links:
         assert Page(get_page(href)).one("data-studio-workbench")
@@ -501,7 +506,7 @@ def test_override_button_is_the_items_action(studio_layer, ui_alice_login):
     action = head["override"]
     assert button.tag == "button" and button.text == "Override on this branch"
     assert button.attrs["type"] == "button"
-    assert button.attrs["hx-post"] == action["href"]
+    assert button.attrs["hx-post"] == ui_url(action["href"])
     assert button.attrs["hx-ext"] == "scrud-json"
     assert button.attrs["hx-swap"] == "none"
     assert button.attrs["data-scrud-json"] == "fixed"

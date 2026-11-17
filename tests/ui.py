@@ -16,3 +16,13 @@ def ui_url(api_url: str) -> str:
     if not api_url.startswith(API_PREFIX):
         raise ValueError(f"{api_url!r} is not under {API_PREFIX!r}")
     return "/" + api_url[len(API_PREFIX) :]
+
+
+def page_request(url: str, **headers) -> tuple[str, dict]:
+    """The URL and headers to request the HTML of `url`, which a page of
+    the UI app links (so an API path, ``/api/...``) or a published branch's
+    prefix serves (``/workbench/...``): an API path becomes its UI URL, which
+    needs no ``Accept``; a prefix path stays, asking for HTML."""
+    if url.startswith(API_PREFIX):
+        return ui_url(url), headers
+    return url, {"HTTP_ACCEPT": HTML, **headers}

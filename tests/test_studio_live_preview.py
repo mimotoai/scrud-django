@@ -41,6 +41,7 @@ from .test_ui_branch_render import put_item
 from .test_ui_branch_types import make_branch, problem
 from .test_ui_embeds import embedded_content, host, make_list, url_of
 from .test_ui_http import PREFIXES, grant, html, make_component, make_stylesheet
+from .ui import ui_url
 
 SLUG = "todo-lists"
 UNAVAILABLE = "https://api.openteams.com/http-problem/ui-branch-unavailable"
@@ -735,9 +736,7 @@ def test_preview_configures_htmx_without_inline_indicator_styles(
     )
     # A real page: no htmx-config, no indicator stylesheet.
     Given.http.force_login(todo_reader_login)
-    When.http.get(
-        reverse("todo-lists-detail", args=[todo_list.pk]), HTTP_ACCEPT="text/html"
-    )
+    When.http.get(ui_url(reverse("todo-lists-detail", args=[todo_list.pk])))
     Then.http.status_code_is(200)
     real = html()
     assert STATIC_HTMX in real

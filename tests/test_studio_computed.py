@@ -46,7 +46,8 @@ from .steps import *  # noqa: F403, F401
 from .test_studio_page import CONFLICT, SLUG, section, setup_branches, store_item
 from .test_ui_branch_push import make_wip, quoted
 from .test_ui_branch_types import make_branch
-from .test_ui_http import HTML, assert_html, grant, html, make_component
+from .test_ui_http import assert_html, grant, html, make_component
+from .ui import ui_url
 
 JSON = "application/json"
 OT = "http://api.openteams.com/json-ld/"
@@ -555,11 +556,11 @@ def test_studio_types_render_as_html(ui_alice_login):
         ("ui-type-catalog", "all"),
         ("ui-selectable-branches", "mine"),
     ):
-        When.http.get(url(slug, key), HTTP_ACCEPT=HTML)
+        When.http.get(ui_url(url(slug, key)))
         Then.http.status_code_is(200)
         assert_html()
         assert 'class="scrud-resource"' in html(), slug
-    When.http.get(url("ui-branch-items", "wip"), HTTP_ACCEPT=HTML)
+    When.http.get(ui_url(url("ui-branch-items", "wip")))
     assert "<section>items of wip</section>" in html()
     # Each type has its schema and JSON-LD context, linked from the
     # response.

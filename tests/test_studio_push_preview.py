@@ -31,7 +31,6 @@ from .test_ui_branch_push import (
 )
 from .test_ui_branch_types import component, make_branch, stylesheet
 from .test_ui_http import (
-    HTML,
     assert_html,
     grant,
     html,
@@ -40,6 +39,7 @@ from .test_ui_http import (
 )
 from .test_ui_layer_conflicts import css_body, wip_body
 from .test_ui_layers import MORE_APP, installed
+from .ui import UI_URLCONF, ui_url
 
 JSON = "application/json"
 OT = "http://api.openteams.com/json-ld/"
@@ -441,9 +441,10 @@ def test_push_of_layer_override_previewed(admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_push_preview_renders_through_the_cascade(admin_login):
+def test_push_preview_renders_through_the_cascade(admin_login, settings):
     # The studio's review panel embeds it: a stylesheet rule on its type
     # renders it like any resource.
+    settings.ROOT_URLCONF = UI_URLCONF
     wip_overrides_row(admin_login)
     make_component(
         "push-preview",
@@ -460,10 +461,13 @@ def test_push_preview_renders_through_the_cascade(admin_login):
         },
         "ui-stylesheets",
     )
-    When.http.get(preview_url("wip"), HTTP_ACCEPT=HTML)
+    When.http.get(ui_url(preview_url("wip")))
     Then.http.status_code_is(200)
     assert_html()
     assert "<section>wip into main: 1</section>" in html()
+    # The UI app sends no Link header; the API's response links the schema
+    # and JSON-LD context.
+    When.http.get(preview_url("wip"), HTTP_ACCEPT=JSON)
     assert 'rel="describedby"' in Http.response["Link"]
 
 

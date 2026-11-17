@@ -31,7 +31,8 @@ from .test_studio_workbench import STUDIO_ROOT, Page, setup_studio, workbench_ur
 from .test_ui_branch_css import make_css
 from .test_ui_branch_js import make_js
 from .test_ui_branch_types import make_branch
-from .test_ui_http import HTML, grant, html
+from .test_ui_http import grant, html
+from .ui import page_request, ui_url
 
 JSON = "application/json"
 EDITOR_SCOPE = "studio studio-editor"
@@ -94,16 +95,20 @@ def open_editor(href, view=False, status=200):
 
 
 def get_page(url, status=200, **headers):
-    When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+    url, headers = page_request(url, **headers)
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
     return html()
 
 
 def root_frame(page, href):
+    """The frame of the resource at `href`: its API path or its UI path (the
+    UI app's pages name resources by the latter)."""
+    ui_href = ui_url(href) if href.startswith("/api/") else href
     [frame] = [
         e
         for e in page.having("data-scrud-href")
-        if e.attrs["data-scrud-href"] == href and "scrud-resource" in e.classes()
+        if e.attrs["data-scrud-href"] == ui_href and "scrud-resource" in e.classes()
     ]
     return frame
 
@@ -135,8 +140,9 @@ def put_item(href, body, etag=None, html_mode=True, **headers):
     if etag is not None:
         headers["HTTP_IF_MATCH"] = etag
     if html_mode:
-        headers.update(
-            HTTP_ACCEPT=HTML,
+        href, headers = page_request(
+            href,
+            **headers,
             HTTP_HX_REQUEST="true",
             HTTP_SCRUD_UI_SCOPE=EDITOR_SCOPE,
             HTTP_SCRUD_UI_POINTER="",
@@ -287,13 +293,8 @@ def test_override_then_save_round_trip(studio_layer, ui_alice_login):
     # As scrud-json sends it: the body byte for byte, no If-Match (empty
     # data-scrud-etag), HTML accepted.
     assert button.attrs["data-scrud-etag"] == ""
-    When.http.post(
-        button.attrs["hx-post"],
-        data=body,
-        content_type=JSON,
-        HTTP_ACCEPT=HTML,
-        HTTP_HX_REQUEST="true",
-    )
+    url, headers = page_request(button.attrs["hx-post"], HTTP_HX_REQUEST="true")
+    When.http.post(url, data=body, content_type=JSON, **headers)
     Then.http.status_code_is(201)
     own = resource(UI_COMPONENT_TYPE_URI, "card", "alice-wip")
     assert own.content["base"] == card.etag

@@ -31,6 +31,7 @@ from .test_ui_branch_types import make_branch
 from .test_ui_http import grant, make_stylesheet
 from .test_ui_static import SCRUD_UI as SCRUD_UI_JS
 from .test_ui_static import require_node
+from .ui import page_request, ui_url
 
 LAYER_PACKAGE = "scrud_django.ui.studio.layer"
 
@@ -4076,7 +4077,7 @@ def test_new_branch_form_body_from_main(studio_layer, admin_login, settings):
     settings.ROOT_URLCONF = "tests.mounted_urls"
     main = make_branch("main", "", parent=None)
     Given.http.force_login(admin_login)
-    When.http.get(workbench_url(main), HTTP_ACCEPT="text/html")
+    When.http.get(page_request(workbench_url(main))[0])
     Then.http.status_code_is(200)
     page = Page(Http.response.content.decode())
     [form] = page.having("data-studio-new-branch")
@@ -4100,8 +4101,11 @@ def test_new_branch_form_body_from_main(studio_layer, admin_login, settings):
     out = json.loads(done.stdout)
     assert out["bad"] == []
     assert out["body"] == {"name": "feature", "parent": "main", "rbac_context": ""}
+    # The form posts to the UI app; the body goes to the API's URL of the
+    # same collection, which answers JSON.
+    assert form.attrs["hx-post"] == ui_url(reverse("ui-branches-list"))
     When.http.post(
-        form.attrs["hx-post"],
+        reverse("ui-branches-list"),
         data=json.dumps(out["body"]),
         content_type="application/json",
         HTTP_ACCEPT="application/json",
@@ -4193,12 +4197,12 @@ def test_promote_sends_the_rendered_bodies(studio_layer, admin_login, settings):
     )
     review = out["review"]
     assert review["verb"] == "GET" and review["source"] is True
-    When.http.get(
+    url, headers = page_request(
         review["path"],
-        HTTP_ACCEPT="text/html",
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_SCOPE=review["headers"]["Scrud-UI-Scope"],
     )
+    When.http.get(url, **headers)
     Then.http.status_code_is(200)
     [found] = Page(Http.response.content.decode()).having("data-studio-push-preview")
     answered = {

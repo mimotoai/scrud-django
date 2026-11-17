@@ -42,7 +42,8 @@ from .test_ui_branch_prefixes import ADMIN, mounted, publish
 from .test_ui_branch_render import may_select_branches
 from .test_ui_branch_types import create, make_branch, problem
 from .test_ui_embeds import host, make_jinja, url_of
-from .test_ui_http import FRAME, HTML, html, make_component, make_stylesheet
+from .test_ui_http import FRAME, html, make_component, make_stylesheet
+from .ui import page_request, ui_url
 
 JSON = "application/json"
 
@@ -67,7 +68,8 @@ def api_at_api_path(settings):
 
 
 def get_page(url, status=200, **headers):
-    When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+    url, headers = page_request(url, **headers)
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
     return html()
 
@@ -466,11 +468,11 @@ def test_studio_page_only_in_studio_scope(studio_layer, admin_login):
         < js_items["studio:branch"][0]
     )
     css_tag = '<link rel="stylesheet" href="{}">\n'.format(
-        reverse("ui-css-file", args=["studio:studio", css_etag])
+        reverse("scrud_ui:ui-css-file", args=["studio:studio", css_etag])
     )
     js_tag = "".join(
         '<script src="{}" defer></script>\n'.format(
-            reverse("ui-js-file", args=[name, js_items[name][1]])
+            reverse("scrud_ui:ui-js-file", args=[name, js_items[name][1]])
         )
         for name in (
             "studio:studio",
@@ -514,10 +516,10 @@ def test_component_globals_in_mount_and_api_url(todo_list, todo_reader_login):
     )
     publish("admin", ADMIN)
     Given.http.force_login(may_select_branches(todo_reader_login))
-    # At the API's URLs, in_mount changes nothing.
+    # At the UI app's URLs, in_mount maps an API path into the UI app.
     page = get_page(url_of(todo_list), HTTP_SCRUD_UI_SCOPE="host")
     assert (
-        f"<p>/api/todo-lists/{pk}/|/api/todo-lists/{pk}/|/api/todo-lists/"
+        f"<p>/todo-lists/{pk}/|/api/todo-lists/{pk}/|/api/todo-lists/"
         "|/api/ui-branch-items/main/|3</p>"
     ) in page
     # Under a published prefix, in_mount maps an API path into it; api_url
@@ -568,7 +570,7 @@ def test_globals_in_list_and_page_components_not_django(todo_list, todo_reader_l
     )
     Given.http.force_login(todo_reader_login)
     page = get_page(reverse("todo-lists-list") + "?ui-scope=listing")
-    assert '<ul data-list="/api/todo-lists/">/api/x/</ul>' in page
+    assert '<ul data-list="/api/todo-lists/">/x/</ul>' in page
     assert '<body data-page="/api/todo-lists/">' in page
     page = get_page(url_of(todo_list), HTTP_SCRUD_UI_SCOPE="plain")
     assert '<i data-django="|">x</i>' in page
@@ -593,15 +595,14 @@ def test_studio_links_on_ui_type_pages_only(todo_list, admin_login):
         assert (
             f"{NAV}"
             f'<a href="{studio_href}">Studio</a>'
-            f'<a href="{url_of(row)}?ui-safe=1">Safe mode</a>'
+            f'<a href="{ui_url(url_of(row))}?ui-safe=1">Safe mode</a>'
             f'<a href="{bootstrap_href}">Bootstrap studio</a>'
             "</nav>"
         ) in page
         # The safe link keeps the query.
         page = get_page(url_of(row) + "?ui-scope=a")
-        assert f'<a href="{url_of(row)}?ui-scope=a&amp;ui-safe=1">Safe mode</a>' in (
-            page
-        )
+        safe = f'<a href="{ui_url(url_of(row))}?ui-scope=a&amp;ui-safe=1">Safe mode</a>'
+        assert safe in page
         # The UI types' lists, and the studio's computed types.
         assert NAV in get_page(reverse("ui-components-list"))
         assert NAV in get_page(url_of(root))

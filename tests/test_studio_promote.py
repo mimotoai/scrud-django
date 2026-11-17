@@ -46,7 +46,8 @@ from .test_ui_branch_push import (
 )
 from .test_ui_branch_types import component, make_branch, stylesheet
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import HTML, grant, make_component, make_stylesheet
+from .test_ui_http import grant, make_component, make_stylesheet
+from .ui import page_request, ui_url
 
 JSON = "application/json"
 PUSH_SCOPE = "studio studio-push"
@@ -61,7 +62,8 @@ def api_at_api_path(settings):
 
 
 def get_page(url, status=200, **headers):
-    When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+    url, headers = page_request(url, **headers)
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
     return Page(Http.response.content.decode())
 
@@ -105,11 +107,12 @@ def press(button, status):
     [method] = [
         m for m in ("post", "put", "patch", "delete") if f"hx-{m}" in button.attrs
     ]
-    headers = {"HTTP_ACCEPT": HTML, "HTTP_HX_REQUEST": "true"}
+    headers = {"HTTP_HX_REQUEST": "true"}
     if button.attrs["data-scrud-etag"]:
         headers["HTTP_IF_MATCH"] = button.attrs["data-scrud-etag"]
+    url, headers = page_request(button.attrs[f"hx-{method}"], **headers)
     getattr(When.http, method)(
-        button.attrs[f"hx-{method}"],
+        url,
         data=button.attrs["data-scrud-body"],
         content_type=JSON,
         **headers,
@@ -176,16 +179,14 @@ def put_frame(page, href, **fields):
     applied, ``If-Match`` from the frame, in the frame's scope."""
     frame = root_frame(page, href)
     body = {**content_of(page, frame), **fields}
-    When.http.put(
+    url, headers = page_request(
         href,
-        data=json.dumps(body),
-        content_type=JSON,
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_SCOPE=frame.attrs["data-scrud-scope"],
         HTTP_SCRUD_UI_POINTER="",
         HTTP_IF_MATCH=frame.attrs["data-scrud-etag"],
     )
+    When.http.put(url, data=json.dumps(body), content_type=JSON, **headers)
     return Http.response
 
 
@@ -234,8 +235,8 @@ def test_promote_panel_shows_changes_and_conflicts(studio_layer, admin_login):
     boxes = promote_boxes(page)
     assert list(boxes) == ["main"]
     box = boxes["main"]
-    assert box.attrs["data-studio-promote-src"] == reverse(
-        "ui-push-previews-detail", args=["wip"]
+    assert box.attrs["data-studio-promote-src"] == ui_url(
+        reverse("ui-push-previews-detail", args=["wip"])
     )
     assert box.within(page.one("data-studio-status"))
     [opener] = page.having("data-studio-promote-open", within=box)
@@ -313,7 +314,7 @@ def test_promote_panel_shows_changes_and_conflicts(studio_layer, admin_login):
     assert text_of(apply) == "Apply to main" and "disabled" in apply.attrs
     assert text_of(propose) == "Propose to main" and "disabled" not in propose.attrs
     for button, state in ((apply, "applied"), (propose, "proposed")):
-        assert button.attrs["hx-post"] == reverse("ui-pushes-list")
+        assert button.attrs["hx-post"] == ui_url(reverse("ui-pushes-list"))
         assert button.attrs["hx-ext"] == "scrud-json"
         assert button.attrs["hx-swap"] == "none"
         assert button.attrs["data-scrud-json"] == "fixed"
@@ -472,7 +473,7 @@ def test_apply_push_from_panel_round_trip(studio_layer, admin_login):
         if "studio-push-link" in e.classes()
     ]
     href = reverse("ui-pushes-detail", args=[push.pk])
-    assert link.attrs["href"] == push_page_url(href)
+    assert link.attrs["href"] == ui_url(push_page_url(href))
     assert text_of(link) == "wip → main"
     assert (
         counts(preview_of(load_review(promote_boxes(page)["main"])))["changes"] == "0"
@@ -498,7 +499,8 @@ def test_propose_then_apply_from_push_page(studio_layer, admin_login):
     assert entry.attrs["data-studio-push-state"] == "proposed"
     assert "proposed" in text_of(entry)
     [link] = [e for e in page.having("href") if e.within(entry)]
-    assert link.attrs["href"] == push_page_url(href) == href + "?ui-scope=studio"
+    assert link.attrs["href"] == ui_url(push_page_url(href))
+    assert push_page_url(href) == href + "?ui-scope=studio"
     # The push page: its record, its review embedded, and the state form.
     page = get_page(link.attrs["href"])
     record = page.one("data-studio-push")
@@ -517,14 +519,14 @@ def test_propose_then_apply_from_push_page(studio_layer, admin_login):
         e.attrs["data-scrud-scope"]: e
         for e in page.having("data-scrud-href")
         if e.attrs["data-scrud-href"].startswith(
-            reverse("ui-push-previews-detail", args=["wip"])
+            ui_url(reverse("ui-push-previews-detail", args=["wip"]))
         )
     }
     assert sorted(embedded) == [PUSH_SCOPE, AFTER_SCOPE]
     assert found.within(embedded[PUSH_SCOPE])
     assert page.one("data-studio-push-after").within(embedded[AFTER_SCOPE])
     frame = root_frame(page, href)
-    assert frame.tag == "form" and frame.attrs["hx-put"] == href
+    assert frame.tag == "form" and frame.attrs["hx-put"] == ui_url(href)
     [state] = [e for e in page.elements if e.attrs.get("name") == "/state"]
     assert state.tag == "input" and state.attrs["type"] == "text"
     assert state.attrs["value"] == "proposed" and state.within(frame)
@@ -589,7 +591,7 @@ def test_applied_push_page_is_a_view_without_delete(studio_layer, admin_login):
     page = get_page(push_page_url(open_href))
     assert page.one("data-studio-push").attrs["data-studio-mode"] == "edit"
     [delete] = page.having("hx-delete")
-    assert delete.attrs["hx-delete"] == open_href
+    assert delete.attrs["hx-delete"] == ui_url(open_href)
     assert [e for e in page.elements if e.attrs.get("name") == "/state"]
     assert get_page(open_href).having("hx-delete")
 
@@ -839,8 +841,8 @@ def test_promote_to_ancestor_beyond_parent(studio_layer, admin_login):
     ids = [e.attrs["id"] for e in page.having("data-studio-promote-panel")]
     assert len(set(ids)) == 2
     for target, box in boxes.items():
-        assert box.attrs["data-studio-promote-src"] == reverse(
-            "ui-push-previews-detail", args=["mine"]
+        assert box.attrs["data-studio-promote-src"] == ui_url(
+            reverse("ui-push-previews-detail", args=["mine"])
         )
         for cls, state in (("studio-apply", "applied"), ("studio-propose", "proposed")):
             body = json.loads(box_button(page, box, cls).attrs["data-scrud-body"])
@@ -874,7 +876,7 @@ def test_published_T_has_no_promote(studio_layer, admin_login):
     # published one is normal); it pushes nothing.
     [new_branch] = page.writes()
     assert "data-studio-new-branch" in new_branch.attrs
-    assert new_branch.attrs["hx-post"] == reverse("ui-branches-list")
+    assert new_branch.attrs["hx-post"] == ui_url(reverse("ui-branches-list"))
 
 
 @pytest.mark.django_db
@@ -947,8 +949,8 @@ def test_push_page_previews_target_after_push(studio_layer, admin_login):
         for e in page.having("data-scrud-scope")
         if e.attrs["data-scrud-scope"] == AFTER_SCOPE
     ]
-    assert embedded.attrs["data-scrud-href"] == reverse(
-        "ui-push-previews-detail", args=["wip"]
+    assert embedded.attrs["data-scrud-href"] == ui_url(
+        reverse("ui-push-previews-detail", args=["wip"])
     )
     assert section.within(embedded)
     assert counts(preview_of(page))["changes"] == "2"
