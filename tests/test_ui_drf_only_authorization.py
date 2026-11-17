@@ -4,12 +4,15 @@ asks a custom ``viewset_class``'s permissions (``IsAuthorized`` subclasses,
 their compositions) or methods, so the UI refuses a type served by one, as
 it refuses a slug it does not serve (404), unless the type declares its
 rules to the core (``checks=`` and ``object_checks=``) or that the core's
-checks are complete for it (``ui_authorization="core"``); the system check
-``scrud_django_ui.W003`` names each type it refuses. These tests serve the
-API at ``/api/`` and the UI at ``/`` (``tests.drf_only_urls``, which is
-``tests.mounted_urls`` with the three types)."""
+checks are complete for it (``ui_authorization="core"``). It serves a type
+only when the views its API routes resolve to were built by a builder the
+core trusts (registration, scrud's ninja ``api()``): a type routed by hand
+is refused too. The system check ``scrud_django_ui.W003`` names each type it
+refuses. These tests serve the API at ``/api/`` and the UI at ``/``
+(``tests.drf_only_urls``, which is ``tests.mounted_urls`` with the types)."""
 
 import dataclasses
+import functools
 import json
 
 import pytest
@@ -21,9 +24,11 @@ from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for, registration
 from scrud_django.core.types import (
+    UNRECORDED_ROUTE,
     TypeOptions,
     drf_only_authorization,
-    record_drf_only_authorization,
+    mark_route,
+    route_authorization,
     type_options_for_slug,
 )
 from scrud_django.models import Resource
@@ -49,12 +54,17 @@ from scrud_django.views import ResourceViewSet
 from .fixtures import *  # noqa
 from .fixtures import TYPE_URI_TODO_LIST, assign_role
 from .resource_types import (
+    CHECKED_DENIED_NOTE_TYPE_URI,
     CORE_DENIED_NOTE_TYPE_URI,
+    CORE_HAND_ROUTED_NOTE_TYPE_URI,
     DENIED,
     DENIED_NOTE_TYPE_URI,
+    HAND_ROUTED_NOTE_TYPE_URI,
     HOOKED_DENIED_NOTE_TYPE_URI,
+    OBJECT_CHECKED_DENIED_NOTE_TYPE_URI,
     SUMMARIES_TYPE,
     drf_only_types,
+    hand_routed_types,
 )
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_prefixes import mounted, publish
@@ -70,11 +80,21 @@ OPEN = "open"
 DENIED_SLUG = "denied-notes"
 CORE_SLUG = "core-denied-notes"
 HOOKED_SLUG = "hooked-denied-notes"
+CHECKED_SLUG = "checked-denied-notes"
+OBJECT_CHECKED_SLUG = "object-checked-denied-notes"
+HAND_SLUG = "hand-routed-notes"
+CORE_HAND_SLUG = "core-hand-routed-notes"
 NOTE_TYPES = {
     DENIED_SLUG: DENIED_NOTE_TYPE_URI,
     CORE_SLUG: CORE_DENIED_NOTE_TYPE_URI,
     HOOKED_SLUG: HOOKED_DENIED_NOTE_TYPE_URI,
+    CHECKED_SLUG: CHECKED_DENIED_NOTE_TYPE_URI,
+    OBJECT_CHECKED_SLUG: OBJECT_CHECKED_DENIED_NOTE_TYPE_URI,
+    HAND_SLUG: HAND_ROUTED_NOTE_TYPE_URI,
+    CORE_HAND_SLUG: CORE_HAND_ROUTED_NOTE_TYPE_URI,
 }
+# The types the UI refuses, as W003 names them (sorted by slug).
+REFUSED_SLUGS = [CHECKED_SLUG, DENIED_SLUG, HAND_SLUG, OBJECT_CHECKED_SLUG]
 
 # Every type the UI app and the studio register.
 UI_SLUGS = (
@@ -91,15 +111,16 @@ STUDIO_SLUGS = tuple(slug for _, slug, _ in STUDIO_COMPUTED_TYPES)
 
 @pytest.fixture(autouse=True)
 def drf_only_urlconf(settings, db):
-    """The URLconf with the three types, whose rows are registered again
-    (a test's rollback removed those its import stored)."""
+    """The URLconf with the types, whose rows are registered again (a test's
+    rollback removed those its import stored)."""
     settings.ROOT_URLCONF = URLCONF
     reverse("denied-notes-list")
     drf_only_types()
+    hand_routed_types()
 
 
 def note_writer():
-    """A user granted every method on the three types and on to-do lists in
+    """A user granted every method on the types and on to-do lists in
     "denied", "open" and "project-a": only the viewset's
     ``ContextDenyingIsAuthorized`` (or the hooks) refuse it."""
     iris = [*NOTE_TYPES.values(), TYPE_URI_TODO_LIST]
@@ -190,6 +211,78 @@ def test_the_ui_refuses_a_type_with_drf_only_authorization():
 
 @pytest.mark.django_db
 @test_context
+def test_the_ui_refuses_the_anonymous_alike():
+    """The anonymous user gets the 404 of an unserved slug too, not the 401
+    or 403 a served type would answer: nothing tells the type exists."""
+    hidden = note(DENIED_SLUG, DENIED, "Hidden")
+    shown = note(DENIED_SLUG, OPEN, "Shown")
+    for resource in (hidden, shown):
+        assert_refused_by_the_ui(DENIED_SLUG, resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_type_declaring_only_one_of_the_hooks_stays_refused():
+    """Only ``checks=`` (writes) or only ``object_checks=`` (reads): the
+    viewset may still authorize the other side, so the UI refuses it."""
+    Given.http.force_login(note_writer())
+    for slug in (CHECKED_SLUG, OBJECT_CHECKED_SLUG):
+        resource = note(slug, OPEN, "Shown")
+        assert pages.refusal(slug) is not None, slug
+        assert_refused_by_the_ui(slug, resource)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_type_routed_by_hand_is_refused_unless_it_opts_in():
+    """Routes not built by registration (``ResourceTypeRegistration(
+    build_urls=False)`` and ``as_view`` named as registration names them):
+    nothing tells what authorizes them, so the UI refuses the type; with
+    ``ui_authorization="core"`` among its options it serves it."""
+    hidden = note(HAND_SLUG, DENIED, "Hidden")
+    shown = note(HAND_SLUG, OPEN, "Shown")
+    Given.http.force_login(note_writer())
+    # The API serves it, with its view's authorization.
+    When.http.get(api_detail(hidden), HTTP_ACCEPT=JSON)
+    Then.http.status_code_is(404)
+    When.http.get(api_detail(shown), HTTP_ACCEPT=JSON)
+    Then.http.status_code_is(200)
+    assert pages.refusal(HAND_SLUG) == UNRECORDED_ROUTE
+    for resource in (hidden, shown):
+        assert_refused_by_the_ui(HAND_SLUG, resource)
+    opted_in = note(CORE_HAND_SLUG, OPEN, "Opted in")
+    assert pages.refusal(CORE_HAND_SLUG) is None
+    When.http.get(ui_url(api_list(CORE_HAND_SLUG)))
+    Then.http.status_code_is(200)
+    When.http.get(ui_url(api_detail(opted_in)))
+    Then.http.status_code_is(200)
+    assert "Opted in" in html()
+
+
+@pytest.mark.django_db
+@test_context
+def test_two_urlconfs_building_a_slug_differently_each_decide_alike(settings):
+    """The views the request's URLconf routes the slug to decide, whichever
+    URLconf built its routes last: ``tests.drf_only_default_urls`` builds
+    ``denied-notes`` with the default viewset, ``tests.drf_only_urls`` with
+    a custom one."""
+    shown = note(DENIED_SLUG, OPEN, "Shown")
+    Given.http.force_login(note_writer())
+    for urlconf, status in (
+        ("tests.drf_only_default_urls", 200),
+        (URLCONF, 404),
+        ("tests.drf_only_default_urls", 200),
+        (URLCONF, 404),
+    ):
+        settings.ROOT_URLCONF = urlconf
+        # Each import (or not) of the URLconf builds its routes again.
+        reverse("denied-notes-list")
+        When.http.get(ui_url(api_detail(shown)))
+        Then.http.status_code_is(status)
+
+
+@pytest.mark.django_db
+@test_context
 def test_an_embed_of_a_drf_only_type_is_refused(todo_list):
     hidden = note(DENIED_SLUG, DENIED, "Hidden")
     shown = note(HOOKED_SLUG, OPEN, "Shown")
@@ -252,6 +345,26 @@ def test_a_studio_preview_of_a_drf_only_instance_is_refused():
 
 @pytest.mark.django_db
 @test_context
+def test_the_studio_refuses_as_for_an_unknown_slug():
+    """The studio's read of a refused type's resource answers exactly as one
+    of a slug that names no type: the same status and problem body."""
+    from scrud_django.ui.studio import answers
+
+    hidden = note(DENIED_SLUG, OPEN, "Hidden")
+    request = RequestFactory().get("/studio/")
+    request.user = note_writer()
+    refused = answers.write(request, DENIED_SLUG, "GET", pk=hidden.pk)
+    unknown = answers.write(request, "no-such-type", "GET", pk=hidden.pk)
+    assert refused.status == unknown.status == 404
+    assert refused.problem == unknown.problem
+    assert refused.problem_type == unknown.problem_type
+    assert answers.validate_draft(request, DENIED_SLUG, {"text": "x"}) == (
+        answers.validate_draft(request, "no-such-type", {"text": "x"})
+    )
+
+
+@pytest.mark.django_db
+@test_context
 def test_ui_authorization_core_serves_the_type():
     """The type declares the core's checks complete for it: the UI serves it
     by its grants (and hooks) alone, as declared."""
@@ -298,21 +411,26 @@ def test_checks_and_object_checks_serve_the_type_and_apply():
 @pytest.mark.django_db
 def test_the_system_check_names_each_refused_type():
     found = check_drf_only_authorization(None)
-    assert [w.id for w in found] == [DRF_ONLY_ID]
-    (warning,) = found
-    assert DENIED_SLUG in warning.msg
-    assert "tests.urls.ContextDenyingResourceViewSet" in warning.msg
-    assert "checks=" in warning.hint and "object_checks=" in warning.hint
-    assert 'ui_authorization="core"' in warning.hint
-    for slug in (CORE_SLUG, HOOKED_SLUG):
-        assert slug not in warning.msg
+    assert [w.id for w in found] == [DRF_ONLY_ID] * len(REFUSED_SLUGS)
+    assert [w.obj for w in found] == REFUSED_SLUGS
+    by_slug = {w.obj: w for w in found}
+    for slug in (CHECKED_SLUG, DENIED_SLUG, OBJECT_CHECKED_SLUG):
+        assert f"{slug!r}" in by_slug[slug].msg
+        assert "tests.urls.ContextDenyingResourceViewSet" in by_slug[slug].msg
+    assert f"{HAND_SLUG!r}" in by_slug[HAND_SLUG].msg
+    assert "not built by registration" in by_slug[HAND_SLUG].msg
+    for warning in found:
+        assert "checks=" in warning.hint and "object_checks=" in warning.hint
+        assert 'ui_authorization="core"' in warning.hint
+        for slug in (CORE_SLUG, HOOKED_SLUG, CORE_HAND_SLUG):
+            assert f"{slug!r}" not in warning.msg
     # ``manage.py check`` runs it.
     assert [w for w in checks.run_checks() if w.id == DRF_ONLY_ID] == found
 
 
 @pytest.mark.django_db
 def test_the_system_check_names_no_type_another_urlconf_serves(settings):
-    """``tests.urls`` serves none of the three types, and none of its own is
+    """``tests.urls`` serves none of the types, and none of its own is
     refused (``todo-summaries``, served by a viewset class alone, has no UI
     page in the first place)."""
     settings.ROOT_URLCONF = "tests.mounted_urls"
@@ -323,7 +441,7 @@ def test_the_system_check_names_no_type_another_urlconf_serves(settings):
 def test_every_built_in_ui_and_studio_type_is_served():
     reverse("ui-components-list")
     for slug in (*UI_SLUGS, *STUDIO_SLUGS, "json-schema", "json-ld"):
-        assert drf_only_authorization(slug) is None, slug
+        assert pages.refusal(slug) is None, slug
         assert pages.served(slug) is not None, slug
     # The UI types' viewsets are their own, which hold no authorization
     # beyond their hooks: the types declare the core's checks complete.
@@ -366,11 +484,50 @@ def test_ui_authorization_is_core_or_none():
         TypeOptions(ui_authorization="drf")
 
 
-def test_a_recorded_route_is_replaced_by_the_next():
-    record_drf_only_authorization("replaced-slug", "its custom viewset")
-    assert drf_only_authorization("replaced-slug") == "its custom viewset"
-    record_drf_only_authorization("replaced-slug", None)
-    assert drf_only_authorization("replaced-slug") is None
+def test_only_the_marked_view_itself_is_trusted():
+    """A view no trusted builder marked, or one wrapping a marked view
+    (``functools.wraps`` copies its mark), is unrecorded: it may authorize
+    on its own, so it fails closed."""
+
+    def view(request):
+        return None
+
+    assert route_authorization(view) == UNRECORDED_ROUTE
+    assert drf_only_authorization("any-slug", view) == UNRECORDED_ROUTE
+    assert drf_only_authorization("any-slug", None) == UNRECORDED_ROUTE
+    mark_route(view)
+    assert route_authorization(view) is None
+    assert drf_only_authorization("any-slug", view) is None
+
+    @functools.wraps(view)
+    def wrapping(request):
+        return view(request)
+
+    assert route_authorization(wrapping) == UNRECORDED_ROUTE
+    mark_route(view, "its custom viewset")
+    assert route_authorization(view) == "its custom viewset"
+
+
+@pytest.mark.django_db
+def test_ninja_marks_its_type_routes_as_the_core_s():
+    """Scrud's ninja ``api()`` handlers call only the core: their views are
+    marked as the core's."""
+    from . import ninja_api
+
+    names = {"partner-profiles-list", "partner-profiles-detail", "summaries-detail"}
+    found = {}
+
+    def walk(patterns):
+        for pattern in patterns:
+            if hasattr(pattern, "url_patterns"):
+                walk(pattern.url_patterns)
+            elif pattern.name in names:
+                found[pattern.name] = pattern.callback
+
+    walk(ninja_api.URLS[0])
+    assert set(found) == names
+    for name, view in found.items():
+        assert route_authorization(view) is None, name
 
 
 @pytest.mark.django_db

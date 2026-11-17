@@ -24,7 +24,7 @@ from scrud_django.core import lists, resources, writes
 from scrud_django.core.bodies import check_body
 from scrud_django.core.collections import collection_context, collection_schema
 from scrud_django.core.errors import precondition_answer
-from scrud_django.core.types import SAFE_METHODS, requirement_for
+from scrud_django.core.types import SAFE_METHODS, mark_route, requirement_for
 from scrud_django.core.urls import absolute_reverse
 from scrud_django.ninja import negotiation
 from scrud_django.ninja.entry import entry
@@ -617,6 +617,16 @@ def vary_on_accept(api, url_names, *, described=frozenset()) -> None:
         [name for name in url_names if name in described],
         functools.partial(_varying_on_accept, preflights=False),
     )
+
+
+def mark_core_routes(api, url_names) -> None:
+    """Mark `api`'s URL patterns named in `url_names` (the types' and the
+    computed types' routes) as the core's (`scrud_django.core.types
+    .mark_route`): their handlers call only the core, so they authorize
+    nothing beyond its checks. Call it last, after every other wrapping
+    of them, before ``api.urls`` is read: the mark names the view it is
+    set on."""
+    _wrap_patterns(api, url_names, mark_route)
 
 
 def _wrap_patterns(api, url_names, wrap):

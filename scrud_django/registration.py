@@ -23,7 +23,8 @@ from django.utils import timezone
 from scrud_django import services
 from scrud_django.core.types import (
     TypeOptions,
-    record_drf_only_authorization,
+    mark_route,
+    note_type_slug,
     register_type_options,
 )
 from scrud_django.models import Resource, ResourceType
@@ -228,6 +229,7 @@ class ResourceTypeRegistration:
                 "ResourceTypeRegistration(build_urls=False) builds no routes: "
                 "it takes no viewset_class."
             )
+        note_type_slug(slug)
         # Read on the type's write database, with the documents compared
         # below with the files (register_json_file): a lagging replica would
         # leave a schema edited since in place, add a second row for a type
@@ -388,10 +390,10 @@ def stored_fields(resource_type):
 def resource_type_urls(slug, viewset_class):
     """The list and detail routes of the resource type `slug`, served by
     `viewset_class`. They need no database: the views read the type by its
-    slug (`get_resource_type_for`) on each request. Records whether
-    `viewset_class` authorizes beyond the core's checks
-    (`drf_only_authorization_of`)."""
-    record_drf_only_authorization(slug, drf_only_authorization_of(viewset_class))
+    slug (`get_resource_type_for`) on each request. Each view is marked
+    with what `viewset_class` authorizes beyond the core's checks
+    (`scrud_django.core.types.mark_route`, `drf_only_authorization_of`)."""
+    drf_only = drf_only_authorization_of(viewset_class)
     names = ResourceType(slug=slug)
     scrud_list = viewset_class.as_view(
         {
@@ -411,8 +413,14 @@ def resource_type_urls(slug, viewset_class):
         resource_type_name=slug,
     )
     return [
-        path(f'{slug}/', scrud_list, name=names.route_name_list()),
-        path(f'{slug}/<str:slug>/', scrud_detail, name=names.route_name_detail()),
+        path(
+            f'{slug}/', mark_route(scrud_list, drf_only), name=names.route_name_list()
+        ),
+        path(
+            f'{slug}/<str:slug>/',
+            mark_route(scrud_detail, drf_only),
+            name=names.route_name_detail(),
+        ),
     ]
 
 
@@ -467,6 +475,7 @@ def register_or_defer(
     be told for another reason (a broken migration graph), which `probe`
     logs with its traceback. The answer is kept for the registrations that
     fail after it (`_PROBED`)."""
+    note_type_slug(slug)
     db = type_db()
     try:
         with transaction.atomic(using=db):
@@ -1466,12 +1475,14 @@ def computed_resource_type(
 
 
 def computed_urls(slug, viewset_class):
-    """The detail route of a computed type: ``<slug>/<str:slug>/``. Records
-    whether `viewset_class` authorizes beyond the core's checks
-    (`drf_only_authorization_of`)."""
-    record_drf_only_authorization(slug, drf_only_authorization_of(viewset_class))
-    detail = viewset_class.as_view(
-        {'get': 'retrieve', 'head': 'retrieve'}, resource_type_name=slug
+    """The detail route of a computed type: ``<slug>/<str:slug>/``, its view
+    marked with what `viewset_class` authorizes beyond the core's checks
+    (`scrud_django.core.types.mark_route`, `drf_only_authorization_of`)."""
+    detail = mark_route(
+        viewset_class.as_view(
+            {'get': 'retrieve', 'head': 'retrieve'}, resource_type_name=slug
+        ),
+        drf_only_authorization_of(viewset_class),
     )
     name = ResourceType(slug=slug).route_name_detail()
     return [path(f'{slug}/<str:slug>/', detail, name=name)]

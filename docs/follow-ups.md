@@ -2219,22 +2219,20 @@ keep the `Vary: Accept` DRF's content negotiation sets (its browsable API is
 still among its renderers). Pinned by
 `tests/test_ui_negotiation.py::test_json_from_the_api_has_no_ui_vary`.
 
-<a id="ui-hand-routed-type"></a>
-## ui-hand-routed-type: a type's API route built outside registration is not seen
+<a id="hooks-loaded-root-urlconf"></a>
+## hooks-loaded-root-urlconf: `ensure_hooks_loaded` imports only `ROOT_URLCONF`
 
-The UI refuses a type whose DRF route holds authorization the core does not
-ask (`scrud_django.core.types.drf_only_authorization`), as its registration
-records it: `registration.resource_type_urls` and `computed_urls` (every
-`json_resource_type`, `computed_resource_type`, `ResourceTypeRegistration`
-and `register_or_defer` route) note the `viewset_class` they build the routes
-with. A project that routes a type's `<slug>-list` and `<slug>-detail` itself
-(`MyViewSet.as_view({...}, resource_type_name=slug)` named as registration
-names them, or `as_view(..., permission_classes=[...])`) while registering
-the type's row some other way bypasses that record, so the UI serves the type
-by the core's checks alone. The test that would expose it: register a type's
-row with `ResourceTypeRegistration(build_urls=False)`, route its list and
-detail by hand with `tests.urls.ContextDenyingResourceViewSet`, and GET a
-resource of it in the context "denied" at its UI URL: 404 expected, 200
-today. A fix would resolve the route `pages.routed` reverses and accept only
-a view registration built (marked by `resource_type_urls`). Not fixed here:
-the documented way to serve a type is its registration's routes.
+`scrud_django.core.types.ensure_hooks_loaded` imports `settings.ROOT_URLCONF`
+once per process, so that a process that never served a request has the hooks
+(and the `ui_authorization` declarations) its URLconf registers. A project
+that sets a per-request URLconf (`request.urlconf`, from a middleware) whose
+module registers types the root URLconf does not is served by that module's
+registrations only once it has been imported (by its first request there).
+Until then `requirement_for` and the UI's `pages.refusal` read the options
+as registered so far: for the UI that fails closed (a custom viewset's type
+is refused, not served, until its `ui_authorization` is registered), but a
+type's `checks` and `object_checks` would be missing from a requirement asked
+before. The test that would expose it: a process that imports only a
+per-request URLconf's module lazily, asked `requirement_for` of one of its
+hooked types before any request routed there. Not fixed here: scrud's apps
+route through `ROOT_URLCONF`.

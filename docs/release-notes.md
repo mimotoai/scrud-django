@@ -37,8 +37,9 @@
   one), whose `IsAuthorized` subclasses, compositions and methods the core
   never asks: its pages answer 404, as for a slug the UI does not serve, its
   embeds are refused, prefixes do not claim it and a studio preview of one of
-  its resources is a 404. The system check `scrud_django_ui.W003` names each
-  such type. To serve it, declare its rules as both `checks=` and
+  its resources is a 404. So is a type whose API routes were not built by
+  registration (or scrud's ninja `api()`): routed by hand, or wrapped in a
+  decorator. The system check `scrud_django_ui.W003` names each such type. To serve it, declare its rules as both `checks=` and
   `object_checks=`, or register it with `ui_authorization="core"` when the
   viewset adds no authorization of its own (the core's checks are complete
   for it). The UI never shows more than the API.
@@ -73,11 +74,12 @@
 * `ui_authorization="core"` on `registration.json_resource_type` and
   `registration.computed_resource_type` (`core.types.TypeOptions.ui_authorization`),
   declaring the core's checks complete for a type served by a custom
-  `viewset_class`, so that the UI serves it; `core.types.drf_only_authorization(slug)`,
-  what of a type's DRF route the core does not ask (`None` when nothing, or
-  when the type opts in), which registration records
-  (`registration.drf_only_authorization_of`); and the system check
-  `scrud_django_ui.W003`. The UI's types declare it.
+  `viewset_class`, so that the UI serves it; `core.types.mark_route`, with
+  which registration (`registration.drf_only_authorization_of`) and the ninja
+  `api()` mark the views they build, `core.types.drf_only_authorization(slug,
+  view)`, what of a route's view the core does not ask (`None` when nothing,
+  or when the type opts in), and `scrud_django.ui.pages.refusal(slug)`; and
+  the system check `scrud_django_ui.W003`. The UI's types declare it.
 
 ### Changed
 

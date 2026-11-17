@@ -327,14 +327,18 @@ def hooked_resource_types():
 
 
 # The context `tests.urls.ContextDenyingIsAuthorized` refuses everything in
-# (its ``DENIED``), which the three types of `drf_only_types` refuse: by
-# that ``IsAuthorized`` subclass alone (``denied-notes``,
-# ``core-denied-notes``), or by their hooks too (``hooked-denied-notes``).
+# (its ``DENIED``), which the types of `drf_only_types` and
+# `hand_routed_types` refuse: by that ``IsAuthorized`` subclass alone, or by
+# their hooks too (``hooked-denied-notes``).
 DENIED = "denied"
 
 DENIED_NOTE_TYPE_URI = "tests://DeniedNote"
 CORE_DENIED_NOTE_TYPE_URI = "tests://CoreDeniedNote"
 HOOKED_DENIED_NOTE_TYPE_URI = "tests://HookedDeniedNote"
+CHECKED_DENIED_NOTE_TYPE_URI = "tests://CheckedDeniedNote"
+OBJECT_CHECKED_DENIED_NOTE_TYPE_URI = "tests://ObjectCheckedDeniedNote"
+HAND_ROUTED_NOTE_TYPE_URI = "tests://HandRoutedNote"
+CORE_HAND_ROUTED_NOTE_TYPE_URI = "tests://CoreHandRoutedNote"
 
 
 def not_in_denied(request, resource_type, body, context):
@@ -366,12 +370,13 @@ def note_type(type_uri, slug, title):
 
 
 def drf_only_types():
-    """Register the three types of ``tests.drf_only_urls`` (their rows, hooks
-    and routes), each served by ``tests.urls.ContextDenyingResourceViewSet``,
-    returning their routes: ``denied-notes`` (DRF-only authorization),
-    ``core-denied-notes`` (``ui_authorization="core"``) and
+    """Register the types of ``tests.drf_only_urls`` served by the custom
+    viewset ``tests.urls.ContextDenyingResourceViewSet`` (their rows, hooks
+    and routes), returning their routes: ``denied-notes`` (DRF-only
+    authorization), ``core-denied-notes`` (``ui_authorization="core"``),
     ``hooked-denied-notes`` (``checks=`` and ``object_checks=`` declaring
-    the viewset's rule)."""
+    the viewset's rule), and ``checked-denied-notes`` and
+    ``object-checked-denied-notes``, which declare only one of the two."""
     from .urls import ContextDenyingIsAuthorized, ContextDenyingResourceViewSet
 
     assert ContextDenyingIsAuthorized.DENIED == DENIED
@@ -394,7 +399,68 @@ def drf_only_types():
             checks=(not_in_denied,),
             object_checks=(readable_outside_denied,),
         ),
+        registration.json_resource_type(
+            **note_type(
+                CHECKED_DENIED_NOTE_TYPE_URI, "checked-denied-notes", "Checked note"
+            ),
+            **viewset,
+            checks=(not_in_denied,),
+        ),
+        registration.json_resource_type(
+            **note_type(
+                OBJECT_CHECKED_DENIED_NOTE_TYPE_URI,
+                "object-checked-denied-notes",
+                "Object-checked note",
+            ),
+            **viewset,
+            object_checks=(readable_outside_denied,),
+        ),
     )
+
+
+def hand_routed_types():
+    """Register the types of ``tests.drf_only_urls`` whose routes are built
+    by hand, not by registration (``ResourceTypeRegistration(build_urls=
+    False)``, then ``ContextDenyingResourceViewSet.as_view(...)`` named as
+    registration names them), returning those routes: ``hand-routed-notes``,
+    and ``core-hand-routed-notes``, whose options declare
+    ``ui_authorization="core"`` (`register_type_options`)."""
+    from django.urls import path
+
+    from scrud_django.core.types import TypeOptions, register_type_options
+
+    from .urls import ContextDenyingResourceViewSet
+
+    routes = []
+    for type_uri, slug, title in (
+        (HAND_ROUTED_NOTE_TYPE_URI, "hand-routed-notes", "Hand-routed note"),
+        (CORE_HAND_ROUTED_NOTE_TYPE_URI, "core-hand-routed-notes", "Core hand"),
+    ):
+        arguments = note_type(type_uri, slug, title)
+        if slug.startswith("core-"):
+            register_type_options(
+                type_uri, TypeOptions(ui_authorization="core"), slug=slug
+            )
+        registration.ResourceTypeRegistration(**arguments, build_urls=False)
+        routes += [
+            path(
+                f"{slug}/",
+                ContextDenyingResourceViewSet.as_view(
+                    {"get": "list", "head": "list", "post": "create"},
+                    resource_type_name=slug,
+                ),
+                name=f"{slug}-list",
+            ),
+            path(
+                f"{slug}/<str:slug>/",
+                ContextDenyingResourceViewSet.as_view(
+                    {"get": "retrieve", "put": "update", "delete": "destroy"},
+                    resource_type_name=slug,
+                ),
+                name=f"{slug}-detail",
+            ),
+        ]
+    return routes
 
 
 def ninja_type_specs():

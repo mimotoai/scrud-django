@@ -11,9 +11,9 @@ given, and no session or cookies (the user is `request`'s, not
 authenticated again). So every
 check of the API applies to the studio user (the type's requirement,
 branch visibility, the hooks of the UI types) and the studio adds no
-rights. A type the UI refuses for its DRF-only authorization (a custom
-``viewset_class``, `scrud_django.core.types.drf_only_authorization`) is a
-404, as at its pages. No CSRF check applies (the studio request that makes
+rights. A type the UI does not serve (the API does not route it, or the UI
+refuses its routes' authorization, `scrud_django.ui.pages.refusal`) is the
+404 of an unknown slug, as at its pages. No CSRF check applies (the studio request that makes
 one passed it: an unsafe `write` from a safe request is refused, ruling
 S8)."""
 
@@ -33,8 +33,9 @@ from scrudful.conditional import quote_etag
 from scrud_django.core import resources, writes
 from scrud_django.core.bodies import check_body
 from scrud_django.core.errors import error_answer
-from scrud_django.core.types import drf_only_authorization, requirement_for
+from scrud_django.core.types import requirement_for
 from scrud_django.core.urls import absolute_reverse
+from scrud_django.models import ResourceType
 from scrud_django.registration import get_resource_type_for, type_db, write_db
 
 logger = logging.getLogger(__name__)
@@ -194,11 +195,15 @@ def _precondition(request, *, etag, last_modified, method) -> Answer | None:
 
 
 def _served_type(slug, using):
-    """The type `slug` (read on `using`), unless the UI refuses it for its
-    DRF-only authorization (`drf_only_authorization`): ``Http404``, as the
-    UI's pages answer it, since the core would not ask that authorization."""
-    if drf_only_authorization(slug) is not None:
-        raise Http404(slug)
+    """The type `slug` (read on `using`), unless the UI does not serve it:
+    the API does not route it, or the UI refuses it for the authorization of
+    its routes' views (`scrud_django.ui.pages.refusal`), which the core
+    would not ask. Refused, it is the very ``Http404`` an unknown slug
+    raises (`get_resource_type_for`), so its answer is the same."""
+    from scrud_django.ui import pages
+
+    if not pages.routed(slug) or pages.refusal(slug) is not None:
+        raise Http404(f"No {ResourceType._meta.object_name} matches the given query.")
     return get_resource_type_for(slug, using=using)
 
 

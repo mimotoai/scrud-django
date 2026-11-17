@@ -8,20 +8,16 @@ DRF_ONLY_ID = "scrud_django_ui.W003"
 
 
 def check_drf_only_authorization(app_configs, **kwargs):
-    """A Warning (``scrud_django_ui.W003``) naming each type the UI app
-    would serve pages of (its API routes are in the URLconf,
-    `pages.routed`) but refuses (a 404, as for a slug it does not serve)
-    because its DRF route holds authorization the core does not ask
-    (`scrud_django.core.types.drf_only_authorization`: a custom
-    ``viewset_class``, with its ``IsAuthorized`` subclasses and their
-    compositions), with how to opt in. Nothing when the project does not
-    include the UI app. The URLconf is imported first, so that its
-    registrations are recorded."""
-    from scrud_django.core.types import (
-        drf_only_authorization,
-        drf_only_slugs,
-        ensure_hooks_loaded,
-    )
+    """A Warning (``scrud_django_ui.W003``) naming each type registered in
+    this process (`scrud_django.core.types.type_slugs`) whose API routes are
+    in the URLconf (`pages.routed`) but which the UI app refuses (a 404, as
+    for a slug it does not serve) for the authorization of their views
+    (`pages.refusal`): a custom ``viewset_class``'s (its ``IsAuthorized``
+    subclasses and their compositions), or views not built by registration,
+    which the core does not ask; with how to opt in. Nothing when the
+    project does not include the UI app. The URLconf is imported first, so
+    that its registrations are noted."""
+    from scrud_django.core.types import ensure_hooks_loaded, type_slugs
     from scrud_django.ui import pages
     from scrud_django.ui.branches.selection import ui_base_info
 
@@ -31,9 +27,9 @@ def check_drf_only_authorization(app_configs, **kwargs):
     except NoReverseMatch:  # the project does not include the UI app
         return []
     found = []
-    for slug in drf_only_slugs():
-        authorization = drf_only_authorization(slug)
-        if authorization is None or not pages.routed(slug):
+    for slug in type_slugs():
+        authorization = pages.refusal(slug)
+        if authorization is None:
             continue
         found.append(
             checks.Warning(
@@ -44,7 +40,9 @@ def check_drf_only_authorization(app_configs, **kwargs):
                     "Declare the type's rules to the core as both checks= and "
                     "object_checks= on its registration, or pass "
                     'ui_authorization="core" to its registration if the '
-                    "core's checks (its grants and hooks) are complete for it."
+                    "core's checks (its grants and hooks) are complete for it "
+                    "(for a type routed by hand, register those options with "
+                    "scrud_django.core.types.register_type_options)."
                 ),
                 obj=slug,
                 id=DRF_ONLY_ID,

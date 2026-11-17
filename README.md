@@ -699,6 +699,19 @@ opts in with either:
   authorization of its own. The UI then serves it by those checks alone, so
   declare it only when that is true.
 
+The UI serves a type only when the views its API routes resolve to (in the
+URLconf serving the request) were built by registration or by scrud's ninja
+`api()`: a type whose `<slug>-list` or `<slug>-detail` you route yourself
+(`MyViewSet.as_view(...)`, or a registration's view wrapped in a decorator)
+is refused the same way, since nothing tells what authorizes it. Such a type
+opts in by registering its options with
+`scrud_django.core.types.register_type_options(type_uri,
+TypeOptions(ui_authorization="core"), slug=slug)` (or both hooks). ninja's
+`json_resource_type_spec` takes no `ui_authorization=`: a type registered on
+both front ends records the hooks of whichever registration runs last, so
+without it there the DRF declaration is replaced (a warning is logged) and the
+UI refuses the type.
+
 Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
 `http.POST`, `http.PUT`, `http.DELETE`) and `http.GET` on its list type,
 `https://api.openteams.com/json-schema/ResourceCollection?contents_type=<type URI>`
@@ -1248,8 +1261,9 @@ What changes:
   `viewset_class` or `IsAuthorized` subclasses (DRF-only authorization). So
   the UI refuses a type registered with a custom `viewset_class`: its pages,
   embeds, prefixes and studio previews answer 404, and the system check
-  `scrud_django_ui.W003` names it. To serve it again, declare its rules as
-  both `checks=` and `object_checks=`, or, when the viewset adds no
+  `scrud_django_ui.W003` names it. So does a type whose API routes you built
+  by hand rather than through registration. To serve it again, declare its
+  rules as both `checks=` and `object_checks=`, or, when the viewset adds no
   authorization of its own, register it with `ui_authorization="core"` (see
   "Hooks on `json_resource_type`").
 * **Stored component templates.** `in_mount(...)`, `embed(...)` and `api_url(...)`

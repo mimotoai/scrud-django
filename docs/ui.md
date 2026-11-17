@@ -96,8 +96,12 @@ So the UI fails closed on a type registered with a custom `viewset_class`
 `content_filter=True` variant of one): its pages answer 404, as for a slug
 the UI does not serve, an embed of it is refused, a prefix does not claim it,
 a studio preview of one of its resources is a 404, and the system check
-`scrud_django_ui.W003` (`manage.py check`) names it. The UI never shows more
-than the API. Such a type opts in with either:
+`scrud_django_ui.W003` (`manage.py check`) names it. The UI decides by the
+views the type's API routes resolve to in the URLconf serving the request, and
+serves only views built by registration or by scrud's ninja `api()`: a type
+routed by hand (`as_view(...)` named `<slug>-list`, or a registration's view
+wrapped in a decorator) is refused too, since nothing tells what authorizes
+it. The UI never shows more than the API. Such a type opts in with either:
 
 - both `checks=` and `object_checks=`, its rules declared to the core, which
   the UI then applies; or
@@ -107,7 +111,11 @@ than the API. Such a type opts in with either:
   own. The UI then serves it by those checks alone. The UI's own types
   declare it (their viewsets keep `IsAuthorized` and add only the
   behaviour of their hooks); the studio's computed types need not (they
-  are registered with `compute=` and scrud's own viewset).
+  are registered with `compute=` and scrud's own viewset). A type routed by
+  hand declares it with `core.types.register_type_options`. ninja's
+  `json_resource_type_spec` takes no `ui_authorization=`: registered on
+  both front ends without it, a type's ninja hooks replace its DRF
+  declaration, and the UI refuses it (fail closed).
 
 A computed type registered only with a DRF `viewset_class` (no `compute=`)
 has no page and cannot be embedded.

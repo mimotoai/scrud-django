@@ -34,7 +34,13 @@ from django.core.exceptions import PermissionDenied
 from django.core.paginator import InvalidPage
 from django.db import DatabaseError, transaction
 from django.http import Http404, HttpResponse
-from django.urls import NoReverseMatch, reverse
+from django.urls import (
+    NoReverseMatch,
+    Resolver404,
+    get_script_prefix,
+    resolve,
+    reverse,
+)
 from django.utils.translation import gettext
 from django.views.decorators.common import no_append_slash
 from django.views.decorators.csrf import csrf_protect
@@ -126,10 +132,10 @@ def served_memo():
 def served(slug: str) -> ServedSlug | None:
     """`slug` with its type (`ServedSlug`) when the UI serves pages of it: a
     type the API serves (`routed`) whose authorization the core asks in
-    full (``drf_only_authorization``: not one served by a custom
-    ``viewset_class`` without the neutral ``checks`` and ``object_checks``,
-    or ``ui_authorization="core"``, which the UI fails closed on) and that
-    is registered (``registration.get_resource_type_for`` finds it); else
+    full (`refusal`: not one whose route's views are a custom
+    ``viewset_class``'s or were routed by hand, unless it declares the
+    neutral ``checks`` and ``object_checks``, or ``ui_authorization="core"``:
+    the UI fails closed on them) and that is registered (``registration.get_resource_type_for`` finds it); else
     ``None``. A database error reading it is logged and serves
     nothing, so that the project's other URLs still answer
     (``scrud_django.ui.urls``' slug converter asks it). In a `served_memo`
@@ -143,22 +149,59 @@ def served(slug: str) -> ServedSlug | None:
     return found
 
 
-def routed(slug: str) -> bool:
-    """Whether the API serves the type `slug`: its route ``<slug>-list``
-    reverses, or for a computed type, one with a registered ``compute``,
-    ``<slug>-detail``."""
+def route_views(slug: str) -> tuple | None:
+    """The views the API's routes of the type `slug` resolve to in the
+    URLconf serving the request: its list's (``<slug>-list``) and its
+    detail's (``<slug>-detail``; ``None`` when it has none, or it resolves to
+    nothing), or for a computed type, one with a registered ``compute``, its
+    detail's; ``None`` when the type has no list route (no computed detail
+    route), which the API does not serve."""
+    names = ("detail",) if is_computed(slug) else ("list", "detail")
+    views = []
+    for kind in names:
+        try:
+            url = reverse(f"{slug}-{kind}", args=["key"] if kind == "detail" else ())
+        except NoReverseMatch:
+            if kind == names[0]:
+                return None
+            views.append(None)
+            continue
+        views.append(_resolved_view(url))
+    return tuple(views)
+
+
+def _resolved_view(url):
+    """The view the URL path `url` (as ``reverse`` gives it, under the
+    script prefix) resolves to, or ``None``."""
+    script = get_script_prefix()
+    path_info = "/" + url[len(script) :] if url.startswith(script) else url
     try:
-        if is_computed(slug):
-            reverse(f"{slug}-detail", args=["key"])
-        else:
-            reverse(f"{slug}-list")
-    except NoReverseMatch:
-        return False
-    return True
+        return resolve(path_info).func
+    except Resolver404:
+        return None
+
+
+def routed(slug: str) -> bool:
+    """Whether the API serves the type `slug` (`route_views`)."""
+    return route_views(slug) is not None
+
+
+def refusal(slug: str) -> str | None:
+    """Why the UI refuses the type `slug` for the authorization of its API
+    routes' views (``drf_only_authorization`` of each of `route_views`: a
+    custom ``viewset_class``'s, or a view no trusted builder marked, unless
+    the type opts in); ``None`` when it does not, or the API does not serve
+    the type."""
+    views = route_views(slug)
+    for view in views or ():
+        found = drf_only_authorization(slug, view)
+        if found is not None:
+            return found
+    return None
 
 
 def _served(slug):
-    if not routed(slug) or drf_only_authorization(slug) is not None:
+    if not routed(slug) or refusal(slug) is not None:
         return None
     try:
         resource_type = get_resource_type_for(slug)

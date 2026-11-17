@@ -221,4 +221,6 @@ def api(
     services.as_drf_api_view_function(
         scrud_api, [services.SERVICES_ROUTE], services.SERVICES_METHODS
     )
+    # Last: the views the URLconf serves are marked as the core's.
+    routers.mark_core_routes(scrud_api, [*type_routes, *computed_routes])
     return scrud_api
