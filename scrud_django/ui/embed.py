@@ -29,8 +29,8 @@ as its path, so that a list item's absolute ``href`` embeds. The path is an
 API path (``/api/<slug>/...``), a UI path (``/<slug>/...``) or a path under
 a published branch's prefix; the embed inherits the embedding request's
 mode, as links do (`selection.in_mount`): inside a UI page its fragments
-carry the UI's hrefs, inside the API's HTML the API's, and under a prefix
-the prefix's (the prefix path's own, when it is one).
+carry the UI's hrefs, and under a prefix the prefix's (the prefix path's
+own, when it is one).
 
 Refused, with the notice `REFUSED_MESSAGE` (and a warning logged): a path
 that is not a string, not absolute, or has another scheme or host; one that

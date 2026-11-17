@@ -193,7 +193,8 @@ urlpatterns = [
   DRF does, and JSON is indented as DRF indents it for
   `Accept: application/json; indent=4`.
 * The UI types (`scrud_django.ui`) and the studio types are not served on
-  ninja yet, nor are the `ui-css-files` and `ui-js-files` views, and a ninja
+  ninja yet (the `ui-css-files` and `ui-js-files` views are the UI app's, at
+  its base, whichever front end serves the API), and a ninja
   route never answers `text/html`: a request that DRF would answer as HTML
   (`Accept: text/html`, `?format=api`) gets the JSON answer.
 * `scrud_django.urls` stays DRF until the release that switches it; include

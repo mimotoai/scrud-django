@@ -384,7 +384,7 @@ most 262144 characters, and never containing `</style`, which is refused with a
 400), `order` (default 0), and the branch fields (`branch`, `deleted`, `base`,
 `rbac_context`) every UI item has. A name is unique on its branch. The page
 links the CSS items effective on the branch it shows, by `order` and then by
-name, at `<api or prefix>ui-css-files/<name>/<etag>.css`. The ETag in the URL
+name, at `<UI base or prefix>ui-css-files/<name>/<etag>.css`. The ETag in the URL
 makes a file immutable (`Cache-Control: private, max-age=31536000,
 immutable`: a shared cache would not check the GET on the branch, so it must
 not keep it): after an edit the old URL is a 404 and the page links the new
@@ -401,7 +401,7 @@ which is refused with a 400 `ui-js-invalid`), `order` (default 0), and the
 branch fields every UI item has. A name is unique on its branch (400
 `ui-js-name-taken` otherwise). The built-in page links the JS items effective
 on the branch it shows, by `order` and then by name, after `scrud-ui.js`, as
-`<script src="..." defer></script>`, at `<api or prefix>ui-js-files/<name>/<etag>.js`
+`<script src="..." defer></script>`, at `<UI base or prefix>ui-js-files/<name>/<etag>.js`
 (`Content-Type: text/javascript; charset=utf-8`). Caching and gating are those
 of [CSS items](#css-items): the ETag in the URL makes a file immutable
 (`private, max-age=31536000, immutable`), a stale URL is a 404, and a viewer who
@@ -1222,10 +1222,11 @@ items only): a JSON answer is the same with or without it.
 In code, `scrud_django.ui.branches.effective.using_safe_mode()` turns it on for
 a block (a context variable, so in-process work during the render sees it too),
 and `safe_mode()` reads it. `stored_state()` (same module) turns safe mode and
-any live-preview drafts off for a block: an embed runs its view in it
-(`dispatch_path`), and views also open it around their data reads (a list of
-UI items, the studio's computed types), so that what an embedded request reads
-is what its URL answers, while its rendering stays safe.
+any live-preview drafts off for a block: a page reads its data in it
+(`scrud_django.ui.pages`, which an embed renders through too), and views also
+open it around their data reads (a list of UI items, the studio's computed
+types), so that what an embedded request reads is what its URL answers, while
+its rendering stays safe.
 
 ### CSS
 
@@ -2923,7 +2924,7 @@ notice:
 ```html
 <nav class="scrud-studio-links">
   <a href="/studio-root/ui-branches/3/?ui-scope=studio&amp;ui-mode=view">Studio</a>
-  <a href="/api/ui-components/9/?ui-safe=1">Safe mode</a>
+  <a href="/ui-components/9/?ui-safe=1">Safe mode</a>
   <a href="/studio/">Bootstrap studio</a>
 </nav>
 ```

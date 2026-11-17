@@ -2,10 +2,10 @@
 type's list (`list_page`) and items (`item_page`, a computed type's
 included) as HTML, at the UI's URLs. They read and write through the
 framework-neutral core, as the API's routes do (so they refuse what the API
-refuses, at the same status), and answer with `render_html`, as the API's
-HTML answers today: a page or an htmx fragment, a write's re-rendered
-frame, a refused PUT's edit form with its errors, a 412 (or a 409 DELETE)
-notice with a frame that reloads itself, an error's notice.
+refuses, at the same status), and answer HTML with `render_html`: a page
+or an htmx fragment, a write's re-rendered frame, a refused PUT's edit form
+with its errors, a 412 (or a 409 DELETE) notice with a frame that reloads
+itself, an error's notice.
 
 The user is Django's session user (``request.user``); a write is checked for CSRF
 by ``csrf_protect``, whether or not ``CsrfViewMiddleware`` is installed. A page serves GET

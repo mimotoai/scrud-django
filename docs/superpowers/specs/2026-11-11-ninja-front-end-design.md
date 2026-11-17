@@ -288,8 +288,9 @@ A module `scrud_django.core.workflow` **(call)**:
 
 ## Phase 2 — the UI, separated from the API
 
-**Breaking (owner).** It ships in the same release as phase 3, 0.16.0
-**(owner)**, so apps migrate once.
+**Breaking (owner).** It ships in the same release as phase 3C, 0.17.0
+**(owner)**, so apps migrate once (see Versioning: 0.16.0 was released after
+part A).
 
 ### 2.1 The API is JSON only
 - Resource routes stop negotiating `text/html`.
