@@ -157,6 +157,15 @@ USE_I18N = True
 USE_TZ = True
 
 
+# scrudful builds each path's HTTP Schema Resource without a request: its
+# links (schemas, contexts), and the link to it each response carries, resolve
+# against this base URL (scrud's other response Links are absolute, built from
+# the request). Set it to the URL the API is served at; without it the API's
+# HTTP Schema Resources fail (500), and manage.py check warns
+# (scrud_django.W009).
+
+SCRUDFUL = {"BASE_URL": "http://127.0.0.1:8000"}
+
 # The published branch that serves the self-hosted studio (see seed_todo_demo).
 SCRUD_UI_STUDIO_BRANCH = "studio"
 

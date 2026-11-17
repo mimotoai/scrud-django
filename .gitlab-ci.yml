@@ -223,8 +223,8 @@ test-mysql:
 # file under scrud_django/, and that it imports (`-I` keeps the checkout off
 # sys.path). It is installed twice: with no extras (ninja only, no DRF), where
 # a project including the default `scrud_django.urls` serves /api/services/
-# and passes `manage.py check` (then with `[ui]` and the UI app, a UI page
-# too), and with `[drf]`.
+# and a route's HTTP Schema Resource, and passes `manage.py check` (then with
+# `[ui]` and the UI app, a UI page too), and with `[drf]`.
 package:
   stage: test
   cache:
@@ -262,6 +262,9 @@ package:
           ],
           DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
           ROOT_URLCONF="project_urls",
+          # The ninja API's HTTP Schema Resources resolve their links
+          # against it (scrud_django.W009 without it).
+          SCRUDFUL={"BASE_URL": "http://testserver"},
       )
       django.setup()
       import scrud_django.ninja  # noqa: E402,F401
@@ -283,9 +286,18 @@ package:
       response = Client().get("/api/services/")
       assert response.status_code == 200, (response.status_code, response.content[:500])
       assert "http://testserver/api/json-schema/" in response.json().values(), response.json()
+      # A route's HTTP Schema Resource, which its OPTIONS links to.
+      hsr_rel = 'rel="https://w3id.org/semantic-http/ns#http-schema-resource-document"'
+      options = Client().options("/api/indexing-policies/")
+      (hsr_link,) = [link for link in options["Link"].split(", ") if hsr_rel in link]
+      hsr_url = hsr_link.split(";")[0].strip("<>")
+      assert hsr_url.startswith("http://testserver/api/indexing-policies/_hsr/"), hsr_url
+      hsr = Client().get(hsr_url)
+      assert hsr.status_code == 200, (hsr_url, hsr.status_code, hsr.content[:500])
+      assert "get" in hsr.json(), hsr.json()
       call_command("check")
       assert "rest_framework" not in sys.modules
-      print("ok: scrud_django.urls serves /api/services/, and check passes, without DRF")
+      print("ok: scrud_django.urls serves /api/services/ and an HTTP Schema Resource, and check passes, without DRF")
       EOF
     - |
       wheel="$(ls build/dist-check/*.whl)"
@@ -325,6 +337,7 @@ package:
           DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
           ROOT_URLCONF="project_urls",
           SECRET_KEY="package check",
+          SCRUDFUL={"BASE_URL": "http://testserver"},
       )
       django.setup()
       import scrud_django.ui.urls  # noqa: E402,F401
