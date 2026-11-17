@@ -1751,6 +1751,25 @@ the UI's own routes; for the CSS/JS file segments that holds under a
 published prefix (the middleware takes that segment for the file route), not
 at the unprefixed UI, where only `<segment>/<name>/<etag>.css` is taken.
 
+<a id="no-drf-namespaced-ui-mount"></a>
+## no-drf-namespaced-ui-mount: without DRF, the UI tests mount the ninja test types outside any namespace
+
+Without DRF (`SCRUD_TEST_NO_DRF=1`, CI's `test-no-drf`), the UI and studio
+suites (`tests.mounted_urls`, `mounted_no_studio_urls`, and the root
+`tests.no_drf_urls`) mount the test types' ninja routes outside any URL
+namespace (`tests.ninja_api.PATTERNS`), as `tests.urls` names the DRF routes,
+so that their bare `reverse("todos-list")` keep working. A ninja-only project
+includes its `api()` under its namespace (`scrud`, or the API's
+`urls_namespace`), where a bare DRF-style name does not reverse: a bare
+`reverse("<slug>-list")` creeping into UI code (instead of
+`core.urls.api_reverse`) would pass the no-DRF run and fail such a project.
+`tests/test_ui_on_ninja.py` runs some UI paths on the namespaced
+`tests.ninja_ui_urls`, not all. The fix: mount the test types' ninja API under
+its namespace in those URLconfs and move the UI tests' `reverse` of API routes
+to `api_reverse`. The test that would expose it: the UI suites run on a
+URLconf with the ninja API namespaced (`tests.ninja_ui_urls`) failing on a
+bare `reverse` in UI code.
+
 # Decided
 
 <a id="core-allowed-methods-existence-leak"></a>

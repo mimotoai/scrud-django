@@ -18,16 +18,12 @@ from django.urls import path, resolve
 from django.utils.http import quote_etag
 from ninja import NinjaAPI, Router
 from ninja.errors import AuthenticationError
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
 
 import scrud_django.ninja
 from scrud_django import registration
 from scrud_django.core import lists, resources, writes
 from scrud_django.core.lists import list_etag
 from scrud_django.core.types import requirement_for
-from scrud_django.drf.exceptions import drf_errors
-from scrud_django.drf.mixins import ListValidatorsMixin
 from scrud_django.exceptions import (
     QueryParameterError,
     RequestBodyTooDeepError,
@@ -38,10 +34,11 @@ from scrud_django.ninja import routers, services
 from scrud_django.ninja.api import RESERVED_SLUGS
 from scrud_django.ninja.entry import entry
 
+from .factories import user_with
 from .front_ends import MOUNTS, serve_both
 from .rbac_defaults import TYPE_URI_PARTNER_PROFILES as PP
 from .resource_types import PARTNER_PROFILES_TYPE, ninja_type_specs
-from .test_core_resources import user_with
+from .settings import NO_DRF
 
 pytestmark = [pytest.mark.urls(__name__), pytest.mark.django_db]
 
@@ -118,11 +115,23 @@ def options_probe(request):
     return HttpResponse(status=204)
 
 
-@api_view(["GET"])
-@permission_classes([AllowAny])
-@drf_errors
-def drf_error_probe(request, name):
-    raise ERRORS[name]()
+def drf_error_probe_patterns():
+    """``/drf/``'s probe, a DRF view raising each of `ERRORS` (none without
+    DRF: `test_scrud_errors_render_as_on_drf` is ``drf``-marked)."""
+    if NO_DRF:
+        return []
+    from rest_framework.decorators import api_view, permission_classes
+    from rest_framework.permissions import AllowAny
+
+    from scrud_django.drf.exceptions import drf_errors
+
+    @api_view(["GET"])
+    @permission_classes([AllowAny])
+    @drf_errors
+    def drf_error_probe(request, name):
+        raise ERRORS[name]()
+
+    return [path("drf/errors/<name>/", drf_error_probe)]
 
 
 def __getattr__(name):
@@ -135,7 +144,7 @@ def __getattr__(name):
     probe_api.add_router("", probes)
     probe_api.add_router("added/", added)
     patterns = globals()["urlpatterns"] = [
-        path("drf/errors/<name>/", drf_error_probe),
+        *drf_error_probe_patterns(),
         path("ninja/", probe_api.urls),
     ]
     return patterns
@@ -171,6 +180,7 @@ def test_api_always_serves_the_built_in_types():
         assert response.status_code == 200, (slug, response.content)
 
 
+@pytest.mark.drf
 @pytest.mark.parametrize("name", sorted(ERRORS))
 def test_scrud_errors_render_as_on_drf(name):
     drf = Client().get(f"/drf/errors/{name}/")
@@ -236,6 +246,7 @@ def test_rewritten_options_is_refused_before_the_core(put_in_b, check_request_ca
     assert len(check_request_calls) == 1
 
 
+@pytest.mark.drf
 @pytest.mark.urls("tests.parity_urls")
 @REWRITING
 def test_rewritten_options_is_refused_on_the_real_detail_route(
@@ -371,6 +382,7 @@ def _list_etag_header(name):
     return {name: quote_etag(etag)}
 
 
+@pytest.mark.drf
 @pytest.mark.urls("tests.parity_urls")
 @pytest.mark.parametrize("front_end", ["drf", "ninja"])
 @pytest.mark.parametrize(
@@ -425,6 +437,8 @@ def test_conditional_create_holds_the_type_lock(
     # The list's validators, read to evaluate the preconditions: on DRF by
     # the view (once a request, cached), on ninja by the core.
     if front_end == "drf":
+        from scrud_django.drf.mixins import ListValidatorsMixin
+
         drf_validators = ListValidatorsMixin.create_list_validators
 
         def recording_drf_validators(view, request):

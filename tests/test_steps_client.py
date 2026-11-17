@@ -178,10 +178,37 @@ def test_a_skip_reason_naming_drf_is_told_apart():
         "could not import 'rest_framework': blocked: rest_framework",
         "needs django_filters",
         "Skipped: drf only",
+        "could not import 'scoped_rbac.permissions': blocked: x",
+        "blocked: scoped_rbac.permissions",
+        "No module named 'scrudful.rest_framework'",
+        "needs scoped_rbac.authentication",
     ):
         assert conftest.NAMES_DRF.search(reason), reason
-    for reason in ("PostgreSQL, MySQL and MariaDB", "needs node", ""):
+    for reason in (
+        "PostgreSQL, MySQL and MariaDB",
+        "needs node",
+        "scoped_rbac.models",
+        "",
+    ):
         assert not conftest.NAMES_DRF.search(reason), reason
+
+
+def test_a_skip_naming_drf_fails_unless_drf_marked_or_drfs_front_end():
+    """`conftest.refused_skip`, the rule of the no-DRF run's test and
+    collection reports."""
+    reason = "could not import 'scoped_rbac.permissions': blocked: x"
+    assert "neither drf-marked" in conftest.refused_skip(None, reason)
+    assert conftest.refused_skip("drf-marked", reason) is None
+    assert conftest.refused_skip("front_end drf parameter", reason) is None
+    assert conftest.refused_skip(None, "needs node") is None
+
+
+def test_a_collected_module_without_tests_is_named():
+    """`conftest.modules_without_tests`: what the no-DRF run's collection
+    stops on."""
+    a, b, c = (Path(f"tests/test_{name}.py") for name in "abc")
+    assert conftest.modules_without_tests({a, b, c}, {a, c}) == [str(b)]
+    assert conftest.modules_without_tests({a}, {a, b}) == []
 
 
 # the private factory the steps' client comes from

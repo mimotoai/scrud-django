@@ -97,19 +97,21 @@ def test_spec_register_twice_is_idempotent(caplog):
     assert TYPE_URI in services.services
 
 
-@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_spec_register_builds_no_drf_views(monkeypatch):
     # The DRF views cannot be imported: registering a spec, and the built-in
     # types its documents are stored as, needs none.
-    import scrud_django.drf
-
-    # The DRF views' module, and its deprecated alias.
-    if hasattr(scrud_django.drf, "views"):
-        monkeypatch.delattr(scrud_django.drf, "views")
-    monkeypatch.setitem(sys.modules, "scrud_django.drf.views", None)
-    monkeypatch.setitem(sys.modules, "scrud_django.views", None)
+    try:
+        import scrud_django.drf
+    except ImportError:  # DRF is not installed (the suite without it).
+        pass
+    else:
+        # The DRF views' module, and its deprecated alias.
+        if hasattr(scrud_django.drf, "views"):
+            monkeypatch.delattr(scrud_django.drf, "views")
+        monkeypatch.setitem(sys.modules, "scrud_django.drf.views", None)
+        monkeypatch.setitem(sys.modules, "scrud_django.views", None)
     with pytest.raises(ImportError):
         from scrud_django.drf import views  # noqa: F401
     for name in BUILT_IN_CACHES:
@@ -602,22 +604,19 @@ def test_a_json_spec_refuses_options_that_are_not_type_options_or_compute():
         )
 
 
-@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_the_ui_type_specs_carry_the_ui_hooks(caplog):
     """`ui_type_specs` are the UI types, each with its hooks
-    (`UI_TYPE_OPTIONS`); a branch version keeps no reversion history; the
-    DRF routes register the same specs, so registering both replaces no
-    hook. The studio's computed types (`studio_computed_type_specs`) each
-    have their ``compute``."""
+    (`UI_TYPE_OPTIONS`); a branch version keeps no reversion history. The
+    studio's computed types (`studio_computed_type_specs`) each have their
+    ``compute``. Registering them warns of nothing."""
     from scrud_django.ui.hooks import UI_TYPE_OPTIONS
     from scrud_django.ui.studio.computed import (
         STUDIO_COMPUTED_TYPES,
         studio_computed_type_specs,
-        studio_computed_type_urls,
     )
-    from scrud_django.ui.types import ui_resource_type_urls, ui_type_specs
+    from scrud_django.ui.types import ui_type_specs
 
     specs = ui_type_specs()
     assert [spec.slug for spec in specs] == [
@@ -642,10 +641,35 @@ def test_the_ui_type_specs_carry_the_ui_hooks(caplog):
     with caplog.at_level(logging.WARNING):
         for spec in [*specs, *computed]:
             spec.register()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    for spec in [*specs, *computed]:
+        assert core_types.type_options_for_slug(spec.slug) == spec.options
+        assert ResourceType.objects.filter(
+            type_uri=spec.resource_type_uri, slug=spec.slug
+        ).exists()
+
+
+@pytest.mark.drf
+@pytest.mark.django_db
+@test_context
+def test_the_drf_routes_register_the_ui_type_specs_replacing_no_hook(caplog):
+    """The DRF routes of the UI types and the studio's computed types
+    register the same specs (`test_the_ui_type_specs_carry_the_ui_hooks`):
+    registering both warns of nothing and replaces no hook."""
+    from scrud_django.ui.studio.computed import (
+        studio_computed_type_specs,
+        studio_computed_type_urls,
+    )
+    from scrud_django.ui.types import ui_resource_type_urls, ui_type_specs
+
+    specs = [*ui_type_specs(), *studio_computed_type_specs()]
+    with caplog.at_level(logging.WARNING):
+        for spec in specs:
+            spec.register()
         ui_resource_type_urls()
         studio_computed_type_urls()
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
-    for spec in [*specs, *computed]:
+    for spec in specs:
         assert core_types.type_options_for_slug(spec.slug) == spec.options
         assert ResourceType.objects.filter(
             type_uri=spec.resource_type_uri, slug=spec.slug

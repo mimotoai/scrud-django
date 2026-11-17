@@ -7,7 +7,9 @@ from multiprocessing import Process
 from uuid import uuid4
 
 import pytest
+from django.conf import settings
 from django.db import connection, connections
+from django.test import override_settings
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
@@ -475,3 +477,11 @@ def run_together(first, second, *, delay):
     for thread in threads:
         thread.join(30)
     return results["first"], results["second"]
+
+
+def uniform_errors_set(uniform):
+    """scoped-rbac's ``UNIFORM_ERRORS`` set to `uniform`, as settings to
+    override."""
+    return override_settings(
+        SCOPED_RBAC=dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
+    )

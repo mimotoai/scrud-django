@@ -2,6 +2,7 @@ import re
 
 import pytest
 
+from tests.no_drf import BLOCKED
 from tests.settings import NO_DRF
 
 # The suite without DRF (``SCRUD_TEST_NO_DRF=1``, CI's ``test-no-drf``): DRF's
@@ -42,9 +43,7 @@ DRF_MODULES = frozenset(
         "test_condition_contexts",
         "test_conditional_create",
         "test_context_limits",
-        "test_core_bodies",
         "test_core_collections",
-        "test_core_computed",
         "test_core_errors",
         "test_core_json",
         "test_core_lists",
@@ -71,8 +70,7 @@ DRF_MODULES = frozenset(
         "test_list_rbac",
         "test_list_removals",
         "test_media_types",
-        "test_ninja_api",
-        "test_ninja_auth",
+        "test_ninja_drf_auth",
         "test_ninja_uniform_off",
         "test_nul_bodies",
         "test_object_check_readability",
@@ -130,11 +128,20 @@ def mark_drf_modules(items):
 #: The reason a test that needs DRF is skipped without it.
 NEEDS_DRF = "needs DRF, which cannot be imported"
 
-#: A skip reason naming DRF or what the no-DRF run blocks.
-NAMES_DRF = re.compile(r"drf|rest_framework|django[_-]filter", re.IGNORECASE)
+#: A skip reason naming DRF, a module the no-DRF run blocks
+#: (`tests.no_drf.BLOCKED`), or the blocker's own message (``blocked: ...``).
+NAMES_DRF = re.compile(
+    "|".join([r"drf", r"django[_-]filter", r"blocked:", *map(re.escape, BLOCKED)]),
+    re.IGNORECASE,
+)
 
-#: The no-DRF run's skips, counted by kind (`pytest_runtest_makereport`).
+#: The no-DRF run's skips, counted by kind (`count_skip`).
 NO_DRF_SKIPS = pytest.StashKey[dict]()
+
+#: The test modules the no-DRF run collects as modules (not `DRF_MODULES`),
+#: and those of its tests deselected (``-k``), for `pytest_collection_finish`.
+NO_DRF_MODULES = pytest.StashKey[set]()
+NO_DRF_DESELECTED_MODULES = pytest.StashKey[set]()
 
 
 def skip_kind(item):
@@ -148,29 +155,102 @@ def skip_kind(item):
     return None
 
 
+def skip_reason(report):
+    """The reason of a skipped test's or collector's `report`."""
+    return report.longrepr[2] if isinstance(report.longrepr, tuple) else ""
+
+
+def refused_skip(kind, reason):
+    """The failure message for a no-DRF skip that may not be one: a skip whose
+    `reason` names DRF (`NAMES_DRF`) of something neither ``drf``-marked nor
+    the ``front_end`` fixture's ``drf`` parameter (`kind` None); else None."""
+    if kind is None and NAMES_DRF.search(reason):
+        return (
+            "skipped without DRF, but neither drf-marked nor the front_end "
+            f"fixture's drf parameter: {reason}"
+        )
+    return None
+
+
+def count_skip(config, kind):
+    counts = config.stash.setdefault(NO_DRF_SKIPS, {})
+    counts[kind] = counts.get(kind, 0) + 1
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item, call):
-    """The no-DRF run skips only what needs DRF: a skip of a test neither
-    ``drf``-marked nor the ``front_end`` fixture's ``drf`` parameter whose
-    reason names DRF (`NAMES_DRF`: an ``importorskip`` of it, say) fails, so
-    that no test silently disappears without DRF. Every skip is counted by
-    kind for the terminal summary."""
+    """The no-DRF run skips only what needs DRF: a test's skip that
+    `refused_skip` refuses (an ``importorskip`` of DRF, say) fails, so that no
+    test silently disappears without DRF. Every skip is counted by kind for
+    the terminal summary."""
     report = yield
     if not NO_DRF or not report.skipped or hasattr(report, "wasxfail"):
         return report
-    reason = report.longrepr[2] if isinstance(report.longrepr, tuple) else ""
+    reason = skip_reason(report)
     kind = skip_kind(item)
-    if kind is None and NAMES_DRF.search(reason):
+    refused = refused_skip(kind, reason)
+    if refused:
         report.outcome = "failed"
-        report.longrepr = (
-            f"skipped without DRF, but neither drf-marked nor the front_end "
-            f"fixture's drf parameter: {reason}"
-        )
+        report.longrepr = refused
         return report
-    counts = item.config.stash.setdefault(NO_DRF_SKIPS, {})
-    key = kind or f"other: {reason}"
-    counts[key] = counts.get(key, 0) + 1
+    count_skip(item.config, kind or f"other: {reason}")
     return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(collector):
+    """`pytest_runtest_makereport`'s rule for a module skipped as it is
+    collected (a module-level ``importorskip`` of DRF): the skip of a module
+    not in `DRF_MODULES` whose reason names DRF fails. Without DRF, each test
+    module collected (not `DRF_MODULES`') is noted for
+    `pytest_collection_finish`."""
+    report = yield
+    if not NO_DRF or isinstance(collector, NeedsDrfModule):
+        return report
+    if isinstance(collector, pytest.Module) and collector.path.stem.startswith("test_"):
+        collector.config.stash.setdefault(NO_DRF_MODULES, set()).add(collector.path)
+    if not report.skipped:
+        return report
+    reason = skip_reason(report)
+    refused = refused_skip(None, reason)
+    if refused:
+        report.outcome = "failed"
+        report.longrepr = refused
+        return report
+    count_skip(collector.config, f"other (collection): {reason}")
+    return report
+
+
+def modules_without_tests(modules, item_modules):
+    """The paths of `modules` none of whose tests are among `item_modules`
+    (the paths the collected tests came from), sorted."""
+    return sorted(str(path) for path in set(modules) - set(item_modules))
+
+
+def pytest_deselected(items):
+    """Without DRF, the modules of deselected tests, which yielded tests."""
+    if NO_DRF and items:
+        modules = items[0].config.stash.setdefault(NO_DRF_DESELECTED_MODULES, set())
+        modules.update(item.path for item in items)
+
+
+def pytest_collection_finish(session):
+    """The no-DRF run: each test module it collected that is not in
+    `DRF_MODULES` yielded a test (one skipped as it was collected, say, has
+    none), or the run stops, failed."""
+    if not NO_DRF:
+        return
+    item_modules = {item.path for item in session.items}
+    item_modules |= session.config.stash.get(NO_DRF_DESELECTED_MODULES, set())
+    missing = modules_without_tests(
+        session.config.stash.get(NO_DRF_MODULES, set()), item_modules
+    )
+    if missing:
+        pytest.exit(
+            "test modules with no test without DRF (not in DRF_MODULES): "
+            + ", ".join(missing),
+            returncode=pytest.ExitCode.TESTS_FAILED,
+        )
 
 
 def pytest_terminal_summary(terminalreporter, config):
@@ -188,10 +268,7 @@ class NeedsDrfModule(pytest.Module):
     (`NEEDS_DRF`), never imported (most import DRF)."""
 
     def collect(self):
-        counts = self.config.stash.setdefault(NO_DRF_SKIPS, {})
-        counts["drf-marked module, not collected"] = (
-            counts.get("drf-marked module, not collected", 0) + 1
-        )
+        count_skip(self.config, "drf-marked module, not collected")
         pytest.skip(NEEDS_DRF, allow_module_level=True)
 
 

@@ -26,8 +26,8 @@ from scrud_django.exceptions import (
 )
 
 from .fixtures import *  # noqa
+from .fixtures import uniform_errors_set
 from .steps import *  # noqa: F403, F401
-from .test_core_errors import uniform_errors_set
 
 
 def nested(depth):
@@ -65,6 +65,7 @@ def test_missing_body():
         check_body({"rbac_context": []}, present=False)
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_absolute_reverse_matches_drf():
@@ -80,6 +81,7 @@ def test_absolute_reverse_matches_drf():
     )
 
 
+@pytest.mark.drf
 def test_view_mixins_keeps_its_public_names():
     from scrud_django.drf import mixins as view_mixins
 
@@ -164,7 +166,7 @@ def test_a_refused_body_is_answered_as_the_route_answers_it(
             RequestBodyMissingError,
         ) as exc:
             status, answered, headers = error_answer(exc, request)
-        Given.http.force_authenticate(admin_login)
+        Given.http.force_login(admin_login)
         When.http.put(
             reverse("todo-lists-detail", args=[todo_list.pk]),
             data=data,

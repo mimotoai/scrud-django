@@ -41,6 +41,7 @@ from scrud_django.models import Resource
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
+    json_resource_type_spec,
     workflow_policy_resource_type,
 )
 from scrud_django.workflow import WORKFLOW_POLICY_TYPE_URI
@@ -401,7 +402,6 @@ def test_validate_write_narrows_by_the_requirements_hooks():
         validate(requirement=[GrantsLeaf(JSON_LD), refuses_a], narrow=())
 
 
-@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_validate_write_asks_a_registered_types_checks():
@@ -410,10 +410,14 @@ def test_validate_write_asks_a_registered_types_checks():
     a write in "b", which its grants alone allow, at the request check
     (``access.AccessDenied``, DRF's 403), which asks them of the body's
     contexts before the workflow check asks them of each transition."""
-    from .resource_types import HOOKED_NOTE_TYPE_URI, hooked_resource_types
+    from .resource_types import (
+        HOOKED_NOTE_TYPE_URI,
+        HOOKED_NOTES_HOOKS,
+        HOOKED_NOTES_TYPE,
+    )
 
-    reverse("hooked-notes-list")
-    hooked_resource_types()
+    # Its spec, as ninja serves it (and DRF's registration registers it).
+    json_resource_type_spec(**HOOKED_NOTES_TYPE, **HOOKED_NOTES_HOOKS).register()
     hooked = get_resource_type_for("hooked-notes")
     workflow_policy_resource_type()
     for context in ("a", "b"):

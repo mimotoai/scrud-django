@@ -6,11 +6,10 @@ routes answer it with (``scrud_exception_handler``, the configured
 import json
 
 import pytest
-from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.http import Http404
-from django.test import RequestFactory, override_settings
+from django.test import RequestFactory
 from django.urls import reverse
 from fastjsonschema import JsonSchemaValueException
 from rest_framework import exceptions as drf
@@ -32,15 +31,10 @@ from scrud_django.exceptions import (
 )
 
 from .fixtures import *  # noqa
+from .fixtures import uniform_errors_set
 from .steps import *  # noqa: F403, F401
 
 CHALLENGE = 'Basic realm="api"'
-
-
-def uniform_errors_set(uniform):
-    return override_settings(
-        SCOPED_RBAC=dict(settings.SCOPED_RBAC, UNIFORM_ERRORS=uniform)
-    )
 
 
 def same(exc):

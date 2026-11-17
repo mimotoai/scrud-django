@@ -5,20 +5,16 @@ validators and Links, and the ``Allow`` of an OPTIONS (`allowed_methods`),
 asked with a plain Django request and a neutral requirement, as the DRF
 routes answer them."""
 
-from uuid import uuid4
-
 import pytest
 from django.contrib.auth.models import AnonymousUser
 from django.http import Http404
 from django.test import RequestFactory
 from django.urls import reverse
-from django.utils.timezone import now
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.test import APIClient
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
-from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django import collection_type_uri_for
 from scrud_django.core.authz import content_of
@@ -26,7 +22,7 @@ from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration, get_resource_type_for
 
-from .factories import UserFactory
+from .factories import UserFactory, user_with  # noqa: F401  (re-exported)
 from .steps import *  # noqa: F403, F401
 
 JSON_LD = "http://www.w3.org/ns/json-ld#context"
@@ -35,22 +31,6 @@ SCRUD_WORKFLOW = {
     "condition": {"operator": "scrud_workflow", "authorized_transitions": ["any"]}
 }
 CONTEXTS = ["", "a", "b", ["a", "b"]]
-
-
-def user_with(*grants, superuser=False):
-    """A user holding each ``(role definition, context)`` of `grants`."""
-    user = UserFactory(is_staff=superuser, is_superuser=superuser)
-    for definition, context in grants:
-        role = Role(definition=definition, etag=uuid4().hex, modified_at=now())
-        role.save()
-        RoleAssignment(
-            user=user,
-            role=role,
-            rbac_context=context,
-            etag=uuid4().hex,
-            modified_at=now(),
-        ).save()
-    return user
 
 
 def users():

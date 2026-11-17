@@ -30,7 +30,7 @@ from scrud_django.core.urls import (
     api_reverse,
     api_route_name,
 )
-from scrud_django.models import Resource
+from scrud_django.models import Resource, ResourceType
 from scrud_django.ninja.api import ui_specs
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui import pages
@@ -123,11 +123,16 @@ def path_of(url):
 
 @pytest.mark.drf
 @pytest.mark.django_db
+def test_drfs_registration_notes_its_routes_outside_any_namespace(ui_urlconf):
+    assert None in api_namespaces()
+
+
+@pytest.mark.django_db
 def test_the_registry_names_each_front_ends_routes(ui_urlconf):
     """Each front end's routes are found where it named them: DRF's outside
-    any namespace, the ninja API's in its ``urls_namespace``; a type the
-    URLconf does not route has none."""
-    assert None in api_namespaces()
+    any namespace (`test_drfs_registration_notes_its_routes_outside_any_namespace`),
+    the ninja API's in its ``urls_namespace``; a type the URLconf does not
+    route has none."""
     if ui_urlconf == NINJA_UI_URLCONF:
         assert NINJA_NAMESPACE in api_namespaces()
     prefix = "" if ui_urlconf == DRF_UI_URLCONF else f"{NINJA_NAMESPACE}:"
@@ -304,20 +309,38 @@ def test_a_studio_preview_of_an_instance(ui_urlconf, todo_list, todo_owner_login
     assert frame_hrefs(html()) == [expected]
 
 
+#: The stored types only DRF routes: ``todo-summaries``, a viewset class of
+#: its own and no spec, stored by DRF's registration (none without DRF).
+DRF_ONLY_TYPES = {"todo-summaries"}
+
+
+def stored_drf_only_types():
+    return set(
+        ResourceType.objects.filter(slug__in=DRF_ONLY_TYPES).values_list(
+            "slug", flat=True
+        )
+    )
+
+
 @pytest.mark.drf
+@pytest.mark.django_db
+def test_drfs_registration_stores_the_types_only_drf_routes():
+    assert stored_drf_only_types() == DRF_ONLY_TYPES
+
+
 @pytest.mark.django_db
 def test_the_ui_checks_name_no_type_it_serves(ui_urlconf):
     """W003 and W004 name none of the types the ninja API routes (the test
     types, the UI's and the studio's computed ones): the UI serves each, on
     either URLconf. W004 names every stored type no API routes: none on
-    the DRF routes; on the ninja API, ``todo-summaries`` alone, which DRF
-    alone routes (a viewset class of its own, no spec)."""
+    the DRF routes; on the ninja API, those DRF alone routes, when stored
+    (`test_drfs_registration_stores_the_types_only_drf_routes`)."""
     slugs = {spec.slug for spec in served_specs()}
     assert {spec.slug for spec in ui_specs()} <= slugs
     unrouted = {w.obj for w in check_unrouted_types(None)}
     refused = {w.obj for w in check_drf_only_authorization(None)}
     assert unrouted == (
-        {"todo-summaries"} if ui_urlconf == NINJA_UI_URLCONF else set()
+        stored_drf_only_types() if ui_urlconf == NINJA_UI_URLCONF else set()
     ), unrouted
     assert not slugs & refused, slugs & refused
     for slug in slugs:
