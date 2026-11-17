@@ -630,9 +630,14 @@ def list_filter_errors(patterns, prefix=""):
     list answers every request with ``ImproperlyConfigured`` (a 500) rather
     than listing every object."""
     from django.urls import URLPattern, URLResolver
-    from scoped_rbac.filters import RbacFilter
 
-    from scrud_django.mixins.view_mixins import ListValidatorsMixin
+    try:
+        from scoped_rbac.filters import RbacFilter
+
+        from scrud_django.mixins.view_mixins import ListValidatorsMixin
+    except ImportError:
+        # Without DRF no route is a DRF viewset.
+        return []
 
     errors = []
     for entry in patterns:

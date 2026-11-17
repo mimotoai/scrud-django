@@ -157,3 +157,37 @@ def test_ui_pages_import_no_drf():
         [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_a_project_without_drf_runs():
+    """`manage.py check`, the ninja API, the UI's files and the studio run in
+    a project where Django REST framework cannot be imported."""
+    from .no_drf import run_without_drf
+
+    result = run_without_drf(
+        """
+from django.contrib.auth import get_user_model
+from django.test import Client, RequestFactory
+
+call_command("check")
+assert "rest_framework" not in sys.modules
+
+client = Client()
+response = client.get("/api/services/")
+assert response.status_code == 200, (response.status_code, response.content)
+
+from scrud_django.ui.branches.file_urls import css_urls
+
+urls = css_urls(RequestFactory().get("/"))
+assert urls, "no packaged stylesheet"
+response = client.get(urls[0])
+assert response.status_code == 200, (urls[0], response.status_code)
+
+user = get_user_model().objects.create_user("studio", password="pw")
+client.force_login(user)
+response = client.get("/studio/")
+assert response.status_code == 200, (response.status_code, response.content[:500])
+assert "rest_framework" not in sys.modules
+"""
+    )
+    assert result.returncode == 0, result.stderr

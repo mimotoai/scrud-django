@@ -159,16 +159,16 @@ def routes_to_ui(path_info: str, rest: str) -> bool:
 
 
 def is_resource_view(view, slug: str) -> bool:
-    """Whether `view` is a scrud resource view serving the type `slug`."""
-    from scrud_django.mixins.view_mixins import ResourceViewMixin
+    """Whether `view` is a scrud resource view serving the type `slug`: a
+    view a trusted builder marked (`scrud_django.core.types.mark_route`:
+    registration's DRF routes, ninja's ``api()``), and, for a DRF view, one
+    built for `slug` (its ``resource_type_name``)."""
+    from scrud_django.core.types import UNRECORDED_ROUTE, route_authorization
 
-    cls = getattr(view, "cls", None)
+    if route_authorization(view) == UNRECORDED_ROUTE:
+        return False
     initkwargs = getattr(view, "initkwargs", None) or {}
-    return (
-        isinstance(cls, type)
-        and issubclass(cls, ResourceViewMixin)
-        and initkwargs.get("resource_type_name") == slug
-    )
+    return initkwargs.get("resource_type_name", slug) == slug
 
 
 def check_mount(request) -> None:
