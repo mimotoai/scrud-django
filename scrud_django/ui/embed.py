@@ -62,7 +62,6 @@ from markupsafe import Markup
 from scrud_django.ui.branches.effective import BRANCH_HEADER, active_selection
 from scrud_django.ui.branches.selection import in_mount, mount_of, selection_value
 from scrud_django.ui.cascade import builtin_component, rules_memo
-from scrud_django.ui.dispatch import dispatch_path, resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +160,11 @@ def api_url(slug, key=None) -> str:
 
 
 def _embed(request, path, scope, mode) -> str:
+    # Not at the top: `dispatch` is DRF's, and `render_html` (which reaches
+    # this module through `component_globals`) must import without DRF.
+    # (Until the embeds leave `dispatch`.)
     from scrud_django.ui import renderer
+    from scrud_django.ui.dispatch import dispatch_path, resolve_path
     from scrud_django.ui.render import in_view_preview
 
     state = _state.get() or _top_state(request)

@@ -13,7 +13,7 @@ import pytest
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
-from scrud_django.ui import renderer
+from scrud_django.ui import html as ui_html
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 from scrud_django.ui.branches.chrome import SAFE_NOTICE
 
@@ -160,7 +160,7 @@ def test_safe_mode_notice_present_and_required(
         name="layertest:page",
         compiled=lambda: SimpleNamespace(render=lambda ctx: "<main>bare</main>"),
     )
-    monkeypatch.setattr(renderer, "resolve_component", lambda *a, **k: leaves_out)
+    monkeypatch.setattr(ui_html, "resolve_component", lambda *a, **k: leaves_out)
     page = get_html(url)
     # Said as what it is (it rendered), not as a failure.
     assert page.startswith(
@@ -176,7 +176,7 @@ def test_safe_mode_notice_present_and_required(
             render=lambda ctx: "<main>kept</main>" + ctx["body"]
         ),
     )
-    monkeypatch.setattr(renderer, "resolve_component", lambda *a, **k: keeps)
+    monkeypatch.setattr(ui_html, "resolve_component", lambda *a, **k: keeps)
     page = get_html(url)
     assert "<main>kept</main>" in page and NOTICE in page
 

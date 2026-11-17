@@ -8,13 +8,13 @@ what a page offers is what a request would be allowed.
 from scoped_rbac import access
 from scoped_rbac.policy import Decision, Permission
 
-from scrud_django.mixins.resource_mixin import rbac_contexts_of
-from scrud_django.permissions import (
+from scrud_django.core.authz import (
     _checking_write,
     condition_resource,
     may_act_in_context,
     may_read_in_context,
 )
+from scrud_django.mixins.resource_mixin import rbac_contexts_of
 
 ALLOWED = "allowed"
 POSSIBLY = "possibly"

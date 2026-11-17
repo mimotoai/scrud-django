@@ -22,6 +22,7 @@ from scrud_django import collection_type_uri_for
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration, get_resource_type_for
 from scrud_django.scrud_signals import scrud_post_save
+from scrud_django.ui import html as ui_html
 from scrud_django.ui import render, renderer
 
 from .factories import UserFactory
@@ -781,7 +782,7 @@ def test_render_failure_of_an_error_keeps_its_status(
     def broken(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(renderer, "_body", broken)
+    monkeypatch.setattr(ui_html, "_body", broken)
     Given.http.force_authenticate(todo_reader_login)
     put_json(
         detail_url(todo_list),

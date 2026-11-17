@@ -24,8 +24,8 @@ from django.middleware.csrf import get_token
 from django.urls import reverse
 from django.utils.crypto import constant_time_compare, salted_hmac
 
+from scrud_django.core.authz import may_read_in_context, resource_contexts
 from scrud_django.models import Resource
-from scrud_django.permissions import may_read_in_context, resource_contexts
 from scrud_django.ui.branches import MAIN, UI_BRANCH_TYPE_URI
 from scrud_django.ui.branches.effective import (
     BRANCH_HEADER,
