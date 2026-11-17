@@ -33,17 +33,19 @@ DRF modules (`tests/test_core_imports.py` holds the deny list). It does import
 installed (a scrud error's detail is then DRF's `ErrorDetail`), and works
 without it. Two front ends adapt it: django-ninja, the default
 (`scrud_django.urls` is `scrud_django.ninja.api(types=[])` in the URL
-namespace `scrud`, plus `scoped_rbac.semantic_urls`; the `checks.py` check
-`scrud_django.W008` warns of two scrud APIs in one namespace), and DRF, the
-`drf` extra (`scrud_django.drf.urls`, which `tests/urls.py` includes so that
-the DRF suites test DRF). The DRF views and mixins are adapters (the `scrud_django.drf`
-package; the old paths `scrud_django.views`, `.filters`, `.permissions`, ...
-are deprecated aliases, `scrud_django/_aliases.py`, and scrud's own code and
-tests import the new paths: `pyproject.toml`'s `filterwarnings` makes an
-alias's warning an error): they delegate to `core`
-for the pieces they call (requirements and grants, the workflow check, body
-checks, list queries and validators, the save and post-save checks, URLs)
-and map its `ScrudException`s and access errors to DRF's
+namespace `scrud`, plus `scoped_rbac.semantic_urls`; the `checks.py`
+checks `scrud_django.E010` and `E011` report two scrud APIs in one
+namespace, and DRF registrations beside the ninja `scrud_django.urls`), and
+DRF, the `drf` extra (`scrud_django.drf.urls`, which `tests/urls.py`
+includes so that the DRF suites test DRF). The DRF views and mixins are
+adapters (the `scrud_django.drf` package; the old paths
+`scrud_django.views`, `.filters`, `.permissions`, ... are deprecated
+aliases, `scrud_django/_aliases.py`, and scrud's own code and tests import
+the new paths: `pyproject.toml`'s `filterwarnings` makes an alias's warning
+an error): they delegate to `core` for the pieces they call (requirements
+and grants, the workflow check, body checks, list queries and validators,
+the save and post-save checks, URLs) and map its `ScrudException`s and
+access errors to DRF's
 (`drf.exceptions.as_drf`, `drf_error`). The facade in `core/resources.py`
 (`check_request`, `load_for_read`, `object_readable`, `readable_content`,
 `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,

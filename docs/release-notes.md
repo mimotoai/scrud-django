@@ -10,15 +10,26 @@
   the service catalog, scoped-rbac's role routes and the collection
   documents) and `scoped_rbac.semantic_urls` at `semantic/`. To stay on DRF,
   install `scrud-django[drf]` and include `scrud_django.drf.urls` instead
-  (with `hsr_urls()`, as before). An app building its own `api()` includes
-  it instead of `scrud_django.urls`, not beside it: two scrud APIs in one URL
-  namespace reverse each other's links, and the new system check
-  `scrud_django.W008` warns of it. DRF's authentication classes do not run on
-  ninja: keep Basic and token clients with
-  `SCOPED_RBAC["NINJA_USER"] = "scrud_django.drf.auth.drf_user"`. A branch's
-  JSON, which a published prefix gave before 0.17.0, is the studio's
-  `/api/ui-branch-items/<branch>/`. See "Migrating to 0.17.0: the switch to
-  django-ninja" in the README.
+  (with `hsr_urls()`, as before); DRF registrations of your own types
+  (`registration.resource_types(...)`) left beside `scrud_django.urls` fail
+  every request (500), and the new system check `scrud_django.E011` reports
+  them. An app building its own `api()` includes it instead of
+  `scrud_django.urls`, not beside it: Django reverses a URL namespace within
+  its first include only, so the second scrud API in one namespace fails
+  every request (500), and the new system check `scrud_django.E010` reports
+  it. `REST_FRAMEWORK` settings no longer apply to `/api/` (only
+  `URL_FORMAT_OVERRIDE` is read): `DEFAULT_AUTHENTICATION_CLASSES` (keep Basic
+  and token clients with
+  `SCOPED_RBAC["NINJA_USER"] = "scrud_django.drf.auth.drf_user"`),
+  `DEFAULT_THROTTLE_CLASSES` and `DEFAULT_THROTTLE_RATES` (the API is not
+  rate limited: stay on DRF, or build your own `api(throttle=[...])` with
+  ninja's throttles), `DEFAULT_RENDERER_CLASSES` (no browsable API; JSON
+  whatever `Accept` asks), `EXCEPTION_HANDLER` (scrud's problem details,
+  not a handler of your own) and, on scoped-rbac's role routes,
+  `DEFAULT_PERMISSION_CLASSES` (the grants are asked as `IsAuthorized`
+  asks them). A branch's JSON, which a published prefix gave before 0.17.0,
+  is the studio's `/api/ui-branch-items/<branch>/`. See "Migrating to
+  0.17.0: the switch to django-ninja" in the README.
 * **django-ninja is in the base install; DRF is the `drf` extra.** A project
   that serves the API through Django REST Framework installs
   `scrud-django[drf]` (django-scoped-rbac[drf], scrudful[drf],

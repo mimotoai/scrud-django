@@ -225,12 +225,15 @@ urlpatterns = [
 
 * Two APIs in one process need distinct `urls_namespace`s. Links (`href`,
   `Location`, `Link` headers, `services/`) are reversed within the namespace
-  the request was resolved under, and the UI finds a type's routes by it. An
+  the request was resolved under, and the UI finds a type's routes by it.
+  Django reverses a namespace's names within its first include only, so an
   API of your own in the default namespace `scrud` beside
-  `include("scrud_django.urls")` (also `scrud`) would take each other's
-  links: `manage.py check` warns of a namespace included more than once
-  (`scrud_django.W008`). Include your `api()` in its place, or give it
-  another `urls_namespace`.
+  `include("scrud_django.urls")` (also `scrud`) fails: every scrudful route
+  of the one included second answers 500 (its HTTP Schema Resource route
+  cannot be reversed), and links in the namespace point at the first.
+  `manage.py check` reports a scrud API's namespace included more than once
+  (`scrud_django.E010`). Include your `api()` in place of
+  `scrud_django.urls`, or give it another `urls_namespace`.
 * A URLconf of your own `api()` must also `include("scoped_rbac.semantic_urls")`
   once, as `scrud_django.urls` does: the role routes' (`roles/`,
   `role-assignments/`, `user-rbac-policy/`) semantic Links reverse those
@@ -258,7 +261,9 @@ urlpatterns = [
 ## Staying on DRF
 
 The Django REST Framework front end is the `drf` extra, in the
-`scrud_django.drf` package, and answers as it did before 0.17.0:
+`scrud_django.drf` package, and answers as it did before 0.17.0, apart from
+the UI app's move off `/api/` (see
+[Migrating to 0.17.0: the UI app](#migrating-to-0170-the-ui-app)):
 
 ```bash
 uv add "scrud-django[drf]"
@@ -1344,25 +1349,61 @@ What to do:
   else changes for your DRF routes. A project that registers its own types
   with `registration.resource_types(...)` beside `include("scrud_django.urls")`
   is on DRF: switch that include, or move the types to
-  `api(types=[registration.json_resource_type_spec(...)])`.
+  `api(types=[registration.json_resource_type_spec(...)])`. Left as it was,
+  every request of those types fails (500: their links reverse the DRF
+  routes of the built-in types, `json-schema-detail` and `json-ld-detail`,
+  which only `scrud_django.drf.urls` has), and `manage.py check` reports it
+  (`scrud_django.E011`).
 * **Old import paths** of the DRF adapter (`scrud_django.views`,
   `scrud_django.exceptions.scrud_exception_handler`, ...) keep working for
   this release with a `DeprecationWarning`: see
   [Migrating to 0.17.0: the DRF adapter](#migrating-to-0170-the-drf-adapter).
-* **Authentication.** ninja does not run DRF's
-  `DEFAULT_AUTHENTICATION_CLASSES`: the session's user is the user, and a
-  Basic or token client is anonymous. To keep those clients as they are, set
-  `SCOPED_RBAC = {..., "NINJA_USER": "scrud_django.drf.auth.drf_user"}`
-  (DRF installed), which runs your DRF authenticators on each ninja request.
+* **`REST_FRAMEWORK` settings no longer apply to `/api/`.** The ninja API
+  reads only `URL_FORMAT_OVERRIDE` (the `?format=` parameter) of them.
+  Those that change what scrud's DRF routes did:
+  * `DEFAULT_AUTHENTICATION_CLASSES`: on ninja the session's user is the
+    user, and a Basic or token client is anonymous. To keep those clients
+    as they are, set
+    `SCOPED_RBAC = {..., "NINJA_USER": "scrud_django.drf.auth.drf_user"}`
+    (DRF installed), which runs your DRF authenticators on each ninja
+    request.
+  * `DEFAULT_THROTTLE_CLASSES` and `DEFAULT_THROTTLE_RATES`: the ninja API is
+    **not rate limited** unless you say so, and nothing warns. Stay on DRF,
+    or build your own `api()` (in place of `scrud_django.urls`) with
+    ninja's throttles, which `api()` passes to `NinjaAPI`:
+    `api(types=[...], throttle=[UserRateThrottle("100/min")])`
+    (`ninja.throttling`; a 429 once the rate is spent). `UserRateThrottle`
+    keys a request by Django's `request.user` (else the client's
+    address); ninja's `AnonRateThrottle` and `AuthRateThrottle` key by
+    `request.auth`, which scrud's routes never set, so they treat every
+    request as anonymous.
+  * `DEFAULT_RENDERER_CLASSES`: ninja negotiates among DRF's default
+    renderers' media types whatever the setting says (follow-up
+    `ninja-renderer-settings`), and never answers `text/html`: DRF's
+    browsable API is gone from `/api/`, which answers JSON whatever `Accept`
+    asks. A project that changed the renderers stays on DRF.
+  * `EXCEPTION_HANDLER`: the ninja API answers errors as scrud's handler
+    does (problem details); a handler of your own wrapping it is not run.
+    Stay on DRF to keep it.
+
+  * `DEFAULT_PERMISSION_CLASSES`: scrud's DRF routes set `IsAuthorized`
+    themselves, and scoped-rbac's DRF role routes took the setting (the
+    `IsAuthorized` above); on ninja every route asks the grants itself, as
+    `IsAuthorized` does. A stricter permission of your own on the role
+    routes is not run on ninja: stay on DRF to keep it.
+
+  `DEFAULT_PARSER_CLASSES`, `DEFAULT_PAGINATION_CLASS` and `PAGE_SIZE`
+  change nothing: scrud's and scoped-rbac's DRF routes set their own JSON
+  parser and paginators (100 a page by default, `?page_size=` up to 1000),
+  which the ninja API follows.
 * **One API per namespace.** An app that builds its own `api()` includes it
-  **instead of** `scrud_django.urls`, not beside it: both in the default
-  namespace `scrud` would take each other's links, and `manage.py check`
-  warns (`scrud_django.W008`). Give a second API its own `urls_namespace`.
+  **instead of** `scrud_django.urls`, not beside it: Django reverses the
+  namespace `scrud` within its first include only, so the other API's
+  requests fail (500), and `manage.py check` reports it
+  (`scrud_django.E010`). Give a second API its own `urls_namespace`.
   Code that reverses scrud's route names on ninja qualifies them with the
   namespace (`reverse("scrud:services")`, `"scrud:<slug>-list"`); on DRF
   they are unqualified, as before.
-* **Renderers.** A ninja route never answers `text/html`: DRF's browsable
-  API is gone from `/api/`, which answers JSON whatever `Accept` asks.
 * **A branch's JSON,** which a published branch's prefix answered before
   0.17.0, is the studio's `/api/ui-branch-items/<branch>/` (with
   `scrud_django.ui.studio` installed); the prefix serves the UI's pages only.

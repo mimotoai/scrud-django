@@ -6,7 +6,7 @@ scoped-rbac's semantic documents (``semantic/``: the schemas and contexts its
 role routes link to). A project staying on DRF includes
 ``scrud_django.drf.urls`` instead (with the ``drf`` extra); one building its
 own ``api()`` includes that instead of this (two scrud APIs in one namespace
-are the system check ``scrud_django.W008``)."""
+are the system check ``scrud_django.E010``)."""
 
 from django.urls import include, path
 

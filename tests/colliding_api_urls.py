@@ -1,6 +1,6 @@
 """An app's own scrud API beside ``include("scrud_django.urls")``, both in
 the default namespace ``scrud`` (`tests.test_default_urls`: the system
-check warns of the collision)."""
+check reports the collision, scrud_django.E010)."""
 
 from django.urls import include, path
 

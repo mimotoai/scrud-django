@@ -127,6 +127,10 @@ def test_the_bare_name_wins_then_each_noted_namespace(api_routes):
     api_routes.note_api_routes(["partner-profiles", "other"], namespace="ns")
     assert api_routes.api_namespaces() == (None, "absent", "ns")
     assert api_routes.api_slugs() == ("partner-profiles", "other")
+    # Or the slugs noted in one namespace (``None``: outside any).
+    assert api_routes.api_slugs(namespace=None) == ("partner-profiles",)
+    assert api_routes.api_slugs(namespace="ns") == ("partner-profiles", "other")
+    assert api_routes.api_slugs(namespace="never-noted") == ()
     assert api_routes.api_route_name("partner-profiles", "detail") == (
         "partner-profiles-detail"
     )

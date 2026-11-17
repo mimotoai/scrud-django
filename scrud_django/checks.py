@@ -709,13 +709,15 @@ def _namespace_counts(patterns, outer="", counts=None):
 
 
 def check_api_namespaces(app_configs, **kwargs):
-    """A Warning (``scrud_django.W008``) for each namespace a scrud ninja API
+    """An Error (``scrud_django.E010``) for each namespace a scrud ninja API
     names its routes in (``api(urls_namespace=...)``, noted in
     `scrud_django.core.urls.api_namespaces`) that the project's URLconf
     (``ROOT_URLCONF``) includes more than once, as when an app's own
     ``api()`` and ``include("scrud_django.urls")`` both keep the default
-    ``"scrud"``: a name in it reverses to one of them only, so links and the
-    UI would point at the other API's routes. Registered with Django's
+    ``"scrud"``. Django reverses the namespace's names within its first
+    include only, so every scrudful route of the other API fails (a 500:
+    scrudful cannot reverse its HTTP Schema Resource route) and links
+    reversed in the namespace point at the first. Registered with Django's
     ``urls`` tag."""
     from django.urls import get_resolver
 
@@ -726,20 +728,77 @@ def check_api_namespaces(app_configs, **kwargs):
     counts = _namespace_counts(get_resolver().url_patterns)
     noted = {namespace for namespace in api_namespaces() if namespace}
     return [
-        checks.Warning(
+        checks.Error(
             f"The URL namespace {namespace!r} of a scrud API is included "
-            f"{count} times: its route names reverse to one of them only, so "
-            "links and the UI can point at another API's routes.",
+            f"{count} times: Django reverses its names within the first "
+            "include only, so the requests of the other API's routes fail "
+            "(500: their HTTP Schema Resource routes cannot be reversed) and "
+            "links point at the first API.",
             hint=(
                 "Give each scrud_django.ninja.api() its own urls_namespace; an "
                 "app building its own api() in the default namespace 'scrud' "
                 'replaces include("scrud_django.urls") rather than adding to it.'
             ),
             obj=namespace,
-            id="scrud_django.W008",
+            id="scrud_django.E010",
         )
         for namespace, count in counts.items()
         if count > 1 and namespace.rsplit(":", 1)[-1] in noted
+    ]
+
+
+#: The routes of the built-in types the links of a DRF-registered type
+#: reverse by bare name (its schema and context), which
+#: ``scrud_django.drf.urls`` routes.
+DRF_BUILT_IN_ROUTES = ("json-schema-detail", "json-ld-detail")
+
+
+def check_drf_registrations_routed(app_configs, **kwargs):
+    """An Error (``scrud_django.E011``) when the project's URLconf
+    (``ROOT_URLCONF``) routes types registered for DRF
+    (``registration.json_resource_type``, whose routes are named outside any
+    namespace, `scrud_django.core.urls.api_slugs` of ``None``) but not the
+    DRF routes of the built-in types their links reverse by bare name
+    (`DRF_BUILT_IN_ROUTES`): an upgrade's ``include("scrud_django.urls")``,
+    the ninja API since 0.17.0, beside ``registration.resource_types(...)``.
+    Every request of those types would fail (500, ``NoReverseMatch``).
+    Registered with Django's ``urls`` tag."""
+    from django.urls import NoReverseMatch, get_resolver, reverse
+
+    from scrud_django.core.urls import api_slugs
+
+    def reverses(name, args):
+        try:
+            reverse(name, args=args)
+        except NoReverseMatch:
+            return False
+        return True
+
+    # Read first: importing the URLconf runs its registrations, which note
+    # their routes.
+    get_resolver().url_patterns  # noqa: B018
+    routed = [
+        slug
+        for slug in api_slugs(namespace=None)
+        if reverses(f"{slug}-list", ()) or reverses(f"{slug}-detail", ("key",))
+    ]
+    missing = [name for name in DRF_BUILT_IN_ROUTES if not reverses(name, ("key",))]
+    if not routed or not missing:
+        return []
+    return [
+        checks.Error(
+            f"The URLconf routes types registered for DRF ({', '.join(routed)}) "
+            f"but not the DRF routes {', '.join(missing)} their links reverse: "
+            "every request of those types would fail (500, NoReverseMatch). "
+            'include("scrud_django.urls") serves the ninja API since 0.17.0.',
+            hint=(
+                'Include "scrud_django.drf.urls" in place of "scrud_django.urls" '
+                "(with the drf extra), or move the types to "
+                "scrud_django.ninja.api(types=[registration."
+                "json_resource_type_spec(...)]) and include that API instead."
+            ),
+            id="scrud_django.E011",
+        )
     ]
 
 

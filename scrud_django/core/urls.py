@@ -43,10 +43,18 @@ def api_namespaces() -> tuple[str | None, ...]:
         return tuple(_api_routes)
 
 
-def api_slugs() -> tuple[str, ...]:
+#: `api_slugs`' default: the slugs noted in any namespace.
+_ANY_NAMESPACE = object()
+
+
+def api_slugs(*, namespace=_ANY_NAMESPACE) -> tuple[str, ...]:
     """The slugs of the types whose API routes a front end built
-    (`note_api_routes`), each once, in the order they were first noted."""
+    (`note_api_routes`), each once, in the order they were first noted: in
+    any namespace, or, given a `namespace`, in that one alone (``None``:
+    outside any, as DRF's registration names them)."""
     with _api_routes_lock:
+        if namespace is not _ANY_NAMESPACE:
+            return tuple(_api_routes.get(namespace, ()))
         found = {}
         for noted in _api_routes.values():
             found.update(noted)
