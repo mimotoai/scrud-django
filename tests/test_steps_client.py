@@ -8,9 +8,12 @@ from copy import copy
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
+import safetydance_django.steps as http_steps
 from django.test import Client
+from django.test.client import MULTIPART_CONTENT
 from safetydance_django.test import *  # noqa: F403, F401
 
 from . import conftest
@@ -146,3 +149,80 @@ def test_a_drf_module_is_marked_but_runs_with_drf(monkeypatch):
 
     assert drf_module.get_closest_marker("drf")
     assert not drf_module.get_closest_marker("skip")
+
+
+def test_every_drf_module_name_is_a_test_module():
+    tests = {path.stem for path in Path(__file__).parent.glob("test_*.py")}
+    assert not set(conftest.DRF_MODULES) - tests
+
+
+# the private factory the steps' client comes from
+
+
+def test_safetydance_builds_its_client_through_new_api_client():
+    assert callable(http_steps._new_api_client)
+    sentinel = object()
+    with mock.patch.object(http_steps, "_new_api_client", lambda: sentinel):
+
+        @test_context
+        def client_of_a_new_context():
+            return Http.api_client
+
+        assert client_of_a_new_context() is sentinel
+
+
+# format
+
+
+def sent(client, method, path, *args, **kwargs):
+    """The method, content type and body the client sends."""
+    seen = {}
+
+    def request(self, **environ):
+        seen["method"] = environ["REQUEST_METHOD"]
+        seen["content_type"] = environ.get("CONTENT_TYPE")
+        body = environ.get("wsgi.input")
+        seen["body"] = body.read() if body else b""
+        return SimpleNamespace(status_code=204)
+
+    with mock.patch.object(Client, "request", request):
+        getattr(client, method)(path, *args, **kwargs)
+    return seen
+
+
+def test_multipart_is_encoded_for_every_method():
+    client = PlainClient()
+    for method in ("post", "put", "patch"):
+        seen = sent(client, method, "/x/", {"a": ["1", "2"]}, format="multipart")
+        assert seen["method"] == method.upper()
+        assert seen["content_type"].startswith(MULTIPART_CONTENT)
+        assert b'name="a"' in seen["body"] and b"2" in seen["body"]
+
+
+def test_an_unknown_format_is_a_value_error():
+    with pytest.raises(ValueError, match="xml"):
+        PlainClient().post("/x/", {"a": 1}, format="xml")
+
+
+def test_requests_match_apiclients_in_method_content_type_and_body():
+    """The requests of `tests.test_context_smuggling` (and a JSON one) are
+    the same for both clients."""
+    pytest.importorskip("rest_framework")
+    from rest_framework.test import APIClient
+
+    smuggling = {"foo": "pwn", "rbac_context": ["victim", "attacker"]}
+    cases = [
+        ("post", ("/t/", smuggling), {"format": "multipart"}),
+        ("put", ("/t/1/", smuggling), {"format": "multipart", "HTTP_IF_MATCH": "x"}),
+        (
+            "put",
+            ("/t/1/", "a=b"),
+            {"content_type": "application/x-www-form-urlencoded"},
+        ),
+        ("post", ("/t/", {"a": [1, {"b": None}]}), {"format": "json"}),
+        ("delete", ("/t/1/",), {}),
+    ]
+    for method, args, kwargs in cases:
+        assert sent(PlainClient(), method, *args[:1], *args[1:], **kwargs) == sent(
+            APIClient(), method, *args[:1], *args[1:], **kwargs
+        ), (method, args, kwargs)

@@ -11,10 +11,13 @@ def pytest_addoption(parser):
     )
 
 
-#: The test modules of the DRF adapter, or that cannot run without DRF (they
-#: import it, `scrud_django.drf` or `tests.urls`/`tests.resource_types`, which
-#: do, or use its ``APIClient``), by module name: they get ``pytest.mark.drf``,
-#: and are skipped when DRF cannot be imported (`mark_drf_modules`).
+#: The test modules that need DRF, by module name: they get ``pytest.mark.drf``
+#: and are skipped when DRF cannot be imported (`mark_drf_modules`). A module is
+#: here when it imports DRF, `scrud_django.drf` or scoped-rbac's DRF modules
+#: (or `tests.urls` / `tests.resource_types`, which do), uses the
+#: ``force_authenticate`` step, or imports a marked module's helpers.
+#: `tests.test_steps_client` checks the names exist. The reverse guard, an
+#: unmarked module that needs DRF, is the no-DRF run's (the CI job).
 DRF_MODULES = frozenset(
     {
         "test_atomic_writes",
