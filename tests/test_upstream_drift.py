@@ -13,7 +13,9 @@ context, and DRF's ``GenericAPIView.filter_queryset``
 object check right after the RBAC filter). It also relies on upstream
 internals: the ``error`` / ``error_body_func`` attributes of scrudful's
 ``ScrudfulViewFunc`` (``gate_uniform_errors``) and its ``_early_response``
-(``ListValidatorsMixin.list_precondition_response``). These tests fail when
+(``ListValidatorsMixin.list_precondition_response``), and scoped-rbac's
+private ``rest._problem_for`` (``scrud_django.drf.auth.AuthenticatorError``,
+the problem of an error a DRF authenticator raises on ninja). These tests fail when
 upstream drifts from what
 was re-implemented or relied on: the names the upstream code uses are
 pinned, and the re-implementations must give upstream's results where
@@ -405,3 +407,71 @@ def test_scrudfuls_early_response_is_what_a_list_precondition_response_renders_w
         "setting_error",
         "with_error_body",
     )
+
+
+def test_scoped_rbacs_problem_for_is_what_the_drf_auth_hook_answers_with():
+    # scrud_django.drf.auth.AuthenticatorError answers an error a DRF
+    # authenticator raised on ninja with scoped-rbac's private
+    # rest._problem_for(exc, response), given a response-like object with
+    # DRF's native body (.data) and the status (.status_code), and keeps the
+    # problem it returns (follow-up ninja-private-upstream-use).
+    import inspect
+
+    from rest_framework.exceptions import Throttled
+    from scoped_rbac import problems, rest
+
+    assert list(inspect.signature(rest._problem_for).parameters) == [
+        "exc",
+        "response",
+    ]
+    assert code_names(rest._problem_for) == (
+        "AccessValidationError",
+        "AuthenticationFailed",
+        "DjangoPermissionDenied",
+        "Http404",
+        "MethodNotAllowed",
+        "NotAuthenticated",
+        "NotFound",
+        "ParseError",
+        "PermissionDenied",
+        "ValidationError",
+        "_ACCESS_VALIDATION_CODES",
+        "_code",
+        "_detail",
+        "_validation_errors",
+        "access_error",
+        "code",
+        "detail",
+        "error_problem",
+        "from_access_error",
+        "getattr",
+        "isinstance",
+        "len",
+        "list",
+        "problem",
+        "problems",
+        "status_code",
+        "str",
+        "validation_problem",
+    )
+    exc = Throttled(wait=7)
+    native = {"detail": exc.detail}
+    with override_settings(
+        SCOPED_RBAC={**settings.SCOPED_RBAC, "UNIFORM_ERRORS": True}
+    ):
+        status, problem = rest._problem_for(
+            exc, types.SimpleNamespace(data=native, status_code=429)
+        )
+    assert status == 429
+    assert problem == problems.problem(
+        429,
+        code="throttled",
+        detail="Request was throttled. Expected available in 7 seconds.",
+    )
+    assert problem == {
+        "type": "about:blank",
+        "title": "Too Many Requests",
+        "status": 429,
+        "detail": "Request was throttled. Expected available in 7 seconds.",
+        "code": "throttled",
+    }
