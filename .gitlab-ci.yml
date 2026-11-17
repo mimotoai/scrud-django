@@ -194,7 +194,8 @@ test-mysql:
 # on every pipeline rather than at publish time. The wheel is also installed
 # into a clean venv to prove that it carries the project version and every
 # file under scrud_django/, and that it imports (`-I` keeps the checkout off
-# sys.path).
+# sys.path). It is installed twice: with no extras (ninja only, no DRF) and
+# with `[drf]`.
 package:
   stage: test
   cache:
@@ -206,8 +207,63 @@ package:
   script:
     - uv build -q -o build/dist-check
     - uv run --no-project --with "twine==7.0.0" twine check --strict build/dist-check/*
+    - uv venv -q build/base-venv
+    - uv pip install -q -p build/base-venv build/dist-check/*.whl
+    # The base install has no DRF and imports ninja. The UI app also needs the
+    # `ui` extra (jinja2); adding it still leaves DRF out.
+    - |
+      build/base-venv/bin/python -I - <<'EOF'
+      import importlib.util
+
+      import django
+      from django.conf import settings
+
+      assert importlib.util.find_spec("rest_framework") is None, "DRF in the base install"
+
+      settings.configure(
+          INSTALLED_APPS=[
+              "django.contrib.auth",
+              "django.contrib.contenttypes",
+              "scoped_rbac",
+              "reversion",
+              "scrud_django",
+          ]
+      )
+      django.setup()
+      import scrud_django.ninja  # noqa: E402,F401
+
+      print("ok: the base install imports scrud_django.ninja")
+      EOF
+    - |
+      wheel="$(ls build/dist-check/*.whl)"
+      uv pip install -q -p build/base-venv "scrud-django[ui] @ file://$PWD/$wheel"
+    - |
+      build/base-venv/bin/python -I - <<'EOF'
+      import importlib.util
+
+      import django
+      from django.conf import settings
+
+      assert importlib.util.find_spec("rest_framework") is None, "DRF in the ui install"
+
+      settings.configure(
+          INSTALLED_APPS=[
+              "django.contrib.auth",
+              "django.contrib.contenttypes",
+              "scoped_rbac",
+              "reversion",
+              "scrud_django",
+          ]
+      )
+      django.setup()
+      import scrud_django.ui.urls  # noqa: E402,F401
+
+      print("ok: scrud_django.ui.urls imports without DRF")
+      EOF
     - uv venv -q build/wheel-venv
-    - uv pip install -q -p build/wheel-venv build/dist-check/*.whl
+    - |
+      wheel="$(ls build/dist-check/*.whl)"
+      uv pip install -q -p build/wheel-venv "scrud-django[drf] @ file://$PWD/$wheel"
     - |
       expected="$(uv version --short)"
       EXPECTED="$expected" build/wheel-venv/bin/python -I - <<'EOF'

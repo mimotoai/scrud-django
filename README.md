@@ -11,6 +11,13 @@ uv add scrud-django
 # or: pip install scrud-django
 ```
 
+django-ninja is part of the base install. Projects that serve the API through
+Django REST Framework install the `drf` extra:
+
+```bash
+uv add "scrud-django[drf]"
+```
+
 For haystack search support, install the `search` extra:
 
 ```bash
@@ -33,13 +40,15 @@ last in the root URLconf: `path("", include("scrud_django.ui.urls"))`. See the
 scrud-django can also serve its resource types through
 [django-ninja](https://django-ninja.dev), answering as the DRF routes do (the
 same statuses, headers and bodies; `tests/test_front_end_parity.py` replays
-the same exchanges against both). It is additive and a preview: nothing
-changes for a DRF project.
+the same exchanges against both). It is a preview.
 
 ```bash
-uv add "scrud-django[ninja]"
-# or: pip install 'scrud-django[ninja]'
+uv add scrud-django
+# or: pip install scrud-django
 ```
+
+(The `ninja` extra of 0.16 stays as an empty alias, so existing requirement
+files keep working.)
 
 ```python
 # urls.py

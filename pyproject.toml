@@ -9,10 +9,8 @@ license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "django>=5.2,<6.0",
-    "django-scoped-rbac[drf]>=0.12.1,<0.13",
-    "scrudful[drf]>=0.10.1,<0.11",
-    "djangorestframework>=3.15",
-    "django-filter>=25.1",
+    "django-scoped-rbac[ninja]>=0.12.1,<0.13",
+    "scrudful[ninja]>=0.10.1,<0.11",
     "django-reversion>=5.1",
     "jsonpath-ng>=1.6",
     "fastjsonschema>=2.19",
@@ -21,13 +19,14 @@ dependencies = [
 [project.optional-dependencies]
 search = ["django-haystack>=3.3", "whoosh-reloaded>=2.7.5"]
 ui = ["jinja2>=3.1,<4"]
-# django-ninja directly: scrud_django.ninja uses ninja's internals itself
-# (NinjaAPI._get_urls, an operation's run), as scoped-rbac's pin allows.
-ninja = [
-    "django-ninja>=1.7.0,<1.7.4",
-    "django-scoped-rbac[ninja]>=0.12.1,<0.13",
-    "scrudful[ninja]>=0.10.1,<0.11",
+drf = [
+    "django-scoped-rbac[drf]>=0.12.1,<0.13",
+    "scrudful[drf]>=0.10.1,<0.11",
+    "djangorestframework>=3.15",
+    "django-filter>=25.1",
 ]
+# Kept empty for 0.16 requirement files: ninja is in the base install now.
+ninja = []
 
 [project.urls]
 Repository = "https://gitlab.com/dcharbon/scrud-django"
@@ -44,7 +43,7 @@ dev = [
     "ruff",
     "pre-commit",
     "django-extensions",
-    "scrud-django[search,ui,ninja]",
+    "scrud-django[search,ui,drf]",
     # The PostgreSQL driver for the test suite on PostgreSQL (CI's
     # test-postgres job; tests/settings.py reads SCRUD_TEST_PG_*).
     "psycopg[binary]>=3.2,<4",

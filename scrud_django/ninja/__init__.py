@@ -1,4 +1,4 @@
-"""The django-ninja front end (optional: ``pip install 'scrud-django[ninja]'``)."""
+"""The django-ninja front end (django-ninja is a base dependency)."""
 
 try:
     import ninja  # noqa: F401
@@ -10,7 +10,8 @@ except ImportError as error:
         # django-ninja is installed but fails to import: its own error.
         raise
     raise ImportError(
-        "scrud_django.ninja needs django-ninja: pip install 'scrud-django[ninja]'"
+        "scrud_django.ninja needs django-ninja, which scrud-django installs; "
+        "reinstall it: pip install scrud-django"
     ) from error
 
 from scrud_django.ninja.api import api  # noqa: E402

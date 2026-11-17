@@ -16,6 +16,13 @@ or, with pip:
 $ pip install scrud-django
 ```
 
+django-ninja is part of the base install. For Django REST Framework, install
+the `drf` extra:
+
+```{sourceCode} console
+$ uv add "scrud-django[drf]"
+```
+
 For haystack search support, install the `search` extra:
 
 ```{sourceCode} console

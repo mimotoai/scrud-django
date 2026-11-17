@@ -4,6 +4,12 @@
 
 ### Breaking changes
 
+* **django-ninja is in the base install; DRF is the `drf` extra.** A project
+  that serves the API through Django REST Framework installs
+  `scrud-django[drf]` (django-scoped-rbac[drf], scrudful[drf],
+  djangorestframework and django-filter); `pip install scrud-django` no longer
+  brings DRF. The `ninja` extra stays as an empty alias so 0.16 requirement
+  files keep installing.
 * **The UI is its own app, served at the site root, and `/api/` is JSON only.**
   Include `scrud_django.ui.urls` last in the root URLconf with no namespace
   argument (`path("", include("scrud_django.ui.urls"))`): it serves a page at
