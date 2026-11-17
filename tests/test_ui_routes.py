@@ -172,14 +172,19 @@ def test_a_stored_type_routed_by_hand_without_registration_is_named(
 
 
 @pytest.mark.django_db
-def test_a_type_routed_only_in_a_namespace_is_named(settings):
+def test_a_type_routed_only_in_a_namespace_is_named(settings, monkeypatch):
     """``tests.ninja_ui_urls``: scrud's ninja ``api()`` routes its types in
     its URL namespace, where the UI does not look for them (follow-up
     ``ui-ninja-routes``): the UI serves none of them, and W004 says so."""
     from django.core import checks
 
+    from .front_ends import serve_ninja
+
     settings.ROOT_URLCONF = "tests.ninja_ui_urls"
     assert reverse("scrud-ninja:partner-profiles-list")
+    # Its types stored again (an earlier test's rollback may have removed
+    # the rows the API's import stored).
+    serve_ninja()
     assert pages.route_views("partner-profiles") is None
     assert pages.served("partner-profiles") is None
     named = {w.obj: w for w in check_unrouted_types(None)}
@@ -199,6 +204,13 @@ def test_a_type_routed_only_in_a_namespace_is_named(settings):
     named = {w.obj for w in check_unrouted_types(None)}
     assert "partner-profiles" not in named and "todo-lists" not in named
     assert "summaries" not in named
+    # Nor a type registered in this process but not stored (another test's
+    # rolled back): the UI would not be asked to serve it.
+    from scrud_django.core import types
+
+    monkeypatch.setattr(types, "_TYPE_SLUGS", types._TYPE_SLUGS | {"never-stored"})
+    settings.ROOT_URLCONF = "tests.ninja_ui_urls"
+    assert "never-stored" not in {w.obj for w in check_unrouted_types(None)}
     # Nor when the project does not include the UI app.
     settings.ROOT_URLCONF = "tests.urls"
     assert check_unrouted_types(None) == []

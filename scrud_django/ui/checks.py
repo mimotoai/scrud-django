@@ -82,17 +82,25 @@ def asked_slugs() -> list[str]:
     app's ``<name>-list``) is none; nor, when the database cannot be read,
     is any slug not registered in this process."""
     from scrud_django.core.types import type_slugs
-    from scrud_django.registration import get_resource_type_for
 
     registered = set(type_slugs())
-    stored = set()
-    for slug in sorted(routed_slugs() - registered):
+    return sorted(registered | stored_slugs(routed_slugs() - registered))
+
+
+def stored_slugs(slugs) -> set[str]:
+    """Those of `slugs` whose type is stored
+    (``registration.get_resource_type_for`` finds it, as the UI asks before
+    serving one); none when the database cannot be read."""
+    from scrud_django.registration import get_resource_type_for
+
+    found = set()
+    for slug in sorted(slugs):
         try:
             get_resource_type_for(slug)
         except (Http404, DatabaseError):
             continue
-        stored.add(slug)
-    return sorted(registered | stored)
+        found.add(slug)
+    return found
 
 
 def routed_slugs() -> set[str]:
@@ -111,7 +119,8 @@ def routed_slugs() -> set[str]:
 
 def check_unrouted_types(app_configs, **kwargs):
     """A Warning (``scrud_django_ui.W004``) naming each type registered in
-    this process (`scrud_django.core.types.type_slugs`) that has no API
+    this process (`scrud_django.core.types.type_slugs`) and stored
+    (`stored_slugs`: the UI would be asked to serve it) that has no API
     route the UI app can serve: no route named ``<slug>-list`` nor
     ``<slug>-detail`` outside a URL namespace, as registration names them.
     Its pages answer 404, as for a slug the UI does not serve. scrud's ninja
@@ -122,10 +131,13 @@ def check_unrouted_types(app_configs, **kwargs):
 
     if not _ui_included():
         return []
+    unrouted = {
+        slug
+        for slug in type_slugs()
+        if not _reverses(f"{slug}-list") and not _reverses(f"{slug}-detail", "key")
+    }
     found = []
-    for slug in type_slugs():
-        if _reverses(f"{slug}-list") or _reverses(f"{slug}-detail", "key"):
-            continue
+    for slug in sorted(stored_slugs(unrouted)):
         found.append(
             checks.Warning(
                 f"The UI app does not serve the type {slug!r} (its pages, "
