@@ -802,6 +802,150 @@ def check_drf_registrations_routed(app_configs, **kwargs):
     ]
 
 
+def routed_api_namespaces():
+    """The namespaces of the scrud ninja APIs the project's URLconf
+    (``ROOT_URLCONF``) routes: each namespace it includes (qualified by the
+    namespaces it is nested in, ``outer:inner``) whose own name a scrud
+    ``api()`` named its routes in (`scrud_django.core.urls.api_namespaces`),
+    sorted."""
+    from django.urls import get_resolver
+
+    from scrud_django.core.urls import api_namespaces
+
+    # Read first: importing the URLconf builds its APIs, which note their
+    # namespaces.
+    counts = _namespace_counts(get_resolver().url_patterns)
+    noted = {namespace for namespace in api_namespaces() if namespace}
+    return sorted(
+        namespace for namespace in counts if namespace.rsplit(":", 1)[-1] in noted
+    )
+
+
+#: DRF's own ``DEFAULT_AUTHENTICATION_CLASSES``: the session's user, then
+#: Basic. A project that leaves them, or sets them again, is not warned
+#: (`check_drf_settings_on_ninja`).
+DRF_DEFAULT_AUTHENTICATION = frozenset(
+    {
+        "rest_framework.authentication.SessionAuthentication",
+        "rest_framework.authentication.BasicAuthentication",
+    }
+)
+
+
+def _dotted_path(value):
+    """The dotted path of `value`, an entry of a DRF class setting: itself
+    when a ``str``, else its module and qualified name."""
+    if isinstance(value, str):
+        return value
+    return f"{value.__module__}.{value.__qualname__}"
+
+
+def check_drf_settings_on_ninja(app_configs, **kwargs):
+    """A Warning (``scrud_django.W008``) for each ``REST_FRAMEWORK`` setting
+    that changed what scrud's DRF routes did but that a scrud ninja API the
+    project's URLconf (``ROOT_URLCONF``) routes (`routed_api_namespaces`,
+    as ``include("scrud_django.urls")`` does since 0.17.0) does not read:
+
+    - ``DEFAULT_THROTTLE_CLASSES`` (not empty): the ninja API is not rate
+      limited;
+    - ``DEFAULT_AUTHENTICATION_CLASSES`` other than DRF's own pair
+      (`DRF_DEFAULT_AUTHENTICATION`) while ``SCOPED_RBAC["NINJA_USER"]`` is
+      unset: their clients (a token's, Basic's) are anonymous on ninja,
+      which reads the session's user instead, so a token-only API accepts
+      session cookies.
+
+    Registered with Django's ``urls`` and ``security`` tags."""
+    from django.conf import settings
+
+    rest_framework = getattr(settings, "REST_FRAMEWORK", None)
+    if not isinstance(rest_framework, dict):
+        return []
+    throttled = bool(rest_framework.get("DEFAULT_THROTTLE_CLASSES"))
+    authentication = rest_framework.get("DEFAULT_AUTHENTICATION_CLASSES")
+    scoped_rbac = getattr(settings, "SCOPED_RBAC", None) or {}
+    authenticated_otherwise = (
+        authentication is not None
+        and {_dotted_path(entry) for entry in authentication}
+        != DRF_DEFAULT_AUTHENTICATION
+        and scoped_rbac.get("NINJA_USER") is None
+    )
+    if not (throttled or authenticated_otherwise):
+        return []
+    routed = routed_api_namespaces()
+    if not routed:
+        return []
+    api = f"the scrud ninja API (namespace {', '.join(map(repr, routed))})"
+    found = []
+    if throttled:
+        found.append(
+            checks.Warning(
+                "REST_FRAMEWORK sets DEFAULT_THROTTLE_CLASSES, which "
+                f"{api} does not read: its requests are not rate limited.",
+                hint=(
+                    "Build your own scrud_django.ninja.api(types=[...], "
+                    "throttle=[...]) with ninja's throttles (ninja.throttling) in "
+                    'place of include("scrud_django.urls"), or stay on DRF '
+                    '(include "scrud_django.drf.urls", with the drf extra). '
+                    "Silence scrud_django.W008 once the API has its own throttles."
+                ),
+                id="scrud_django.W008",
+            )
+        )
+    if authenticated_otherwise:
+        found.append(
+            checks.Warning(
+                "REST_FRAMEWORK sets DEFAULT_AUTHENTICATION_CLASSES, which "
+                f"{api} does not run: it reads the session's user, so their "
+                "clients (a token's, Basic's) are anonymous there, and a "
+                "session cookie authenticates where they accepted none.",
+                hint=(
+                    'Set SCOPED_RBAC["NINJA_USER"] = '
+                    '"scrud_django.drf.auth.drf_user" (with the drf extra), which '
+                    "runs them on each ninja request, or stay on DRF (include "
+                    '"scrud_django.drf.urls").'
+                ),
+                id="scrud_django.W008",
+            )
+        )
+    return found
+
+
+def check_base_url_for_ninja(app_configs, **kwargs):
+    """A Warning (``scrud_django.W009``) when the project's URLconf
+    (``ROOT_URLCONF``) routes a scrud ninja API (`routed_api_namespaces`)
+    and ``SCRUDFUL["BASE_URL"]`` is unset: scrudful builds a route's HTTP
+    Schema Resource without a request, so the HSRs whose links are relative
+    (those of every type's routes and of scoped-rbac's role routes) fail
+    (500, ninja's ``ConfigError``), as a DRF project's do without
+    scrudful's HSR route (``scrudful.E003``). A ``SCRUDFUL`` that is not a
+    mapping is left to scrudful, which refuses it on each request.
+    Registered with Django's ``urls`` tag."""
+    from collections.abc import Mapping
+
+    from django.conf import settings
+
+    scrudful = getattr(settings, "SCRUDFUL", {})
+    if not isinstance(scrudful, Mapping) or scrudful.get("BASE_URL") is not None:
+        return []
+    routed = routed_api_namespaces()
+    if not routed:
+        return []
+    named = ", ".join(repr(namespace) for namespace in routed)
+    return [
+        checks.Warning(
+            'SCRUDFUL["BASE_URL"] is unset, and the URLconf routes the scrud '
+            f"ninja API (namespace {named}): scrudful builds an HTTP Schema "
+            "Resource without a request, so those of its types' and role "
+            "routes, whose links are relative, fail (500, ConfigError).",
+            hint=(
+                'Set SCRUDFUL = {"BASE_URL": "https://api.example.com"}, the URL '
+                "the API is served at."
+            ),
+            id="scrud_django.W009",
+        )
+    ]
+
+
 ACTIONS_HINT = (
     "Each entry of a mapping SCRUD_WORKFLOW_ACTIONS names maps a type URI to "
     "{'on_save': callable, 'on_delete': callable} (either key may be left out, "

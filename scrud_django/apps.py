@@ -13,10 +13,12 @@ class ScrudConfig(AppConfig):
 
         from scrud_django.checks import (
             check_api_namespaces,
+            check_base_url_for_ninja,
             check_context_drift,
             check_default_policy_conditions,
             check_default_workflow_policies,
             check_drf_registrations_routed,
+            check_drf_settings_on_ninja,
             check_isolation_level,
             check_list_filters,
             check_overlong_contexts,
@@ -38,6 +40,10 @@ class ScrudConfig(AppConfig):
         checks.register(check_list_filters, checks.Tags.urls)
         checks.register(check_api_namespaces, checks.Tags.urls)
         checks.register(check_drf_registrations_routed, checks.Tags.urls)
+        checks.register(
+            check_drf_settings_on_ninja, checks.Tags.urls, checks.Tags.security
+        )
+        checks.register(check_base_url_for_ninja, checks.Tags.urls)
         checks.register(check_workflow_actions)
         checks.register(check_workflow_action_types, checks.Tags.database)
 
