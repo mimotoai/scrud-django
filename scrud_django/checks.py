@@ -641,7 +641,7 @@ def list_filter_errors(patterns, prefix=""):
         return []
     from scoped_rbac.filters import RbacFilter
 
-    from scrud_django.mixins.view_mixins import ListValidatorsMixin
+    from scrud_django.drf.mixins import ListValidatorsMixin
 
     errors = []
     for entry in patterns:
@@ -672,7 +672,7 @@ def list_filter_errors(patterns, prefix=""):
                 "ImproperlyConfigured (a 500).",
                 hint=(
                     "Put scoped_rbac.filters.RbacFilter (for resources, "
-                    "scrud_django.filters.ResourceRbacFilter) in its "
+                    "scrud_django.drf.filters.ResourceRbacFilter) in its "
                     "filter_backends."
                 ),
                 obj=view_class,

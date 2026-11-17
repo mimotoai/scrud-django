@@ -21,6 +21,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
 
 from scrud_django.core.errors import error_answer, parse_error_detail
+from scrud_django.drf.exceptions import scrud_exception_handler
 from scrud_django.exceptions import (
     ContentFilterError,
     JsonValidationError,
@@ -28,7 +29,6 @@ from scrud_django.exceptions import (
     QueryParameterError,
     RequestBodyMalformedError,
     UIComponentNameTakenError,
-    scrud_exception_handler,
 )
 
 from .fixtures import *  # noqa

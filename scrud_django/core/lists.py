@@ -4,7 +4,7 @@ both in the list's order (`list_queryset`), a page of them read key first
 on MySQL (`page_of`, `rows_by_keys`), and the list's validators
 (`list_etag`, `list_last_modified`) and the preconditions of a POST to it
 (`evaluate_list_preconditions`), as the DRF routes answer them
-(`scrud_django.filters.ResourceRbacFilter`, ``ResourceContentFilter``,
+(`scrud_django.drf.filters.ResourceRbacFilter`, ``ResourceContentFilter``,
 ``StandardResultsSetPagination``, ``ListValidatorsMixin``).
 
 A requirement's leaves must read a resource's contexts as they are stored
@@ -82,7 +82,7 @@ from scrud_django.utils import http_date_for
 LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
 
 # The paging rules of a list, as the DRF paginator
-# (`scrud_django.paginations.StandardResultsSetPagination`) has them: the
+# (`scrud_django.drf.paginations.StandardResultsSetPagination`) has them: the
 # query parameters naming the page and its size, the size of a page that
 # names none (or not a positive integer) and the largest size, and the page
 # names standing for the last page.

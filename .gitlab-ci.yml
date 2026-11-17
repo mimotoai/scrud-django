@@ -247,7 +247,7 @@ package:
           ]
       )
       django.setup()
-      import scrud_django.views  # noqa: E402,F401
+      import scrud_django.drf.views  # noqa: E402,F401
 
       print(f"ok: scrud_django {scrud_django.__version__} from {installed}")
       EOF

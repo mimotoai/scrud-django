@@ -26,13 +26,13 @@ from scrud_django import registration
 from scrud_django.core import lists, resources, writes
 from scrud_django.core.lists import list_etag
 from scrud_django.core.types import requirement_for
+from scrud_django.drf.exceptions import drf_errors
+from scrud_django.drf.mixins import ListValidatorsMixin
 from scrud_django.exceptions import (
     QueryParameterError,
     RequestBodyTooDeepError,
     ResourceInUseError,
-    drf_errors,
 )
-from scrud_django.mixins.view_mixins import ListValidatorsMixin
 from scrud_django.models import Resource, ResourceType
 from scrud_django.ninja import routers, services
 from scrud_django.ninja.api import RESERVED_SLUGS

@@ -36,7 +36,7 @@ def rbac_contexts_of(content):
     resource that names none would have no context, which no role grants.
     Absent, ``None`` and ``""`` are all the default context. The one reading of
     a resource's contexts: object checks (``Resource.rbac_contexts``, and
-    ``scrud_django.permissions.resource_contexts``, scoped-rbac's default
+    ``scrud_django.drf.permissions.resource_contexts``, scoped-rbac's default
     ``contexts_for`` on the scrud views, which give checks the content), and the workflow checks (``WorkflowValidator``) all
     use it. Each context is the exact ``str`` of its characters, as
     scoped-rbac reads a context (``access.context_name``): a ``str`` subclass
@@ -97,7 +97,7 @@ class ResourceMixin(ScrudfulMixin):
         """What a grant's CEL condition reads for this resource: its content
         when it is a mapping, else ``{}``. The scrud views' object checks and
         list filter give conditions (and operators) the content itself
-        (`scrud_django.permissions.content_of`), the same fields."""
+        (`scrud_django.drf.permissions.content_of`), the same fields."""
         return self.content if isinstance(self.content, Mapping) else {}
 
     def _write_db(self, using=None):

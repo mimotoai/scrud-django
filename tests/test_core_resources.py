@@ -270,7 +270,7 @@ def test_object_readable_matches_the_drf_views():
     view's ``object_readable`` answers it, which tells its 404 from its
     403."""
     from scrud_django.core.resources import object_readable
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.views import ResourceViewSet
 
     resource_type = json_ld()
     requirement = [GrantsLeaf(JSON_LD)]
@@ -466,7 +466,7 @@ def test_drf_views_keep_their_refusals_and_their_not_path():
     from rest_framework.exceptions import PermissionDenied
     from scoped_rbac.permissions import IsAuthorized
 
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.views import ResourceViewSet
 
     from .urls import ContextDenyingIsAuthorized
 

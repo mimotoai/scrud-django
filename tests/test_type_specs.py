@@ -101,10 +101,15 @@ def test_spec_register_twice_is_idempotent(caplog):
 def test_spec_register_builds_no_drf_views(monkeypatch):
     # The DRF views cannot be imported: registering a spec, and the built-in
     # types its documents are stored as, needs none.
-    import scrud_django
+    import scrud_django.drf
 
-    monkeypatch.delattr(scrud_django, "views")
+    # The DRF views' module, and its deprecated alias.
+    if hasattr(scrud_django.drf, "views"):
+        monkeypatch.delattr(scrud_django.drf, "views")
+    monkeypatch.setitem(sys.modules, "scrud_django.drf.views", None)
     monkeypatch.setitem(sys.modules, "scrud_django.views", None)
+    with pytest.raises(ImportError):
+        from scrud_django.drf import views  # noqa: F401
     for name in BUILT_IN_CACHES:
         monkeypatch.setattr(registration, name, getattr(registration, name))
     for spec in registration.built_in_type_specs():

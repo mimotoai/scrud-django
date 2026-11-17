@@ -1,4 +1,4 @@
-"""Computed, read-only resource types (`scrud_django.computed`): content a
+"""Computed, read-only resource types (`scrud_django.drf.computed`): content a
 view computes for the requesting user, served with an ETag, rendered through
 the same cascade as stored resources, and never writable."""
 
@@ -9,7 +9,7 @@ import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django.computed import computed_etag
+from scrud_django.drf.computed import computed_etag
 from scrud_django.registration import ResourceRegistration, get_resource_type_for
 
 from .fixtures import *  # noqa
@@ -277,7 +277,7 @@ def test_compute_must_return_a_mapping(computed):
     programming error, raised (``TypeError``), never served as content."""
     from types import SimpleNamespace
 
-    from scrud_django.computed import ComputedResourceViewSet
+    from scrud_django.drf.computed import ComputedResourceViewSet
 
     class Wrong(ComputedResourceViewSet):
         def compute(self, request, key):

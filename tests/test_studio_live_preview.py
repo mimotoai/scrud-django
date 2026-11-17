@@ -19,7 +19,7 @@ from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
-from scrud_django.mixins.view_mixins import max_body_depth
+from scrud_django.drf.mixins import max_body_depth
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import (

@@ -80,11 +80,20 @@ def ui_type_specs() -> list[TypeSpec]:
 
 def ui_resource_type_urls():
     """The DRF routes of the UI resource types (`ui_type_specs`, each served
-    by its viewset: `scrud_django.ui.views`, `scrud_django.ui.branches
-    .views`), each type registered first (`TypeSpec.register`: its hooks
-    recorded, whatever the database says, then its row stored, or its
+    by its viewset, `scrud_django.drf.ui`), each type registered first
+    (`TypeSpec.register`: its hooks recorded, whatever the database says, then its row stored, or its
     registration left pending on a database error, `register_or_defer`).
-    ``scrud_django.urls`` serves them when ``scrud_django.ui`` is installed."""
+    ``scrud_django.drf.urls`` serves them when ``scrud_django.ui`` is
+    installed."""
+    from scrud_django.drf.ui import (
+        UIBranchVersionViewSet,
+        UIBranchViewSet,
+        UIComponentViewSet,
+        UICssViewSet,
+        UIJsViewSet,
+        UIPushViewSet,
+        UIStylesheetViewSet,
+    )
     from scrud_django.registration import resource_type_urls
     from scrud_django.ui.branches import (
         UI_BRANCH_SLUG,
@@ -92,17 +101,6 @@ def ui_resource_type_urls():
         UI_CSS_SLUG,
         UI_JS_SLUG,
         UI_PUSH_SLUG,
-    )
-    from scrud_django.ui.branches.views import (
-        UIBranchVersionViewSet,
-        UIBranchViewSet,
-        UIPushViewSet,
-    )
-    from scrud_django.ui.views import (
-        UIComponentViewSet,
-        UICssViewSet,
-        UIJsViewSet,
-        UIStylesheetViewSet,
     )
 
     viewsets = {

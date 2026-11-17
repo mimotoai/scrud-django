@@ -169,7 +169,7 @@ class TypeOptions:
       detail route, a list, the post-save check): the counterpart of
       ``has_object_permission``; a refused read hides the resource (404);
     - ``content_filter``: a list filters on its query parameters
-      (``scrud_django.filters.ResourceContentFilter`` on DRF);
+      (``scrud_django.drf.filters.ResourceContentFilter`` on DRF);
     - ``compute``: ``(request, key: str) -> Mapping``, a computed type's
       content for `key`;
 

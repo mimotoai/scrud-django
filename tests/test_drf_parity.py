@@ -26,8 +26,8 @@ from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.permissions import IsAuthorized
 
 import scrud_django
+from scrud_django.drf.views import ResourceViewSet, get_service_list
 from scrud_django.registration import ResourceRegistration
-from scrud_django.views import ResourceViewSet, get_service_list
 
 from .factories import UserFactory
 from .fixtures import *  # noqa
@@ -236,7 +236,9 @@ def test_scrud_reverse_is_drfs(query):
 
 
 # The scrud-defined names each module had at df04105 that moved: each still
-# imports from there, and is the moved object itself.
+# imports from there, and is the moved object itself. The DRF modules among
+# them have since moved to `scrud_django.drf` (their old paths are deprecated
+# aliases, `tests/test_drf_package.py`): the names import from both.
 OLD_HOMES = {
     "scrud_django.validators": {
         "HiddenWorkflowTransitionError": "scrud_django.exceptions",
@@ -261,26 +263,44 @@ OLD_HOMES = {
         "_workflow_authorized": "scrud_django.core.authz",
     },
     "scrud_django.filters": {"ResourceRemoval": "scrud_django.models"},
-    "scrud_django.exceptions": {"DOCUMENT_RENDERERS": "scrud_django.renderers"},
+    "scrud_django.exceptions": {"DOCUMENT_RENDERERS": "scrud_django.drf.renderers"},
+}
+#: Where each DRF module of `OLD_HOMES` is now.
+MOVED_TO = {
+    "scrud_django.validators": "scrud_django.drf.validators",
+    "scrud_django.permissions": "scrud_django.drf.permissions",
+    "scrud_django.mixins.view_mixins": "scrud_django.drf.mixins",
+    "scrud_django.filters": "scrud_django.drf.filters",
 }
 
 
 @pytest.mark.parametrize("module", sorted(OLD_HOMES))
 def test_moved_names_import_from_their_old_modules(module):
     import importlib
+    import warnings
 
-    old = importlib.import_module(module)
-    for name, home in OLD_HOMES[module].items():
-        assert getattr(old, name) is getattr(importlib.import_module(home), name), name
-    if module == "scrud_django.permissions":
-        from scrud_django.permissions import logger
+    with warnings.catch_warnings():
+        # An old path of a DRF module or name warns (once): not asked here.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        old = importlib.import_module(module)
+        for name, home in OLD_HOMES[module].items():
+            moved = getattr(importlib.import_module(home), name)
+            assert getattr(old, name) is moved, name
+            if module in MOVED_TO:
+                new = importlib.import_module(MOVED_TO[module])
+                assert getattr(new, name) is moved, name
+        if module == "scrud_django.permissions":
+            from scrud_django.permissions import logger
 
-        assert logger.name == "scrud_django.permissions"
-    if module == "scrud_django.exceptions":
-        from scrud_django.exceptions import DOCUMENT_RENDERERS  # noqa: F401
+            assert logger.name == "scrud_django.permissions"
+            from scrud_django.drf.permissions import logger as new_logger
 
-        with pytest.raises(AttributeError):
-            old.no_such_name  # noqa: B018
+            assert new_logger is logger
+        if module == "scrud_django.exceptions":
+            from scrud_django.exceptions import DOCUMENT_RENDERERS  # noqa: F401
+
+            with pytest.raises(AttributeError):
+                old.no_such_name  # noqa: B018
 
 
 class ObjectRefusing(BasePermission):

@@ -81,7 +81,7 @@ def test_absolute_reverse_matches_drf():
 
 
 def test_view_mixins_keeps_its_public_names():
-    from scrud_django.mixins import view_mixins
+    from scrud_django.drf import mixins as view_mixins
 
     for name in (
         "check_body_present",

@@ -47,8 +47,37 @@
 * In stored component templates, `in_mount(...)`, `embed(...)` and `api_url(...)`
   with `/api/` paths keep working (they are mapped to the UI), but a raw
   `hx-get="/api/..."` expecting HTML now gets JSON.
+* **The DRF adapter moved to `scrud_django.drf`.** Its modules are
+  `scrud_django.drf.views`, `.computed`, `.filters`, `.paginations`,
+  `.permissions`, `.renderers`, `.serializers` (with the serializer mixins),
+  `.requirements` (was `scrud_django.drf_requirements`), `.validators`
+  (`WorkflowValidator` and its helpers), `.mixins` (was
+  `scrud_django.mixins.view_mixins`), `.ui` (the UI types' viewsets, was
+  `scrud_django.ui.views` and `scrud_django.ui.branches.views`),
+  `.exceptions` (`scrud_exception_handler`, `as_drf`, `drf_errors`) and
+  `.urls` (the DRF routes, which `scrud_django.urls` still serves). The old
+  paths keep working for this release as deprecated aliases: importing one
+  (or, for `scrud_django.exceptions` and `scrud_django.validators`, which keep
+  their neutral names, reading one of the moved names) gives the moved
+  objects themselves and raises a `DeprecationWarning` naming the new path,
+  once. Set `REST_FRAMEWORK["EXCEPTION_HANDLER"]` to
+  `"scrud_django.drf.exceptions.scrud_exception_handler"`; the old value still
+  resolves, with the warning. `scrud_django.drf` raises an `ImportError`
+  naming `scrud-django[drf]` when DRF is not installed. See "Migrating to
+  0.17.0: the DRF adapter" in the README.
 
 ### Added
+
+* `scrud_django.drf.auth.drf_user`, an opt-in `SCOPED_RBAC["NINJA_USER"]`
+  hook (`"NINJA_USER": "scrud_django.drf.auth.drf_user"`) that authenticates
+  a ninja request with DRF's authentication classes
+  (`DEFAULT_AUTHENTICATION_CLASSES`, or the `SCRUD_DRF_AUTHENTICATION`
+  setting, a list of classes or dotted paths), so a Basic or token client of
+  the DRF routes is the same user on ninja and is refused alike (a wrong
+  credential is a 401 as DRF answers it, uniform errors on or off). A
+  session user's write is CSRF-checked as DRF's `SessionAuthentication`
+  checks it (403 `CSRF Failed: ...`); Basic and token clients need no CSRF
+  token. Pinned against the DRF routes in `tests/test_ninja_auth.py`.
 
 * An app's own Django models can be served through ninja with scrud's
   workflow: `scrud_django.ninja.workflow_check(iri, *, model, schema_out=None,

@@ -16,13 +16,13 @@ from rest_framework.renderers import BrowsableAPIRenderer, JSONRenderer
 from rest_framework.settings import api_settings
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.drf.views import ResourceViewSet
 from scrud_django.ui.branches import (
     UI_BRANCH_SLUG,
     UI_CSS_SLUG,
     UI_JS_SLUG,
     UI_PUSH_SLUG,
 )
-from scrud_django.views import ResourceViewSet
 
 from .fixtures import *  # noqa
 from .front_ends import api_url
@@ -206,6 +206,7 @@ def test_negotiation_of_the_api(todo_list, todo_owner_login, accept, query, expe
 def test_errors_with_a_html_accept_are_unchanged_without_the_ui_app(
     todo_list, todo_reader_login
 ):
+    import scrud_django.drf.urls
     import scrud_django.urls
 
     url = url_of(todo_list)
@@ -215,6 +216,8 @@ def test_errors_with_a_html_accept_are_unchanged_without_the_ui_app(
     try:
         with without_ui_app():
             clear_url_caches()
+            # scrud_django.urls re-exports the DRF URLconf's patterns.
+            importlib.reload(scrud_django.drf.urls)
             importlib.reload(scrud_django.urls)
             for accept in ("text/html", JSON):
                 # 403 (a reader PUTs), 412 and 400 are the JSON problems, as
@@ -239,6 +242,8 @@ def test_errors_with_a_html_accept_are_unchanged_without_the_ui_app(
                 assert "scrud-notice" not in Http.response.content.decode()
     finally:
         clear_url_caches()
+        # scrud_django.urls re-exports the DRF URLconf's patterns.
+        importlib.reload(scrud_django.drf.urls)
         importlib.reload(scrud_django.urls)
     html_accept, json_accept = responses["text/html"], responses[JSON]
     assert html_accept["Content-Type"] == json_accept["Content-Type"]

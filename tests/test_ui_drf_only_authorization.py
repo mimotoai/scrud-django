@@ -31,6 +31,7 @@ from scrud_django.core.types import (
     route_authorization,
     type_options_for_slug,
 )
+from scrud_django.drf.views import ResourceViewSet
 from scrud_django.models import Resource
 from scrud_django.registration import (
     ResourceRegistration,
@@ -49,7 +50,6 @@ from scrud_django.ui.checks import DRF_ONLY_ID, check_drf_only_authorization
 from scrud_django.ui.embed import REFUSED_MESSAGE, embed_for
 from scrud_django.ui.studio.computed import STUDIO_COMPUTED_TYPES
 from scrud_django.ui.types import UI_COMPONENT_SLUG, UI_STYLESHEET_SLUG
-from scrud_django.views import ResourceViewSet
 
 from .fixtures import *  # noqa
 from .fixtures import TYPE_URI_TODO_LIST, assign_role
@@ -453,8 +453,8 @@ def test_every_built_in_ui_and_studio_type_is_served():
 
 @pytest.mark.django_db
 def test_scrud_viewsets_hold_no_drf_only_authorization():
-    from scrud_django import views
-    from scrud_django.computed import ComputedResourceViewSet
+    from scrud_django.drf import views
+    from scrud_django.drf.computed import ComputedResourceViewSet
 
     from .urls import ContextDenyingResourceViewSet
 

@@ -1514,6 +1514,13 @@ authentication alone gives the item GET a 200 on ninja.
 Owner's decision (2026-11-13): keep `resolve_user` as it is for now; revisit
 with part C.
 
+Part C (owner, 2026-11-17): scrud ships the opt-in hook,
+`scrud_django.drf.auth.drf_user` (`SCOPED_RBAC["NINJA_USER"]`), which runs
+DRF's `DEFAULT_AUTHENTICATION_CLASSES` (or `SCRUD_DRF_AUTHENTICATION`);
+`tests/test_ninja_auth.py` compares its answers with the DRF route's (Basic,
+token, refused credentials, a session write without CSRF, the anonymous).
+Without the hook, ninja still reads no DRF authenticator.
+
 <a id="ninja-renderer-settings"></a>
 ## ninja-renderer-settings: ninja negotiates with DRF's default renderers whatever the project sets
 

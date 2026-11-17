@@ -13,13 +13,13 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from scrud_django import checks as scrud_checks
-from scrud_django.mixins import view_mixins
+from scrud_django.drf import mixins as view_mixins
+from scrud_django.drf.validators import WorkflowValidator
 from scrud_django.models import Resource
 from scrud_django.registration import (
     ResourceRegistration,
     workflow_policy_resource_type,
 )
-from scrud_django.validators import WorkflowValidator
 
 from .factories import UserFactory
 

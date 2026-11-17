@@ -1,7 +1,7 @@
 """Adopters' own operators get plain data, as scoped-rbac's checks give it: the
 request body itself (a ``dict``) on the request check and where the workflow
 check authorizes a transition (which they read as
-``scrud_django.permissions.current_transition()``), and the stored content
+``scrud_django.drf.permissions.current_transition()``), and the stored content
 (a ``dict``) on object checks. An operator that evaluates CEL itself reads it
 as scoped-rbac does. A check must only read what it gets: a change is stored."""
 
@@ -255,7 +255,7 @@ def test_a_body_nested_past_the_limit_is_400_and_one_within_it_is_stored():
     # MariaDB, test_the_depth_limit_is_what_the_database_stores) is checked
     # (its operator gets plain dicts and lists at every level), stored and
     # read back.
-    from scrud_django.mixins.view_mixins import max_body_depth
+    from scrud_django.drf.mixins import max_body_depth
 
     MAX_BODY_DEPTH = max_body_depth()
     reverse("todos-list")
@@ -301,7 +301,7 @@ def test_the_depth_limit_is_what_the_database_stores():
     # MySQL's JSON type stores MAX_BODY_DEPTH (100) levels. MariaDB's JSON
     # column refuses 32 levels (its JSON_VALID check, an IntegrityError):
     # there a deeper body is a 400, never a 500.
-    from scrud_django.mixins.view_mixins import (
+    from scrud_django.drf.mixins import (
         MARIADB_MAX_BODY_DEPTH,
         MAX_BODY_DEPTH,
         max_body_depth,
@@ -558,7 +558,7 @@ TRANSITIONS = []
 
 
 def recording_transition(resource, configuration):
-    from scrud_django.permissions import current_transition
+    from scrud_django.drf.permissions import current_transition
 
     TRANSITIONS.append(current_transition())
     return True
@@ -566,7 +566,7 @@ def recording_transition(resource, configuration):
 
 @pytest.mark.django_db
 def test_current_transition_is_the_workflow_checks_and_none_outside_it():
-    from scrud_django.permissions import current_transition
+    from scrud_django.drf.permissions import current_transition
 
     reverse("todos-list")
     TRANSITIONS.clear()
@@ -595,7 +595,7 @@ def test_current_transition_is_the_workflow_checks_and_none_outside_it():
 
 
 def test_scrud_workflow_allows_a_covered_writes_checks_and_what_it_lists():
-    from scrud_django.permissions import (
+    from scrud_django.drf.permissions import (
         _checking_transition,
         _checking_write,
         _not_checking_write,
@@ -639,7 +639,7 @@ class TransitionLeaf:
     def has_context_permission(self, request, view, obj, context):
         from rest_framework.exceptions import PermissionDenied
 
-        from scrud_django.permissions import current_transition
+        from scrud_django.drf.permissions import current_transition
 
         self.seen.append((current_transition(), type(obj)))
         if self.outcome == "raise":
@@ -655,9 +655,9 @@ def test_the_transition_is_forgotten_after_a_refused_or_raising_check(outcome):
     from rest_framework.exceptions import PermissionDenied
     from rest_framework.test import APIRequestFactory
 
-    from scrud_django.permissions import current_transition
+    from scrud_django.drf.permissions import current_transition
+    from scrud_django.drf.validators import WorkflowValidator
     from scrud_django.registration import get_resource_type_for
-    from scrud_django.validators import WorkflowValidator
 
     reverse("todos-list")
     request = APIRequestFactory().put("/")

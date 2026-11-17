@@ -62,7 +62,7 @@ class Renderer:
 
 #: DRF's default renderers (``JSONRenderer``, ``BrowsableAPIRenderer``) and
 #: the documents' renderers
-#: (``scrud_django.renderers``).
+#: (``scrud_django.drf.renderers``).
 JSON = Renderer("application/json", "json")
 BROWSABLE_API = Renderer("text/html", "api")
 _DOCUMENT_FORMATS = {
@@ -77,7 +77,7 @@ DOCUMENT_RENDERERS = {
 }
 
 #: The renderers that are DRF's ``JSONRenderer`` or a subclass of it
-#: (``scrud_django.renderers``), which indent as the accepted media type asks.
+#: (``scrud_django.drf.renderers``), which indent as the accepted media type asks.
 JSON_RENDERERS = frozenset({JSON, *DOCUMENT_RENDERERS.values()})
 
 #: The methods whose answer is the document, on a route serving one

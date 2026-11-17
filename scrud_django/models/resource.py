@@ -336,7 +336,7 @@ class ResourceContext(models.Model):
     """One RBAC context a `Resource` is in: one row per context of
     ``rbac_contexts_of(resource.content)`` (none for ``"rbac_context": []``),
     as stored, reserved contexts included. Lists filter resources by these rows
-    in SQL (`scrud_django.filters.ResourceRbacFilter`). `Resource.save()`
+    in SQL (`scrud_django.drf.filters.ResourceRbacFilter`). `Resource.save()`
     keeps them in step with the content.
 
     The content decides: a dump may hold these rows or leave them out
@@ -366,7 +366,7 @@ class ResourceRemoval(models.Model):
     content no longer in it. One row per type and context, its `removed_at`
     the newest such moment (`stamp_removals`). A list's ``Last-Modified``
     takes the newest stamp of the contexts whose every resource the requester
-    may list (`scrud_django.filters.readable_removal`), so that a list that
+    may list (`scrud_django.drf.filters.readable_removal`), so that a list that
     lost a resource is not "not modified". A deleted resource in no context
     stamps `SOME_CONTEXT` (reserved: superusers' lists only)."""
 

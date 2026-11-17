@@ -617,7 +617,7 @@ def test_drf_refuses_a_prepare_write_that_returns_another_body(
 ):
     """The DRF views save ``request.data`` itself: a ``prepare_write`` that
     returns another body would have it checked, and this one saved."""
-    from scrud_django.ui.views import UIComponentViewSet
+    from scrud_django.drf.ui import UIComponentViewSet
 
     rtype(UI_COMPONENT_SLUG)
     monkeypatch.setattr(

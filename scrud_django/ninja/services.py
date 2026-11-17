@@ -1,5 +1,5 @@
 """The ninja route of the service catalog (``services/``), answering as the DRF
-view (``scrud_django.views.get_service_list``) does."""
+view (``scrud_django.drf.views.get_service_list``) does."""
 
 import functools
 

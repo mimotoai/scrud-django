@@ -24,8 +24,8 @@ from scoped_rbac.models import Role, RoleAssignment
 from scrud_django import collection_type_uri_for
 from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.core.types import requirement_for
+from scrud_django.drf.filters import ui_parameters
 from scrud_django.exceptions import ScrudException
-from scrud_django.filters import ui_parameters
 from scrud_django.models import Resource, ResourceRemoval
 from scrud_django.registration import ResourceRegistration, get_resource_type_for
 
@@ -414,8 +414,8 @@ def test_readable_queryset_refuses_a_leaf_with_its_own_contexts():
 
     from scrud_django.core.lists import list_last_modified, readable_queryset
     from scrud_django.core.types import HookLeaf, TypeOptions
-    from scrud_django.drf_requirements import requirement_of
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.requirements import requirement_of
+    from scrud_django.drf.views import ResourceViewSet
 
     from .urls import TeamIsAuthorized
 

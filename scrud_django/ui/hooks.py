@@ -3,7 +3,7 @@
 `scrud_django.ui.types.ui_type_specs`, which both front ends register), which
 `scrud_django.core.writes`, `scrud_django.core.lists` and
 `scrud_django.core.resources` run for every front end; the DRF viewsets
-(`scrud_django.ui.views`, `scrud_django.ui.branches.views`) call the same
+(`scrud_django.drf.ui`) call the same
 functions.
 
 A write's ``prepare_write`` checks and completes its body before the
@@ -1012,7 +1012,7 @@ def read_version(request, resource_type, version) -> tuple[Mapping, str]:
 
 # The write and read behaviour of each UI type, by slug. Each declares the
 # core's checks complete for it (``ui_authorization``): its viewset
-# (`scrud_django.ui.views`, `scrud_django.ui.branches.views`) keeps
+# (`scrud_django.drf.ui`) keeps
 # ``ResourceViewSet``'s permissions (``IsAuthorized``) and adds only these
 # hooks' behaviour, so the UI app serves it.
 UI_TYPE_OPTIONS: dict[str, TypeOptions] = {

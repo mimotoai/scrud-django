@@ -1,19 +1,33 @@
+"""The neutral validators and workflow names, kept here as before: the JSON
+Schema validation (`scrud_django.core.writes`), the workflow helpers
+(`scrud_django.core.workflow`, `scrud_django.workflow`) and the errors. The
+DRF validator, ``WorkflowValidator``, and its helpers moved to
+`scrud_django.drf.validators`: their names here are deprecated aliases for
+one release (`__getattr__`), which import DRF."""
+
 import logging
-from collections.abc import Mapping
 
-from django.core.exceptions import ImproperlyConfigured
-from scoped_rbac import access
-from scoped_rbac.permissions import drf_error
+from scoped_rbac import access  # noqa: F401  (re-exported)
 
-from scrud_django.core import workflow as core_workflow
-from scrud_django.core.workflow import (  # noqa: F401  (moved; re-exported)
+from scrud_django._aliases import moved_name
+from scrud_django.core.authz import (  # noqa: F401  (re-exported)
+    _checking_transition,
+    _checking_write,
+    _mark_workflow_authorized,
+    _not_checking_write,
+    _reading_every_context,
+    condition_resource,
+    content_of,
+    may_read_in_context,
+)
+from scrud_django.core.workflow import (  # noqa: F401  (re-exported)
     NULL_CONTENT,
     NULL_STORED_CONTENT,
     check_policy_is_unique,
     plain_body,
     prior_of,
 )
-from scrud_django.core.writes import (  # noqa: F401  (moved; re-exported)
+from scrud_django.core.writes import (  # noqa: F401  (re-exported)
     JSON_SCHEMA_TYPE_URIS,
     JsonValidator,
     RefusedRemoteRef,
@@ -22,30 +36,17 @@ from scrud_django.core.writes import (  # noqa: F401  (moved; re-exported)
     compile_json_schema,
     refuse_remote_ref,
 )
-from scrud_django.drf_requirements import type_hook_leaf
-from scrud_django.exceptions import (
-    HiddenWorkflowTransitionError,  # noqa: F401  (re-exported)
-    JsonSchemaInvalidError,  # noqa: F401  (re-exported)
-    JsonValidationError,  # noqa: F401  (re-exported)
-    WorkflowPolicyInvalidError,  # noqa: F401  (re-exported)
+from scrud_django.exceptions import (  # noqa: F401  (re-exported)
+    HiddenWorkflowTransitionError,
+    JsonSchemaInvalidError,
+    JsonValidationError,
+    WorkflowPolicyInvalidError,
     WorkflowTransitionError,
 )
 from scrud_django.mixins.resource_mixin import (  # noqa: F401  (re-exported)
     rbac_contexts_of,
 )
 from scrud_django.models import ResourceType  # noqa: F401  (re-exported)
-from scrud_django.permissions import (
-    _checking_transition,  # noqa: F401  (re-exported)
-    _checking_write,  # noqa: F401  (re-exported)
-    _mark_workflow_authorized,  # noqa: F401  (re-exported)
-    _not_checking_write,
-    _reading_every_context,  # noqa: F401  (re-exported)
-    checks_read_content,
-    condition_resource,  # noqa: F401  (re-exported)
-    content_of,
-    may_read_in_context,
-    reading_content,
-)
 from scrud_django.workflow import (  # noqa: F401  (re-exported)
     WORKFLOW_POLICY_TYPE_URI,
     WorkflowPolicy,
@@ -54,237 +55,27 @@ from scrud_django.workflow import (  # noqa: F401  (re-exported)
     workflow_policies_for,
 )
 
+# The logger's name is kept: operators filter on it.
 logger = logging.getLogger(__name__)
 
-
-def rbac_permissions_of(view):
-    """The ``IsAuthorized`` (or subclass) permissions of `view` (nested ones
-    included: ``ResourceViewMixin.get_rbac_permissions``), or ``[]`` for no
-    view or one without them."""
-    get_rbac_permissions = getattr(view, "get_rbac_permissions", None)
-    return list(get_rbac_permissions()) if callable(get_rbac_permissions) else []
-
-
-def narrow_of(view):
-    """`scrud_django.core.workflow.workflow_check`'s ``narrow`` for `view`
-    (``None``: no view): a single check that allows only when every
-    ``IsAuthorized`` permission of the view allows, each asked
-    ``has_context_permission(request, view, body, rbac_context)``. The
-    permissions are fetched anew (`rbac_permissions_of`, through
-    `reading_content`) each time the check runs. An ``IsAuthorized``
-    subclass can therefore refuse a transition, never grant one the policy
-    refuses: its ``obj`` here is the request body as the writer sent it (a
-    check written for stored fields, such as an owner, would read the
-    writer's claim). The checks registered for the view's type
-    (`scrud_django.drf_requirements.type_hook_leaf`) follow it, each its own
-    narrow check, ``check(request, resource_type, body, rbac_context)``."""
-
-    def narrow(request, body, rbac_context):
-        return all(
-            leaf.has_context_permission(request, view, body, rbac_context)
-            for leaf in reading_content(rbac_permissions_of(view))
-        )
-
-    hooks = type_hook_leaf(view)
-    return (narrow,) if hooks is None else (narrow, *hooks.narrow)
+#: The names that moved to `scrud_django.drf.validators`.
+MOVED_TO_DRF = frozenset(
+    {
+        "WorkflowValidator",
+        "checks_read_content",
+        "drf_error",
+        "narrow_of",
+        "rbac_permissions_of",
+        "reading_content",
+        "type_hook_leaf",
+        "view_of",
+    }
+)
 
 
-def view_of(context):
-    """The view of the serializer `context`, or ``None``."""
-    return getattr(context, "context", {}).get("view")
-
-
-class WorkflowValidator:
-    """Checks a create or update of a resource against the workflow policy of
-    every context concerned: the DRF adapter of
-    `scrud_django.core.workflow.workflow_check`, which describes the check.
-    It gives the check the body as sent (`body_of`), as a ``Create``, or,
-    over the serializer's ``instance``, an ``Update`` of its stored content
-    (`prior_of`), the view's
-    ``IsAuthorized`` permissions as its ``narrow`` (`narrow_of`; without a
-    view, a serializer used outside the views, the policy alone decides),
-    and whether the stored resource is readable (`stored_resource_readable`).
-    A refusal in a context without a policy is DRF's 403
-    (``scoped_rbac.permissions.drf_error``).
-
-    A ``WorkflowPolicy`` resource is itself checked when it is written
-    (`validate_policy`): a policy that fails those checks, names a context that
-    is not a string, or would be a second policy for its type in its context
-    is a 400 and is not stored. Policies stored before those checks existed
-    (or server-side) are not rechecked on write; the database system check
-    reports those that fail them (``scrud_django.E005``).
-    """
-
-    requires_context = True
-
-    def __call__(self, data, context):
-        resource_type = context.resource_type
-        instance = context.instance
-        data = self.body_of(data, context)
-        if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
-            self.validate_policy(data, instance)
-        request = context.context.get("request")
-        if instance is None:
-            write = core_workflow.Create(proposed=data)
-        else:
-            write = core_workflow.Update(
-                prior=prior_of(instance),
-                proposed=data,
-                readable=lambda: self.stored_resource_readable(
-                    request, instance, context
-                ),
-                stored_pk=instance.pk,
-            )
-        view = view_of(context)
-        try:
-            core_workflow.workflow_check(
-                request,
-                type_iri=resource_type.type_uri,
-                write=write,
-                narrow=narrow_of(view),
-                post_save_type_iri=self.post_save_type_iri(view, request, context),
-            )
-        except core_workflow.WorkflowRequestRequired:
-            self.request_of(context)
-            raise
-        except core_workflow.NoWorkflowPolicyDenied as exc:
-            raise drf_error(exc, request) from exc
-        return data
-
-    @staticmethod
-    def post_save_type_iri(view, request, context):
-        """The type the write's post-save check names, which the workflow
-        check's mark names (`scrud_django.core.workflow.workflow_check`):
-        the view's ``resource_type_iri_for`` (as its
-        ``check_post_save_permissions``), else, without a view that has
-        one, the serializer's resource type."""
-        iri_for = getattr(view, "resource_type_iri_for", None)
-        if iri_for is None:
-            return context.resource_type.type_uri
-        return iri_for(request)
-
-    @staticmethod
-    def body_of(data, context):
-        """What the check reads: the body as sent (the serializer's
-        ``initial_data``, which is what is stored), not `data`, the copy DRF
-        passes to validators, which another validator may have changed (a
-        JSON Schema default filled in, for example). `data` when the
-        serializer has no mapping ``initial_data``."""
-        initial_data = getattr(context, "initial_data", None)
-        return initial_data if isinstance(initial_data, Mapping) else data
-
-    def request_of(self, context):
-        """The request of the serializer `context`; the workflow check
-        authorizes it. Raises ``ImproperlyConfigured`` without one."""
-        request = getattr(context, "context", {}).get("request")
-        if request is None:
-            raise ImproperlyConfigured(
-                "WorkflowValidator needs the request in the serializer context "
-                "(context={'request': request}) to authorize workflow transitions."
-            )
-        return request
-
-    def errors_hidden_unless_readable(
-        self, workflow_policy, request, instance=None, context=None
-    ):
-        """`scrud_django.core.workflow.errors_hidden_unless_readable` for the
-        stored resource `instance` (``None`` for a create), as
-        `stored_resource_readable` reads it."""
-        return core_workflow.errors_hidden_unless_readable(
-            workflow_policy,
-            request,
-            None if instance is None else prior_of(instance),
-            lambda: self.stored_resource_readable(request, instance, context),
-        )
-
-    @staticmethod
-    def stored_resource_readable(request, instance, context=None):
-        """Whether the requester may read the stored resource `instance` (a
-        ``Resource``), as the detail route decides it tells a 403 from a 404:
-        the view's ``object_readable`` (``http.GET`` in the resource's
-        contexts, as each of its ``IsAuthorized`` permissions reads them from
-        the content, and the object checks its list asks for a read), else
-        its ``is_readable``, else ``http.GET`` on the resource's type in one
-        of its contexts. Asked outside any write's checks, so a grant
-        conditioned on ``scrud_workflow`` does not make it readable; no
-        request is no requester to hide anything from."""
-        if request is None:
-            return True
-        view = getattr(context, "context", {}).get("view")
-        content = content_of(instance)
-        with _not_checking_write():
-            for name in ("object_readable", "is_readable"):
-                readable = getattr(view, name, None)
-                if callable(readable):
-                    with checks_read_content(view):
-                        return readable(request, content)
-            return may_read_in_context(
-                request,
-                instance.resource_type.type_uri,
-                content,
-                instance.rbac_contexts,
-            )
-
-    def validate_policy(self, data, instance):
-        """`scrud_django.core.workflow.validate_policy_write` of the
-        ``WorkflowPolicy`` write `data` replacing `instance` (``None`` for a
-        create)."""
-        core_workflow.validate_policy_write(
-            data, instance.pk if instance is not None else None
-        )
-
-    def transition_for(self, workflow_policy, data, instance, entering=False):
-        """`scrud_django.core.workflow.transition_for` from the stored
-        `instance` (``None`` for a create)."""
-        return core_workflow.transition_for(
-            workflow_policy,
-            data,
-            None if instance is None else prior_of(instance),
-            entering,
-        )
-
-    def authorize(
-        self, workflow_policy, transition_data, rbac_context, context, data=None
-    ):
-        """Raise unless the user may make `transition_data`'s transition in
-        `rbac_context` (``None``: the resource is in no context)."""
-        if not self.allowed(context, rbac_context, transition_data.transition, data):
-            raise WorkflowTransitionError(
-                workflow_policy.reference,
-                transition_data.prior_state,
-                transition_data.proposed_state,
-                message="The user isn't authorized to perform this state transition on this resource.",
-            )
-
-    def authorize_without_policy(self, rbac_context, context, data):
-        """`scrud_django.core.workflow.authorize_without_policy`, its refusal
-        DRF's 403 (``PermissionDenied``)."""
-        if self.allowed(context, rbac_context, None, data):
-            return
-        if not self.allowed(context, rbac_context, data=data, transition_check=False):
-            return
-        raise drf_error(access.AccessDenied(), self.request_of(context))
-
-    def allowed(
-        self, context, rbac_context, transition=None, data=None, transition_check=True
-    ):
-        """`scrud_django.core.workflow.allowed` for the request and type of
-        the serializer `context`, narrowed by its view's ``IsAuthorized``
-        permissions (`narrow_of`)."""
-        return core_workflow.allowed(
-            self.request_of(context),
-            context.resource_type.type_uri,
-            rbac_context,
-            transition,
-            data,
-            narrow_of(view_of(context)),
-            transition_check,
-        )
-
-    @staticmethod
-    def allowed_on(request, permission, rbac_context, body, context):
-        """`scrud_django.core.workflow.allowed_on`, narrowed by each
-        ``IsAuthorized`` of the serializer `context`'s view."""
-        return core_workflow.allowed_on(
-            request, permission, rbac_context, body, narrow_of(view_of(context))
-        )
+def __getattr__(name):
+    """A name in `MOVED_TO_DRF`: the object of `scrud_django.drf.validators`,
+    with a ``DeprecationWarning`` (once)."""
+    if name in MOVED_TO_DRF:
+        return moved_name(globals(), name, "scrud_django.drf.validators")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -269,7 +269,7 @@ def test_server_side_writes_write_nothing_back_to_the_type():
 
 @pytest.mark.django_db
 def test_api_writes_write_nothing_back_to_the_type():
-    from scrud_django.mixins.view_mixins import ResourceViewMixin
+    from scrud_django.drf.mixins import ResourceViewMixin
 
     client = admin_client()
     with (

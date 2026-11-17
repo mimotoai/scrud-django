@@ -146,6 +146,24 @@ urlpatterns = [
   Basic credentials suit non-browser API clients, not browsers. Send Basic
   credentials only over TLS. See
   `ninja-drf-authenticators` in the follow-ups.
+
+  To keep a DRF project's clients as they are, use scrud's own hook instead,
+  which runs DRF's authentication classes on the ninja request (DRF
+  installed):
+
+  ```python
+  SCOPED_RBAC = {..., "NINJA_USER": "scrud_django.drf.auth.drf_user"}
+  ```
+
+  It runs `REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"]`, or the
+  classes (or dotted paths) of the `SCRUD_DRF_AUTHENTICATION` setting when
+  it is set, and the first that authenticates the request gives the user
+  (none: the anonymous user). Each client is then the user it is on the DRF
+  routes and is refused alike: credentials an authenticator refuses are the
+  401 DRF answers (uniform errors on or off), a session user's write
+  without a valid CSRF token is a 403 (`CSRF Failed: ...`) as with DRF's
+  `SessionAuthentication`, and Basic and token clients need no CSRF token
+  (`tests/test_ninja_auth.py` compares each with the DRF route).
 * A computed type's `compute(request, key)` receives a plain Django
   `HttpRequest` on ninja (a DRF `Request` on DRF): read `request.GET` and
   `request.user`, not `request.query_params` or `request.data`, and do not
@@ -628,7 +646,7 @@ type's row follows the registration's arguments (`slug`, `revision`,
 `schema_uri`, ...); outside
 it, the stored row keeps its slug, revision and URIs, and only its
 documents (and `uses_reversion`) are updated. Pass
-`viewset_class=ResourceViewSetGenericFilter` (`scrud_django.views`) for a
+`viewset_class=ResourceViewSetGenericFilter` (`scrud_django.drf.views`) for a
 list that filters on its query parameters (`?text=...`; with `scrud_django.ui`
 installed, its URL parameters `ui-branch`, `ui-branch-confirm`, `ui-scope`,
 `ui-mode` and `ui-safe` are not filters).
@@ -812,7 +830,7 @@ Code of your own reads what it always did: an operator function, and a
 `has_context_permission` of your own, get the content as stored (or the
 body as sent), its `rbac_context` the whole value. Its `super()` call reads
 that too; to have scoped-rbac's check read each context as the object is
-there, pass it `scrud_django.permissions.condition_resource(obj, context)`.
+there, pass it `scrud_django.drf.permissions.condition_resource(obj, context)`.
 On a view with such an override, the scrud views also ask the grants,
 each context read as the resource is there, on the detail route and after
 a write, as its list does: the override narrows what the grants allow.
@@ -820,7 +838,7 @@ A context that a `contexts_for` of your own names, and that is not one of
 the resource's, leaves the object as it is (`docs/follow-ups.md`,
 `custom-contexts-conditions`). A view of your own that composes scoped-rbac's
 `AccessControlledAPIView` with `ResourceViewMixin` puts
-`scrud_django.mixins.view_mixins.ReadableMixin` first, as the scrud viewsets
+`scrud_django.drf.mixins.ReadableMixin` first, as the scrud viewsets
 do, so that a refused write of a resource readable in one of its contexts is
 a 403, not a 404.
 
@@ -834,7 +852,7 @@ native `{"detail": ...}` bodies when it is off):
 ```python
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["scoped_rbac.permissions.IsAuthorized"],
-    "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+    "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
     ...
 }
 ```
@@ -904,7 +922,7 @@ your `IsAuthorized` subclasses (`has_permission`, `contexts_from`) and the
 operators of your grants' conditions get the parsed body itself
 (`request.data`); the workflow check gives their `has_context_permission`
 and operators the body as sent, with the transition it authorizes as
-`scrud_django.permissions.current_transition()`; and every object check of a
+`scrud_django.drf.permissions.current_transition()`; and every object check of a
 `Resource` view (the detail route's, the post-save check, a list's
 per-object check) gives `has_object_permission`, `has_context_permission`,
 `contexts_for` and operators the resource's content, the `dict` the
@@ -923,7 +941,7 @@ fields it reads are missing: on `{}` the CEL result is undetermined, and
 read, what the response shows), a bug in that check. Scoped-rbac's default
 `contexts_for` reads a resource's contexts from its content on the scrud
 views, whatever your `get_permissions` returns; a `contexts_for` of your own
-calls `scrud_django.permissions.resource_contexts(obj)` where it would call
+calls `scrud_django.drf.permissions.resource_contexts(obj)` where it would call
 `super().contexts_for(obj)`, which cannot read a `dict` (a 500, failing
 closed).
 
@@ -943,13 +961,13 @@ write there bypasses scoped-rbac, the workflow and JSON Schema validation.
 A computed type has a schema and a JSON-LD context like any resource type, but
 its content is computed per request, never stored: a read-only view of data
 the server derives for the requesting user. Subclass
-`scrud_django.computed.ComputedResourceViewSet`, implement
+`scrud_django.drf.computed.ComputedResourceViewSet`, implement
 `compute(request, key)` (return a mapping; raise `Http404` or
 `PermissionDenied`), and register it with `computed_resource_type`:
 
 ```python
 from scrud_django import registration
-from scrud_django.computed import ComputedResourceViewSet
+from scrud_django.drf.computed import ComputedResourceViewSet
 
 
 class BranchSummaryViewSet(ComputedResourceViewSet):
@@ -1297,6 +1315,52 @@ What changes:
   or the UI path.
 * **Tests of UI pages** sign in with a session (`client.force_login(user)`), not
   DRF's `force_authenticate`, which pages do not read.
+
+### Migrating to 0.17.0: the DRF adapter
+
+scrud's DRF views, serializers, filters, permissions and exception handler
+moved to the `scrud_django.drf` package. The old import paths keep working
+for this release: each is the moved module (or object) itself, so
+`isinstance` checks and your subclasses are unaffected, and importing it
+raises a `DeprecationWarning` naming the new path. Change your imports:
+
+| Old path | New path |
+| --- | --- |
+| `scrud_django.views` | `scrud_django.drf.views` |
+| `scrud_django.computed` | `scrud_django.drf.computed` |
+| `scrud_django.filters` | `scrud_django.drf.filters` |
+| `scrud_django.paginations` | `scrud_django.drf.paginations` |
+| `scrud_django.permissions` | `scrud_django.drf.permissions` |
+| `scrud_django.renderers` | `scrud_django.drf.renderers` |
+| `scrud_django.serializers` | `scrud_django.drf.serializers` |
+| `scrud_django.mixins.serializer_mixins` | `scrud_django.drf.serializers` |
+| `scrud_django.mixins.view_mixins` | `scrud_django.drf.mixins` |
+| `scrud_django.drf_requirements` | `scrud_django.drf.requirements` |
+| `scrud_django.ui.views`, `scrud_django.ui.branches.views` | `scrud_django.drf.ui` |
+| `scrud_django.validators.WorkflowValidator` (and `narrow_of`, `view_of`, `rbac_permissions_of`) | `scrud_django.drf.validators` |
+| `scrud_django.exceptions.scrud_exception_handler`, `as_drf`, `drf_errors` | `scrud_django.drf.exceptions` |
+
+`scrud_django.validators` and `scrud_django.exceptions` stay: their neutral
+names (the JSON Schema validator, the errors) import from there without a
+warning; only the DRF names in the table warn. The logger names
+(`scrud_django.permissions`, `scrud_django.validators`) are unchanged. Set
+the exception handler to its new path (the old value still resolves, with
+the warning):
+
+```python
+REST_FRAMEWORK = {
+    ...,
+    "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
+}
+```
+
+`include("scrud_django.urls")` still serves the DRF routes in this release
+(they are `scrud_django.drf.urls`). Importing `scrud_django.drf` without DRF
+installed raises an `ImportError` naming `scrud-django[drf]`. To find the old
+paths in your code, run your tests with
+`-W "error:scrud_django:DeprecationWarning"`. To serve DRF's Basic and token
+clients on ninja too, see `scrud_django.drf.auth.drf_user` in
+[django-ninja (preview)](#django-ninja-preview).
 
 ### Upgrading
 

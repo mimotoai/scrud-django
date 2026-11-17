@@ -457,7 +457,7 @@ def test_drf_workflow_check_is_told_whether_an_update_is_readable(with_view):
     serializer with no view: ``may_read_in_context`` of the stored
     resource), and builds a ``Create``, which takes none, for a create."""
     from scrud_django.core import workflow as core_workflow
-    from scrud_django.validators import WorkflowValidator
+    from scrud_django.drf.validators import WorkflowValidator
 
     resource_type = json_ld()
     stored = ResourceRegistration.register({"rbac_context": "a"}, "json-ld")

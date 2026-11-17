@@ -17,7 +17,7 @@ test's rollback removes, are registered again by the tests)."""
 from django.urls import include, path, register_converter
 
 from scrud_django import registration
-from scrud_django.views import ResourceViewSet
+from scrud_django.drf.views import ResourceViewSet
 
 from . import mounted_urls
 from .resource_types import (

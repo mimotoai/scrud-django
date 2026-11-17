@@ -1,6 +1,6 @@
 """The ninja routes of computed types: each a thin adapter over the core's
 computed answer (`scrud_django.core.computed`), answering as
-``scrud_django.computed.ComputedResourceViewSet`` does."""
+``scrud_django.drf.computed.ComputedResourceViewSet`` does."""
 
 import functools
 

@@ -821,7 +821,7 @@ the frame with the current state, and so does a 409 DELETE.
 
 ## Computed resource types
 
-A computed type (`scrud_django.computed.ComputedResourceViewSet`, registered
+A computed type (`scrud_django.drf.computed.ComputedResourceViewSet`, registered
 with `registration.computed_resource_type`; see the README) renders through
 the same cascade as a stored resource: a stylesheet rule on its type's IRI
 selects a component, and its UI page, under a published

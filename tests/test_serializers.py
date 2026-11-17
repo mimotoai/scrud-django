@@ -5,13 +5,13 @@ import pytest
 from django.test import override_settings
 from rest_framework.test import APIRequestFactory
 
+from scrud_django.drf.serializers import ResourceSerializer
 from scrud_django.models import Resource
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
     register_json_ld_resource_type,
 )
-from scrud_django.serializers import ResourceSerializer
 
 
 class SluggedSerializer(ResourceSerializer):

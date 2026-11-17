@@ -39,11 +39,11 @@ from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.permissions import policy_for
 from scoped_rbac.policy import Permission
 
-from scrud_django.filters import filter_readable_resources_per_object
-from scrud_django.mixins.view_mixins import ResourceViewMixin
+from scrud_django.drf.filters import filter_readable_resources_per_object
+from scrud_django.drf.mixins import ResourceViewMixin
+from scrud_django.drf.views import ResourceViewSet
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration, get_resource_type_for
-from scrud_django.views import ResourceViewSet
 
 from .factories import UserFactory
 from .rbac_defaults import TYPE_URI_LIST_PARTNER_PROFILES, TYPE_URI_PARTNER_PROFILES
@@ -145,13 +145,13 @@ def test_scoped_rbacs_is_readable_is_what_scrud_re_implements():
 
 
 def test_scoped_rbacs_custom_contexts_for_reads_the_permissions_class():
-    # scrud_django.permissions.reading_content gives a permission that keeps
+    # scrud_django.drf.permissions.reading_content gives a permission that keeps
     # scoped-rbac's contexts_for an instance-level one: lists stay on their
     # SQL path only while custom_contexts_for judges a permission by its
     # class, not by the bound method.
     from scoped_rbac.permissions import IsAuthorized, custom_contexts_for
 
-    from scrud_django.permissions import reading_content
+    from scrud_django.drf.permissions import reading_content
 
     assert code_names(custom_contexts_for) == (
         "IsAuthorized",
@@ -168,7 +168,7 @@ def test_scoped_rbacs_custom_contexts_for_reads_the_permissions_class():
 
 @pytest.mark.django_db
 def test_a_scrud_view_reading_the_content_lists_by_its_default_contexts():
-    from scrud_django.permissions import checks_read_content
+    from scrud_django.drf.permissions import checks_read_content
 
     reverse("partner-profiles-list")
     view = ResourceViewSet(resource_type_name="partner-profiles")

@@ -163,7 +163,7 @@ USE_TZ = True
 
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["scoped_rbac.permissions.IsAuthorized"],
-    "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+    "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
 }
 
 # scrudful builds each path's HTTP Schema Resource without a request: its

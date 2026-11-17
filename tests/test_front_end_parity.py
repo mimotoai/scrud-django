@@ -21,8 +21,8 @@ from ninja.errors import AuthenticationError
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django import ScrudServices, collection_type_uri_for, registration
-from scrud_django.computed import computed_etag
 from scrud_django.core.lists import list_etag
+from scrud_django.drf.computed import computed_etag
 from scrud_django.models import Resource, ResourceType
 
 from . import front_ends

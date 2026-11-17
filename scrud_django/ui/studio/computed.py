@@ -632,7 +632,7 @@ def studio_computed_type_urls():
     (`studio_computed_type_specs`, served by ``ComputedResourceViewSet``),
     each type registered first (`TypeSpec.register`): served by
     ``scrud_django.urls`` when ``scrud_django.ui.studio`` is installed."""
-    from scrud_django.computed import ComputedResourceViewSet
+    from scrud_django.drf.computed import ComputedResourceViewSet
 
     urls = []
     for spec in studio_computed_type_specs():

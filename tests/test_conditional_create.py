@@ -388,7 +388,7 @@ def paused_after_evaluation(thread_name, front_end="drf", seconds=0.8):
     them, then calls ``core.writes.create``. `timeline` records when
     (``paused``, ``resumed``) and `evaluated` is set as it pauses."""
     from scrud_django.core import writes
-    from scrud_django.mixins.view_mixins import ResourceViewMixin
+    from scrud_django.drf.mixins import ResourceViewMixin
 
     target, name = {
         "drf": (ResourceViewMixin, "create_resource"),
@@ -788,7 +788,7 @@ def test_a_create_a_scrudful_function_view_delegates_to_evaluates_itself(writer,
     from rest_framework.test import APIRequestFactory
     from scrudful.rest_framework import scrudful
 
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.views import ResourceViewSet
 
     @scrudful()
     def outer(request):

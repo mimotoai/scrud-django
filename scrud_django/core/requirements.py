@@ -9,8 +9,8 @@ no grants; the facade's entry points take a requirement through it.
 
 `GrantsLeaf` answers as scoped-rbac's ``IsAuthorized`` answers on a scrud
 resource view. The DRF views' own permissions are leaves too
-(`scrud_django.drf_requirements.ViewLeaf`). The functions here are those
-`scrud_django.filters` asks of a view, taking a requirement instead.
+(`scrud_django.drf.requirements.ViewLeaf`). The functions here are those
+`scrud_django.drf.filters` asks of a view, taking a requirement instead.
 
 "As a GET of the detail route" is the caller's: it passes a GET copy of its
 request (`as_get`) where today's view-based code asked a GET of the detail
@@ -168,7 +168,7 @@ class Requirement:
         """`entries` (a sequence of leaves and ``AnyOf``s, scoped-rbac's
         included) as a `Requirement`, with no grants check; a `Requirement`
         as it is. Only for a DRF view's requirement
-        (`scrud_django.drf_requirements.requirement_of`) and the helpers
+        (`scrud_django.drf.requirements.requirement_of`) and the helpers
         the DRF adapters call."""
         if isinstance(entries, Requirement):
             return entries

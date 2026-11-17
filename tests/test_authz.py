@@ -15,7 +15,7 @@ from .fixtures import RESOURCE_ENDPOINT_DETAIL_NAME, RESOURCE_ENDPOINT_LIST_NAME
 # A project whose DRF default lets everyone through, and whose anonymous users
 # have no RBAC grants (scoped-rbac's default POLICY_FOR_UNAUTHENTICATED).
 PERMISSIVE_REST_FRAMEWORK = {
-    "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+    "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
 }
 NO_ANONYMOUS_GRANTS = {"POLICY_FOR_STAFF": "tests.rbac_defaults.policy_for_staff"}
@@ -100,7 +100,7 @@ def test_scrud_viewsets_set_is_authorized():
     # DEFAULT_PERMISSION_CLASSES.
     from scoped_rbac.permissions import IsAuthorized
 
-    from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
+    from scrud_django.drf.views import ResourceViewSet, ResourceViewSetGenericFilter
 
     for viewset in (ResourceViewSet, ResourceViewSetGenericFilter):
         assert viewset.__dict__["permission_classes"] == [IsAuthorized], viewset

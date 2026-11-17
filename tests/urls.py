@@ -17,16 +17,16 @@ from scrudful.rest_framework import hsr_urls, scrudful, scrudful_viewset
 
 from scrud_django import registration
 from scrud_django.core.transitions import govern
-from scrud_django.filters import ResourceRbacFilter
-from scrud_django.mixins.view_mixins import (
+from scrud_django.drf.filters import ResourceRbacFilter
+from scrud_django.drf.mixins import (
     GenericViewMixin,
     ReadableMixin,
     ResourceViewMixin,
     ScrudfulMeta,
 )
+from scrud_django.drf.permissions import current_transition
+from scrud_django.drf.views import ResourceViewSet, ResourceViewSetGenericFilter
 from scrud_django.models import ResourceType
-from scrud_django.permissions import current_transition
-from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
 
 from .models import Article, Note
 from .resource_types import hooked_resource_types, json_resource_types

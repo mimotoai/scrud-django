@@ -18,7 +18,7 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
   `get_object()`. `ResourceViewSet` and `ResourceViewSetGenericFilter` set
   `permission_classes = [IsAuthorized]` themselves so they fail closed even
   under DRF's `AllowAny` default; keep it that way (`tests/test_authz.py`).
-- The combined exception handler is `scrud_django.exceptions.scrud_exception_handler`.
+- The combined exception handler is `scrud_django.drf.exceptions.scrud_exception_handler`.
 
 ## Architecture
 
@@ -29,11 +29,15 @@ neutral: it takes a plain Django request and imports nothing from
 DRF modules (`tests/test_core_imports.py` holds the deny list). It does import
 `scrud_django.exceptions`, which loads `rest_framework.exceptions` when DRF is
 installed (a scrud error's detail is then DRF's `ErrorDetail`), and works
-without it. The DRF views and mixins are adapters: they delegate to `core`
+without it. The DRF views and mixins are adapters (the `scrud_django.drf`
+package; the old paths `scrud_django.views`, `.filters`, `.permissions`, ...
+are deprecated aliases, `scrud_django/_aliases.py`, and scrud's own code and
+tests import the new paths: `pyproject.toml`'s `filterwarnings` makes an
+alias's warning an error): they delegate to `core`
 for the pieces they call (requirements and grants, the workflow check, body
 checks, list queries and validators, the save and post-save checks, URLs)
 and map its `ScrudException`s and access errors to DRF's
-(`exceptions.as_drf`, `drf_error`). The facade in `core/resources.py`
+(`drf.exceptions.as_drf`, `drf_error`). The facade in `core/resources.py`
 (`check_request`, `load_for_read`, `object_readable`, `readable_content`,
 `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
 `create`, `update`, `destroy`) is not called by DRF (which calls the
@@ -245,7 +249,7 @@ See `tests/test_conditional.py` for the idiom.
   the root `manage.py` both call `settings.configure(**SETTINGS)`; there is no
   settings module on disk and no `DJANGO_SETTINGS_MODULE`. Add settings there.
 - Request bodies are JSON-only (`parser_classes = [RbacJSONParser]` in
-  `scrud_django/views.py`): form or multipart bodies get 415.
+  `scrud_django/drf/views.py`): form or multipart bodies get 415.
 - Tests run on in-memory SQLite unless `SCRUD_TEST_PG_HOST` or
   `SCRUD_TEST_MYSQL_HOST` is set (CI's `test-postgres` and `test-mysql`; see
   `tests/settings.py`). Code the tests exercise must work on all four

@@ -1,7 +1,7 @@
 """The documents a list's Links name, without DRF: the JSON Schema of a
 resource type's list body (``collections-json-schema/<slug>/``, its
 ``describedby``) and its JSON-LD context (``collections-json-ld/<slug>/``),
-as the DRF views (``scrud_django.views.ResourceCollectionSchemaView`` and
+as the DRF views (``scrud_django.drf.views.ResourceCollectionSchemaView`` and
 ``ResourceCollectionContextView``) and the ninja routes serve them."""
 
 from scrud_django import collection_type_uri_for

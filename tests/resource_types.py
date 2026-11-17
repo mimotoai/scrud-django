@@ -6,10 +6,10 @@ from django.core.exceptions import PermissionDenied
 from django.http import Http404
 
 from scrud_django import registration
-from scrud_django.computed import ComputedResourceViewSet
+from scrud_django.drf.computed import ComputedResourceViewSet
+from scrud_django.drf.permissions import may_read_in_context
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
-from scrud_django.permissions import may_read_in_context
 
 TODO_SUMMARY_TYPE_URI = "tests://TodoSummary"
 TODO_LIST_TYPE_URI = "tests://TodoList"

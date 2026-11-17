@@ -2,7 +2,7 @@
 class (each ``IsAuthorized`` of its permissions), as the object and post-save
 checks do, so that an ``IsAuthorized`` subclass's ``has_context_permission``
 decides it too: in each context it gets the request body (a ``dict``) and
-reads the transition as ``scrud_django.permissions.current_transition()``."""
+reads the transition as ``scrud_django.drf.permissions.current_transition()``."""
 
 from uuid import uuid4
 

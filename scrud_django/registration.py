@@ -318,7 +318,7 @@ class ResourceTypeRegistration:
         self.viewset_class = viewset_class
         if build_urls:
             if self.viewset_class is None:
-                from scrud_django import views
+                from scrud_django.drf import views
 
                 self.viewset_class = views.ResourceViewSet
             self.register_urls()
@@ -357,8 +357,8 @@ def drf_only_authorization_of(viewset_class) -> str | None:
     ``IsAuthorized`` subclasses (or their ``&``, ``|`` and ``~``
     compositions) in its permissions, or authorize in its own methods,
     which only DRF applies."""
-    from scrud_django import views
-    from scrud_django.computed import ComputedResourceViewSet
+    from scrud_django.drf import views
+    from scrud_django.drf.computed import ComputedResourceViewSet
 
     own = (
         views.ResourceViewSet,
@@ -1393,7 +1393,7 @@ def json_resource_type(
     migrated yet), they are returned all the same and the registration is
     retried when the type is next read (`register_or_defer`).
     """
-    from scrud_django import views
+    from scrud_django.drf import views
 
     # Not stored, as it never was (``json-resource-type-indexing-policy`` in
     # docs/follow-ups.md).
@@ -1431,7 +1431,7 @@ def content_filtered_viewset(viewset_class):
     """`viewset_class` with ``ResourceContentFilter`` among its
     ``filter_backends`` (last): itself when it has it, else a subclass of
     it, so that no other type's view gains it."""
-    from scrud_django.filters import ResourceContentFilter
+    from scrud_django.drf.filters import ResourceContentFilter
 
     backends = list(viewset_class.filter_backends)
     if ResourceContentFilter in backends:
@@ -1459,7 +1459,7 @@ def computed_resource_type(
     ui_authorization: str | None = None,
 ):
     """Registration of a computed, read-only resource type
-    (`scrud_django.computed.ComputedResourceViewSet`): its `ResourceType` row
+    (`scrud_django.drf.computed.ComputedResourceViewSet`): its `ResourceType` row
     (so ``get_resource_type_for(slug)`` works, and a published branch's prefix
     claims the slug), but only the route ``<slug>/<key>/`` (named
     ``<slug>-detail``): no list route, and no reversion. The key is the URL
@@ -1477,7 +1477,7 @@ def computed_resource_type(
     ``ComputedResourceViewSet``; one of the two is needed. The UI app
     serves it only with `compute`, and with a custom `viewset_class` only
     when `ui_authorization` is ``"core"`` (see `json_resource_type`)."""
-    from scrud_django.computed import ComputedResourceViewSet
+    from scrud_django.drf.computed import ComputedResourceViewSet
 
     if viewset_class is None and compute is None:
         raise ImproperlyConfigured(
@@ -1584,7 +1584,7 @@ def built_in_resource_type_urls():
     context, indexing policy and workflow policy documents), each registered
     first, or its registration left pending on a database error
     (`register_or_defer`). ``scrud_django.urls`` serves them."""
-    from scrud_django import views
+    from scrud_django.drf import views
 
     viewsets = {"json-schema": views.JsonSchemaViewSet, "json-ld": views.JsonLdViewSet}
     urls = []
