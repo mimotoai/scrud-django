@@ -11,8 +11,11 @@ given, and no session or cookies (the user is `request`'s, not
 authenticated again). So every
 check of the API applies to the studio user (the type's requirement,
 branch visibility, the hooks of the UI types) and the studio adds no
-rights. No CSRF check applies (the studio request that makes one passed it:
-an unsafe `write` from a safe request is refused, ruling S8)."""
+rights. A type the UI refuses for its DRF-only authorization (a custom
+``viewset_class``, `scrud_django.core.types.drf_only_authorization`) is a
+404, as at its pages. No CSRF check applies (the studio request that makes
+one passed it: an unsafe `write` from a safe request is refused, ruling
+S8)."""
 
 import json
 import logging
@@ -22,7 +25,7 @@ from dataclasses import dataclass
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ImproperlyConfigured
 from django.core.serializers.json import DjangoJSONEncoder
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
 from django.test.client import RequestFactory
 from django.urls import NoReverseMatch, reverse
 from scrudful.conditional import quote_etag
@@ -30,7 +33,7 @@ from scrudful.conditional import quote_etag
 from scrud_django.core import resources, writes
 from scrud_django.core.bodies import check_body
 from scrud_django.core.errors import error_answer
-from scrud_django.core.types import requirement_for
+from scrud_django.core.types import drf_only_authorization, requirement_for
 from scrud_django.core.urls import absolute_reverse
 from scrud_django.registration import get_resource_type_for, type_db, write_db
 
@@ -102,9 +105,7 @@ def write(
         raise ValueError("answers.write reads one item: a GET needs its pk.")
     internal = _internal(request, slug, method, pk, body, if_match)
     try:
-        resource_type = get_resource_type_for(
-            slug, using=None if method == "GET" else type_db()
-        )
+        resource_type = _served_type(slug, None if method == "GET" else type_db())
         requirement = requirement_for(resource_type, slug)
         if method == "GET":
             return _read(internal, resource_type, requirement, pk)
@@ -190,6 +191,15 @@ def _precondition(request, *, etag, last_modified, method) -> Answer | None:
         problem=body or None,
         problem_type=headers.get("Content-Type", PROBLEM_JSON),
     )
+
+
+def _served_type(slug, using):
+    """The type `slug` (read on `using`), unless the UI refuses it for its
+    DRF-only authorization (`drf_only_authorization`): ``Http404``, as the
+    UI's pages answer it, since the core would not ask that authorization."""
+    if drf_only_authorization(slug) is not None:
+        raise Http404(slug)
+    return get_resource_type_for(slug, using=using)
 
 
 def _refusal(exc: Exception, request) -> Answer:
@@ -292,7 +302,7 @@ def validate_draft(request, slug: str, body: Mapping, *, pk=None) -> dict | None
     method = "POST" if pk is None else "PUT"
     internal = _internal(request, slug, method, pk, body, None)
     try:
-        resource_type = get_resource_type_for(slug, using=type_db())
+        resource_type = _served_type(slug, type_db())
         requirement = requirement_for(resource_type, slug)
         using = write_db()
         with writes.write_transaction(using) as rollback:

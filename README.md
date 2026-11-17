@@ -680,6 +680,25 @@ def readable_somewhere(request, resource_type, obj):
 json_resource_type(..., checks=[not_archived], object_checks=[readable_somewhere])
 ```
 
+The UI app (`scrud_django.ui`) reads through the core, which asks a type's
+grants and hooks but never a DRF view's own permissions, so it fails closed
+on a type registered with a custom `viewset_class` (any but
+`ResourceViewSet`, `ResourceViewSetGenericFilter`, the document types' own
+and `ComputedResourceViewSet`, or the `content_filter=True` variant of one):
+whatever authorizes there (`IsAuthorized` subclasses, their `&`, `|` and `~`
+compositions, the viewset's own methods) is DRF's only. Its pages, embeds,
+prefixes and studio previews answer 404, as for a slug the UI does not
+serve, and the system check `scrud_django_ui.W003` names it, unless the type
+opts in with either:
+
+- both `checks=` and `object_checks=`: its rules declared to the core, which
+  then applies them on the UI as on every front end; or
+- `ui_authorization="core"` (on `json_resource_type` or
+  `computed_resource_type`): a statement that the core's checks (its grants
+  and any hooks) are already complete for it, because the viewset adds no
+  authorization of its own. The UI then serves it by those checks alone, so
+  declare it only when that is true.
+
 Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
 `http.POST`, `http.PUT`, `http.DELETE`) and `http.GET` on its list type,
 `https://api.openteams.com/json-schema/ResourceCollection?contents_type=<type URI>`
@@ -1226,9 +1245,13 @@ What changes:
   `viewset_class` (no `compute=`) has no UI page and cannot be embedded. The
   pages read through the core, which asks a type's grants and its neutral
   `checks=` and `object_checks=` hooks, not the permission classes of a custom
-  `viewset_class` or `IsAuthorized` subclasses (DRF-only authorization): a type
-  whose rules live only there must declare them as those hooks to have the UI
-  honour them.
+  `viewset_class` or `IsAuthorized` subclasses (DRF-only authorization). So
+  the UI refuses a type registered with a custom `viewset_class`: its pages,
+  embeds, prefixes and studio previews answer 404, and the system check
+  `scrud_django_ui.W003` names it. To serve it again, declare its rules as
+  both `checks=` and `object_checks=`, or, when the viewset adds no
+  authorization of its own, register it with `ui_authorization="core"` (see
+  "Hooks on `json_resource_type`").
 * **Stored component templates.** `in_mount(...)`, `embed(...)` and `api_url(...)`
   with `/api/` paths keep working (they are mapped to the UI), but a raw
   `hx-get="/api/..."` that expects HTML now gets JSON: use `in_mount`, `embed`

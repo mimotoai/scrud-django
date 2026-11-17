@@ -14,6 +14,14 @@ and ``methods`` are a type's own write behaviour, which
 ``read_view``) its own read behaviour, which `scrud_django.core.lists` and
 `scrud_django.core.resources` run: they authorize nothing, and make no
 `HookLeaf` (`has_hooks`).
+
+A type's DRF route may hold authorization the core never asks (a custom
+``viewset_class``, whose ``IsAuthorized`` subclasses and ``&``, ``|`` and
+``~`` compositions only DRF applies): its registration records it
+(`record_drf_only_authorization`), and a front end that reads through the
+core alone (the UI app) refuses such a type (`drf_only_authorization`)
+unless it declares its rules as ``checks`` and ``object_checks``, or that
+the core's checks are complete for it (``ui_authorization="core"``).
 """
 
 import importlib
@@ -126,6 +134,10 @@ class ReadView(Protocol):
     ) -> tuple[Mapping, str]: ...
 
 
+# What ``TypeOptions.ui_authorization`` declares: the core's checks are
+# complete for the type.
+CORE_AUTHORIZATION = "core"
+
 # The write hooks of `TypeOptions`, each a callable or ``None``.
 WRITE_HOOKS = (
     "prepare_write",
@@ -195,7 +207,15 @@ class TypeOptions:
       its stored ones (`scrud_django.core.resources.item_read`, a list's
       envelopes and ETag).
 
-    The hooks of one write share `scrud_django.core.writes.hook_state`."""
+    The hooks of one write share `scrud_django.core.writes.hook_state`.
+
+    And a declaration, which authorizes nothing either:
+
+    - ``ui_authorization``: ``"core"`` (`CORE_AUTHORIZATION`) declares that
+      the core's checks (the type's grants and its ``checks`` and
+      ``object_checks``) are complete for it, though its DRF route holds
+      authorization of its own (`drf_only_authorization`): the UI then
+      serves it; ``None`` (the default) declares nothing."""
 
     checks: tuple[Check, ...] = ()
     object_checks: tuple[ObjectCheck, ...] = ()
@@ -209,6 +229,7 @@ class TypeOptions:
     methods: frozenset[str] | None = None
     list_rows: ListRows | None = None
     read_view: ReadView | None = None
+    ui_authorization: str | None = None
 
     def __post_init__(self):
         # Any sequence given is kept as a tuple of the same hook objects
@@ -234,6 +255,11 @@ class TypeOptions:
             object.__setattr__(
                 self, "methods", frozenset(method.upper() for method in self.methods)
             )
+        if self.ui_authorization not in (None, CORE_AUTHORIZATION):
+            raise ValueError(
+                f"TypeOptions.ui_authorization: {self.ui_authorization!r} is "
+                f"neither None nor {CORE_AUTHORIZATION!r}"
+            )
 
 
 # The methods whose body the request check reads (the scrud views' own
@@ -247,6 +273,9 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _OPTIONS: dict[str, TypeOptions] = {}
 _SLUG_IRIS: dict[str, str] = {}
 _IRI_SLUGS: dict[str, set[str]] = {}
+# The slugs whose DRF route holds authorization the core does not ask
+# (`record_drf_only_authorization`): what it is.
+_DRF_ONLY: dict[str, str] = {}
 _OPTIONS_LOCK = threading.RLock()
 _LOAD_LOCK = threading.Lock()
 _loaded = False
@@ -302,6 +331,7 @@ def _same_hooks(old: TypeOptions, new: TypeOptions, *, same) -> bool:
             for name in ("compute", *WRITE_HOOKS, *READ_HOOKS)
         )
         and old.methods == new.methods
+        and old.ui_authorization == new.ui_authorization
     )
 
 
@@ -361,6 +391,48 @@ def type_options_for_slug(slug: str) -> TypeOptions:
     IRI); `TypeOptions()` when the slug was never registered."""
     type_iri = _SLUG_IRIS.get(slug)
     return TypeOptions() if type_iri is None else type_options(type_iri)
+
+
+def record_drf_only_authorization(slug: str, authorization: str | None) -> None:
+    """Record what of the DRF route of the type `slug` authorizes beyond the
+    core's checks (`authorization`, a description naming it, as a custom
+    ``viewset_class``), or that nothing does (``None``): the registration
+    building the route records it, and a slug's route built again replaces
+    it."""
+    with _OPTIONS_LOCK:
+        if authorization is None:
+            _DRF_ONLY.pop(slug, None)
+        else:
+            _DRF_ONLY[slug] = authorization
+
+
+def drf_only_authorization(slug: str) -> str | None:
+    """What of the DRF route of the type `slug` authorizes beyond the core's
+    checks (`record_drf_only_authorization`), which a front end reading
+    through the core alone cannot ask, so must refuse the type; ``None``
+    when nothing does, or when the type declares that the core's checks
+    are complete for it: its options (`type_options_for_slug`) hold both
+    ``checks`` and ``object_checks`` (its rules, declared to the core), or
+    ``ui_authorization="core"``. The hooks are loaded first
+    (`ensure_hooks_loaded`)."""
+    ensure_hooks_loaded()
+    authorization = _DRF_ONLY.get(slug)
+    if authorization is None:
+        return None
+    options = type_options_for_slug(slug)
+    if options.ui_authorization == CORE_AUTHORIZATION or (
+        options.checks and options.object_checks
+    ):
+        return None
+    return authorization
+
+
+def drf_only_slugs() -> list[str]:
+    """The slugs whose DRF route was recorded as authorizing beyond the
+    core's checks (`record_drf_only_authorization`), sorted, whether or not
+    they declare the core's checks complete (`drf_only_authorization`)."""
+    with _OPTIONS_LOCK:
+        return sorted(_DRF_ONLY)
 
 
 def hooks_loaded() -> bool:

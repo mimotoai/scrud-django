@@ -326,6 +326,77 @@ def hooked_resource_types():
     ]
 
 
+# The context `tests.urls.ContextDenyingIsAuthorized` refuses everything in
+# (its ``DENIED``), which the three types of `drf_only_types` refuse: by
+# that ``IsAuthorized`` subclass alone (``denied-notes``,
+# ``core-denied-notes``), or by their hooks too (``hooked-denied-notes``).
+DENIED = "denied"
+
+DENIED_NOTE_TYPE_URI = "tests://DeniedNote"
+CORE_DENIED_NOTE_TYPE_URI = "tests://CoreDeniedNote"
+HOOKED_DENIED_NOTE_TYPE_URI = "tests://HookedDeniedNote"
+
+
+def not_in_denied(request, resource_type, body, context):
+    """The check of ``hooked-denied-notes``: nothing is written in the
+    context "denied" (`ContextDenyingIsAuthorized`'s rule)."""
+    return context != DENIED
+
+
+def readable_outside_denied(request, resource_type, obj):
+    """The object check of ``hooked-denied-notes``: a note stored in the
+    context "denied" is hidden."""
+    return DENIED not in rbac_contexts_of(obj)
+
+
+def note_type(type_uri, slug, title):
+    """The registration arguments of a note type `slug` (`type_uri`)."""
+    name = type_uri.removeprefix("tests://")
+    return {
+        "resource_type_uri": type_uri,
+        "revision": "1",
+        "slug": slug,
+        "schema_func": lambda: dict(
+            HOOKED_NOTE_SCHEMA, **{"$id": type_uri, "title": title}
+        ),
+        "context_func": lambda: dict(
+            HOOKED_NOTE_CONTEXT, **{"@type": f"http://example.org/hooked#{name}"}
+        ),
+    }
+
+
+def drf_only_types():
+    """Register the three types of ``tests.drf_only_urls`` (their rows, hooks
+    and routes), each served by ``tests.urls.ContextDenyingResourceViewSet``,
+    returning their routes: ``denied-notes`` (DRF-only authorization),
+    ``core-denied-notes`` (``ui_authorization="core"``) and
+    ``hooked-denied-notes`` (``checks=`` and ``object_checks=`` declaring
+    the viewset's rule)."""
+    from .urls import ContextDenyingIsAuthorized, ContextDenyingResourceViewSet
+
+    assert ContextDenyingIsAuthorized.DENIED == DENIED
+    viewset = {"viewset_class": ContextDenyingResourceViewSet}
+    return registration.resource_types(
+        registration.json_resource_type(
+            **note_type(DENIED_NOTE_TYPE_URI, "denied-notes", "Denied note"),
+            **viewset,
+        ),
+        registration.json_resource_type(
+            **note_type(CORE_DENIED_NOTE_TYPE_URI, "core-denied-notes", "Core note"),
+            **viewset,
+            ui_authorization="core",
+        ),
+        registration.json_resource_type(
+            **note_type(
+                HOOKED_DENIED_NOTE_TYPE_URI, "hooked-denied-notes", "Hooked note"
+            ),
+            **viewset,
+            checks=(not_in_denied,),
+            object_checks=(readable_outside_denied,),
+        ),
+    )
+
+
 def ninja_type_specs():
     """The `TypeSpec`s of the test types that register no viewset class
     (all of `json_resource_types` and `hooked_resource_types` but

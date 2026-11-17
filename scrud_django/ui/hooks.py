@@ -43,7 +43,7 @@ from scrud_django.core.authz import (
     may_read_in_context,
     resource_contexts,
 )
-from scrud_django.core.types import TypeOptions
+from scrud_django.core.types import CORE_AUTHORIZATION, TypeOptions
 from scrud_django.core.writes import hook_state
 from scrud_django.exceptions import (
     JsonValidationError,
@@ -1010,7 +1010,11 @@ def read_version(request, resource_type, version) -> tuple[Mapping, str]:
     return content_of(version), version.etag
 
 
-# The write and read behaviour of each UI type, by slug.
+# The write and read behaviour of each UI type, by slug. Each declares the
+# core's checks complete for it (``ui_authorization``): its viewset
+# (`scrud_django.ui.views`, `scrud_django.ui.branches.views`) keeps
+# ``ResourceViewSet``'s permissions (``IsAuthorized``) and adds only these
+# hooks' behaviour, so the UI app serves it.
 UI_TYPE_OPTIONS: dict[str, TypeOptions] = {
     UI_COMPONENT_SLUG: TypeOptions(
         prepare_write=prepare_component,
@@ -1018,6 +1022,7 @@ UI_TYPE_OPTIONS: dict[str, TypeOptions] = {
         after_write=after_item_write,
         after_destroy=after_item_destroy,
         list_rows=list_item_rows,
+        ui_authorization=CORE_AUTHORIZATION,
     ),
     UI_STYLESHEET_SLUG: TypeOptions(
         prepare_write=prepare_stylesheet,
@@ -1025,6 +1030,7 @@ UI_TYPE_OPTIONS: dict[str, TypeOptions] = {
         after_write=after_item_write,
         after_destroy=after_item_destroy,
         list_rows=list_item_rows,
+        ui_authorization=CORE_AUTHORIZATION,
     ),
     UI_CSS_SLUG: TypeOptions(
         prepare_write=prepare_css,
@@ -1032,6 +1038,7 @@ UI_TYPE_OPTIONS: dict[str, TypeOptions] = {
         after_write=after_item_write,
         after_destroy=after_item_destroy,
         list_rows=list_item_rows,
+        ui_authorization=CORE_AUTHORIZATION,
     ),
     UI_JS_SLUG: TypeOptions(
         prepare_write=prepare_js,
@@ -1039,18 +1046,23 @@ UI_TYPE_OPTIONS: dict[str, TypeOptions] = {
         after_write=after_item_write,
         after_destroy=after_item_destroy,
         list_rows=list_item_rows,
+        ui_authorization=CORE_AUTHORIZATION,
     ),
     UI_BRANCH_SLUG: TypeOptions(
         prepare_write=prepare_branch,
         after_write=after_branch_write,
         before_destroy=before_branch_destroy,
+        ui_authorization=CORE_AUTHORIZATION,
     ),
     UI_PUSH_SLUG: TypeOptions(
         prepare_write=prepare_push,
         after_write=after_push_write,
         before_destroy=before_push_destroy,
+        ui_authorization=CORE_AUTHORIZATION,
     ),
     UI_BRANCH_VERSION_SLUG: TypeOptions(
-        methods=READ_ONLY_METHODS, read_view=read_version
+        methods=READ_ONLY_METHODS,
+        read_view=read_version,
+        ui_authorization=CORE_AUTHORIZATION,
     ),
 }

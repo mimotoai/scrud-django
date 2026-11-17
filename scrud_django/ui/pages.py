@@ -51,7 +51,11 @@ from scrud_django.core.computed import (
     not_modified,
 )
 from scrud_django.core.errors import error_answer, precondition_answer
-from scrud_django.core.types import requirement_for, type_options_for_slug
+from scrud_django.core.types import (
+    drf_only_authorization,
+    requirement_for,
+    type_options_for_slug,
+)
 from scrud_django.core.urls import absolute_reverse
 from scrud_django.exceptions import MethodNotAllowedError, ScrudException
 from scrud_django.registration import get_resource_type_for, type_db, write_db
@@ -121,10 +125,12 @@ def served_memo():
 
 def served(slug: str) -> ServedSlug | None:
     """`slug` with its type (`ServedSlug`) when the UI serves pages of it: a
-    type the API serves (its route ``<slug>-list`` reverses, or for a
-    computed type, one with a registered ``compute``, ``<slug>-detail``)
-    that is registered (``registration.get_resource_type_for`` finds it);
-    else ``None``. A database error reading it is logged and serves
+    type the API serves (`routed`) whose authorization the core asks in
+    full (``drf_only_authorization``: not one served by a custom
+    ``viewset_class`` without the neutral ``checks`` and ``object_checks``,
+    or ``ui_authorization="core"``, which the UI fails closed on) and that
+    is registered (``registration.get_resource_type_for`` finds it); else
+    ``None``. A database error reading it is logged and serves
     nothing, so that the project's other URLs still answer
     (``scrud_django.ui.urls``' slug converter asks it). In a `served_memo`
     block, what it found for `slug` before."""
@@ -137,13 +143,22 @@ def served(slug: str) -> ServedSlug | None:
     return found
 
 
-def _served(slug):
+def routed(slug: str) -> bool:
+    """Whether the API serves the type `slug`: its route ``<slug>-list``
+    reverses, or for a computed type, one with a registered ``compute``,
+    ``<slug>-detail``."""
     try:
         if is_computed(slug):
             reverse(f"{slug}-detail", args=["key"])
         else:
             reverse(f"{slug}-list")
     except NoReverseMatch:
+        return False
+    return True
+
+
+def _served(slug):
+    if not routed(slug) or drf_only_authorization(slug) is not None:
         return None
     try:
         resource_type = get_resource_type_for(slug)

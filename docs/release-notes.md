@@ -30,9 +30,18 @@
   JSON body of a page's write is subject to `DATA_UPLOAD_MAX_MEMORY_SIZE`
   (follow-up `ui-page-body-size-limit`).
 * A computed type registered only with a DRF `viewset_class` (no `compute=`)
-  has no UI page and cannot be embedded. The pages read through the core, so a
-  custom `viewset_class`'s permission classes are not consulted: declare such
-  rules as `checks=` and `object_checks=`.
+  has no UI page and cannot be embedded.
+* On DRF, the UI refuses a type registered with a custom `viewset_class` (any
+  but `ResourceViewSet`, `ResourceViewSetGenericFilter`, the document types'
+  own and `ComputedResourceViewSet`, or the `content_filter=True` variant of
+  one), whose `IsAuthorized` subclasses, compositions and methods the core
+  never asks: its pages answer 404, as for a slug the UI does not serve, its
+  embeds are refused, prefixes do not claim it and a studio preview of one of
+  its resources is a 404. The system check `scrud_django_ui.W003` names each
+  such type. To serve it, declare its rules as both `checks=` and
+  `object_checks=`, or register it with `ui_authorization="core"` when the
+  viewset adds no authorization of its own (the core's checks are complete
+  for it). The UI never shows more than the API.
 * In stored component templates, `in_mount(...)`, `embed(...)` and `api_url(...)`
   with `/api/` paths keep working (they are mapped to the UI), but a raw
   `hx-get="/api/..."` expecting HTML now gets JSON.
@@ -61,6 +70,14 @@
   they call; `ScrudHTMLRenderer` and `scrud_django.ui.dispatch` are gone.
 * The UI's types' viewset behaviour is core hooks on `core.types.TypeOptions`,
   so the core alone can read and write them.
+* `ui_authorization="core"` on `registration.json_resource_type` and
+  `registration.computed_resource_type` (`core.types.TypeOptions.ui_authorization`),
+  declaring the core's checks complete for a type served by a custom
+  `viewset_class`, so that the UI serves it; `core.types.drf_only_authorization(slug)`,
+  what of a type's DRF route the core does not ask (`None` when nothing, or
+  when the type opts in), which registration records
+  (`registration.drf_only_authorization_of`); and the system check
+  `scrud_django_ui.W003`. The UI's types declare it.
 
 ### Changed
 

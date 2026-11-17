@@ -88,11 +88,29 @@ authentication does not apply to pages or to the studio (sign in at your
 login, `/api-auth/login/` in the demo). A type served by the UI needs its
 authorization to be expressed to the core: a page asks the type's grants and
 its neutral `checks=` and `object_checks=` hooks, never the permission classes
-of a custom `viewset_class` (DRF-only authorization), so a type whose rules
-live only there must declare them as hooks to have the UI honour them (see the
-README's migration notes), and a computed
-type registered only with a DRF `viewset_class` (no `compute=`) has no page and
-cannot be embedded.
+of a custom `viewset_class` (DRF-only authorization: `IsAuthorized`
+subclasses, their `&`, `|` and `~` compositions, the viewset's own methods).
+So the UI fails closed on a type registered with a custom `viewset_class`
+(any but scrud's own: `ResourceViewSet`, `ResourceViewSetGenericFilter`,
+`JsonSchemaViewSet`, `JsonLdViewSet`, `ComputedResourceViewSet`, or the
+`content_filter=True` variant of one): its pages answer 404, as for a slug
+the UI does not serve, an embed of it is refused, a prefix does not claim it,
+a studio preview of one of its resources is a 404, and the system check
+`scrud_django_ui.W003` (`manage.py check`) names it. The UI never shows more
+than the API. Such a type opts in with either:
+
+- both `checks=` and `object_checks=`, its rules declared to the core, which
+  the UI then applies; or
+- `ui_authorization="core"` on its registration (`json_resource_type`,
+  `computed_resource_type`), stating that the core's checks (its grants and
+  any hooks) are complete for it: the viewset adds no authorization of its
+  own. The UI then serves it by those checks alone. The UI's own types
+  declare it (their viewsets keep `IsAuthorized` and add only the
+  behaviour of their hooks); the studio's computed types need not (they
+  are registered with `compute=` and scrud's own viewset).
+
+A computed type registered only with a DRF `viewset_class` (no `compute=`)
+has no page and cannot be embedded.
 
 ## UI components
 
@@ -319,7 +337,8 @@ in the embed's place (each refusal is logged as a warning by
   a path that resolves to nothing);
 - a path that doesn't resolve to a UI page: a stored type's list or detail
   page, or a computed type's (one registered with `compute=`; a computed type
-  with only a DRF `viewset_class` has no page). A project's page, the studio,
+  with only a DRF `viewset_class` has no page, nor has a type the UI refuses
+  for its DRF-only authorization, `scrud_django_ui.W003`). A project's page, the studio,
   the API root and the CSS and JavaScript file routes are refused, and so is a
   request for another format (`?format=json`, `?format=api`);
 - a `scope` that is not a scope chain, and a `mode` other than `"view"`;

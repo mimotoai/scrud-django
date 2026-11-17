@@ -2218,3 +2218,23 @@ scrud UI HTML and no cache can serve one for the other. DRF's JSON responses
 keep the `Vary: Accept` DRF's content negotiation sets (its browsable API is
 still among its renderers). Pinned by
 `tests/test_ui_negotiation.py::test_json_from_the_api_has_no_ui_vary`.
+
+<a id="ui-hand-routed-type"></a>
+## ui-hand-routed-type: a type's API route built outside registration is not seen
+
+The UI refuses a type whose DRF route holds authorization the core does not
+ask (`scrud_django.core.types.drf_only_authorization`), as its registration
+records it: `registration.resource_type_urls` and `computed_urls` (every
+`json_resource_type`, `computed_resource_type`, `ResourceTypeRegistration`
+and `register_or_defer` route) note the `viewset_class` they build the routes
+with. A project that routes a type's `<slug>-list` and `<slug>-detail` itself
+(`MyViewSet.as_view({...}, resource_type_name=slug)` named as registration
+names them, or `as_view(..., permission_classes=[...])`) while registering
+the type's row some other way bypasses that record, so the UI serves the type
+by the core's checks alone. The test that would expose it: register a type's
+row with `ResourceTypeRegistration(build_urls=False)`, route its list and
+detail by hand with `tests.urls.ContextDenyingResourceViewSet`, and GET a
+resource of it in the context "denied" at its UI URL: 404 expected, 200
+today. A fix would resolve the route `pages.routed` reverses and accept only
+a view registration built (marked by `resource_type_urls`). Not fixed here:
+the documented way to serve a type is its registration's routes.

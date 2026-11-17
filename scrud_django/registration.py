@@ -5,7 +5,7 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Literal
 from uuid import uuid4
@@ -21,7 +21,11 @@ from django.urls import path
 from django.utils import timezone
 
 from scrud_django import services
-from scrud_django.core.types import TypeOptions, register_type_options
+from scrud_django.core.types import (
+    TypeOptions,
+    record_drf_only_authorization,
+    register_type_options,
+)
 from scrud_django.models import Resource, ResourceType
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_HELD,
@@ -328,6 +332,49 @@ class ResourceTypeRegistration:
         self.urls = resource_type_urls(self.resource_type.slug, self.viewset_class)
 
 
+# The marker `content_filtered_viewset` gives the subclass it builds: the
+# class it was built from.
+_CONTENT_FILTERED_FROM = "_scrud_content_filtered_from"
+
+
+def drf_only_authorization_of(viewset_class) -> str | None:
+    """What `viewset_class`, serving a type's DRF routes, authorizes beyond
+    the core's checks (the type's grants and hooks,
+    `scrud_django.core.types.requirement_for`), as a description naming it;
+    ``None`` for scrud's own viewsets, whose authorization is exactly the
+    core's: ``ResourceViewSet`` (``permission_classes = [IsAuthorized]``,
+    which the core's ``GrantsLeaf`` asks as it does), the built-in document
+    types' ``JsonSchemaViewSet`` and ``JsonLdViewSet`` (only their media
+    type differs), ``ResourceViewSetGenericFilter`` (its filters list, they
+    do not authorize), ``ComputedResourceViewSet`` (an authenticated user,
+    as `scrud_django.core.computed` asks, and the type's ``compute``), and
+    the subclass `content_filtered_viewset` builds of one of them.
+
+    Any other class is a custom ``viewset_class``: it may hold
+    ``IsAuthorized`` subclasses (or their ``&``, ``|`` and ``~``
+    compositions) in its permissions, or authorize in its own methods,
+    which only DRF applies."""
+    from scrud_django import views
+    from scrud_django.computed import ComputedResourceViewSet
+
+    own = (
+        views.ResourceViewSet,
+        views.ResourceViewSetGenericFilter,
+        views.JsonSchemaViewSet,
+        views.JsonLdViewSet,
+        ComputedResourceViewSet,
+    )
+    built_from = vars(viewset_class).get(_CONTENT_FILTERED_FROM, viewset_class)
+    if built_from in own:
+        return None
+    return (
+        f"its API routes are served by the custom viewset_class "
+        f"{viewset_class.__module__}.{viewset_class.__qualname__}, whose "
+        "permissions (IsAuthorized subclasses and their compositions) and "
+        "methods only DRF applies"
+    )
+
+
 def stored_fields(resource_type):
     """The fields of `resource_type`'s row that registration sets, other than
     its ETag and modification time, which follow a change of them."""
@@ -341,7 +388,10 @@ def stored_fields(resource_type):
 def resource_type_urls(slug, viewset_class):
     """The list and detail routes of the resource type `slug`, served by
     `viewset_class`. They need no database: the views read the type by its
-    slug (`get_resource_type_for`) on each request."""
+    slug (`get_resource_type_for`) on each request. Records whether
+    `viewset_class` authorizes beyond the core's checks
+    (`drf_only_authorization_of`)."""
+    record_drf_only_authorization(slug, drf_only_authorization_of(viewset_class))
     names = ResourceType(slug=slug)
     scrud_list = viewset_class.as_view(
         {
@@ -1008,7 +1058,9 @@ class TypeSpec:
             raise ImproperlyConfigured(
                 f"{name}: a computed type, and only one, has options.compute."
             )
-        if computed and self.options != TypeOptions(compute=self.options.compute):
+        if computed and replace(self.options, ui_authorization=None) != TypeOptions(
+            compute=self.options.compute
+        ):
             raise ImproperlyConfigured(
                 f"{name}: a computed type's hooks are its compute alone: its "
                 "checks, object_checks and content_filter would never be asked."
@@ -1245,6 +1297,7 @@ def json_resource_type(
     checks=(),
     object_checks=(),
     content_filter: bool = False,
+    ui_authorization: str | None = None,
 ):
     """Registration of a single json resource type. Callers **should** provide one and
     only one of `schema_resource, schema_path, schema_uri` as well as one and only  one
@@ -1275,6 +1328,14 @@ def json_resource_type(
     (`register_type_options`; a different set logs a warning),
     even when the registration is deferred.
 
+    The UI app reads through the core alone, so it refuses (404) a type
+    whose `viewset_class` is a custom one (`drf_only_authorization_of`:
+    its ``IsAuthorized`` subclasses, their compositions and its own methods
+    are DRF's only), unless the type declares both `checks` and
+    `object_checks` (its rules, as the core asks them), or
+    `ui_authorization` is ``"core"``: the core's checks (its grants and
+    hooks) are complete for it (``TypeOptions.ui_authorization``).
+
     Returns the type's routes. When the database fails (unreachable, or not
     migrated yet), they are returned all the same and the registration is
     retried when the type is next read (`register_or_defer`).
@@ -1301,6 +1362,10 @@ def json_resource_type(
         object_checks=object_checks,
         content_filter=content_filter,
     )
+    if ui_authorization is not None:
+        spec = replace(
+            spec, options=replace(spec.options, ui_authorization=ui_authorization)
+        )
     viewset_class = viewset_class or views.ResourceViewSet
     if content_filter:
         viewset_class = content_filtered_viewset(viewset_class)
@@ -1326,6 +1391,7 @@ def content_filtered_viewset(viewset_class):
             "__qualname__": viewset_class.__qualname__,
             "__doc__": viewset_class.__doc__,
             "filter_backends": [*backends, ResourceContentFilter],
+            _CONTENT_FILTERED_FROM: viewset_class,
         },
     )
 
@@ -1337,6 +1403,7 @@ def computed_resource_type(
     context_func,
     viewset_class=None,
     compute=None,
+    ui_authorization: str | None = None,
 ):
     """Registration of a computed, read-only resource type
     (`scrud_django.computed.ComputedResourceViewSet`): its `ResourceType` row
@@ -1354,7 +1421,9 @@ def computed_resource_type(
     type's (`register_type_options`, replacing any registered for its IRI
     before), which ``ComputedResourceViewSet.compute`` calls unless
     `viewset_class` overrides it. `viewset_class` defaults to
-    ``ComputedResourceViewSet``; one of the two is needed."""
+    ``ComputedResourceViewSet``; one of the two is needed. The UI app
+    serves it only with `compute`, and with a custom `viewset_class` only
+    when `ui_authorization` is ``"core"`` (see `json_resource_type`)."""
     from scrud_django.computed import ComputedResourceViewSet
 
     if viewset_class is None and compute is None:
@@ -1367,6 +1436,11 @@ def computed_resource_type(
         spec = computed_resource_type_spec(
             resource_type_uri, slug, schema_func, context_func, compute=compute
         )
+        if ui_authorization is not None:
+            spec = replace(
+                spec,
+                options=replace(spec.options, ui_authorization=ui_authorization),
+            )
         return spec.register(urls_func=urls_func)
     # Its `viewset_class` computes the content: it has no `TypeSpec` (whose
     # computed type has a ``compute``), and records no hooks but empty ones.
@@ -1384,7 +1458,7 @@ def computed_resource_type(
     return _register_type(
         resource_type_uri,
         slug,
-        TypeOptions(),
+        TypeOptions(ui_authorization=ui_authorization),
         register_row,
         register_service=False,
         urls_func=urls_func,
@@ -1392,7 +1466,10 @@ def computed_resource_type(
 
 
 def computed_urls(slug, viewset_class):
-    """The detail route of a computed type: ``<slug>/<str:slug>/``."""
+    """The detail route of a computed type: ``<slug>/<str:slug>/``. Records
+    whether `viewset_class` authorizes beyond the core's checks
+    (`drf_only_authorization_of`)."""
+    record_drf_only_authorization(slug, drf_only_authorization_of(viewset_class))
     detail = viewset_class.as_view(
         {'get': 'retrieve', 'head': 'retrieve'}, resource_type_name=slug
     )
