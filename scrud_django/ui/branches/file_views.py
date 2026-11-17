@@ -12,12 +12,11 @@ prefix's branch."""
 import json
 
 from django.http import Http404, HttpResponse
-from scoped_rbac import access
 
 from scrud_django.core.errors import error_answer
 from scrud_django.ui.branches.effective import safe_mode_requested, using_safe_mode
 from scrud_django.ui.branches.file_urls import css_files, js_files
-from scrud_django.ui.branches.selection import choose, may_get_mount, mount_of
+from scrud_django.ui.branches.selection import check_mount_access, choose
 
 MAX_AGE = 31536000  # a year: the URL holds the ETag
 
@@ -69,19 +68,18 @@ def js_file(request, name: str, etag: str):
 
 def _served(request, files, name, etag, content_type):
     """`file_response` for a GET or HEAD, under a prefix only to a user who
-    may GET its branch (else refused as the API refuses it, an
-    ``access.AccessDenied``: 401 for the anonymous user, else 403); any
-    other method is a 405 naming the `FILE_METHODS` in ``Allow``. A refusal
-    is answered as the API answers it (`error_answer`: problem details)."""
+    may GET its branch (`check_mount_access`: else refused as the API
+    refuses it, 401 for the anonymous user, else 403); any other method is
+    a 405 naming the `FILE_METHODS` in ``Allow``, for anyone, as the API's
+    file view answers one (it asks no grant). A refusal is answered as the
+    API answers it (`error_answer`: problem details)."""
     if request.method not in FILE_METHODS:
         response = HttpResponse(status=405)
         del response["Content-Type"]
         response["Allow"] = ", ".join(FILE_METHODS)
         return response
     try:
-        mount = mount_of(request)
-        if mount is not None and not may_get_mount(request, mount):
-            raise access.AccessDenied()
+        check_mount_access(request)
         return file_response(request, files, name, etag, content_type)
     except Exception as exc:
         answered = error_answer(exc, request)

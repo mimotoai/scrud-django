@@ -57,9 +57,8 @@ from scrud_django.ui import UI_NAMESPACE
 from scrud_django.ui.branches import is_record
 from scrud_django.ui.branches.selection import (
     UI_BASE_ATTR,
+    check_mount_access,
     in_mount,
-    may_get_mount,
-    mount_of,
 )
 from scrud_django.ui.html import (
     CONTENT_TYPE,
@@ -68,6 +67,7 @@ from scrud_django.ui.html import (
     _notices,
     check_ui_headers,
     html_headers,
+    pointer_of,
     render_html,
 )
 
@@ -84,25 +84,37 @@ PAGE_METHODS = {
 }
 
 
-def serves(slug: str) -> bool:
-    """Whether the UI serves pages of the type `slug`: a type the API
-    serves (its route ``<slug>-list`` reverses, or for a computed type,
-    one with a registered ``compute``, ``<slug>-detail``) that is
-    registered (``registration.get_resource_type_for`` finds it). A
-    database error reading it is logged and serves nothing, so that the
-    project's other URLs still answer (``scrud_django.ui.urls``' slug
-    converter asks it)."""
+class ServedSlug(str):
+    """The slug of a type the UI serves (`served`), carrying the
+    `resource_type` read for it, so that a page's GET reads it once."""
+
+    resource_type = None
+
+    def __new__(cls, slug: str, resource_type):
+        self = super().__new__(cls, slug)
+        self.resource_type = resource_type
+        return self
+
+
+def served(slug: str) -> ServedSlug | None:
+    """`slug` with its type (`ServedSlug`) when the UI serves pages of it: a
+    type the API serves (its route ``<slug>-list`` reverses, or for a
+    computed type, one with a registered ``compute``, ``<slug>-detail``)
+    that is registered (``registration.get_resource_type_for`` finds it);
+    else ``None``. A database error reading it is logged and serves
+    nothing, so that the project's other URLs still answer
+    (``scrud_django.ui.urls``' slug converter asks it)."""
     try:
         if is_computed(slug):
             reverse(f"{slug}-detail", args=["key"])
         else:
             reverse(f"{slug}-list")
     except NoReverseMatch:
-        return False
+        return None
     try:
-        get_resource_type_for(slug)
+        resource_type = get_resource_type_for(slug)
     except Http404:
-        return False
+        return None
     except DatabaseError as error:
         logger.warning(
             "scrud-ui: not serving pages of %r: reading its type failed (%s: %s)",
@@ -110,8 +122,8 @@ def serves(slug: str) -> bool:
             type(error).__name__,
             error,
         )
-        return False
-    return True
+        return None
+    return ServedSlug(slug, resource_type)
 
 
 def is_computed(slug: str) -> bool:
@@ -157,32 +169,52 @@ class _Answer:
 
 
 def _page(request, slug, pk) -> HttpResponse:
-    """The answer of the page of `slug`'s list (`pk` ``None``) or item: a
-    method the page does not serve is a 405 at once; any other request
-    passes the prefix's check and the fragment protocol's headers' (400),
-    then is served by its handler; what it raises is answered as the API
-    answers it."""
+    """The answer of the page of `slug`'s list (`pk` ``None``) or item, its
+    checks in the order the API's route asks them (DRF's ``initial()``,
+    then its handler):
+
+    1. a method the page does not serve for the type (`_allowed`) is a 405
+       at once, for anyone, as scoped-rbac leaves a method the API's view
+       does not serve to its 405 before any grant;
+    2. the handler asks the route's request check first (a write's body
+       read and checked before it, as DRF parses it in its permission
+       check; a computed type's: an authenticated user), then the prefix's
+       check and the fragment protocol's headers (400, `_entered`), then
+       reads or writes.
+
+    What it raises is answered as the API answers it. The type is the one
+    the slug converter read (`ServedSlug`) for a GET or HEAD; a write reads
+    it on the type database, as the API's route does."""
     setattr(request, UI_BASE_ATTR, _ui_base(request, slug))
     if pk is None:
         kind = "list"
     else:
         kind = "computed" if is_computed(slug) else "item"
     method = request.method
-    resource_type = get_resource_type_for(
-        slug, using=None if method in SAFE_METHODS else type_db()
-    )
+    resource_type = getattr(slug, "resource_type", None)
+    if resource_type is None or method not in SAFE_METHODS:
+        resource_type = get_resource_type_for(
+            slug, using=None if method in SAFE_METHODS else type_db()
+        )
     allow = _allowed(resource_type, kind)
-    if method not in PAGE_METHODS[kind]:
+    if method not in allow:
         answer = _refused(MethodNotAllowedError(method), request, kind, allow)
         return _respond(request, resource_type, answer)
     handler = _HANDLERS[kind, "GET" if method == "HEAD" else method]
     try:
-        _check_mount(request)
-        check_ui_headers(request)
         answer = handler(request, resource_type, slug, pk, allow)
     except Exception as exc:
         answer = _refused(exc, request, _error_kind(kind, method), allow)
     return _respond(request, resource_type, answer)
+
+
+def _entered(request) -> None:
+    """The checks the API's route asks once its request check passed
+    (``ResourceViewMixin.initial``): under a published branch's prefix, GET
+    on its branch (`check_mount_access`), then the fragment protocol's
+    headers (`check_ui_headers`, 400)."""
+    check_mount_access(request)
+    check_ui_headers(request)
 
 
 def _ui_base(request, slug) -> str:
@@ -212,20 +244,14 @@ def _error_kind(kind, method):
     return "create" if kind == "list" and method == "POST" else kind
 
 
-def _check_mount(request) -> None:
-    """Refuse a request under a published branch's prefix whose user may
-    not GET the prefix's branch, as a refused GET is refused
-    (``access.AccessDenied``: 401 for the anonymous user, else 403)."""
-    mount = mount_of(request)
-    if mount is not None and not may_get_mount(request, mount):
-        raise access.AccessDenied()
-
-
 def _read_list(request, resource_type, slug, pk, allow) -> _Answer:
     """A GET (or HEAD) of the list, as the API's list route reads it: the
     rows its user may list (as HTML: `lists.list_queryset`), the page asked
     for (an invalid page is a 404), its validators and preconditions."""
     requirement = requirement_for(resource_type, slug)
+    resources.check_request(request, resource_type, requirement, list_route=True)
+    _entered(request)
+    # (`list_queryset` asks the list's request check again: as it passed.)
     queryset = lists.list_queryset(
         request, resource_type, request.GET, requirement=requirement, html=True
     )
@@ -262,6 +288,7 @@ def _create(request, resource_type, slug, pk, allow) -> _Answer:
     resources.check_request(
         request, resource_type, requirement, list_route=True, body=body
     )
+    _entered(request)
     headers = precondition_headers(request)
     with writes.write_transaction(using), ExitStack() as locks:
         if lists.list_validators_needed(headers):
@@ -304,12 +331,16 @@ def _read_item(request, resource_type, slug, pk, allow) -> _Answer:
     """A GET (or HEAD) of the item, as the API's detail route reads it:
     looked up and checked (`resources.load_for_read`), as its reader gets it
     (`resources.item_read`), then its preconditions (a 304)."""
+    requirement = requirement_for(resource_type, slug)
+    resources.check_request(request, resource_type, requirement, list_route=False)
+    _entered(request)
     obj = resources.load_for_read(
         request,
         resource_type,
         pk,
-        requirement=requirement_for(resource_type, slug),
+        requirement=requirement,
         method=request.method,
+        request_checked=True,
     )
     content, etag, last_modified = resources.item_read(request, resource_type, obj)
     failed = resources.item_precondition_answer(
@@ -341,6 +372,10 @@ def _update(request, resource_type, slug, pk, allow) -> _Answer:
     try:
         body, present = request_json(request)
         check_body(body, present=present)
+        resources.check_request(
+            request, resource_type, requirement, list_route=False, body=body
+        )
+        _entered(request)
         with writes.write_transaction(using):
             obj = resources.load_for_read(
                 request,
@@ -350,6 +385,7 @@ def _update(request, resource_type, slug, pk, allow) -> _Answer:
                 method="PUT",
                 lock_using=using,
                 body=body,
+                request_checked=True,
             )
             stored = _stored(obj)
             etag, last_modified = resources.item_validators(obj)
@@ -366,7 +402,8 @@ def _update(request, resource_type, slug, pk, allow) -> _Answer:
             )
     except Exception as exc:
         answer = _refused(exc, request, "item", allow)
-        if answer.status in (400, 403):
+        # Not for invalid UI headers: the answer is then a notice.
+        if answer.status in (400, 403) and pointer_of(request) is not None:
             if stored is None:
                 stored = _stored_for_refused_put(
                     request, resource_type, pk, requirement
@@ -391,6 +428,8 @@ def _destroy(request, resource_type, slug, pk, allow) -> _Answer:
     is a 409)."""
     requirement = requirement_for(resource_type, slug)
     using = write_db()
+    resources.check_request(request, resource_type, requirement, list_route=False)
+    _entered(request)
     with writes.write_transaction(using):
         obj = resources.load_for_read(
             request,
@@ -399,6 +438,7 @@ def _destroy(request, resource_type, slug, pk, allow) -> _Answer:
             requirement=requirement,
             method="DELETE",
             lock_using=using,
+            request_checked=True,
         )
         etag, last_modified = resources.item_validators(obj)
         failed = resources.item_precondition_answer(
@@ -417,6 +457,7 @@ def _read_computed(request, resource_type, slug, key, allow) -> _Answer:
     computed route answers it: to an authenticated user only, the type's
     ``compute``, its ETag (a 304 for an ``If-None-Match`` naming it)."""
     check_authenticated(request)
+    _entered(request)
     content, etag = computed_answer(request, resource_type, key)
     headers = {"ETag": etag}
     if not_modified(request, etag):

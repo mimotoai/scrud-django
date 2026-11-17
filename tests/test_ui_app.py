@@ -11,14 +11,17 @@ from html import unescape
 from urllib.parse import urlsplit
 
 import pytest
+from django.db import connection
 from django.test import Client, RequestFactory
-from django.urls import reverse
+from django.test.utils import CaptureQueriesContext
+from django.urls import resolve, reverse
 from django.utils.http import quote_etag
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import registration
 from scrud_django.models import Resource
 from scrud_django.registration import get_resource_type_for
+from scrud_django.ui.branches.checks import prefix_problems
 from scrud_django.ui.branches.selection import (
     MOUNT_ATTR,
     UI_BASE_ATTR,
@@ -214,25 +217,42 @@ def send(method, url, resource, body, **headers):
     return Http.response.status_code
 
 
+# What they ask it of: each request of a to-do list and of a partner
+# profile, and the item requests of a to-do list that does not exist (the
+# answer of a resource hidden from the user must be the same).
+TARGETS = [
+    *(
+        (slug, method, item)
+        for slug in ("todo-lists", "partner-profiles")
+        for method, item in REQUESTS
+    ),
+    *(("missing", method, True) for method, item in REQUESTS if item),
+]
+
+
 @pytest.mark.django_db
 @pytest.mark.parametrize("who", WHO)
-@pytest.mark.parametrize("method,item", REQUESTS)
-@pytest.mark.parametrize("slug", ["todo-lists", "partner-profiles"])
+@pytest.mark.parametrize("target,method,item", TARGETS)
 @test_context
 def test_page_and_api_refuse_alike(
-    request, todo_list, partner_profiles, who, method, item, slug
+    request, todo_list, partner_profiles, who, target, method, item
 ):
     """Review Focus 2: the page answers the status `/api/` answers the same
-    request (401, 403, or 404 for a resource hidden as a missing one), and
-    a refused one writes nothing. (The anonymous user may create partner
-    profiles: `tests.rbac_defaults`.)"""
+    request (401, 403, or 404 for a resource hidden as a missing one, and
+    for a missing one), and a refused one writes nothing. (The anonymous
+    user may create partner profiles: `tests.rbac_defaults`.)"""
     if who is not None:
         Given.http.force_login(request.getfixturevalue(who))
-    resource = todo_list if slug == "todo-lists" else partner_profiles
+    resource = partner_profiles if target == "partner-profiles" else todo_list
+    slug = resource.resource_type.slug
     body = dict(resource.content)
     if slug == "todo-lists":
         body["title"] = "Written"
-    api = api_detail(resource) if item else reverse(f"{slug}-list")
+    if target == "missing":
+        missing = Resource.objects.order_by("-pk").first().pk + 1000
+        api = reverse("todo-lists-detail", args=[missing])
+    else:
+        api = api_detail(resource) if item else reverse(f"{slug}-list")
     count = Resource.objects.count()
 
     page_status = send(method, ui_url(api), resource, body)
@@ -480,6 +500,11 @@ def test_a_ui_put_of_a_body_the_api_refuses_answers_as_the_api(
             **headers,
         )
         Then.http.status_code_is(status)
+        if not headers:
+            # The page's answer: a notice, without the body as a form.
+            assert_html()
+            assert 'class="scrud-notice' in html()
+            assert FRAME not in html() and "<form" not in html()
     assert stored(todo_list).etag == todo_list.etag
 
 
@@ -703,3 +728,122 @@ def test_partner_profile_pages_render(partner_profiles, admin_login):
     When.http.get(ui_url(reverse(RESOURCE_ENDPOINT_LIST_NAME)))
     Then.http.status_code_is(200)
     assert frame_hrefs(html()) == [f"http://testserver{url}"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_prefix_shadowing_another_ui_page_is_reported(todo_list):
+    """A prefix serves the presentation of the UI's list page of each type
+    it claims (`/` over the UI's base), which is no project URL; any other
+    UI page it would hide is: ``/summaries/todo-lists/`` is the computed
+    type's page for the key ``todo-lists``."""
+    reverse("summaries-detail", args=["k"])  # the URLconf registers the types
+    registration.computed_resource_type(**SUMMARIES_TYPE)
+    assert prefix_problems("/", [], "default") == []
+    problems = prefix_problems("/summaries/", [], "default")
+    assert len(problems) == 1, problems
+    assert "/summaries/todo-lists/ (scrud_ui:detail)" in problems[0]
+
+
+# Requests whose UI headers are invalid: (method, the item (else the list),
+# headers, query).
+INVALID_UI_HEADERS = [
+    ("GET", True, {"HTTP_SCRUD_UI_POINTER": "bad"}, ""),
+    ("GET", False, {}, "?ui-mode=edit"),
+    ("PUT", True, {"HTTP_SCRUD_UI_POINTER": "bad"}, ""),
+]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("who", WHO)
+@pytest.mark.parametrize("method,item,headers,query", INVALID_UI_HEADERS)
+@test_context
+def test_invalid_ui_headers_are_answered_after_the_request_check(
+    request, todo_list, who, method, item, headers, query
+):
+    """The page asks the route's request check before the fragment
+    protocol's headers, as the API's route does: a user it refuses gets its
+    401 or 403, any other the headers' 400, as from `/api/`'s HTML."""
+    if who is not None:
+        Given.http.force_login(request.getfixturevalue(who))
+    api = (api_detail(todo_list) if item else reverse("todo-lists-list")) + query
+    body = {**todo_list.content, "title": "Written"}
+    page_status = send(method, ui_url(api), todo_list, body, **headers)
+    assert_html()
+    assert 'class="scrud-notice' in html() and FRAME not in html()
+    api_status = send(method, api, todo_list, body, HTTP_ACCEPT=HTML, **headers)
+    assert page_status == api_status, (page_status, api_status)
+    assert stored(todo_list).etag == todo_list.etag
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("who", ["login_no_roles", None])
+@test_context
+def test_unserved_methods_are_answered_as_the_api(request, todo_list, who):
+    """A method a page does not serve is a 405 for anyone, as the API's
+    route answers one its view does not serve (scoped-rbac leaves it to
+    the 405 before any grant): PATCH of a page, a POST to a read-only
+    type's list (branch versions). OPTIONS is the exception the UI makes:
+    the API answers it (204, scrudful's ``Allow``), a page does not
+    (405)."""
+    if who is not None:
+        Given.http.force_login(request.getfixturevalue(who))
+    for api in (api_detail(todo_list), reverse("todo-lists-list")):
+        statuses = []
+        for url in (ui_url(api), api):
+            Http.response = Http.api_client.patch(url, HTTP_ACCEPT=JSON)
+            statuses.append(Http.response.status_code)
+        assert statuses == [405, 405], (api, statuses)
+        Http.response = Http.api_client.options(ui_url(api))
+        Then.http.status_code_is(405)
+        assert Http.response["Allow"]
+        Http.response = Http.api_client.options(api, HTTP_ACCEPT=JSON)
+        Then.http.status_code_is(204)
+    versions = reverse("ui-branch-versions-list")
+    statuses = []
+    for url, headers in ((ui_url(versions), {}), (versions, {"HTTP_ACCEPT": JSON})):
+        When.http.post(url, data=json.dumps({}), content_type=JSON, **headers)
+        statuses.append(Http.response.status_code)
+    assert statuses == [405, 405]
+    assert Http.response["Allow"].startswith("GET")
+
+
+@pytest.mark.django_db
+@test_context
+def test_head_and_304_bodies_are_empty_at_the_view(todo_list, todo_reader_login):
+    """The test client drops the body of a HEAD's and a 304's response: the
+    view itself is asked."""
+    url = ui_detail(todo_list)
+    match = resolve(url)
+    factory = RequestFactory()
+    for method, headers in (
+        ("head", {}),
+        ("get", {"HTTP_IF_NONE_MATCH": quote_etag(todo_list.etag)}),
+    ):
+        request = getattr(factory, method)(url, **headers)
+        request.user = todo_reader_login
+        request.resolver_match = match
+        response = match.func(request, *match.args, **match.kwargs)
+        assert response.status_code == (200 if method == "head" else 304)
+        assert response.content == b""
+        assert response["ETag"] == quote_etag(todo_list.etag)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_page_reads_its_type_once(todo_list, todo_reader_login):
+    """The slug converter's read of the type is the page's."""
+    url = ui_detail(todo_list)
+    Given.http.force_login(todo_reader_login)
+    When.http.get(url)  # warm: sessions, the policy's first reads
+    table = connection.ops.quote_name("scrud_django_resourcetype")
+    slug = connection.ops.quote_name("slug")
+    with CaptureQueriesContext(connection) as queries:
+        When.http.get(url)
+    Then.http.status_code_is(200)
+    by_slug = [
+        q["sql"]
+        for q in queries.captured_queries
+        if f"FROM {table}" in q["sql"] and f"{slug} =" in q["sql"]
+    ]
+    assert len(by_slug) == 1, by_slug

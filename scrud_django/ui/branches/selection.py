@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from django.middleware.csrf import get_token
 from django.urls import NoReverseMatch, reverse
 from django.utils.crypto import constant_time_compare, salted_hmac
+from scoped_rbac import access
 
 from scrud_django.core.authz import may_read_in_context, resource_contexts
 from scrud_django.models import Resource
@@ -414,6 +415,17 @@ def may_get_mount(request, mount: Mount) -> bool:
         and branch.prefix == mount.prefix
         and may_get(request, branch)
     )
+
+
+def check_mount_access(request) -> None:
+    """Refuse a request under a published branch's prefix (`mount_of`)
+    whose user may not GET the prefix's branch (`may_get_mount`), as a
+    refused GET is refused: ``access.AccessDenied`` (401 for the anonymous
+    user, else 403, as `scrud_django.core.errors.error_answer` answers it).
+    The neutral check of the UI app's views."""
+    mount = mount_of(request)
+    if mount is not None and not may_get_mount(request, mount):
+        raise access.AccessDenied()
 
 
 def may_get_stored(request, content) -> bool:

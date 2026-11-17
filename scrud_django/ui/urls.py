@@ -36,16 +36,17 @@ STUDIO_APP = "scrud_django.ui.studio"
 
 
 class UISlugConverter:
-    """The slug of a type the UI serves (`pages.serves`): any other path
-    segment is no match (``ValueError``), so the URLconf's later patterns
-    still match it."""
+    """The slug of a type the UI serves, with its type (`pages.served`, a
+    `pages.ServedSlug`): any other path segment is no match
+    (``ValueError``), so the URLconf's later patterns still match it."""
 
     regex = "[-a-zA-Z0-9_]+"
 
     def to_python(self, value):
-        if not pages.serves(value):
+        found = pages.served(value)
+        if found is None:
             raise ValueError(f"the UI serves no type {value!r}")
-        return value
+        return found
 
     def to_url(self, value):
         return str(value)

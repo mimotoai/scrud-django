@@ -334,6 +334,7 @@ def load_for_read(
     method: str,
     lock_using: str | None = None,
     body: Mapping | None = None,
+    request_checked: bool = False,
 ) -> Resource:
     """The resource `pk` of `resource_type`, looked up and checked for a
     `method` request (every method's lookup, not only a read's), as the
@@ -376,15 +377,22 @@ def load_for_read(
     writer holding the type lock and waiting for the row. Else the row is
     read as the router reads.
 
+    With `request_checked`, the caller asked the request check itself
+    (`check_request` of `request` on the item route, with `body`) before
+    the checks DRF's ``initial()`` asks after it (a UI page's prefix and
+    headers, `scrud_django.ui.pages`): it is not asked again; everything
+    after it is.
+
     `requirement` is taken through `Requirement.of`: one that asks no
     grants (empty, or hooks only) is ``ImproperlyConfigured``, before any
     lookup: it would let anyone load any resource."""
     requirement = Requirement.of(requirement, caller="load_for_read")
-    if body is None and method in BODY_METHODS:
-        checked = _options_copy(request, method)
-    else:
-        checked = _as_method(request, method)
-    check_request(checked, resource_type, requirement, list_route=False, body=body)
+    if not request_checked:
+        if body is None and method in BODY_METHODS:
+            checked = _options_copy(request, method)
+        else:
+            checked = _as_method(request, method)
+        check_request(checked, resource_type, requirement, list_route=False, body=body)
     # A HEAD is served where a GET is.
     refuse_unserved(resource_type, "GET" if method == "HEAD" else method)
     queryset = Resource.objects.filter(resource_type=resource_type)

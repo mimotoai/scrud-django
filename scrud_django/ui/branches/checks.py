@@ -118,9 +118,11 @@ def overlap(one: str, other: str, segments) -> bool:
 
 def shadowed_urls(prefix, slugs) -> list[str]:
     """The URLs ``<prefix><slug>/`` that the project's URLconf serves, each
-    with its view's name. The UI app's own pages (``scrud_django.ui.urls``,
-    namespace `UI_NAMESPACE`) are not the project's: a prefix serves their
-    presentation of its branch."""
+    with its view's name. The UI app's page of the list of `slug` itself
+    (``scrud_django.ui.urls``, ``<UI_NAMESPACE>:list``, at a prefix ``/``
+    over the UI's base) is not the project's: a prefix serves that page's
+    presentation of its branch. Any other UI page (another type's item, a
+    computed type's key) is, as any other URL."""
     shadowed = []
     for slug in slugs:
         path = f"{prefix}{slug}/"
@@ -128,10 +130,19 @@ def shadowed_urls(prefix, slugs) -> list[str]:
             match = resolve(path)
         except Resolver404:
             continue
-        if UI_NAMESPACE in match.namespaces:
+        if _is_ui_list_of(match, slug):
             continue
         shadowed.append(f"{path} ({match.view_name})")
     return shadowed
+
+
+def _is_ui_list_of(match, slug) -> bool:
+    """Whether `match` is the UI app's page of the list of `slug`."""
+    return (
+        UI_NAMESPACE in match.namespaces
+        and match.url_name == "list"
+        and match.kwargs.get("slug") == slug
+    )
 
 
 def prefix_problems(prefix: str, others, using) -> list[str]:

@@ -1056,3 +1056,54 @@ def test_allowed_methods_for_asks_each_request_check_once():
         "HEAD",
     ]
     assert sorted(asked) == ["DELETE", "GET", "PUT"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_load_for_read_skips_a_request_check_the_caller_asked(monkeypatch):
+    """With ``request_checked`` the request check is the caller's (a UI page
+    asks it before its prefix and header checks): not asked again; the
+    lookup and the object check still are."""
+    from scrud_django.core import resources
+
+    resource_type = json_ld()
+    requirement = [GrantsLeaf(JSON_LD)]
+    note = store("a")
+    hidden = store("b")
+    matrix = users()
+    asked = []
+    check_request = resources.check_request
+
+    def recording(*args, **kwargs):
+        asked.append(args[0].method)
+        return check_request(*args, **kwargs)
+
+    monkeypatch.setattr(resources, "check_request", recording)
+
+    def load(name, method, pk, **options):
+        return resources.load_for_read(
+            request_of(method, matrix[name]),
+            resource_type,
+            pk,
+            requirement=requirement,
+            method=method,
+            **options,
+        )
+
+    assert load("reader-a", "GET", note.pk) == note
+    assert asked == ["GET"]
+    asked.clear()
+    assert load("reader-a", "GET", note.pk, request_checked=True) == note
+    assert asked == []
+    # The object check: hidden is a 404, readable but refused a 403.
+    with pytest.raises(Http404):
+        load("reader-a", "GET", hidden.pk, request_checked=True)
+    with pytest.raises(access.AccessDenied):
+        load("reader-a", "DELETE", note.pk, request_checked=True)
+    # Unchecked, the anonymous user's request is refused only by the object
+    # check, as a hidden object.
+    with pytest.raises(Http404):
+        load("anonymous", "GET", note.pk, request_checked=True)
+    with pytest.raises(Http404):
+        load("reader-a", "GET", "no-such-key", request_checked=True)
+    assert asked == []

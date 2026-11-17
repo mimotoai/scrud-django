@@ -1707,6 +1707,26 @@ A ScrudfulRouter an app adds itself is not covered, and the upstream
 proposal is still open (catch `AuthenticationError` too): a hook raising `AuthenticationError`, PATCH a `crud_router` path,
 assert 401.
 
+<a id="ui-page-body-size-limit"></a>
+## ui-page-body-size-limit: a UI write over Django's upload limit gets Django's plain 400, not the API's 413
+
+A UI page's write (`scrud_django.ui.pages`: a POST to a list, a PUT of an
+item) reads its body with `scrud_django.core.bodies.request_json`, which reads
+`request.body`, so Django's `DATA_UPLOAD_MAX_MEMORY_SIZE` (2.5 MB by default)
+applies: a larger body raises `RequestDataTooBig`, which `error_answer` does
+not map, so no page answers it and Django's own plain 400 page (its
+`SuspiciousOperation` answer, `text/html` without the UI's notice or headers)
+is the response. The API refuses the same body too, but as a 413 problem
+("Content Too Large", `scoped_rbac.problems.REQUEST_TOO_LARGE_STATUS`).
+Checked when recording: a PUT of a to-do list whose title is 3,000,000
+characters answers 400 (Django's "Bad Request (400)" page) at its UI URL and
+413 (`application/problem+json`) at its `/api/` URL. The test that would
+expose it: that PUT, asserting the page's status equals the API's (413) and
+that it answers a UI notice. A fix maps `RequestDataTooBig` to the 413 in
+`core.errors.error_answer` (or in `request_json`). Not fixed here (Task 5a,
+fix round 1: recorded only; the review's premise that the API accepts the
+larger body did not hold).
+
 # Decided
 
 <a id="core-allowed-methods-existence-leak"></a>
