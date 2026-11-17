@@ -26,7 +26,9 @@ hooks of one write share `hook_state`, which the core clears before the
 ``prepare_write`` and once the save is over. A front end answers a
 `create` or `update` with `answered_content`. A write by a method the
 type does not serve (``TypeOptions.methods``) is refused
-(`MethodNotAllowedError`, 405) once the request check passed.
+(`MethodNotAllowedError`, 405) once the request check passed (the API
+front ends answer it before any authorization: follow-up
+``core-unserved-order``).
 
 The whole sequence of a route's write, in the DRF route's order, is
 written once here, for every front end but DRF's viewsets (which keep
@@ -312,8 +314,10 @@ def prepared_body(
 def refuse_unserved(resource_type, method: str) -> None:
     """Refuse (`MethodNotAllowedError`, 405) a write by `method` when the
     type's ``TypeOptions.methods`` (`write_hooks`) are set and do not name
-    it, as DRF answers a method a view does not serve once ``initial()``
-    passed."""
+    it. The core asks it after the request check, while DRF's view, and the
+    ninja routes, answer such a method 405 before any authorization
+    (scoped-rbac's request check leaves it to the 405): follow-up
+    ``core-unserved-order``."""
     methods = write_hooks(resource_type).methods
     if methods is not None and method not in methods:
         raise MethodNotAllowedError(method)
@@ -369,8 +373,9 @@ def validate_write(
     `covered` (by default, as the object check, whether the request is the
     PUT the workflow check covers). Right after the request check, a write
     by a method the type does not serve (``POST`` for a create, ``PUT`` for
-    an update) is refused (`refuse_unserved`, 405), as DRF answers it once
-    ``initial()`` passed. Then `prepare`, when given, is called
+    an update) is refused (`refuse_unserved`, 405); DRF's view and the
+    ninja routes answer it before any authorization (follow-up
+    ``core-unserved-order``). Then `prepare`, when given, is called
     with the body, and the body it returns is the one validated from there
     on (`create` and `update` give the type's ``prepare_write``, as the DRF
     views run it after the request and object checks, before the

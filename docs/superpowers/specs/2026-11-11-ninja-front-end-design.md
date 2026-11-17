@@ -481,6 +481,11 @@ These are all re-tested at the new URLs:
 ### 3.3 Tolerated differences
 These are the only differences allowed, the same list as scoped-rbac's:
 - the mount prefix;
+- the ETag of a computed answer whose content links to the serving API (a
+  studio computed type's hrefs): it is the hash of that content, so it
+  differs between the front ends exactly as the mount in its links does; the
+  parity harness checks each front end's ETag is the hash of its own body,
+  then compares the bodies normalized (`Case.etag_hashes_the_mount`) **(call)**;
 - `Date`, `Vary`, `WWW-Authenticate`, `Set-Cookie`;
 - the HSR link target;
 - DRF-only features: `?format=api` (browsable API), format-suffix URLs, and

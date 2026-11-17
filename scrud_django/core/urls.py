@@ -62,9 +62,11 @@ def api_route_name(
     reverses (DRF's registration, or a route named so by hand), else the
     first noted namespace's (`api_namespaces`: scrud's ninja ``api()``'s
     ``"<namespace>:<slug>-<kind>"``) that does; ``None`` when none does.
-    Given a `request` an API serves (resolved under a noted namespace), that
-    API's route comes first, as `absolute_reverse`'s links follow it (R5):
-    an answer it computes links to its own routes.
+    Given a `request` an API serves (`serving_api_namespace`: resolved in a
+    noted namespace, DRF's included, outside any), that API's route alone is
+    looked for (R5): an answer it computes links to its own routes, never
+    another API's (``None`` when it has none). A request no API serves (a
+    UI page's, the studio's, or one not resolved) looks as without one.
     A name found is only where the route is: whether its view is one scrud
     built is its mark's to say (`scrud_django.core.types.route_authorization`).
     A namespace an outer ``include`` nests the API's in is not looked in.
@@ -73,10 +75,10 @@ def api_route_name(
         raise ValueError(f"api_route_name: {kind!r} is not one of {ROUTE_KINDS}.")
     name = f"{slug}-{kind}"
     args = ("key",) if kind == "detail" else ()
-    serving = getattr(getattr(request, "resolver_match", None), "namespace", "")
-    if serving and serving in api_namespaces():
-        if _reverses(f"{serving}:{name}", args):
-            return f"{serving}:{name}"
+    serving = serving_api_namespace(request)
+    if serving is not _NO_API:
+        qualified = name if serving is None else f"{serving}:{name}"
+        return qualified if _reverses(qualified, args) else None
     if _reverses(name, args):
         return name
     # Reversing imported the URLconf, which builds (and notes) its APIs:
@@ -85,6 +87,23 @@ def api_route_name(
         if namespace and _reverses(f"{namespace}:{name}", args):
             return f"{namespace}:{name}"
     return None
+
+
+#: What `serving_api_namespace` answers for a request no API serves.
+_NO_API = object()
+
+
+def serving_api_namespace(request):
+    """The noted API namespace (`api_namespaces`) `request` was resolved in:
+    a ninja ``api()``'s ``urls_namespace``, or ``None`` for a route outside
+    any namespace once DRF's registration noted that (``None``) one;
+    `_NO_API` for a request resolved elsewhere (the UI's ``scrud_ui``, the
+    studio's ``scrud-studio``, a namespace no API noted) or not resolved."""
+    match = getattr(request, "resolver_match", None)
+    if match is None:
+        return _NO_API
+    namespace = getattr(match, "namespace", "") or None
+    return namespace if namespace in api_namespaces() else _NO_API
 
 
 def _reverses(name, args) -> bool:
@@ -126,12 +145,13 @@ def absolute_reverse(name, *, args=(), kwargs=None, request=None, namespace=None
     built in its describe mode) points at that API's routes.
 
     A name neither reverses within is reversed within each namespace an
-    API's routes are named in (`api_namespaces`), in turn, unless the
-    serving namespace is itself one (``NoReverseMatch`` then: a link always
-    points at the API that served the request, never into another): a UI
-    page (resolved in the UI's namespace) or a request with no route links
-    to the API that routes the name, a ninja ``api()``'s in a ninja-only
-    project."""
+    API's routes are named in (`api_namespaces`), in turn, unless an API
+    serves the request (`serving_api_namespace`, DRF's routes outside any
+    namespace included) or the `namespace` given is a noted one
+    (``NoReverseMatch`` then: a link always points at the API that served
+    the request, never into another): a UI page (resolved in the UI's
+    namespace) or a request with no route links to the API that routes the
+    name, a ninja ``api()``'s in a ninja-only project."""
     match = getattr(request, "resolver_match", None)
     namespace = getattr(match, "namespace", "") or namespace
     if namespace and ":" not in name:
@@ -145,7 +165,11 @@ def absolute_reverse(name, *, args=(), kwargs=None, request=None, namespace=None
         return reverse(name, args=args or None, kwargs=kwargs, request=request)
     except NoReverseMatch as error:
         namespaces = api_namespaces()
-        if ":" in name or (namespace and namespace in namespaces):
+        if (
+            ":" in name
+            or (namespace and namespace in namespaces)
+            or serving_api_namespace(request) is not _NO_API
+        ):
             raise
         for api_namespace in namespaces:
             if not api_namespace:

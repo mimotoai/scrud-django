@@ -2319,3 +2319,29 @@ are) would answer each later call at once. The test that would expose it:
 on `tests/ninja_no_ui_types_urls.py`, count the `reverse` calls (or patch
 `api_route_name`) over two `api_base()` calls, asserting the second makes
 none.
+
+<a id="core-unserved-order"></a>
+## core-unserved-order: the core facade refuses an unserved method after the request check; both API front ends answer 405 first
+
+A type whose `TypeOptions.methods` leave a method out (a UI branch
+version's: GET, HEAD and OPTIONS) is refused that method by the core
+(`core.writes.refuse_unserved`, 405) only after the request check:
+`core.resources.load_for_read` and `core.writes.check_write_request` (so
+`create`, `update`, `create_answer`, `item_write_answer`, `write_item`) ask
+`check_request` first, so the anonymous get 401 and a requester without the
+grant 403. Both API front ends answer it 405 first, for anyone: DRF's view
+because scoped-rbac's request check leaves a method the view does not serve
+(`http_method_names`) to its 405, the ninja routes because `type_router`
+routes no operation for it (scrudful's 405, after authentication). The UI's
+pages refuse it first too (`pages._allowed`). Who still meets the core's
+order: a direct caller of the facade, the studio's writes
+(`scrud_django/ui/studio/answers.py`: `load_for_read`, `create_answer`,
+`item_write_answer`, which only write types the studio serves) and the
+`tests/test_core_*` modules
+(`test_core_ui_types.py::test_core_create_of_a_version_asks_the_request_check_first`
+pins the current order). The test that would pin alignment: that test
+inverted, `core_create`, `core_update` and `core_destroy` of a version by
+the anonymous and by a user without roles each raising
+`MethodNotAllowedError`, and `load_for_read(method="PUT")` likewise, before
+any `access.AccessDenied`.
+

@@ -50,6 +50,7 @@ from scrud_django.ui.embed import REFUSED_MESSAGE
 from scrud_django.ui.embed import api_url as embed_api_url
 
 from .fixtures import *  # noqa
+from .fixtures import assign_role
 from .front_ends import NINJA_NAMESPACE, serve_ninja, served_specs
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_render import may_select_branches
@@ -377,3 +378,41 @@ def test_an_api_not_serving_the_ui_types():
         f"{API.urls_namespace}:json-schema-list"
     )
     assert api_base() == "/api/"
+
+
+VERSION_TYPE_URI = "http://api.openteams.com/json-ld/UIBranchVersion"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("who", ["anonymous", "no-roles", "reader"])
+def test_a_versions_write_is_a_405_at_its_page_and_api_alike(ui_urlconf, who):
+    """A POST to the UI branch versions' list, and a PUT or DELETE of a
+    version, is a 405 for anyone at its UI page as at its ``/api/`` route
+    (the API answers it before any authorization, DRF's and ninja's alike;
+    the page refuses a method it does not serve first, `pages._allowed`),
+    each naming the methods it serves."""
+    from django.contrib.auth.models import User
+    from django.test import Client
+
+    from scrud_django.core.urls import api_reverse
+
+    make_jinja("row", "<b>{{ value }}</b>")  # main's versions recorded
+    version = Resource.objects.filter(resource_type__type_uri=VERSION_TYPE_URI).latest(
+        "pk"
+    )
+    client = Client()
+    if who == "no-roles":
+        client.force_login(User.objects.create(username="no-roles"))
+    elif who == "reader":
+        client.force_login(assign_role({"http.GET": [VERSION_TYPE_URI]}, ""))
+    item = api_reverse("ui-branch-versions", "detail", args=[version.pk])
+    collection = api_reverse("ui-branch-versions", "list")
+    for method, api in (("POST", collection), ("PUT", item), ("DELETE", item)):
+        # Both URLconfs serve the API under /api/ and the UI at /.
+        page = "/" + api.removeprefix("/api/")
+        for url in (api, page):
+            response = client.generic(
+                method, url, data=json.dumps({}), content_type=JSON
+            )
+            assert response.status_code == 405, (method, url, response.content)
+            assert response["Allow"].startswith("GET"), (method, url)

@@ -3146,6 +3146,9 @@ def test_ui_type_routes_answer_alike(case, status):
 
     assert drf.status == status, drf
     assert drf == ninja
+    if case.id == "ui-stylesheets-create-bad-selector":
+        # The problem names the refused rule's selector, the second.
+        assert json.loads(drf.body)["name"] == "rules[1].select", drf.body
 
 
 # UI branch versions: read in their branch's context, each narrowed to the
@@ -3385,21 +3388,24 @@ def test_ui_type_options_answer_alike(case):
 # refused), over main's ``row``, which ``wip`` overrides.
 
 UI_STUDIO_SETUP = (UI_MAIN_ROW, UI_WIP, UI_WIP_ROW)
+#: ``(slug, key, links)``: `links`, the answer links to the API's routes
+#: (hrefs, actions), so its ETag is the serving mount's
+#: (`Case.etag_hashes_the_mount`); the others' are alike.
 UI_STUDIO_CASES = [
-    ("ui-branch-items", "wip/"),
-    ("ui-branch-items", "main/"),
-    ("ui-branch-status", "wip/"),
-    ("ui-branch-status", "wip/?type=todo-lists"),
-    ("ui-type-catalog", "all/"),
-    ("ui-selectable-branches", "mine/"),
-    ("ui-push-previews", "wip/"),
-    ("ui-push-previews", "wip/?target=main"),
+    ("ui-branch-items", "wip/", True),
+    ("ui-branch-items", "main/", True),
+    ("ui-branch-status", "wip/", True),
+    ("ui-branch-status", "wip/?type=todo-lists", True),
+    ("ui-type-catalog", "all/", False),
+    ("ui-selectable-branches", "mine/", True),
+    ("ui-push-previews", "wip/", False),
+    ("ui-push-previews", "wip/?target=main", False),
 ]
 
 
 def _ui_studio_cases():
     cases = []
-    for slug, key in UI_STUDIO_CASES:
+    for slug, key, links in UI_STUDIO_CASES:
         path = "{mount}" + f"{slug}/{key}"
         name = f"{slug}-{key.strip('/').replace('/?', '-').replace('=', '-')}"
         cases.append(
@@ -3408,7 +3414,7 @@ def _ui_studio_cases():
                 "GET",
                 path,
                 _ui_setup(*UI_STUDIO_SETUP),
-                etag_hashes_the_mount=True,
+                etag_hashes_the_mount=links,
             )
         )
     cases.append(
@@ -3463,20 +3469,36 @@ def test_studio_computed_links_name_the_serving_mount():
 
 def test_the_harness_checks_a_masked_etag_is_the_bodys_hash():
     """`Case.etag_hashes_the_mount` masks an ETag only once it is the hash
-    of the body: one that is not fails the case."""
-    case = Case(
-        "ui-type-catalog-masked",
+    of the body (one that is not fails the case), and only where it is
+    needed: a 2xx with an ETag on each front end, the two different. An
+    answer whose ETags are alike (the type catalog links nowhere), or one
+    with none (a refusal), fails the flagged case."""
+    links = Case(
+        "ui-selectable-branches-masked",
         "GET",
-        "{mount}ui-type-catalog/all/",
-        _ui_setup(),
+        "{mount}ui-selectable-branches/mine/",
+        _ui_setup(*UI_STUDIO_SETUP),
         etag_hashes_the_mount=True,
     )
-    drf, ninja = parity(case)
+    drf, ninja = parity(links)
     assert drf.headers["ETag"] == ninja.headers["ETag"] == front_ends.BODY_ETAG
+    assert drf.raw_etag != ninja.raw_etag
 
     with mock.patch("scrud_django.core.computed.computed_etag", return_value='"other"'):
         with pytest.raises(AssertionError, match="not the hash of the body"):
-            parity(case)
+            parity(links)
+    alike = dataclasses.replace(
+        links, id="ui-type-catalog-masked", path="{mount}ui-type-catalog/all/"
+    )
+    with pytest.raises(AssertionError, match="unnecessary"):
+        parity(alike)
+    refused = dataclasses.replace(
+        links,
+        id="ui-selectable-branches-refused",
+        setup=_ui_setup(*UI_STUDIO_SETUP, login=False),
+    )
+    with pytest.raises(AssertionError, match="without an ETag"):
+        parity(refused)
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])

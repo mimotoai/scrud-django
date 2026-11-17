@@ -502,8 +502,10 @@ def test_core_create_of_a_version_answers_the_drf_405(admin_login, uniform):
 def test_core_create_of_a_version_asks_the_request_check_first(
     admin_login, login_no_roles
 ):
-    """As DRF answers 405 once ``initial()`` passed: a requester the request
-    check refuses gets its 403."""
+    """The core asks the request check before it refuses a method the type
+    does not serve: a requester it refuses gets its 403. (The API front
+    ends answer that method 405 before any authorization; follow-up
+    ``core-unserved-order``.)"""
     make_wip(admin_login)
     with pytest.raises(access.AccessDenied):
         core_create(login_no_roles, UI_BRANCH_VERSION_SLUG, dict(a_version().content))

@@ -36,7 +36,7 @@ import re
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from unittest import mock
 
 from django.db import transaction
@@ -92,6 +92,9 @@ class Exchange:
     status: int
     headers: dict[str, str]
     body: str | None
+    # The ETag a `Case.etag_hashes_the_mount` answer had before it was
+    # masked (`BODY_ETAG`), for `parity` to check; not compared.
+    raw_etag: str | None = field(default=None, compare=False, repr=False)
 
 
 def _no_setup(client):
@@ -122,6 +125,8 @@ class Case:
       hash (`scrud_django.core.computed.computed_etag`): `exchange` asserts
       each front end's ETag is the hash of its own body, then masks it
       (`BODY_ETAG`), so that the normalized bodies alone are compared.
+      `parity` asserts the flag is needed: each answer a 2xx with an ETag,
+      and the two ETags different (`checking_the_masked_etags`).
     """
 
     id: str
@@ -215,7 +220,25 @@ def parity(case: Case) -> tuple[Exchange, Exchange]:
     drf, ninja = exchanges
     if case.drf_alone_reads_the_session:
         drf = excusing_drfs_session_vary(drf, ninja)
+    if case.etag_hashes_the_mount:
+        checking_the_masked_etags(case, drf, ninja)
     return drf, ninja
+
+
+def checking_the_masked_etags(case, drf: Exchange, ninja: Exchange) -> None:
+    """``AssertionError`` unless `case` (`Case.etag_hashes_the_mount`)
+    needs its flag: each front end answered a 2xx with an ETag (checked to
+    be its body's hash, then masked, by `exchange`), and the two ETags
+    differ (alike, nothing was excused)."""
+    for exchange in (drf, ninja):
+        assert 200 <= exchange.status < 300 and exchange.raw_etag is not None, (
+            f"{case.id}: etag_hashes_the_mount on an answer without an ETag "
+            f"({exchange.status})"
+        )
+    assert drf.raw_etag != ninja.raw_etag, (
+        f"{case.id}: etag_hashes_the_mount is unnecessary: both front ends "
+        "answered the same ETag"
+    )
 
 
 def excusing_drfs_session_vary(drf: Exchange, ninja: Exchange) -> Exchange:
@@ -337,13 +360,17 @@ def exchange(
         get = client.generic("GET", url, **kwargs)
         assert get.status_code == response.status_code, get
         length_of = get.content
+    raw_etag = None
     if etag_hashes_the_body and response.has_header("ETag"):
         content = response.content if length_of is None else length_of
-        assert response["ETag"] == computed_etag(json.loads(content)), (
-            f"the ETag {response['ETag']} is not the hash of the body"
+        raw_etag = response["ETag"]
+        assert raw_etag == computed_etag(json.loads(content)), (
+            f"the ETag {raw_etag} is not the hash of the body"
         )
         response["ETag"] = BODY_ETAG
-    return normalized(response, mount, keys, length_of=length_of)
+    return dataclasses.replace(
+        normalized(response, mount, keys, length_of=length_of), raw_etag=raw_etag
+    )
 
 
 def normalized(response, mount, keys, *, length_of=None) -> Exchange:

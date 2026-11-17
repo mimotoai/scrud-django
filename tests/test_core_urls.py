@@ -195,10 +195,10 @@ def test_a_link_follows_the_api_serving_the_request():
 
 @pytest.mark.urls("tests.two_ninja_apis_urls")
 def test_a_type_route_follows_the_api_serving_the_request():
-    """`api_route_name` and `api_reverse` given a request an API serves try
-    that API's route first (an answer it computes, a studio computed type's,
-    links to its own routes); without one, or for a request outside every
-    API (a UI page's), the first noted API routing it."""
+    """`api_route_name` and `api_reverse` given a request an API serves look
+    in that API alone (an answer it computes, a studio computed type's,
+    links to its own routes, R5); without one, or for a request outside
+    every API (a UI page's), in the first noted API routing it."""
     from scrud_django.core.urls import api_reverse, api_route_name
 
     assert reverse("ninja-b:json-schema-list") == "/b/json-schema/"
@@ -214,7 +214,53 @@ def test_a_type_route_follows_the_api_serving_the_request():
     assert api_route_name("json-schema", "list", request=page) == (
         "ninja-a:json-schema-list"
     )
-    # A type the serving API lacks is found where it is routed.
-    assert api_route_name("partner-profiles", "list", request=request) == (
+    # A type the serving API lacks is not looked for in another API, which
+    # routes it (R5, strictly: the coordinator's fix-round ruling).
+    assert api_route_name("partner-profiles", "list", request=request) is None
+    with pytest.raises(NoReverseMatch):
+        api_reverse("partner-profiles", "list", request=request)
+    assert api_route_name("partner-profiles", "list", request=page) == (
         "ninja-a:partner-profiles-list"
     )
+
+
+@pytest.mark.urls("tests.drf_and_ninja_urls")
+def test_a_link_from_a_drf_route_stays_on_drf():
+    """A request DRF's routes serve (outside any namespace, which DRF's
+    registration notes) links within DRF alone: a type only the ninja API
+    beside it routes reverses nowhere from it, through either helper, though
+    a UI page, or a request not resolved, finds it there."""
+    from scrud_django.core.urls import api_reverse, api_route_name
+
+    assert reverse("ninja-beside-drf:ninja-only-things-list") == (
+        "/ninja/ninja-only-things/"
+    )
+    drf = resolved_request("/partner-profiles/")
+    assert drf.resolver_match.namespace == ""
+    assert api_route_name("partner-profiles", "list", request=drf) == (
+        "partner-profiles-list"
+    )
+    assert api_route_name("ninja-only-things", "list", request=drf) is None
+    with pytest.raises(NoReverseMatch):
+        api_reverse("ninja-only-things", "list", request=drf)
+    with pytest.raises(NoReverseMatch):
+        absolute_reverse("ninja-only-things-list", request=drf)
+    # Its own routes reverse as before.
+    assert absolute_reverse("partner-profiles-list", request=drf) == (
+        "http://testserver/partner-profiles/"
+    )
+    # A studio page, and a request not resolved, fall back to the ninja API.
+    page = resolved_request(reverse("scrud-studio:live-preview"))
+    assert page.resolver_match.namespace == "scrud-studio"
+    unresolved = RequestFactory().get("/")
+    for request in (page, unresolved):
+        assert api_route_name("ninja-only-things", "list", request=request) == (
+            "ninja-beside-drf:ninja-only-things-list"
+        )
+        assert absolute_reverse("ninja-only-things-list", request=request) == (
+            "http://testserver/ninja/ninja-only-things/"
+        )
+    # The ninja API's request: its own routes alone, DRF's not.
+    ninja = resolved_request("/ninja/ninja-only-things/")
+    assert ninja.resolver_match.namespace == "ninja-beside-drf"
+    assert api_route_name("partner-profiles", "list", request=ninja) is None

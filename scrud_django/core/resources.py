@@ -354,8 +354,9 @@ def load_for_read(
       body with its object check, as DRF's ``|`` does (`validate_write`
       asks the object check again with the body, `check_object`);
     - then a `method` the type does not serve (``TypeOptions.methods``) is
-      refused (`scrud_django.core.writes.refuse_unserved`, 405), as DRF
-      answers it once ``initial()`` passed;
+      refused (`scrud_django.core.writes.refuse_unserved`, 405); DRF's view
+      and the ninja routes answer it before any authorization (follow-up
+      ``core-unserved-order``);
     - missing, or a `pk` that is no key, it is ``Http404``; so is one stored
       in a context reserved once normalised (`found_item`, which caches the
       type on it). The lookup is not narrowed by readability, as the DRF

@@ -707,3 +707,48 @@ def test_a_preflight_on_an_entry_router_does_not_resolve_the_user():
         )
     # The probe's own answer: the hook, which would refuse (401), never ran.
     assert response.status_code == 204, response.content
+
+
+STUDIO_SLUGS = {
+    "ui-branch-items",
+    "ui-branch-status",
+    "ui-type-catalog",
+    "ui-selectable-branches",
+    "ui-push-previews",
+}
+UI_SLUGS = {
+    "ui-components",
+    "ui-stylesheets",
+    "ui-css",
+    "ui-js",
+    "ui-branches",
+    "ui-branch-versions",
+    "ui-pushes",
+}
+
+
+@pytest.mark.parametrize(
+    "removed, served",
+    [
+        ((), UI_SLUGS | STUDIO_SLUGS),
+        (("scrud_django.ui.studio",), UI_SLUGS),
+        (("scrud_django.ui", "scrud_django.ui.studio"), set()),
+    ],
+    ids=["both", "no-studio", "no-ui"],
+)
+def test_the_ui_types_follow_the_installed_apps(removed, served):
+    """`ui_specs`, and so ``api()``, bring the UI's types only when
+    ``scrud_django.ui`` is installed, and the studio's computed types only
+    when ``scrud_django.ui.studio`` is too."""
+    from scrud_django.ninja.api import ui_specs
+
+    installed = [app for app in settings.INSTALLED_APPS if app not in removed]
+    with override_settings(INSTALLED_APPS=installed):
+        assert {spec.slug for spec in ui_specs()} == served
+        built = scrud_django.ninja.api(
+            urls_namespace=f"test-ui-apps-{len(removed)}", docs_url=None
+        )
+        names = {pattern.name for pattern in built.urls[0] if pattern.name}
+    every = UI_SLUGS | STUDIO_SLUGS
+    assert {slug for slug in every if f"{slug}-detail" in names} == served
+    assert {slug for slug in UI_SLUGS if f"{slug}-list" in names} == (served & UI_SLUGS)

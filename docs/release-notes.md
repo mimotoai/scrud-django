@@ -88,8 +88,9 @@
   `api_reverse`, `api_namespaces`, `api_slugs`) gives the UI its pages,
   embeds, prefixes, studio links and the API's base in a ninja-only project.
   `core.urls.absolute_reverse` falls back to those namespaces, so a UI page's
-  `Location` and item hrefs reverse there too, but never from a request
-  another API serves: its links stay within that API.
+  `Location` and item hrefs reverse there too, but never from a request an
+  API serves (DRF's routes outside any namespace included): its links stay
+  within that API.
 * The ninja `api()` serves the UI's types (`ui-components/`,
   `ui-stylesheets/`, `ui-css/`, `ui-js/`, `ui-branches/`,
   `ui-branch-versions/`, `ui-pushes/`) when `scrud_django.ui` is installed,
@@ -104,7 +105,7 @@
   405, before any authorization, as DRF's view answers it), and a GET of an
   item answers what its reader gets (the type's `read_view`). A studio
   computed answer's links, and `api_reverse(..., request=)`'s, are the
-  serving API's.
+  serving API's alone (none when it does not route the type).
 * The system checks `scrud_django_ui.W004`, naming each registered type with
   no API route the UI reads (none named `<slug>-list` or `<slug>-detail`
   outside a URL namespace or in a ninja `api()`'s), and
