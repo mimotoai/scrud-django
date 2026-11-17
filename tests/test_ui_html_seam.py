@@ -13,6 +13,7 @@ from django.urls import reverse
 from django.utils.http import quote_etag
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.models import Resource
 from scrud_django.ui import html as ui_html
 from scrud_django.ui import pages
 
@@ -118,7 +119,9 @@ def test_render_html_equals_the_page_for_a_create(todo_owner_login, calls):
     assert arguments["kind"] == "create"
     # the page is given the API's URL of the new resource, and answers (as it
     # links it) with the UI's
-    assert arguments["location"].replace("/api/", "/", 1) == Http.response["Location"]
+    pk = Resource.objects.get(content__title="Created").pk
+    assert arguments["location"] == f"http://testserver/api/todo-lists/{pk}/"
+    assert Http.response["Location"] == f"http://testserver/todo-lists/{pk}/"
     assert Http.response["Location"].removeprefix("http://testserver") in (
         Http.response.content.decode()
     )

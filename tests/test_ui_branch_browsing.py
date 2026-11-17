@@ -19,7 +19,7 @@ from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_render import (
     BRANCH_HEADER,
-    MAIN_RENDER_QUERIES,
+    assert_main_render_queries,
     may_select_branches,
     put_item,
     setup_main_and_wip,
@@ -402,7 +402,7 @@ def test_selecting_main_reads_no_branch(todo_list, todo_reader_login):
             Http.api_client.cookies.pop(COOKIE, None)
         with CaptureQueriesContext(connection) as queries:
             assert MAIN_ROW in get(todo_list, query, **headers)
-        assert len(queries) == MAIN_RENDER_QUERIES, [q["sql"] for q in queries]
+        assert_main_render_queries(queries)
 
 
 @pytest.mark.django_db
