@@ -114,6 +114,10 @@ class ScrudException(Exception):
     # (``scoped_rbac.problems.PROBLEM_LINKS``); off, DRF's native body
     # (`native_response_data`) as ``application/json``.
     problem_links: bool = False
+    # The headers its answer carries beyond the error's own (a 401's
+    # ``WWW-Authenticate``, a 429's ``Retry-After``), on either front end. An
+    # instance sets its own; the class's is never changed.
+    answer_headers: dict[str, str] = {}
 
     def __init__(self, message=None):
         if message is None:

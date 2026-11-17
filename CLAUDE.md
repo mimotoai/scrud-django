@@ -85,7 +85,8 @@ domain logic lives there, and a handler that needs something the core lacks
 adds it to the core with a core test. It authenticates with scoped-rbac's
 `resolve_user` (the `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`
 (only on a router added with its own `auth=`), else the session), not DRF's
-authentication classes (see the README). It answers as the DRF routes do,
+authentication classes unless that hook is the opt-in
+`scrud_django.drf.auth.drf_user`, which runs them (see the README). It answers as the DRF routes do,
 and `tests/test_front_end_parity.py` is the proof (the same exchanges
 replayed against both, compared exactly); the generic suites take the
 `front_end` fixture and run on both. It serves the UI's types and the

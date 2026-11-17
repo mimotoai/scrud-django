@@ -2,7 +2,7 @@
 DRF routes answer an error with (`error_answer`), for a view that calls the
 core alone, uniform errors on or off as ``SCOPED_RBAC["UNIFORM_ERRORS"]``
 says for ``"drf"``. A scrud error is answered as
-`scrud_django.exceptions.scrud_exception_handler` answers it
+`scrud_django.drf.exceptions.scrud_exception_handler` answers it
 (`scrud_error_answer`, which the ninja front end's handler calls too,
 `scrud_django.ninja.errors.install`), an access error, a ``Http404`` and
 Django's ``PermissionDenied`` as scoped-rbac's DRF handler answers the DRF
@@ -27,6 +27,12 @@ from scrud_django.exceptions import ScrudException
 
 PROBLEM_JSON = problems.PROBLEM_JSON
 JSON = "application/json"
+
+#: The attribute of a request holding the ``WWW-Authenticate`` challenge its
+#: 401s carry, which an authentication hook sets: on DRF the challenge of the
+#: route's first authenticator (``scrud_django.drf.auth.drf_user`` sets that
+#: one on ninja, whose answers `scrud_django.ninja.errors` gives it).
+AUTH_CHALLENGE_ATTR = "_scrud_auth_challenge"
 
 #: The headers of a problem scoped-rbac's handler answers (uniform errors
 #: on).
@@ -124,20 +130,23 @@ def scrud_error_answer(
     exc: ScrudException, request=None, *, uniform: bool
 ) -> tuple[int, dict | list, dict[str, str]]:
     """``(status, body, headers)`` of `exc` as
-    `scrud_django.exceptions.scrud_exception_handler` answers it: its
+    `scrud_django.drf.exceptions.scrud_exception_handler` answers it: its
     status, its `ScrudException.response_data` (given `request`) with that
     ``status``, as ``application/problem+json``. One standing for an error
     DRF answers through scoped-rbac's handler (`ScrudException.problem_links`)
     is answered as that one: with scoped-rbac's problem-details ``Link``
     while `uniform` (errors are on), else as DRF's native body
-    (`ScrudException.native_response_data`, ``application/json``)."""
+    (`ScrudException.native_response_data`, ``application/json``). The
+    error's `ScrudException.answer_headers` are added to either."""
     if exc.problem_links and not uniform:
-        return exc.status_code, exc.native_response_data(), dict(NATIVE_HEADERS)
+        headers = {**NATIVE_HEADERS, **exc.answer_headers}
+        return exc.status_code, exc.native_response_data(), headers
     data = exc.response_data({"request": request})
     data["status"] = exc.status_code
     headers = (
         dict(PROBLEM_HEADERS) if exc.problem_links else {"Content-Type": PROBLEM_JSON}
     )
+    headers.update(exc.answer_headers)
     return exc.status_code, data, headers
 
 

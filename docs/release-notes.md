@@ -74,10 +74,17 @@
   (`DEFAULT_AUTHENTICATION_CLASSES`, or the `SCRUD_DRF_AUTHENTICATION`
   setting, a list of classes or dotted paths), so a Basic or token client of
   the DRF routes is the same user on ninja and is refused alike (a wrong
-  credential is a 401 as DRF answers it, uniform errors on or off). A
-  session user's write is CSRF-checked as DRF's `SessionAuthentication`
-  checks it (403 `CSRF Failed: ...`); Basic and token clients need no CSRF
-  token. Pinned against the DRF routes in `tests/test_ninja_auth.py`.
+  credential is a 401 as DRF answers it, uniform errors on or off, with the
+  first authenticator's `WWW-Authenticate` challenge as on DRF; any other
+  error an authenticator raises is answered as DRF answers it). A session
+  user's write is CSRF-checked as DRF's `SessionAuthentication` checks it
+  (403 `CSRF Failed: ...`); Basic and token clients need no CSRF token. One
+  stricter difference: with Basic or token authentication before the
+  session's, the session user's own credentials sent with its cookie are
+  CSRF-checked on ninja, not on DRF. Pinned against the DRF routes in
+  `tests/test_ninja_auth.py`.
+* A `ScrudException` can carry headers of its answer
+  (`ScrudException.answer_headers`), which both front ends send.
 
 * An app's own Django models can be served through ninja with scrud's
   workflow: `scrud_django.ninja.workflow_check(iri, *, model, schema_out=None,

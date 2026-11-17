@@ -26,6 +26,8 @@ def scrud_exception_handler(exc, context):
     response = drf_exception_handler(as_drf(exc), context)
     response.data = exc.response_data(context)
     response.data["status"] = response.status_code
+    for name, value in exc.answer_headers.items():
+        response[name] = value
     try:
         request = context["request"]
         renderer = request.accepted_renderer

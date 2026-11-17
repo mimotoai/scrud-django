@@ -12,6 +12,7 @@ from scoped_rbac import conf, problems
 from scoped_rbac.ninja import install_error_handlers
 
 from scrud_django.core.errors import (
+    AUTH_CHALLENGE_ATTR,
     not_authenticated_detail,
     parse_error_detail,
     scrud_error_answer,
@@ -50,7 +51,7 @@ def uniform_errors() -> bool:
 
 def install(api) -> None:
     """Answer `api`'s `ScrudException`s as
-    `scrud_django.exceptions.scrud_exception_handler` does on DRF
+    `scrud_django.drf.exceptions.scrud_exception_handler` does on DRF
     (`scrud_django.core.errors.scrud_error_answer`): the
     error's status, its `ScrudException.response_data` with that ``status``,
     written as DRF's JSON (scoped-rbac's renderer, which
@@ -128,7 +129,10 @@ def answer_natively_when_off(api) -> None:
     (`_native`): scrudful's own 400, 412 and 428, which scrud's routers
     always describe as problem details, and scoped-rbac's errors, whose
     handlers `install` installs with uniform errors on. Call it after `install`,
-    before ``api.urls`` is read."""
+    before ``api.urls`` is read. A 401 without a ``WWW-Authenticate`` gets
+    the challenge the request's authentication hook noted
+    (`scrud_django.core.errors.AUTH_CHALLENGE_ATTR`), uniform errors on or
+    off."""
     get_urls = api._get_urls
 
     @functools.wraps(get_urls)
@@ -145,6 +149,12 @@ def _answering_natively(view, api):
     @functools.wraps(view)
     def answered(request, *args, **kwargs):
         response = view(request, *args, **kwargs)
+        if response.status_code == 401 and not response.has_header("WWW-Authenticate"):
+            # The challenge the request's authentication hook noted
+            # (`AUTH_CHALLENGE_ATTR`), as DRF gives its first authenticator's.
+            challenge = getattr(request, AUTH_CHALLENGE_ATTR, None)
+            if challenge:
+                response["WWW-Authenticate"] = challenge
         if response.status_code >= 400 and not uniform_errors():
             return _native(request, response, api)
         return response

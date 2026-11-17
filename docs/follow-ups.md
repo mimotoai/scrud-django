@@ -1349,6 +1349,11 @@ Each is worked around here; none has a public replacement upstream yet.
   way to keep scrudful's automatic OPTIONS while supplying the whole `Allow`
   (its `allowed=` takes a per-method hook on a loaded object, ruled out by
   R4).
+- `scrud_django.drf.auth.AuthenticatorError` answers an error a DRF
+  authenticator raises on ninja with scoped-rbac's private
+  `scoped_rbac.rest._problem_for` (the problem its DRF handler answers that
+  exception with); a public form would replace it. Its test is
+  `tests/test_ninja_auth.py::test_the_drf_hook_answers_another_authenticator_error_as_drf`.
 - Every URL-level wrapper monkeypatches ninja's private `NinjaAPI._get_urls`:
   `entry.authenticate_first`, `errors.answer_natively_when_off`,
   `negotiation.negotiate_as_drf` and `routers._wrap_patterns` (which feeds

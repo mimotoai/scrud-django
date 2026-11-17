@@ -160,10 +160,20 @@ urlpatterns = [
   it is set, and the first that authenticates the request gives the user
   (none: the anonymous user). Each client is then the user it is on the DRF
   routes and is refused alike: credentials an authenticator refuses are the
-  401 DRF answers (uniform errors on or off), a session user's write
+  401 DRF answers (uniform errors on or off), any other error an
+  authenticator raises (a `Throttled`, say) is answered as DRF answers it,
+  a 401 carries the first authenticator's challenge as `WWW-Authenticate`
+  as on DRF (`Basic realm="api"` when Basic authentication comes first;
+  none when the session's does, DRF's default), a session user's write
   without a valid CSRF token is a 403 (`CSRF Failed: ...`) as with DRF's
   `SessionAuthentication`, and Basic and token clients need no CSRF token
-  (`tests/test_ninja_auth.py` compares each with the DRF route).
+  (`tests/test_ninja_auth.py` compares each with the DRF route). One
+  difference, stricter and safe: when Basic or token authentication comes
+  before the session's and a browser sends the session user's own Basic or
+  token credentials together with that user's session cookie, DRF takes
+  the write as Basic or token (no CSRF check) while ninja's `resolve_user`
+  CSRF-checks the session's user however it was found: a write without a
+  CSRF token is a 403 on ninja, a 200 on DRF.
 * A computed type's `compute(request, key)` receives a plain Django
   `HttpRequest` on ninja (a DRF `Request` on DRF): read `request.GET` and
   `request.user`, not `request.query_params` or `request.data`, and do not

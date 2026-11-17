@@ -134,15 +134,17 @@ def fresh(monkeypatch):
     """Import an old module path anew (its alias module runs again), the
     modules restored afterwards."""
 
-    def fresh_import(name):
+    def fresh_import(name, importer=__import__):
         parent_name, _, child = name.rpartition(".")
         parent = importlib.import_module(parent_name)
-        if hasattr(parent, child):
-            monkeypatch.setattr(parent, child, getattr(parent, child))
-        monkeypatch.delitem(sys.modules, name, raising=False)
+        # Set back afterwards, or removed when they were not there: an alias
+        # module left imported would not warn in a later test.
+        monkeypatch.setattr(parent, child, getattr(parent, child, None), raising=False)
+        monkeypatch.setitem(sys.modules, name, sys.modules.get(name))
+        del sys.modules[name]
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            __import__(name)
+            importer(name)
         return sys.modules[name], deprecations(caught)
 
     return fresh_import
@@ -163,6 +165,36 @@ def test_an_old_module_is_its_new_module_and_warns_once(fresh, old, new):
     assert public
     for name in public:
         assert getattr(module, name) is getattr(new_module, name), name
+
+
+def test_fresh_leaves_no_alias_imported_that_was_not(fresh, request):
+    import scrud_django
+
+    was_there = "scrud_django.views" in sys.modules
+    fresh("scrud_django.views")
+    request.getfixturevalue("monkeypatch").undo()
+    assert ("scrud_django.views" in sys.modules) is was_there
+    assert hasattr(scrud_django, "views") is was_there
+
+
+def test_an_alias_imported_by_import_module_warns_at_its_caller(fresh):
+    _module, caught = fresh("scrud_django.views", importer=importlib.import_module)
+    assert len(caught) == 1
+    assert caught[0].filename == __file__
+
+
+def test_a_moved_name_imported_by_import_string_warns_at_its_caller(monkeypatch):
+    from django.utils.module_loading import import_string
+
+    from scrud_django import exceptions
+
+    monkeypatch.delitem(vars(exceptions), "scrud_exception_handler", raising=False)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        import_string("scrud_django.exceptions.scrud_exception_handler")
+    caught = deprecations(caught)
+    assert len(caught) == 1
+    assert caught[0].filename == __file__
 
 
 @pytest.mark.parametrize("old,name", sorted(NAME_ALIASES))

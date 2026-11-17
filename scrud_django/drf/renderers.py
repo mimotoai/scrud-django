@@ -25,5 +25,5 @@ class JSONLDRenderer(JSONRenderer):
 
 
 # The documents' renderers: an error answered under one of them is problem
-# details (``scrud_django.exceptions.scrud_exception_handler``).
+# details (``scrud_django.drf.exceptions.scrud_exception_handler``).
 DOCUMENT_RENDERERS = (SchemaJSONRenderer, JSONLDRenderer)
