@@ -8,8 +8,10 @@ from django.conf import settings
 from django.db import transaction
 from django.test import RequestFactory, override_settings
 from django.urls import reverse
+from django.utils.http import http_date
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
+from scrudful._django import precondition_headers
 
 from scrud_django.core import lists, writes
 from scrud_django.core.errors import error_answer
@@ -797,6 +799,9 @@ def test_core_list_of_versions_is_narrowed_per_reader(admin_login):
         ("DELETE", "If-Match", "stale"),
         ("DELETE", None, None),
         ("PUT", "If-Match", "malformed"),
+        ("GET", "If-Modified-Since", "modified"),
+        ("PUT", "If-Unmodified-Since", "long-ago"),
+        ("DELETE", "If-None-Match", "current"),
     ],
 )
 @test_context
@@ -810,6 +815,8 @@ def test_item_preconditions_match_the_api(
         "current": f'"{todo_list.etag}"',
         "stale": '"stale"',
         "malformed": "not-an-etag",
+        "modified": http_date(todo_list.modified_at.timestamp()),
+        "long-ago": "Mon, 01 Jan 2001 00:00:00 GMT",
     }
     headers = {} if header is None else {header: values[value]}
     request = getattr(RequestFactory(), method.lower())("/", headers=headers)
@@ -837,3 +844,84 @@ def test_item_preconditions_match_the_api(
         assert drf == 200
     else:
         assert status == drf
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_read_view_narrows_one_version_again_for_another_reader(admin_login):
+    """`read_version` narrows per request: one version object read first by
+    a reader of every item, then by one who may not read them all, gives
+    the second the narrowed items and ETag (from the stored ones)."""
+    version, reader = a_narrowed_version()
+    versions_type = rtype(UI_BRANCH_VERSION_SLUG)
+    stored = (version.content, version.etag)
+    content, etag = read_version(get_request(admin_login), versions_type, version)
+    assert (content, etag) == stored
+    narrowed, narrowed_etag = read_version(get_request(reader), versions_type, version)
+    assert [i["name"] for i in narrowed["items"]["stylesheet"]] == ["theme"]
+    assert narrowed_etag != stored[1]
+    assert (narrowed, narrowed_etag) == core_item_read(reader, version)[:2]
+    # And back: the reader of everything gets the stored version again.
+    assert read_version(get_request(admin_login), versions_type, version) == stored
+    # The same request is answered from its memo.
+    request = get_request(reader)
+    first = read_version(request, versions_type, version)
+    assert read_version(request, versions_type, version) == first
+
+
+def post_request(user, headers):
+    request = RequestFactory().post(
+        "/",
+        data=component(name="new", **WIP),
+        content_type="application/json",
+        headers=headers,
+    )
+    request.user = user
+    return request
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_conditional_create_on_a_branch_list_evaluates_as_drf(admin_login):
+    """A POST's list validators read the list through the type's
+    ``list_rows`` (as JSON), as DRF's ``create_list_validators`` does: an
+    ``If-Match`` of the ``wip`` list's ETag passes on both, a stale one
+    fails on both."""
+    wip_overrides_row(admin_login)
+    resource_type = rtype(UI_COMPONENT_SLUG)
+    list_url = reverse(f"{UI_COMPONENT_SLUG}-list")
+    Given.http.force_authenticate(admin_login)
+    When.http.get(list_url, headers={BRANCH_HEADER: "wip"})
+    Then.http.status_code_is(200)
+    wip_etag = Http.response["ETag"]
+    When.http.get(list_url)
+    assert Http.response["ETag"] != wip_etag  # main's list differs
+
+    def core_status(if_match):
+        request = post_request(
+            admin_login, {BRANCH_HEADER: "wip", "If-Match": if_match}
+        )
+        failed = lists.evaluate_list_preconditions(
+            "POST",
+            precondition_headers(request),
+            lambda: lists.create_list_validators(
+                request,
+                resource_type,
+                requirement=requirement_for(resource_type),
+                using=write_db(),
+            ),
+        )
+        return None if failed is None else failed.status
+
+    def drf_status(if_match):
+        When.http.post(
+            list_url,
+            data=component(name="new", **WIP),
+            format="json",
+            headers={BRANCH_HEADER: "wip", "If-Match": if_match},
+        )
+        return Http.response.status_code
+
+    assert core_status('"stale"') == drf_status('"stale"') == 412
+    assert core_status(wip_etag) is None
+    assert drf_status(wip_etag) == 201

@@ -6,7 +6,12 @@ says for ``"drf"``. A scrud error is answered as
 (`scrud_error_answer`, which the ninja front end's handler calls too,
 `scrud_django.ninja.errors.install`), an access error, a ``Http404`` and
 Django's ``PermissionDenied`` as scoped-rbac's DRF handler answers the DRF
-exception each stands for."""
+exception each stands for.
+
+The headers given are the error's own (``Content-Type``, the problem-details
+``Link``, a 401's ``WWW-Authenticate``): those a route adds to every answer
+are its caller's to add, such as DRF's ``Allow`` on a 405, the route's own
+Links (its HTTP Schema Resource) and ``Access-Control-Expose-Headers``."""
 
 import json
 
@@ -60,7 +65,9 @@ def error_answer(
     The body is a problem with its ``status`` (``application/problem+json``,
     with scoped-rbac's problem-details ``Link`` for the errors its handler
     answers); with uniform errors off, DRF's native body for those
-    (``application/json``)."""
+    (``application/json``). The headers are the error's own: the route's
+    (DRF's ``Allow`` on a 405, its own Links) are the caller's to add. Who
+    is anonymous is decided as `access_error_answer` says."""
     uniform = uniform_errors()
     if isinstance(exc, ScrudException):
         return scrud_error_answer(exc, request, uniform=uniform)
@@ -112,6 +119,16 @@ def access_error_answer(
     anonymous user of `request` (no `request`: not anonymous) is DRF's
     ``NotAuthenticated``, a 401 carrying `challenge` as its
     ``WWW-Authenticate`` when given; any other is its status
+
+    The anonymous user is one whose ``user.is_authenticated`` is false
+    (`_anonymous`), for a view that authenticates by Django's session. DRF's
+    rule differs: ``drf_error`` makes it a 401 when the route has
+    authenticators and none of them succeeded
+    (``request.successful_authenticator``). The two agree for a route
+    authenticating by the session; they differ for a route without
+    session authentication (a session user DRF's authenticators do not
+    read gets DRF's 401, a 403 here) and for one with no authenticators at
+    all (DRF answers 403 even to the anonymous, a 401 here).
     (``problems.from_access_error``). With `uniform` errors, scoped-rbac's
     problem; else DRF's native body: ``{"detail": message}``, a
     ``ReservedContext``'s or ``PrimaryKeyChanged``'s ``[message]`` (DRF's
@@ -121,7 +138,7 @@ def access_error_answer(
         if uniform:
             body = problems.error_problem(401)
         else:
-            body = {"detail": gettext("Authentication credentials were not provided.")}
+            body = {"detail": not_authenticated_detail()}
         headers = dict(PROBLEM_HEADERS if uniform else NATIVE_HEADERS)
         if challenge:
             headers["WWW-Authenticate"] = challenge
@@ -163,8 +180,18 @@ def _framework_answer(status, code, detail, default, uniform):
             problems.error_problem(status, code=code, detail=text),
             dict(PROBLEM_HEADERS),
         )
-    native = message if isinstance(message, list | dict) else {"detail": message}
-    return status, native, dict(NATIVE_HEADERS)
+    return status, native_body(message), dict(NATIVE_HEADERS)
+
+
+def native_body(message):
+    """DRF's native error body of an exception of `message` (a `drf_detail`):
+    a list's or a dict's own, else ``{"detail": message}``."""
+    return message if isinstance(message, list | dict) else {"detail": message}
+
+
+def not_authenticated_detail() -> str:
+    """The ``detail`` of DRF's ``NotAuthenticated`` (its native 401's)."""
+    return gettext("Authentication credentials were not provided.")
 
 
 def drf_detail(exc):

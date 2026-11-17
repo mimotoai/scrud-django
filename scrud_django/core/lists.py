@@ -332,11 +332,30 @@ def list_queryset(
         raise ValueError(
             f"list_queryset lists for a GET or HEAD, not a {request.method}"
         )
+    queryset = listed_rows(request, resource_type, requirement, using=using, html=html)
+    return _listed(queryset, resource_type, params, ignored)
+
+
+def listed_rows(
+    request,
+    resource_type,
+    requirement: Requirement | Sequence,
+    *,
+    using: str | None = None,
+    html: bool = False,
+) -> QuerySet[Resource]:
+    """The rows of `resource_type`'s list `request`'s user gets, before its
+    content filter and order: `readable_queryset` (`requirement` and
+    `using` as it takes them), then the rows the type's
+    ``TypeOptions.list_rows`` shows of them, when it has one (`html`: the
+    list is asked for as HTML). `list_queryset` (a GET's) and
+    `create_list_validators` (a POST's, never as HTML) read the list
+    through it."""
     queryset = readable_queryset(request, resource_type, requirement, using=using)
     list_rows = type_options(resource_type.type_uri).list_rows
     if list_rows is not None:
         queryset = list_rows(request, resource_type, queryset, html=html)
-    return _listed(queryset, resource_type, params, ignored)
+    return queryset
 
 
 def _listed(queryset, resource_type, params, ignored):
@@ -664,11 +683,12 @@ def create_list_validators(
     `ignored` as `list_queryset` takes it), read on database `using` (the
     create's, under its `scrud_django.core.writes.conditional_create_lock`),
     as the DRF route reads them (``ListValidatorsMixin.create_list_validators``):
-    `readable_queryset` of the POST, which lists as its GET copy without the
-    list grant (the create's own request check governs it). A page that is
+    `listed_rows` of the POST (`readable_queryset`, which lists as its GET
+    copy without the list grant, the create's own request check governing
+    it, then the type's ``list_rows``, as JSON). A page that is
     not one of the list's raises ``django.core.paginator.InvalidPage`` (404
     on DRF), as the GET would."""
-    queryset = readable_queryset(request, resource_type, requirement, using=using)
+    queryset = listed_rows(request, resource_type, requirement, using=using)
     queryset = _listed(queryset, resource_type, request.GET, ignored)
     page = requested_page(queryset, request.GET)
     return list_validators(as_get(request), resource_type, queryset, page, requirement)

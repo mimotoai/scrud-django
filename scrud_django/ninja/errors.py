@@ -11,7 +11,11 @@ from django.utils.translation import gettext
 from scoped_rbac import conf, problems
 from scoped_rbac.ninja import install_error_handlers
 
-from scrud_django.core.errors import parse_error_detail, scrud_error_answer
+from scrud_django.core.errors import (
+    not_authenticated_detail,
+    parse_error_detail,
+    scrud_error_answer,
+)
 from scrud_django.exceptions import ScrudException
 
 PROBLEM_JSON = "application/problem+json"
@@ -152,9 +156,7 @@ def _answering_natively(view, api):
 #: problem (by its ``code``) words it otherwise: the reason phrase of a 401
 #: and a 405, a parse error's.
 NATIVE_DETAILS = {
-    "not_authenticated": lambda request: gettext(
-        "Authentication credentials were not provided."
-    ),
+    "not_authenticated": lambda request: not_authenticated_detail(),
     "method_not_allowed": lambda request: gettext(
         'Method "{method}" not allowed.'
     ).format(method=request.method),

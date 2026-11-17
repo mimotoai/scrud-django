@@ -948,6 +948,12 @@ def list_item_rows(request, resource_type, queryset, *, html: bool):
     )
 
 
+# The attributes of a version read for a request (`readable_version`): its
+# stored ``(content, etag)``, and the request it is narrowed for.
+STORED_VERSION_ATTR = "_scrud_stored_version"
+READ_FOR_ATTR = "_scrud_read_for"
+
+
 def readable_version(request, version):
     """`version` (a version `Resource`, read for `request`) as `request` may
     see it, in memory only: its ``items`` without those the requester may
@@ -956,10 +962,16 @@ def readable_version(request, version):
     without theirs. When any is left out, its ``etag`` becomes one for what
     is left (the stored ETag and the positions left out), so that two
     requesters seeing different items get different ETags. Done once per
-    instance."""
-    if getattr(version, "_scrud_readable", False):
+    instance and request: for another request, again from the stored
+    content and ETag (kept on the instance)."""
+    stored = getattr(version, STORED_VERSION_ATTR, None)
+    if stored is None:
+        setattr(version, STORED_VERSION_ATTR, (version.content, version.etag))
+    elif getattr(version, READ_FOR_ATTR, None) is request:
         return version
-    version._scrud_readable = True
+    else:
+        version.content, version.etag = stored
+    setattr(version, READ_FOR_ATTR, request)
     content = version.content
     items = content.get("items") if isinstance(content, Mapping) else None
     if not isinstance(items, Mapping):
