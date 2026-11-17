@@ -1,10 +1,13 @@
 import json
 import os
+import threading
+import time
 from http import server
 from multiprocessing import Process
 from uuid import uuid4
 
 import pytest
+from django.db import connection, connections
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
@@ -432,3 +435,33 @@ def partner_profiles(db, partner_profile_post_data):
     return ResourceRegistration.register(
         content=partner_profile_post_data, register_type='partner-profiles'
     )
+
+
+TWO_WRITERS = pytest.mark.skipif(
+    connection.vendor == "sqlite", reason="SQLite runs one writer at a time"
+)
+
+
+def run_together(first, second, *, delay):
+    """Run `first` and, `delay` seconds later, `second`, in two threads (two
+    connections); their results (or the exceptions they raised)."""
+    results = {}
+
+    def run(name, function, wait):
+        time.sleep(wait)
+        try:
+            results[name] = function()
+        except Exception as exc:  # noqa: BLE001 - reported to the test
+            results[name] = exc
+        finally:
+            connections.close_all()
+
+    threads = [
+        threading.Thread(target=run, args=("first", first, 0)),
+        threading.Thread(target=run, args=("second", second, delay)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    return results["first"], results["second"]

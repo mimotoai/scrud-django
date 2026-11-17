@@ -107,7 +107,7 @@ def test_term_definition_class_and_nested():
 @pytest.mark.django_db
 @test_context
 def test_stylesheet_bad_selector_is_400(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     body = {"name": "bad", "rules": [{"select": "strng", "component": "x"}]}
     When.http.post(reverse("ui-stylesheets-list"), data=body, format="json")
     Then.http.status_code_is(400)
@@ -117,7 +117,7 @@ def test_stylesheet_bad_selector_is_400(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_stylesheet_selector_uses_own_prefixes(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     body = {
         "name": "ok",
         "prefixes": {"ex": "http://ex/"},

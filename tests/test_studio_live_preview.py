@@ -14,12 +14,12 @@ from unittest import mock
 from urllib.parse import urlencode
 
 import pytest
-from django.test import RequestFactory
+from django.test import Client, RequestFactory
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
-from scrud_django.drf.mixins import max_body_depth
+from scrud_django.core.bodies import max_body_depth
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import (
@@ -761,12 +761,10 @@ def test_live_preview_needs_login_and_post():
 @pytest.mark.django_db
 @test_context
 def test_live_preview_is_a_post_with_csrf(ui_alice_login):
-    from rest_framework.test import APIClient
-
     main_row()
     reverse("todo-lists-list")
     make_branch("wip", "alice")
-    client = APIClient(enforce_csrf_checks=True)
+    client = Client(enforce_csrf_checks=True)
     client.force_login(ui_alice_login)
     body = urlencode({"request": json.dumps({"type": SLUG, "branch": "main"})})
     response = client.post(

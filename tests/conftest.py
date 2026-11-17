@@ -11,6 +11,109 @@ def pytest_addoption(parser):
     )
 
 
+#: The test modules of the DRF adapter, or that cannot run without DRF (they
+#: import it, `scrud_django.drf` or `tests.urls`/`tests.resource_types`, which
+#: do, or use its ``APIClient``), by module name: they get ``pytest.mark.drf``,
+#: and are skipped when DRF cannot be imported (`mark_drf_modules`).
+DRF_MODULES = frozenset(
+    {
+        "test_atomic_writes",
+        "test_authz",
+        "test_collection_schemas",
+        "test_computed_types",
+        "test_condition_contexts",
+        "test_conditional_create",
+        "test_context_limits",
+        "test_core_bodies",
+        "test_core_collections",
+        "test_core_computed",
+        "test_core_errors",
+        "test_core_guards",
+        "test_core_json",
+        "test_core_lists",
+        "test_core_parity",
+        "test_core_requirements",
+        "test_core_resources",
+        "test_core_ui_types",
+        "test_core_workflow",
+        "test_core_writes",
+        "test_custom_operators",
+        "test_default_workflow_policies",
+        "test_delete_locking",
+        "test_drf_package",
+        "test_drf_parity",
+        "test_empty_body",
+        "test_error_media_types",
+        "test_exact_contexts",
+        "test_exceptions",
+        "test_front_end_parity",
+        "test_generic_views",
+        "test_json_schema_refs",
+        "test_list_filter_check",
+        "test_list_object_checks",
+        "test_list_rbac",
+        "test_list_removals",
+        "test_media_types",
+        "test_ninja_api",
+        "test_ninja_auth",
+        "test_ninja_routers",
+        "test_ninja_uniform_off",
+        "test_nul_bodies",
+        "test_object_check_readability",
+        "test_object_checks",
+        "test_options",
+        "test_paginations",
+        "test_policy_cache",
+        "test_policy_duplicates",
+        "test_post_commit",
+        "test_query_budget",
+        "test_resource_contexts",
+        "test_resource_view_mark",
+        "test_reversion",
+        "test_schema_defaults",
+        "test_serializers",
+        "test_services",
+        "test_studio_dispatch",
+        "test_studio_writes",
+        "test_type_hooks",
+        "test_type_registration",
+        "test_type_specs",
+        "test_ui_app",
+        "test_ui_drf_only_authorization",
+        "test_ui_json_bodies",
+        "test_ui_negotiation",
+        "test_ui_routes",
+        "test_ui_types",
+        "test_upstream_drift",
+        "test_workflow_contexts",
+        "test_workflow_edge_cases",
+        "test_workflow_fail_closed",
+        "test_workflow_permission_class",
+        "test_write_routing",
+    }
+)
+
+
+def drf_importable():
+    """Whether DRF can be imported (`tests.steps.drf_importable`; imported
+    when called, as that module needs Django set up)."""
+    from tests import steps
+
+    return steps.drf_importable()
+
+
+def mark_drf_modules(items):
+    """Mark the tests of `DRF_MODULES` ``drf``, and skip every ``drf``-marked
+    test (a module's or a test's own) when DRF cannot be imported."""
+    available = drf_importable()
+    skip = pytest.mark.skip(reason="needs DRF, which cannot be imported")
+    for item in items:
+        if item.path.stem in DRF_MODULES:
+            item.add_marker(pytest.mark.drf)
+        if not available and item.get_closest_marker("drf"):
+            item.add_marker(skip)
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_collection_modifyitems(config, items):
     """``--reverse``: reverse the collected tests before pytest-django's
@@ -20,6 +123,7 @@ def pytest_collection_modifyitems(config, items):
     transactional test never runs first."""
     if config.getoption("--reverse"):
         items.reverse()
+    mark_drf_modules(items)
     return (yield)
 
 
@@ -94,6 +198,8 @@ def front_end(request):
 
     assert FRONT_END_PARAMS == FRONT_ENDS, (FRONT_END_PARAMS, FRONT_ENDS)
     if request.param == "drf":
+        if not drf_importable():
+            pytest.skip("needs DRF, which cannot be imported")
         yield request.param
         return
     with override_settings(ROOT_URLCONF="tests.ninja_urls"):
@@ -107,6 +213,16 @@ def front_end(request):
             set_urlconf(None)
     clear_url_caches()
     set_urlconf(None)
+
+
+@pytest.fixture
+def plain_client(monkeypatch):
+    """Opt a test (or a module, with ``pytestmark = pytest.mark.usefixtures(
+    "plain_client")``) in to ``django.test.Client`` for the ``Http`` steps
+    (`tests.steps.PlainClient`), where DRF is installed too."""
+    from tests import steps
+
+    steps.use_plain_client(monkeypatch)
 
 
 @pytest.fixture

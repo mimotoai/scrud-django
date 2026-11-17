@@ -4,13 +4,13 @@ DRF reads an empty body as ``{}``: a POST created an empty resource and a PUT
 wiped the stored content (authorized in the default context).
 """
 
+from http import HTTPStatus
 from uuid import uuid4
 
 import pytest
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
-from rest_framework import status
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
@@ -51,7 +51,7 @@ def json_ld_writer():
 
 
 def assert_body_missing():
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
     body = Http.response.json()
     assert body == {
         "type": BODY_MISSING,
@@ -109,7 +109,7 @@ def test_an_empty_object_is_still_a_body():
     reverse("json-ld-list")
     Given.http.force_authenticate(json_ld_writer())
     When.http.post(reverse("json-ld-list"), data="{}", content_type="application/json")
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     assert Http.response.json() == {}
 
 
@@ -145,9 +145,9 @@ def test_an_unrouted_method_is_405_whatever_its_body():
             Http.response = Http.api_client.generic(
                 method, url, body, content_type="application/json"
             )
-            Then.http.status_code_is(status.HTTP_405_METHOD_NOT_ALLOWED)
+            Then.http.status_code_is(HTTPStatus.METHOD_NOT_ALLOWED)
     When.http.post(detail, content_type="application/json")
-    Then.http.status_code_is(status.HTTP_405_METHOD_NOT_ALLOWED)
+    Then.http.status_code_is(HTTPStatus.METHOD_NOT_ALLOWED)
     assert Resource.objects.get(pk=stored.pk).content == {"name": "kept"}
 
 
@@ -177,5 +177,5 @@ def test_an_unrouted_method_is_405_before_the_body_checks():
                 Http.response = Http.api_client.generic(
                     method, url, body, content_type=content_type
                 )
-                Then.http.status_code_is(status.HTTP_405_METHOD_NOT_ALLOWED)
+                Then.http.status_code_is(HTTPStatus.METHOD_NOT_ALLOWED)
     assert Resource.objects.get(pk=stored.pk).content == {"name": "kept"}

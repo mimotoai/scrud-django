@@ -160,7 +160,7 @@ def component_writer():
 def test_push_applies_atomically_and_empties_source(admin_login):
     main_row, override = wip_overrides_row(admin_login)
     main_versions = versions_of("main")
-    Given.http.force_authenticate(component_writer())
+    Given.http.force_login(component_writer())
     push()
     Then.http.status_code_is(201)
     body = Http.response.json()
@@ -192,7 +192,7 @@ def test_push_applies_atomically_and_empties_source(admin_login):
 def test_push_creates_target_rows_with_their_base(admin_login):
     # A push into a branch with a parent: a new row's base is the parent's
     # current ETag for the key; an existing row keeps its own base.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>main</b>")
     make_wip(admin_login, "team", context="alice")
     team_row = create(
@@ -250,7 +250,7 @@ def test_push_needs_per_item_grant(admin_login):
     before = stored_state()
     # May PUT components in "" (the overridden row), but holds no grant on
     # stylesheets in "acme", where an acme stylesheet on main is authorized.
-    Given.http.force_authenticate(component_writer())
+    Given.http.force_login(component_writer())
     push()
     Then.http.status_code_is(403)
     body = problem()
@@ -264,7 +264,7 @@ def test_push_needs_per_item_grant(admin_login):
             "acme": {"http.POST": [ITEM_KINDS["stylesheet"]]},
         }
     )
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     push()
     Then.http.status_code_is(201)
     (theme,) = [
@@ -281,7 +281,7 @@ def test_push_needs_the_grant_on_the_targets_stored_row(admin_login):
     # main's row is stored in "secret" (not the "" a component on main is
     # authorized in now): a direct PUT of it needs a grant in "secret", and
     # so does a push that writes over it.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     reverse("ui-components-list")
     main_row = ResourceRegistration.register(
         component(name="row", template="<b>main</b>", rbac_context="secret"),
@@ -291,7 +291,7 @@ def test_push_needs_the_grant_on_the_targets_stored_row(admin_login):
     create("ui-components", component(name="row", template="<i>wip</i>", **WIP))
     user = pusher(**{"": {"http.PUT": [UI_COMPONENT_TYPE_URI]}})
     grant(user, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "secret")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.put(
         reverse("ui-components-detail", args=[main_row.pk]),
         data=component(name="row", template="<i>wip</i>", rbac_context=""),
@@ -340,7 +340,7 @@ def test_conflicts_on_unreadable_items_are_only_counted(admin_login):
             {**stored.content, field: value}, stored.resource_type.slug, stored.pk
         )
     user = pusher(**{"": {"http.GET": [UI_COMPONENT_TYPE_URI]}})
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     before = stored_state()
     push()
     Then.http.status_code_is(409)
@@ -369,7 +369,7 @@ def conflicts_of(name):
 @test_context
 def test_deleting_a_targets_row_clears_its_conflict(admin_login):
     # Ruling R21: as a direct DELETE of an override does.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>main</b>")
     make_wip(admin_login, "team")
     on_team = {"branch": "team", "rbac_context": "alice"}
@@ -422,7 +422,7 @@ def test_push_needs_put_on_source(admin_login):
     user = assign_ui_role((UI_PUSH_TYPE_URI,), "")
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
     grant(user, {"http.PUT": [UI_COMPONENT_TYPE_URI]}, "")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     push()
     Then.http.status_code_is(403)
     assert stored_state() == before
@@ -431,7 +431,7 @@ def test_push_needs_put_on_source(admin_login):
     user = assign_ui_role((UI_PUSH_TYPE_URI,), "")
     grant(user, {"http.PUT": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "alice")
     grant(user, {"http.PUT": [UI_COMPONENT_TYPE_URI]}, "")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     push()
     Then.http.status_code_is(400)
     assert Http.response.json()["type"].endswith("/ui-branch-invalid")
@@ -442,18 +442,16 @@ def test_push_needs_put_on_source(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_deletion_marker_pushes_as_delete(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>main</b>")
     make_wip(admin_login)
     create("ui-components", {"name": "row", "deleted": True, **WIP})
     # Removing main's own row needs DELETE there.
-    Given.http.force_authenticate(component_writer())
+    Given.http.force_login(component_writer())
     push()
     Then.http.status_code_is(403)
     assert Resource.objects.filter(pk=main_row.pk).exists()
-    Given.http.force_authenticate(
-        pusher(**{"": {"http.DELETE": [UI_COMPONENT_TYPE_URI]}})
-    )
+    Given.http.force_login(pusher(**{"": {"http.DELETE": [UI_COMPONENT_TYPE_URI]}}))
     push()
     Then.http.status_code_is(201)
     assert not Resource.objects.filter(pk=main_row.pk).exists()
@@ -465,7 +463,7 @@ def test_deletion_marker_pushes_as_delete(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_deletion_marker_hides_the_parents_item_on_the_target(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>main</b>")
     make_wip(admin_login, "team")
     make_wip(admin_login, "mine", parent="team")
@@ -616,7 +614,7 @@ def test_workflow_can_require_approval(admin_login):
     main_row, _override = wip_overrides_row(admin_login)
     workflow_policy_resource_type()
     ResourceRegistration.register(APPROVAL_POLICY, "workflow-policies")
-    Given.http.force_authenticate(component_writer())
+    Given.http.force_login(component_writer())
     push()
     Then.http.status_code_is(400)
     push(state="proposed")
@@ -680,7 +678,7 @@ def test_restore_needs_per_item_grant(admin_login):
     before = stored_state()
     # Restoring removes wip's "extra": DELETE on components in "alice".
     user = assign_ui_role((UI_PUSH_TYPE_URI,), "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     push(source=None, restore=number, target="wip", context="alice")
     Then.http.status_code_is(403)
     assert problem()["type"].endswith("/ui-push-forbidden")
@@ -712,7 +710,7 @@ def test_a_new_target_row_is_based_on_the_checked_base(admin_login, monkeypatch)
     (ruling R41, minor 1). Here that read is made to answer otherwise."""
     from scrud_django.ui.branches import sync
 
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>main</b>")
     make_wip(admin_login, "testing")
     make_wip(admin_login, "wip", parent="testing")

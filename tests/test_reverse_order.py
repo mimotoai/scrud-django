@@ -5,6 +5,8 @@ and so the resource types ``django_db_setup`` registers once per session),
 then the others. A transactional test must not run first in the reverse
 run."""
 
+from pathlib import Path
+
 import pytest
 from pytest_django.plugin import (
     pytest_collection_modifyitems as pytest_django_ordering,
@@ -14,10 +16,12 @@ from tests import conftest
 
 
 class Item:
-    """What pytest-django's ordering reads of a test item."""
+    """What pytest-django's ordering, and the conftest's marking of the DRF
+    modules, read of a test item."""
 
     def __init__(self, name, marker=None, fixtures=()):
         self.name = name
+        self.path = Path(f"tests/test_{name}.py")
         self.cls = None
         self.fixturenames = list(fixtures)
         self.marker = marker

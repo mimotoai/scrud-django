@@ -1,7 +1,10 @@
 import json
 from datetime import datetime
+from importlib.util import find_spec
 
+import safetydance_django.steps as http_steps
 from django.db.models import Model
+from django.test import Client
 from jsonpath_ng import parse
 from rdflib import Graph, URIRef
 from safetydance import context_data, initializer, step, step_namespace
@@ -11,7 +14,10 @@ from safetydance_django.test import Http
 from scrud_django.models import Resource, ResourceType
 
 __all__ = [
+    'PlainClient',
     'Scrud',
+    'drf_importable',
+    'use_plain_client',
     'an_instance_named',
     'is_valid_resource',
     'is_valid_resource_type',
@@ -25,6 +31,59 @@ __all__ = [
 ]
 
 http_step = step_namespace("http")
+
+
+def drf_importable() -> bool:
+    """Whether DRF can be imported (the suite's check for it: tests patch it)."""
+    return find_spec("rest_framework") is not None
+
+
+class PlainClient(Client):
+    """The ``Http`` steps' client when DRF is not used: ``django.test.Client``
+    (CSRF checks off, as the test client has them) that takes DRF's
+    ``format="json"`` as a JSON body (``content_type="application/json"``,
+    the ``data`` serialized), so a step reads the same for either client.
+    ``force_login`` and ``login`` are the test client's; there is no
+    ``force_authenticate``."""
+
+    def _json(self, kwargs):
+        if kwargs.pop("format", None) == "json":
+            kwargs["content_type"] = "application/json"
+        data = kwargs.get("data")
+        if kwargs.get("content_type") == "application/json" and not isinstance(
+            data, str | bytes | None
+        ):
+            kwargs["data"] = json.dumps(data)
+        return kwargs
+
+    def post(self, path, data=None, **kwargs):
+        return super().post(path, **self._json({"data": data, **kwargs}))
+
+    def put(self, path, data="", **kwargs):
+        return super().put(path, **self._json({"data": data, **kwargs}))
+
+    def patch(self, path, data="", **kwargs):
+        return super().patch(path, **self._json({"data": data, **kwargs}))
+
+    def delete(self, path, data="", **kwargs):
+        return super().delete(path, **self._json({"data": data, **kwargs}))
+
+
+def use_plain_client(monkeypatch=None):
+    """Make the ``Http`` steps create a `PlainClient` instead of DRF's
+    ``APIClient``. safetydance-django's ``Http.api_client`` initializer calls
+    its module's ``_new_api_client`` when a test first needs the client, so
+    replacing that, and registering no step twice, is the whole override.
+    Without ``monkeypatch`` it holds for the session (DRF absent); with it
+    (the ``plain_client`` fixture) for one test."""
+    if monkeypatch is None:
+        http_steps._new_api_client = PlainClient
+    else:
+        monkeypatch.setattr(http_steps, "_new_api_client", PlainClient)
+
+
+if not drf_importable():
+    use_plain_client()
 
 
 @context_data

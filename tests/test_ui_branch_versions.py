@@ -24,9 +24,8 @@ from scrud_django.ui.branches.versions import (
 from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
 
 from .fixtures import *  # noqa
-from .fixtures import UI_TYPE_URIS, assign_ui_role
+from .fixtures import TWO_WRITERS, UI_TYPE_URIS, assign_ui_role, run_together
 from .steps import *  # noqa: F403, F401
-from .test_delete_locking import TWO_WRITERS, run_together
 from .test_ui_branch_types import component, make_branch, problem, stylesheet
 from .test_ui_http import grant, make_component
 
@@ -68,7 +67,7 @@ def put(url, body, etag):
 def test_every_item_write_creates_a_version(ui_alice_login):
     make_branch("wip", "alice")
     on_wip = {"branch": "wip", "rbac_context": "alice"}
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.post(
         reverse("ui-components-list"), data=component(**on_wip), format="json"
     )
@@ -106,7 +105,7 @@ def test_main_versions_hold_items_stored_before_branches(ui_author_login):
     old = make_component("old-row", "<i>{{ value }}</i>")
     assert "branch" not in old.content
     assert versions_of("main") == [1]
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     When.http.post(
         reverse("ui-stylesheets-list"),
         data=stylesheet(rbac_context=""),
@@ -128,7 +127,7 @@ def test_main_versions_hold_items_stored_before_branches(ui_author_login):
 @pytest.mark.django_db
 @test_context
 def test_branching_point_records_every_ancestor(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_component("row", "<b/>")
     make_component("title", "<h1/>")
     assert versions_of("main") == [1, 2]
@@ -174,7 +173,7 @@ def test_versions_are_read_only(admin_login):
     make_component("row", "<b/>")
     version = Resource.objects.get(resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI)
     detail = reverse(f"{VERSIONS}-detail", args=[version.pk])
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.get(detail)
     Then.http.status_code_is(200)
     etag = Http.response["ETag"]
@@ -196,7 +195,7 @@ def test_versions_are_read_in_the_branchs_context():
     make_component("row", "<b/>")
     on("wip", "alice")
     reader = assign_ui_role((UI_BRANCH_VERSION_TYPE_URI,), "alice")
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     When.http.get(reverse(f"{VERSIONS}-list"))
     Then.http.status_code_is(200)
     listed = [entry["content"] for entry in Http.response.json()["content"]]
@@ -254,7 +253,7 @@ def branch_url(stored):
 @test_context
 def test_a_branchs_context_is_fixed(admin_login):
     wip = make_branch("wip", "alice")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     put(
         branch_url(wip),
         {"name": "wip", "rbac_context": "bob", "parent": "main"},
@@ -279,7 +278,7 @@ def test_a_published_branch_may_change_its_prefix(admin_login, settings):
         "ui-stylesheets",
         stylesheet(branch="admin", applies_to="acme", rbac_context="acme"),
     )
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     put(
         branch_url(admin),
         {"name": "admin", "rbac_context": "alice", "parent": None, "prefix": "/ops/"},
@@ -306,7 +305,7 @@ def test_publishing_is_fixed_while_stylesheets_apply_elsewhere(
             name="everywhere", branch="wip", applies_to="", rbac_context="alice"
         ),
     )
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     body = {"name": "wip", "rbac_context": "alice", "parent": "main"}
     put(branch_url(wip), {**body, "prefix": after}, f'"{wip.etag}"')
     Then.http.status_code_is(200)
@@ -434,7 +433,7 @@ def test_versions_have_no_reversion_history(ui_author_login):
     from reversion.models import Version
 
     row = make_component("row", "<b/>")
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     When.http.post(
         reverse("ui-components-list"), data=component(rbac_context=""), format="json"
     )
@@ -478,7 +477,7 @@ def test_main_cannot_be_deleted(admin_login):
     main = Resource.objects.get(
         resource_type__type_uri=UI_BRANCH_TYPE_URI, content__name="main"
     )
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     delete_branch(main)
     Then.http.status_code_is(400)
     assert problem()["type"].endswith("/ui-branch-invalid")
@@ -492,7 +491,7 @@ def test_a_parent_branch_cannot_be_deleted(admin_login):
     testing = make_branch("testing", "alice")
     make_branch("alice", "alice", parent="testing")
     on("testing", "alice")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     delete_branch(testing)
     Then.http.status_code_is(409)
     assert problem()["type"].endswith("/ui-branch-in-use")
@@ -511,7 +510,7 @@ def test_deleting_a_branch_discards_its_items_and_versions(admin_login):
     on("wip", "alice", name="title")
     on("other", "alice")
     assert versions_of("wip") == [1, 2]
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     delete_branch(wip)
     Then.http.status_code_is(204)
     assert not Resource.objects.filter(pk=wip.pk).exists()

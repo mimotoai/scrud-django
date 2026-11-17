@@ -10,13 +10,13 @@ stored resource ends up in.
 """
 
 from contextlib import contextmanager
+from http import HTTPStatus
 from uuid import uuid4
 
 import pytest
 from django.urls import clear_url_caches, reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
-from rest_framework import status
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
@@ -67,13 +67,13 @@ def test_form_post_naming_two_contexts_is_refused(slug, type_uri):
     reverse("todos-list")  # registers the built-in types' routes
     attacker, _ = attacker_and_victim(type_uri)
     before = Resource.objects.count()
-    Given.http.force_authenticate(attacker)
+    Given.http.force_login(attacker)
     When.http.post(
         f"/{slug}/",
         SMUGGLING_FORM,
         content_type="application/x-www-form-urlencoded",
     )
-    Then.http.status_code_is(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+    Then.http.status_code_is(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
     assert Resource.objects.count() == before
 
 
@@ -84,13 +84,13 @@ def test_multipart_post_naming_two_contexts_is_refused(slug, type_uri):
     reverse("todos-list")
     attacker, _ = attacker_and_victim(type_uri)
     before = Resource.objects.count()
-    Given.http.force_authenticate(attacker)
+    Given.http.force_login(attacker)
     When.http.post(
         f"/{slug}/",
         {"foo": "pwn", "rbac_context": ["victim", "attacker"]},
         format="multipart",
     )
-    Then.http.status_code_is(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+    Then.http.status_code_is(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
     assert Resource.objects.count() == before
 
 
@@ -112,7 +112,7 @@ def test_form_put_naming_two_contexts_is_refused(slug, type_uri, body, content_t
         {"foo": "mine", "rbac_context": "attacker"}, slug
     )
     stored = dict(own.content)
-    Given.http.force_authenticate(attacker)
+    Given.http.force_login(attacker)
     if content_type == "multipart":
         When.http.put(
             f"/{slug}/{own.id}/",
@@ -127,7 +127,7 @@ def test_form_put_naming_two_contexts_is_refused(slug, type_uri, body, content_t
             content_type=content_type,
             HTTP_IF_MATCH=quote_etag(own.etag),
         )
-    Then.http.status_code_is(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+    Then.http.status_code_is(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
     own.refresh_from_db()
     assert own.content == stored
     assert own.rbac_contexts == ["attacker"]
@@ -138,11 +138,11 @@ def test_form_put_naming_two_contexts_is_refused(slug, type_uri, body, content_t
 def test_json_list_body_is_400(regular_login):
     reverse("todos-list")
     before = Resource.objects.count()
-    Given.http.force_authenticate(regular_login)
+    Given.http.force_login(regular_login)
     When.http.post("/json-ld/", [{"foo": "x"}], format="json")
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
     When.http.post(reverse("todos-list"), [{"title": "x"}], format="json")
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
     assert Resource.objects.count() == before
 
 
@@ -152,14 +152,14 @@ def test_json_list_body_put_is_400(regular_login):
     reverse("todos-list")
     own = ResourceRegistration.register({"foo": "mine"}, "json-ld")
     stored = dict(own.content)
-    Given.http.force_authenticate(regular_login)
+    Given.http.force_login(regular_login)
     When.http.put(
         f"/json-ld/{own.id}/",
         [{"foo": "x"}],
         format="json",
         HTTP_IF_MATCH=quote_etag(own.etag),
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
     own.refresh_from_db()
     assert own.content == stored
 
@@ -171,9 +171,9 @@ def test_json_post_in_a_permitted_context_is_created(slug, type_uri):
     # Positive control: a JSON body naming a context the writer holds is stored.
     reverse("todos-list")
     attacker, _ = attacker_and_victim(type_uri)
-    Given.http.force_authenticate(attacker)
+    Given.http.force_login(attacker)
     When.http.post(f"/{slug}/", {"foo": "x", "rbac_context": "attacker"}, format="json")
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     created = Resource.objects.order_by("-id").first()
     assert created.content == {"foo": "x", "rbac_context": "attacker"}
     assert created.rbac_contexts == ["attacker"]
@@ -184,7 +184,7 @@ def test_json_post_in_a_permitted_context_is_created(slug, type_uri):
 def test_json_todo_post_in_a_permitted_context_is_created():
     reverse("todos-list")
     writer = user_with({m: [TODO] for m in ALL_METHODS}, "attacker")
-    Given.http.force_authenticate(writer)
+    Given.http.force_login(writer)
     # The ToDo workflow policy applies in "attacker" too (0.12.0): a ToDo with
     # no status is not a valid initial state there, as in the default context.
     When.http.post(
@@ -192,7 +192,7 @@ def test_json_todo_post_in_a_permitted_context_is_created():
         {"title": "x", "rbac_context": "attacker"},
         format="json",
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
     assert Http.response.json()["type"] == (
         "http://api.openteams.com/http-problem/workflow-transition-invalid"
     )
@@ -201,7 +201,7 @@ def test_json_todo_post_in_a_permitted_context_is_created():
         {"title": "x", "status": "not started", "rbac_context": "attacker"},
         format="json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     created = Resource.objects.order_by("-id").first()
     assert created.rbac_contexts == ["attacker"]
 
@@ -250,9 +250,9 @@ def context_defaulted_type(db):
 @test_context
 def test_schema_default_context_is_not_stored(context_defaulted_type):
     writer = user_with({m: [DEFAULTED_TYPE] for m in ALL_METHODS}, DEFAULT_CONTEXT)
-    Given.http.force_authenticate(writer)
+    Given.http.force_login(writer)
     When.http.post("/context-defaulted/", {"name": "x"}, format="json")
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     created = Resource.objects.get(resource_type=context_defaulted_type)
     assert created.content == {"name": "x"}
     assert created.rbac_contexts == [DEFAULT_CONTEXT]
@@ -263,7 +263,7 @@ def test_schema_default_context_is_not_stored(context_defaulted_type):
         format="json",
         HTTP_IF_MATCH=quote_etag(created.etag),
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     created.refresh_from_db()
     assert created.content == {"name": "y"}
     assert created.rbac_contexts == [DEFAULT_CONTEXT]
@@ -305,10 +305,10 @@ def default_context_todo_writer():
 def test_create_moved_to_a_context_the_writer_cannot_write_is_403():
     reverse("todos-list")
     before = Resource.objects.count()
-    Given.http.force_authenticate(default_context_todo_writer())
+    Given.http.force_login(default_context_todo_writer())
     with todos_moved_after_save():
         When.http.post(reverse("todos-list"), TODO_DATA, format="json")
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    Then.http.status_code_is(HTTPStatus.FORBIDDEN)
     assert Resource.objects.count() == before
 
 
@@ -318,7 +318,7 @@ def test_update_moved_to_a_context_the_writer_cannot_write_is_403():
     reverse("todos-list")
     own = ResourceRegistration.register(dict(TODO_DATA), "todos")
     stored = dict(own.content)
-    Given.http.force_authenticate(default_context_todo_writer())
+    Given.http.force_login(default_context_todo_writer())
     with todos_moved_after_save():
         When.http.put(
             reverse("todos-detail", args=[own.id]),
@@ -326,7 +326,7 @@ def test_update_moved_to_a_context_the_writer_cannot_write_is_403():
             format="json",
             HTTP_IF_MATCH=quote_etag(own.etag),
         )
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    Then.http.status_code_is(HTTPStatus.FORBIDDEN)
     own.refresh_from_db()
     assert own.content == stored
     assert own.rbac_contexts == [DEFAULT_CONTEXT]
@@ -362,13 +362,13 @@ def test_the_post_save_check_of_a_create_goes_through_the_permission_class():
     # post-save check must.
     reverse("partner-profiles-list")
     before = Resource.objects.count()
-    Given.http.force_authenticate(partner_profile_writer("denied", "ok"))
+    Given.http.force_login(partner_profile_writer("denied", "ok"))
     When.http.post(
         reverse("denying-partner-profiles-list"),
         {"name": "x", "rbac_context": "denied"},
         format="json",
     )
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    Then.http.status_code_is(HTTPStatus.FORBIDDEN)
     assert Resource.objects.count() == before
 
     When.http.post(
@@ -376,14 +376,14 @@ def test_the_post_save_check_of_a_create_goes_through_the_permission_class():
         {"name": "x", "rbac_context": "ok"},
         format="json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     # The user's grants allow "denied": IsAuthorized itself lets it through.
     When.http.post(
         reverse("partner-profiles-list"),
         {"name": "x", "rbac_context": "denied"},
         format="json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
 
 
 @pytest.mark.django_db
@@ -393,14 +393,14 @@ def test_the_post_save_check_of_an_update_goes_through_the_permission_class():
     own = ResourceRegistration.register(
         {"name": "x", "rbac_context": "ok"}, "partner-profiles"
     )
-    Given.http.force_authenticate(partner_profile_writer("denied", "ok"))
+    Given.http.force_login(partner_profile_writer("denied", "ok"))
     When.http.put(
         reverse("denying-partner-profiles-detail", args=[own.pk]),
         {"name": "y", "rbac_context": "denied"},
         format="json",
         HTTP_IF_MATCH=quote_etag(own.etag),
     )
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    Then.http.status_code_is(HTTPStatus.FORBIDDEN)
     assert Resource.objects.get(pk=own.pk).content == own.content
 
     When.http.put(
@@ -409,7 +409,7 @@ def test_the_post_save_check_of_an_update_goes_through_the_permission_class():
         format="json",
         HTTP_IF_MATCH=quote_etag(own.etag),
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
 
 
 JSON_LD_TYPE = "http://www.w3.org/ns/json-ld#context"
@@ -423,10 +423,10 @@ def test_the_post_save_check_asks_an_overridden_has_object_permission():
     # object check; on a PUT the request-time one saw the old content.
     reverse("json-ld-list")
     writer = user_with({m: [JSON_LD_TYPE] for m in ALL_METHODS}, DEFAULT_CONTEXT)
-    Given.http.force_authenticate(writer)
+    Given.http.force_login(writer)
     before = Resource.objects.count()
     When.http.post(reverse("locking-json-ld-list"), {"locked": True}, format="json")
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    Then.http.status_code_is(HTTPStatus.FORBIDDEN)
     assert Resource.objects.count() == before
 
     open_one = ResourceRegistration.register({"locked": False}, "json-ld")
@@ -436,7 +436,7 @@ def test_the_post_save_check_asks_an_overridden_has_object_permission():
         format="json",
         HTTP_IF_MATCH=quote_etag(open_one.etag),
     )
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    Then.http.status_code_is(HTTPStatus.FORBIDDEN)
     assert Resource.objects.get(pk=open_one.pk).content == {"locked": False}
     assert Resource.objects.count() == before + 1
 
@@ -446,9 +446,9 @@ def test_the_post_save_check_asks_an_overridden_has_object_permission():
         format="json",
         HTTP_IF_MATCH=quote_etag(open_one.etag),
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     When.http.post(reverse("locking-json-ld-list"), {"locked": False}, format="json")
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
 
 
 # A writer granted everywhere but one context, by a condition: a grant in
@@ -470,14 +470,14 @@ def writer_everywhere_but_victim():
 @test_context
 def test_a_list_context_cannot_slip_past_a_negated_condition_on_create():
     reverse("json-ld-list")
-    Given.http.force_authenticate(writer_everywhere_but_victim())
+    Given.http.force_login(writer_everywhere_but_victim())
     before = Resource.objects.count()
     When.http.post(
         reverse("json-ld-list"),
         {"foo": "pwn", "rbac_context": ["victim", "public"]},
         format="json",
     )
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    Then.http.status_code_is(HTTPStatus.FORBIDDEN)
     assert Resource.objects.count() == before
     assert not Resource.objects.filter(content__foo="pwn").exists()
 
@@ -486,7 +486,7 @@ def test_a_list_context_cannot_slip_past_a_negated_condition_on_create():
         {"foo": "fine", "rbac_context": ["public", "other"]},
         format="json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     assert Resource.objects.count() == before + 1
 
 
@@ -497,14 +497,14 @@ def test_a_list_context_cannot_slip_past_a_negated_condition_on_update():
     own = ResourceRegistration.register(
         {"foo": "mine", "rbac_context": "public"}, "json-ld"
     )
-    Given.http.force_authenticate(writer_everywhere_but_victim())
+    Given.http.force_login(writer_everywhere_but_victim())
     When.http.put(
         reverse("json-ld-detail", args=[own.pk]),
         {"foo": "moved", "rbac_context": ["victim", "public"]},
         format="json",
         HTTP_IF_MATCH=quote_etag(own.etag),
     )
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
+    Then.http.status_code_is(HTTPStatus.FORBIDDEN)
     own.refresh_from_db()
     assert own.content == {"foo": "mine", "rbac_context": "public"}
     assert own.rbac_contexts == ["public"]
@@ -515,6 +515,6 @@ def test_a_list_context_cannot_slip_past_a_negated_condition_on_update():
         format="json",
         HTTP_IF_MATCH=quote_etag(own.etag),
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     own.refresh_from_db()
     assert own.rbac_contexts == ["public", "other"]

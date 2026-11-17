@@ -45,7 +45,7 @@ def test_a_parent_the_creator_may_not_get_is_unknown(ui_alice_login):
     the parent of her branch and so read its CSS. Now the parent is refused
     exactly as an unknown one is."""
     secret, _look = secret_with_css()
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.get(reverse("ui-branches-detail", args=[secret.pk]))
     Then.http.status_code_is(404)
     body = {"name": "mine", "rbac_context": "alice", "parent": "secret"}
@@ -74,7 +74,7 @@ def test_a_parent_the_creator_may_not_get_is_unknown(ui_alice_login):
 def test_a_readable_parent_is_accepted(ui_alice_login):
     secret_with_css()
     grant(ui_alice_login, MAIN_GET, "bob")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     create("ui-branches", {"name": "mine", "rbac_context": "alice", "parent": "secret"})
     Then.http.status_code_is(201)
 
@@ -84,7 +84,7 @@ def test_a_readable_parent_is_accepted(ui_alice_login):
 def test_creating_a_branch_of_main_needs_get_on_main(ui_alice_login):
     """``main`` is the parent as stored (or, virtual, as reserved): in
     context ""."""
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     body = {"name": "alice-wip", "rbac_context": "alice", "parent": "main"}
     create("ui-branches", body)
     Then.http.status_code_is(400)
@@ -99,7 +99,7 @@ def test_creating_a_branch_of_main_needs_get_on_main(ui_alice_login):
 def test_an_unchanged_parent_needs_no_get(ui_alice_login):
     """An update that keeps the parent is not a new read of it."""
     own = make_branch("own", "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.put(
         reverse("ui-branches-detail", args=[own.pk]),
         data={"name": "own", "rbac_context": "alice", "parent": "main"}
@@ -135,7 +135,7 @@ def test_an_item_write_on_an_unreadable_branch_is_answered_as_unknown(
     item naming it gets the answer an unknown branch gets, which does not
     name its context (ruling R36: it was the follow-up ui-branch-enumeration)."""
     secret_with_css()
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     create("ui-components", component(branch="secret", rbac_context=""))
     Then.http.status_code_is(400)
     hidden = refusal()
@@ -156,7 +156,7 @@ def test_a_push_naming_an_unreadable_branch_is_answered_as_unknown():
     answered as an unknown branch, without its context."""
     secret_with_css()
     make_branch("wip", "alice")
-    Given.http.force_authenticate(pusher())
+    Given.http.force_login(pusher())
     answers = {}
     for name in ("secret", "nope"):
         push(target="main", source=name)
@@ -201,10 +201,10 @@ def test_a_context_writer_cannot_claim_site_urls(ui_alice_login, todo_reader_log
     published a branch at ``/shop/`` and so put the project's page there
     behind GET on her branch. Setting a prefix needs PUT on branches in ""."""
     reverse("todo-lists-list")  # the URLconf registers the types
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     When.http.get("/shop/todo-lists/")
     Then.http.status_code_is(200)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     body = {"name": "shop", "rbac_context": "alice", "parent": None}
     for prefix in ("/shop/", "/"):
         create("ui-branches", {**body, "prefix": prefix})
@@ -213,7 +213,7 @@ def test_a_context_writer_cannot_claim_site_urls(ui_alice_login, todo_reader_log
     own = make_branch("own", "alice", parent=None)
     put_branch(own, prefix="/shop/")
     Then.http.status_code_is(403)
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     When.http.get("/shop/todo-lists/")
     Then.http.status_code_is(200)
     assert Http.response.content == b"The shop's to-do lists"
@@ -225,14 +225,14 @@ def test_changing_a_prefix_is_site_level(ui_alice_login):
     """Moving a published branch, or unpublishing it, needs the site grant
     too; an update that keeps the prefix does not."""
     shop = make_branch("shop", "alice", parent=None, prefix="/shop-a/")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     put_branch(shop, label="The shop")
     Then.http.status_code_is(200)
     shop.refresh_from_db()
     for prefix in ("/shop-b/", None):
         put_branch(shop, prefix=prefix)
         Then.http.status_code_is(403)
-    Given.http.force_authenticate(publisher())
+    Given.http.force_login(publisher())
     put_branch(shop, prefix="/shop-b/")
     Then.http.status_code_is(200)
 
@@ -245,7 +245,7 @@ def test_deleting_a_published_branch_is_site_level(ui_alice_login):
     review); a working branch is deleted with grants in its own context."""
     shop = make_branch("shop", "alice", parent=None, prefix="/shop-a/")
     own = make_branch("own", "alice", parent=None)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.delete(
         reverse("ui-branches-detail", args=[shop.pk]),
         HTTP_IF_MATCH=f'"{shop.etag}"',
@@ -259,7 +259,7 @@ def test_deleting_a_published_branch_is_site_level(ui_alice_login):
     Then.http.status_code_is(204)
     user = publisher()
     grant(user, {"http.DELETE": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.delete(
         reverse("ui-branches-detail", args=[shop.pk]),
         HTTP_IF_MATCH=f'"{shop.etag}"',
@@ -275,7 +275,7 @@ def test_a_prefix_that_overlaps_shadows_or_lies_under_the_api_is_refused():
     is the API's, and ``/todo-lists/`` is among the URLs ``/`` claims."""
     reverse("todo-lists-list")  # the URLconf registers the types
     make_branch("everything", "alice", parent=None, prefix="/")
-    Given.http.force_authenticate(publisher())
+    Given.http.force_login(publisher())
     body = {"name": "shop", "rbac_context": "alice", "parent": None}
     details = []
     for prefix in ("/shop/", "/api/", "/api/shop/", "/todo-lists/"):
@@ -313,7 +313,7 @@ def test_a_json_list_with_a_refused_selection_is_400(ui_author_login):
     make_branch("shop", "project-a", parent=None, prefix="/shop-front/")
     make_branch("shop-wip", "project-a", parent="shop")
     grant(ui_author_login, MAIN_GET, "project-a")
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     list_json(**{BRANCH_HEADER: "wip"})
     Then.http.status_code_is(200)
     answers = {}

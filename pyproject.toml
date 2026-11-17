@@ -72,6 +72,9 @@ python_files = ["tests.py", "test_*.py", "*_tests.py"]
 # scrud's own code and tests import the DRF adapter's new paths: an old path's
 # deprecation warning (its message starts with "scrud_django") is an error.
 filterwarnings = ["error:scrud_django:DeprecationWarning"]
+markers = [
+    "drf: tests of the DRF adapter, or that need DRF; tests/conftest.py applies it by module name and skips them when DRF cannot be imported",
+]
 
 [tool.ruff]
 line-length = 88

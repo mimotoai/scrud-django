@@ -231,7 +231,7 @@ def test_html_detail_page_and_fragment(todo_list, todo_owner_login):
 @test_context
 def test_json_unchanged_and_browsable_api_reachable(todo_list, todo_owner_login):
     url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     When.http.get(url, HTTP_ACCEPT="application/json")
     Then.http.status_code_is(200)
     assert Http.response["Content-Type"] == "application/json"
@@ -313,7 +313,7 @@ def test_invalid_pointer_header_is_400(todo_list, todo_owner_login):
     When.http.get(url, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_POINTER="/a~0~1")
     Then.http.status_code_is(200)
     # JSON ignores the header
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     When.http.get(
         detail_url(todo_list),
         HTTP_ACCEPT="application/json",
@@ -383,7 +383,7 @@ def test_put_refused_shows_messages_html_only(todo_list):
     assert etag_attribute(quote_etag(todo_list.etag)) in html()
     assert 'data-scrud-etag="*"' not in html()
 
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     put_json(
         detail_url(todo_list),
         body,
@@ -534,7 +534,7 @@ def test_list_html(todo_list):
         "project-a",
     )
     Given.http.force_login(reader)
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     When.http.get(list_url(), HTTP_ACCEPT="application/json")
     Then.http.status_code_is(200)
     # the UI page links to the UI URLs of the JSON list's items
@@ -1001,7 +1001,7 @@ def test_api_options_with_a_html_accept_is_204_with_allow(
     """OPTIONS of the API with Accept text/html answers as it does for JSON:
     204 and the Allow header, not an error and not an HTML page (the API
     negotiates no scrud UI HTML; the UI's own OPTIONS is tested below)."""
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     url = list_url() if route is list_url else detail_url(todo_list)
     When.http.options(url, HTTP_ACCEPT=HTML)
     Then.http.status_code_is(204)

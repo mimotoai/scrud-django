@@ -36,7 +36,7 @@ def setup_wip():
 @test_context
 def test_list_is_effective_state_of_selected_branch(admin_login):
     setup_wip()
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     assert set(listed(**{BRANCH_HEADER: "wip"})) == {
         ("row", "wip"),
         ("title", "main"),
@@ -58,7 +58,7 @@ def test_list_includes_deletion_markers_and_tells_changed_from_added(admin_login
     setup_wip()
     put_item("ui-components", "title", "", "wip", deleted=True)
     put_item("ui-components", "extra", "<u/>", "wip")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     items = listed(**{BRANCH_HEADER: "wip"})
     assert set(items) == {("row", "wip"), ("title", "wip"), ("extra", "wip")}
     assert items[("title", "wip")]["deleted"] is True
@@ -70,7 +70,7 @@ def test_inherited_items_keep_their_read_check(ui_alice_login):
     make_component("title", "<h1/>")
     make_branch("alice-wip", "alice")
     put_item("ui-components", "row", "<i/>", "alice-wip", context="alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     assert set(listed(**{BRANCH_HEADER: "alice-wip"})) == {("row", "alice-wip")}
     # With GET on main's context too, the inherited item shows.
     grant(ui_alice_login, {"http.GET": [UI_COMPONENT_TYPE_URI, COMPONENTS]}, "")
@@ -94,7 +94,7 @@ def test_unreadable_branch_list_is_refused(todo_reader_login):
         {"http.GET": [UI_COMPONENT_TYPE_URI, COMPONENTS]},
         "project-a",
     )
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     When.http.get(reverse(LIST), **{BRANCH_HEADER: "wip"})
     Then.http.status_code_is(400)
     body = Http.response.json()
@@ -108,7 +108,7 @@ def test_unreadable_branch_list_is_refused(todo_reader_login):
 @test_context
 def test_list_without_selection_is_main(admin_login):
     setup_wip()
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     assert set(listed()) == {("row", "main"), ("title", "main")}
 
 
@@ -121,7 +121,7 @@ def test_list_of_main_reads_no_branch_rows(admin_login, monkeypatch):
         raise AssertionError("a list of main read the branch rows")
 
     monkeypatch.setattr("scrud_django.ui.branches.effective.branches", refuse)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     assert set(listed()) == {("row", "main"), ("title", "main")}
     assert set(listed(**{BRANCH_HEADER: "main"})) == {
         ("row", "main"),

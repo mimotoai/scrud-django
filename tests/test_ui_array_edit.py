@@ -98,7 +98,7 @@ def test_bad_selector_error_lands_on_its_rule(admin_login):
             {"select": "strng", "component": "scrud:json"},
         ],
     }
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     Given.http.force_login(admin_login)
     put_json(
         api_url, body, HTTP_IF_MATCH=f'"{sheet.etag}"', HTTP_ACCEPT="application/json"
