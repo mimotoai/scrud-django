@@ -7,13 +7,14 @@ from scrud_django.ui.branches.file_urls import (  # noqa: F401
     js_files,
     js_urls,
 )
+from scrud_django.ui.branches.file_views import JS_CONTENT_TYPE
 from scrud_django.ui.branches.files import ItemFileView
 
 
 class UIJsFileView(ItemFileView):
     """GET a JS item's text, by name and ETag."""
 
-    content_type = "text/javascript; charset=utf-8"
+    content_type = JS_CONTENT_TYPE
 
     def files(self, selection):
         return js_files(selection)

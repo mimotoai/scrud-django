@@ -5,6 +5,9 @@ from django.apps import apps as django_apps
 
 UI_APP_NAME = "scrud_django.ui"
 
+#: The URL namespace of the UI app's routes (`scrud_django.ui.urls`).
+UI_NAMESPACE = "scrud_ui"
+
 
 def is_enabled() -> bool:
     """Whether the project installed ``scrud_django.ui``."""

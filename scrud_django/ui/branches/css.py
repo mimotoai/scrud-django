@@ -7,13 +7,14 @@ from scrud_django.ui.branches.file_urls import (  # noqa: F401
     css_files,
     css_urls,
 )
+from scrud_django.ui.branches.file_views import CSS_CONTENT_TYPE
 from scrud_django.ui.branches.files import ItemFileView
 
 
 class UICssFileView(ItemFileView):
     """GET a CSS item's text, by name and ETag."""
 
-    content_type = "text/css; charset=utf-8"
+    content_type = CSS_CONTENT_TYPE
 
     def files(self, selection):
         return css_files(selection)

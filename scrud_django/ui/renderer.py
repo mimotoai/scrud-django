@@ -45,7 +45,7 @@ from rest_framework.renderers import BaseRenderer, BrowsableAPIRenderer
 from rest_framework.response import Response
 from scoped_rbac import access
 
-from scrud_django.exceptions import ScrudException, UIHeaderInvalidError
+from scrud_django.exceptions import ScrudException
 from scrud_django.permissions import content_of
 
 # What the neutral half defines, still importable from here.
@@ -67,7 +67,6 @@ from scrud_django.ui.html import (  # noqa: F401
     VIEW_MODE,
     Stored,
     _notices,
-    _requested_mode_value,
     html_headers,
     parse_scope_chain,
     pointer_of,
@@ -77,6 +76,7 @@ from scrud_django.ui.html import (  # noqa: F401
     scope_chain_of,
     scope_names,
 )
+from scrud_django.ui.html import check_ui_headers as check_html_headers
 
 logger = logging.getLogger(__name__)
 
@@ -215,24 +215,12 @@ def finalize_html(request, response) -> None:
 
 
 def check_ui_headers(request) -> None:
-    """Refuse (400) an HTML request whose `POINTER_HEADER` is not a JSON
-    Pointer of at most `MAX_POINTER_LENGTH` characters, or whose requested
-    mode (`MODE_HEADER`, `MODE_PARAMETER`) is not ``"view"``: before the view
-    acts, so a PUT carrying one writes nothing. An invalid scope chain
-    (`SCOPE_HEADER`, `SCOPE_PARAMETER`) is ignored (`scope_chain_of`)."""
+    """For a request that negotiated HTML, refuse (400) the fragment
+    protocol's invalid headers (`scrud_django.ui.html.check_ui_headers`),
+    before the view acts, so a PUT carrying one writes nothing."""
     if negotiated_html(request) is None:
         return
-    if pointer_of(request) is None:
-        raise UIHeaderInvalidError(
-            POINTER_HEADER,
-            f"a JSON Pointer (RFC 6901) of at most {MAX_POINTER_LENGTH} characters"
-            " is expected.",
-        )
-    mode = _requested_mode_value(request)
-    if mode is not None and mode != VIEW_MODE:
-        raise UIHeaderInvalidError(
-            MODE_HEADER, f'"{VIEW_MODE}" is the only mode that can be requested.'
-        )
+    check_html_headers(request)
 
 
 def remember_stored(view, request, obj) -> None:

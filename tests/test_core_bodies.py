@@ -4,18 +4,30 @@ request."""
 
 import pytest
 from django.test import RequestFactory
+from django.urls import reverse
+from django.utils.http import quote_etag
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django.core.bodies import check_body, check_nul, max_body_depth
+from scrud_django.core.bodies import (
+    check_body,
+    check_nul,
+    max_body_depth,
+    request_json,
+)
+from scrud_django.core.errors import error_answer
 from scrud_django.core.urls import absolute_reverse
 from scrud_django.exceptions import (
     RbacContextInvalidError,
+    RequestBodyMalformedError,
+    RequestBodyMediaTypeError,
     RequestBodyMissingError,
     RequestBodyNulError,
     RequestBodyTooDeepError,
 )
 
+from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
+from .test_core_errors import uniform_errors_set
 
 
 def nested(depth):
@@ -91,3 +103,74 @@ def test_view_mixins_keeps_its_public_names():
         "max_body_depth",
     ):
         assert hasattr(view_mixins, name), name
+
+
+def put_request(data, content_type):
+    return RequestFactory().put("/", data, content_type=content_type)
+
+
+@pytest.mark.parametrize(
+    "data,content_type,expected",
+    [
+        ('{"a": [1, 2]}', "application/json", ({"a": [1, 2]}, True)),
+        ('"text"', "application/json; charset=utf-8", ("text", True)),
+        ("[1]", "*/*", ([1], True)),
+        ("", "application/json", (None, False)),
+        ("", "application/x-www-form-urlencoded", (None, False)),
+    ],
+)
+def test_request_json_reads_the_body_as_drf_reads_it(data, content_type, expected):
+    assert request_json(put_request(data, content_type)) == expected
+
+
+@pytest.mark.parametrize(
+    "data,content_type,error",
+    [
+        ('{"a": ', "application/json", RequestBodyMalformedError),
+        ("NaN", "application/json", RequestBodyMalformedError),
+        ("a=1", "application/x-www-form-urlencoded", RequestBodyMediaTypeError),
+        ("{}", "application/problem+json", RequestBodyMediaTypeError),
+        ("{}", "text/plain", RequestBodyMediaTypeError),
+    ],
+)
+def test_request_json_refuses_what_drf_refuses(data, content_type, error):
+    with pytest.raises(error):
+        request_json(put_request(data, content_type))
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("uniform", [True, False])
+@pytest.mark.parametrize(
+    "data,content_type",
+    [
+        ("title=x", "application/x-www-form-urlencoded"),
+        ('{"title": ', "application/json"),
+        ("", "application/json"),
+    ],
+)
+@test_context
+def test_a_refused_body_is_answered_as_the_route_answers_it(
+    admin_login, todo_list, uniform, data, content_type
+):
+    request = put_request(data, content_type)
+    request.user = admin_login
+    with uniform_errors_set(uniform):
+        try:
+            body, present = request_json(request)
+            check_body(body, present=present)
+        except (
+            RequestBodyMalformedError,
+            RequestBodyMediaTypeError,
+            RequestBodyMissingError,
+        ) as exc:
+            status, answered, headers = error_answer(exc, request)
+        Given.http.force_authenticate(admin_login)
+        When.http.put(
+            reverse("todo-lists-detail", args=[todo_list.pk]),
+            data=data,
+            content_type=content_type,
+            HTTP_IF_MATCH=quote_etag(todo_list.etag),
+        )
+    assert status == Http.response.status_code
+    assert answered == Http.response.json()
+    assert headers["Content-Type"] == Http.response["Content-Type"]

@@ -75,6 +75,7 @@ from scrud_django.ui.branches import (
     UI_CSS_SLUG,
     UI_JS_SLUG,
     UI_PUSH_SLUG,
+    applied_content,
 )
 from scrud_django.ui.branches.checks import prefix_problems
 from scrud_django.ui.branches.effective import (
@@ -805,11 +806,6 @@ def check_publisher(request, content):
 
 
 # Pushes.
-
-
-def applied_content(content) -> bool:
-    """Whether push `content` is applied."""
-    return isinstance(content, Mapping) and content.get("state") == "applied"
 
 
 def applied(push) -> bool:

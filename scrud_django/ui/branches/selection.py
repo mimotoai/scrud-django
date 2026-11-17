@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from django.middleware.csrf import get_token
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 from django.utils.crypto import constant_time_compare, salted_hmac
 
 from scrud_django.core.authz import may_read_in_context, resource_contexts
@@ -54,6 +54,9 @@ HEADER, PARAM, COOKIE, NONE = "header", "param", "cookie", "none"
 
 # On the request: its `Mount` (`PublishedBranchMiddleware`).
 MOUNT_ATTR = "scrud_ui_mount"
+# On the request of a UI page (`scrud_django.ui.pages`): the UI's base path,
+# which its API hrefs are mapped under (`in_mount`).
+UI_BASE_ATTR = "scrud_ui_base"
 # On the request: {use the cookie: Chosen}.
 _CHOSEN_ATTR = "_scrud_ui_chosen"
 # The key the stored branch contents are memoised under in a `rules_memo`.
@@ -127,11 +130,29 @@ def mount_of(request) -> Mount | None:
     return mount if isinstance(mount, Mount) else None
 
 
+def ui_base_of(request) -> str | None:
+    """The UI's base path of `request`, a UI page's (``request.scrud_ui_base``,
+    which `scrud_django.ui.pages` sets), or ``None``."""
+    base = getattr(request, UI_BASE_ATTR, None)
+    return base if isinstance(base, str) else None
+
+
 def in_mount(request, href: str) -> str:
-    """`href`, an API URL, as the request's prefix serves it (`Mount.href`):
-    HTML links stay in the mount; JSON keeps the API's."""
+    """`href`, an API URL, as the request's page serves it: under its prefix
+    (`Mount.href`); else, on a UI page (`ui_base_of`), under the UI's base
+    instead of the API's (`api_base`); else as it is (the API's HTML, and
+    JSON, keep the API's)."""
     mount = mount_of(request)
-    return mount.href(href) if mount is not None else href
+    if mount is not None:
+        return mount.href(href)
+    ui_base = ui_base_of(request)
+    if ui_base is None:
+        return href
+    try:
+        base = api_base()
+    except NoReverseMatch:
+        return href
+    return _moved(href, base, ui_base)
 
 
 def published_branch(request) -> str:
@@ -156,9 +177,11 @@ def cookie_name(request) -> str:
 
 def cookie_path(request) -> str:
     """The path the cookie (`cookie_name`) is scoped to: the prefix's, else
-    the API's."""
+    a UI page's base (`ui_base_of`), else the API's."""
     mount = mount_of(request)
-    return mount.url_prefix if mount is not None else api_base()
+    if mount is not None:
+        return mount.url_prefix
+    return ui_base_of(request) or api_base()
 
 
 def selection_value(selection: Selection) -> str:
@@ -377,6 +400,20 @@ def branch_content(branch: Branch, using=None) -> Mapping | None:
         return {"name": branch.name, "rbac_context": branch.context}
     rows = Resource.objects.using(using) if using else Resource.objects
     return rows.filter(pk=branch.pk).values_list("content", flat=True).first()
+
+
+def may_get_mount(request, mount: Mount) -> bool:
+    """Whether the user of `request` may GET `mount`'s branch: as the
+    middleware read it (`Mount.content`), else as stored now (and still
+    published at the mount's prefix)."""
+    if mount.content is not None:
+        return may_get_stored(request, mount.content)
+    branch = branches().get(mount.branch)
+    return (
+        branch is not None
+        and branch.prefix == mount.prefix
+        and may_get(request, branch)
+    )
 
 
 def may_get_stored(request, content) -> bool:

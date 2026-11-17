@@ -806,6 +806,37 @@ class RequestBodyMalformedError(ScrudException):
         return {"detail": str(self.detail)}
 
 
+class RequestBodyMediaTypeError(ScrudException):
+    """A request body of another media type than JSON (a form, text), as the
+    DRF routes answer it (DRF's ``UnsupportedMediaType``, through
+    scoped-rbac's handler): 415. While uniform errors are on, scoped-rbac's
+    problem (`response_data`: ``error_problem`` of a 415 coded
+    ``unsupported_media_type``, whose ``detail`` is DRF's message) with its
+    problem-details Links; off, DRF's native body (`native_response_data`)
+    as ``application/json``. `media_type` is the request's
+    ``Content-Type``, as DRF names it."""
+
+    status_code = 415
+    default_detail = "Unsupported media type in request."
+    default_code = "unsupported_media_type"
+    problem_links = True
+
+    def __init__(self, media_type):
+        super().__init__(f'Unsupported media type "{media_type}" in request.')
+        self.media_type = media_type
+
+    def response_data(self, context):
+        from scoped_rbac.problems import error_problem
+
+        return error_problem(
+            self.status_code, code=self.default_code, detail=str(self.detail)
+        )
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off."""
+        return {"detail": str(self.detail)}
+
+
 class RequestBodyNotAnObjectError(ScrudException):
     """A POST or PUT body that is not a JSON object (a list, a string, a
     number): a resource is one. Its body is the 400 the DRF routes answer

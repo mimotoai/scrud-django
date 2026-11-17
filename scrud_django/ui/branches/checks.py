@@ -5,6 +5,8 @@ of overrides of packaged UI layer items (`check_layer_conflicts`)."""
 from django.core import checks
 from django.urls import NoReverseMatch, Resolver404, get_script_prefix, resolve
 
+from scrud_django.ui import UI_NAMESPACE
+
 CHECK_ID = "scrud_django_ui.W001"
 LAYER_CONFLICTS_ID = "scrud_django_ui.W002"
 
@@ -116,13 +118,17 @@ def overlap(one: str, other: str, segments) -> bool:
 
 def shadowed_urls(prefix, slugs) -> list[str]:
     """The URLs ``<prefix><slug>/`` that the project's URLconf serves, each
-    with its view's name."""
+    with its view's name. The UI app's own pages (``scrud_django.ui.urls``,
+    namespace `UI_NAMESPACE`) are not the project's: a prefix serves their
+    presentation of its branch."""
     shadowed = []
     for slug in slugs:
         path = f"{prefix}{slug}/"
         try:
             match = resolve(path)
         except Resolver404:
+            continue
+        if UI_NAMESPACE in match.namespaces:
             continue
         shadowed.append(f"{path} ({match.view_name})")
     return shadowed

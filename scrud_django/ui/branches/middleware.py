@@ -29,11 +29,10 @@ from scrud_django.ui.branches.selection import (
     MOUNT_ATTR,
     Mount,
     api_base,
-    may_get,
-    may_get_stored,
+    may_get_mount,
     mount_of,
 )
-from scrud_django.ui.branches.store import branches, stored_branches
+from scrud_django.ui.branches.store import stored_branches
 
 logger = logging.getLogger(__name__)
 
@@ -165,23 +164,10 @@ def check_mount(request) -> None:
     mount = mount_of(request)
     if mount is None:
         return
-    if _may_get_mounted(request, mount):
+    if may_get_mount(request, mount):
         return
     if getattr(request, "authenticators", None) and not getattr(
         request, "successful_authenticator", None
     ):
         raise NotAuthenticated()
     raise PermissionDenied()
-
-
-def _may_get_mounted(request, mount) -> bool:
-    """Whether the user of `request` may GET `mount`'s branch: as the
-    middleware read it (`Mount.content`), else as stored now."""
-    if mount.content is not None:
-        return may_get_stored(request, mount.content)
-    branch = branches().get(mount.branch)
-    return (
-        branch is not None
-        and branch.prefix == mount.prefix
-        and may_get(request, branch)
-    )

@@ -26,6 +26,7 @@ from django.utils.cache import patch_cache_control, patch_vary_headers
 from django.utils.html import format_html
 from django.utils.safestring import SafeString, mark_safe
 
+from scrud_django.exceptions import UIHeaderInvalidError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messages
 from scrud_django.ui.branches.chrome import SAFE_NOTICE, banner, confirm_page
@@ -208,6 +209,26 @@ def pointer_of(request) -> str | None:
     return value
 
 
+def check_ui_headers(request) -> None:
+    """Refuse (`UIHeaderInvalidError`, 400) a request whose `POINTER_HEADER`
+    is not a JSON Pointer of at most `MAX_POINTER_LENGTH` characters, or
+    whose requested mode (`MODE_HEADER`, `MODE_PARAMETER`) is not
+    ``"view"``: before anything is read or written, so a PUT carrying one
+    writes nothing. An invalid scope chain (`SCOPE_HEADER`,
+    `SCOPE_PARAMETER`) is ignored (`scope_chain_of`)."""
+    if pointer_of(request) is None:
+        raise UIHeaderInvalidError(
+            POINTER_HEADER,
+            f"a JSON Pointer (RFC 6901) of at most {MAX_POINTER_LENGTH} characters"
+            " is expected.",
+        )
+    mode = _requested_mode_value(request)
+    if mode is not None and mode != VIEW_MODE:
+        raise UIHeaderInvalidError(
+            MODE_HEADER, f'"{VIEW_MODE}" is the only mode that can be requested.'
+        )
+
+
 def html_headers(request, response) -> None:
     """Make `response` an HTML response: vary it on the fragment protocol's
     headers (`VARY`), keep caches from storing it (``Cache-Control: private,
@@ -260,7 +281,7 @@ def render_html(
             return str(confirm_page(chosen, request))
         # An embedded request (`embed`) stays in its embedder's safe mode:
         # it is only ever turned on here (and, for the CSS and JS file
-        # responses, in `branches.files`).
+        # responses, in `branches.file_views`).
         with (
             using_selection(chosen.selection),
             using_safe_mode(safe_mode_requested(request) or safe_mode()),

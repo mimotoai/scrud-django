@@ -2,6 +2,7 @@
 their parent branch's. See ``docs/ui.md``."""
 
 import re
+from collections.abc import Mapping
 
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
@@ -30,3 +31,15 @@ ITEM_KINDS = {
     "css": UI_CSS_TYPE_URI,
     "js": UI_JS_TYPE_URI,
 }
+
+
+def applied_content(content) -> bool:
+    """Whether push `content` is applied."""
+    return isinstance(content, Mapping) and content.get("state") == "applied"
+
+
+def is_record(type_uri: str, content) -> bool:
+    """Whether `content`, of the type `type_uri`, is a read-only record,
+    which the type refuses a PUT and a DELETE of (an applied push), so that
+    its HTML page is a view: no form, no Delete button."""
+    return type_uri == UI_PUSH_TYPE_URI and applied_content(content)

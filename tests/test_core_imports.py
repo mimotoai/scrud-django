@@ -114,3 +114,44 @@ assert hash(ErrorText("x", "a")) == hash("x")
         [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+# The UI app's pages and URLconf, and the views serving its CSS and JS files,
+# import none of the denied modules either (the deny list).
+UI_APP = (
+    ROOT / "scrud_django" / "ui" / "pages.py",
+    ROOT / "scrud_django" / "ui" / "urls.py",
+    ROOT / "scrud_django" / "ui" / "branches" / "file_views.py",
+)
+
+
+def test_ui_pages_import_no_drf():
+    """The UI app's modules import no DRF (directly: the deny list), and
+    import with it blocked (with what they import), ``scrud_django.ui``
+    installed."""
+    offenders = []
+    for path in UI_APP:
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                names = [base] + [f"{base}.{alias.name}" for alias in node.names]
+            else:
+                continue
+            for name in names:
+                if any(name == d or name.startswith(d + ".") for d in DENIED):
+                    offenders.append(f"{path.relative_to(ROOT)}: {name}")
+    assert not offenders
+    script = SCRIPT.replace(
+        '"scrud_django",\n    ],', '"scrud_django",\n        "scrud_django.ui",\n    ],'
+    ) + (
+        "\nfor name in ('scrud_django.ui.pages', 'scrud_django.ui.urls',"
+        " 'scrud_django.ui.branches.file_views'):\n"
+        "    importlib.import_module(name)\n"
+    )
+    assert '"scrud_django.ui",' in script
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr

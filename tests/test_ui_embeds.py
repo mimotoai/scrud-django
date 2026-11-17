@@ -491,11 +491,11 @@ def test_embed_of_an_api_path_under_a_published_prefix(
     # check_mount gates the embed's own request.
     checked = []
 
-    def may_get_mounted(request, mount):
+    def may_get_mount(request, mount):
         checked.append(request.path)
         return request.path != mounted(ADMIN, other)
 
-    monkeypatch.setattr(middleware, "_may_get_mounted", may_get_mounted)
+    monkeypatch.setattr(middleware, "may_get_mount", may_get_mount)
     page = get_page(mounted(ADMIN, todo_list), scope="host")
     assert mounted(ADMIN, other) in checked
     assert "Chores" not in page and not frames(page, mounted(ADMIN, other))
