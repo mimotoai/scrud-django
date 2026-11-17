@@ -11,6 +11,10 @@ hrefs mapped to the UI, the branch cookie's path, a published prefix's page,
 a studio preview of an instance, and the UI's system checks."""
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
@@ -27,6 +31,7 @@ from scrud_django.core.urls import (
     api_route_name,
 )
 from scrud_django.models import Resource
+from scrud_django.ninja.api import ui_specs
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui import pages
 from scrud_django.ui.branches.middleware import find_mount
@@ -45,8 +50,7 @@ from scrud_django.ui.embed import REFUSED_MESSAGE
 from scrud_django.ui.embed import api_url as embed_api_url
 
 from .fixtures import *  # noqa
-from .front_ends import NINJA_NAMESPACE, serve_ninja
-from .resource_types import ninja_type_specs
+from .front_ends import NINJA_NAMESPACE, serve_ninja, served_specs
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_render import may_select_branches
 from .test_ui_http import PREFIXES, assert_html, frame_hrefs, html, put_json
@@ -69,8 +73,8 @@ def ui_urlconf(request, settings, db):
 
 
 def register(slug, content):
-    """A resource of `slug` on main, stored as is (not through a route: the
-    UI's types are not routed on the ninja URLconf)."""
+    """A resource of `slug` on main, stored as is (not through a route, so
+    that each URLconf's test starts from the same rows)."""
     return ResourceRegistration.register(content, slug)
 
 
@@ -290,18 +294,86 @@ def test_a_studio_preview_of_an_instance(ui_urlconf, todo_list, todo_owner_login
     When.http.get(url, {"instance": todo_list.pk})
     Then.http.status_code_is(200)
     assert "Groceries" in html()
-    # The previewed frame's href is the instance's API URL.
-    assert f"/todo-lists/{todo_list.pk}/" in html()
+    # The previewed frame's href is the instance's API URL, the whole path.
+    expected = api_reverse("todo-lists", "detail", args=[todo_list.pk])
+    assert expected == f"/api/todo-lists/{todo_list.pk}/"
+    assert frame_hrefs(html()) == [expected]
 
 
 @pytest.mark.django_db
 def test_the_ui_checks_name_no_type_it_serves(ui_urlconf):
-    """W003 and W004 name none of the test types the ninja API routes: the
-    UI serves each, on either URLconf."""
-    slugs = {spec.slug for spec in ninja_type_specs()}
+    """W003 and W004 name none of the types the ninja API routes (the test
+    types, the UI's and the studio's computed ones): the UI serves each, on
+    either URLconf. W004 names every stored type no API routes: none on
+    the DRF routes; on the ninja API, ``todo-summaries`` alone, which DRF
+    alone routes (a viewset class of its own, no spec)."""
+    slugs = {spec.slug for spec in served_specs()}
+    assert {spec.slug for spec in ui_specs()} <= slugs
     unrouted = {w.obj for w in check_unrouted_types(None)}
     refused = {w.obj for w in check_drf_only_authorization(None)}
-    assert not slugs & unrouted, slugs & unrouted
+    assert unrouted == (
+        {"todo-summaries"} if ui_urlconf == NINJA_UI_URLCONF else set()
+    ), unrouted
     assert not slugs & refused, slugs & refused
     for slug in slugs:
         assert pages.refusal(slug) != UNRECORDED_ROUTE, slug
+
+
+#: A fresh process's first `api_base` on ``tests.ninja_no_ui_types_urls``,
+#: before anything imported the URLconf: no API has noted its routes yet.
+FIRST_API_BASE = """
+import django
+from django.conf import settings
+
+from tests.settings import SETTINGS
+
+settings.configure(**{**SETTINGS, "ROOT_URLCONF": "tests.ninja_no_ui_types_urls"})
+django.setup()
+
+from scrud_django.core.urls import api_slugs
+from scrud_django.ui.branches.selection import api_base
+
+assert api_slugs() == (), api_slugs()
+print("api_base", api_base())
+"""
+
+
+def test_the_api_base_on_a_processs_first_call():
+    """`api_base` imports the URLconf (asking for the UI components' list)
+    before it reads the slugs the APIs noted: on a process's first call, on
+    an API not routing the UI's types, it finds another type's list. In
+    in-memory SQLite (the database variables unset): the API's types are
+    not stored there (`register_or_defer` leaves them pending), as nothing
+    here needs them."""
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("SCRUD_TEST_")
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", FIRST_API_BASE],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines()[-1] == "api_base /api/", result.stdout
+
+
+@pytest.mark.django_db
+@pytest.mark.urls("tests.ninja_no_ui_types_urls")
+def test_an_api_not_serving_the_ui_types():
+    """``api(ui_types=False)`` routes none of the UI's types nor the
+    studio's computed ones, only its own (the built-in ones here): the UI
+    finds the API's base from another type's list."""
+    from .ninja_no_ui_types_urls import API
+
+    for spec in ui_specs():
+        for kind in ("list", "detail"):
+            assert api_route_name(spec.slug, kind) is None, (spec.slug, kind)
+    assert api_route_name("json-schema", "list") == (
+        f"{API.urls_namespace}:json-schema-list"
+    )
+    assert api_base() == "/api/"

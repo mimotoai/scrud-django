@@ -533,3 +533,110 @@ def test_the_drf_path_still_registers_a_slug_with_a_dot():
         registration._PENDING_REGISTRATIONS.pop("v1.notes", None)
         with core_types._OPTIONS_LOCK:
             core_types._SLUG_IRIS.pop("v1.notes", None)
+
+
+def _a_check(request, resource_type, body, context):
+    return True
+
+
+def _another_check(request, resource_type, body, context):
+    return True
+
+
+def _prepare(request, resource_type, body, *, instance, using):
+    return body
+
+
+def test_a_json_spec_takes_options_merged_with_its_hooks():
+    """`options` carry the hooks the keyword arguments do not (here a
+    ``prepare_write`` and ``methods``), merged with ``checks``,
+    ``object_checks`` and ``content_filter``."""
+    options = core_types.TypeOptions(prepare_write=_prepare, methods={"GET"})
+    spec = registration.json_resource_type_spec(
+        TYPE_URI, SLUG, checks=[_a_check], content_filter=True, options=options
+    )
+    assert spec.options == dataclasses.replace(
+        options, checks=(_a_check,), content_filter=True
+    )
+    # Alone, they are the spec's.
+    assert (
+        registration.json_resource_type_spec(TYPE_URI, SLUG, options=options).options
+        == options
+    )
+    # A hook set in both to one value is no conflict.
+    both = dataclasses.replace(options, checks=(_a_check,))
+    assert (
+        registration.json_resource_type_spec(
+            TYPE_URI, SLUG, checks=[_a_check], options=both
+        ).options
+        == both
+    )
+
+
+@pytest.mark.parametrize("keyword", ["checks", "object_checks"])
+def test_a_json_spec_refuses_a_hook_set_twice_differently(keyword):
+    # (``content_filter`` cannot be: its one value besides the default is
+    # True, which both may set.)
+    options = core_types.TypeOptions(**{keyword: (_a_check,)})
+    with pytest.raises(TypeError, match=keyword):
+        registration.json_resource_type_spec(
+            TYPE_URI, SLUG, options=options, **{keyword: [_another_check]}
+        )
+
+
+def test_a_json_spec_refuses_options_that_are_not_type_options_or_compute():
+    with pytest.raises(TypeError, match="TypeOptions"):
+        registration.json_resource_type_spec(TYPE_URI, SLUG, options={"checks": ()})
+    with pytest.raises(ImproperlyConfigured, match="compute"):
+        registration.json_resource_type_spec(
+            TYPE_URI, SLUG, options=core_types.TypeOptions(compute=lambda r, k: {})
+        )
+
+
+@pytest.mark.django_db
+@test_context
+def test_the_ui_type_specs_carry_the_ui_hooks(caplog):
+    """`ui_type_specs` are the UI types, each with its hooks
+    (`UI_TYPE_OPTIONS`); a branch version keeps no reversion history; the
+    DRF routes register the same specs, so registering both replaces no
+    hook. The studio's computed types (`studio_computed_type_specs`) each
+    have their ``compute``."""
+    from scrud_django.ui.hooks import UI_TYPE_OPTIONS
+    from scrud_django.ui.studio.computed import (
+        STUDIO_COMPUTED_TYPES,
+        studio_computed_type_specs,
+        studio_computed_type_urls,
+    )
+    from scrud_django.ui.types import ui_resource_type_urls, ui_type_specs
+
+    specs = ui_type_specs()
+    assert [spec.slug for spec in specs] == [
+        "ui-components",
+        "ui-stylesheets",
+        "ui-branches",
+        "ui-branch-versions",
+        "ui-pushes",
+        "ui-css",
+        "ui-js",
+    ]
+    for spec in specs:
+        assert spec.kind == "json"
+        assert spec.options == UI_TYPE_OPTIONS[spec.slug]
+        assert spec._registration_arguments()["uses_reversion"] is (
+            spec.slug != "ui-branch-versions"
+        )
+    computed = studio_computed_type_specs()
+    assert [(spec.slug, spec.kind, spec.options.compute) for spec in computed] == [
+        (slug, "computed", compute) for _, slug, compute in STUDIO_COMPUTED_TYPES
+    ]
+    with caplog.at_level(logging.WARNING):
+        for spec in [*specs, *computed]:
+            spec.register()
+        ui_resource_type_urls()
+        studio_computed_type_urls()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    for spec in [*specs, *computed]:
+        assert core_types.type_options_for_slug(spec.slug) == spec.options
+        assert ResourceType.objects.filter(
+            type_uri=spec.resource_type_uri, slug=spec.slug
+        ).exists()

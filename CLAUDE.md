@@ -84,7 +84,10 @@ adds it to the core with a core test. It authenticates with scoped-rbac's
 authentication classes (see the README). It answers as the DRF routes do,
 and `tests/test_front_end_parity.py` is the proof (the same exchanges
 replayed against both, compared exactly); the generic suites take the
-`front_end` fixture and run on both. It serves no UI or studio types yet.
+`front_end` fixture and run on both. It serves the UI's types and the
+studio's computed types (`ui.types.ui_type_specs()`,
+`ui.studio.computed.studio_computed_type_specs()`) when their apps are
+installed, unless `api(ui_types=False)`.
 
 `scrud_django/ui/` is the third front end of the core, the htmx UI: plain
 Django views (`scrud_django/ui/pages.py`), routed by `scrud_django.ui.urls`

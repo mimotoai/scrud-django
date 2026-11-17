@@ -88,7 +88,23 @@
   `api_reverse`, `api_namespaces`, `api_slugs`) gives the UI its pages,
   embeds, prefixes, studio links and the API's base in a ninja-only project.
   `core.urls.absolute_reverse` falls back to those namespaces, so a UI page's
-  `Location` and item hrefs reverse there too.
+  `Location` and item hrefs reverse there too, but never from a request
+  another API serves: its links stay within that API.
+* The ninja `api()` serves the UI's types (`ui-components/`,
+  `ui-stylesheets/`, `ui-css/`, `ui-js/`, `ui-branches/`,
+  `ui-branch-versions/`, `ui-pushes/`) when `scrud_django.ui` is installed,
+  and the studio's computed types when `scrud_django.ui.studio` is too,
+  answering as their DRF routes do (`api(ui_types=False)` leaves them out).
+  Their specs are `scrud_django.ui.types.ui_type_specs()` and
+  `scrud_django.ui.studio.computed.studio_computed_type_specs()`, which the
+  DRF routes register too. `registration.json_resource_type_spec` takes
+  `options=` (a `TypeOptions`: write and read hooks, `methods`), merged with
+  `checks`, `object_checks` and `content_filter`. A ninja type whose
+  `TypeOptions.methods` leave a method out routes none for it (scrudful's
+  405, before any authorization, as DRF's view answers it), and a GET of an
+  item answers what its reader gets (the type's `read_view`). A studio
+  computed answer's links, and `api_reverse(..., request=)`'s, are the
+  serving API's.
 * The system checks `scrud_django_ui.W004`, naming each registered type with
   no API route the UI reads (none named `<slug>-list` or `<slug>-detail`
   outside a URL namespace or in a ninja `api()`'s), and
@@ -98,6 +114,10 @@
 
 ### Changed
 
+* `scrud_django.ui.types`' per-type registration functions
+  (`ui_component_resource_type()` and the others) and their module-level
+  caches are removed: register the UI types with `ui_type_specs()` (each
+  `spec.register()`), or route them with `ui_resource_type_urls()` on DRF.
 * `scrud_django.scrud_signals` is now an alias of `scrud_django.core.signals`:
   the same objects, so existing imports and receivers keep working.
 * `ResourceMixin.get_transitions` computes each context's transition with

@@ -18,9 +18,14 @@ A response is normalized as the design allows, and in no other way:
 - ``Content-Length`` is that of the body once so replaced.
 
 Everything else (status, every other header, ``Vary`` included, the body's
-bytes) must match. The one difference a case may excuse, and then only by
-name, is DRF's ``Vary: Cookie`` on a refusal of failing credentials
-(`Case.drf_alone_reads_the_session`, `excusing_drfs_session_vary`).
+bytes) must match. The differences a case may excuse, and then only by
+name, are DRF's ``Vary: Cookie`` on a refusal of failing credentials
+(`Case.drf_alone_reads_the_session`, `excusing_drfs_session_vary`), and the
+ETag of a computed answer whose content links to the serving mount (a
+studio computed type's hrefs, `Case.etag_hashes_the_mount`): the hash of
+that content, which differs between the mounts as the content does before
+it is normalized; each front end's is checked to be the hash of its own
+body, then masked (`BODY_ETAG`).
 """
 
 import dataclasses
@@ -39,7 +44,9 @@ from django.test import Client
 from django.urls import reverse
 
 from scrud_django import registration
+from scrud_django.core.computed import computed_etag
 from scrud_django.models import Resource
+from scrud_django.ninja.api import ui_specs
 
 from .resource_types import ninja_type_specs
 
@@ -58,6 +65,10 @@ MOUNT = "{mount}"
 #: responses of a described path, and the placeholder its target becomes.
 HSR_REL = "https://w3id.org/semantic-http/ns#http-schema-resource-document"
 HSR = "{hsr}"
+
+#: The ETag of an answer whose ETag is its body's hash, once checked
+#: (`Case.etag_hashes_the_mount`).
+BODY_ETAG = '"{body-etag}"'
 
 #: The response headers dropped.
 IGNORED_HEADERS = frozenset({"date"})
@@ -106,6 +117,11 @@ class Case:
       refuses before the session is read. `parity` then asserts that DRF's
       ``Vary`` is exactly ninja's plus ``Cookie``, and returns DRF's exchange
       with ninja's ``Vary`` (`excusing_drfs_session_vary`).
+    - `etag_hashes_the_mount`: the answer is a computed type's whose content
+      names the serving mount (its links), and whose ETag is that content's
+      hash (`scrud_django.core.computed.computed_etag`): `exchange` asserts
+      each front end's ETag is the hash of its own body, then masks it
+      (`BODY_ETAG`), so that the normalized bodies alone are compared.
     """
 
     id: str
@@ -115,6 +131,7 @@ class Case:
     body: object = None
     headers: Mapping[str, str] | Callable[[Mapping], Mapping[str, str]] | None = None
     drf_alone_reads_the_session: bool = False
+    etag_hashes_the_mount: bool = False
 
 
 class Clock:
@@ -230,8 +247,15 @@ def serve_both():
     writes nothing."""
     from . import parity_urls  # noqa: F401
 
-    for spec in [*registration.built_in_type_specs(), *ninja_type_specs()]:
+    for spec in served_specs():
         spec.register()
+
+
+def served_specs():
+    """The specs of every type the test types' ninja API serves
+    (`tests.ninja_api`): the built-in ones, the UI app's (`ui_specs`) and
+    the test types (`ninja_type_specs`)."""
+    return [*registration.built_in_type_specs(), *ui_specs(), *ninja_type_specs()]
 
 
 def serve_ninja():
@@ -241,7 +265,7 @@ def serve_ninja():
     Registering a type already stored writes nothing."""
     from . import ninja_urls  # noqa: F401
 
-    for spec in [*registration.built_in_type_specs(), *ninja_type_specs()]:
+    for spec in served_specs():
         spec.register()
 
 
@@ -268,6 +292,7 @@ def _run(case, front_end):
                     headers=headers,
                     keys=keys,
                     stored=stored,
+                    etag_hashes_the_body=case.etag_hashes_the_mount,
                 )
             finally:
                 transaction.set_rollback(True)
@@ -283,13 +308,16 @@ def exchange(
     headers=None,
     keys=None,
     stored=None,
+    etag_hashes_the_body=False,
 ) -> Exchange:
     """Send `method` `path` (whose ``{mount}`` becomes `front_end`'s mount)
     with `client`, `body` as JSON (a ``str`` or ``bytes`` as is) and
     `headers`, and return the response `normalized`, with `keys` (``{name:
     key}``) as the keys to replace. Given `stored`, the keys of the resources
     stored before the request, each resource the request created is
-    ``created`` (then ``created-2`` ...), in key order."""
+    ``created`` (then ``created-2`` ...), in key order. With
+    `etag_hashes_the_body` (`Case.etag_hashes_the_mount`), the response's
+    ETag is asserted to be its body's hash, then is `BODY_ETAG`."""
     mount = MOUNTS[front_end]
     kwargs = {"headers": dict(headers or {})}
     if body is not None:
@@ -309,6 +337,12 @@ def exchange(
         get = client.generic("GET", url, **kwargs)
         assert get.status_code == response.status_code, get
         length_of = get.content
+    if etag_hashes_the_body and response.has_header("ETag"):
+        content = response.content if length_of is None else length_of
+        assert response["ETag"] == computed_etag(json.loads(content)), (
+            f"the ETag {response['ETag']} is not the hash of the body"
+        )
+        response["ETag"] = BODY_ETAG
     return normalized(response, mount, keys, length_of=length_of)
 
 

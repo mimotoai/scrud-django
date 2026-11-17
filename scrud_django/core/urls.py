@@ -53,13 +53,18 @@ def api_slugs() -> tuple[str, ...]:
         return tuple(found)
 
 
-def api_route_name(slug: str, kind: Literal["list", "detail"]) -> str | None:
+def api_route_name(
+    slug: str, kind: Literal["list", "detail"], *, request=None
+) -> str | None:
     """The name of the API route of the type `slug` of `kind` (``"list"``:
     ``<slug>-list``; ``"detail"``: ``<slug>-detail``, reversed with one
     key) in the URLconf serving the request: the bare name when it
     reverses (DRF's registration, or a route named so by hand), else the
     first noted namespace's (`api_namespaces`: scrud's ninja ``api()``'s
     ``"<namespace>:<slug>-<kind>"``) that does; ``None`` when none does.
+    Given a `request` an API serves (resolved under a noted namespace), that
+    API's route comes first, as `absolute_reverse`'s links follow it (R5):
+    an answer it computes links to its own routes.
     A name found is only where the route is: whether its view is one scrud
     built is its mark's to say (`scrud_django.core.types.route_authorization`).
     A namespace an outer ``include`` nests the API's in is not looked in.
@@ -68,6 +73,10 @@ def api_route_name(slug: str, kind: Literal["list", "detail"]) -> str | None:
         raise ValueError(f"api_route_name: {kind!r} is not one of {ROUTE_KINDS}.")
     name = f"{slug}-{kind}"
     args = ("key",) if kind == "detail" else ()
+    serving = getattr(getattr(request, "resolver_match", None), "namespace", "")
+    if serving and serving in api_namespaces():
+        if _reverses(f"{serving}:{name}", args):
+            return f"{serving}:{name}"
     if _reverses(name, args):
         return name
     # Reversing imported the URLconf, which builds (and notes) its APIs:
@@ -87,12 +96,13 @@ def _reverses(name, args) -> bool:
 
 
 def api_reverse(
-    slug: str, kind: Literal["list", "detail"], *, args=(), kwargs=None
+    slug: str, kind: Literal["list", "detail"], *, args=(), kwargs=None, request=None
 ) -> str:
     """The URL path of the API route of the type `slug` of `kind`
-    (`api_route_name`), reversed with `args` or `kwargs`, as ``reverse``
-    gives it. ``NoReverseMatch`` when the URLconf routes none."""
-    name = api_route_name(slug, kind)
+    (`api_route_name`, the API serving `request` first), reversed with
+    `args` or `kwargs`, as ``reverse`` gives it. ``NoReverseMatch`` when the
+    URLconf routes none."""
+    name = api_route_name(slug, kind, request=request)
     if name is None:
         raise NoReverseMatch(
             f"The URLconf routes no {kind} of the type {slug!r} "
@@ -116,9 +126,11 @@ def absolute_reverse(name, *, args=(), kwargs=None, request=None, namespace=None
     built in its describe mode) points at that API's routes.
 
     A name neither reverses within is reversed within each namespace an
-    API's routes are named in (`api_namespaces`), in turn: a UI page
-    (resolved in the UI's namespace) or a request with no route links to
-    the API that routes the name, a ninja ``api()``'s in a ninja-only
+    API's routes are named in (`api_namespaces`), in turn, unless the
+    serving namespace is itself one (``NoReverseMatch`` then: a link always
+    points at the API that served the request, never into another): a UI
+    page (resolved in the UI's namespace) or a request with no route links
+    to the API that routes the name, a ninja ``api()``'s in a ninja-only
     project."""
     match = getattr(request, "resolver_match", None)
     namespace = getattr(match, "namespace", "") or namespace
@@ -132,10 +144,11 @@ def absolute_reverse(name, *, args=(), kwargs=None, request=None, namespace=None
     try:
         return reverse(name, args=args or None, kwargs=kwargs, request=request)
     except NoReverseMatch as error:
-        if ":" in name:
+        namespaces = api_namespaces()
+        if ":" in name or (namespace and namespace in namespaces):
             raise
-        for api_namespace in api_namespaces():
-            if not api_namespace or api_namespace == namespace:
+        for api_namespace in namespaces:
+            if not api_namespace:
                 continue
             try:
                 return reverse(

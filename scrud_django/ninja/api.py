@@ -3,12 +3,13 @@
 from collections.abc import Sequence
 
 import ninja
+from django.apps import apps as django_apps
 from django.core.exceptions import ImproperlyConfigured
 from django.core.validators import slug_re
 from scoped_rbac.ninja.api import router as scoped_rbac_router
 from scrudful.ninja import ScrudfulRouter
 
-from scrud_django import registration
+from scrud_django import registration, ui
 from scrud_django.core.urls import note_api_routes
 from scrud_django.ninja import computed, entry, errors, negotiation, routers, services
 from scrud_django.registration import TypeSpec, built_in_type_specs
@@ -74,16 +75,39 @@ def _check_specs(specs: Sequence[object]) -> None:
         by_slug[spec.slug] = by_iri[spec.resource_type_uri] = spec
 
 
+def ui_specs() -> list[TypeSpec]:
+    """The `TypeSpec`s of the types the UI app brings, as ``scrud_django.urls``
+    serves them on DRF: the UI resource types
+    (`scrud_django.ui.types.ui_type_specs`) when ``scrud_django.ui`` is
+    installed, and the studio's computed types
+    (`scrud_django.ui.studio.computed.studio_computed_type_specs`) when
+    ``scrud_django.ui.studio`` is too; none otherwise."""
+    if not ui.is_enabled():
+        return []
+    from scrud_django.ui.types import ui_type_specs
+
+    specs = ui_type_specs()
+    if django_apps.is_installed(ui.STUDIO_APP_NAME):
+        from scrud_django.ui.studio.computed import studio_computed_type_specs
+
+        specs.extend(studio_computed_type_specs())
+    return specs
+
+
 def api(
     *,
     types: Sequence[TypeSpec] = (),
     urls_namespace: str = "scrud",
+    ui_types: bool = True,
     **ninja_kwargs,
 ) -> ninja.NinjaAPI:
     """A ``NinjaAPI`` serving scrud's resource types: the built-in ones (JSON
     Schema and JSON-LD documents, indexing and workflow policies), always
     (every stored type's Links name its schema and context resources, which
-    the built-in routes serve), and each of `types`, all of them checked before
+    the built-in routes serve); with `ui_types` (the default), the UI app's
+    when it is installed (`ui_specs`: the UI resource types, and the
+    studio's computed types when the studio is installed, with their hooks,
+    answering as their DRF routes do); and each of `types`, all of them checked before
     any is registered (`_check_specs`: ``TypeError`` for a non-`TypeSpec`,
     ``ImproperlyConfigured`` for a reserved or shared slug, a slug that is not
     one URL segment, or a shared IRI), then registered
@@ -145,7 +169,7 @@ def api(
     # `ninja-openapi-head-operation-id`).
     ninja_kwargs.setdefault("docs_url", None)
     ninja_kwargs.setdefault("openapi_url", None)
-    specs = [*built_in_type_specs(), *types]
+    specs = [*built_in_type_specs(), *(ui_specs() if ui_types else ()), *types]
     # Before any side effect: nothing is registered, nor any API built.
     _check_specs(specs)
     scrud_api = ninja.NinjaAPI(

@@ -2068,7 +2068,12 @@ Decided in `docs/superpowers/plans/2026-11-12-ninja-phase3a-front-end.md`
 - **R3. Not served on ninja in 0.16.0:** the UI types (`ui_resource_type_urls()`),
   the studio's computed types (`studio_computed_type_urls()`) and the
   `ui-css-files` and `ui-js-files` views. `api()` does not mount them; a later release
-  moves them onto core hooks.
+  moves them onto core hooks. Lifted in part C: `api()` serves the UI types
+  (`ui.types.ui_type_specs()`) and the studio's computed types
+  (`ui.studio.computed.studio_computed_type_specs()`) when their apps are
+  installed (`api(ui_types=False)` opts out), through their core hooks, and
+  `tests/test_front_end_parity.py` pins their exchanges against DRF's; the
+  file views are the UI app's own routes, served whatever the API.
 - **R4. OPTIONS is scrud's own operation**, not scrudful's automatic one with
   an `allowed=` hook (see `core-allowed-methods-existence-leak`).
 - **R5. Links follow the serving API's namespace.** The ninja routes keep
@@ -2295,3 +2300,22 @@ before. The test that would expose it: a process that imports only a
 per-request URLconf's module lazily, asked `requirement_for` of one of its
 hooked types before any request routed there. Not fixed here: scrud's apps
 route through `ROOT_URLCONF`.
+
+<a id="ui-api-base-cache"></a>
+## ui-api-base-cache: `api_base` repeats its failed reverses for each href on an API not routing the UI's types
+
+`scrud_django.ui.branches.selection.api_base` asks `api_route_name` for the
+UI components' list first, then for each noted slug's list in turn
+(`core.urls.api_slugs`) until one reverses. On an API that does not route
+the UI's types (a ninja `api(ui_types=False)`; DRF and a default `api()`
+route them), every call fails the UI components' reverses (the bare name,
+then each noted namespace's) before it finds another type's list, and
+`api_base` is called for each href a page maps (`Mount.href`, `in_mount`,
+`cookie_path`, the middleware's `find_mount`): a page of many frames repeats
+the same failed reverses many times. The answer depends only on the URLconf
+serving the request, so a memo per URLconf (keyed by `get_urlconf()`,
+cleared on `setting_changed` for `ROOT_URLCONF` as Django's own URL caches
+are) would answer each later call at once. The test that would expose it:
+on `tests/ninja_no_ui_types_urls.py`, count the `reverse` calls (or patch
+`api_route_name`) over two `api_base()` calls, asserting the second makes
+none.

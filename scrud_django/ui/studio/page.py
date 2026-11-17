@@ -237,12 +237,15 @@ def linked_items(request, branch: Branch, kind: str) -> list[dict]:
     return [{"name": name, "own": own} for _order, name, own in found]
 
 
-def browse_url(slug: str, root: Branch | None, selection: Selection) -> str | None:
+def browse_url(
+    slug: str, root: Branch | None, selection: Selection, *, request=None
+) -> str | None:
     """The type's list in the app on `selection`'s branch: the API's URL
+    (that of the API serving `request`, when one does: `api_reverse`)
     under the prefix of the branch's published `root`, with
     ``?ui-branch=<selection>``, so that the switch is confirmed."""
     try:
-        canonical = api_reverse(slug, "list")
+        canonical = api_reverse(slug, "list", request=request)
     except NoReverseMatch:
         return None
     mount = mount_at(root) if root is not None and root.name != MAIN else None

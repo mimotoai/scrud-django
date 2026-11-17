@@ -1,6 +1,6 @@
 """The UI resource types' write and read behaviour, as the hooks of their
-`TypeOptions` (`UI_TYPE_OPTIONS`, registered by
-`scrud_django.ui.types.ui_resource_type_urls`), which
+`TypeOptions` (`UI_TYPE_OPTIONS`, the options of
+`scrud_django.ui.types.ui_type_specs`, which both front ends register), which
 `scrud_django.core.writes`, `scrud_django.core.lists` and
 `scrud_django.core.resources` run for every front end; the DRF viewsets
 (`scrud_django.ui.views`, `scrud_django.ui.branches.views`) call the same

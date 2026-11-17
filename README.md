@@ -65,13 +65,25 @@ urlpatterns = [
 ```
 
 * The factory is `scrud_django.ninja.api(*, types=(), urls_namespace="scrud",
-  **ninja_kwargs)`. `types` are `TypeSpec`s, from
+  ui_types=True, **ninja_kwargs)`. `types` are `TypeSpec`s, from
   `registration.json_resource_type_spec(...)` and
   `registration.computed_resource_type_spec(...)`; it serves them and always
   the built-in types (`json-schema/`, `json-ld/`, `indexing-policies/`,
   `workflow-policies/`: every type's Links name its schema and context
   resources there), with the service catalog (`services/`), scoped-rbac's
-  role routes and the collection documents.
+  role routes and the collection documents. With `ui_types` (the default)
+  it also serves the UI app's types when `scrud_django.ui` is installed
+  (`ui-components/`, `ui-stylesheets/`, `ui-css/`, `ui-js/`, `ui-branches/`,
+  `ui-branch-versions/`, `ui-pushes/`, with their write and read behaviour)
+  and the studio's computed types when `scrud_django.ui.studio` is too
+  (`ui-branch-items/`, `ui-branch-status/`, `ui-type-catalog/`,
+  `ui-selectable-branches/`, `ui-push-previews/`), as `scrud_django.urls`
+  serves them on DRF; `ui_types=False` leaves them out (one API of several
+  serves them). A type of yours cannot take one of their slugs.
+  `json_resource_type_spec(..., options=TypeOptions(...))` gives a spec the
+  hooks the keyword arguments do not (`scrud_django.core.types.TypeOptions`:
+  write and read behaviour, the methods it serves), merged with `checks`,
+  `object_checks` and `content_filter`.
 * It serves no interactive docs and no OpenAPI document unless you pass
   `docs_url=` and `openapi_url=` (they go to `NinjaAPI`, as the rest of
   `ninja_kwargs` do); those routes are public. Each operation has an
@@ -181,8 +193,8 @@ urlpatterns = [
   role routes' (`roles/`, `role-assignments/`, `user-rbac-policy/`) semantic
   Links reverse those global names, and answer 500 without it.
 * `services/` lists the types the serving API routes. A type registered in
-  the process that it does not route (another API's, or a UI type on a ninja
-  API) is left out, on both front ends.
+  the process that it does not route (another API's, or a UI type on an
+  `api(ui_types=False)`) is left out, on both front ends.
 * Content negotiation is DRF's with DRF's default renderers (`JSONRenderer`,
   `BrowsableAPIRenderer`): an `Accept` none of a route's renderers serves
   (`Accept: application/xml`) is DRF's 406 (`not_acceptable`), and a
@@ -192,11 +204,13 @@ urlpatterns = [
   `ninja-renderer-settings`). The document routes choose their media type as
   DRF does, and JSON is indented as DRF indents it for
   `Accept: application/json; indent=4`.
-* The UI types (`scrud_django.ui`) and the studio types are not served on
-  ninja yet (the `ui-css-files` and `ui-js-files` views are the UI app's, at
-  its base, whichever front end serves the API), and a ninja
-  route never answers `text/html`: a request that DRF would answer as HTML
-  (`Accept: text/html`, `?format=api`) gets the JSON answer.
+* The `ui-css-files` and `ui-js-files` views are the UI app's, at its base,
+  whichever front end serves the API. A ninja route never answers
+  `text/html`: a request that DRF would answer as HTML (`Accept: text/html`,
+  `?format=api`) gets the JSON answer.
+* A studio computed type's answer links to the API serving the request, so
+  its ETag (the hash of that content) is that API's own: with both front
+  ends mounted, the two answers differ only in those links and their ETag.
 * `scrud_django.urls` stays DRF until the release that switches it; include
   it as before for a DRF project.
 

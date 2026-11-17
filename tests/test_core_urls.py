@@ -154,5 +154,67 @@ def test_a_type_routed_in_a_noted_namespace_only(api_routes):
     assert absolute_reverse("todo-lists-detail", args=["7"], request=request) == (
         "http://testserver/api/todo-lists/7/"
     )
+    # The API serves the UI's types too (``api(ui_types=True)``, the
+    # default): their links reverse there.
+    assert absolute_reverse("ui-components-list", request=request) == (
+        "http://testserver/api/ui-components/"
+    )
+    # A type it does not route (``todo-summaries``, DRF's alone) reverses
+    # nowhere.
     with pytest.raises(NoReverseMatch):
-        absolute_reverse("ui-components-list", request=request)
+        absolute_reverse("todo-summaries-list", request=request)
+
+
+@pytest.mark.urls("tests.two_ninja_apis_urls")
+def test_a_link_follows_the_api_serving_the_request():
+    """Of two ninja APIs, a request one serves links within it, never into
+    the other (R5): a name its API lacks reverses globally, else nowhere
+    (``NoReverseMatch``), though the other routes it. A request in neither
+    (a UI page's, or none) links into the API that routes the name."""
+    request = resolved_request("/b/todos/")
+    assert request.resolver_match.namespace == "ninja-b"
+    assert absolute_reverse("todos-detail", args=["7"], request=request) == (
+        "http://testserver/b/todos/7/"
+    )
+    assert reverse("ninja-a:partner-profiles-list") == "/a/partner-profiles/"
+    with pytest.raises(NoReverseMatch):
+        absolute_reverse("partner-profiles-list", request=request)
+    # Without a request, the namespace given is the serving API's.
+    with pytest.raises(NoReverseMatch):
+        absolute_reverse("partner-profiles-list", namespace="ninja-b")
+    # Outside both APIs.
+    page = resolved_request("/partner-profiles/")
+    assert page.resolver_match.namespace == "scrud_ui"
+    assert absolute_reverse("partner-profiles-list", request=page) == (
+        "http://testserver/a/partner-profiles/"
+    )
+    assert absolute_reverse("todos-list", request=RequestFactory().get("/")) == (
+        "http://testserver/b/todos/"
+    )
+
+
+@pytest.mark.urls("tests.two_ninja_apis_urls")
+def test_a_type_route_follows_the_api_serving_the_request():
+    """`api_route_name` and `api_reverse` given a request an API serves try
+    that API's route first (an answer it computes, a studio computed type's,
+    links to its own routes); without one, or for a request outside every
+    API (a UI page's), the first noted API routing it."""
+    from scrud_django.core.urls import api_reverse, api_route_name
+
+    assert reverse("ninja-b:json-schema-list") == "/b/json-schema/"
+    request = resolved_request("/b/todos/")
+    assert api_route_name("json-schema", "list", request=request) == (
+        "ninja-b:json-schema-list"
+    )
+    assert api_reverse("json-schema", "detail", args=["7"], request=request) == (
+        "/b/json-schema/7/"
+    )
+    assert api_route_name("json-schema", "list") == "ninja-a:json-schema-list"
+    page = resolved_request("/json-schema/")
+    assert api_route_name("json-schema", "list", request=page) == (
+        "ninja-a:json-schema-list"
+    )
+    # A type the serving API lacks is found where it is routed.
+    assert api_route_name("partner-profiles", "list", request=request) == (
+        "ninja-a:partner-profiles-list"
+    )

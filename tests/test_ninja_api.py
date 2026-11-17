@@ -630,6 +630,45 @@ def test_the_reserved_slugs_cover_every_fixed_route_prefix():
     assert first <= RESERVED_SLUGS
 
 
+def test_the_ui_types_slugs_are_neither_reserved_nor_the_uis_own():
+    """The UI's types and the studio's computed ones, which ``api()``
+    serves, have slugs no fixed route of the API has (`RESERVED_SLUGS`),
+    nor the UI app's own routes (``scrud_django.ui.reserved_slugs``: their
+    pages would be shadowed); and no reserved name is the UI's own."""
+    from scrud_django import ui
+    from scrud_django.ninja.api import ui_specs
+
+    slugs = {spec.slug for spec in ui_specs()}
+    assert len(slugs) == 12, slugs
+    assert not slugs & RESERVED_SLUGS
+    assert not slugs & ui.reserved_slugs()
+    assert not RESERVED_SLUGS & ui.reserved_slugs()
+
+
+@pytest.mark.urls("tests.ninja_urls")
+def test_api_serves_the_ui_types_by_default():
+    """``api()`` serves the UI's types (their list and item routes) and the
+    studio's computed types (their item route) when their apps are
+    installed, as the tests' settings install them; ``ui_types=False``
+    serves neither (`tests.ninja_no_ui_types_urls`)."""
+    from django.urls import reverse
+
+    from scrud_django.ninja.api import ui_specs
+
+    for spec in ui_specs():
+        detail = reverse(f"scrud-ninja:{spec.slug}-detail", args=["k"])
+        assert detail == f"/{spec.slug}/k/"
+        if spec.kind == "json":
+            assert reverse(f"scrud-ninja:{spec.slug}-list") == f"/{spec.slug}/"
+
+
+def test_a_type_with_a_ui_types_slug_is_refused():
+    """A type of the app's own with the slug of a UI type is refused, as two
+    types sharing a slug are, before anything is registered."""
+    spec = _spec(slug="ui-components")
+    _refused([spec], match="ui-components")
+
+
 @pytest.mark.parametrize("element", ["not-a-spec", object(), None])
 def test_an_element_that_is_not_a_type_spec_is_refused(element):
     _refused([element], match="json_resource_type_spec", error=TypeError)

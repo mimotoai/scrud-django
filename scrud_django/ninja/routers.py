@@ -46,6 +46,9 @@ API_ATTR = "_scrud_ninja_api"
 #: The request attribute caching the request's resource type.
 TYPE_ATTR = "_scrud_ninja_resource_type"
 
+#: The methods whose answer is the item as its reader gets it (`type_router`).
+READ_METHODS = frozenset({"GET", "HEAD"})
+
 #: The methods whose row an item operation reads locked, in the request's
 #: write transaction (`scrud_django.ninja.entry`).
 LOCKED_METHODS = frozenset({"PUT", "DELETE"})
@@ -120,6 +123,18 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
     API's, which the links its HTTP Schema Resource describes (without a
     request) are reversed in.
 
+    A type whose hooks name the methods it serves (``TypeOptions.methods``:
+    a UI branch version's, GET, HEAD and OPTIONS) has routes for those
+    alone: any other is scrudful's 405 with the path's ``Allow``, once the
+    requester is authenticated and before anything is authorized, as
+    DRF's view answers a method its ``http_method_names`` leave out
+    (scoped-rbac's request check leaves it to the 405).
+
+    A GET or HEAD of an item answers what its reader gets
+    (`scrud_django.core.resources.item_read`: the type's ``read_view``, a
+    UI branch version narrowed to the items its reader may read), its ETag
+    too, as the DRF view's ``get_object`` gives it.
+
     OPTIONS of either route is scrud's own operation, not scrudful's
     automatic one (`_options`): its ``Allow`` is the core's
     (``core.resources.allowed_methods_for``), which looks nothing up for a
@@ -136,10 +151,17 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
     url_name = f"{slug}-detail"
     item = _item_operation_options(spec, urls_namespace)
     list_name = f"{slug}-list"
+    served = _served_methods(spec)
 
-    @router.api_operation(
-        ["GET", "HEAD"], "/", url_name=list_name, operation_id=f"{slug}_list"
-    )
+    def operation(methods, path, **kwargs):
+        """``router.api_operation`` of those of `methods` the type serves,
+        or no operation for none."""
+        methods = [method for method in methods if method in served]
+        if not methods:
+            return lambda handler: handler
+        return router.api_operation(methods, path, **kwargs)
+
+    @operation(["GET", "HEAD"], "/", url_name=list_name, operation_id=f"{slug}_list")
     @described(_collection_entity(spec, urls_namespace))
     def list_resources(request, response: HttpResponse):
         rtype = _resource_type(request, spec)
@@ -166,9 +188,7 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         _set_validators(response, etag, last_modified)
         return lists.list_body(request, rtype, page)
 
-    @router.api_operation(
-        ["POST"], "/", url_name=list_name, operation_id=f"{slug}_create"
-    )
+    @operation(["POST"], "/", url_name=list_name, operation_id=f"{slug}_create")
     @described(_item_entity(spec, urls_namespace))
     def create(request):
         rtype = _resource_type(request, spec)
@@ -197,7 +217,7 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         _set_validators(response, answer.etag, answer.last_modified)
         return response
 
-    @router.api_operation(
+    @operation(
         ["GET", "HEAD"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_retrieve"
     )
     @scrudful(**item)
@@ -205,9 +225,7 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         _as_document(request, response, spec)
         return obj.content
 
-    @router.api_operation(
-        ["PUT"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_replace"
-    )
+    @operation(["PUT"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_replace")
     @scrudful(**item)
     def replace(request, slug: str, obj, response: HttpResponse):
         # scrudful's item decorator looked `obj` up and evaluated its
@@ -217,7 +235,7 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         _as_document(request, response, spec)
         return answer.content
 
-    @router.api_operation(
+    @operation(
         ["DELETE"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_destroy"
     )
     @scrudful(**item)
@@ -237,6 +255,17 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         return _options(request, spec, slug)
 
     return router
+
+
+#: The methods of a type's routes but OPTIONS (`type_router`).
+ROUTED_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "DELETE"})
+
+
+def _served_methods(spec) -> frozenset[str]:
+    """The methods of `ROUTED_METHODS` `spec`'s type serves: those its
+    ``TypeOptions.methods`` name, else all."""
+    methods = spec.options.methods
+    return ROUTED_METHODS if methods is None else ROUTED_METHODS & methods
 
 
 def _options(request, spec, slug):
@@ -529,7 +558,7 @@ def _item_operation_options(spec, urls_namespace):
             body = request_json(request)
         lock = request.method in LOCKED_METHODS and not allow_copy
         with _options_denials(request):
-            return resources.load_for_read(
+            obj = resources.load_for_read(
                 request,
                 rtype,
                 slug,
@@ -538,6 +567,11 @@ def _item_operation_options(spec, urls_namespace):
                 body=body,
                 lock_using=write_db() if lock else None,
             )
+        if request.method in READ_METHODS:
+            # What its reader gets (the type's read_view), which the answer
+            # and its validators are made of, as DRF's get_object gives it.
+            obj.content, obj.etag, _ = resources.item_read(request, rtype, obj)
+        return obj
 
     def targets(request):
         return resources.item_link_targets(

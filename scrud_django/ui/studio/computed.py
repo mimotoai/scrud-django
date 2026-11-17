@@ -26,6 +26,7 @@ are not. The bootstrap studio's strip reads the same functions
 (`scrud_django.ui.studio.page`)."""
 
 import contextlib
+import functools
 import importlib.resources
 import logging
 from collections.abc import Mapping
@@ -245,7 +246,7 @@ def _override(request, kind, key, content, selection, branch) -> dict | None:
     body = item_content(kind, key[0], target, kept, branch)
     if not may_post(request, ITEM_KINDS[kind], body):
         return None
-    return _action("POST", api_reverse(KIND_SLUGS[kind], "list"), body)
+    return _action("POST", api_reverse(KIND_SLUGS[kind], "list", request=request), body)
 
 
 def _beneath(request, kind, branch, all_branches) -> dict:
@@ -292,7 +293,7 @@ def _item(request, kind, row, selection, branch, on, conflicts, beneath) -> dict
     item["origin"] = "packaged" if packaged else "own" if own else "inherited"
     item["from"] = None if packaged else source
     item["href"] = (
-        api_reverse(KIND_SLUGS[kind], "detail", args=[pk])
+        api_reverse(KIND_SLUGS[kind], "detail", args=[pk], request=request)
         if pk is not None and not packaged
         else None
     )
@@ -338,7 +339,9 @@ def branch_status(request, key):
             ],
             "changed": own_items(request, branch),
             "conflicts": _conflicts(request, branch),
-            "browse_url": browse_url(slug, root, selection) if slug else None,
+            "browse_url": (
+                browse_url(slug, root, selection, request=request) if slug else None
+            ),
             "may_write": may_write,
             "may_publish": may_send(request, "PUT", UI_BRANCH_TYPE_URI, content, [""]),
             "pushes": _pushes(request, branch),
@@ -398,7 +401,7 @@ def _pushes(request, branch) -> list[dict]:
         label = content.get("label")
         found.append(
             {
-                "href": api_reverse(UI_PUSH_SLUG, "detail", args=[pk]),
+                "href": api_reverse(UI_PUSH_SLUG, "detail", args=[pk], request=request),
                 "source": content.get("source"),
                 "target": content.get("target"),
                 "state": content.get("state"),
@@ -419,7 +422,7 @@ def _versions(request, branch) -> list[dict]:
         resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI,
         content__branch=branch.name,
     )
-    pushes = api_reverse(UI_PUSH_SLUG, "list")
+    pushes = api_reverse(UI_PUSH_SLUG, "list", request=request)
     found = []
     for pk, content in _latest_readable(request, UI_BRANCH_VERSION_TYPE_URI, rows):
         if content.get("branch") != branch.name:
@@ -435,7 +438,9 @@ def _versions(request, branch) -> list[dict]:
         found.append(
             {
                 "number": number,
-                "href": api_reverse(UI_BRANCH_VERSION_SLUG, "detail", args=[pk]),
+                "href": api_reverse(
+                    UI_BRANCH_VERSION_SLUG, "detail", args=[pk], request=request
+                ),
                 "restore": (
                     _action("POST", pushes, body)
                     if may_post(request, UI_PUSH_TYPE_URI, body)
@@ -462,11 +467,11 @@ def _actions(request, branch, content, etag, chain, may_write) -> dict:
     if branch.parent is not None and may_write and etag is not None:
         pull = _action(
             "PUT",
-            api_reverse(UI_BRANCH_SLUG, "detail", args=[branch.pk]),
+            api_reverse(UI_BRANCH_SLUG, "detail", args=[branch.pk], request=request),
             {**content, "pull": True},
             f'"{etag}"',
         )
-    pushes = api_reverse(UI_PUSH_SLUG, "list")
+    pushes = api_reverse(UI_PUSH_SLUG, "list", request=request)
     promote = []
     for target in chain[1:]:
         entry = {"target": target.name}
@@ -531,7 +536,9 @@ def selectable_branches(request, key):
             branch = all_branches[choice.name]
             href = None
             if branch.pk is not None and may_get(request, branch):
-                href = api_reverse(UI_BRANCH_SLUG, "detail", args=[branch.pk])
+                href = api_reverse(
+                    UI_BRANCH_SLUG, "detail", args=[branch.pk], request=request
+                )
             found.append(
                 {"name": choice.name, "published": choice.published, "href": href}
             )
@@ -601,23 +608,40 @@ def _document(name):
     )
 
 
+def studio_computed_type_specs() -> list[registration.TypeSpec]:
+    """The `TypeSpec`s of the studio's computed types (``<slug>/<key>/``),
+    each with its ``compute`` (`registration.computed_resource_type_spec`),
+    which `scrud_django.core.computed.computed_answer` answers for any
+    front end: what the ninja ``api()`` serves when
+    ``scrud_django.ui.studio`` is installed, and what
+    `studio_computed_type_urls` registers with the DRF routes."""
+    return [
+        registration.computed_resource_type_spec(
+            TYPE_URI_BASE + name,
+            slug,
+            schema_func=lambda name=name: _document(f"{name}-schema.json"),
+            context_func=lambda name=name: _document(f"{name}-ld.json"),
+            compute=compute,
+        )
+        for name, slug, compute in STUDIO_COMPUTED_TYPES
+    ]
+
+
 def studio_computed_type_urls():
-    """The routes of the studio's computed types (``<slug>/<key>/``), each
-    type registered first with its ``compute`` (`registration
-    .computed_resource_type(..., compute=)`, which
-    ``ComputedResourceViewSet`` serves on DRF and
-    `scrud_django.core.computed.computed_answer` answers for any front
-    end): served by ``scrud_django.urls`` when ``scrud_django.ui.studio``
-    is installed."""
+    """The DRF routes of the studio's computed types
+    (`studio_computed_type_specs`, served by ``ComputedResourceViewSet``),
+    each type registered first (`TypeSpec.register`): served by
+    ``scrud_django.urls`` when ``scrud_django.ui.studio`` is installed."""
+    from scrud_django.computed import ComputedResourceViewSet
+
     urls = []
-    for name, slug, compute in STUDIO_COMPUTED_TYPES:
+    for spec in studio_computed_type_specs():
         urls.extend(
-            registration.computed_resource_type(
-                TYPE_URI_BASE + name,
-                slug,
-                schema_func=lambda name=name: _document(f"{name}-schema.json"),
-                context_func=lambda name=name: _document(f"{name}-ld.json"),
-                compute=compute,
+            spec.register(
+                urls_func=functools.partial(
+                    registration.computed_urls,
+                    viewset_class=ComputedResourceViewSet,
+                )
             )
         )
     return urls

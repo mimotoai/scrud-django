@@ -83,19 +83,31 @@ class Chosen:
 def api_base() -> str:
     """The path the API's type URLs start with (``/api/``): the path of the
     UI components' list without its slug, else (a project whose API does
-    not route the UI's types: a ninja-only one, for now) of the first type
-    whose list the URLconf routes, among those a front end built routes of
-    (`scrud_django.core.urls.api_slugs`), outside any URL namespace or in a
-    ninja ``api()``'s (`scrud_django.core.urls.api_route_name`).
-    ``NoReverseMatch`` when it routes none."""
-    for slug in (UI_COMPONENT_SLUG, *api_slugs()):
+    not route the UI's types: a ninja ``api(ui_types=False)``) of the first
+    type whose list the URLconf routes, among those a front end built
+    routes of (`scrud_django.core.urls.api_slugs`), outside any URL
+    namespace or in a ninja ``api()``'s
+    (`scrud_django.core.urls.api_route_name`). ``NoReverseMatch`` when it
+    routes none."""
+    # The UI components' first: asking imports the URLconf, whose APIs note
+    # their routes, so that the slugs are read once noted (on a process's
+    # first call too).
+    name = api_route_name(UI_COMPONENT_SLUG, "list")
+    if name is not None:
+        return _list_base(name, UI_COMPONENT_SLUG)
+    for slug in api_slugs():
         name = api_route_name(slug, "list")
-        if name is None:
-            continue
-        path = reverse(name)
-        suffix = slug + "/"
-        return path[: -len(suffix)] if path.endswith(suffix) else path
+        if name is not None:
+            return _list_base(name, slug)
     raise NoReverseMatch("The URLconf routes no type's list.")
+
+
+def _list_base(name, slug) -> str:
+    """The path of the list route `name` of the type `slug`, without its
+    slug."""
+    path = reverse(name)
+    suffix = slug + "/"
+    return path[: -len(suffix)] if path.endswith(suffix) else path
 
 
 def ui_base() -> str:

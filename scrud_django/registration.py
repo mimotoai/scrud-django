@@ -1231,13 +1231,22 @@ def json_resource_type_spec(
     object_checks=(),
     content_filter: bool = False,
     document_media_type: DocumentMediaType | None = None,
+    options: TypeOptions | None = None,
 ) -> TypeSpec:
     """The `TypeSpec` of a stored json resource type, from the arguments of
     `json_resource_type` (see it for the hooks; keyword-only here) but its
     ``viewset_class`` and its ``indexing_policy_resource``, which it never
     stored (``json-resource-type-indexing-policy`` in docs/follow-ups.md),
     and its `document_media_type` (``None``: plain JSON; else one of
-    `DOCUMENT_MEDIA_TYPES`, ``ImproperlyConfigured`` for another)."""
+    `DOCUMENT_MEDIA_TYPES`, ``ImproperlyConfigured`` for another).
+
+    `options` are the type's hooks beyond `checks`, `object_checks` and
+    `content_filter` (`scrud_django.core.types.TypeOptions`: its write and
+    read behaviour, its ``methods``, its ``ui_authorization``; not a
+    ``compute``, which a computed type alone has), merged with those three:
+    one set both there and in `options`, to another value, is a
+    ``TypeError``; one ``compute`` is ``ImproperlyConfigured``, as for any
+    json type."""
     for name, hook in (
         ("schema_func", schema_func),
         ("context_func", context_func),
@@ -1251,7 +1260,9 @@ def json_resource_type_spec(
         kind="json",
         resource_type_uri=resource_type_uri,
         slug=slug,
-        options=TypeOptions(
+        options=_merged_options(
+            slug,
+            options,
             checks=tuple(checks),
             object_checks=tuple(object_checks),
             content_filter=content_filter,
@@ -1270,6 +1281,33 @@ def json_resource_type_spec(
             "register_service": register_service,
         },
     )
+
+
+def _merged_options(slug, options, **hooks) -> TypeOptions:
+    """`options` (``None``: none) with `hooks` (``checks``, ``object_checks``
+    and ``content_filter``, as `json_resource_type_spec` takes them) set:
+    ``TypeError`` for one that `options` sets to another value (each unset
+    one is its default)."""
+    if options is None:
+        return TypeOptions(**hooks)
+    if not isinstance(options, TypeOptions):
+        raise TypeError(
+            f"json_resource_type_spec({slug!r}): options is a TypeOptions, "
+            f"not {options!r}."
+        )
+    unset = TypeOptions()
+    merged = {}
+    for name, value in hooks.items():
+        own = getattr(options, name)
+        if value == getattr(unset, name) or value == own:
+            continue
+        if own != getattr(unset, name):
+            raise TypeError(
+                f"json_resource_type_spec({slug!r}): {name}= and options."
+                f"{name} differ; set it in one of them."
+            )
+        merged[name] = value
+    return replace(options, **merged) if merged else options
 
 
 def computed_resource_type_spec(

@@ -48,8 +48,6 @@ def django_db_setup(django_db_setup, django_db_blocker):
     context document) for every later test.
     """
     from scrud_django import registration
-    from scrud_django.ui import types as ui_types
-    from scrud_django.ui.studio.computed import studio_computed_type_urls
     from tests import resource_types
 
     with django_db_blocker.unblock():
@@ -58,15 +56,18 @@ def django_db_setup(django_db_setup, django_db_blocker):
         # first resolves a URL, whose rollback would remove their rows.
         resource_types.hooked_resource_types()
         registration.workflow_policy_resource_type()
-        ui_types.ui_component_resource_type()
-        ui_types.ui_stylesheet_resource_type()
-        ui_types.ui_branch_resource_type()
-        ui_types.ui_branch_version_resource_type()
-        ui_types.ui_push_resource_type()
-        ui_types.ui_css_resource_type()
-        ui_types.ui_js_resource_type()
-        # The studio's computed types (registered with their routes).
-        studio_computed_type_urls()
+        # The UI types and the studio's computed types, with their hooks.
+        _register_ui_types()
+
+
+def _register_ui_types():
+    """Register the UI resource types and the studio's computed types
+    (`scrud_django.ninja.api.ui_specs`, as both front ends serve them): their
+    hooks recorded and their rows stored."""
+    from scrud_django.ninja.api import ui_specs
+
+    for spec in ui_specs():
+        spec.register()
 
 
 #: `tests.front_ends.FRONT_ENDS`, which this module cannot import (it imports
@@ -146,27 +147,16 @@ def committed_types():
     pytest-django runs transactional tests after the other database tests
     (with ``--reverse`` too), so those never see the flushed database."""
     from scrud_django import registration
-    from scrud_django.ui import types as ui_types
-    from scrud_django.ui.studio.computed import studio_computed_type_urls
     from tests import resource_types
 
     def forget():
         for name in REGISTRATION_CACHES:
             setattr(registration, name, None)
-        for name in ui_types.REGISTRATION_CACHES:
-            setattr(ui_types, name, None)
 
     forget()
     resource_types.json_resource_types()
     resource_types.hooked_resource_types()
     registration.workflow_policy_resource_type()
-    ui_types.ui_component_resource_type()
-    ui_types.ui_stylesheet_resource_type()
-    ui_types.ui_branch_resource_type()
-    ui_types.ui_branch_version_resource_type()
-    ui_types.ui_push_resource_type()
-    ui_types.ui_css_resource_type()
-    ui_types.ui_js_resource_type()
-    studio_computed_type_urls()
+    _register_ui_types()
     yield
     forget()
