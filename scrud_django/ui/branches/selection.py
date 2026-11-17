@@ -97,6 +97,31 @@ def ui_base() -> str:
     return path[: -len(slug) - 1]
 
 
+def as_path_info(path: str, script: str | None = None) -> str:
+    """The URL path `path` as a ``path_info`` (as prefixes are matched):
+    without the script prefix `script` (default: `get_script_prefix`); a
+    path not under it as it is."""
+    if script is None:
+        script = get_script_prefix()
+    return "/" + path[len(script) :] if path.startswith(script) else path
+
+
+def api_base_info() -> str | None:
+    """The API's base (`api_base`) as a ``path_info``; ``None`` when the
+    project does not serve the UI's types."""
+    try:
+        return as_path_info(api_base())
+    except NoReverseMatch:
+        return None
+
+
+def ui_base_info() -> str:
+    """The UI app's base (`ui_base`) as a ``path_info``, which a prefix's
+    URLs are routed under. ``NoReverseMatch`` when the project does not
+    include the UI app."""
+    return as_path_info(ui_base())
+
+
 @dataclass(frozen=True)
 class Mount:
     """A request under the `prefix` of the published branch `branch`, which
@@ -153,15 +178,20 @@ class Mount:
 
 def mount_at(branch: Branch) -> Mount | None:
     """The `Mount` of the published `branch`'s prefix, which links into it
-    are mapped by (`Mount.href`); ``None`` when it has no prefix, or the
-    project does not include the UI app."""
+    are mapped by (`Mount.href`); ``None`` when it has no prefix, when its
+    prefix is the UI's own base (main's pages: the middleware never mounts
+    it, so links must not lead there), or when the project does not include
+    the UI app."""
     if not branch.prefix:
         return None
     try:
         base = ui_base()
     except NoReverseMatch:
         return None
-    return Mount(branch.prefix, branch.name, base, get_script_prefix())
+    script = get_script_prefix()
+    if branch.prefix == as_path_info(base, script):
+        return None
+    return Mount(branch.prefix, branch.name, base, script)
 
 
 def _moved(url, old, new):

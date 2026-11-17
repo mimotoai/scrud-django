@@ -3,7 +3,9 @@ the branch views apply them when a prefix is set (`prefix_problems`), and
 of overrides of packaged UI layer items (`check_layer_conflicts`)."""
 
 from django.core import checks
-from django.urls import NoReverseMatch, Resolver404, get_script_prefix, resolve
+from django.urls import NoReverseMatch, Resolver404, resolve
+
+from scrud_django.ui.branches.selection import api_base_info, ui_base_info
 
 CHECK_ID = "scrud_django_ui.W001"
 LAYER_CONFLICTS_ID = "scrud_django_ui.W002"
@@ -69,37 +71,14 @@ def check_prefixes(app_configs, databases=None, **kwargs):
             shadowed = shadowed_urls(branch.prefix, slugs)
             if shadowed:
                 found.append(_shadowing(branch, shadowed))
+        # A prefix at the UI's base is never mounted (`find_mount`): it
+        # claims nothing another could overlap.
+        published = [b for b in published if b.prefix != base]
         for index, outer in enumerate(published):
             for inner in published[index + 1 :]:
                 if overlap(outer.prefix, inner.prefix, segments):
                     found.append(_overlap(outer, inner))
     return found
-
-
-def api_base_info() -> str | None:
-    """The API's base (`selection.api_base`) as a ``path_info`` (without
-    the script prefix), as prefixes are matched; ``None`` when the project
-    does not serve the UI's types."""
-    from scrud_django.ui.branches.selection import api_base
-
-    try:
-        return _path_info(api_base())
-    except NoReverseMatch:
-        return None
-
-
-def ui_base_info() -> str:
-    """The UI app's base (`selection.ui_base`) as a ``path_info``, which a
-    prefix's URLs are routed under. ``NoReverseMatch`` when the project
-    does not include the UI app."""
-    from scrud_django.ui.branches.selection import ui_base
-
-    return _path_info(ui_base())
-
-
-def _path_info(base):
-    script = get_script_prefix()
-    return "/" + base[len(script) :] if base.startswith(script) else base
 
 
 def claimed_slugs(base: str, using) -> list[str]:

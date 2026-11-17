@@ -32,7 +32,8 @@ from scrud_django.ui.branches.file_urls import (  # noqa: F401
 from scrud_django.ui.branches.selection import (
     MOUNT_ATTR,
     Mount,
-    api_base,
+    api_base_info,
+    as_path_info,
     check_mount_access,
     mount_of,
     ui_base,
@@ -102,8 +103,8 @@ def find_mount(path_info: str) -> tuple[Mount, str] | None:
     script = get_script_prefix()
     if not base.startswith(script):
         return None
-    base_info = "/" + base[len(script) :]
-    api_info = _api_base_info(script)
+    base_info = as_path_info(base, script)
+    api_info = api_base_info()
     if api_info is not None and path_info.startswith(api_info):
         # The API's URLs are never mounted, and read no branch (ruling R1).
         return None
@@ -136,16 +137,6 @@ def find_mount(path_info: str) -> tuple[Mount, str] | None:
             mount = Mount(branch.prefix, branch.name, base, script, content)
             return mount, target
     return None
-
-
-def _api_base_info(script) -> str | None:
-    """The API's base (`api_base`) as a ``path_info``, or ``None`` when the
-    project does not serve the UI's types."""
-    try:
-        base = api_base()
-    except NoReverseMatch:
-        return None
-    return "/" + base[len(script) :] if base.startswith(script) else base
 
 
 def routes_to_ui(path_info: str, rest: str) -> bool:

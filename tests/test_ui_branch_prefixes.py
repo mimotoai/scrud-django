@@ -23,8 +23,9 @@ from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import ui
 from scrud_django.models import Resource
+from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
-from scrud_django.ui.branches.selection import Mount
+from scrud_django.ui.branches.selection import Mount, mount_at
 
 from .fixtures import *  # noqa
 from .fixtures import TYPE_URI_TODO_LIST
@@ -308,10 +309,15 @@ def test_a_prefix_claims_only_type_slugs(todo_list, todo_reader_login):
         "/customer/ui-components/../services/",
         f"/customer/todo-lists%2F{todo_list.pk}%2F..%2F..%2Fservices%2F",
         "/customer/todo-lists/x/y/",
+        # Rewritten into the API's base: never mounted, never the API's.
+        "/customer/api/todo-lists/",
+        f"/customer/api/todo-lists/{todo_list.pk}/",
+        "/customer/api/",
     ):
         When.http.get(path, HTTP_ACCEPT=JSON)
         Then.http.status_code_is(404)
         assert "Groceries" not in Http.response.content.decode(), path
+        assert "json" not in Http.response["Content-Type"], path
     # The project's own URL is not shadowed by a prefix whose types it is not.
     When.http.get("/shop/todo-lists/")
     Then.http.status_code_is(200)
@@ -369,6 +375,16 @@ def test_a_branch_at_the_ui_base_is_not_served_there(
     [warning] = prefix_errors()
     assert "'/'" in warning.msg and "'root'" in warning.msg
     assert "UI's own base" in warning.msg
+    # It claims nothing, so no project URL is hidden...
+    When.http.get("/shop/todo-lists/")
+    Then.http.status_code_is(200)
+    assert Http.response.content == b"The shop's to-do lists"
+    # ...and no prefix overlaps it: a type's first segment is reported for
+    # what it shadows only.
+    publish("lists", "/todo-lists/")
+    assert prefix_errors(overlap=True) == []
+    [shadowing] = [m for m in prefix_errors() if "'lists'" in m.msg]
+    assert "/todo-lists/todo-lists/" in shadowing.msg
 
 
 @pytest.mark.django_db
@@ -682,3 +698,69 @@ def test_a_mount_maps_api_and_ui_hrefs_into_its_prefix(todo_list):
         assert mount.href(other) == other
     assert mount.canonical(item) == ui_page(todo_list)
     assert mount.canonical("/studio/") == "/studio/"
+
+
+@pytest.mark.django_db
+@test_context
+def test_links_never_lead_into_a_branch_at_the_ui_base(todo_list, settings):
+    """A branch stored at the UI's base is never mounted, so the studio's
+    links into its tree stay unmapped (no `Mount`); a prefix elsewhere is
+    mapped."""
+    from scrud_django.ui.branches.effective import Selection
+    from scrud_django.ui.branches.store import branches
+    from scrud_django.ui.studio.links import studio_href
+    from scrud_django.ui.studio.page import browse_url
+    from scrud_django.ui.studio.preview import preview_css_urls
+
+    setup_admin_and_customer()
+    root = publish("root", UI_BASE)
+    css = ResourceRegistration.register(
+        {
+            "name": "site",
+            "css": "a { b: c }",
+            "rbac_context": "project-a",
+            "branch": "root",
+        },
+        "ui-css",
+    )
+    found = branches()
+    assert mount_at(found["root"]) is None
+    assert mount_at(found["admin"]) == Mount(ADMIN, "admin", UI_BASE, "/")
+    lists = reverse("todo-lists-list")
+    assert browse_url("todo-lists", found["root"], Selection("root")) == (
+        f"{lists}?ui-branch=root"
+    )
+    assert browse_url("todo-lists", found["admin"], Selection("admin")) == (
+        f"{ADMIN}todo-lists/?ui-branch=admin"
+    )
+    assert preview_css_urls(Selection("root")) == [
+        f"/api/ui-css-files/site/{css.etag}.css?ui-branch=root"
+    ]
+    settings.SCRUD_UI_STUDIO_BRANCH = "root"
+    assert studio_href() is None
+    settings.SCRUD_UI_STUDIO_BRANCH = "admin"
+    admin = Resource.objects.get(
+        resource_type__slug="ui-branches", content__name="admin"
+    )
+    assert studio_href() == (
+        f"{ADMIN}ui-branches/{admin.pk}/?ui-scope=studio&ui-mode=view"
+    )
+    assert root.content["prefix"] == UI_BASE
+
+
+@pytest.mark.django_db
+@test_context
+def test_api_json_selects_only_in_mains_tree(admin_login):
+    """JSON is only at the API's URLs, where a selection is in main's tree
+    (as before prefixes stopped serving JSON): a published branch outside
+    it is refused for a UI item list (ruling R40); a detail by key is the
+    item whatever the selection."""
+    setup_admin_and_customer()
+    title = Resource.objects.get(content__name="title", content__branch="admin")
+    Given.http.force_login(admin_login)
+    get_json(reverse("ui-components-list"), status=400, **{BRANCH_HEADER: "admin"})
+    assert Http.response.json()["type"].endswith("/ui-branch-unavailable")
+    detail = reverse("ui-components-detail", args=[title.pk])
+    found = get_json(detail, **{BRANCH_HEADER: "admin"})
+    assert found["template"] == TITLE.format("h2")
+    assert found == get_json(detail)
