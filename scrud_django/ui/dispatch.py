@@ -1,122 +1,24 @@
 """In-process requests to the resource views, made as the user of the
-request in progress: every read and write the studio makes (`call_view`),
-and every embed a component renders (`dispatch_path`), goes through the
-views with that user's own rights, so that every check the API makes
-applies (RBAC, branch visibility, ``check_mount``, ``base``, versions)."""
+request in progress: every embed a component renders (`dispatch_path`) goes
+through the views with that user's own rights, so that every check the API
+makes applies (RBAC, branch visibility, ``check_mount``, ``base``,
+versions)."""
 
-import json
 from dataclasses import dataclass
 from urllib.parse import unquote, urlsplit
 
-from django.core.exceptions import ImproperlyConfigured
 from django.test.client import RequestFactory
 from django.urls import (
-    NoReverseMatch,
     Resolver404,
     ResolverMatch,
     get_script_prefix,
     resolve,
-    reverse,
 )
 from rest_framework.decorators import api_view, permission_classes, renderer_classes
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
 from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
-
-SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
-
-
-def call_view(
-    request,
-    slug: str,
-    method: str,
-    *,
-    pk=None,
-    data=None,
-    if_match=None,
-    headers=None,
-) -> Response:
-    """The rendered response of the resource view of type `slug` (its list
-    route, or with `pk` its detail route) to a `method` request made in
-    process for the user of `request` (DRF authenticates it with
-    ``ForcedAuthentication``, from ``_force_auth_user``). `data`, unless
-    ``None``, is sent as the JSON body; `if_match` is the ``If-Match``
-    header as sent (an ETag in quotes); `headers` are more headers by name.
-    It accepts JSON only. It is sent to `request`'s host and scheme.
-
-    It is exempt from CSRF checks, because the studio request that makes it
-    passed them: so an unsafe `method` (not GET, HEAD or OPTIONS) is refused
-    (``ImproperlyConfigured``, a programming error) when `request`'s own
-    method is safe, which Django's CSRF check lets through (ruling S8).
-
-    An anonymous user is not forced: the view answers as it answers an
-    unauthenticated request. A `pk` no detail URL has (``""``, or one with
-    a ``/``) is the 404 the API answers for its URL."""
-    method = method.upper()
-    if method not in SAFE_METHODS and request.method.upper() in SAFE_METHODS:
-        raise ImproperlyConfigured(
-            f"call_view: a {method} from a {request.method} request would "
-            "skip the CSRF check; make it from the studio's POST."
-        )
-    try:
-        if pk is None:
-            url = reverse(f"{slug}-list")
-        else:
-            url = reverse(f"{slug}-detail", args=[pk])
-    except NoReverseMatch:
-        url = None
-    extra = _extra(request, "application/json", headers, if_match=if_match)
-    body = {}
-    if data is not None:
-        body = {"data": json.dumps(data), "content_type": "application/json"}
-    internal = RequestFactory().generic(
-        method, url or request.path, secure=request.is_secure(), **body, **extra
-    )
-    _as_user_of(request, internal)
-    if url is None:
-        response = _not_found(internal)
-    else:
-        script = get_script_prefix()
-        match = resolve("/" + url[len(script) :] if url.startswith(script) else url)
-        response = match.func(internal, *match.args, **match.kwargs)
-    return _rendered(response)
-
-
-def view_for(request, slug: str, method: str, *, pk=None, data=None):
-    """``(view, request)``: the resource viewset of type `slug` (its list
-    route, or with `pk` its detail route) set up, as DRF's ``as_view`` sets
-    one up, for a `method` request made in process for the user of `request`
-    (as `call_view` makes one, `data` its JSON body), but not dispatched:
-    nothing runs (no check, no handler, no transaction) until the caller
-    asks the view itself, so that it can ask the view's own checks of a
-    write without making it. `pk` must name a detail URL (no ``/``)."""
-    method = method.upper()
-    url = (
-        reverse(f"{slug}-list") if pk is None else reverse(f"{slug}-detail", args=[pk])
-    )
-    extra = _extra(request, "application/json", None)
-    body = {}
-    if data is not None:
-        body = {"data": json.dumps(data), "content_type": "application/json"}
-    internal = RequestFactory().generic(
-        method, url, secure=request.is_secure(), **body, **extra
-    )
-    _as_user_of(request, internal)
-    script = get_script_prefix()
-    match = resolve("/" + url[len(script) :] if url.startswith(script) else url)
-    func = match.func
-    view = func.cls(**func.initkwargs)
-    view.action_map = dict(func.actions)
-    for name, action in view.action_map.items():
-        setattr(view, name, getattr(view, action))
-    view.args, view.kwargs = match.args, match.kwargs
-    view.request = internal
-    drf_request = view.initialize_request(internal, *match.args, **match.kwargs)
-    view.request = drf_request
-    view.headers = view.default_response_headers
-    view.format_kwarg = view.get_format_suffix(**match.kwargs)
-    return view, drf_request
 
 
 @dataclass(frozen=True)
@@ -161,7 +63,7 @@ def dispatch_path(
 ) -> Response:
     """The rendered response of the view at `path` (an absolute URL path,
     with an optional query) to a GET made in process for the user of
-    `request`, as `call_view` makes one, with ``Accept: text/html`` and
+    `request`, as the studio made one, with ``Accept: text/html`` and
     `headers` (by name). A path under a published branch's prefix is served
     as `PublishedBranchMiddleware` serves it: at the API's URL, with the
     prefix's `Mount` (so the view's `check_mount` applies, and links stay

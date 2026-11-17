@@ -36,8 +36,7 @@ from scrud_django.ui.branches.selection import parse_value, selectable
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.cascade import request_memo
 from scrud_django.ui.render import node_at
-from scrud_django.ui.studio import writes
-from scrud_django.ui.studio.dispatch import call_view
+from scrud_django.ui.studio import answers, writes
 from scrud_django.ui.studio.explain import explain as explain_node
 from scrud_django.ui.studio.live_preview import (
     live_preview_csp,
@@ -409,15 +408,11 @@ def _shown(request, slug, resource_type, params=None) -> "_Shown | HttpResponse"
             decisions=SAMPLE_DECISIONS,
             data_context=context,
         )
-    read = call_view(request, slug, "GET", pk=instance)
-    if read.status_code != 200:
-        return HttpResponse(
-            read.content,
-            status=read.status_code,
-            content_type=read["Content-Type"],
-        )
+    read = answers.write(request, slug, "GET", pk=instance)
+    if read.status != 200:
+        return answers.as_response(read, saved_trigger=False)
     return _Shown(
-        content=read.data,
+        content=read.content,
         href=reverse(f"{slug}-detail", args=[instance]),
         selection=selection,
         mode=mode,

@@ -880,15 +880,9 @@ def test_published_branch_refused(admin_login):
     before = stored_state()
     # Even for a superuser, and before anything is dispatched.
     Given.http.force_authenticate(admin_login)
-    with (
-        mock.patch(
-            "scrud_django.ui.studio.new_component.call_view",
-            side_effect=AssertionError("dispatched"),
-        ),
-        mock.patch(
-            "scrud_django.ui.studio.views.call_view",
-            side_effect=AssertionError("dispatched"),
-        ),
+    with mock.patch(
+        "scrud_django.ui.studio.answers.write",
+        side_effect=AssertionError("dispatched"),
     ):
         for branch in ("main", "shop"):
             new_component(400, branch=branch)

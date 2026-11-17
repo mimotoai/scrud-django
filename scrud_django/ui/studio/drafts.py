@@ -11,23 +11,15 @@ The after-push preview (`after_push_drafts`) shows a target branch with a
 source branch's stored overrides layered on, as the push would write them; it
 needs GET on both branches only, since they are stored items, not drafts."""
 
-import logging
 from collections.abc import Mapping
 
-from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
-from django.http import Http404
-from rest_framework.exceptions import APIException
-
-from scrud_django.exceptions import ScrudException
 from scrud_django.ui.branches import ITEM_KINDS
 from scrud_django.ui.branches.effective import Draft, using_drafts
 from scrud_django.ui.branches.model import Branch, branch_of, item_key
 from scrud_django.ui.branches.sync import _onto
 from scrud_django.ui.cascade import item_rows
-from scrud_django.ui.dispatch import view_for
+from scrud_django.ui.studio import answers
 from scrud_django.ui.studio.writes import KIND_SLUGS, item_content, own_item
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "Draft",
@@ -63,57 +55,42 @@ def validate_draft(request, branch: Branch, draft: Draft) -> list[str]:
     """Why `draft` may not be saved on the working `branch` by the user of
     `request`, as the save's own answers say it (``[]``: it may). The write
     the studio's save would make (a POST of the branch's override when it
-    has no row of its own for the item, else a PUT of that row) is asked of
-    the item's resource view (`dispatch.view_for`), in the order the view
-    runs them, and nothing is written: the request's permission check (the
-    body's contexts), the object check of the row an update replaces, the
-    item checks (`validate_content` of the ``UI*ViewSet``: name, branch,
-    context, template, selectors, text) and the type's JSON Schema. The
-    checks a write makes once saved (scoped RBAC's re-check of the stored
-    row) and its preconditions (``If-Match``) are not run: nothing is
-    saved. A check that fails as a server error (an ``APIException`` of
-    status 500 or more) is listed too, and logged at ERROR."""
+    has no row of its own for the item, else a PUT of that row) is asked its
+    checks through the core, and nothing is written
+    (`answers.validate_draft`): the request check (the body's contexts), the
+    object check of the row an update replaces, the item checks (the type's
+    ``prepare_write``: name, branch, context, template, selectors, text),
+    its JSON Schema and the workflow check. The checks a write makes once
+    saved and its preconditions (``If-Match``) are not run. A check that
+    fails as a server error is listed too, and logged at ERROR."""
     item, messages = draft_item(branch, draft)
     if item is None:
         return messages
     target = item.get("applies_to", "")
     own = own_item(draft.kind, branch, item["name"], target)
-    slug = KIND_SLUGS[draft.kind]
-    if own is None:
-        view, internal = view_for(request, slug, "POST", data=item)
-    else:
-        view, internal = view_for(request, slug, "PUT", pk=own.pk, data=item)
-    try:
-        view.check_permissions(internal)
-        instance = None if own is None else view.get_object()
-        body = internal.data
-        view.validate_content(body, instance=instance)
-        view.get_serializer(data=body, instance=instance).is_valid(raise_exception=True)
-    except (APIException, ScrudException) as error:
-        if error.status_code >= 500:
-            # No answer about the draft: a check that broke.
-            logger.error(
-                "scrud-ui: checking the draft %s %r failed",
-                draft.kind,
-                item["name"],
-                exc_info=True,
-            )
-        return _messages(error.detail)
-    except Http404:
-        return ["Not found."]
-    except DjangoPermissionDenied:
-        return ["You do not have permission to perform this action."]
-    return []
+    problem = answers.validate_draft(
+        request,
+        KIND_SLUGS[draft.kind],
+        item,
+        pk=None if own is None else own.pk,
+    )
+    if problem is None:
+        return []
+    return _messages(problem)
 
 
-def _messages(detail) -> list[str]:
-    """The messages of an error's `detail` (a message, or lists and
-    mappings of them), in order."""
-    if isinstance(detail, Mapping):
-        return [m for value in detail.values() for m in _messages(value)]
-    if isinstance(detail, (list, tuple)):
-        return [m for value in detail for m in _messages(value)]
-    return [str(detail)]
+def _messages(problem) -> list[str]:
+    """The messages of a refusal's `problem` body: its ``detail``; a body
+    with none (DRF's native shapes, uniform errors off) lists the messages of
+    its members, in order."""
+    if isinstance(problem, Mapping):
+        detail = problem.get("detail")
+        if isinstance(detail, str):
+            return [detail]
+        return [m for value in problem.values() for m in _messages(value)]
+    if isinstance(problem, (list, tuple)):
+        return [m for value in problem for m in _messages(value)]
+    return [str(problem)]
 
 
 def after_push_drafts(source: Branch, target: Branch) -> list[Draft]:

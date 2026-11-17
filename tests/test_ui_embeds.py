@@ -17,7 +17,6 @@ from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
 from scrud_django.registration import ResourceRegistration
-from scrud_django.ui import dispatch as ui_dispatch
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, middleware
 from scrud_django.ui.branches.effective import (
     Draft,
@@ -32,7 +31,6 @@ from scrud_django.ui.embed import (
     REFUSED_MESSAGE,
     embed_for,
 )
-from scrud_django.ui.studio import dispatch as studio_dispatch
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .fixtures import *  # noqa
@@ -467,12 +465,6 @@ def test_django_engine_has_no_embed(todo_list, todo_reader_login):
     page = get_page(url_of(todo_list), scope="plain")
     aside = re.search(r"<aside>(.*?)</aside>", page, re.S).group(1)
     assert len(frames(aside, url_of(other))) == 1 and "Sweep" in aside
-
-
-def test_studio_dispatch_still_works():
-    """The studio's module re-exports the moved `call_view`
-    (``tests/test_studio_dispatch.py`` runs unchanged against it)."""
-    assert studio_dispatch.call_view is ui_dispatch.call_view
 
 
 @pytest.mark.django_db

@@ -1,6 +1,6 @@
 """The studio's writes: saving and reverting an item on a working branch,
 pulling it and pushing it, each made through the resource views with the
-studio user's own rights (`studio.dispatch.call_view`), so that the studio
+studio user's own rights (`studio.answers.write`), so that the studio
 adds no rights. These tests serve the API at ``/api/`` and the studio at
 ``/studio/`` (``tests.mounted_urls``)."""
 
@@ -172,7 +172,7 @@ def test_published_branch_is_read_only(admin_login):
     # Even for a superuser, and before anything is dispatched.
     Given.http.force_authenticate(admin_login)
     with mock.patch(
-        "scrud_django.ui.studio.writes.call_view",
+        "scrud_django.ui.studio.answers.write",
         side_effect=AssertionError("dispatched"),
     ):
         for verb, body in bodies.items():
@@ -249,7 +249,7 @@ def test_revert_on_a_published_branch(admin_login):
     # before anything is dispatched.
     Given.http.force_authenticate(assign_ui_role((UI_COMPONENT_TYPE_URI,), "alice"))
     with mock.patch(
-        "scrud_django.ui.studio.writes.call_view",
+        "scrud_django.ui.studio.answers.write",
         side_effect=AssertionError("dispatched"),
     ):
         studio("revert-item", revert, HTTP_IF_MATCH=current)
@@ -345,7 +345,7 @@ def test_revert_reveals_no_row_the_user_may_not_read(admin_login):
     before = stored_state()
     Given.http.force_authenticate(user)
     with mock.patch(
-        "scrud_django.ui.studio.writes.call_view",
+        "scrud_django.ui.studio.answers.write",
         side_effect=AssertionError("dispatched"),
     ):
         for branch in ("shop", "wip"):
@@ -437,7 +437,7 @@ def test_studio_adds_no_rights(admin_login):
     # one that does not exist, and nothing is dispatched.
     Given.http.force_authenticate(assign_ui_role((UI_COMPONENT_TYPE_URI,), "alice"))
     with mock.patch(
-        "scrud_django.ui.studio.writes.call_view",
+        "scrud_django.ui.studio.answers.write",
         side_effect=AssertionError("dispatched"),
     ):
         for verb in ("save-item", "revert-item", "pull", "push"):

@@ -16,7 +16,7 @@ that built-in with the scope is created, selected by the root's most
 specific class term (S12) in the same stylesheet. It is not offered when the
 user may not read the root's component (S13).
 
-Every write is a request to a resource view (`call_view`) with the user's
+Every write is made through the core (`answers.write`) with the user's
 own rights, so the studio adds no rights; any refusal (status 400 or more)
 rolls the whole action back and is the action's answer, passed through. An
 inherited item it extends is read through its view too, so that no one
@@ -58,7 +58,7 @@ from scrud_django.ui.cascade import (
 from scrud_django.ui.layers import LAYER_BRANCH, LAYER_BRANCH_NAME
 from scrud_django.ui.render import NodeInfo, node_at
 from scrud_django.ui.selectors import SCOPE_NAME, TypeTerm
-from scrud_django.ui.studio.dispatch import call_view
+from scrud_django.ui.studio import answers
 from scrud_django.ui.studio.explain import explain, term_text
 from scrud_django.ui.studio.writes import KIND_SLUGS, SAVED_EVENT, _passed, own_item
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
@@ -239,7 +239,7 @@ def create(
                 {"kind": "stylesheet", "name": STUDIO_STYLESHEET, "applies_to": target}
             )
     except _Refused as refused:
-        return _passed(refused.response)
+        return _passed(refused.answer)
     with using_selection(shown.selection), rules_memo():
         info = _node(request, resource_type, shown, pointer)
         wins = False
@@ -258,18 +258,18 @@ def create(
 
 
 class _Refused(Exception):
-    """A resource view's refusal (`response`), which rolls the action back."""
+    """A resource route's refusal (`answer`), which rolls the action back."""
 
-    def __init__(self, response):
-        super().__init__(response.status_code)
-        self.response = response
+    def __init__(self, answer):
+        super().__init__(answer.status)
+        self.answer = answer
 
 
-def _ok(response):
-    """`response`, unless it is a refusal (`_Refused`)."""
-    if response.status_code >= 400:
-        raise _Refused(response)
-    return response
+def _ok(answer):
+    """`answer`, unless it is a refusal (`_Refused`)."""
+    if answer.status >= 400:
+        raise _Refused(answer)
+    return answer
 
 
 def _plan(request, slug, resource_type, shown, pointer) -> _Plan:
@@ -496,11 +496,11 @@ def _create_component(request, branch: Branch, name, mode, template, scopes=None
     if scopes:
         content["scopes"] = scopes
     _ok(
-        call_view(
+        answers.write(
             request,
             KIND_SLUGS["component"],
             "POST",
-            data=_item("component", branch, name, "", content),
+            body=_item("component", branch, name, "", content),
         )
     )
 
@@ -585,18 +585,18 @@ def _extend(request, kind, branch: Branch, name, target, change, fresh=None):
     slug = KIND_SLUGS[kind]
     own = own_item(kind, branch, name, target)
     if own is not None:
-        read = _ok(call_view(request, slug, "GET", pk=own.pk))
-        content = read.data
+        read = _ok(answers.write(request, slug, "GET", pk=own.pk))
+        content = read.content
         if content.get("deleted") is True:
             content = {**content, **(fresh or {})}
         return _ok(
-            call_view(
+            answers.write(
                 request,
                 slug,
                 "PUT",
                 pk=own.pk,
-                data=_item(kind, branch, name, target, change(content)),
-                if_match=read["ETag"],
+                body=_item(kind, branch, name, target, change(content)),
+                if_match=read.etag,
             )
         )
     inherited = _inherited(
@@ -605,17 +605,17 @@ def _extend(request, kind, branch: Branch, name, target, change, fresh=None):
     if inherited is None:
         content = fresh or {}
     elif inherited[0] is not None:
-        content = _ok(call_view(request, slug, "GET", pk=inherited[0])).data
+        content = _ok(answers.write(request, slug, "GET", pk=inherited[0])).content
     else:
         content = inherited[2]
         if not may_read_item(request, kind, inherited[0], content):
             raise PermissionDenied()
     return _ok(
-        call_view(
+        answers.write(
             request,
             slug,
             "POST",
-            data=_item(kind, branch, name, target, change(dict(content))),
+            body=_item(kind, branch, name, target, change(dict(content))),
         )
     )
 

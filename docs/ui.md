@@ -1280,7 +1280,7 @@ branch").
 
 The studio page is built on a JSON API, which the
 [self-hosted studio](#self-hosted-studio) uses too. Paths are relative to where you include the URLs.
-A studio write calls the resource viewsets in-process (`call_view`), not
+A studio write runs the core's write in-process (`studio.answers.write`), not
 through a new HTTP request, so the site's middleware does not run for that
 inner call: a middleware-only check on the API's URLs (an IP allowlist on
 `/api/`, say) does not cover the studio's writes. The studio's own URL passes
