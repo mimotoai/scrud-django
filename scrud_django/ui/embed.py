@@ -279,7 +279,8 @@ def _resolve(path) -> _Target | None:
     the prefix serves it with (`find_mount`), the UI's list and detail
     pages (`UI_NAMESPACE`) and the API's of a registered type
     (``<slug>-list``, ``<slug>-detail``) as they are. ``None`` for any other
-    path, and a type the UI does not serve."""
+    path, a type the UI does not serve, and a computed type's list path
+    (it has none)."""
     from scrud_django import ui
     from scrud_django.ui import pages
     from scrud_django.ui.branches.middleware import find_mount
@@ -314,8 +315,8 @@ def _resolve(path) -> _Target | None:
                 if (pk is None) != (suffix == "-list"):
                     return None
                 break
-    if not slug:
-        return None
+    if not slug or (pk is None and pages.is_computed(slug)):
+        return None  # (a computed type has no list)
     served = pages.served(slug) if not hasattr(slug, "resource_type") else slug
     if served is None:
         return None

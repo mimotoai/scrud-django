@@ -296,6 +296,18 @@ def test_embed_foreign_host_and_non_resource_path_refused(
 
 @pytest.mark.django_db
 @test_context
+def test_embed_of_a_computed_type_s_list_path_is_refused(todo_list, todo_reader_login):
+    """A computed type has no list: its UI list path (``/summaries/``, which
+    the UI's list route matches) is refused with the notice, not raised."""
+    host('<p class="e">{{ embed("/summaries/") }}</p>')
+    Given.http.force_login(todo_reader_login)
+    page = get_page(ui_of(todo_list), scope="host")
+    assert page.count(f'<p class="e">{REFUSED}</p>') == 1
+    assert str(embed_for(RequestFactory().get("/x/"))("/summaries/")) == REFUSED
+
+
+@pytest.mark.django_db
+@test_context
 def test_embed_of_a_published_prefix_path(todo_list, todo_reader_login):
     other = make_list("Chores", items=["Sweep"])
     publish("admin", ADMIN)
