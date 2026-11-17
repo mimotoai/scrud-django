@@ -35,7 +35,10 @@ without it. Two front ends adapt it: django-ninja, the default
 (`scrud_django.urls` is `scrud_django.ninja.api(types=[])` in the URL
 namespace `scrud`, plus `scoped_rbac.semantic_urls`; the `checks.py`
 checks `scrud_django.E010` and `E011` report two scrud APIs in one
-namespace, and DRF registrations beside the ninja `scrud_django.urls`), and
+namespace, and DRF registrations beside the ninja `scrud_django.urls`;
+`W008` and `W009`, a routed scrud ninja API beside `REST_FRAMEWORK`
+throttles or authentication classes it does not read, and without
+`SCRUDFUL["BASE_URL"]`), and
 DRF, the `drf` extra (`scrud_django.drf.urls`, which `tests/urls.py`
 includes so that the DRF suites test DRF). The DRF views and mixins are
 adapters (the `scrud_django.drf` package; the old paths
