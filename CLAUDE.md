@@ -205,10 +205,11 @@ MariaDB suite in CI's image instead
 default-libmysqlclient-dev pkg-config`, on a docker network with the server),
 as the `test-mysql` job does.
 
-Demo app (API root at http://127.0.0.1:8000/api/ and the UI's pages at
-`/<slug>/<pk>/`, such as `/todo-lists/<pk>/`; the pages and the studio need a
-session login at `/api-auth/login/`, while `/api/` also takes DRF's Basic auth;
-ninja does not read it without a `NINJA_USER` hook, see the README):
+Demo app (ninja only, no DRF: the API at http://127.0.0.1:8000/api/, such as
+`/api/todo-lists/<pk>/`, and the UI's pages at `/<slug>/<pk>/`, such as
+`/todo-lists/<pk>/`; sign in with Django's own login at `/accounts/login/`, a
+session that the API, the UI pages and the studio all read; the API takes no
+Basic auth):
 
 ```bash
 cd demo

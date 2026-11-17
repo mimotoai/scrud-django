@@ -86,7 +86,7 @@ The pages are plain Django views. They read and write through the same core as
 the API, so they refuse what the API refuses, at the same status, and they
 authenticate with Django's **session user only**: DRF's Basic or Token
 authentication does not apply to pages or to the studio (sign in at your
-login, `/api-auth/login/` in the demo). A type served by the UI needs its
+login, `/accounts/login/` in the demo). A type served by the UI needs its
 authorization to be expressed to the core: a page asks the type's grants and
 its neutral `checks=` and `object_checks=` hooks, never the permission classes
 of a custom `viewset_class` (DRF-only authorization: `IsAuthorized`
@@ -1284,7 +1284,7 @@ out (see [Setting up the self-hosted studio](#setting-up-the-self-hosted-studio)
 
 Every studio view is a plain Django view that needs an authenticated user. An
 anonymous request gets a 401, not a redirect to a login page. Sign in first at
-your login (the demo has `/api-auth/login/`), then open the studio. The studio
+your login (the demo has `/accounts/login/`), then open the studio. The studio
 authenticates with Django's session user only: DRF's Basic or Token
 authentication does not apply to it. Its writes are checked for CSRF even
 without `CsrfViewMiddleware` (an anonymous tokenless POST gets Django's CSRF
@@ -3090,7 +3090,7 @@ uv run python manage.py seed_todo_demo
 uv run python manage.py runserver
 ```
 
-Sign in at `/api-auth/login/` (a session: the UI pages and the studio do not read
+Sign in at `/accounts/login/` (a session: the UI pages and the studio do not read
 HTTP Basic auth) and open `/todo-lists/` with a browser; the JSON is at
 `/api/todo-lists/` (there, HTTP Basic auth works too). The demo's URLconf ends
 with `path("", include("scrud_django.ui.urls"))`, which also serves its studio
@@ -3119,7 +3119,7 @@ studio's workbench URLs, as `author`:
 and for `studio-wip` (see [Self-hosted studio](#self-hosted-studio); to edit
 the studio itself, work on `studio-wip` and push it to `studio`).
 
-The demo also includes the studio at `/studio/`. Sign in at `/api-auth/login/` as
+The demo also includes the studio at `/studio/`. Sign in at `/accounts/login/` as
 `author`, open `/studio/types/todo-lists/`, pick `alice-wip`, click an item in the
 preview, write a "New component for this node" (choose the `row` scope under
 "where", so the rule is as specific as the existing `row` rules), then push to

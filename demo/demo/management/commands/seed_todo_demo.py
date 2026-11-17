@@ -491,7 +491,7 @@ class Command(BaseCommand):
             f"; customer: /todo/{TODO_LIST_SLUG}/{groceries.pk}/"
             " (author, reader, owner)"
         )
-        self.stdout.write("the studio, as author (sign in at /api-auth/login/):")
+        self.stdout.write("the studio, as author (sign in at /accounts/login/):")
         for name in ("alice-wip", "studio-wip"):
             pk = self.find(UI_BRANCH_SLUG, name=name).pk
             self.stdout.write(
@@ -501,7 +501,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             "articles, an app's own model with a draft -> published workflow"
-            " on ninja (needs a role on demo://Article): /ninja/articles/"
+            " (needs a role on demo://Article): /api/articles/"
         )
 
     def seed_user(self, username, roles):

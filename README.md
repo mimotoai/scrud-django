@@ -1579,11 +1579,11 @@ uv run python manage.py createsuperuser
 uv run python manage.py runserver
 ```
 
-The API root is at http://127.0.0.1:8000/api/. Resource routes need a login
-(anonymous requests get 401): log in to the browsable API at
-http://127.0.0.1:8000/api-auth/login/ (the API root's "Log in" link) with
-the superuser, or send Basic auth, for example
-`curl -u <user>:<password> http://127.0.0.1:8000/api/partner-profiles/`.
+The demo serves ninja alone (no DRF) at http://127.0.0.1:8000/api/, which has
+no root page: try `/api/services/`. Resource routes need a login (anonymous
+requests get 401): sign in at http://127.0.0.1:8000/accounts/login/ (Django's
+own login view, a session that the API, the UI and the studio read) with the
+superuser. The API takes no Basic auth.
 The superuser may do everything; other users need scoped-rbac roles
 (`api/roles/`, `api/role-assignments/`). The Django admin is at
 http://127.0.0.1:8000/admin/. The demo reads
