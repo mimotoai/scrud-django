@@ -98,10 +98,17 @@ the UI does not serve, an embed of it is refused, a prefix does not claim it,
 a studio preview of one of its resources is a 404, and the system check
 `scrud_django_ui.W003` (`manage.py check`) names it. The UI decides by the
 views the type's API routes resolve to in the URLconf serving the request, and
-serves only views built by registration or by scrud's ninja `api()`: a type
-routed by hand (`as_view(...)` named `<slug>-list`, or a registration's view
-wrapped in a decorator) is refused too, since nothing tells what authorizes
-it. The UI never shows more than the API. Such a type opts in with either:
+serves only views built by registration: a type routed by hand (`as_view(...)`
+named `<slug>-list`, or a registration's view wrapped in a decorator) is
+refused too, since nothing tells what authorizes it. It reads those routes by
+their names (`<slug>-list`, `<slug>-detail`) outside any URL namespace, so it
+does not serve ninja-routed types yet: scrud's ninja `api()` marks the views
+it builds as the core's, but routes them in its `urls_namespace` (phase 3C;
+follow-up `ui-ninja-routes`). The system check `scrud_django_ui.W004` names
+each registered type with no route the UI reads, and `scrud_django_ui.W005`
+each type whose slug is a segment of the UI app's own routes (`ui-css-files`,
+`ui-js-files`, and `studio` with the studio installed), which answer before
+its pages. The UI never shows more than the API. Such a type opts in with either:
 
 - both `checks=` and `object_checks=`, its rules declared to the core, which
   the UI then applies; or

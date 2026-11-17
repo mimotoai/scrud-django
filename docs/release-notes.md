@@ -38,8 +38,9 @@
   never asks: its pages answer 404, as for a slug the UI does not serve, its
   embeds are refused, prefixes do not claim it and a studio preview of one of
   its resources is a 404. So is a type whose API routes were not built by
-  registration (or scrud's ninja `api()`): routed by hand, or wrapped in a
-  decorator. The system check `scrud_django_ui.W003` names each such type. To serve it, declare its rules as both `checks=` and
+  registration: routed by hand, or wrapped in a decorator. The system check
+  `scrud_django_ui.W003` names each such type, whether registered in the
+  process or only stored and routed in the URLconf. To serve it, declare its rules as both `checks=` and
   `object_checks=`, or register it with `ui_authorization="core"` when the
   viewset adds no authorization of its own (the core's checks are complete
   for it). The UI never shows more than the API.
@@ -79,7 +80,17 @@
   `api()` mark the views they build, `core.types.drf_only_authorization(slug,
   view)`, what of a route's view the core does not ask (`None` when nothing,
   or when the type opts in), and `scrud_django.ui.pages.refusal(slug)`; and
-  the system check `scrud_django_ui.W003`. The UI's types declare it.
+  the system check `scrud_django_ui.W003`. The UI's types declare it. The
+  ninja `api()` marks its views, but the UI does not serve ninja-routed types
+  yet: it reads a type's routes (`<slug>-list`, `<slug>-detail`) outside any
+  URL namespace, and `api()` routes them in its `urls_namespace` (phase 3C,
+  follow-up `ui-ninja-routes`).
+* The system checks `scrud_django_ui.W004`, naming each registered type with
+  no API route the UI reads (none named `<slug>-list` or `<slug>-detail`
+  outside a URL namespace, as a ninja-only project's), and
+  `scrud_django_ui.W005`, naming each type whose slug is one of the UI app's
+  own route segments (`ui-css-files`, `ui-js-files`, and `studio` with the
+  studio installed), whose routes shadow its pages.
 
 ### Changed
 

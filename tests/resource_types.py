@@ -463,6 +463,29 @@ def hand_routed_types():
     return routes
 
 
+# The types of ``tests.mixed_routes_urls``.
+MARKED_LIST_SLUG = "marked-list-notes"
+MARKED_DETAIL_SLUG = "marked-detail-notes"
+UNRESOLVED_DETAIL_SLUG = "unresolved-detail-notes"
+UNREGISTERED_SLUG = "unregistered-notes"
+UNREGISTERED_TYPE_URI = "tests://UnregisteredNote"
+
+MIXED_TYPES = (
+    ("tests://MarkedListNote", MARKED_LIST_SLUG, "Marked list note"),
+    ("tests://MarkedDetailNote", MARKED_DETAIL_SLUG, "Marked detail note"),
+    ("tests://UnresolvedDetailNote", UNRESOLVED_DETAIL_SLUG, "Unresolved note"),
+)
+
+
+def register_mixed_types():
+    """Register the types of ``tests.mixed_routes_urls`` (`MIXED_TYPES`), without
+    their routes, which it builds."""
+    for type_uri, slug, title in MIXED_TYPES:
+        registration.ResourceTypeRegistration(
+            **note_type(type_uri, slug, title), build_urls=False
+        )
+
+
 def ninja_type_specs():
     """The `TypeSpec`s of the test types that register no viewset class
     (all of `json_resource_types` and `hooked_resource_types` but

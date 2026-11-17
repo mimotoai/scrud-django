@@ -700,10 +700,18 @@ opts in with either:
   declare it only when that is true.
 
 The UI serves a type only when the views its API routes resolve to (in the
-URLconf serving the request) were built by registration or by scrud's ninja
-`api()`: a type whose `<slug>-list` or `<slug>-detail` you route yourself
+URLconf serving the request) were built by registration: a type whose
+`<slug>-list` or `<slug>-detail` you route yourself
 (`MyViewSet.as_view(...)`, or a registration's view wrapped in a decorator)
-is refused the same way, since nothing tells what authorizes it. Such a type
+is refused the same way, since nothing tells what authorizes it. The UI reads
+a type's routes by those names outside any URL namespace, so it does not
+serve ninja-routed types yet: scrud's ninja `api()` marks the views it builds
+as the core's, but routes them in its `urls_namespace` (the UI's support is
+planned for phase 3C; follow-up `ui-ninja-routes`). The system check
+`scrud_django_ui.W004` names each registered type with no such route, and
+`scrud_django_ui.W005` each type whose slug is one of the UI app's own route
+segments (`ui-css-files`, `ui-js-files`, and `studio` with the studio
+installed), whose pages those routes shadow. Such a type
 opts in by registering its options with
 `scrud_django.core.types.register_type_options(type_uri,
 TypeOptions(ui_authorization="core"), slug=slug)` (or both hooks). ninja's

@@ -15,14 +15,19 @@ class ScrudUIConfig(AppConfig):
         UI layers' files (`scrud_django.ui.layers.check_layers`), and of
         branches' overrides of layer items
         (`scrud_django.ui.branches.checks.check_layer_conflicts`), and of
-        the types the UI refuses for their DRF-only authorization
-        (`scrud_django.ui.checks.check_drf_only_authorization`)."""
+        the types the UI does not serve (`scrud_django.ui.checks`: those it
+        refuses for their DRF-only authorization, those with no API route it
+        reads, and those whose slug its own routes shadow)."""
         from scrud_django.ui.branches.checks import (
             check_layer_conflicts,
             check_prefixes,
         )
         from scrud_django.ui.branches.versions import connect_receivers
-        from scrud_django.ui.checks import check_drf_only_authorization
+        from scrud_django.ui.checks import (
+            check_drf_only_authorization,
+            check_reserved_slugs,
+            check_unrouted_types,
+        )
         from scrud_django.ui.layers import check_layers
 
         connect_receivers()
@@ -30,3 +35,5 @@ class ScrudUIConfig(AppConfig):
         checks.register(check_layer_conflicts, checks.Tags.database)
         checks.register(check_layers)
         checks.register(check_drf_only_authorization, checks.Tags.urls)
+        checks.register(check_unrouted_types, checks.Tags.urls)
+        checks.register(check_reserved_slugs, checks.Tags.urls)

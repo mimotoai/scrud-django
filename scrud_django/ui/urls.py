@@ -28,11 +28,18 @@ would nest it, as ``scrud_ui:scrud-studio``)."""
 from django.apps import apps
 from django.urls import include, path, register_converter
 
-from scrud_django.ui import UI_NAMESPACE, pages
+from scrud_django.ui import (
+    CSS_FILES_SEGMENT,
+    JS_FILES_SEGMENT,
+    STUDIO_APP_NAME,
+    STUDIO_SEGMENT,
+    UI_NAMESPACE,
+    pages,
+)
 from scrud_django.ui.branches.file_urls import CSS_FILE_URL_NAME, JS_FILE_URL_NAME
 from scrud_django.ui.branches.file_views import css_file, js_file
 
-STUDIO_APP = "scrud_django.ui.studio"
+STUDIO_APP = STUDIO_APP_NAME
 
 
 class UISlugConverter:
@@ -55,13 +62,21 @@ class UISlugConverter:
 register_converter(UISlugConverter, "ui_slug")
 
 ui_urlpatterns = [
-    path("ui-css-files/<str:name>/<str:etag>.css", css_file, name=CSS_FILE_URL_NAME),
-    path("ui-js-files/<str:name>/<str:etag>.js", js_file, name=JS_FILE_URL_NAME),
+    path(
+        f"{CSS_FILES_SEGMENT}/<str:name>/<str:etag>.css",
+        css_file,
+        name=CSS_FILE_URL_NAME,
+    ),
+    path(
+        f"{JS_FILES_SEGMENT}/<str:name>/<str:etag>.js", js_file, name=JS_FILE_URL_NAME
+    ),
     path("<ui_slug:slug>/", pages.list_page, name="list"),
     path("<ui_slug:slug>/<str:pk>/", pages.item_page, name="detail"),
 ]
 
 urlpatterns = []
 if apps.is_installed(STUDIO_APP):
-    urlpatterns.append(path("studio/", include("scrud_django.ui.studio.urls")))
+    urlpatterns.append(
+        path(f"{STUDIO_SEGMENT}/", include("scrud_django.ui.studio.urls"))
+    )
 urlpatterns.append(path("", include((ui_urlpatterns, UI_NAMESPACE))))

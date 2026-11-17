@@ -1718,6 +1718,55 @@ that it answers a UI notice. A fix maps `RequestDataTooBig` to the 413 in
 fix round 1: recorded only; the review's premise that the API accepts the
 larger body did not hold).
 
+<a id="ui-ninja-routes"></a>
+## ui-ninja-routes: the UI does not serve ninja-routed types
+
+The UI app decides whether it serves a type by the views its API routes
+resolve to (`scrud_django.ui.pages.route_views`), which it finds by
+reversing `<slug>-list` and `<slug>-detail` outside any URL namespace, as
+DRF's registration names them. scrud's ninja `api()` marks the views it
+builds as the core's (`core.types.mark_route`), but names its routes in its
+`urls_namespace` (`"scrud"` by default), so in a ninja-only project the UI
+finds no route for any type: every page is the 404 of a slug it does not
+serve, and every embed of one is refused. The system check
+`scrud_django_ui.W004` names each such type (it said nothing before), and
+the README and `docs/ui.md` say so. The test that would expose it: with
+`tests.ninja_ui_urls` (the test types' ninja API under `/api/`, the UI at
+`/`), `pages.served("partner-profiles")` should be the type, and a signed-in
+GET of `/partner-profiles/` should answer the list's page (it answers 404;
+`tests/test_ui_routes.py::test_a_type_routed_only_in_a_namespace_is_named`
+pins today's behaviour). A fix (phase 3C) finds a type's routes under the
+namespaces of the ninja APIs the project serves too, and maps API hrefs to
+the UI from them (`selection.in_mount`, `embed._resolve`).
+
+<a id="core-write-orchestration"></a>
+## core-write-orchestration: three front ends each orchestrate a write
+
+A write's steps, in their order, are written out three times: the UI pages'
+`_create` (`scrud_django/ui/pages.py`: the body read and checked, the
+route's request check, the list's preconditions under the conditional-create
+lock, `writes.create`, `writes.answered_content`, the `Location`) is the
+ninja router's `create` (`scrud_django/ninja/routers.py`) step for step; the
+pages' `_update` and `_destroy` (the item looked up for the method with its
+row locked, its validators and preconditions, `writes.update` or
+`writes.destroy`, the answered content) are the studio's `answers._write`
+(`scrud_django/ui/studio/answers.py`), and ninja's `replace` and `destroy`
+behind scrudful's item decorator. Each copy calls the core for every
+decision, so they agree today (`tests/test_front_end_parity.py`,
+`tests/test_ui_app.py`, `tests/test_studio_writes.py`), but a step added to
+one (a new check, a changed order) must be added to each by hand. Core
+helpers that would make it one copy: `core.writes.create_answer(request,
+resource_type, body, *, requirement, using)` (the checks, the locked
+preconditions and the create, returning the status, content, validators and
+`Location`, or the failed precondition's answer) and
+`core.writes.item_write_answer(request, resource_type, pk, method, body, *,
+requirement, using)` (the PUT or DELETE likewise), each front end keeping
+only how it renders the answer. The test that would expose a drift: a
+parity test replaying the same create, update and delete (including their
+refusals and failed preconditions) through a page, the studio's `write` and
+the ninja route, comparing status, validators and problem bodies. Not done
+in phase 2 (parked by the final review).
+
 # Decided
 
 <a id="core-allowed-methods-existence-leak"></a>
