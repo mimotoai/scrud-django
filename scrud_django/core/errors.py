@@ -21,6 +21,7 @@ from django.http import Http404
 from django.utils.encoding import force_str
 from django.utils.translation import gettext
 from scoped_rbac import access, problems
+from scrudful.conditional import ConditionalResult
 
 from scrud_django.exceptions import ScrudException
 
@@ -83,6 +84,40 @@ def error_answer(
             403, "permission_denied", drf_detail(exc), default, uniform
         )
     return None
+
+
+def precondition_answer(
+    request, result: ConditionalResult, *, uniform: bool | None = None
+) -> tuple[int, dict | list, dict[str, str]]:
+    """``(status, body, headers)`` of the answer the DRF item route gives the
+    failed precondition `result` (scrudful's, of the request `request`),
+    uniform errors as they are now (`uniform_errors`):
+
+    - a 304 has an empty body (``{}``) and `result`'s validator headers
+      (``ETag``, ``Last-Modified``), no ``Content-Type``;
+    - a 400, 412 or 428 with uniform errors on is scoped-rbac's problem
+      details of the result (``problems.conditional_problem``, with its
+      ``code``), ``application/problem+json`` with the problem-details
+      ``Link``; off, scrudful's own body (``{"detail": ...}``, a 428's
+      ``accepted-precondition-headers`` too) as ``application/json``.
+
+    `uniform` (default: `uniform_errors`) says which body a front end
+    with its own setting has (the ninja routes ask for problem details
+    always, and answer them natively themselves while theirs are off).
+    The route's own headers (``Access-Control-Expose-Headers``) are the
+    caller's to add."""
+    if uniform is None:
+        uniform = uniform_errors()
+    headers = dict(result.headers)
+    if result.body is None:
+        return result.status, {}, headers
+    if uniform:
+        body = problems.conditional_problem(request, result)
+        headers.update(PROBLEM_HEADERS)
+    else:
+        body = dict(result.body)
+        headers.update(NATIVE_HEADERS)
+    return result.status, body, headers
 
 
 def scrud_error_answer(

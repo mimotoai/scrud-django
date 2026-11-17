@@ -63,7 +63,7 @@ def dispatch_path(
 ) -> Response:
     """The rendered response of the view at `path` (an absolute URL path,
     with an optional query) to a GET made in process for the user of
-    `request`, as the studio made one, with ``Accept: text/html`` and
+    `request`, with ``Accept: text/html`` and
     `headers` (by name). A path under a published branch's prefix is served
     as `PublishedBranchMiddleware` serves it: at the API's URL, with the
     prefix's `Mount` (so the view's `check_mount` applies, and links stay

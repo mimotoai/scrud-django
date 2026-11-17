@@ -130,19 +130,20 @@ def test_unsafe_method_from_a_safe_request_is_refused(todo_owner_login, todo_lis
 @pytest.mark.django_db
 @test_context
 def test_anonymous_user_answers_as_the_api(todo_list):
-    for method, pk in (("GET", todo_list.pk),):
-        url = (
-            reverse("todo-lists-detail", args=[pk])
-            if pk
-            else reverse("todo-lists-list")
-        )
-        api = api_get(url)
-        assert api.status_code in (401, 403)
-        response = write(
-            studio_request(AnonymousUser(), "get"), "todo-lists", method, pk=pk
-        )
-        assert response.status == api.status_code
-        assert response.body == api.json()
+    api = api_get(reverse("todo-lists-detail", args=[todo_list.pk]))
+    assert api.status_code in (401, 403)
+    response = write(
+        studio_request(AnonymousUser(), "get"), "todo-lists", "GET", pk=todo_list.pk
+    )
+    assert response.status == api.status_code
+    assert response.body == api.json()
+
+
+@pytest.mark.django_db
+@test_context
+def test_get_without_a_pk_is_refused(todo_reader_login):
+    with pytest.raises(ValueError):
+        write(studio_request(todo_reader_login, "get"), "todo-lists", "GET")
 
 
 @pytest.mark.django_db

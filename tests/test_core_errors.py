@@ -209,3 +209,97 @@ def test_a_malformed_body_is_answered_as_the_route_answers_it(
         assert Http.response["Link"].startswith(headers["Link"])
     else:
         assert answered["detail"].startswith("JSON parse error - ")
+
+
+def precondition_exchange(todo_list, user, method, headers, uniform):
+    """``(core, api)``: the core's answer to the failed precondition of a
+    `method` request with `headers` on `todo_list`, and the DRF route's
+    response to it."""
+    from scrud_django.core.resources import item_precondition_answer
+
+    request = getattr(RequestFactory(), method.lower())(
+        "/", **{f"HTTP_{k.upper().replace('-', '_')}": v for k, v in headers.items()}
+    )
+    request.user = user
+    with uniform_errors_set(uniform):
+        core = item_precondition_answer(
+            request,
+            etag=todo_list.etag,
+            last_modified=todo_list.modified_at,
+            method=method,
+        )
+        Given.http.force_authenticate(user)
+        sent = {f"HTTP_{k.upper().replace('-', '_')}": v for k, v in headers.items()}
+        url = reverse("todo-lists-detail", args=[todo_list.pk])
+        if method == "GET":
+            When.http.get(url, **sent)
+        else:
+            When.http.put(url, data=todo_list.content, format="json", **sent)
+    return core, Http.response
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("uniform", [True, False])
+@pytest.mark.parametrize(
+    "method, headers, status",
+    [
+        ("PUT", {}, 428),
+        ("PUT", {"If-Match": '"stale"'}, 412),
+        ("PUT", {"If-Match": "not an etag"}, 400),
+    ],
+)
+@test_context
+def test_item_precondition_answer_matches_the_drf_route(
+    admin_login, todo_list, method, headers, status, uniform
+):
+    core, api = precondition_exchange(todo_list, admin_login, method, headers, uniform)
+    answered, body, answered_headers = core
+    assert answered == api.status_code == status
+    assert body == api.json()
+    assert answered_headers["Content-Type"] == api["Content-Type"]
+    if uniform:
+        assert api["Link"].startswith(answered_headers["Link"])
+    else:
+        assert "Link" not in answered_headers
+
+
+@pytest.mark.django_db
+@test_context
+def test_item_precondition_answer_of_a_not_modified_get(admin_login, todo_list):
+    from scrud_django.core.resources import item_preconditions
+
+    core, api = precondition_exchange(
+        todo_list, admin_login, "GET", {"If-None-Match": f'"{todo_list.etag}"'}, True
+    )
+    status, body, headers = core
+    assert status == api.status_code == 304
+    assert body == {}
+    assert headers["ETag"] == api["ETag"]
+    assert "Content-Type" not in headers
+    request = RequestFactory().get("/", HTTP_IF_NONE_MATCH=f'"{todo_list.etag}"')
+    assert (
+        item_preconditions(
+            request,
+            etag=todo_list.etag,
+            last_modified=todo_list.modified_at,
+            method="GET",
+        )
+        == 304
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_item_precondition_answer_proceeds_when_nothing_fails(todo_list):
+    from scrud_django.core.resources import item_precondition_answer
+
+    request = RequestFactory().put("/", HTTP_IF_MATCH=f'"{todo_list.etag}"')
+    assert (
+        item_precondition_answer(
+            request,
+            etag=todo_list.etag,
+            last_modified=todo_list.modified_at,
+            method="PUT",
+        )
+        is None
+    )

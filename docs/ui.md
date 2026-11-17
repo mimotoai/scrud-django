@@ -1379,12 +1379,13 @@ parameters, read and checked the same way.
   `applies_to`). Each draft is shown as the branch's own row of the item, in
   place of its stored one, and ranks in the cascade where its save would put
   it (an own row's place, or after every stored stylesheet for a new one).
-  A draft is shown only if its save would be accepted: the item's resource
-  view is asked the checks of the write `save-item` would make (a create of
+  A draft is shown only if its save would be accepted: the core is asked
+  the checks of the write `save-item` would make (a create of
   the branch's override, or an update of its own row: the permission checks
   on the body and the row, the item's own checks, the type's JSON Schema),
   without making it. A draft that fails is left out and listed with its
-  errors (below). Embedded resources render in process, so they show the
+  errors (below); a check that fails as a server error is also logged at
+  ERROR by the `scrud_django.ui.studio.answers` logger. Embedded resources render in process, so they show the
   drafts too; the data they read does not (a list of the branch's items lists
   the stored item, not the draft).
 - **Drafts on a published branch** (`main`, or one with a prefix) are refused

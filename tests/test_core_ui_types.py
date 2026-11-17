@@ -925,3 +925,56 @@ def test_core_conditional_create_on_a_branch_list_evaluates_as_drf(admin_login):
     assert core_status('"stale"') == drf_status('"stale"') == 412
     assert core_status(wip_etag) is None
     assert drf_status(wip_etag) == 201
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("uniform", [True, False])
+@test_context
+def test_core_load_of_an_unserved_method_answers_the_drf_405(
+    admin_login, todo_list, uniform
+):
+    """`load_for_read` fails closed for a method the type does not serve,
+    after the request check, as DRF answers it."""
+    from unittest import mock
+
+    from scrud_django.core import resources
+    from scrud_django.core.types import TypeOptions
+
+    resource_type = todo_list.resource_type
+    request = request_by("get", admin_login)
+    with mock.patch(
+        "scrud_django.core.writes.type_options",
+        return_value=TypeOptions(methods={"PUT"}),
+    ):
+        with pytest.raises(MethodNotAllowedError) as refused:
+            resources.load_for_read(
+                request,
+                resource_type,
+                todo_list.pk,
+                requirement=requirement_for(resource_type),
+                method="GET",
+            )
+    assert str(refused.value.detail) == 'Method "GET" not allowed.'
+    assert refused.value.status_code == 405
+    with uniform_errors_set(uniform):
+        status, _body, _headers = error_answer(refused.value)
+    assert status == 405
+
+
+@pytest.mark.django_db
+@test_context
+def test_core_load_of_a_version_still_serves_get(admin_login):
+    from scrud_django.core import resources
+
+    make_wip(admin_login)
+    version = a_version()
+    resource_type = rtype(UI_BRANCH_VERSION_SLUG)
+    for method in ("GET", "HEAD"):
+        got = resources.load_for_read(
+            request_by(method.lower(), admin_login),
+            resource_type,
+            version.pk,
+            requirement=requirement_for(resource_type),
+            method=method,
+        )
+        assert got.pk == version.pk

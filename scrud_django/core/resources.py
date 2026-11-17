@@ -41,10 +41,16 @@ from django.http import Http404
 from scoped_rbac import access
 from scoped_rbac.policy import Permission
 from scrudful._django import aware, precondition_headers
-from scrudful.conditional import evaluate_preconditions, http_timestamp, quote_etag
+from scrudful.conditional import (
+    ConditionalResult,
+    evaluate_preconditions,
+    http_timestamp,
+    quote_etag,
+)
 
 from scrud_django import collection_type_uri_for
 from scrud_django.core.authz import _not_checking_write, content_of
+from scrud_django.core.errors import precondition_answer
 from scrud_django.core.lists import (  # noqa: F401  (re-exported)
     content_filtered,
     evaluate_list_preconditions,
@@ -73,6 +79,7 @@ from scrud_django.core.workflow import authorizing_write
 from scrud_django.core.writes import (  # noqa: F401  (re-exported)
     create,
     destroy,
+    refuse_unserved,
     update,
     validate_write,
 )
@@ -345,6 +352,9 @@ def load_for_read(
       check), and so is pairing an ``AnyOf`` option's request check of the
       body with its object check, as DRF's ``|`` does (`validate_write`
       asks the object check again with the body, `check_object`);
+    - then a `method` the type does not serve (``TypeOptions.methods``) is
+      refused (`scrud_django.core.writes.refuse_unserved`, 405), as DRF
+      answers it once ``initial()`` passed;
     - missing, or a `pk` that is no key, it is ``Http404``; so is one stored
       in a context reserved once normalised (`found_item`, which caches the
       type on it). The lookup is not narrowed by readability, as the DRF
@@ -375,6 +385,8 @@ def load_for_read(
     else:
         checked = _as_method(request, method)
     check_request(checked, resource_type, requirement, list_route=False, body=body)
+    # A HEAD is served where a GET is.
+    refuse_unserved(resource_type, "GET" if method == "HEAD" else method)
     queryset = Resource.objects.filter(resource_type=resource_type)
     if lock_using is not None:
         lock_if_workflow_policy(resource_type, lock_using)
@@ -413,6 +425,22 @@ def item_read(request, resource_type, obj: Resource) -> tuple[Mapping, str, date
     return content, etag, obj.modified_at
 
 
+def _item_preconditions_result(
+    request, *, etag, last_modified, method
+) -> ConditionalResult | None:
+    method = method.upper()
+    if method in NO_PRECONDITION_METHODS:
+        return None
+    return evaluate_preconditions(
+        method,
+        precondition_headers(request),
+        etag=None if etag is None else quote_etag(etag),
+        last_modified=http_timestamp(aware(last_modified)),
+        exists=True,
+        require_precondition=True,
+    )
+
+
 def item_preconditions(
     request,
     *,
@@ -431,19 +459,25 @@ def item_preconditions(
     (a precondition that fails), 428 (a PUT, PATCH or DELETE without
     ``If-Match`` or ``If-Unmodified-Since``) or 400 (a malformed
     ``If-Match`` or ``If-None-Match``). An OPTIONS (or TRACE, CONNECT) has
-    none evaluated."""
-    method = method.upper()
-    if method in NO_PRECONDITION_METHODS:
-        return None
-    result = evaluate_preconditions(
-        method,
-        precondition_headers(request),
-        etag=None if etag is None else quote_etag(etag),
-        last_modified=http_timestamp(aware(last_modified)),
-        exists=True,
-        require_precondition=True,
+    none evaluated. `item_precondition_answer` gives the answer itself."""
+    result = _item_preconditions_result(
+        request, etag=etag, last_modified=last_modified, method=method
     )
     return None if result is None else result.status
+
+
+def item_precondition_answer(
+    request, *, etag: str | None, last_modified: datetime | None, method: str
+) -> tuple[int, dict | list, dict[str, str]] | None:
+    """``(status, body, headers)`` of the DRF item route's answer to a
+    failed precondition (`item_preconditions` evaluates them; the answer is
+    `scrud_django.core.errors.precondition_answer`'s: a 304 with its
+    validators, or a 400, 412 or 428 as the route words it), else ``None``
+    to proceed."""
+    result = _item_preconditions_result(
+        request, etag=etag, last_modified=last_modified, method=method
+    )
+    return None if result is None else precondition_answer(request, result)
 
 
 def item_link_targets(

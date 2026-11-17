@@ -1,7 +1,6 @@
 """The ninja front end's per-type routers: each operation a thin adapter over
 the core facade (`scrud_django.core`), answering as the DRF route does."""
 
-import dataclasses
 import functools
 import inspect
 from contextlib import ExitStack, contextmanager
@@ -15,7 +14,7 @@ from ninja import Router
 from ninja.errors import HttpError
 from scoped_rbac import access, problems
 from scoped_rbac.ninja import request_json, resolve_user
-from scrudful._adapter import set_validator_headers
+from scrudful._adapter import expose_headers, set_validator_headers
 from scrudful._django import aware, conditional_response, precondition_headers
 from scrudful._hsr import is_preflight
 from scrudful.conditional import http_timestamp, quote_etag
@@ -24,6 +23,7 @@ from scrudful.ninja import Entity, ScrudfulRouter, described, scrudful
 from scrud_django.core import lists, resources, writes
 from scrud_django.core.bodies import check_body
 from scrud_django.core.collections import collection_context, collection_schema
+from scrud_django.core.errors import precondition_answer
 from scrud_django.core.types import SAFE_METHODS, requirement_for
 from scrud_django.core.urls import absolute_reverse
 from scrud_django.ninja import negotiation
@@ -491,27 +491,18 @@ def _serving_api(request):
 
 def _precondition_response(request, result):
     """scrudful's answer to the failed precondition `result`, as the DRF
-    routes answer it: a bare 304, else problem details
-    (``problems.conditional_problem``) with their Links, written by the
-    serving API's renderer (answered natively while uniform errors are off,
+    routes answer it (`scrud_django.core.errors.precondition_answer`): a bare
+    304, else problem details with their Links, written by the serving API's
+    renderer (answered natively while uniform errors are off,
     `scrud_django.ninja.errors.answer_natively_when_off`)."""
+    status, body, headers = precondition_answer(request, result, uniform=True)
     if result.body is None:
         return conditional_response(result)
-    result = dataclasses.replace(
-        result, body=problems.conditional_problem(request, result)
-    )
-
-    def render(data, status, content_type):
-        response = _serving_api(request).create_response(request, data, status=status)
-        response["Content-Type"] = content_type
-        return response
-
-    return conditional_response(
-        result,
-        link=problems.PROBLEM_LINKS,
-        content_type=problems.PROBLEM_JSON,
-        render=render,
-    )
+    response = _serving_api(request).create_response(request, body, status=status)
+    for name, value in headers.items():
+        response[name] = value
+    expose_headers(response)
+    return response
 
 
 def _item_operation_options(spec, urls_namespace):

@@ -5,9 +5,10 @@ answered as the resource route answers it, its refusals included),
 `as_response` (the studio's HTTP answer to one) and `validate_draft` (a write
 asked its checks and not made).
 
-Each runs on a request of its own, built as the in-process requests the
-studio used to make were: `request`'s host and scheme, its user, the write's
-method and a JSON body, with no header but the ``If-Match`` given. So every
+Each runs on a request of its own: `request`'s host and scheme, its user,
+the write's method and a JSON body, with no header but the ``If-Match``
+given, and no session or cookies (the user is `request`'s, not
+authenticated again). So every
 check of the API applies to the studio user (the type's requirement,
 branch visibility, the hooks of the UI types) and the studio adds no
 rights. No CSRF check applies (the studio request that makes one passed it:
@@ -17,7 +18,6 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from http import HTTPStatus
 
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ImproperlyConfigured
@@ -28,7 +28,7 @@ from scrudful.conditional import quote_etag
 
 from scrud_django.core import resources, writes
 from scrud_django.core.bodies import check_body
-from scrud_django.core.errors import error_answer, uniform_errors
+from scrud_django.core.errors import error_answer
 from scrud_django.core.types import requirement_for
 from scrud_django.core.urls import absolute_reverse
 from scrud_django.registration import get_resource_type_for, type_db, write_db
@@ -42,14 +42,6 @@ SAVED_EVENT = "scrud-studio-saved"
 
 JSON = "application/json"
 PROBLEM_JSON = "application/problem+json"
-
-# The detail of the answers a failed precondition gets, as scrudful words
-# them (``scrudful.conditional.evaluate_preconditions``).
-_PRECONDITION_DETAILS = {
-    400: "Malformed If-Match header.",
-    412: "Precondition failed.",
-    428: "This request must be conditional.",
-}
 
 
 @dataclass(frozen=True)
@@ -105,6 +97,8 @@ def write(
             f"answers.write: a {method} from a {request.method} request would "
             "skip the CSRF check; make it from the studio's POST."
         )
+    if method == "GET" and pk is None:
+        raise ValueError("answers.write reads one item: a GET needs its pk.")
     internal = _internal(request, slug, method, pk, body, if_match)
     try:
         resource_type = get_resource_type_for(
@@ -124,11 +118,11 @@ def _read(request, resource_type, requirement, pk) -> Answer:
         request, resource_type, pk, requirement=requirement, method="GET"
     )
     content, etag, last_modified = resources.item_read(request, resource_type, obj)
-    failed = resources.item_preconditions(
+    failed = _precondition(
         request, etag=etag, last_modified=last_modified, method="GET"
     )
     if failed is not None:
-        return _failed(failed, etag)
+        return failed
     return Answer(200, content, quote_etag(etag))
 
 
@@ -160,11 +154,11 @@ def _write(request, resource_type, requirement, method, pk, body) -> Answer:
         body=body,
     )
     etag, last_modified = resources.item_validators(obj)
-    failed = resources.item_preconditions(
+    failed = _precondition(
         request, etag=etag, last_modified=last_modified, method=method
     )
     if failed is not None:
-        return _failed(failed, etag)
+        return failed
     if method == "DELETE":
         writes.destroy(
             request, resource_type, obj, requirement=requirement, using=using
@@ -179,37 +173,22 @@ def _write(request, resource_type, requirement, method, pk, body) -> Answer:
     return Answer(200, content, quote_etag(resources.item_validators(saved)[0]))
 
 
-def _failed(status: int, etag: str | None) -> Answer:
-    """The answer of a failed precondition (`item_preconditions`'s `status`),
-    as scrudful words it: a 304 has no body; any other is problem details
-    (``application/json`` and ``{"detail": ...}`` while uniform errors are
-    off)."""
-    if status == 304:
-        return Answer(304, etag=None if etag is None else quote_etag(etag))
-    body = {"detail": _PRECONDITION_DETAILS[status]}
-    if status == 428:
-        body["accepted-precondition-headers"] = ["If-Match", "If-Unmodified-Since"]
-    return Answer(status, **_problem(status, body))
-
-
-def _problem(status: int, body: dict) -> dict:
-    """`Answer` arguments of a scrudful precondition refusal."""
-    if not uniform_errors():
-        return {"problem": body, "problem_type": JSON}
-    detail = body.pop("detail")
-    problem = {
-        "type": "about:blank",
-        "title": HTTPStatus(status).phrase,
-        "status": status,
-        "detail": detail,
-        **body,
-        "code": {
-            412: "precondition_failed",
-            428: "precondition_required",
-            400: "malformed_precondition",
-        }[status],
-    }
-    return {"problem": problem, "problem_type": PROBLEM_JSON}
+def _precondition(request, *, etag, last_modified, method) -> Answer | None:
+    """The answer of a failed precondition of the `method` request on the
+    item with `etag` (unquoted) and `last_modified`
+    (`resources.item_precondition_answer`), else ``None`` to go on."""
+    found = resources.item_precondition_answer(
+        request, etag=etag, last_modified=last_modified, method=method
+    )
+    if found is None:
+        return None
+    status, body, headers = found
+    return Answer(
+        status,
+        etag=headers.get("ETag"),
+        problem=body or None,
+        problem_type=headers.get("Content-Type", PROBLEM_JSON),
+    )
 
 
 def _refusal(exc: Exception, request) -> Answer:
