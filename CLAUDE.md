@@ -74,8 +74,8 @@ Put new domain logic in `core`, not in a view; per-type hooks are
 `scrud_django/ninja/` is the second adapter (the optional `ninja` extra,
 `scrud_django.ninja.api(types=[...])`). Its handlers call only the core
 (`scrud_django/core/`: the facade above, `core.lists`, `core.collections`,
-`core.computed`, `core.writes`, `core.urls`, `core.bodies`, `core.types`, `core.errors`) and
-the registration and service-catalog lookups (`scrud_django.registration`'s
+`core.computed`, `core.writes`, `core.urls`, `core.bodies`, `core.types`,
+`core.errors`) and the registration and service-catalog lookups (`scrud_django.registration`'s
 `get_resource_type_for`, `type_db`, `write_db`; `scrud_django.services`): no
 domain logic lives there, and a handler that needs something the core lacks
 adds it to the core with a core test. It authenticates with scoped-rbac's

@@ -119,6 +119,11 @@ def access_error_answer(
     anonymous user of `request` (no `request`: not anonymous) is DRF's
     ``NotAuthenticated``, a 401 carrying `challenge` as its
     ``WWW-Authenticate`` when given; any other is its status
+    (``problems.from_access_error``). With `uniform` errors, scoped-rbac's
+    problem; else DRF's native body: ``{"detail": message}``, a
+    ``ReservedContext``'s or ``PrimaryKeyChanged``'s ``[message]`` (DRF's
+    ``ValidationError`` of it), an ``InvalidContext``'s
+    ``{field: [message]}``.
 
     The anonymous user is one whose ``user.is_authenticated`` is false
     (`_anonymous`), for a view that authenticates by Django's session. DRF's
@@ -128,12 +133,7 @@ def access_error_answer(
     authenticating by the session; they differ for a route without
     session authentication (a session user DRF's authenticators do not
     read gets DRF's 401, a 403 here) and for one with no authenticators at
-    all (DRF answers 403 even to the anonymous, a 401 here).
-    (``problems.from_access_error``). With `uniform` errors, scoped-rbac's
-    problem; else DRF's native body: ``{"detail": message}``, a
-    ``ReservedContext``'s or ``PrimaryKeyChanged``'s ``[message]`` (DRF's
-    ``ValidationError`` of it), an ``InvalidContext``'s
-    ``{field: [message]}``."""
+    all (DRF answers 403 even to the anonymous, a 401 here)."""
     if isinstance(exc, access.AccessDenied) and _anonymous(request):
         if uniform:
             body = problems.error_problem(401)
