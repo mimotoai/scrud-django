@@ -18,6 +18,7 @@ def test_base_install_is_ninja_without_drf():
     assert sorted(PROJECT["dependencies"]) == sorted(
         [
             "django>=5.2,<6.0",
+            "django-ninja>=1.7.0,<1.7.4",
             "django-scoped-rbac[ninja]>=0.12.1,<0.13",
             "scrudful[ninja]>=0.10.1,<0.11",
             "django-reversion>=5.1",

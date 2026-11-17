@@ -1285,6 +1285,7 @@ version = "0.16.0"
 source = { editable = "." }
 dependencies = [
     { name = "django" },
+    { name = "django-ninja" },
     { name = "django-reversion" },
     { name = "django-scoped-rbac", extra = ["ninja"] },
     { name = "fastjsonschema" },
@@ -1335,6 +1336,7 @@ requires-dist = [
     { name = "django", specifier = ">=5.2,<6.0" },
     { name = "django-filter", marker = "extra == 'drf'", specifier = ">=25.1" },
     { name = "django-haystack", marker = "extra == 'search'", specifier = ">=3.3" },
+    { name = "django-ninja", specifier = ">=1.7.0,<1.7.4" },
     { name = "django-reversion", specifier = ">=5.1" },
     { name = "django-scoped-rbac", extras = ["drf"], marker = "extra == 'drf'", specifier = ">=0.12.1,<0.13" },
     { name = "django-scoped-rbac", extras = ["ninja"], specifier = ">=0.12.1,<0.13" },
