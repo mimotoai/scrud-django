@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from django.urls import reverse
 from django.utils.safestring import SafeString
 
+from scrud_django.ui import UI_NAMESPACE
 from scrud_django.ui.branches.effective import (
     BRANCH_PARAMETER,
     Selection,
@@ -77,9 +78,9 @@ def preview_css_urls(selection: Selection) -> list[str]:
     must be `selectable`), each selecting it (`BRANCH_PARAMETER`), so that
     the file is served from that branch whatever a cookie browses: under the
     prefix of its published root, where the CSS view serves its tree; at the
-    API's URLs for ``main``'s."""
+    UI app's URLs for ``main``'s."""
     urls = [
-        reverse(CSS_FILE_URL_NAME, args=[name, etag])
+        reverse(f"{UI_NAMESPACE}:{CSS_FILE_URL_NAME}", args=[name, etag])
         for name, etag, _text in css_files(selection)
     ]
     try:

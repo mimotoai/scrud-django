@@ -2,7 +2,7 @@
 reads of a plain Django request.
 
 `render_html` answers a request with a page, or with a fragment for an htmx
-request (the fragment protocol, `ScrudHTMLRenderer`'s docstring in
+request (the fragment protocol,
 `scrud_django.ui.renderer`): a resource, a page of a list or an error as a
 notice, through the render tree. It takes plain arguments (the resource type,
 the kind of answer, the data, the ETag, the stored content of a refused PUT)
@@ -239,8 +239,8 @@ def html_headers(request, response) -> None:
     share that ETag, so a stored copy revalidated with a 304 could show one
     as the other, or stale presentation. So no cache stores it (no-store;
     private and no-cache for caches that ignore no-store). A client that
-    resends an old ETag itself still gets a 304 (ui-html-shared-etag in
-    docs/follow-ups.md)."""
+    resends an old ETag itself still gets a 304 (ui-html-shared-etag
+    in docs/follow-ups.md)."""
     patch_vary_headers(response, VARY)
     remember_branch(request, response)
     patch_cache_control(response, private=True, no_cache=True, no_store=True)

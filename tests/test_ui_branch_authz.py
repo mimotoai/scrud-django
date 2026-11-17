@@ -120,7 +120,7 @@ def test_a_working_ancestor_the_viewer_may_not_get_is_not_selectable(
     served through ``mine``."""
     _secret, look = secret_with_css()
     make_branch("mine", "alice", parent="secret")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     get_css(file_url(look), status=404, **{BRANCH_HEADER: "mine"})
     grant(ui_alice_login, MAIN_GET, "bob")
     assert get_css(file_url(look), **{BRANCH_HEADER: "mine"}).content == b"SECRET"

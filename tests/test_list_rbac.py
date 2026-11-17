@@ -433,7 +433,7 @@ def test_filtered_list_ignores_the_ui_parameters():
     from scrud_django.ui import is_enabled
     from scrud_django.ui.branches.effective import BRANCH_PARAMETER, SAFE_PARAMETER
     from scrud_django.ui.branches.selection import CONFIRM_PARAMETER
-    from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER
+    from scrud_django.ui.html import MODE_PARAMETER, SCOPE_PARAMETER
 
     assert is_enabled()
     profile("keep", rbac_context="b", display_name="Keep")

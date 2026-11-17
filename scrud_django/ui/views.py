@@ -10,7 +10,6 @@ from scrudful.rest_framework import scrudful_viewset
 from scrud_django.core import writes as core_writes
 from scrud_django.registration import write_db
 from scrud_django.ui import hooks
-from scrud_django.ui.renderer import negotiated_html
 from scrud_django.views import ResourceViewSet
 
 
@@ -41,8 +40,8 @@ class UIContentValidationMixin:
         """A list shows the rows the type's ``list_rows`` shows
         (`scrud_django.ui.hooks.list_item_rows`: an item kind's, the
         effective items of the selected branch), then the RBAC list filter
-        applies to each row; the browsing cookie selects only for a list
-        asked for as HTML."""
+        applies to each row. The API is JSON only: the browsing cookie
+        selects only in the UI's pages."""
         queryset = super().filter_queryset(queryset)
         if getattr(self, "action", None) != "list":
             return queryset
@@ -50,7 +49,7 @@ class UIContentValidationMixin:
             self.request,
             self.get_resource_type(),
             queryset,
-            html=negotiated_html(self.request) is not None,
+            html=False,
         )
 
     def validate_content(self, content, instance=None):

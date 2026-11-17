@@ -6,12 +6,9 @@ import logging
 import re
 from contextlib import contextmanager
 from html import escape
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from django.conf import settings
-from django.test import override_settings
 from django.urls import reverse
 from django.utils.http import quote_etag
 from django.utils.timezone import now
@@ -23,7 +20,7 @@ from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration, get_resource_type_for
 from scrud_django.scrud_signals import scrud_post_save
 from scrud_django.ui import html as ui_html
-from scrud_django.ui import render, renderer
+from scrud_django.ui import render
 
 from .factories import UserFactory
 from .fixtures import *  # noqa
@@ -635,19 +632,6 @@ def test_create_html(todo_owner_login):
 
 @pytest.mark.django_db
 @test_context
-def test_without_ui_app_html_is_browsable_api(todo_list, todo_owner_login):
-    url = detail_url(todo_list)
-    installed = [app for app in settings.INSTALLED_APPS if app != "scrud_django.ui"]
-    Given.http.force_authenticate(todo_owner_login)
-    with override_settings(INSTALLED_APPS=installed):
-        When.http.get(url, HTTP_ACCEPT=HTML)
-    Then.http.status_code_is(200)
-    assert "Django REST framework" in html()
-    assert FRAME not in html()
-
-
-@pytest.mark.django_db
-@test_context
 def test_page_component_resolves_from_stylesheet(todo_list, todo_reader_login):
     make_component(
         "my-page", '<html><title>{{ title }}</title><body id="mine">{{ body }}</body>'
@@ -739,23 +723,6 @@ def test_post_save_refusal_rerenders_with_stored_state(todo_list, todo_owner_log
     assert todo_list.content["title"] == "Groceries"
     assert todo_list.content["rbac_context"] == "project-a"
     assert quote_etag(todo_list.etag) == stored_etag
-
-
-def test_stored_is_kept_once():
-    """M-5: a later lookup in the same request does not replace the stored
-    resource the first one kept."""
-    view = SimpleNamespace()
-    request = SimpleNamespace(method="PUT")
-    renderer.note_negotiation(request, renderer.ScrudHTMLRenderer())
-    first = SimpleNamespace(content={"title": "before"}, etag="one")
-    renderer.remember_stored(view, request, first)
-    first.content["title"] = "changed by the write"
-    renderer.remember_stored(
-        view, request, SimpleNamespace(content={"title": "after"}, etag="two")
-    )
-    stored = view.__dict__["_scrud_ui_stored"]
-    assert stored.content == {"title": "before"}
-    assert stored.etag == '"one"'
 
 
 @pytest.mark.django_db
@@ -947,43 +914,6 @@ def test_refused_html_put_takes_no_row_lock(todo_list, todo_reader_login, who):
         assert "Item 2" not in output
 
 
-def test_resource_type_of_a_view_without_one_is_none():
-    """A view whose type is not registered (404) has none; any other error
-    reading it is not hidden."""
-    from django.db import DatabaseError
-    from django.http import Http404
-
-    def raising(error):
-        def get_resource_type():
-            raise error
-
-        return SimpleNamespace(get_resource_type=get_resource_type)
-
-    assert renderer._resource_type(SimpleNamespace()) is None
-    assert renderer._resource_type(raising(Http404())) is None
-    with pytest.raises(DatabaseError):
-        renderer._resource_type(raising(DatabaseError("down")))
-
-
-def test_submitted_body_refused_by_its_parser_is_none():
-    """A body that failed to parse is no submitted body; any other error
-    reading it is not hidden."""
-    from rest_framework.exceptions import ParseError, UnsupportedMediaType
-
-    class Request:
-        def __init__(self, error):
-            self.error = error
-
-        @property
-        def data(self):
-            raise self.error
-
-    assert renderer._submitted(Request(ParseError())) is None
-    assert renderer._submitted(Request(UnsupportedMediaType("text/plain"))) is None
-    with pytest.raises(RuntimeError):
-        renderer._submitted(Request(RuntimeError("boom")))
-
-
 @pytest.mark.django_db
 @test_context
 def test_html_if_none_match_is_304_with_no_body(todo_list, todo_owner_login):
@@ -1065,9 +995,12 @@ def test_html_post_invalid_create_is_400_notice(todo_owner_login):
 @pytest.mark.django_db
 @pytest.mark.parametrize("route", [list_url, detail_url])
 @test_context
-def test_html_options_is_204_with_allow(todo_list, todo_owner_login, route):
-    """OPTIONS with Accept text/html answers as it does for JSON: 204 and the
-    Allow header, not an error and not an HTML page."""
+def test_api_options_with_a_html_accept_is_204_with_allow(
+    todo_list, todo_owner_login, route
+):
+    """OPTIONS of the API with Accept text/html answers as it does for JSON:
+    204 and the Allow header, not an error and not an HTML page (the API
+    negotiates no scrud UI HTML; the UI's own OPTIONS is tested below)."""
     Given.http.force_authenticate(todo_owner_login)
     url = list_url() if route is list_url else detail_url(todo_list)
     When.http.options(url, HTTP_ACCEPT=HTML)
@@ -1075,3 +1008,20 @@ def test_html_options_is_204_with_allow(todo_list, todo_owner_login, route):
     assert Http.response.content == b""
     allow = {m.strip() for m in Http.response["Allow"].split(",")}
     assert {"GET", "OPTIONS"} <= allow
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("route", [ui_list_url, ui_detail_url])
+@test_context
+def test_ui_options_is_not_served_and_names_the_methods_it_serves(
+    todo_list, todo_owner_login, route
+):
+    """The UI's pages are not an API (no CORS, no HTTP Schema Resource): OPTIONS
+    there is a 405 whose Allow header names the methods the page serves, where
+    the API's HTML-Accept OPTIONS (the shim) was a 204."""
+    Given.http.force_login(todo_owner_login)
+    url = ui_list_url() if route is ui_list_url else ui_detail_url(todo_list)
+    When.http.options(url, HTTP_ACCEPT=HTML)
+    Then.http.status_code_is(405)
+    allow = {m.strip() for m in Http.response["Allow"].split(",")}
+    assert "GET" in allow and "OPTIONS" not in allow

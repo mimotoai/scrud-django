@@ -27,7 +27,7 @@ from scrud_django.ui.branches import (
     UI_CSS_TYPE_URI,
     UI_JS_TYPE_URI,
 )
-from scrud_django.ui.renderer import STATIC_HTMX
+from scrud_django.ui.html import STATIC_HTMX
 from scrud_django.ui.studio import views
 from scrud_django.ui.studio.live_preview import MAX_DRAFTS
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI

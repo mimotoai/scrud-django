@@ -1,5 +1,5 @@
 """The studio links: server chrome on the pages of the UI's types and the
-studio's computed types (`renderer._page` adds them when the studio app is
+studio's computed types (`scrud_django.ui.pages` adds them when the studio app is
 installed), so that a broken studio can always be reached in safe mode or in
 the bootstrap studio."""
 
@@ -19,7 +19,7 @@ from scrud_django.ui.branches import (
 from scrud_django.ui.branches.effective import SAFE_PARAMETER
 from scrud_django.ui.branches.selection import mount_at
 from scrud_django.ui.branches.store import branches
-from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER, VIEW_MODE
+from scrud_django.ui.html import MODE_PARAMETER, SCOPE_PARAMETER, VIEW_MODE
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
 # The scope of the self-hosted studio's pages.

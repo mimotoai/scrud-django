@@ -1,10 +1,11 @@
 """What a page needs to link its CSS and JS items: the text of each item per
 branch (`file_items`, `css_files`, `js_files`) and their versioned URLs
-(`css_urls`, `js_urls`). No DRF: the views that serve the files are in
-`scrud_django.ui.branches.files` (and `css`, `js`), which re-export these."""
+(`css_urls`, `js_urls`). No DRF: the UI app's views that serve the files are in
+`scrud_django.ui.branches.file_views`."""
 
 from django.urls import reverse
 
+from scrud_django.ui import UI_NAMESPACE
 from scrud_django.ui.branches import UI_CSS_TYPE_URI, UI_JS_TYPE_URI
 from scrud_django.ui.branches.effective import (
     SAFE_PARAMETER,
@@ -36,12 +37,13 @@ def file_items(
 
 
 def file_urls(request, url_name: str, files: list[tuple[str, str, str]]) -> list[str]:
-    """The URLs of `files` (route `url_name`), under the prefix of `request`'s
-    page when it has one. In safe mode they carry ``?ui-safe=1``, which the
+    """The URLs of `files` (route `url_name` of the UI app), under the prefix
+    of `request`'s page when it has one. In safe mode they carry ``?ui-safe=1``, which the
     file views honour (the layer's items only)."""
     suffix = f"?{SAFE_PARAMETER}=1" if safe_mode() else ""
     return [
-        in_mount(request, reverse(url_name, args=[name, etag])) + suffix
+        in_mount(request, reverse(f"{UI_NAMESPACE}:{url_name}", args=[name, etag]))
+        + suffix
         for name, etag, _text in files
     ]
 

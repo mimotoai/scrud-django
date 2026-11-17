@@ -18,6 +18,7 @@ from .steps import *  # noqa: F403, F401
 from .test_ui_branch_prefixes import ADMIN, publish
 from .test_ui_branch_render import may_select_branches, put_item
 from .test_ui_http import HTML, assert_html, html, make_component, make_stylesheet
+from .ui import ui_url
 
 JSON = "application/json"
 # The page of ``summaries`` (a computed type with a ``compute`` hook).
@@ -83,14 +84,17 @@ def test_computed_type_json_and_etag_304(todo_list, todo_reader_login):
 @pytest.mark.django_db
 @test_context
 def test_computed_type_renders_through_cascade(todo_list, todo_reader_login):
-    make_component("summary", SUMMARY_TEMPLATE)
-    make_stylesheet("s", [("ex:TodoSummary", "summary")])
-    Given.http.force_authenticate(todo_reader_login)
-    When.http.get(summary_url(), HTTP_ACCEPT=HTML)
+    # The UI serves a computed type with a ``compute`` hook (``summaries``);
+    # the viewset-computed ``todo-summaries`` has no page of the UI's.
+    make_component("hooked-summary", HOOKED_SUMMARY_TEMPLATE)
+    make_summaries_stylesheet("hooked-summary")
+    Given.http.force_login(todo_reader_login)
+    When.http.get(ui_url(reverse("summaries-detail", args=["k"])), HTTP_ACCEPT=HTML)
     Then.http.status_code_is(200)
     assert_html()
     # View-only decisions, whatever the user's grants.
-    assert "<section>project-a:Groceries|allowed|denied|denied</section>" in html()
+    name = todo_reader_login.get_username()
+    assert f"<section>k:{name}|allowed|denied|denied</section>" in html()
 
 
 @pytest.mark.django_db
@@ -221,9 +225,9 @@ def test_computed_etag_of_encoder_types():
 @pytest.mark.django_db
 @test_context
 def test_computed_type_405_as_html(todo_list, todo_owner_login):
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     When.http.put(
-        summary_url(),
+        ui_url(reverse("summaries-detail", args=["k"])),
         data=json.dumps({"context": "x"}),
         content_type=JSON,
         HTTP_ACCEPT=HTML,

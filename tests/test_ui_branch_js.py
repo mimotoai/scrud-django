@@ -70,7 +70,7 @@ def script_srcs(page):
 UI = "/"  # the UI app's base: its pages link and serve the files there
 
 
-def file_url(item, base="/api/"):
+def file_url(item, base=UI):
     return f"{base}ui-js-files/{item.content['name']}/{item.etag}.js"
 
 
@@ -136,6 +136,8 @@ def test_js_files_served_versioned_private_immutable(
     assert response.content == b"window.x = 1"
     old_url = file_url(app)
     assert get_js(old_url).content == b"window.x = 1"
+    # The API serves no files: they are the UI app's.
+    get_js(file_url(app, "/api/"), status=404)
     # Only GET.
     When.http.post(old_url, data="x", content_type="text/javascript")
     Then.http.status_code_is(405)
@@ -151,7 +153,7 @@ def test_js_files_served_versioned_private_immutable(
     Given.http.force_login(todo_reader_login)
     # A stale ETag is a 404; so is an unknown name.
     get_js(old_url, status=404)
-    get_js("/api/ui-js-files/nope/x.js", status=404)
+    get_js("/ui-js-files/nope/x.js", status=404)
     assert get_js(file_url(app)).content == b"window.x = 2"
 
 

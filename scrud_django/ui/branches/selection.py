@@ -218,8 +218,8 @@ def ui_base_of(request) -> str | None:
 def in_mount(request, href: str) -> str:
     """`href`, an API URL, as the request's page serves it: under its prefix
     (`Mount.href`); else, on a UI page (`ui_base_of`), under the UI's base
-    instead of the API's (`api_base`); else as it is (the API's HTML, and
-    JSON, keep the API's)."""
+    instead of the API's (`api_base`); else as it is (the API serves JSON only: a request
+    that is no UI page's keeps the API's URLs)."""
     mount = mount_of(request)
     if mount is not None:
         return mount.href(href)

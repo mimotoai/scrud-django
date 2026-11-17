@@ -405,30 +405,21 @@ an off-site link. It is not script execution (the scheme is still http(s)).
 Suggested fix: refuse a value with ASCII control characters or whitespace in the
 first three characters. Test: those values render as text.
 
-<a id="ui-json-vary-accept"></a>
-## ui-json-vary-accept: JSON from UI-enabled resource views does not send `Vary: Accept`
-
-The same URL now has an HTML representation, but its JSON responses do not
-vary on `Accept`, so a cache could serve a stored JSON response to an HTML
-request. HTML responses are `private, no-cache, no-store`, so an HTML response
-is never stored and served for JSON; but that does nothing for the JSON
-responses, which a cache may still store and then serve to an HTML request. Suggested fix: add `Accept` to
-`Vary` on the JSON responses of the views when the UI app is installed. Test:
-a JSON GET carries `Vary: Accept`.
-
 <a id="ui-html-shared-etag"></a>
-## ui-html-shared-etag: HTML responses reuse the resource's strong ETag and Last-Modified
+## ui-html-shared-etag: the UI's pages reuse the resource's strong ETag and Last-Modified
 
-The HTML depends on the stylesheets, components and the viewer's grants as well
-as the resource, but carries the resource's ETag and `Last-Modified`, so a
-conditional GET can answer 304 for HTML that would now differ. `Cache-Control:
-private, no-cache, no-store` keeps browser and proxy caches from storing the
-HTML, so they hold no stale copy to revalidate. It does not change the
-validators: a client that keeps an ETag itself and resends it (`If-None-Match`)
-after a component, stylesheet or grant changed still gets a 304, and keeps
-showing the old HTML. Suggested fix: a weak ETag for HTML derived from the
-resource's and the presentation's (and the viewer's decisions). Test: change a
-component; a conditional GET with the old validator gets a 200.
+The API no longer answers the scrud UI's HTML, so its validators are no longer
+shared with it. The UI app's pages (`scrud_django.ui.pages`) still carry the
+resource's ETag and `Last-Modified` (a form needs the ETag for its `If-Match`),
+though the HTML depends on the stylesheets, components and the viewer's grants
+as well as the resource. `Cache-Control: private, no-cache, no-store` keeps
+caches from storing a page, but a client that keeps an ETag itself and resends
+it (`If-None-Match`) after a component, stylesheet or grant changed still gets
+a 304 (`tests/test_ui_http.py::test_html_if_none_match_is_304_with_no_body`)
+and keeps showing the old HTML. Suggested fix: a weak ETag for a page derived
+from the resource's and the presentation's (and the viewer's decisions), the
+strong one kept in the form for `If-Match`. Test: change a component; a
+conditional GET of the page with the old validator gets a 200.
 
 <a id="ui-number-precision"></a>
 ## ui-number-precision: a browser edit rewrites numbers JSON.parse cannot keep
@@ -2216,3 +2207,14 @@ run. The test counts `Resource` rows before its first `reverse(...)`, which is
 what imports the URLconf and registers the types (12 rows); nothing earlier in
 a lone run has done that. Fix: take `before` after the `reverse`, or register
 the types in a fixture. Not fixed here.
+
+<a id="ui-json-vary-accept"></a>
+## ui-json-vary-accept: JSON from UI-enabled resource views does not send `Vary: Accept`
+
+Fixed in the commit "feat!: /api/ serves JSON only", by removing the cause: the API no longer has an HTML
+representation of the scrud UI at its URLs (the UI's pages are the UI app's, at
+URLs of their own), so a JSON response of the API never shares a URL with
+scrud UI HTML and no cache can serve one for the other. DRF's JSON responses
+keep the `Vary: Accept` DRF's content negotiation sets (its browsable API is
+still among its renderers). Pinned by
+`tests/test_ui_negotiation.py::test_json_from_the_api_has_no_ui_vary`.

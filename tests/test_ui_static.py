@@ -16,13 +16,13 @@ import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django.ui import renderer
+from scrud_django import ui
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .ui import UI_URLCONF, ui_url
 
-STATIC_DIR = Path(renderer.__file__).parent / "static" / "scrud_ui"
+STATIC_DIR = Path(ui.__file__).parent / "static" / "scrud_ui"
 HTMX = STATIC_DIR / "htmx.min.js"
 SCRUD_UI = STATIC_DIR / "scrud-ui.js"
 

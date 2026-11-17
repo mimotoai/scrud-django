@@ -1,6 +1,5 @@
 """The CSS and JS items' files, served without DRF: `file_response` (the
-answer to a GET of one, by name and ETag, which the API's
-`scrud_django.ui.branches.files.ItemFileView` gives too) and the UI app's
+answer to a GET of one, by name and ETag) and the UI app's
 views of them (`css_file`, `js_file`, routed by `scrud_django.ui.urls`).
 
 The URL holds the item's ETag, so a URL is immutable (a year's caching) and a

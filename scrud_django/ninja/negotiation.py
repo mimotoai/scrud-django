@@ -7,7 +7,7 @@ selects (`negotiated`) decides whether a document is served as its own media
 type (``routers._as_media_type``), and the media type it accepted (DRF's
 ``accepted_media_type``) whether JSON is indented (`IndentingJSONRenderer`).
 Only the choice is DRF's: a route that negotiates ``text/html`` (the
-browsable API's, or ``scrud_django.ui``'s) is answered as it is without one,
+browsable API's) is answered as it is without one,
 never as HTML."""
 
 import contextlib
@@ -24,7 +24,6 @@ from scoped_rbac import access, problems
 from scoped_rbac.ninja import DRFStyleJSONRenderer
 from scrudful._hsr import is_preflight
 
-from scrud_django import ui
 from scrud_django.ninja import entry
 from scrud_django.ninja.errors import PROBLEM_JSON, uniform_errors
 from scrud_django.registration import DOCUMENT_MEDIA_TYPES
@@ -63,12 +62,11 @@ class Renderer:
     format: str
 
 
-#: DRF's default renderers (``JSONRenderer``, ``BrowsableAPIRenderer``),
-#: ``scrud_django.ui``'s HTML renderer, and the documents' renderers
+#: DRF's default renderers (``JSONRenderer``, ``BrowsableAPIRenderer``) and
+#: the documents' renderers
 #: (``scrud_django.renderers``).
 JSON = Renderer("application/json", "json")
 BROWSABLE_API = Renderer("text/html", "api")
-SCRUD_HTML = Renderer("text/html", "html")
 _DOCUMENT_FORMATS = {
     "application/schema+json": "schema-json",
     "application/ld+json": "ld-json",
@@ -101,11 +99,10 @@ def resource_renderers(document_media_type=None, document_methods=DOCUMENT_METHO
     """The renderers of a scrud resource view (``ResourceViewMixin``), a
     function of the request: its document's first for a method in
     `document_methods` (``DocumentResourceViewSet``: its detail route's GET,
-    HEAD and PUT), then DRF's JSON, ``scrud_django.ui``'s HTML when it is
-    installed (``ResourceViewMixin.get_renderers``), and the browsable API."""
+    HEAD and PUT), then DRF's JSON and the browsable API."""
 
     def renderers(request):
-        offered = [JSON, *([SCRUD_HTML] if ui.is_enabled() else []), BROWSABLE_API]
+        offered = [JSON, BROWSABLE_API]
         if document_media_type is not None and request.method in document_methods:
             offered.insert(0, DOCUMENT_RENDERERS[document_media_type])
         return offered

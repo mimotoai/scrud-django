@@ -1021,12 +1021,12 @@ def test_push_page_has_no_after_push_preview_without_studio_urls(
 ):
     wip_with_changes(admin_login)
     proposed = store_push("wip", "main", "")
-    # Without the studio's URLs (tests.urls) the push preview has no
-    # endpoints: the review stays, with no preview after the push.
-    settings.ROOT_URLCONF = "tests.urls"
+    # Without the studio's URLs the push preview has no endpoints: the
+    # review stays, with no preview after the push. The UI app's pages are
+    # served (`tests.mounted_no_studio_urls`), the studio's routes are not.
+    settings.ROOT_URLCONF = "tests.mounted_no_studio_urls"
     href = reverse("ui-pushes-detail", args=[proposed.pk])
-    # tests.urls has no UI app: the API's HTML (at "/"), which it negotiates.
-    When.http.get(push_page_url(href), HTTP_ACCEPT="text/html")
+    When.http.get(ui_url(push_page_url(href)), HTTP_ACCEPT="text/html")
     Then.http.status_code_is(200)
     page = Page(Http.response.content.decode())
     assert counts(preview_of(page))["changes"] == "2"
@@ -1037,8 +1037,8 @@ def test_push_page_has_no_after_push_preview_without_studio_urls(
         for e in page.having("data-scrud-scope")
         if e.attrs["data-scrud-scope"] == AFTER_SCOPE
     ]
-    assert embedded.attrs["data-scrud-href"] == reverse(
-        "ui-push-previews-detail", args=["wip"]
+    assert embedded.attrs["data-scrud-href"] == ui_url(
+        reverse("ui-push-previews-detail", args=["wip"])
     )
     assert not [e for e in page.elements if e.within(embedded) and e.tag != "script"]
     assert not page.having("data-studio-push-after")
@@ -1046,5 +1046,5 @@ def test_push_page_has_no_after_push_preview_without_studio_urls(
         e
         for e in page.elements
         if e.tag in ("template", "iframe", "select", "form")
-        and e is not root_frame(page, href)
+        and e is not root_frame(page, ui_url(href))
     ]

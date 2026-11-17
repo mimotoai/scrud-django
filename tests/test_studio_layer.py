@@ -24,6 +24,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scrud_django.ui.branches import UI_CSS_TYPE_URI, UI_JS_TYPE_URI
 from scrud_django.ui.branches.effective import Selection, effective_rows
 from scrud_django.ui.branches.store import branches
+from scrud_django.ui.html import STATIC_HTMX, STATIC_SCRUD_UI
 from scrud_django.ui.layers import (
     UILayer,
     check_layers,
@@ -32,7 +33,6 @@ from scrud_django.ui.layers import (
     layer_conflicts,
     layer_item,
 )
-from scrud_django.ui.renderer import STATIC_HTMX, STATIC_SCRUD_UI
 from scrud_django.ui.studio import studio_branch, studio_layer_enabled
 from scrud_django.ui.studio.apps import ScrudUIStudioConfig
 
@@ -570,6 +570,9 @@ def test_globals_in_list_and_page_components_not_django(todo_list, todo_reader_l
     )
     Given.http.force_login(todo_reader_login)
     page = get_page(reverse("todo-lists-list") + "?ui-scope=listing")
+    # `api_url` is the API path of a type, for a component's own scripts to
+    # fetch as JSON (the `data-*` names are this test's, no shipped JS reads
+    # them): `/api/` is right, not the UI's pages.
     assert '<ul data-list="/api/todo-lists/">/x/</ul>' in page
     assert '<body data-page="/api/todo-lists/">' in page
     page = get_page(url_of(todo_list), HTTP_SCRUD_UI_SCOPE="plain")

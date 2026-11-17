@@ -753,7 +753,7 @@ def test_embed_with_an_invalid_scope_or_mode_is_refused(
     mode other than ``"view"`` are refused with the embed notice, as the
     same mode at the resource's URL is a 400: never ignored, which would
     put edit controls in a card meant to be read-only."""
-    from scrud_django.ui.renderer import MAX_SCOPES
+    from scrud_django.ui.html import MAX_SCOPES
 
     request = RequestFactory().get("/somewhere/")
     request.user = todo_owner_login

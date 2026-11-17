@@ -56,7 +56,7 @@ def css_hrefs(page):
 UI = "/"  # the UI app's base: its pages link and serve the CSS files there
 
 
-def file_url(item, base="/api/"):
+def file_url(item, base=UI):
     return f"{base}ui-css-files/{item.content['name']}/{item.etag}.css"
 
 
@@ -83,9 +83,11 @@ def test_css_served_under_prefix_with_versioned_url(todo_list, todo_reader_login
     assert css_hrefs(get_html(ui_url(api_url(todo_list)))) == [file_url(site, UI)]
     assert get_css(file_url(site, UI)).content == b"h2 { color: red }"
     # Only GET.
-    for base in ("/api/", ADMIN, UI):
+    for base in (ADMIN, UI):
         When.http.post(file_url(site, base), data="x", content_type="text/css")
         Then.http.status_code_is(405)
+    # The API serves no files: they are the UI app's.
+    get_css(file_url(site, "/api/"), status=404)
 
 
 @pytest.mark.django_db
@@ -170,9 +172,9 @@ def test_css_refused_without_get_on_branch(todo_list, todo_reader_login):
     setup_admin_and_customer()
     site = make_css("site")
     url = file_url(site, ADMIN)
-    # The reader sees the page at the API, and so its CSS...
+    # The reader sees the page at the UI, and so its CSS...
     Given.http.force_login(todo_reader_login)
-    get_css(file_url(site))
+    get_css(file_url(site, UI))
     # ...but not under a prefix whose branch they may not GET.
     get_css(url, status=403)
     Http.api_client.logout()

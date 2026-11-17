@@ -818,7 +818,7 @@ def test_ui_parameters_name_the_uis():
     from scrud_django.core.lists import ui_parameters as core_ui_parameters
     from scrud_django.ui.branches.effective import BRANCH_PARAMETER, SAFE_PARAMETER
     from scrud_django.ui.branches.selection import CONFIRM_PARAMETER
-    from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER
+    from scrud_django.ui.html import MODE_PARAMETER, SCOPE_PARAMETER
 
     assert UI_PARAMETERS == {
         BRANCH_PARAMETER,

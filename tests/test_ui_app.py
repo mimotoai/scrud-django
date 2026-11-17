@@ -58,7 +58,7 @@ from .test_ui_http import (
     three_items,
     without_content,
 )
-from .ui import HTML, UI_URLCONF, comparable, ui_url
+from .ui import UI_URLCONF, ui_url
 
 JSON = "application/json"
 NEW_LIST = {"title": "Created", "rbac_context": "project-a", "items": []}
@@ -129,13 +129,10 @@ def test_a_page_renders_at_the_ui_url(todo_list, todo_owner_login):
     assert f'hx-put="{ui_detail(todo_list)}"' in page
     ui_etag = Http.response["ETag"]
 
-    When.http.get(api_detail(todo_list), HTTP_ACCEPT=HTML)
+    # The page's ETag is the API's: its form's If-Match is checked there.
+    When.http.get(api_detail(todo_list), HTTP_ACCEPT=JSON)
     Then.http.status_code_is(200)
     assert Http.response["ETag"] == ui_etag
-    # Normalised: the CSRF token, and the API's hrefs as the UI's.
-    assert comparable(page) == comparable(
-        api_hrefs_as_ui(html(), api_detail(todo_list))
-    )
 
 
 @pytest.mark.django_db
@@ -147,8 +144,6 @@ def test_a_fragment_renders_at_the_ui_url(todo_list, todo_owner_login):
     fragment = html()
     assert fragment.startswith('<form class="scrud-resource"')
     assert etag_attribute(Http.response["ETag"]) in fragment
-    When.http.get(api_detail(todo_list), HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
-    assert fragment == api_hrefs_as_ui(html(), api_detail(todo_list))
 
 
 @pytest.mark.django_db
@@ -768,12 +763,6 @@ def test_a_computed_page_renders_at_the_ui_url(todo_owner_login):
         getattr(When.http, method)(url)
         Then.http.status_code_is(405)
         assert Http.response["Allow"] == "GET, HEAD"
-    # Its API page is the same, the hrefs aside.
-    When.http.get(url)
-    page = html()
-    api = reverse("summaries-detail", args=["k"])
-    When.http.get(api, HTTP_ACCEPT=HTML)
-    assert comparable(page) == comparable(api_hrefs_as_ui(html(), api))
     # The anonymous user is refused, as the API refuses them.
     Http.api_client.logout()
     When.http.get(url)
@@ -894,8 +883,9 @@ def test_invalid_ui_headers_are_answered_after_the_request_check(
     request, todo_list, who, method, item, headers, query
 ):
     """The page asks the route's request check before the fragment
-    protocol's headers, as the API's route does: a user it refuses gets its
-    401 or 403, any other the headers' 400, as from `/api/`'s HTML."""
+    protocol's headers: a user the API's route refuses gets its 401 or 403
+    (the same status the API answers the request), any other the headers'
+    400."""
     if who is not None:
         Given.http.force_login(request.getfixturevalue(who))
     api = (api_detail(todo_list) if item else reverse("todo-lists-list")) + query
@@ -903,8 +893,16 @@ def test_invalid_ui_headers_are_answered_after_the_request_check(
     page_status = send(method, ui_url(api), todo_list, body, **headers)
     assert_html()
     assert 'class="scrud-notice' in html() and FRAME not in html()
-    api_status = send(method, api, todo_list, body, HTTP_ACCEPT=HTML, **headers)
-    assert page_status == api_status, (page_status, api_status)
+    if page_status == 400:
+        # Past the request check: the user may ask this of the API (a GET
+        # stands in for a write, which would write).
+        api_status = send("GET", api, todo_list, body, HTTP_ACCEPT=JSON)
+        assert api_status == 200, api_status
+    else:
+        # Refused: the API refuses the same request the same way, writing
+        # nothing.
+        api_status = send(method, api, todo_list, body, HTTP_ACCEPT=JSON)
+        assert page_status == api_status, (page_status, api_status)
     assert stored(todo_list).etag == todo_list.etag
 
 

@@ -179,7 +179,7 @@ def api_url(slug, key=None) -> str:
 def _embed(request, path, scope, mode) -> str:
     # Not at the top: `pages` reaches `render_html`, which reaches this
     # module through `component_globals`.
-    from scrud_django.ui import pages, renderer
+    from scrud_django.ui import html, pages
     from scrud_django.ui.render import in_view_preview
 
     state = _state.get() or _top_state(request)
@@ -212,25 +212,25 @@ def _embed(request, path, scope, mode) -> str:
     chain = _scope_chain(scope)
     if chain is None:
         return _refused(path, f"scope {scope!r} is not a scope chain")
-    if mode is not None and mode != renderer.VIEW_MODE:
-        return _refused(path, f'mode {mode!r} is not "{renderer.VIEW_MODE}"')
+    if mode is not None and mode != html.VIEW_MODE:
+        return _refused(path, f'mode {mode!r} is not "{html.VIEW_MODE}"')
     headers = {
-        renderer.HX_REQUEST_HEADER: "true",
+        html.HX_REQUEST_HEADER: "true",
         BRANCH_HEADER: selection_value(active_selection()),
     }
     if chain:
-        headers[renderer.SCOPE_HEADER] = " ".join(chain)
+        headers[html.SCOPE_HEADER] = " ".join(chain)
     else:
         # No scope given: the path's own ``?ui-scope=`` applies, as at its
         # URL (an empty header would override it).
-        chain = renderer.parse_scope_chain(query.get(renderer.SCOPE_PARAMETER))
+        chain = html.parse_scope_chain(query.get(html.SCOPE_PARAMETER))
     key = (target.served, chain)
     if key in state.stack:
         return _refused(path, f"a cycle (in scope {' '.join(chain)!r})")
-    if mode == renderer.VIEW_MODE or in_view_preview():
+    if mode == html.VIEW_MODE or in_view_preview():
         # A view-mode preview shows what a viewer sees: an embed in it keeps
         # no edit control of a user who may PUT the embedded resource.
-        headers[renderer.MODE_HEADER] = renderer.VIEW_MODE
+        headers[html.MODE_HEADER] = html.VIEW_MODE
     mount = target.mount or mount_of(request)
     url = _url_of(request, target, mount)
     internal = _request_for(request, url, parts.query, headers, mount)
@@ -377,8 +377,8 @@ def _savepoints():
     embedding request's, under ``ATOMIC_REQUESTS``, or a studio preview's),
     so that an embedded view that fails on the database (on PostgreSQL, a
     failed query aborts the transaction) is rolled back alone: the
-    embedding render's later queries still run (as `renderer.load_stored`
-    guards its lookup)."""
+    embedding render's later queries still run (as the refused PUT's stored lookup in
+    `scrud_django.ui.pages` does)."""
     with ExitStack() as stack:
         for alias in connections:
             if connections[alias].in_atomic_block:
@@ -388,12 +388,12 @@ def _savepoints():
 
 def _top_state(request) -> _EmbedState:
     """The embed state of the top-level request `request`, kept on it."""
-    from scrud_django.ui import renderer
+    from scrud_django.ui import html
 
     http = getattr(request, "_request", request)
     state = getattr(http, _REQUEST_ATTR, None)
     if state is None:
-        top = (_served_by(request), renderer.scope_chain_of(request))
+        top = (_served_by(request), html.scope_chain_of(request))
         state = _EmbedState(stack=(top,))
         setattr(http, _REQUEST_ATTR, state)
     return state
@@ -431,13 +431,13 @@ def _same_site(request, parts) -> bool:
 
 def _scope_chain(scope) -> tuple[str, ...] | None:
     """The scope chain `scope` names (a string of names, or a list or tuple
-    of names, as `renderer.parse_scope_chain` reads a header's), ``()`` for
+    of names, as `html.parse_scope_chain` reads a header's), ``()`` for
     none (``None`` too, as Jinja's ``none`` is no scope); ``None`` when it is
     not one: not a string or a list of strings, more than ``MAX_SCOPES``
     names, or a name that is not one. An undefined Jinja variable is not
     ``None``, so a misspelt variable is refused, not read as no scope."""
-    from scrud_django.ui import renderer
-    from scrud_django.ui.renderer import scope_names
+    from scrud_django.ui import html
+    from scrud_django.ui.html import scope_names
 
     if scope is None:
         return ()
@@ -447,7 +447,7 @@ def _scope_chain(scope) -> tuple[str, ...] | None:
         scope = " ".join(scope)
     if not isinstance(scope, str):
         return None
-    chain = renderer.parse_scope_chain(scope)
+    chain = html.parse_scope_chain(scope)
     if not chain and scope_names(scope):
         return None  # names that are not a chain (``()`` is also no names)
     return chain

@@ -156,7 +156,7 @@ def test_preview_uses_the_branch_and_its_css(todo_reader_login):
     Given.http.force_login(may_select_branches(todo_reader_login))
     page = preview(branch="wip")
     assert "<i>Lorem ipsum</i>" in page and "<b>Lorem ipsum</b>" not in page
-    assert branch_css(page) == [file_url(wip_css) + "?ui-branch=wip"]
+    assert branch_css(page) == [file_url(wip_css, "/") + "?ui-branch=wip"]
     # The link serves the branch's CSS, whatever branch a cookie browses.
     Http.api_client.cookies["scrud_ui_branch"] = "main"
     When.http.get(branch_css(page)[0])
@@ -166,7 +166,7 @@ def test_preview_uses_the_branch_and_its_css(todo_reader_login):
     for params in ({"branch": "main"}, {}):
         page = preview(**params)
         assert "<b>Lorem ipsum</b>" in page and "<i>Lorem ipsum</i>" not in page
-        assert branch_css(page) == [file_url(main_css) + "?ui-branch=main"]
+        assert branch_css(page) == [file_url(main_css, "/") + "?ui-branch=main"]
 
 
 @pytest.mark.django_db

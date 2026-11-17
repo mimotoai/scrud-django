@@ -19,8 +19,8 @@ from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
 from scrud_django.ui.branches import UI_CSS_TYPE_URI, UI_JS_TYPE_URI
+from scrud_django.ui.html import STALE_MESSAGE
 from scrud_django.ui.layers import layer_item
-from scrud_django.ui.renderer import STALE_MESSAGE
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .fixtures import *  # noqa

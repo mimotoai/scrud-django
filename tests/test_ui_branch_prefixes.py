@@ -734,7 +734,7 @@ def test_links_never_lead_into_a_branch_at_the_ui_base(todo_list, settings):
         f"{ADMIN}todo-lists/?ui-branch=admin"
     )
     assert preview_css_urls(Selection("root")) == [
-        f"/api/ui-css-files/site/{css.etag}.css?ui-branch=root"
+        f"/ui-css-files/site/{css.etag}.css?ui-branch=root"
     ]
     settings.SCRUD_UI_STUDIO_BRANCH = "root"
     assert studio_href() is None
