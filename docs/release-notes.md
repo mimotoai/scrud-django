@@ -104,9 +104,12 @@
   release). The old
   paths keep working for this release as deprecated aliases: importing one
   (or, for `scrud_django.exceptions` and `scrud_django.validators`, which keep
-  their neutral names, reading one of the moved names) gives the moved
-  objects themselves and raises a `DeprecationWarning` naming the new path,
-  once. Set `REST_FRAMEWORK["EXCEPTION_HANDLER"]` to
+  their neutral names, and `scrud_django.computed`, reading one of the moved
+  names) gives the moved objects themselves and raises a
+  `DeprecationWarning` naming the new path, once. `scrud_django.computed`'s
+  neutral helpers (`computed_etag`, `computed_answer`, `computed_link`,
+  `not_modified`) moved to `scrud_django.core.computed` and resolve without
+  DRF. Set `REST_FRAMEWORK["EXCEPTION_HANDLER"]` to
   `"scrud_django.drf.exceptions.scrud_exception_handler"`; the old value still
   resolves, with the warning. `scrud_django.drf` raises an `ImportError`
   naming `scrud-django[drf]` when DRF is not installed. See "Migrating to

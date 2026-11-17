@@ -37,7 +37,6 @@ NEW_MODULES = [
 #: Each old module path, an alias of the module that replaced it.
 MODULE_ALIASES = {
     "scrud_django.views": "scrud_django.drf.views",
-    "scrud_django.computed": "scrud_django.drf.computed",
     "scrud_django.filters": "scrud_django.drf.filters",
     "scrud_django.paginations": "scrud_django.drf.paginations",
     "scrud_django.permissions": "scrud_django.drf.permissions",
@@ -67,6 +66,13 @@ NAME_ALIASES = {
     ("scrud_django.validators", "type_hook_leaf"): "scrud_django.drf.validators",
     ("scrud_django.validators", "checks_read_content"): ("scrud_django.drf.validators"),
     ("scrud_django.validators", "reading_content"): "scrud_django.drf.validators",
+    # scrud_django.computed's DRF view, and its neutral helpers, whose new
+    # home is the core (they resolve without DRF).
+    ("scrud_django.computed", "ComputedResourceViewSet"): "scrud_django.drf.computed",
+    ("scrud_django.computed", "computed_answer"): "scrud_django.core.computed",
+    ("scrud_django.computed", "computed_etag"): "scrud_django.core.computed",
+    ("scrud_django.computed", "computed_link"): "scrud_django.core.computed",
+    ("scrud_django.computed", "not_modified"): "scrud_django.core.computed",
 }
 
 #: Names of the modules that stay which are neutral: read without a warning.
@@ -226,9 +232,21 @@ def test_a_neutral_name_that_stays_does_not_warn(old, name):
 
 
 def test_an_unknown_name_of_a_module_that_stays_is_an_attribute_error():
-    for old in NEUTRAL_NAMES:
+    for old in [*NEUTRAL_NAMES, "scrud_django.computed"]:
         with pytest.raises(AttributeError):
             importlib.import_module(old).no_such_name  # noqa: B018
+
+
+def test_the_old_computed_path_is_no_module_alias():
+    """``scrud_django.computed`` names its moved objects one by one
+    (`NAME_ALIASES`), so that its neutral helpers resolve to the core's
+    without DRF: it is not ``scrud_django.drf.computed``, and importing it
+    does not warn (reading a name does)."""
+    import scrud_django.computed
+    import scrud_django.drf.computed
+
+    assert scrud_django.computed is not scrud_django.drf.computed
+    assert scrud_django.computed.__name__ == "scrud_django.computed"
 
 
 def test_the_old_exception_handler_setting_resolves_and_warns_at_most_once(
@@ -272,6 +290,42 @@ except ImportError as error:
     assert "scrud-django[drf]" in str(error), str(error)
 else:
     raise SystemExit("WorkflowValidator imported")
+"""
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_old_computed_paths_neutral_names_resolve_without_drf():
+    """``scrud_django.computed``'s neutral helpers are the core's, without
+    DRF, each with the warning naming ``scrud_django.core.computed``; its
+    DRF view raises the ImportError naming ``scrud-django[drf]``."""
+    result = run_without_drf(
+        """
+import warnings
+
+import scrud_django.core.computed as core
+
+names = ["computed_answer", "computed_etag", "computed_link", "not_modified"]
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    import scrud_django.computed as old
+
+    for name in names:
+        assert getattr(old, name) is getattr(core, name), name
+        # Kept once read: no second warning.
+        assert getattr(old, name) is getattr(core, name), name
+messages = [str(w.message) for w in caught if w.category is DeprecationWarning]
+assert len(messages) == len(names), messages
+for name, message in zip(names, messages):
+    assert message.startswith(f"scrud_django.computed.{name}"), message
+    assert f"scrud_django.core.computed.{name}" in message, message
+
+try:
+    from scrud_django.computed import ComputedResourceViewSet
+except ImportError as error:
+    assert "scrud-django[drf]" in str(error), str(error)
+else:
+    raise SystemExit("ComputedResourceViewSet imported")
 """
     )
     assert result.returncode == 0, result.stderr

@@ -1519,7 +1519,8 @@ raises a `DeprecationWarning` naming the new path. Change your imports:
 | Old path | New path |
 | --- | --- |
 | `scrud_django.views` | `scrud_django.drf.views` |
-| `scrud_django.computed` | `scrud_django.drf.computed` |
+| `scrud_django.computed.ComputedResourceViewSet` | `scrud_django.drf.computed` |
+| `scrud_django.computed.computed_etag` (and `computed_answer`, `computed_link`, `not_modified`) | `scrud_django.core.computed` |
 | `scrud_django.filters` | `scrud_django.drf.filters` |
 | `scrud_django.paginations` | `scrud_django.drf.paginations` |
 | `scrud_django.permissions` | `scrud_django.drf.permissions` |
@@ -1534,7 +1535,9 @@ raises a `DeprecationWarning` naming the new path. Change your imports:
 
 `scrud_django.validators` and `scrud_django.exceptions` stay: their neutral
 names (the JSON Schema validator, the errors) import from there without a
-warning; only the DRF names in the table warn. The logger names
+warning; only the DRF names in the table warn. `scrud_django.computed` names
+its moved objects one by one too: its neutral helpers resolve to
+`scrud_django.core.computed`'s, with the warning, even without DRF. The logger names
 (`scrud_django.permissions`, `scrud_django.validators`) are unchanged. Set
 the exception handler to its new path (the old value still resolves, with
 the warning):
