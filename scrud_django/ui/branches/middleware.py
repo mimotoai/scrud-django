@@ -23,7 +23,7 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.urls import NoReverseMatch, Resolver404, get_script_prefix, resolve
 
 from scrud_django import ui
-from scrud_django.ui import UI_NAMESPACE
+from scrud_django.ui import CSS_FILES_SEGMENT, JS_FILES_SEGMENT, UI_NAMESPACE
 from scrud_django.ui.branches import PREFIX
 from scrud_django.ui.branches.file_urls import (  # noqa: F401
     CSS_FILE_URL_NAME,
@@ -45,10 +45,8 @@ logger = logging.getLogger(__name__)
 __all__ = ["Mount", "PublishedBranchMiddleware", "check_mount", "mount_of"]
 
 # The first segment of the CSS and JS files' URLs (``<ui>ui-css-files/...``,
-# ``<ui>ui-js-files/...``), which a prefix claims too, and the name of each
-# one's route (in the UI's namespace).
-CSS_FILES_SEGMENT = "ui-css-files"
-JS_FILES_SEGMENT = "ui-js-files"
+# ``<ui>ui-js-files/...``, `scrud_django.ui`'s), which a prefix claims too,
+# and the name of each one's route (in the UI's namespace).
 FILE_ROUTES = {
     CSS_FILES_SEGMENT: CSS_FILE_URL_NAME,
     JS_FILES_SEGMENT: JS_FILE_URL_NAME,
