@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
-from django.urls import NoReverseMatch, get_script_prefix, reverse
+from django.urls import NoReverseMatch, reverse
 
 from scrud_django.core.authz import may_read_in_context
 from scrud_django.ui.branches import ITEM_KINDS, MAIN
@@ -20,9 +20,8 @@ from scrud_django.ui.branches.model import Branch, branch_of, item_key
 from scrud_django.ui.branches.reads import may_read_item
 from scrud_django.ui.branches.selection import (
     BRANCH_PARAMETER,
-    Mount,
-    api_base,
     branch_content,
+    mount_at,
     selectable,
     selection_value,
 )
@@ -245,13 +244,8 @@ def browse_url(slug: str, root: Branch | None, selection: Selection) -> str | No
         canonical = reverse(f"{slug}-list")
     except NoReverseMatch:
         return None
-    if root is not None and root.name != MAIN and root.prefix:
-        mount = Mount(
-            prefix=root.prefix,
-            branch=root.name,
-            api_base=api_base(),
-            script=get_script_prefix(),
-        )
+    mount = mount_at(root) if root is not None and root.name != MAIN else None
+    if mount is not None:
         canonical = mount.href(canonical)
     return f"{canonical}?{urlencode({BRANCH_PARAMETER: selection_value(selection)})}"
 

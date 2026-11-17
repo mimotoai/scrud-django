@@ -3,7 +3,7 @@ studio's computed types (`renderer._page` adds them when the studio app is
 installed), so that a broken studio can always be reached in safe mode or in
 the bootstrap studio."""
 
-from django.urls import NoReverseMatch, get_script_prefix, reverse
+from django.urls import NoReverseMatch, reverse
 from django.utils.encoding import escape_uri_path
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import SafeString
@@ -17,7 +17,7 @@ from scrud_django.ui.branches import (
     UI_PUSH_TYPE_URI,
 )
 from scrud_django.ui.branches.effective import SAFE_PARAMETER
-from scrud_django.ui.branches.selection import Mount, api_base
+from scrud_django.ui.branches.selection import mount_at
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER, VIEW_MODE
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
@@ -83,7 +83,9 @@ def studio_href() -> str | None:
     branch = branches().get(name) if name is not None else None
     if branch is None or not branch.prefix or branch.pk is None:
         return None
-    mount = Mount(branch.prefix, branch.name, api_base(), get_script_prefix())
+    mount = mount_at(branch)
+    if mount is None:
+        return None
     detail = reverse(f"{UI_BRANCH_SLUG}-detail", args=[branch.pk])
     return (
         f"{mount.href(detail)}?{SCOPE_PARAMETER}={STUDIO_SCOPE}"

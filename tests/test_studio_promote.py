@@ -1025,7 +1025,10 @@ def test_push_page_has_no_after_push_preview_without_studio_urls(
     # endpoints: the review stays, with no preview after the push.
     settings.ROOT_URLCONF = "tests.urls"
     href = reverse("ui-pushes-detail", args=[proposed.pk])
-    page = get_page(push_page_url(href))
+    # tests.urls has no UI app: the API's HTML (at "/"), which it negotiates.
+    When.http.get(push_page_url(href), HTTP_ACCEPT="text/html")
+    Then.http.status_code_is(200)
+    page = Page(Http.response.content.decode())
     assert counts(preview_of(page))["changes"] == "2"
     # The second embed renders (its frame, in the scope studio
     # studio-push-after), with nothing in it: no controls, no frame.

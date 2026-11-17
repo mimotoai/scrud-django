@@ -58,11 +58,10 @@ from .test_ui_http import (
     three_items,
     without_content,
 )
-from .ui import HTML, UI_URLCONF, ui_url
+from .ui import HTML, UI_URLCONF, comparable, ui_url
 
 JSON = "application/json"
 NEW_LIST = {"title": "Created", "rbac_context": "project-a", "items": []}
-CSRF_META = re.compile(r'(<meta name="csrf-token" content=")[^"]*(")')
 
 
 @pytest.fixture(autouse=True)
@@ -80,12 +79,6 @@ def ui_detail(resource):
 
 def ui_list(slug="todo-lists"):
     return ui_url(reverse(f"{slug}-list"))
-
-
-def comparable(page):
-    """`page` with its per-request values normalised (ruling R3): the CSRF
-    token the page carries is masked anew for every response."""
-    return CSRF_META.sub(r"\1\2", page)
 
 
 def id_prefix(href):
@@ -869,12 +862,16 @@ def test_partner_profile_pages_render(partner_profiles, admin_login):
 @pytest.mark.django_db
 @test_context
 def test_a_prefix_shadowing_another_ui_page_is_reported(todo_list):
-    """A prefix serves the presentation of the UI's list page of each type
-    it claims (`/` over the UI's base), which is no project URL; any other
-    UI page it would hide is: ``/summaries/todo-lists/`` is the computed
-    type's page for the key ``todo-lists``."""
+    """A UI page a prefix would hide is reported as a project URL is:
+    ``/summaries/todo-lists/`` is the computed type's page for the key
+    ``todo-lists``. The UI's own base (``/`` here) is main's: no prefix
+    applies there (the middleware does not mount a branch at it)."""
     reverse("summaries-detail", args=["k"])  # the URLconf registers the types
-    assert prefix_problems("/", [], "default") == []
+    assert prefix_problems("/", [], "default") == [
+        "The prefix '/' is the UI's own base, whose pages are main's: no "
+        "prefix applies there."
+    ]
+    assert prefix_problems("/front/", [], "default") == []
     problems = prefix_problems("/summaries/", [], "default")
     assert len(problems) == 1, problems
     assert "/summaries/todo-lists/ (scrud_ui:detail)" in problems[0]

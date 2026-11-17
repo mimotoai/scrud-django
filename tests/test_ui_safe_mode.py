@@ -27,6 +27,8 @@ from .test_ui_branch_prefixes import (
     get_html,
     get_json,
     mounted,
+    notices,
+    refusal,
     setup_admin_and_customer,
 )
 from .test_ui_branch_render import BRANCH_HEADER, may_select_branches, put_item
@@ -108,18 +110,21 @@ def test_safe_mode_uses_layer_items(todo_list, todo_reader_login):
 def test_safe_mode_keeps_mount_gate(todo_list, todo_reader_login):
     setup_admin_and_customer()
     Given.http.force_login(todo_reader_login)
-    refused = get_json(mounted(ADMIN, todo_list), status=403)
+    refused = notices(get_html(mounted(ADMIN, todo_list), status=403))
     for url in (mounted(ADMIN, todo_list), mounted(ADMIN)):
         page = get_html(url + SAFE, status=403)
         assert "Groceries" not in page and "permission" in page
-        assert get_json(url + SAFE, status=403) == refused
+        # Asked for as JSON too: the UI's same refusal (a prefix serves the
+        # UI only).
+        assert refusal(url + SAFE, 403) == refused
     # The files of a refused prefix too.
     css = make_css("site")
     get_css(f"{ADMIN}ui-css-files/site/{css.etag}.css{SAFE}", status=403)
     # Anonymous: refused, not rendered.
     Http.api_client.logout()
-    When.http.get(mounted(ADMIN, todo_list) + SAFE, HTTP_ACCEPT="text/html")
+    When.http.get(mounted(ADMIN, todo_list) + SAFE)
     assert Http.response.status_code in (401, 403)
+    assert "Groceries" not in Http.response.content.decode()
 
 
 @pytest.mark.django_db

@@ -763,9 +763,10 @@ def check_prefix(request, name, content, prefix, all_branches, instance):
     (the virtual ``main``'s ``""`` included). Setting one, or changing
     it (to another, to none or from none), publishes URLs of the site,
     and needs PUT on branches in the context ``""`` (`check_publisher`,
-    403; ruling R37); the new prefix must not lie under the API's URLs,
-    hide URLs the project's URLconf serves, or overlap another branch's
-    (`checks.prefix_problems`, 400)."""
+    403; ruling R37); the new prefix must not lie under the API's URLs, be
+    the UI app's own base (``main``'s pages), hide URLs the project's
+    URLconf serves, or overlap another branch's (`checks.prefix_problems`,
+    400)."""
     if prefix is not None and prefix and not PREFIX.fullmatch(prefix):
         raise UIBranchInvalidError(
             f'A branch prefix is "" or matches {PREFIX.pattern}; {prefix!r} does not.',

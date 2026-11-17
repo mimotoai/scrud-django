@@ -1,13 +1,15 @@
 """What CSS and JS items share at the API's URLs: the text of a page's
 stylesheet or script, per branch, served at versioned URLs
-(``<api or prefix>ui-<kind>-files/<name>/<etag>.<kind>``) and linked by the
+(``<api>ui-<kind>-files/<name>/<etag>.<kind>``) and linked by the
 page. The answer is `scrud_django.ui.branches.file_views.file_response`, which
 the UI app's views give too.
 
 The URL holds the item's ETag, so a URL is immutable (a year's caching) and a
 stale one is a 404. Presentation is read with system rights (ruling R12):
 what gates a file is the branch the request selects (`choose`, which refuses
-a working branch the viewer may not GET) and, under a prefix, `check_mount`.
+a working branch the viewer may not GET). The API's URLs are never under a
+prefix: a prefix's files are the UI app's (`file_views`, which ask GET on
+its branch).
 """
 
 from rest_framework.permissions import AllowAny
@@ -18,7 +20,6 @@ from scrud_django.ui.branches.file_views import (  # noqa: F401
     MAX_AGE,
     file_response,
 )
-from scrud_django.ui.branches.middleware import check_mount
 
 
 class ItemFileView(APIView):
@@ -35,5 +36,4 @@ class ItemFileView(APIView):
         raise NotImplementedError
 
     def get(self, request, name: str, etag: str):
-        check_mount(request)
         return file_response(request, self.files, name, etag, self.content_type)

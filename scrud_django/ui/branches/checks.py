@@ -5,8 +5,6 @@ of overrides of packaged UI layer items (`check_layer_conflicts`)."""
 from django.core import checks
 from django.urls import NoReverseMatch, Resolver404, get_script_prefix, resolve
 
-from scrud_django.ui import UI_NAMESPACE
-
 CHECK_ID = "scrud_django_ui.W001"
 LAYER_CONFLICTS_ID = "scrud_django_ui.W002"
 
@@ -18,12 +16,15 @@ def check_prefixes(app_configs, databases=None, **kwargs):
 
     - lies under the API's URLs (`selection.api_base`), where no prefix
       applies;
+    - is the UI app's own base (`selection.ui_base`), whose pages are
+      ``main``'s: the middleware does not serve the branch there;
     - overlaps another: the URLs one claims (``<prefix><type slug>/...``,
-      `middleware.routes_to_api`) include the other's, as ``/shop/`` and
+      `middleware.routes_to_ui`) include the other's, as ``/shop/`` and
       ``/shop/todo-lists/`` do (``/`` and ``/admin/resources/`` do not,
       unless ``admin`` is a type's slug); or
-    - claims a URL that the project's URLconf serves with another view
-      (``<prefix><type slug>/``), which the prefix would hide.
+    - claims a URL that the project's URLconf serves with another view, or
+      another of the UI's pages (``<prefix><type slug>/``), which the prefix
+      would hide.
 
     A Warning, not an Error (ruling R26): it reports stored data, and an
     Error from a database check would stop ``migrate``; routing stays
@@ -39,9 +40,10 @@ def check_prefixes(app_configs, databases=None, **kwargs):
     from scrud_django.ui.branches.store import _read_branches
 
     try:
-        base = api_base_info()
-    except NoReverseMatch:  # the project does not serve the UI's types
+        base = ui_base_info()
+    except NoReverseMatch:  # the project does not include the UI app
         return []
+    api = api_base_info()
     found = []
     for alias in databases or ():
         if not_checked(alias):
@@ -58,8 +60,11 @@ def check_prefixes(app_configs, databases=None, **kwargs):
         segments = {*slugs, *FILE_ROUTES}
         published = [b for b in published if PREFIX.fullmatch(b.prefix)]
         for branch in published:
-            if under_api(branch.prefix, base):
-                found.append(_under_api(branch, base))
+            if under_api(branch.prefix, api):
+                found.append(_under_api(branch, api))
+                continue
+            if branch.prefix == base:
+                found.append(_at_ui_base(branch, base))
                 continue
             shadowed = shadowed_urls(branch.prefix, slugs)
             if shadowed:
@@ -71,36 +76,51 @@ def check_prefixes(app_configs, databases=None, **kwargs):
     return found
 
 
-def api_base_info() -> str:
+def api_base_info() -> str | None:
     """The API's base (`selection.api_base`) as a ``path_info`` (without
-    the script prefix), as prefixes are matched. ``NoReverseMatch`` when the
-    project does not serve the UI's types."""
+    the script prefix), as prefixes are matched; ``None`` when the project
+    does not serve the UI's types."""
     from scrud_django.ui.branches.selection import api_base
 
-    base = api_base()
+    try:
+        return _path_info(api_base())
+    except NoReverseMatch:
+        return None
+
+
+def ui_base_info() -> str:
+    """The UI app's base (`selection.ui_base`) as a ``path_info``, which a
+    prefix's URLs are routed under. ``NoReverseMatch`` when the project
+    does not include the UI app."""
+    from scrud_django.ui.branches.selection import ui_base
+
+    return _path_info(ui_base())
+
+
+def _path_info(base):
     script = get_script_prefix()
     return "/" + base[len(script) :] if base.startswith(script) else base
 
 
 def claimed_slugs(base: str, using) -> list[str]:
-    """The slugs of the types stored on `using` that the API at `base`
-    serves with their resource views, sorted: the first segments a prefix
-    claims (with the CSS and JS files')."""
+    """The slugs of the types stored on `using` that the UI app at `base`
+    serves pages of, sorted: the first segments a prefix claims (with the
+    CSS and JS files')."""
     from scrud_django.models import ResourceType
-    from scrud_django.ui.branches.middleware import routes_to_api
+    from scrud_django.ui.branches.middleware import routes_to_ui
 
     stored = ResourceType.objects.using(using).values_list("slug", flat=True)
     return sorted(
         slug
         for slug in set(stored)
-        if isinstance(slug, str) and routes_to_api(f"{base}{slug}/", f"{slug}/")
+        if isinstance(slug, str) and routes_to_ui(f"{base}{slug}/", f"{slug}/")
     )
 
 
-def under_api(prefix: str, base: str) -> bool:
-    """Whether `prefix` lies under the API's URLs (`base`, a ``path_info``),
-    where no prefix applies."""
-    return prefix.startswith(base)
+def under_api(prefix: str, base: str | None) -> bool:
+    """Whether `prefix` lies under the API's URLs (`base`, a ``path_info``;
+    ``None``: there are none), where no prefix applies."""
+    return base is not None and prefix.startswith(base)
 
 
 def overlap(one: str, other: str, segments) -> bool:
@@ -118,11 +138,9 @@ def overlap(one: str, other: str, segments) -> bool:
 
 def shadowed_urls(prefix, slugs) -> list[str]:
     """The URLs ``<prefix><slug>/`` that the project's URLconf serves, each
-    with its view's name. The UI app's page of the list of `slug` itself
-    (``scrud_django.ui.urls``, ``<UI_NAMESPACE>:list``, at a prefix ``/``
-    over the UI's base) is not the project's: a prefix serves that page's
-    presentation of its branch. Any other UI page (another type's item, a
-    computed type's key) is, as any other URL."""
+    with its view's name: the project's own, and the UI app's pages (a
+    computed type's page for the key `slug`, under ``/<computed slug>/``),
+    which the prefix would hide behind its branch's."""
     shadowed = []
     for slug in slugs:
         path = f"{prefix}{slug}/"
@@ -130,47 +148,39 @@ def shadowed_urls(prefix, slugs) -> list[str]:
             match = resolve(path)
         except Resolver404:
             continue
-        if _is_ui_list_of(match, slug):
-            continue
         shadowed.append(f"{path} ({match.view_name})")
     return shadowed
 
 
-def _is_ui_list_of(match, slug) -> bool:
-    """Whether `match` is the UI app's page of the list of `slug`."""
-    return (
-        UI_NAMESPACE in match.namespaces
-        and match.url_name == "list"
-        and match.kwargs.get("slug") == slug
-    )
-
-
 def prefix_problems(prefix: str, others, using) -> list[str]:
     """Why `prefix` (not ``""``), to be set on a branch, is refused (ruling
-    R37): it lies under the API's URLs, claims URLs that the project's
-    URLconf serves, or overlaps the prefix of one of `others` (the other
-    stored branches), as the system check would warn. The types are read on
-    `using`. Empty when there is none, or when the project does not serve
-    the UI's types."""
+    R37): it lies under the API's URLs, is the UI app's own base (``main``'s
+    pages), claims URLs that the project's URLconf serves, or overlaps the
+    prefix of one of `others` (the other stored branches), as the system
+    check would warn. The types are read on `using`. Empty when there is
+    none, or when the project does not include the UI app."""
     from scrud_django.ui.branches import PREFIX
     from scrud_django.ui.branches.middleware import FILE_ROUTES
 
     try:
-        base = api_base_info()
+        base = ui_base_info()
     except NoReverseMatch:
         return []
-    if under_api(prefix, base):
+    api = api_base_info()
+    if under_api(prefix, api):
         return [
-            f"The prefix {prefix!r} is under the API's URLs ({base!r}), where "
+            f"The prefix {prefix!r} is under the API's URLs ({api!r}), where "
             "no prefix applies."
         ]
+    if prefix == base:
+        return [_AT_UI_BASE.format(prefix=prefix)]
     slugs = claimed_slugs(base, using)
     problems = []
     shadowed = shadowed_urls(prefix, slugs)
     if shadowed:
         problems.append(
             f"The prefix {prefix!r} claims URLs that the project's URLconf "
-            f"serves: {', '.join(shadowed)}. The branch's resource views would "
+            f"serves: {', '.join(shadowed)}. The branch's pages would "
             "hide them."
         )
     segments = {*slugs, *FILE_ROUTES}
@@ -188,6 +198,12 @@ def prefix_problems(prefix: str, others, using) -> list[str]:
     return problems
 
 
+_AT_UI_BASE = (
+    "The prefix {prefix!r} is the UI's own base, whose pages are main's: no "
+    "prefix applies there."
+)
+
+
 def _under_api(branch, base):
     return checks.Warning(
         f"The prefix {branch.prefix!r} of branch {branch.name!r} is under the "
@@ -197,11 +213,22 @@ def _under_api(branch, base):
     )
 
 
+def _at_ui_base(branch, base):
+    return checks.Warning(
+        f"The prefix {branch.prefix!r} of branch {branch.name!r} is the UI's "
+        f"own base ({base!r}), whose pages are main's: the branch is not "
+        "served there.",
+        hint="Give the branch another prefix, or push its items to main to "
+        "show them at the UI's base.",
+        id=CHECK_ID,
+    )
+
+
 def _shadowing(branch, shadowed):
     return checks.Warning(
         f"The prefix {branch.prefix!r} of branch {branch.name!r} claims URLs "
         f"that the project's URLconf serves: {', '.join(shadowed)}. The "
-        "branch's resource views would hide them.",
+        "branch's pages would hide them.",
         hint="Give the branch another prefix, or move the project's URLs.",
         id=CHECK_ID,
     )

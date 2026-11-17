@@ -42,7 +42,7 @@ from .test_ui_branch_render import BRANCH_HEADER, may_select_branches, put_item
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
 from .test_ui_http import html, make_component, make_stylesheet
-from .ui import HTML, UI_URLCONF, ui_url
+from .ui import UI_URLCONF, ui_url
 
 REFUSED = (
     f'<div class="scrud-notice scrud-notice-error" role="alert">{REFUSED_MESSAGE}'
@@ -122,9 +122,9 @@ def get_page(url, status=200, scope=None, **headers):
 
 
 def get_prefixed(url, **kwargs):
-    """The page at `url`, under a published branch's prefix, which answers
-    HTML to ``Accept: text/html`` (prefix requests: Task 9 moves them)."""
-    return get_page(url, HTTP_ACCEPT=HTML, **kwargs)
+    """The page at `url`, under a published branch's prefix: the UI's page
+    of the same URL under the UI's base, in the prefix's branch."""
+    return get_page(url, **kwargs)
 
 
 def notice_texts(output):
@@ -301,8 +301,8 @@ def test_embed_of_a_published_prefix_path(todo_list, todo_reader_login):
     publish("admin", ADMIN)
     url = mounted(ADMIN, other)
     host('<section class="host">{{ embed("' + url + '") }}</section>')
-    # The prefix's branch is readable: the embed is the API's resource,
-    # with links in the prefix.
+    # The prefix's branch is readable: the embed is the UI's page of the
+    # resource, with links in the prefix.
     Given.http.force_login(may_select_branches(todo_reader_login))
     page = get_page(ui_of(todo_list), scope="host")
     assert "Sweep" in page and len(frames(page, url)) == 1

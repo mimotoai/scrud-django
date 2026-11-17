@@ -275,10 +275,11 @@ class _Target:
 def _resolve(path) -> _Target | None:
     """The `_Target` of the absolute URL path `path` (no query: a path as
     an HTML link has it, under the script prefix) as a request for it would
-    be routed: a path under a published branch's prefix to the API's URL
-    (`find_mount`), the UI's list and detail pages (`UI_NAMESPACE`) and the
-    API's of a registered type (``<slug>-list``, ``<slug>-detail``) as they
-    are. ``None`` for any other path, and a type the UI does not serve."""
+    be routed: a path under a published branch's prefix to the UI's page
+    the prefix serves it with (`find_mount`), the UI's list and detail
+    pages (`UI_NAMESPACE`) and the API's of a registered type
+    (``<slug>-list``, ``<slug>-detail``) as they are. ``None`` for any other
+    path, and a type the UI does not serve."""
     from scrud_django import ui
     from scrud_django.ui import pages
     from scrud_django.ui.branches.middleware import find_mount
@@ -298,9 +299,9 @@ def _resolve(path) -> _Target | None:
         return None
     slug = pk = None
     if match.namespaces == [UI_NAMESPACE] and match.url_name in ("list", "detail"):
-        if mount is not None:
-            return None  # a prefix routes to the API's URLs only
         slug, pk = match.kwargs["slug"], match.kwargs.get("pk")
+    elif mount is not None:
+        return None  # a prefix serves the UI's pages only
     else:
         name = match.url_name or ""
         for suffix in ("-list", "-detail"):
@@ -342,8 +343,8 @@ def _request_for(request, url, query, headers, mount):
     """The GET the embedded page is rendered for: `url` and `query`, with
     `headers` (by name) and `request`'s host, as the user of `request`; on
     the UI's base `request` has (`UI_BASE_ATTR`). Under a prefix, `mount`
-    is its mount and its path_info the API's, as `PublishedBranchMiddleware`
-    leaves it."""
+    is its mount and its path_info the UI page's, as
+    `PublishedBranchMiddleware` leaves it."""
     script = get_script_prefix()
     path_info = "/" + url[len(script) :] if url.startswith(script) else url
     extra = {"HTTP_ACCEPT": "text/html"}

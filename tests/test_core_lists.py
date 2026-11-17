@@ -657,16 +657,18 @@ def test_page_url_is_drfs(query, number):
     assert page_url(request, number) == expected
 
 
-def test_page_url_under_a_published_branch_is_the_apis():
+def test_page_url_under_a_published_branch_is_the_prefixs():
+    """Under a published branch's prefix only the UI answers (with the
+    prefix's own links), so a page's URL is the prefix's, not the API's."""
     from scrud_django.core.lists import page_url
 
     class Mount:
         def canonical(self, url):
-            return url.replace("/branch/", "/api/")
+            raise AssertionError("page_url maps no URL out of the prefix")
 
     request = RequestFactory().get("/branch/notes/?page=1")
     request.scrud_ui_mount = Mount()
-    assert page_url(request, 2) == "http://testserver/api/notes/?page=2"
+    assert page_url(request, 2) == "http://testserver/branch/notes/?page=2"
 
 
 @pytest.mark.django_db

@@ -35,6 +35,8 @@ from .test_ui_http import grant, html
 from .ui import page_request, ui_url
 
 JSON = "application/json"
+# The branch published at `STUDIO_ROOT` (`setup_studio`).
+STUDIO_BRANCH = "studio"
 EDITOR_SCOPE = "studio studio-editor"
 OT = "http://api.openteams.com/json-ld/"
 EDITORS = {
@@ -200,7 +202,11 @@ def test_own_component_editor_has_save_and_revert(studio_layer, ui_alice_login):
         assert frame.tag == "form", key
         assert frame.attrs["hx-put"] == href
         assert frame.attrs["data-scrud-scope"] == EDITOR_SCOPE
-        When.http.get(href, HTTP_ACCEPT=JSON)
+        # The item's JSON is the API's (a prefix serves the UI only), with
+        # the prefix's branch selected.
+        When.http.get(
+            api_of(href), HTTP_ACCEPT=JSON, HTTP_SCRUD_UI_BRANCH=STUDIO_BRANCH
+        )
         assert frame.attrs["data-scrud-etag"] == Http.response["ETag"]
         stored = Http.response.json()
         content = content_of(page, frame)
@@ -327,10 +333,16 @@ def test_override_then_save_round_trip(studio_layer, ui_alice_login):
     assert textarea_value(code) == "<p>saved {{ value }}</p>"
 
 
-def crafted_put(href, body, etag):
+def crafted_put(href, body, etag, **headers):
     """A PUT as JSON with `etag`: ``(status, body)``."""
-    response = put_item(href, body, etag=etag, html_mode=False)
+    response = put_item(href, body, etag=etag, html_mode=False, **headers)
     return response.status_code, response.json()
+
+
+def api_of(href):
+    """The API URL of `href`, a URL under the studio's prefix."""
+    assert href.startswith(STUDIO_ROOT), href
+    return "/api/" + href[len(STUDIO_ROOT) :]
 
 
 @pytest.mark.django_db
@@ -363,33 +375,44 @@ def test_published_T_editor_view_only(studio_layer, admin_login, ui_alice_login)
     assert page.one("data-studio-workbench").attrs["data-studio-published"] == "true"
     opened = Page(open_editor(row["href"], view=True))
     assert opened.writes() == [] and "Save" not in opened.buttons()
-    # A crafted save of main's row through the studio's mount: the API's own
-    # answer, for a user who may not PUT it and for one who may.
+    # A crafted save of main's row: the API's own answer, for a user who may
+    # not PUT it and for one who may, with the studio's branch selected too.
     stored = resource(UI_COMPONENT_TYPE_URI, "row", "main")
     api_href = reverse("ui-components-detail", args=[stored.pk])
     assert row["href"] == STUDIO_ROOT + api_href[len("/api/") :]
     body = {**stored.content, "template": "<b>crafted</b>"}
     etag = f'"{stored.etag}"'
+    studio_branch = {"HTTP_SCRUD_UI_BRANCH": STUDIO_BRANCH}
     grant(ui_alice_login, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
     Given.http.force_login(ui_alice_login)
-    refused = crafted_put(row["href"], body, etag)
+    refused = crafted_put(api_href, body, etag, **studio_branch)
     assert refused[0] == 403
     assert crafted_put(api_href, body, etag) == refused
-    # As the editor's form would send it (HTML): refused alike.
-    put_item(row["href"], body, etag=etag)
-    assert Http.response.status_code == 403
-    assert "crafted" not in Http.response.content.decode()
+    # Through the studio's mount, as JSON or as the editor's form would send
+    # it (HTML): the UI's answer (a prefix serves no JSON), refused alike.
+    for html_mode in (False, True):
+        put_item(row["href"], body, etag=etag, html_mode=html_mode)
+        assert Http.response.status_code == 403
+        assert Http.response["Content-Type"] == "text/html; charset=utf-8"
+        assert "crafted" not in Http.response.content.decode()
     Given.http.force_login(admin_login)
-    stale = crafted_put(row["href"], body, '"stale"')
+    stale = crafted_put(api_href, body, '"stale"', **studio_branch)
     assert stale[0] == 412 and crafted_put(api_href, body, '"stale"') == stale
+    put_item(row["href"], body, etag='"stale"', html_mode=False)
+    assert Http.response.status_code == 412
+    assert Http.response["Content-Type"] == "text/html; charset=utf-8"
     assert resource(UI_COMPONENT_TYPE_URI, "row", "main").etag == stored.etag
-    # One the API accepts is accepted: the server's checks decide.
-    status, saved = crafted_put(row["href"], body, etag)
+    # One the API accepts is accepted, through the mount too (the UI's
+    # write, answered with its HTML): the server's checks decide.
+    status, saved = crafted_put(api_href, body, etag, **studio_branch)
     assert status == 200 and saved["template"] == "<b>crafted</b>"
     stored = resource(UI_COMPONENT_TYPE_URI, "row", "main")
     again = {**stored.content, "template": "<b>again</b>"}
-    status, saved = crafted_put(api_href, again, f'"{stored.etag}"')
-    assert status == 200 and saved["template"] == "<b>again</b>"
+    put_item(row["href"], again, etag=f'"{stored.etag}"', html_mode=False)
+    assert Http.response.status_code == 200
+    assert Http.response["Content-Type"] == "text/html; charset=utf-8"
+    stored = resource(UI_COMPONENT_TYPE_URI, "row", "main")
+    assert stored.content["template"] == "<b>again</b>"
 
 
 @pytest.mark.django_db

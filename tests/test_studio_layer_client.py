@@ -19,6 +19,7 @@ from django.http import QueryDict
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.models import Resource
 from scrud_django.registration import ResourceTypeRegistration
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
@@ -4077,7 +4078,8 @@ def test_new_branch_form_body_from_main(studio_layer, admin_login, settings):
     settings.ROOT_URLCONF = "tests.mounted_urls"
     main = make_branch("main", "", parent=None)
     Given.http.force_login(admin_login)
-    When.http.get(page_request(workbench_url(main))[0])
+    url, headers = page_request(workbench_url(main))
+    When.http.get(url, **headers)
     Then.http.status_code_is(200)
     page = Page(Http.response.content.decode())
     [form] = page.having("data-studio-new-branch")
@@ -4101,17 +4103,17 @@ def test_new_branch_form_body_from_main(studio_layer, admin_login, settings):
     out = json.loads(done.stdout)
     assert out["bad"] == []
     assert out["body"] == {"name": "feature", "parent": "main", "rbac_context": ""}
-    # The form posts to the UI app; the body goes to the API's URL of the
-    # same collection, which answers JSON.
+    # The form posts to the UI app, which creates the branch with the body.
     assert form.attrs["hx-post"] == ui_url(reverse("ui-branches-list"))
+    url, headers = page_request(form.attrs["hx-post"], HTTP_HX_REQUEST="true")
     When.http.post(
-        reverse("ui-branches-list"),
-        data=json.dumps(out["body"]),
-        content_type="application/json",
-        HTTP_ACCEPT="application/json",
+        url, data=json.dumps(out["body"]), content_type="application/json", **headers
     )
     Then.http.status_code_is(201)
-    assert Http.response.json()["rbac_context"] == ""
+    created = Resource.objects.get(
+        resource_type__slug="ui-branches", content__name="feature"
+    )
+    assert created.content["rbac_context"] == ""
 
 
 # ---- bodies from the server's markup, through the API ---------------------

@@ -167,7 +167,7 @@ def test_js_gated_by_branch_get_under_prefix(todo_list, todo_reader_login):
     # ...but not under a prefix whose branch they may not GET.
     get_js(url, status=403)
     Http.api_client.logout()
-    When.http.get(mounted(ADMIN), HTTP_ACCEPT="application/json")
+    When.http.get(mounted(ADMIN))
     refused = Http.response.status_code
     assert refused in (401, 403)
     get_js(url, status=refused)

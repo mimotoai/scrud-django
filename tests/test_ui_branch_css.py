@@ -79,13 +79,13 @@ def test_css_served_under_prefix_with_versioned_url(todo_list, todo_reader_login
     assert response["Cache-Control"] == PRIVATE
     assert response["X-Content-Type-Options"] == "nosniff"
     assert response.content == b"h2 { color: red }"
-    # The API's URLs link and serve it too (not the UI's: the branch published
-    # at "/" claims the UI's URLs; Task 9 moves the prefix tests).
-    assert css_hrefs(get_html(api_url(todo_list))) == [file_url(site)]
-    assert get_css(file_url(site)).content == b"h2 { color: red }"
+    # The UI's own page (main's) links and serves it too, at the UI's URLs.
+    assert css_hrefs(get_html(ui_url(api_url(todo_list)))) == [file_url(site, UI)]
+    assert get_css(file_url(site, UI)).content == b"h2 { color: red }"
     # Only GET.
-    When.http.post(file_url(site), data="x", content_type="text/css")
-    Then.http.status_code_is(405)
+    for base in ("/api/", ADMIN, UI):
+        When.http.post(file_url(site, base), data="x", content_type="text/css")
+        Then.http.status_code_is(405)
 
 
 @pytest.mark.django_db
@@ -177,7 +177,7 @@ def test_css_refused_without_get_on_branch(todo_list, todo_reader_login):
     get_css(url, status=403)
     Http.api_client.logout()
     # The anonymous get what any refused GET under the mount gets.
-    When.http.get(mounted(ADMIN), HTTP_ACCEPT="application/json")
+    When.http.get(mounted(ADMIN))
     refused = Http.response.status_code
     assert refused in (401, 403)
     get_css(url, status=refused)

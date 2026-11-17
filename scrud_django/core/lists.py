@@ -529,9 +529,8 @@ def page_url(request, number: int, *, param: str = PAGE_PARAMETER) -> str:
     ``PageNumberPagination`` links the next and previous pages: `request`'s
     absolute URL with the page parameter `param` (by default the list's; a
     paginator passes its ``page_query_param``) set to `number` (left out for
-    page 1), the query parameters sorted; under a published branch's prefix
-    (``request.scrud_ui_mount``, ``scrud_django.ui``'s ``Mount``), the API's
-    URL."""
+    page 1), the query parameters sorted (under a published branch's
+    prefix, the prefix's URL: the UI page the prefix serves)."""
     scheme, netloc, path, query, fragment = urlsplit(
         force_str(request.build_absolute_uri())
     )
@@ -541,9 +540,7 @@ def page_url(request, number: int, *, param: str = PAGE_PARAMETER) -> str:
     else:
         params[force_str(param)] = [force_str(number)]
     query = urlencode(sorted(params.items()), doseq=True)
-    url = urlunsplit((scheme, netloc, path, query, fragment))
-    mount = getattr(request, "scrud_ui_mount", None)
-    return mount.canonical(url) if mount is not None else url
+    return urlunsplit((scheme, netloc, path, query, fragment))
 
 
 def read_view(request, resource_type, obj: Resource) -> tuple[object, str]:

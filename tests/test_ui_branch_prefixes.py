@@ -1,7 +1,9 @@
 """Published branches at URL prefixes: under a branch's prefix, a type's URLs
-reach the same views as under the API's, with the same checks; only the
-presentation differs. These tests serve the API at ``/api/``
-(``tests.mounted_urls``)."""
+reach the UI app's pages of the same URLs, with the same checks (and GET on
+the branch); only the presentation differs. Under a prefix only the UI
+answers (HTML, whatever the ``Accept``); JSON is at the API's URLs. The UI's
+own base is main's: a branch is never served there. These tests serve the
+API at ``/api/`` and the UI at ``/`` (``tests.mounted_urls``)."""
 
 import hashlib
 import json
@@ -22,6 +24,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scrud_django import ui
 from scrud_django.models import Resource
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
+from scrud_django.ui.branches.selection import Mount
 
 from .fixtures import *  # noqa
 from .fixtures import TYPE_URI_TODO_LIST
@@ -29,7 +32,6 @@ from .steps import *  # noqa: F403, F401
 from .test_ui_branch_render import BRANCH_HEADER, may_select_branches, put_item
 from .test_ui_branch_types import make_branch
 from .test_ui_http import (
-    HTML,
     assert_html,
     frame_hrefs,
     html,
@@ -38,9 +40,13 @@ from .test_ui_http import (
     make_stylesheet,
     put_json,
 )
+from .ui import UI_URLCONF, comparable, ui_url
 
 ADMIN = "/admin/resources/"
-CUSTOMER = "/"
+CUSTOMER = "/customer/"
+# The UI's own base (``tests.mounted_urls``): main's pages.
+UI_BASE = "/"
+JSON = "application/json"
 CHECK_ID = "scrud_django_ui.W001"
 # Shows the decisions the component was given.
 TITLE = (
@@ -53,9 +59,9 @@ MIDDLEWARE = "scrud_django.ui.branches.middleware.PublishedBranchMiddleware"
 
 @pytest.fixture(autouse=True)
 def api_at_api_path(settings):
-    """The API at ``/api/``: ``tests.urls`` serves it at ``/``, where no
-    prefix applies."""
-    settings.ROOT_URLCONF = "tests.mounted_urls"
+    """The API at ``/api/`` and the UI at ``/`` (``tests.urls`` serves the
+    API at ``/``, where no prefix applies)."""
+    settings.ROOT_URLCONF = UI_URLCONF
 
 
 def mount_cookie(prefix):
@@ -78,9 +84,9 @@ def publish(name, prefix, parent="main", context="project-a", **fields):
 
 
 def setup_admin_and_customer():
-    """main's ``title`` (an ``<h1>``) for ``ex:TodoList``; ``admin`` at
-    `ADMIN` overrides it with an ``<h2>``, ``customer`` at `CUSTOMER` with an
-    ``<h3>``."""
+    """main's ``title`` (an ``<h1>``, at the UI's own URLs) for
+    ``ex:TodoList``; ``admin`` at `ADMIN` overrides it with an ``<h2>``,
+    ``customer`` at `CUSTOMER` with an ``<h3>``."""
     make_component("title", TITLE.format("h1"))
     make_stylesheet("s", [("ex:TodoList", "title")])
     publish("admin", ADMIN)
@@ -99,15 +105,24 @@ def mounted(prefix, resource=None, slug="todo-lists"):
 
 
 def get_html(url, status=200, **headers):
-    When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+    """GET the page at `url`, a UI URL or one under a prefix (the UI does
+    not negotiate: no ``Accept``)."""
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
+    assert_html()
     return html()
 
 
 def get_json(url, status=200, **headers):
-    When.http.get(url, HTTP_ACCEPT="application/json", **headers)
+    """GET the JSON at `url`, an API URL."""
+    When.http.get(url, HTTP_ACCEPT=JSON, **headers)
     Then.http.status_code_is(status)
     return Http.response.json()
+
+
+def ui_page(resource=None, slug="todo-lists"):
+    """The UI's own URL of `resource` (else of the `slug` list): main's."""
+    return mounted(UI_BASE, resource, slug)
 
 
 def heading(page, tag):
@@ -138,24 +153,71 @@ def prefix_errors(*, overlap=None):
     return found
 
 
+def refusal(url, status, **headers):
+    """The notices of the page at `url`, refused with `status`, asked for as
+    HTML (no ``Accept``) and as JSON: the UI's HTML both times, the same."""
+    page = get_html(url, status=status, **headers)
+    assert "Groceries" not in page
+    When.http.get(url, HTTP_ACCEPT=JSON, **headers)
+    Then.http.status_code_is(status)
+    assert_html()
+    assert notices(html()) == notices(page)
+    return notices(page)
+
+
 @pytest.mark.django_db
 @test_context
 def test_two_prefixes_render_same_resource_differently(todo_list, todo_reader_login):
     setup_admin_and_customer()
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     admin = get_html(mounted(ADMIN, todo_list))
     customer = get_html(mounted(CUSTOMER, todo_list))
-    api = get_html(api_url(todo_list))
+    main = get_html(ui_page(todo_list))
     assert "<h2>" in admin and "<h3>" not in admin and "<h1>" not in admin
     assert "<h3>" in customer and "<h2>" not in customer and "<h1>" not in customer
-    assert "<h1>" in api and "<h2>" not in api and "<h3>" not in api
+    assert "<h1>" in main and "<h2>" not in main and "<h3>" not in main
     # The same list, with the same decisions.
-    assert heading(admin, "h2") == heading(customer, "h3") == heading(api, "h1")
+    assert heading(admin, "h2") == heading(customer, "h3") == heading(main, "h1")
     assert heading(admin, "h2") == "Groceries|allowed|denied|denied"
     # No banner: a published branch at its own prefix is the normal site.
     assert "scrud-branch-banner" not in admin + customer
-    # JSON is the same everywhere.
-    assert get_json(mounted(ADMIN, todo_list)) == get_json(api_url(todo_list))
+    # JSON is the API's, the same with the prefix's branch selected.
+    api = get_json(api_url(todo_list))
+    assert get_json(api_url(todo_list), **{BRANCH_HEADER: "admin"}) == api
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_prefix_serves_the_ui_only(todo_list, todo_reader_login):
+    """Under a prefix only the UI answers: a request asking for JSON gets
+    the page's HTML (the UI does not negotiate)."""
+    setup_admin_and_customer()
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    for url in (mounted(ADMIN, todo_list), mounted(ADMIN)):
+        page = get_html(url)
+        for accept in (JSON, "application/json, text/html;q=0.1", "*/*"):
+            When.http.get(url, HTTP_ACCEPT=accept)
+            Then.http.status_code_is(200)
+            assert_html()
+            assert 'class="scrud-resource"' in html() and "<h2>Groceries" in html()
+            assert comparable(html()) == comparable(page), accept
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_prefix_maps_to_the_ui_views(todo_list, todo_reader_login):
+    """A page under a prefix is the UI's page of the same URL under the UI's
+    base, in the prefix's branch: with no item of its own, ``front`` shows
+    main's, so its page is main's page, the prefix aside."""
+    setup_admin_and_customer()
+    make_list("Chores")
+    publish("front", "/front/")
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    for resource in (todo_list, None):
+        page = get_html(mounted("/front/", resource) + "?page_size=1")
+        main = get_html(ui_page(resource) + "?page_size=1")
+        assert "front/" in page and "<h1>Groceries" in page
+        assert comparable(page.replace("/front/", "/")) == comparable(main)
 
 
 @pytest.mark.django_db
@@ -163,7 +225,7 @@ def test_two_prefixes_render_same_resource_differently(todo_list, todo_reader_lo
 def test_published_branch_live_over_another(todo_list, todo_reader_login):
     setup_admin_and_customer()
     publish("msp", "/msp/", parent="admin")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     assert "<h2>Groceries" in get_html(mounted("/msp/", todo_list))
     title = Resource.objects.get(content__name="title", content__branch="admin")
     title.content = {**title.content, "template": TITLE.format("h4")}
@@ -180,30 +242,28 @@ def test_published_branch_live_over_another(todo_list, todo_reader_login):
 @test_context
 def test_prefix_refuses_without_get_on_branch(todo_list, todo_reader_login):
     setup_admin_and_customer()
-    Given.http.force_authenticate(todo_reader_login)
-    # The reader may GET the list at the API's URL...
-    assert "<h1>Groceries" in get_html(api_url(todo_list))
+    Given.http.force_login(todo_reader_login)
+    # The reader may GET the list at the UI's own URL (and the API's)...
+    assert "<h1>Groceries" in get_html(ui_page(todo_list))
     get_json(api_url(todo_list))
-    # ...not under a prefix whose branch they may not GET: refused, as HTML
-    # and as JSON, as a GET of a type they may not GET is, with no fallback
-    # to another presentation.
-    refused_html = notices(get_html(reverse("ui-pushes-list"), status=403))
+    # ...not under a prefix whose branch they may not GET: refused, as a GET
+    # of a type they may not GET is, with no fallback to another
+    # presentation; asked for as JSON too, with the UI's HTML.
+    refused = notices(get_html(ui_url(reverse("ui-pushes-list")), status=403))
     get_json(reverse("ui-pushes-list"), status=403)
-    refused = (Http.response["Content-Type"], Http.response.json())
     for url in (mounted(ADMIN, todo_list), mounted(ADMIN)):
-        page = get_html(url, status=403)
-        assert_html()
-        assert "Groceries" not in page and notices(page) == refused_html
-        get_json(url, status=403)
-        assert (Http.response["Content-Type"], Http.response.json()) == refused
-    # Anonymous: the 401 the views answer with.
-    Given.http.force_authenticate(None)
-    When.http.get(api_url(todo_list), HTTP_ACCEPT="application/json")
+        assert refusal(url, 403) == refused
+    # JSON is the API's, whatever branch is named: the reader's to-do list.
+    api = get_json(api_url(todo_list))
+    assert get_json(api_url(todo_list), **{BRANCH_HEADER: "admin"}) == api
+    # Anonymous: the status the API answers the anonymous with.
+    Http.api_client.logout()
+    When.http.get(api_url(todo_list), HTTP_ACCEPT=JSON)
     anonymous_status = Http.response.status_code
     assert anonymous_status in (401, 403)
-    get_json(mounted(ADMIN, todo_list), status=anonymous_status)
+    refusal(mounted(ADMIN, todo_list), anonymous_status)
     # Allowed to GET the branch, the reader gets the branch's presentation.
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     assert "<h2>Groceries" in get_html(mounted(ADMIN, todo_list))
 
 
@@ -211,7 +271,7 @@ def test_prefix_refuses_without_get_on_branch(todo_list, todo_reader_login):
 @test_context
 def test_prefix_refuses_anonymous_with_401(todo_list, settings):
     """An anonymous viewer allowed to GET the list but not the branch gets
-    the views' answer to the anonymous: a 401."""
+    the pages' answer to the anonymous: a 401."""
     setup_admin_and_customer()
     publish("public", "/public/", context="")
     anonymous = {
@@ -221,47 +281,94 @@ def test_prefix_refuses_anonymous_with_401(todo_list, settings):
     with override_settings(
         SCOPED_RBAC={**settings.SCOPED_RBAC, "POLICY_FOR_UNAUTHENTICATED": anonymous}
     ):
-        Given.http.force_authenticate(None)
-        get_json(api_url(todo_list))
-        get_json(mounted("/public/", todo_list))
-        # The answer to the anonymous at the API's URL of a type they may
-        # not GET.
+        api = get_json(api_url(todo_list))
+        assert get_json(api_url(todo_list), **{BRANCH_HEADER: "public"}) == api
+        assert "<h1>Groceries" in get_html(mounted("/public/", todo_list))
+        # The answer to the anonymous at the URL of a type they may not GET.
         get_json(reverse("ui-pushes-list"), status=401)
-        refused = (Http.response["Content-Type"], Http.response.json())
-        get_json(mounted(ADMIN, todo_list), status=401)
-        assert (Http.response["Content-Type"], Http.response.json()) == refused
-        page = get_html(mounted(ADMIN, todo_list), status=401)
-        assert 'class="scrud-notices"' in page and "Groceries" not in page
+        refused = notices(get_html(ui_url(reverse("ui-pushes-list")), status=401))
+        assert refusal(mounted(ADMIN, todo_list), 401) == refused
 
 
 @pytest.mark.django_db
 @test_context
-def test_root_prefix_claims_only_type_slugs(todo_list, todo_reader_login):
+def test_a_prefix_claims_only_type_slugs(todo_list, todo_reader_login):
     setup_admin_and_customer()
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     assert "<h3>Groceries" in get_html(mounted(CUSTOMER, todo_list))
     # Anything but a type's URLs is the project's (a 404 here).
     for path in (
-        "/nope/",
-        "/nope/1/",
-        "/todo-lists",
+        "/customer/nope/",
+        "/customer/nope/1/",
         "/admin/resources/nope/",
         "/admin/",
-        # Out of the type's routes once rewritten: not claimed.
-        f"/todo-lists/{todo_list.pk}/../../services/",
-        "/ui-components/../services/",
-        f"/todo-lists%2F{todo_list.pk}%2F..%2F..%2Fservices%2F",
-        "/todo-lists/x/y/",
+        "/customer/studio/",
+        # Out of the type's pages once rewritten: not claimed.
+        f"/customer/todo-lists/{todo_list.pk}/../../services/",
+        "/customer/ui-components/../services/",
+        f"/customer/todo-lists%2F{todo_list.pk}%2F..%2F..%2Fservices%2F",
+        "/customer/todo-lists/x/y/",
     ):
-        When.http.get(path, HTTP_ACCEPT="application/json")
+        When.http.get(path, HTTP_ACCEPT=JSON)
         Then.http.status_code_is(404)
         assert "Groceries" not in Http.response.content.decode(), path
-    # The project's own URL under a prefix is not shadowed when it is no type.
+    # The project's own URL is not shadowed by a prefix whose types it is not.
     When.http.get("/shop/todo-lists/")
     Then.http.status_code_is(200)
     assert Http.response.content == b"The shop's to-do lists"
-    # The API's URLs are not mounted: main.
-    assert "<h1>Groceries" in get_html(api_url(todo_list))
+    # The UI's own URLs are main's.
+    assert "<h1>Groceries" in get_html(ui_page(todo_list))
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_prefix_without_its_slash_is_not_redirected(todo_list, todo_reader_login):
+    setup_admin_and_customer()
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    for path in ("/customer/todo-lists", "/admin/resources/todo-lists", "/todo-lists"):
+        When.http.get(path)
+        Then.http.status_code_is(404)
+        assert "Location" not in Http.response, path
+        assert "Groceries" not in Http.response.content.decode(), path
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_branch_at_the_ui_base_is_not_served_there(
+    todo_list, todo_reader_login, admin_login
+):
+    """The UI's own base (``/``) is main's, the site's normal presentation:
+    a branch stored with that prefix is not served there (nor does anything
+    loop), the system check warns of it, and setting it is refused."""
+    setup_admin_and_customer()
+    # Setting it is refused.
+    Given.http.force_login(admin_login)
+    front = publish("front", "/front/")
+    When.http.put(
+        reverse("ui-branches-detail", args=[front.pk]),
+        data=json.dumps({**front.content, "prefix": UI_BASE}),
+        content_type="application/json",
+        HTTP_ACCEPT=JSON,
+        HTTP_IF_MATCH=f'"{front.etag}"',
+    )
+    Then.http.status_code_is(400)
+    assert "UI's own base" in Http.response.json()["detail"]
+    front.refresh_from_db()
+    assert front.content["prefix"] == "/front/"
+    # Stored otherwise, it is not served there.
+    publish("root", UI_BASE)
+    put_item("ui-components", "title", TITLE.format("h5"), "root")
+    Given.http.force_login(todo_reader_login)  # no GET on any branch
+    for url in (ui_page(todo_list), ui_page()):
+        page = get_html(url)
+        assert "<h1>Groceries" in page and "<h5>" not in page
+        assert "scrud-branch-banner" not in page
+    # The other prefixes are served as ever.
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    assert "<h2>Groceries" in get_html(mounted(ADMIN, todo_list))
+    [warning] = prefix_errors()
+    assert "'/'" in warning.msg and "'root'" in warning.msg
+    assert "UI's own base" in warning.msg
 
 
 @pytest.mark.django_db
@@ -269,12 +376,12 @@ def test_root_prefix_claims_only_type_slugs(todo_list, todo_reader_login):
 def test_api_urls_read_no_prefix(todo_list, todo_reader_login, settings):
     """The middleware reads no branch for a URL under the API's."""
     setup_admin_and_customer()
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
-    get_html(api_url(todo_list))  # warm up
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    get_json(api_url(todo_list))  # warm up
 
     def queries():
         with CaptureQueriesContext(connection) as captured:
-            get_html(api_url(todo_list))
+            get_json(api_url(todo_list))
         return len(captured)
 
     with_middleware = queries()
@@ -290,36 +397,53 @@ def test_api_urls_read_no_prefix(todo_list, todo_reader_login, settings):
 def test_writes_under_prefix_use_same_checks(
     todo_list, todo_owner_login, todo_reader_login
 ):
+    """A write under a prefix is the UI page's: the API's checks, at the
+    API's statuses, answered with HTML (asked for as JSON too)."""
     setup_admin_and_customer()
     body = {**todo_list.content, "title": "Shopping"}
-    answers = {}
-    for url in (api_url(todo_list), mounted(ADMIN, todo_list)):
-        Given.http.force_authenticate(may_select_branches(todo_owner_login))
-        put_json(url, body, HTTP_ACCEPT="application/json")
-        no_if_match = (Http.response.status_code, Http.response.json())
-        Given.http.force_authenticate(may_select_branches(todo_reader_login))
-        put_json(
-            url,
-            body,
-            HTTP_IF_MATCH=f'"{todo_list.etag}"',
-            HTTP_ACCEPT="application/json",
-        )
-        refused = (Http.response.status_code, Http.response.json())
-        answers[url] = (no_if_match, refused)
-    api, admin = answers.values()
-    assert api == admin
+
+    def answers(url, **headers):
+        Given.http.force_login(may_select_branches(todo_owner_login))
+        put_json(url, body, **headers)
+        no_if_match = Http.response
+        Given.http.force_login(may_select_branches(todo_reader_login))
+        put_json(url, body, HTTP_IF_MATCH=f'"{todo_list.etag}"', **headers)
+        return no_if_match, Http.response
+
+    api = [
+        (r.status_code, r.json()) for r in answers(api_url(todo_list), HTTP_ACCEPT=JSON)
+    ]
     assert api[0][0] == 428 and api[1][0] == 403
+    # JSON is the API's: the same with the prefix's branch selected.
+    assert [
+        (r.status_code, r.json())
+        for r in answers(
+            api_url(todo_list), HTTP_ACCEPT=JSON, **{BRANCH_HEADER: "admin"}
+        )
+    ] == api
+    for url in (ui_page(todo_list), mounted(ADMIN, todo_list)):
+        for headers in ({}, {"HTTP_ACCEPT": JSON}):
+            found = answers(url, **headers)
+            assert [r.status_code for r in found] == [428, 403], (url, headers)
+            assert all(r["Content-Type"].startswith("text/html") for r in found)
+    todo_list.refresh_from_db()
+    assert todo_list.content["title"] == "Groceries"
     # And an allowed write under the prefix is the same write.
-    Given.http.force_authenticate(may_select_branches(todo_owner_login))
+    Given.http.force_login(may_select_branches(todo_owner_login))
     put_json(
         mounted(ADMIN, todo_list),
         body,
         HTTP_IF_MATCH=f'"{todo_list.etag}"',
-        HTTP_ACCEPT="application/json",
+        HTTP_ACCEPT=JSON,
     )
     Then.http.status_code_is(200)
+    assert_html()
     todo_list.refresh_from_db()
     assert todo_list.content["title"] == "Shopping"
+    # So is a DELETE.
+    When.http.delete(mounted(ADMIN, todo_list), HTTP_IF_MATCH=f'"{todo_list.etag}"')
+    Then.http.status_code_is(204)
+    assert not Resource.objects.filter(pk=todo_list.pk).exists()
 
 
 @pytest.mark.django_db
@@ -327,7 +451,7 @@ def test_writes_under_prefix_use_same_checks(
 def test_links_stay_in_mount(todo_list, todo_owner_login):
     setup_admin_and_customer()
     make_list("Chores")
-    Given.http.force_authenticate(may_select_branches(todo_owner_login))
+    Given.http.force_login(may_select_branches(todo_owner_login))
     # A list: its items' frames, their writes and its pager stay in the mount.
     page = get_html(mounted(ADMIN) + "?page_size=1")
     hrefs = frame_hrefs(page) + hx_puts(page)
@@ -338,8 +462,11 @@ def test_links_stay_in_mount(todo_list, todo_owner_login):
     # A resource: its frame writes to its mounted URL.
     page = get_html(mounted(ADMIN, todo_list))
     assert hx_puts(page) == [mounted(ADMIN, todo_list)]
-    # JSON keeps the API's hrefs.
-    listed = get_json(mounted(ADMIN) + "?page_size=1")
+    # JSON is the API's, with the API's hrefs, the prefix's branch selected
+    # or not.
+    listed = get_json(
+        reverse("todo-lists-list") + "?page_size=1", **{BRANCH_HEADER: "admin"}
+    )
     assert path_of(listed["next"]) == reverse("todo-lists-list")
     assert [path_of(item["href"]) for item in listed["content"]] == [
         path_of(item["href"])
@@ -349,19 +476,18 @@ def test_links_stay_in_mount(todo_list, todo_owner_login):
         path_of(item["href"]).startswith("/api/todo-lists/")
         for item in listed["content"]
     )
-    # A create under the prefix answers with its frame in the mount, and the
-    # API's Location.
+    # A create under the prefix answers with its frame in the mount, and its
+    # Location there too (the UI's page of it under the prefix).
     When.http.post(
         mounted(ADMIN),
         data=json.dumps({"title": "New", "rbac_context": "project-a", "items": []}),
         content_type="application/json",
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(201)
-    assert path_of(Http.response["Location"]).startswith("/api/todo-lists/")
-    created = path_of(Http.response["Location"])[len("/api/") :]
-    assert hx_puts(html()) == [ADMIN + created]
+    created = path_of(Http.response["Location"])
+    assert created.startswith(ADMIN + "todo-lists/")
+    assert hx_puts(html()) == [created]
 
 
 @pytest.mark.django_db
@@ -371,7 +497,7 @@ def test_working_branch_browsed_under_its_root_prefix(todo_list, todo_reader_log
     make_branch("testing-admin", "project-a", parent="admin")
     put_item("ui-components", "title", TITLE.format("h6"), "testing-admin")
     make_branch("orphan", "project-a", parent=None)
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     fragment = {"HTTP_HX_REQUEST": "true", BRANCH_HEADER: "testing-admin"}
     # In admin's tree: selectable under admin's prefix...
     page = get_html(mounted(ADMIN, todo_list), **fragment)
@@ -396,9 +522,9 @@ def test_working_branch_browsed_under_its_root_prefix(todo_list, todo_reader_log
     banner = re.search(r'<aside class="scrud-branch-banner".*?</aside>', page, re.S)
     links = re.findall(r'href="([^"]*)"', banner.group(0))
     assert links and all(path_of(h) == mounted(ADMIN, todo_list) for h in links)
-    # ...not under customer's, or the API's: the published branch, with the
-    # banner's note.
-    for url in (mounted(CUSTOMER, todo_list), api_url(todo_list)):
+    # ...not under customer's, or at the UI's own URLs (main's): the
+    # published branch, with the banner's note.
+    for url in (mounted(CUSTOMER, todo_list), ui_page(todo_list)):
         page = get_html(url, **fragment)
         assert "<h6>" not in page
         page = get_html(url, **{BRANCH_HEADER: "testing-admin"})
@@ -439,50 +565,64 @@ def test_overlapping_prefixes_reported_by_check(todo_list):
 
 @pytest.mark.django_db
 @test_context
-def test_each_prefix_keeps_its_own_cookie(todo_list, todo_reader_login):
-    """A cookie set under ``/`` is sent to every prefix too: its own name
-    keeps it from shadowing another prefix's (ruling R28)."""
+def test_each_prefix_keeps_its_own_cookie(todo_list, todo_reader_login, admin_login):
+    """A cookie set at the UI's own URLs (main's, scoped to ``/``) is sent to
+    every prefix too: each prefix's own name keeps it from shadowing the
+    prefix's (ruling R28)."""
     setup_admin_and_customer()
     make_branch("testing-admin", "project-a", parent="admin")
     put_item("ui-components", "title", TITLE.format("h6"), "testing-admin")
     make_branch("testing-customer", "project-a", parent="customer")
     put_item("ui-components", "title", TITLE.format("h5"), "testing-customer")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    make_branch("testing-main", "project-a", parent="main")
+    put_item("ui-components", "title", TITLE.format("h4"), "testing-main")
+    Given.http.force_login(may_select_branches(todo_reader_login))
     assert "<h6>Groceries" in choose_by_link(mounted(ADMIN, todo_list), "testing-admin")
     page = choose_by_link(mounted(CUSTOMER, todo_list), "testing-customer")
     assert "<h5>Groceries" in page
     cookie = Http.response.cookies[mount_cookie(CUSTOMER)]
     assert cookie.value == "testing-customer" and cookie["path"] == CUSTOMER
-    # The client sends both cookies everywhere, as a browser does for `/`.
+    page = choose_by_link(ui_page(todo_list), "testing-main")
+    assert "<h4>Groceries" in page
+    cookie = Http.response.cookies[COOKIE]
+    assert cookie.value == "testing-main" and cookie["path"] == UI_BASE
+    # The client sends every cookie everywhere, as a browser does for `/`.
     sent = Http.api_client.cookies
     assert sent[mount_cookie(ADMIN)].value == "testing-admin"
     assert sent[mount_cookie(CUSTOMER)].value == "testing-customer"
-    # Each prefix reads its own, and neither shows a refused branch.
+    assert sent[COOKIE].value == "testing-main"
+    # Each reads its own, and none shows a refused branch.
     page = get_html(mounted(ADMIN, todo_list))
     assert "<h6>Groceries" in page and "isn't available" not in page
     assert "You are browsing branch <strong>testing-admin</strong>" in page
     page = get_html(mounted(CUSTOMER, todo_list))
     assert "<h5>Groceries" in page and "isn't available" not in page
-    # The API's URLs read neither.
-    page = get_html(api_url(todo_list))
-    assert "<h1>Groceries" in page and "scrud-branch-banner" not in page
+    page = get_html(ui_page(todo_list))
+    assert "<h4>Groceries" in page and "isn't available" not in page
+    # The API's JSON reads none (the cookies still sent): JSON is not
+    # affected by browsing.
+    Given.http.force_login(admin_login)
+    listed = json.dumps(get_json(reverse("ui-components-list")))
+    assert "<h1>" in listed
+    assert not any(f"<{tag}>" in listed for tag in ("h4", "h5", "h6"))
 
 
 @pytest.mark.django_db
 @test_context
 def test_mounted_request_reads_branches_once(todo_list, todo_reader_login):
-    """A mounted JSON request costs one query over the API's: the
-    middleware's read of the branches, which check_mount reuses."""
+    """A page under a prefix costs one query over the UI's own page: the
+    middleware's read of the branches, which the mount check reuses."""
     setup_admin_and_customer()
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    publish("front", "/front/")  # no item of its own: main's presentation
+    Given.http.force_login(may_select_branches(todo_reader_login))
 
     def queries(url):
-        get_json(url)  # warm up
+        get_html(url)  # warm up
         with CaptureQueriesContext(connection) as captured:
-            get_json(url)
+            get_html(url)
         return len(captured)
 
-    assert queries(mounted(ADMIN, todo_list)) == queries(api_url(todo_list)) + 1
+    assert queries(mounted("/front/", todo_list)) == queries(ui_page(todo_list)) + 1
 
 
 @pytest.mark.django_db
@@ -512,12 +652,33 @@ def test_database_error_mounts_nothing(todo_list, monkeypatch, caplog):
 @pytest.mark.django_db
 @test_context
 def test_middleware_inert_without_ui(todo_list, todo_reader_login, monkeypatch):
-    """Without scrud_django.ui installed, the views would not check_mount:
-    so nothing is mounted."""
+    """Without scrud_django.ui installed, the pages would not check the
+    mount: so nothing is mounted."""
     setup_admin_and_customer()
-    Given.http.force_authenticate(todo_reader_login)  # no GET on admin
-    get_json(mounted(ADMIN, todo_list), status=403)
+    Given.http.force_login(todo_reader_login)  # no GET on admin
+    get_html(mounted(ADMIN, todo_list), status=403)
     monkeypatch.setattr(ui, "is_enabled", lambda: False)
     get_json(api_url(todo_list))
-    When.http.get(mounted(ADMIN, todo_list), HTTP_ACCEPT="application/json")
+    When.http.get(mounted(ADMIN, todo_list))
     Then.http.status_code_is(404)
+
+
+@pytest.mark.django_db
+def test_a_mount_maps_api_and_ui_hrefs_into_its_prefix(todo_list):
+    """`Mount.href` maps an API URL, or a UI page's that a prefix claims,
+    into the prefix (any other as it is); `Mount.canonical` maps a URL under
+    the prefix to the UI page it serves."""
+    mount = Mount(ADMIN, "admin", UI_BASE, "/")
+    item = mounted(ADMIN, todo_list)
+    for href in (api_url(todo_list), ui_page(todo_list), item):
+        assert mount.href(href) == item, href
+        assert mount.href("http://testserver" + href + "?a=1") == (
+            "http://testserver" + item + "?a=1"
+        )
+    assert (
+        mount.href("/ui-css-files/site/abc.css") == ADMIN + "ui-css-files/site/abc.css"
+    )
+    for other in ("/studio/", "/shop/todo-lists/", "/nope/", "/todo-lists/x/y/"):
+        assert mount.href(other) == other
+    assert mount.canonical(item) == ui_page(todo_list)
+    assert mount.canonical("/studio/") == "/studio/"

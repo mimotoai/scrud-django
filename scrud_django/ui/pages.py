@@ -23,10 +23,11 @@ A page's URL without its trailing slash is not redirected to it
 project might serve. It imports no DRF.
 """
 
+import contextvars
 import copy
 import logging
 from collections.abc import Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 
 from django.core.exceptions import PermissionDenied
@@ -99,6 +100,25 @@ class ServedSlug(str):
         return self
 
 
+# What `served` found for each slug in the block of `served_memo` in
+# progress (``None`` outside one).
+_served_memo: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "scrud_ui_served", default=None
+)
+
+
+@contextmanager
+def served_memo():
+    """A block in which `served` reads each slug's type once: a request's
+    (`PublishedBranchMiddleware` resolves a prefix's URL to a page before
+    Django resolves it again)."""
+    token = _served_memo.set({})
+    try:
+        yield
+    finally:
+        _served_memo.reset(token)
+
+
 def served(slug: str) -> ServedSlug | None:
     """`slug` with its type (`ServedSlug`) when the UI serves pages of it: a
     type the API serves (its route ``<slug>-list`` reverses, or for a
@@ -106,7 +126,18 @@ def served(slug: str) -> ServedSlug | None:
     that is registered (``registration.get_resource_type_for`` finds it);
     else ``None``. A database error reading it is logged and serves
     nothing, so that the project's other URLs still answer
-    (``scrud_django.ui.urls``' slug converter asks it)."""
+    (``scrud_django.ui.urls``' slug converter asks it). In a `served_memo`
+    block, what it found for `slug` before."""
+    memo = _served_memo.get()
+    if memo is not None and slug in memo:
+        return memo[slug]
+    found = _served(slug)
+    if memo is not None:
+        memo[slug] = found
+    return found
+
+
+def _served(slug):
     try:
         if is_computed(slug):
             reverse(f"{slug}-detail", args=["key"])
