@@ -15,7 +15,7 @@ from django.test import RequestFactory
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django import collection_type_uri_for, registration
+from scrud_django import collection_type_uri_for
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI, selection
 from scrud_django.ui.branches.effective import (
@@ -35,14 +35,14 @@ from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .fixtures import *  # noqa
 from .fixtures import TYPE_URI_TODO_LIST, assign_role, assign_ui_role
-from .resource_types import SUMMARIES_TYPE
 from .steps import *  # noqa: F403, F401
 from .test_studio_page import setup_branches
 from .test_ui_branch_prefixes import ADMIN, mounted, publish
 from .test_ui_branch_render import BRANCH_HEADER, may_select_branches, put_item
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import HTML, html, make_component, make_stylesheet
+from .test_ui_http import html, make_component, make_stylesheet
+from .ui import HTML, UI_URLCONF, ui_url
 
 REFUSED = (
     f'<div class="scrud-notice scrud-notice-error" role="alert">{REFUSED_MESSAGE}'
@@ -52,7 +52,7 @@ REFUSED = (
 
 @pytest.fixture(autouse=True)
 def api_at_api_path(settings):
-    settings.ROOT_URLCONF = "tests.mounted_urls"
+    settings.ROOT_URLCONF = UI_URLCONF
 
 
 def make_jinja(name, template, mode="view", context=""):
@@ -104,15 +104,32 @@ def embed_warnings(caplog):
 
 
 def url_of(resource):
+    """The API URL of `resource`."""
     return reverse(f"{resource.resource_type.slug}-detail", args=[resource.pk])
+
+
+def ui_of(resource):
+    """The UI URL of `resource`."""
+    return ui_url(url_of(resource))
 
 
 def get_page(url, status=200, scope=None, **headers):
     if scope is not None:
         headers["HTTP_SCRUD_UI_SCOPE"] = scope
-    When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
     return html()
+
+
+def get_prefixed(url, **kwargs):
+    """The page at `url`, under a published branch's prefix, which answers
+    HTML to ``Accept: text/html`` (prefix requests: Task 9 moves them)."""
+    return get_page(url, HTTP_ACCEPT=HTML, **kwargs)
+
+
+def notice_texts(output):
+    """The text of each notice (``scrud-notice``) in `output`."""
+    return re.findall(r'<div class="scrud-notice[^"]*"[^>]*>(.*?)</div>', output, re.S)
 
 
 def host(template):
@@ -143,8 +160,6 @@ def test_embed_renders_resource_with_viewers_rights(
     other = make_list("Chores", items=["Sweep"])
     # A computed type with a registered ``compute``: the UI serves its pages.
     summary = reverse("summaries-detail", args=["project-a"])
-    # Its row, which an earlier test's import may have rolled back.
-    registration.computed_resource_type(**SUMMARIES_TYPE)
     lists = reverse("todo-lists-list")
     host(
         '<section class="host">{{ embed("' + url_of(other) + '") }}'
@@ -152,16 +167,18 @@ def test_embed_renders_resource_with_viewers_rights(
         '|{{ embed("' + lists + '?page=1") }}</section>'
     )
     Given.http.force_login(todo_reader_login)
-    page = get_page(url_of(todo_list), scope="host")
+    page = get_page(ui_of(todo_list), scope="host")
     assert '<section class="host">' in page
     # A list, with a query: its collection frame, each item in its own.
-    assert f'<div class="scrud-collection-frame" data-scrud-href="{lists}"' in page
+    assert (
+        f'<div class="scrud-collection-frame" data-scrud-href="{ui_url(lists)}"' in page
+    )
     # The embedded list, as its own fragment: its frame, its content.
-    assert "Sweep" in page and len(frames(page, url_of(other))) == 2
+    assert "Sweep" in page and len(frames(page, ui_of(other))) == 2
     # A reader gets view mode: no write attributes on the embedded frames.
-    assert not any("hx-put" in frame for frame in frames(page, url_of(other)))
+    assert not any("hx-put" in frame for frame in frames(page, ui_of(other)))
     # A computed type is a resource view too (ruling 3).
-    assert len(frames(page, summary)) == 1
+    assert len(frames(page, ui_url(summary))) == 1
     # One that is served by a viewset class alone has no UI page: refused.
     viewset_only = reverse("todo-summaries-detail", args=["project-a"])
     assert str(embed_for(RequestFactory().get("/x/"))(viewset_only)) == REFUSED
@@ -169,11 +186,11 @@ def test_embed_renders_resource_with_viewers_rights(
     assert REFUSED_MESSAGE not in page
     # The owner may PUT: the embedded frame is the edit form, at its URL.
     Given.http.force_login(todo_owner_login)
-    page = get_page(url_of(todo_list), scope="host")
-    assert f'hx-put="{url_of(other)}"' in frames(page, url_of(other))[0]
+    page = get_page(ui_of(todo_list), scope="host")
+    assert f'hx-put="{ui_of(other)}"' in frames(page, ui_of(other))[0]
     # The fragment of the embedding request embeds too.
-    page = get_page(url_of(todo_list), scope="host", HTTP_HX_REQUEST="true")
-    assert len(frames(page, url_of(other))) == 2  # by itself, and in the list
+    page = get_page(ui_of(todo_list), scope="host", HTTP_HX_REQUEST="true")
+    assert len(frames(page, ui_of(other))) == 2  # by itself, and in the list
 
 
 @pytest.mark.django_db
@@ -187,12 +204,12 @@ def test_embed_of_unreadable_resource_shows_refusal_not_content(
     When.http.get(url_of(secret), HTTP_ACCEPT="application/json")
     refused_status = Http.response.status_code
     assert refused_status in (403, 404)
-    page = get_page(url_of(todo_list), scope="host")
+    page = get_page(ui_of(todo_list), scope="host")
     assert "Secret plans" not in page and "Hidden item" not in page
-    assert not frames(page, url_of(secret))
+    assert not frames(page, ui_of(secret))
     # The notice the resource's own URL answers with, in place of the embed.
     embedded = re.search(r'<section class="host">(.*?)</section>', page, re.S)
-    own = get_page(url_of(secret), refused_status, HTTP_HX_REQUEST="true")
+    own = get_page(ui_of(secret), refused_status, HTTP_HX_REQUEST="true")
     assert embedded.group(1) == own
     assert 'class="scrud-notice' in own
 
@@ -223,14 +240,14 @@ def test_embed_cycle_refused(todo_list, todo_reader_login, caplog):
     )
     Given.http.force_login(todo_reader_login)
     with caplog.at_level(logging.WARNING, logger="scrud_django.ui.embed"):
-        page = get_page(url_of(todo_list), scope="self")
+        page = get_page(ui_of(todo_list), scope="self")
     assert page.count('<section class="self">') == 1
     assert page.count(REFUSED) == 1
     assert '<section class="self">' + REFUSED + "</section>" in page
     assert any("cycle" in m for m in embed_warnings(caplog))
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="scrud_django.ui.embed"):
-        page = get_page(url_of(todo_list), scope="a")
+        page = get_page(ui_of(todo_list), scope="a")
     # a (the page) embeds b, which embeds a again: refused there.
     assert page.count('<section class="a">') == 1
     assert page.count('<section class="b">') == 1
@@ -239,9 +256,9 @@ def test_embed_cycle_refused(todo_list, todo_reader_login, caplog):
     assert any("cycle" in m for m in embed_warnings(caplog))
     # The same resource in another scope is embedded: a cycle is a path and
     # scope already on the stack.
-    page = get_page(url_of(other), scope="a")
+    page = get_page(ui_of(other), scope="a")
     assert '<section class="a">' in page and '<section class="b">' in page
-    assert len(frames(page, url_of(other))) == 2
+    assert len(frames(page, ui_of(other))) == 2
 
 
 @pytest.mark.django_db
@@ -271,7 +288,7 @@ def test_embed_foreign_host_and_non_resource_path_refused(
     host(template + '<p class="e">{{ embed(42) }}</p>')
     Given.http.force_login(todo_reader_login)
     with caplog.at_level(logging.WARNING, logger="scrud_django.ui.embed"):
-        page = get_page(url_of(todo_list), scope="host")
+        page = get_page(ui_of(todo_list), scope="host")
     assert page.count(f'<p class="e">{REFUSED}</p>') == len(refused) + 1
     assert "Sweep" not in page and "The shop's to-do lists" not in page
     assert len(embed_warnings(caplog)) == len(refused) + 1
@@ -287,11 +304,11 @@ def test_embed_of_a_published_prefix_path(todo_list, todo_reader_login):
     # The prefix's branch is readable: the embed is the API's resource,
     # with links in the prefix.
     Given.http.force_login(may_select_branches(todo_reader_login))
-    page = get_page(url_of(todo_list), scope="host")
+    page = get_page(ui_of(todo_list), scope="host")
     assert "Sweep" in page and len(frames(page, url)) == 1
     # A user who may not GET the prefix's branch gets check_mount's refusal.
     Given.http.force_login(reader_of("project-a"))
-    page = get_page(url_of(todo_list), scope="host")
+    page = get_page(ui_of(todo_list), scope="host")
     assert "Sweep" not in page and not frames(page, url)
     assert 'class="scrud-notice' in page
 
@@ -312,7 +329,7 @@ def test_embed_limits(todo_list, todo_reader_login, caplog):
     make_stylesheet("chains", [("chain ex:TodoList", "chain")])
     Given.http.force_login(todo_reader_login)
     with caplog.at_level(logging.WARNING, logger="scrud_django.ui.embed"):
-        page = get_page(url_of(chain[0]), scope="chain")
+        page = get_page(ui_of(chain[0]), scope="chain")
     for n in range(MAX_EMBED_DEPTH + 1):
         assert f'<section class="chain">Level {n}' in page
     assert f"Level {MAX_EMBED_DEPTH + 1}<" not in page
@@ -335,11 +352,11 @@ def test_embed_limits(todo_list, todo_reader_login, caplog):
     )
     for _ in range(2):  # the count is per response
         with caplog.at_level(logging.WARNING, logger="scrud_django.ui.embed"):
-            page = get_page(url_of(todo_list), scope="fan")
+            page = get_page(ui_of(todo_list), scope="fan")
         # 15 outer embeds, each embedding the inner one: 30 calls, the first
         # MAX_EMBEDS rendered (outer, inner, outer, inner, ...).
-        assert len(frames(page, url_of(outer))) == MAX_EMBEDS // 2
-        assert len(frames(page, url_of(inner))) == MAX_EMBEDS // 2
+        assert len(frames(page, ui_of(outer))) == MAX_EMBEDS // 2
+        assert len(frames(page, ui_of(inner))) == MAX_EMBEDS // 2
         assert page.count(REFUSED) == 15 - MAX_EMBEDS // 2
         assert any("count" in m for m in embed_warnings(caplog))
         caplog.clear()
@@ -355,14 +372,14 @@ def test_embed_uses_embedding_branch(todo_list, todo_reader_login):
     make_branch("wip", "project-a", branching_point={"main": versions_of("main")[-1]})
     put_item("ui-components", "row", "<i>{{ value.text }}</i>", "wip")
     Given.http.force_login(may_select_branches(todo_reader_login))
-    page = get_page(url_of(todo_list), scope="host")
+    page = get_page(ui_of(todo_list), scope="host")
     assert "<b>Sweep</b>" in page and "<i>Sweep</i>" not in page
-    page = get_page(url_of(todo_list), scope="host", **{BRANCH_HEADER: "wip"})
+    page = get_page(ui_of(todo_list), scope="host", **{BRANCH_HEADER: "wip"})
     assert "<i>Sweep</i>" in page and "<b>Sweep</b>" not in page
     # The embedded frame's own requests stay on the branch.
-    assert 'data-scrud-branch="wip"' in frames(page, url_of(other))[0]
-    page = get_page(url_of(todo_list), scope="host", **{BRANCH_HEADER: "wip@pinned"})
-    assert 'data-scrud-branch="wip@pinned"' in frames(page, url_of(other))[0]
+    assert 'data-scrud-branch="wip"' in frames(page, ui_of(other))[0]
+    page = get_page(ui_of(todo_list), scope="host", **{BRANCH_HEADER: "wip@pinned"})
+    assert 'data-scrud-branch="wip@pinned"' in frames(page, ui_of(other))[0]
     assert "<i>Sweep</i>" in page
 
 
@@ -378,7 +395,7 @@ def test_embed_in_preview_has_no_write_attributes(todo_list, todo_owner_login):
     Given.http.force_login(todo_owner_login)
     # Outside a preview the owner's embeds are edit forms: the resource, and
     # it as an item of the list.
-    outside = frames(get_page(url_of(todo_list), scope="host"), url_of(other))
+    outside = frames(get_page(ui_of(todo_list), scope="host"), ui_of(other))
     assert len(outside) == 2 and all("hx-put" in frame for frame in outside)
     When.http.get(
         reverse("scrud-studio:preview", args=["todo-lists"]),
@@ -390,6 +407,7 @@ def test_embed_in_preview_has_no_write_attributes(todo_list, todo_owner_login):
     for attribute in ("hx-put", "hx-ext", "hx-trigger", "hx-delete"):
         assert attribute not in page
     assert "<form" not in page and ">Delete</button>" not in page
+    # the studio's preview links the API's URLs
     inside = frames(page, url_of(other))
     assert len(inside) == 2
     assert all(f.startswith("<div ") and "data-scrud-branch" not in f for f in inside)
@@ -416,24 +434,25 @@ def test_embed_in_safe_mode_stays_safe(todo_list, todo_reader_login):
 def test_embed_view_mode(todo_list, todo_owner_login):
     other = make_list("Chores", items=["Sweep"])
     url = url_of(other)
+    ui = ui_of(other)  # the frames are the UI's
     host(
         '<p class="v">{{ embed("' + url + '", mode="view") }}</p>'
         '<p class="e">{{ embed("' + url + '", "plain") }}</p>'
         '<p class="x">{{ embed("' + url + '", "other", mode="edit") }}</p>'
     )
     Given.http.force_login(todo_owner_login)
-    page = get_page(url_of(todo_list), scope="host")
-    found = frames(page, url)
+    page = get_page(ui_of(todo_list), scope="host")
+    found = frames(page, ui)
     assert len(found) == 2
     assert "hx-put" not in found[0]
-    assert f'hx-put="{url}"' in found[1]
+    assert f'hx-put="{ui}"' in found[1]
     # A view-mode embed has no Delete button either; without a mode, the
     # user who may DELETE gets it: one in the page, in the second embed.
-    assert page.count(f'hx-delete="{url}"') == 1
+    assert page.count(f'hx-delete="{ui}"') == 1
     view_embed = page.split('<p class="v">', 1)[1].split('<p class="e">', 1)[0]
     assert "hx-delete" not in view_embed and "Sweep" in view_embed
     edit_embed = page.split('<p class="e">', 1)[1].split('<p class="x">', 1)[0]
-    assert f'hx-delete="{url}"' in edit_embed
+    assert f'hx-delete="{ui}"' in edit_embed
     # Without a mode, the mode is the user's own.
     assert 'data-scrud-scope="plain"' in found[1]
     # Any other mode is refused, as ``ui-mode=edit`` is a 400 at the URL.
@@ -455,7 +474,7 @@ def test_django_engine_has_no_embed(todo_list, todo_reader_login):
         "s", [("plain ex:TodoList", "plain"), ("scrud:page", "django-page")]
     )
     Given.http.force_login(todo_reader_login)
-    page = get_page(url_of(todo_list), scope="plain")
+    page = get_page(ui_of(todo_list), scope="plain")
     # Neither a Django node component nor a Django page component has one.
     assert '<p class="plain">[]</p>' in page
     assert page.startswith("<html><body>") and page.endswith("[]</body></html>")
@@ -469,9 +488,9 @@ def test_django_engine_has_no_embed(todo_list, todo_reader_login):
         ],
     }
     sheet.save()
-    page = get_page(url_of(todo_list), scope="plain")
+    page = get_page(ui_of(todo_list), scope="plain")
     aside = re.search(r"<aside>(.*?)</aside>", page, re.S).group(1)
-    assert len(frames(aside, url_of(other))) == 1 and "Sweep" in aside
+    assert len(frames(aside, ui_of(other))) == 1 and "Sweep" in aside
 
 
 @pytest.mark.django_db
@@ -486,15 +505,15 @@ def test_embed_of_an_api_path_under_a_published_prefix(
     publish("admin", ADMIN)
     put_item("ui-components", "title", "<h2>{{ value.title }}</h2>", "admin")
     Given.http.force_login(may_select_branches(todo_reader_login))
-    # At the API's URLs, main's presentation.
-    page = get_page(url_of(todo_list), scope="host")
-    assert "<h1>Chores</h1>" in page and len(frames(page, url_of(other))) == 1
+    # At the UI's URLs, main's presentation.
+    page = get_page(ui_of(todo_list), scope="host")
+    assert "<h1>Chores</h1>" in page and len(frames(page, ui_of(other))) == 1
     # Under the prefix, the API path is embedded under it: on its branch,
     # with its links.
-    page = get_page(mounted(ADMIN, todo_list), scope="host")
+    page = get_prefixed(mounted(ADMIN, todo_list), scope="host")
     assert "<h2>Chores</h2>" in page and "<h1>Chores" not in page
     assert len(frames(page, mounted(ADMIN, other))) == 1
-    assert not frames(page, url_of(other))
+    assert not frames(page, ui_of(other))
     # check_mount gates the embed's own request.
     checked = []
 
@@ -503,7 +522,7 @@ def test_embed_of_an_api_path_under_a_published_prefix(
         return request.path != mounted(ADMIN, other)
 
     monkeypatch.setattr(selection, "may_get_mount", may_get_mount)
-    page = get_page(mounted(ADMIN, todo_list), scope="host")
+    page = get_prefixed(mounted(ADMIN, todo_list), scope="host")
     assert mounted(ADMIN, other) in checked
     assert "Chores" not in page and not frames(page, mounted(ADMIN, other))
     assert '<section class="host"><div class="scrud-notices">' in page
@@ -514,6 +533,7 @@ def test_embed_of_an_api_path_under_a_published_prefix(
 def test_embed_of_a_same_host_absolute_url(todo_list, todo_reader_login, caplog):
     other = make_list("Chores", items=["Sweep"])
     url = url_of(other)
+    ui = ui_of(other)  # the frames are the UI's
     host(
         '<p class="a">{{ embed("http://testserver' + url + '") }}</p>'
         '<p class="a">{{ embed("https://TestServer' + url + '") }}</p>'
@@ -524,8 +544,8 @@ def test_embed_of_a_same_host_absolute_url(todo_list, todo_reader_login, caplog)
     )
     Given.http.force_login(todo_reader_login)
     with caplog.at_level(logging.WARNING, logger="scrud_django.ui.embed"):
-        page = get_page(url_of(todo_list), scope="host")
-    assert len(frames(page, url)) == 2
+        page = get_page(ui_of(todo_list), scope="host")
+    assert len(frames(page, ui)) == 2
     assert page.count(f'<p class="r">{REFUSED}</p>') == 4
     assert len(embed_warnings(caplog)) == 4
     # A list item's href is absolute: its component embeds it.
@@ -539,7 +559,7 @@ def test_embed_of_a_same_host_absolute_url(todo_list, todo_reader_login, caplog)
     other.save()
     make_jinja("list-host", "{{ embed(value['items'][0].text, 'items') }}")
     make_stylesheet("list-hosts", [("lists ex:TodoList", "list-host")])
-    page = get_page(url, scope="lists")
+    page = get_page(ui, scope="lists")
     assert '<p class="card">Groceries</p>' in page
     assert '<p class="card">Chores</p>' in page
     assert REFUSED_MESSAGE not in page
@@ -550,6 +570,7 @@ def test_embed_of_a_same_host_absolute_url(todo_list, todo_reader_login, caplog)
 def test_embed_path_parsed_once(todo_list, todo_owner_login, caplog):
     other = make_list("Chores", items=["Sweep"])
     url = url_of(other)
+    ui = ui_of(other)  # the frames are the UI's
     slug, pk = "todo-lists", other.pk
     refused = [
         f"/api/{slug}/../{slug}/{pk}/",  # not normalized: no route
@@ -573,20 +594,20 @@ def test_embed_path_parsed_once(todo_list, todo_owner_login, caplog):
     )
     Given.http.force_login(todo_owner_login)
     with caplog.at_level(logging.WARNING, logger="scrud_django.ui.embed"):
-        page = get_page(url_of(todo_list), scope="host")
+        page = get_page(ui_of(todo_list), scope="host")
     assert page.count(f'<p class="r">{REFUSED}</p>') == len(refused)
     assert len(embed_warnings(caplog)) == len(refused)
 
     def embedded(name):
         found = re.search(rf'<p class="{name}">(.*?)</p>', page, re.S).group(1)
-        [frame] = frames(found, url)
+        [frame] = frames(found, ui)
         return frame
 
-    assert f'hx-put="{url}"' in embedded("decoded")
+    assert f'hx-put="{ui}"' in embedded("decoded")
     # The query is dispatched; the fragment is dropped.
     assert "hx-put" not in embedded("query")
-    assert f'hx-put="{url}"' in embedded("fragment")
-    assert f'hx-put="{url}"' in embedded("space")
+    assert f'hx-put="{ui}"' in embedded("fragment")
+    assert f'hx-put="{ui}"' in embedded("space")
 
 
 def component_frames(page):
@@ -662,7 +683,7 @@ def test_embed_without_scope_keeps_the_query_scope(todo_list, todo_owner_login):
         ' mode="view") }}</p>'
     )
     Given.http.force_login(todo_owner_login)
-    page = get_page(url_of(todo_list), scope="host")
+    page = get_page(ui_of(todo_list), scope="host")
     query = re.search(r'<p class="q">(.*?)</p>', page, re.S).group(1)
     given = re.search(r'<p class="s">(.*?)</p>', page, re.S).group(1)
     assert "<h4>Chores</h4>" in query
@@ -874,8 +895,12 @@ def test_embed_authorization_equals_the_page_get(todo_list):
     request = RequestFactory().get("/somewhere/")
     request.user = stranger
     Given.http.force_login(stranger)
-    When.http.get(f"/todo-lists/{todo_list.pk}/", HTTP_ACCEPT=HTML)
+    When.http.get(ui_of(todo_list), HTTP_HX_REQUEST="true")
     status = Http.response.status_code
     assert status >= 400
+    refusal = html()
+    assert 'class="scrud-notice' in refusal and "Groceries" not in refusal
     notice = str(embed_for(request)(url_of(todo_list)))
     assert "Groceries" not in notice and 'class="scrud-notice' in notice
+    # the page's own refusal notice, word for word
+    assert notice_texts(notice) == notice_texts(refusal) != []

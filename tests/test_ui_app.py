@@ -19,7 +19,6 @@ from django.urls import resolve, reverse
 from django.utils.http import quote_etag
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django import registration
 from scrud_django.models import Resource
 from scrud_django.registration import get_resource_type_for
 from scrud_django.ui.branches.checks import prefix_problems
@@ -39,7 +38,6 @@ from .fixtures import (
     TYPE_URI_TODO_LIST,
     assign_role,
 )
-from .resource_types import SUMMARIES_TYPE
 from .steps import *  # noqa: F403, F401
 from .test_studio_writes import main_and_wip
 from .test_ui_branch_css import css_hrefs, make_css
@@ -763,8 +761,6 @@ def test_the_ui_does_not_claim_app_urls(todo_list, todo_owner_login):
 @test_context
 def test_a_computed_page_renders_at_the_ui_url(todo_owner_login):
     reverse("summaries-detail", args=["k"])  # the URLconf registers the types
-    # Its row, which an earlier test's import may have rolled back.
-    registration.computed_resource_type(**SUMMARIES_TYPE)
     Given.http.force_login(todo_owner_login)
     url = ui_url(reverse("summaries-detail", args=["k"]))
     When.http.get(url)
@@ -878,7 +874,6 @@ def test_a_prefix_shadowing_another_ui_page_is_reported(todo_list):
     UI page it would hide is: ``/summaries/todo-lists/`` is the computed
     type's page for the key ``todo-lists``."""
     reverse("summaries-detail", args=["k"])  # the URLconf registers the types
-    registration.computed_resource_type(**SUMMARIES_TYPE)
     assert prefix_problems("/", [], "default") == []
     problems = prefix_problems("/summaries/", [], "default")
     assert len(problems) == 1, problems

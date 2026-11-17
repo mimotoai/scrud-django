@@ -14,7 +14,6 @@ from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
-from scrud_django.ui.branches.selection import api_base
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
@@ -27,7 +26,14 @@ from .test_ui_branch_render import (
 )
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import HTML, detail_url, html, make_stylesheet
+from .test_ui_http import html, make_stylesheet, ui_detail_url
+from .ui import UI_URLCONF, ui_url
+
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
 
 COOKIE = "scrud_ui_branch"
 BANNER = 'class="scrud-branch-banner"'
@@ -44,12 +50,12 @@ def setup_branches(user):
     setup_main_and_wip()
     make_branch("other", "project-a")
     put_item("ui-components", "row", "<u>{{ value.text }}</u>", "other")
-    Given.http.force_authenticate(may_select_branches(user))
+    Given.http.force_login(may_select_branches(user))
 
 
 def get(todo_list, query="", **headers):
-    url = detail_url(todo_list) + (f"?{query}" if query else "")
-    When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+    url = ui_detail_url(todo_list) + (f"?{query}" if query else "")
+    When.http.get(url, **headers)
     Then.http.status_code_is(200)
     return html()
 
@@ -76,7 +82,7 @@ def get_href(href, **headers):
     """GET `href` as found (HTML-escaped) in a page, as a same-origin link
     unless `headers` say otherwise."""
     headers = {"HTTP_SEC_FETCH_SITE": "same-origin", **headers}
-    When.http.get(unescape(href), HTTP_ACCEPT=HTML, **headers)
+    When.http.get(unescape(href), **headers)
     Then.http.status_code_is(200)
     return html()
 
@@ -132,7 +138,7 @@ def test_json_lists_ignore_the_cookie(admin_login):
     """JSON is not affected by browsing: the cookie selects nothing there, an
     explicit header or parameter still does."""
     setup_main_and_wip()
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     set_cookie("wip")
 
     def branches_listed(**extra):
@@ -147,7 +153,7 @@ def test_json_lists_ignore_the_cookie(admin_login):
     assert ("row", "wip") in branches_listed(**{BRANCH_HEADER: "wip"})
     assert ("row", "wip") in branches_listed(QUERY_STRING="ui-branch=wip")
     # Asked for as HTML, the list is the browsed branch's.
-    When.http.get(reverse("ui-components-list"), HTTP_ACCEPT=HTML)
+    When.http.get(ui_url(reverse("ui-components-list")))
     Then.http.status_code_is(200)
     assert "&lt;i&gt;" in html() and BANNER in html()
 
@@ -158,7 +164,7 @@ def test_param_from_shared_link_asks_first_then_sets_cookie(
     todo_list, todo_reader_login
 ):
     setup_branches(todo_reader_login)
-    url = detail_url(todo_list)
+    url = ui_detail_url(todo_list)
     # A shared link: the confirmation page, with nothing of the branch.
     page = get(todo_list, "ui-branch=wip")
     assert CONFIRM in page and "wip" in page
@@ -200,7 +206,8 @@ def test_param_from_shared_link_asks_first_then_sets_cookie(
     assert WIP_ROW in page and CONFIRM not in page
     cookie = response_cookie()
     assert cookie is not None and cookie.value == "wip"
-    assert cookie["path"] == api_base() and cookie["httponly"]
+    # the cookie is scoped to the UI's base, where the pages are
+    assert cookie["path"] == "/" and cookie["httponly"]
     assert cookie["samesite"] == "Lax"
     # A later plain GET stays on the branch (the cookie).
     page = get(todo_list)
@@ -224,7 +231,7 @@ def test_param_from_shared_link_asks_first_then_sets_cookie(
     assert MAIN_ROW in page and BANNER not in page
     cookie = response_cookie()
     assert cookie is not None and cookie.value == "" and cookie["max-age"] == 0
-    assert cookie["path"] == api_base()
+    assert cookie["path"] == "/"
 
 
 @pytest.mark.django_db
@@ -240,7 +247,7 @@ def test_banner_only_on_working_branch(todo_list, todo_reader_login):
     banner = banner_of(page)
     assert banner and page.index(BANNER) < page.index('class="scrud-resource"')
     assert "wip" in banner and "live" in banner
-    url = detail_url(todo_list)
+    url = ui_detail_url(todo_list)
     token = "&amp;ui-branch-confirm=[0-9a-f]+"
     # the switcher: a link to each branch the viewer may GET in this tree
     switch = switch_hrefs(banner)
@@ -356,7 +363,7 @@ def test_odd_selection_values_are_ignored(todo_list, todo_reader_login, value):
 @pytest.mark.django_db
 @test_context
 def test_vary_names_branch_header_and_cookie(todo_list, todo_reader_login):
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     get(todo_list)
     vary = {v.strip().lower() for v in Http.response["Vary"].split(",")}
     assert {
@@ -402,13 +409,12 @@ def test_selecting_main_reads_no_branch(todo_list, todo_reader_login):
 @test_context
 def test_reload_after_a_stale_write_stays_on_the_branch(todo_list, todo_owner_login):
     setup_main_and_wip()
-    Given.http.force_authenticate(may_select_branches(todo_owner_login))
+    Given.http.force_login(may_select_branches(todo_owner_login))
     When.http.put(
-        detail_url(todo_list),
+        ui_detail_url(todo_list),
         data=json.dumps({**todo_list.content, "title": "Too late"}),
         content_type="application/json",
         HTTP_IF_MATCH='"stale"',
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         **{BRANCH_HEADER: "wip"},
     )

@@ -54,6 +54,9 @@ def django_db_setup(django_db_setup, django_db_blocker):
 
     with django_db_blocker.unblock():
         resource_types.json_resource_types()
+        # Registered when the URLconf is imported, inside whichever test
+        # first resolves a URL, whose rollback would remove their rows.
+        resource_types.hooked_resource_types()
         registration.workflow_policy_resource_type()
         ui_types.ui_component_resource_type()
         ui_types.ui_stylesheet_resource_type()
@@ -155,6 +158,7 @@ def committed_types():
 
     forget()
     resource_types.json_resource_types()
+    resource_types.hooked_resource_types()
     registration.workflow_policy_resource_type()
     ui_types.ui_component_resource_type()
     ui_types.ui_stylesheet_resource_type()

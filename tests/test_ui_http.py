@@ -33,6 +33,7 @@ from .fixtures import (
     assign_role,
 )
 from .steps import *  # noqa: F403, F401
+from .ui import UI_URLCONF, ui_url
 
 HTML = "text/html"
 HTML_CONTENT_TYPE = "text/html; charset=utf-8"
@@ -49,12 +50,29 @@ CONDITIONAL_PUT = {
 }
 
 
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
+
 def detail_url(resource):
+    """The API URL of `resource` (under ``/api/``)."""
     return reverse(f"{resource.resource_type.slug}-detail", args=[resource.pk])
 
 
 def list_url():
+    """The API URL of the to-do lists."""
     return reverse("todo-lists-list")
+
+
+def ui_detail_url(resource):
+    """The UI URL of `resource`."""
+    return ui_url(detail_url(resource))
+
+
+def ui_list_url():
+    """The UI URL of the to-do lists."""
+    return ui_url(list_url())
 
 
 def grant(user, definition, rbac_context):
@@ -128,6 +146,13 @@ def html():
     return Http.response.content.decode()
 
 
+def get_ui_html(url, status=200, **headers):
+    """GET the UI page `url` (a UI URL) and return its HTML, checking `status`."""
+    When.http.get(url, **headers)
+    Then.http.status_code_is(status)
+    return html()
+
+
 def without_content(output):
     """`output` without its ``scrud-content`` script elements."""
     return re.sub(
@@ -176,9 +201,9 @@ def three_items(todo_list):
 @pytest.mark.django_db
 @test_context
 def test_html_detail_page_and_fragment(todo_list, todo_owner_login):
-    url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_owner_login)
-    When.http.get(url, HTTP_ACCEPT=HTML)
+    url = ui_detail_url(todo_list)
+    Given.http.force_login(todo_owner_login)
+    When.http.get(url)
     Then.http.status_code_is(200)
     assert_html()
     page = html()
@@ -192,7 +217,7 @@ def test_html_detail_page_and_fragment(todo_list, todo_owner_login):
     assert {"accept", "hx-request", "scrud-ui-scope", "scrud-ui-pointer"} <= vary
     assert_not_cached()
 
-    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    When.http.get(url, HTTP_HX_REQUEST="true")
     Then.http.status_code_is(200)
     assert_html()
     fragment = html()
@@ -227,15 +252,13 @@ def test_json_unchanged_and_browsable_api_reachable(todo_list, todo_owner_login)
 def test_scope_header_selects_component(todo_list, todo_reader_login):
     make_component("sidebar-list", '<nav class="sidebar">{{ value.title }}</nav>')
     make_stylesheet("s", [("sidebar ex:TodoList", "sidebar-list")])
-    url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_reader_login)
-    When.http.get(
-        url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_SCOPE="sidebar"
-    )
+    url = ui_detail_url(todo_list)
+    Given.http.force_login(todo_reader_login)
+    When.http.get(url, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_SCOPE="sidebar")
     Then.http.status_code_is(200)
     assert '<nav class="sidebar">Groceries</nav>' in html()
     assert 'data-scrud-scope="sidebar"' in html()
-    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    When.http.get(url, HTTP_HX_REQUEST="true")
     assert "sidebar" not in html()
 
 
@@ -246,18 +269,15 @@ def test_invalid_scope_header_is_ignored(todo_list, todo_reader_login):
     empty."""
     make_component("sidebar-list", '<nav class="sidebar">{{ value.title }}</nav>')
     make_stylesheet("s", [("sidebar ex:TodoList", "sidebar-list")])
-    url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_reader_login)
+    url = ui_detail_url(todo_list)
+    Given.http.force_login(todo_reader_login)
     for scope in ("sidebar 1bad", "sidebar <x>", " ".join(["sidebar"] * 17)):
-        When.http.get(
-            url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_SCOPE=scope
-        )
+        When.http.get(url, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_SCOPE=scope)
         Then.http.status_code_is(200)
         assert 'data-scrud-scope=""' in html(), scope
         assert "sidebar" not in html(), scope
     When.http.get(
         url,
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_SCOPE=" ".join(["sidebar"] * 16),
     )
@@ -267,11 +287,9 @@ def test_invalid_scope_header_is_ignored(todo_list, todo_reader_login):
 @pytest.mark.django_db
 @test_context
 def test_pointer_header_renders_node(todo_list, todo_owner_login):
-    url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_owner_login)
-    When.http.get(
-        url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_POINTER="/items/1"
-    )
+    url = ui_detail_url(todo_list)
+    Given.http.force_login(todo_owner_login)
+    When.http.get(url, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_POINTER="/items/1")
     Then.http.status_code_is(200)
     output = html()
     assert 'data-scrud-pointer="/items/1"' in output
@@ -287,22 +305,23 @@ def test_pointer_header_renders_node(todo_list, todo_owner_login):
 def test_invalid_pointer_header_is_400(todo_list, todo_owner_login):
     """Ruling 3: a pointer that is not RFC 6901, or longer than 1024
     characters, is a 400 notice, and a PUT carrying it writes nothing."""
-    url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_owner_login)
+    url = ui_detail_url(todo_list)
+    Given.http.force_login(todo_owner_login)
     for pointer in ("items/1", "/items/~2", "/" + "a" * 1024):
-        When.http.get(
-            url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_POINTER=pointer
-        )
+        When.http.get(url, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_POINTER=pointer)
         Then.http.status_code_is(400)
         assert_html()
         assert "Buy milk" not in html() and FRAME not in html()
         assert 'class="scrud-notice' in html()
-    When.http.get(
-        url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_POINTER="/a~0~1"
-    )
+    When.http.get(url, HTTP_HX_REQUEST="true", HTTP_SCRUD_UI_POINTER="/a~0~1")
     Then.http.status_code_is(200)
     # JSON ignores the header
-    When.http.get(url, HTTP_ACCEPT="application/json", HTTP_SCRUD_UI_POINTER="bad")
+    Given.http.force_authenticate(todo_owner_login)
+    When.http.get(
+        detail_url(todo_list),
+        HTTP_ACCEPT="application/json",
+        HTTP_SCRUD_UI_POINTER="bad",
+    )
     Then.http.status_code_is(200)
 
     body = {**todo_list.content, "title": "Renamed"}
@@ -310,7 +329,6 @@ def test_invalid_pointer_header_is_400(todo_list, todo_owner_login):
         url,
         body,
         HTTP_IF_MATCH=f'"{todo_list.etag}"',
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_POINTER="bad",
     )
@@ -323,14 +341,13 @@ def test_invalid_pointer_header_is_400(todo_list, todo_owner_login):
 @pytest.mark.django_db
 @test_context
 def test_put_json_returns_html_fragment(todo_list, todo_owner_login):
-    url = detail_url(todo_list)
+    url = ui_detail_url(todo_list)
     body = {**todo_list.content, "title": "Weekend shopping"}
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     put_json(
         url,
         body,
         HTTP_IF_MATCH=f'"{todo_list.etag}"',
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(200)
@@ -348,13 +365,11 @@ def test_put_refused_shows_messages_html_only(todo_list):
     user = assign_role(
         {"http.GET": [TYPE_URI_TODO_LIST], **CONDITIONAL_PUT}, "project-a"
     )
-    url = detail_url(todo_list)
+    url = ui_detail_url(todo_list)
     body = three_items(todo_list)
     if_match = f'"{todo_list.etag}"'
-    Given.http.force_authenticate(user)
-    put_json(
-        url, body, HTTP_IF_MATCH=if_match, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true"
-    )
+    Given.http.force_login(user)
+    put_json(url, body, HTTP_IF_MATCH=if_match, HTTP_HX_REQUEST="true")
     Then.http.status_code_is(403)
     assert_html()
     output = html()
@@ -366,12 +381,18 @@ def test_put_refused_shows_messages_html_only(todo_list):
 
     # M-2: the form writes at the stored resource's ETag, never at the
     # If-Match sent ("*" would defeat lost-update protection)
-    put_json(url, body, HTTP_IF_MATCH="*", HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    put_json(url, body, HTTP_IF_MATCH="*", HTTP_HX_REQUEST="true")
     Then.http.status_code_is(403)
     assert etag_attribute(quote_etag(todo_list.etag)) in html()
     assert 'data-scrud-etag="*"' not in html()
 
-    put_json(url, body, HTTP_IF_MATCH=if_match, HTTP_ACCEPT="application/json")
+    Given.http.force_authenticate(user)
+    put_json(
+        detail_url(todo_list),
+        body,
+        HTTP_IF_MATCH=if_match,
+        HTTP_ACCEPT="application/json",
+    )
     Then.http.status_code_is(403)
     assert Http.response["Content-Type"] == "application/problem+json"
     assert "At most 3 items" not in Http.response.content.decode()
@@ -380,13 +401,11 @@ def test_put_refused_shows_messages_html_only(todo_list):
 @pytest.mark.django_db
 @test_context
 def test_put_invalid_html_400_rerenders_form(todo_list, todo_owner_login):
-    url = detail_url(todo_list)
+    url = ui_detail_url(todo_list)
     body = {**todo_list.content, "items": [{"text": 5, "done": False}]}
     if_match = f'"{todo_list.etag}"'
-    Given.http.force_authenticate(todo_owner_login)
-    put_json(
-        url, body, HTTP_IF_MATCH=if_match, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true"
-    )
+    Given.http.force_login(todo_owner_login)
+    put_json(url, body, HTTP_IF_MATCH=if_match, HTTP_HX_REQUEST="true")
     Then.http.status_code_is(400)
     assert_html()
     output = html()
@@ -400,15 +419,14 @@ def test_put_invalid_html_400_rerenders_form(todo_list, todo_owner_login):
 def test_crafted_put_by_reader_gets_no_form(todo_list, todo_reader_login):
     """Ruling 2: a user who may not PUT the stored resource gets a notice,
     never an edit form of what they sent."""
-    url = detail_url(todo_list)
+    url = ui_detail_url(todo_list)
     body = {**todo_list.content, "title": "Crafted title"}
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     for headers in ({"HTTP_HX_REQUEST": "true"}, {}):
         put_json(
             url,
             body,
             HTTP_IF_MATCH=f'"{todo_list.etag}"',
-            HTTP_ACCEPT=HTML,
             **headers,
         )
         Then.http.status_code_is(403)
@@ -423,14 +441,13 @@ def test_crafted_put_by_reader_gets_no_form(todo_list, todo_reader_login):
 @pytest.mark.django_db
 @test_context
 def test_put_stale_etag_html_412(todo_list, todo_owner_login):
-    url = detail_url(todo_list)
+    url = ui_detail_url(todo_list)
     body = {**todo_list.content, "title": "Too late"}
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     put_json(
         url,
         body,
         HTTP_IF_MATCH='"stale"',
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_SCOPE="sidebar",
         HTTP_SCRUD_UI_POINTER="/items/0",
@@ -469,12 +486,11 @@ def assert_notice_and_reload(url, scope="sidebar", pointer="/items/0"):
 @pytest.mark.django_db
 @test_context
 def test_delete_stale_etag_html_412(todo_list, todo_owner_login):
-    url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_owner_login)
+    url = ui_detail_url(todo_list)
+    Given.http.force_login(todo_owner_login)
     When.http.delete(
         url,
         HTTP_IF_MATCH='"stale"',
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_SCOPE="sidebar",
         HTTP_SCRUD_UI_POINTER="/items/0",
@@ -490,12 +506,11 @@ def test_delete_of_a_resource_in_use_html_409():
     with a notice and a frame that reloads its current state."""
     reverse("todo-lists-list")
     schema = get_resource_type_for("todo-lists").schema
-    url = reverse("json-schema-detail", args=[schema.pk])
-    Given.http.force_authenticate(UserFactory(is_staff=True, is_superuser=True))
+    url = ui_url(reverse("json-schema-detail", args=[schema.pk]))
+    Given.http.force_login(UserFactory(is_staff=True, is_superuser=True))
     When.http.delete(
         url,
         HTTP_IF_MATCH=quote_etag(schema.etag),
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_SCOPE="sidebar",
         HTTP_SCRUD_UI_POINTER="/items/0",
@@ -521,19 +536,24 @@ def test_list_html(todo_list):
         },
         "project-a",
     )
+    Given.http.force_login(reader)
     Given.http.force_authenticate(reader)
     When.http.get(list_url(), HTTP_ACCEPT="application/json")
     Then.http.status_code_is(200)
-    expected = [item["href"] for item in Http.response.json()["content"]]
+    # the UI page links to the UI URLs of the JSON list's items
+    expected = [
+        item["href"].replace("/api/", "/", 1)
+        for item in Http.response.json()["content"]
+    ]
     assert len(expected) == 2
-    When.http.get(list_url(), HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    When.http.get(ui_list_url(), HTTP_HX_REQUEST="true")
     Then.http.status_code_is(200)
     assert_html()
     output = html()
     assert frame_hrefs(output) == expected
     assert output.count(FRAME) == 2
     assert "Other project" not in output
-    When.http.get(list_url(), HTTP_ACCEPT=HTML)
+    When.http.get(ui_list_url())
     assert html().lower().startswith("<!doctype html>")
     assert frame_hrefs(html()) == expected
 
@@ -545,23 +565,23 @@ def test_unauthorized_html_has_no_content(
 ):
     """Review Focus 5: an anonymous or unauthorized HTML request gets the
     JSON status, as text/html, with a notice and none of the content."""
-    url = detail_url(todo_list)
-    When.http.get(url, HTTP_ACCEPT="application/json")
+    url = ui_detail_url(todo_list)
+    When.http.get(detail_url(todo_list), HTTP_ACCEPT="application/json")
     json_status = Http.response.status_code
     assert json_status in (401, 403)
     for headers in ({}, {"HTTP_HX_REQUEST": "true"}):
-        When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+        When.http.get(url, **headers)
         Then.http.status_code_is(json_status)
         assert_html()
         assert "Groceries" not in html() and "Buy milk" not in html()
         assert FRAME not in html()
         assert 'class="scrud-notice' in html()
 
-    profile_url = reverse(
-        RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id}
+    profile_url = ui_url(
+        reverse(RESOURCE_ENDPOINT_DETAIL_NAME, kwargs={"slug": partner_profiles.id})
     )
-    Given.http.force_authenticate(login_other_context)
-    When.http.get(profile_url, HTTP_ACCEPT=HTML)
+    Given.http.force_login(login_other_context)
+    When.http.get(profile_url)
     Then.http.status_code_is(404)
     assert_html()
     assert FRAME not in html()
@@ -575,20 +595,20 @@ def test_unauthorized_html_has_no_content(
 def test_error_content_type_is_html(todo_list, todo_owner_login):
     """Ruling 6: whatever error handler answers, an HTML request gets
     text/html."""
-    url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_owner_login)
+    url = ui_detail_url(todo_list)
+    Given.http.force_login(todo_owner_login)
     # 405 (scoped-rbac's handler)
-    When.http.post(url, data={}, format="json", HTTP_ACCEPT=HTML)
+    When.http.post(url, data={}, format="json")
     Then.http.status_code_is(405)
     assert_html()
     assert_not_cached()
     # 428 (scrudful's own)
-    put_json(url, todo_list.content, HTTP_ACCEPT=HTML)
+    put_json(url, todo_list.content)
     Then.http.status_code_is(428)
     assert_html()
     assert 'class="scrud-notice' in html()
     # a scrud error (scrud's handler)
-    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_SCRUD_UI_POINTER="bad")
+    When.http.get(url, HTTP_SCRUD_UI_POINTER="bad")
     Then.http.status_code_is(400)
     assert_html()
 
@@ -598,12 +618,11 @@ def test_error_content_type_is_html(todo_list, todo_owner_login):
 def test_create_html(todo_owner_login):
     reverse("todo-lists-list")
     body = {"title": "Created", "rbac_context": "project-a", "items": []}
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     When.http.post(
-        list_url(),
+        ui_list_url(),
         data=json.dumps(body),
         content_type="application/json",
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(201)
@@ -634,14 +653,14 @@ def test_page_component_resolves_from_stylesheet(todo_list, todo_reader_login):
         "my-page", '<html><title>{{ title }}</title><body id="mine">{{ body }}</body>'
     )
     make_stylesheet("pages", [("scrud:page", "my-page")])
-    url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_reader_login)
-    When.http.get(url, HTTP_ACCEPT=HTML)
+    url = ui_detail_url(todo_list)
+    Given.http.force_login(todo_reader_login)
+    When.http.get(url)
     Then.http.status_code_is(200)
     assert html().startswith("<html><title>To-do list</title><body id=\"mine\">")
     assert "Buy milk" in html()
     # a fragment is not wrapped
-    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    When.http.get(url, HTTP_HX_REQUEST="true")
     assert 'id="mine"' not in html()
 
 
@@ -650,9 +669,9 @@ def test_page_component_resolves_from_stylesheet(todo_list, todo_reader_login):
 def test_failing_page_component_falls_back(todo_list, todo_reader_login):
     make_component("bad-page", '{{ body }}{% url "no-such-route" %}')
     make_stylesheet("pages", [("scrud:page", "bad-page")])
-    url = detail_url(todo_list)
-    Given.http.force_authenticate(todo_reader_login)
-    When.http.get(url, HTTP_ACCEPT=HTML)
+    url = ui_detail_url(todo_list)
+    Given.http.force_login(todo_reader_login)
+    When.http.get(url)
     Then.http.status_code_is(200)
     assert html().startswith('<!-- scrud-ui: component "bad-page" failed -->')
     assert "<title>To-do list</title>" in html()
@@ -674,14 +693,13 @@ def test_refused_put_uses_stored_contexts_and_decisions(todo_list):
         "project-a",
     )
     grant(user, {"http.DELETE": [TYPE_URI_TODO_LIST]}, "project-b")
-    url = detail_url(todo_list)
+    url = ui_detail_url(todo_list)
     body = {**todo_list.content, "title": "Moved", "rbac_context": "project-b"}
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     put_json(
         url,
         body,
         HTTP_IF_MATCH=quote_etag(todo_list.etag),
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(403)
@@ -698,16 +716,15 @@ def test_post_save_refusal_rerenders_with_stored_state(todo_list, todo_owner_log
     """M-5: refused by the post-save check (the saved list landed where the
     owner may not write), the form is decided on the resource as stored
     before the write, and nothing is written."""
-    url = detail_url(todo_list)
+    url = ui_detail_url(todo_list)
     stored_etag = quote_etag(todo_list.etag)
     body = {**todo_list.content, "title": "Renamed"}
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     with todo_lists_moved_after_save("project-b"):
         put_json(
             url,
             body,
             HTTP_IF_MATCH=stored_etag,
-            HTTP_ACCEPT=HTML,
             HTTP_HX_REQUEST="true",
         )
     Then.http.status_code_is(403)
@@ -757,19 +774,22 @@ def test_render_failure_is_a_notice_without_content(
 
     monkeypatch.setattr(render, "decisions_for", broken)
     headers = {"HTTP_HX_REQUEST": "true"} if fragment else {}
-    Given.http.force_authenticate(todo_owner_login)
-    with caplog.at_level(logging.ERROR, logger="scrud_django.ui.renderer"):
-        When.http.get(detail_url(todo_list), HTTP_ACCEPT=HTML, **headers)
+    Given.http.force_login(todo_owner_login)
+    with caplog.at_level(logging.ERROR, logger="scrud_django.ui.pages"):
+        When.http.get(ui_detail_url(todo_list), **headers)
     Then.http.status_code_is(500)
     assert_html()
     output = html()
     assert "Something went wrong rendering this page." in output
     assert "Groceries" not in output and "Buy milk" not in output
     assert "boom" not in output and "Traceback" not in output
-    failures = [r for r in caplog.records if r.exc_info]
+    failures = [
+        r for r in caplog.records if r.exc_info and r.name == "scrud_django.ui.pages"
+    ]
     assert failures
     message = failures[0].getMessage()
-    assert "ResourceViewSet" in message and "200" in message, message
+    # logged with the page and the status it replaced
+    assert ui_detail_url(todo_list) in message and "status 200" in message, message
 
 
 @pytest.mark.django_db
@@ -783,12 +803,11 @@ def test_render_failure_of_an_error_keeps_its_status(
         raise RuntimeError("boom")
 
     monkeypatch.setattr(ui_html, "_body", broken)
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     put_json(
-        detail_url(todo_list),
+        ui_detail_url(todo_list),
         {**todo_list.content, "title": "Crafted"},
         HTTP_IF_MATCH=f'"{todo_list.etag}"',
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(403)
@@ -803,12 +822,12 @@ def test_render_failure_of_an_error_keeps_its_status(
     [
         ("DatabaseError", True),
         ("TransactionManagementError", True),
-        ("ValidationError", True),
-        ("Throttled", True),
-        ("NotFound", False),
+        ("RbacContextInvalidError", True),
+        ("ScrudException", True),
+        ("ObjectNotFound", False),
         ("Http404", False),
         ("PermissionDenied", False),
-        ("NotAuthenticated", False),
+        ("AccessDenied", False),
     ],
 )
 @test_context
@@ -819,45 +838,46 @@ def test_refused_put_stored_lookup_failure_is_notice(
     the notices only, keeping its status. A refusal of the lookup (401, 403,
     404) is expected and not logged; anything else (a database error,
     another API error) is logged as a warning."""
+    from django.core.exceptions import PermissionDenied
     from django.db import DatabaseError
     from django.db.transaction import TransactionManagementError
     from django.http import Http404
-    from rest_framework import exceptions
+    from scoped_rbac import access
 
-    from scrud_django.mixins.view_mixins import ResourceViewMixin
+    from scrud_django import exceptions
+    from scrud_django.core import resources
 
     errors = {
         "DatabaseError": DatabaseError,
         "TransactionManagementError": TransactionManagementError,
-        "ValidationError": exceptions.ValidationError,
-        "Throttled": lambda message: exceptions.Throttled(detail=message),
-        "NotFound": exceptions.NotFound,
+        "RbacContextInvalidError": exceptions.RbacContextInvalidError,
+        "ScrudException": exceptions.ScrudException,
+        "ObjectNotFound": access.ObjectNotFound,
         "Http404": Http404,
-        "PermissionDenied": exceptions.PermissionDenied,
-        "NotAuthenticated": exceptions.NotAuthenticated,
+        "PermissionDenied": PermissionDenied,
+        "AccessDenied": access.AccessDenied,
     }
 
-    def failing(self):
+    def failing(*args, **kwargs):
         raise errors[error]("lookup failed")
 
     user = assign_role(
         {"http.GET": [TYPE_URI_TODO_LIST], **CONDITIONAL_PUT}, "project-a"
     )
-    monkeypatch.setattr(ResourceViewMixin, "get_object", failing)
-    Given.http.force_authenticate(user)
-    with caplog.at_level(logging.WARNING, logger="scrud_django.ui.renderer"):
+    monkeypatch.setattr(resources, "load_for_read", failing)
+    Given.http.force_login(user)
+    with caplog.at_level(logging.WARNING, logger="scrud_django.ui.pages"):
         put_json(
-            detail_url(todo_list),
+            ui_detail_url(todo_list),
             three_items(todo_list),
             HTTP_IF_MATCH=f'"{todo_list.etag}"',
-            HTTP_ACCEPT=HTML,
             HTTP_HX_REQUEST="true",
         )
     Then.http.status_code_is(403)
     warned = [
         r
         for r in caplog.records
-        if r.name == "scrud_django.ui.renderer" and r.levelno == logging.WARNING
+        if r.name == "scrud_django.ui.pages" and r.levelno == logging.WARNING
     ]
     assert bool(warned) == logged, [r.getMessage() for r in warned]
     assert all(r.exc_info for r in warned)
@@ -905,13 +925,12 @@ def test_refused_html_put_takes_no_row_lock(todo_list, todo_reader_login, who):
         ),
     }
     if who in users:
-        Given.http.force_authenticate(users[who])
+        Given.http.force_login(users[who])
     with recorded_row_locks() as locks:
         put_json(
-            detail_url(todo_list),
+            ui_detail_url(todo_list),
             three_items(todo_list),
             HTTP_IF_MATCH=f'"{todo_list.etag}"',
-            HTTP_ACCEPT=HTML,
             HTTP_HX_REQUEST="true",
         )
     assert Http.response.status_code in (401, 403), Http.response.status_code
@@ -968,11 +987,11 @@ def test_submitted_body_refused_by_its_parser_is_none():
 @pytest.mark.django_db
 @test_context
 def test_html_if_none_match_is_304_with_no_body(todo_list, todo_owner_login):
-    Given.http.force_authenticate(todo_owner_login)
-    When.http.get(detail_url(todo_list), HTTP_ACCEPT=HTML)
+    Given.http.force_login(todo_owner_login)
+    When.http.get(ui_detail_url(todo_list))
     Then.http.status_code_is(200)
     etag = Http.response["ETag"]
-    When.http.get(detail_url(todo_list), HTTP_ACCEPT=HTML, HTTP_IF_NONE_MATCH=etag)
+    When.http.get(ui_detail_url(todo_list), HTTP_IF_NONE_MATCH=etag)
     Then.http.status_code_is(304)
     assert Http.response.content == b""
     assert Http.response["ETag"] == etag
@@ -984,12 +1003,11 @@ def test_html_if_none_match_is_304_with_no_body(todo_list, todo_owner_login):
 def test_html_form_encoded_put_is_415_notice_without_content(
     todo_list, todo_owner_login
 ):
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     When.http.put(
-        detail_url(todo_list),
+        ui_detail_url(todo_list),
         data="title=x",
         content_type="application/x-www-form-urlencoded",
-        HTTP_ACCEPT=HTML,
         HTTP_IF_MATCH=f'"{todo_list.etag}"',
     )
     Then.http.status_code_is(415)
@@ -1006,13 +1024,12 @@ def test_html_form_encoded_put_is_415_notice_without_content(
 def test_html_post_create_returns_fragment_for_the_new_resource(
     todo_owner_login,
 ):
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     body = {"title": "Fresh list", "rbac_context": "project-a", "items": []}
     When.http.post(
-        list_url(),
+        ui_list_url(),
         data=json.dumps(body),
         content_type="application/json",
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(201)
@@ -1029,13 +1046,12 @@ def test_html_post_create_returns_fragment_for_the_new_resource(
 @pytest.mark.django_db
 @test_context
 def test_html_post_invalid_create_is_400_notice(todo_owner_login):
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     body = {"title": 5, "rbac_context": "project-a", "items": []}
     When.http.post(
-        list_url(),
+        ui_list_url(),
         data=json.dumps(body),
         content_type="application/json",
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(400)

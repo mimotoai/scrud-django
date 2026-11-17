@@ -14,8 +14,13 @@ from scrud_django.models import Resource
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_ui_http import make_component, make_stylesheet
+from .ui import UI_URLCONF, ui_url
 
-HTML = "text/html"
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
 
 # Names a template might try to reach the request, the user or the settings
 # through; each is empty, or the component fails and the page falls back.
@@ -44,10 +49,9 @@ JINJA_PROBES = [p for p in DJANGO_PROBES if p != "{{ self }}"] + [
 
 
 def render_with(template, engine, todo_list, user):
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.get(
-        reverse("todo-lists-detail", args=[todo_list.pk]),
-        HTTP_ACCEPT=HTML,
+        ui_url(reverse("todo-lists-detail", args=[todo_list.pk])),
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(200)

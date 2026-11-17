@@ -17,6 +17,7 @@ from scrud_django.registration import ResourceRegistration
 from .fixtures import *  # noqa
 from .fixtures import TYPE_URI_TODO_LIST, assign_role
 from .steps import *  # noqa: F403, F401
+from .ui import UI_URLCONF, ui_url
 
 HTML = "text/html"
 JSON = "application/json"
@@ -29,9 +30,15 @@ TODO = {
     "assignee": "http://somewhere.example/someone",
 }
 
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
+
 REPRESENTATIONS = {
     "json": {"HTTP_ACCEPT": JSON},
-    "html": {"HTTP_ACCEPT": HTML, "HTTP_HX_REQUEST": "true"},
+    "html": {"HTTP_HX_REQUEST": "true"},
 }
 
 
@@ -68,6 +75,10 @@ def stored_state(pk):
 
 
 def send(method, url, body, etag, representation):
+    """`method` of `url` (the API's) over `representation`: the JSON one to
+    the API, the HTML one to the UI's page of it."""
+    if representation == "html":
+        url = ui_url(url)
     headers = {"HTTP_IF_MATCH": quote_etag(etag), **REPRESENTATIONS[representation]}
     if method == "PUT":
         When.http.put(
@@ -83,7 +94,7 @@ def outcome(method, user, body, representation):
     `representation`."""
     todo = new_todo()
     before = stored_state(todo.pk)
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     send(method, todo_url(todo), body, todo.etag, representation)
     after = stored_state(todo.pk)
     if not after[0]:
@@ -161,12 +172,12 @@ def test_workflow_refusal_over_html_names_the_same_transition(todo_creator_login
 def refused_writer_put(writer, pointer=None):
     todo = new_todo(title="Stored title")
     body = {**TODO, "title": "Submitted title", "status": "done"}
-    Given.http.force_authenticate(writer)
+    Given.http.force_login(writer)
     headers = {**REPRESENTATIONS["html"]}
     if pointer is not None:
         headers.update(HTTP_SCRUD_UI_POINTER=pointer, HTTP_SCRUD_UI_SCOPE="sidebar")
     When.http.put(
-        todo_url(todo),
+        ui_url(todo_url(todo)),
         data=json.dumps(body),
         content_type="application/json",
         HTTP_IF_MATCH=quote_etag(todo.etag),
@@ -227,13 +238,12 @@ def test_refused_put_with_a_pointer_missing_from_the_body(todo_list, pointer):
         **todo_list.content,
         "items": [{"done": False} for _ in range(3)],
     }
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.put(
-        reverse("todo-lists-detail", args=[todo_list.pk]),
+        ui_url(reverse("todo-lists-detail", args=[todo_list.pk])),
         data=json.dumps(body),
         content_type="application/json",
         HTTP_IF_MATCH=quote_etag(todo_list.etag),
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_POINTER=pointer,
     )
@@ -250,10 +260,9 @@ def test_refused_put_with_a_pointer_missing_from_the_body(todo_list, pointer):
 
 
 def detail_page(user, resource, slug):
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.get(
-        reverse(f"{slug}-detail", args=[resource.pk]),
-        HTTP_ACCEPT=HTML,
+        ui_url(reverse(f"{slug}-detail", args=[resource.pk])),
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(200)
@@ -264,7 +273,7 @@ def detail_page(user, resource, slug):
 @test_context
 def test_owner_deletes_over_html(todo_list, todo_owner_login):
     url = reverse("todo-lists-detail", args=[todo_list.pk])
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     send("DELETE", url, None, todo_list.etag, "html")
     Then.http.status_code_is(204)
     assert Http.response.content == b""
@@ -278,7 +287,7 @@ def test_owner_deletes_over_html(todo_list, todo_owner_login):
 @test_context
 def test_reader_cannot_delete_over_html(todo_list, todo_reader_login):
     url = reverse("todo-lists-detail", args=[todo_list.pk])
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     send("DELETE", url, None, todo_list.etag, "json")
     json_status = Http.response.status_code
     assert json_status in (403, 404)
@@ -299,7 +308,7 @@ def test_delete_of_a_resource_the_user_cannot_read_is_the_same_over_html(todo_li
         "project-b",
     )
     url = reverse("todo-lists-detail", args=[todo_list.pk])
-    Given.http.force_authenticate(stranger)
+    Given.http.force_login(stranger)
     send("DELETE", url, None, todo_list.etag, "json")
     json_status = Http.response.status_code
     assert json_status in (403, 404)

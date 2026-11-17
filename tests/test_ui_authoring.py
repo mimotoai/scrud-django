@@ -10,8 +10,12 @@ from scrud_django.models import Resource
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_ui_http import make_component, make_stylesheet
+from .ui import UI_URLCONF, ui_url
 
-HTML = "text/html"
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
 
 
 def component(**overrides):
@@ -150,6 +154,7 @@ def test_reader_without_ui_grants_sees_styled_pages_but_no_components(
     made = make_component("styled-list", '<div class="styled">{{ value.title }}</div>')
     sheet = make_stylesheet("pages", [("ex:TodoList", "styled-list")])
     Given.http.force_authenticate(ui_reader_login)
+    Given.http.force_login(ui_reader_login)
     for resource, slug in ((made, "ui-components"), (sheet, "ui-stylesheets")):
         When.http.get(
             reverse(f"{slug}-detail", args=[resource.pk]),
@@ -161,8 +166,7 @@ def test_reader_without_ui_grants_sees_styled_pages_but_no_components(
         assert Http.response.status_code in (200, 403, 404)
         assert "styled" not in Http.response.content.decode()
     When.http.get(
-        reverse("todo-lists-detail", args=[todo_list.pk]),
-        HTTP_ACCEPT=HTML,
+        ui_url(reverse("todo-lists-detail", args=[todo_list.pk])),
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(200)

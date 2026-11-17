@@ -11,7 +11,14 @@ from safetydance_django.test import *  # noqa: F403, F401
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_ui_builtins import render
-from .test_ui_http import FRAME, HTML, assert_html, html, make_stylesheet, put_json
+from .test_ui_http import FRAME, assert_html, html, make_stylesheet, put_json
+from .ui import UI_URLCONF, ui_url
+
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
 
 OPS = re.compile(r'<button type="button" data-scrud-array-op="([a-z]+)"([^>]*)>([^<]*)')
 
@@ -67,12 +74,12 @@ def test_root_array_item_pointers():
 @pytest.mark.django_db
 @test_context
 def test_view_mode_has_no_array_controls(todo_list, todo_owner_login):
-    url = reverse("todo-lists-detail", args=[todo_list.pk])
-    Given.http.force_authenticate(todo_owner_login)
-    When.http.get(url, HTTP_ACCEPT=HTML)
+    url = ui_url(reverse("todo-lists-detail", args=[todo_list.pk]))
+    Given.http.force_login(todo_owner_login)
+    When.http.get(url)
     Then.http.status_code_is(200)
     assert "data-scrud-array-op" in html()
-    When.http.get(url + "?ui-mode=view", HTTP_ACCEPT=HTML)
+    When.http.get(url + "?ui-mode=view")
     Then.http.status_code_is(200)
     assert "data-scrud-array-op" not in html()
     assert "hx-put" not in html()
@@ -82,7 +89,8 @@ def test_view_mode_has_no_array_controls(todo_list, todo_owner_login):
 @test_context
 def test_bad_selector_error_lands_on_its_rule(admin_login):
     sheet = make_stylesheet("mine", [("null", "scrud:json")])
-    url = reverse("ui-stylesheets-detail", args=[sheet.pk])
+    api_url = reverse("ui-stylesheets-detail", args=[sheet.pk])
+    url = ui_url(api_url)
     body = {
         **sheet.content,
         "rules": [
@@ -91,14 +99,16 @@ def test_bad_selector_error_lands_on_its_rule(admin_login):
         ],
     }
     Given.http.force_authenticate(admin_login)
-    put_json(url, body, HTTP_IF_MATCH=f'"{sheet.etag}"', HTTP_ACCEPT="application/json")
+    Given.http.force_login(admin_login)
+    put_json(
+        api_url, body, HTTP_IF_MATCH=f'"{sheet.etag}"', HTTP_ACCEPT="application/json"
+    )
     Then.http.status_code_is(400)
     assert Http.response.json()["name"] == "rules[1].select"
     put_json(
         url,
         body,
         HTTP_IF_MATCH=f'"{sheet.etag}"',
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(400)

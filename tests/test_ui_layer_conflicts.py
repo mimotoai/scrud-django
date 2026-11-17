@@ -50,6 +50,13 @@ from .test_ui_layers import (
     page,
     render,
 )
+from .ui import UI_URLCONF
+
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
 
 CHECK_ID = "scrud_django_ui.W002"
 SUITE_LAYER_APP = "tests.apps.UILayerTestConfig"
@@ -161,7 +168,7 @@ def layer_warnings():
 @pytest.mark.django_db
 @test_context
 def test_root_override_records_layer_etag(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("site", "project-a", parent=None)
     with installed(MORE_APP):
         on_main = create("ui-components", override_body())
@@ -200,7 +207,7 @@ def test_root_override_records_layer_etag(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_child_override_records_layer_etag_when_no_ancestor_overrides(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("wip", "project-a")
     make_branch("wip2", "project-a")
     with installed(MORE_APP):
@@ -227,7 +234,7 @@ def test_child_override_of_layer_item_is_no_conflict_against_its_parent(
     admin_login,
 ):
     """Ruling 1: the layer is beneath the parent in `conflicts` too."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("wip", "project-a")
     with installed(MORE_APP):
         create("ui-components", wip_body())
@@ -255,7 +262,7 @@ def test_child_override_of_layer_item_is_no_conflict_against_its_parent(
 def test_changed_layer_item_is_a_layer_conflict_on_main_and_on_a_child(
     admin_login, todo_list, todo_reader_login, layer_files
 ):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("wip", "project-a")
     with installed(MORE_APP):
         component_before = etag_of("component", "layermore:list")
@@ -294,14 +301,14 @@ def test_changed_layer_item_is_a_layer_conflict_on_main_and_on_a_child(
             }
         ]
         # The overrides still render.
-        Given.http.force_authenticate(todo_reader_login)
+        Given.http.force_login(todo_reader_login)
         assert OVERRIDE in render(todo_list)
 
 
 @pytest.mark.django_db
 @test_context
 def test_rebase_on_root_resolves_layer_conflict(admin_login, layer_files):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("wip", "project-a")
     with installed(MORE_APP):
         create("ui-components", override_body())
@@ -352,7 +359,7 @@ def test_rebase_on_root_resolves_layer_conflict(admin_login, layer_files):
 def test_revert_resolves_layer_conflict(
     admin_login, todo_list, todo_reader_login, layer_files
 ):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     with installed(MORE_APP):
         create("ui-components", override_body())
         Then.http.status_code_is(201)
@@ -364,7 +371,7 @@ def test_revert_resolves_layer_conflict(
         assert layer_conflicts(branch("main")) == []
         assert layer_warnings() == []
         # The upgraded layer item shows.
-        Given.http.force_authenticate(todo_reader_login)
+        Given.http.force_login(todo_reader_login)
         assert CHANGED_LIST in render(todo_list)
 
 
@@ -373,7 +380,7 @@ def test_revert_resolves_layer_conflict(
 def test_removed_layer_item_leaves_orphan_rendering_and_reported(
     admin_login, todo_list, todo_reader_login, layer_files
 ):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("wip", "project-a")
     with installed(MORE_APP):
         layer = etag_of("component", "layermore:list")
@@ -395,16 +402,16 @@ def test_removed_layer_item_leaves_orphan_rendering_and_reported(
         assert "'main'" in warning.msg and "layermore:list" in warning.msg
         assert "orphan" in warning.msg
         # It keeps rendering as an ordinary item: no 500, no silent drop.
-        Given.http.force_authenticate(todo_reader_login)
+        Given.http.force_login(todo_reader_login)
         assert OVERRIDE in render(todo_list)
         # It stays editable under its name (ruling 2), and stays reported.
-        Given.http.force_authenticate(admin_login)
+        Given.http.force_login(admin_login)
         put("ui-components", orphan, override_body(template="<i>{{ value.title }}</i>"))
         Then.http.status_code_is(200)
-        Given.http.force_authenticate(todo_reader_login)
+        Given.http.force_login(todo_reader_login)
         assert "<i>Groceries</i>" in render(todo_list)
         assert layer_conflicts(branch("main")) == [expected]
-        Given.http.force_authenticate(admin_login)
+        Given.http.force_login(admin_login)
         # There is no layer item to rebase onto.
         put("ui-components", orphan, override_body(rebase=True))
         Then.http.status_code_is(400)
@@ -430,7 +437,7 @@ def test_removed_layer_item_leaves_orphan_rendering_and_reported(
 @pytest.mark.django_db
 @test_context
 def test_w002_lists_layer_conflicts(admin_login, layer_files):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("wip", "project-a")
     with installed(MORE_APP):
         create("ui-components", override_body())
@@ -463,7 +470,7 @@ def test_w002_lists_layer_conflicts(admin_login, layer_files):
 def test_push_override_of_layer_item_into_root(
     admin_login, todo_list, todo_reader_login
 ):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("wip", "project-a")
     with installed(MORE_APP):
         layer = etag_of("component", "layermore:list")
@@ -494,9 +501,9 @@ def test_push_override_of_layer_item_into_root(
         [marker] = own_rows(UI_CSS_TYPE_URI, "main")
         assert marker["deleted"] is True and marker["base"] == css_layer
         assert layer_conflicts(branch("main")) == []
-        Given.http.force_authenticate(todo_reader_login)
+        Given.http.force_login(todo_reader_login)
         assert OVERRIDE in render(todo_list)
-        css_url = reverse("ui-css-file", args=["layermore:theme", css_layer])
+        css_url = reverse("scrud_ui:ui-css-file", args=["layermore:theme", css_layer])
         assert css_url not in page(todo_list)
 
 
@@ -505,7 +512,7 @@ def test_push_override_of_layer_item_into_root(
 def test_branch_override_of_layer_stylesheet_hides_its_rules_there(
     admin_login, todo_list, todo_reader_login
 ):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("wip", "project-a")
     create(
         "ui-stylesheets",
@@ -517,7 +524,7 @@ def test_branch_override_of_layer_stylesheet_hides_its_rules_there(
         },
     )
     Then.http.status_code_is(201)
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     assert LAYER_JSON not in render(todo_list, branch="wip")
     assert LAYER_JSON in render(todo_list)
 
@@ -527,7 +534,7 @@ def test_branch_override_of_layer_stylesheet_hides_its_rules_there(
 def test_deletion_marker_hides_layer_item_on_its_branch_only(
     admin_login, todo_list, todo_reader_login
 ):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_branch("wip", "project-a")
     with installed(MORE_APP):
         create(
@@ -540,7 +547,7 @@ def test_deletion_marker_hides_layer_item_on_its_branch_only(
             },
         )
         Then.http.status_code_is(201)
-        Given.http.force_authenticate(may_select_branches(todo_reader_login))
+        Given.http.force_login(may_select_branches(todo_reader_login))
         # On wip, the suite layer's rule takes the list again.
         on_wip = render(todo_list, branch="wip")
         assert MORE_LIST not in on_wip and LAYER_JSON in on_wip
