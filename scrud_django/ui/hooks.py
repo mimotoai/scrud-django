@@ -880,8 +880,9 @@ def after_push_write(request, resource_type, saved, *, created, using):
     the write's transaction: write its source's overrides into its target
     (`apply_push`), or restore version ``restore`` of its target
     (`apply_restore`); then store its ``result``, the target's new
-    version, and answer the push with it. A refused push writes nothing,
-    the push included. ``None`` (the saved content answered) otherwise."""
+    version, and answer the push with it as stored (read again: the
+    database may reorder its keys). A refused push writes nothing, the push
+    included. ``None`` (the saved content answered) otherwise."""
     if not write_state(request).applying:
         return None
     content = saved.content
@@ -899,6 +900,9 @@ def after_push_write(request, resource_type, saved, *, created, using):
         resource_type=resource_type,
         using=using,
     )
+    # Answer the content as stored, as DRF serializes the row read again:
+    # PostgreSQL's jsonb and MySQL's JSON reorder an object's keys.
+    saved.refresh_from_db(fields=["content"], using=using)
     return content_of(saved)
 
 
