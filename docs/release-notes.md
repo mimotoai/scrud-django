@@ -1,6 +1,14 @@
 # Change Log
 
-## Unreleased
+## 0.17.0
+
+This release makes django-ninja the default front end: `scrud_django.urls`
+serves the ninja API, django-ninja is a base dependency, and Django REST
+framework moves to the `drf` extra (`scrud_django.drf.urls`), answering as
+before. The htmx UI leaves the API: `/api/` is JSON only, and the UI app is
+mounted at `/` like any Django app. Apps' own Django models get the workflow
+through ninja. Most of these changes are breaking: read Breaking changes and
+the README's "Migrating to 0.17.0" sections before you upgrade.
 
 ### Breaking changes
 
