@@ -13,7 +13,7 @@ from scrud_django.workflow import (
     workflow_policies_for,
 )
 
-from ..core.decisions import NULL_CONTENT
+from ..core.decisions import NULL_CONTENT, take_pending
 from ..core.signals import scrud_post_delete, scrud_post_save
 from ..core.transitions import (  # noqa: F401  (re-exported)
     WORKFLOW_ERRORS,
@@ -112,21 +112,32 @@ class ResourceMixin(ScrudfulMixin):
         self, force_insert=False, force_update=False, using=None, update_fields=None
     ) -> None:
         """``Model.save()``, then ``scrud_post_save``, sent with ``using`` the
-        database the save wrote to (`_write_db`) and the save's transitions
-        (`get_transitions`), read before it writes.
+        database the save wrote to (`_write_db`) and the save's
+        `WorkflowDecision` as ``decision`` (with its ``transition_data``,
+        ``transition_error`` and ``transitions``), taken before it writes:
+        the workflow check's, when one is pending for this save
+        (`scrud_django.core.decisions.take_pending`: an API or UI write's,
+        of this type, this pk, ``None`` for a create, and this content),
+        else computed (`get_transitions`, ``checked=False``).
 
-        A save is not checked against the workflow (the ``WorkflowValidator``
-        checks API writes; the admin, ``ResourceRegistration`` and server
-        code skip it): an invalid one is still saved, and each context where
-        it is invalid is logged as a WARNING on the ``scrud_django.workflow``
-        logger, naming the resource's pk, its type URI, the context, the
+        Otherwise a save is not checked against the workflow (the
+        ``WorkflowValidator`` checks API writes; the admin,
+        ``ResourceRegistration`` and server code skip it): an invalid one is
+        still saved, and each context where it is invalid is logged as a
+        WARNING on the ``scrud_django.workflow`` logger, naming the resource's pk, its type URI, the context, the
         policy and the workflow error (`log_workflow_errors`), with the
         states the content meets when it meets several. It is logged once
         the row is written and before ``scrud_post_save`` is sent, so that a
         receiver that raises cannot keep it from being logged (the save may
         still roll back)."""
         db = self._write_db(using)
-        transitions = self.get_transitions(db)
+        decision = take_pending(
+            type_iri=self.resource_type.type_uri,
+            pk=None if self._state.adding else self.pk,
+            content=self.content,
+        )
+        if decision is None:
+            decision = self.get_transitions(db)
         action = 'CREATE' if self._state.adding else 'UPDATE'
         super().save(
             force_insert=force_insert,
@@ -134,17 +145,18 @@ class ResourceMixin(ScrudfulMixin):
             using=using,
             update_fields=update_fields,
         )
-        self.log_workflow_errors(transitions.errors)
+        self.log_workflow_errors(decision.errors)
         scrud_post_save.send(
             sender=self.__class__,
             instance=self,
             update_fields=update_fields,
             using=db,
             resource_type_uri=self.resource_type.type_uri,
-            transition_data=transitions.transition_data,
-            transition_error=transitions.transition_error,
-            transitions=transitions.transitions,
+            transition_data=decision.transition_data,
+            transition_error=decision.transition_error,
+            transitions=decision.transitions,
             action=action,
+            decision=decision,
         )
 
     def log_workflow_errors(self, errors):

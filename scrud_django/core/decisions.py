@@ -8,10 +8,18 @@ immutable data: it holds snapshots of the stored and proposed content, so that
 it describes the write as checked however the caller changes them later. This
 module imports only `scrud_django.workflow`, `scrud_django.exceptions` and the
 standard library: `core.workflow` and `core.transitions` import it.
+
+A checked write's decision reaches the save that writes it through
+`applying` (`core.writes.save_checked` runs the save in it) and
+`take_pending` (``Resource.save()`` takes it when it matches the save), so
+that ``scrud_post_save`` sends the decision the check made instead of
+computing it again.
 """
 
 import copy
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -227,3 +235,42 @@ def context_transition(
 def snapshot_prior(prior: Mapping | NullContent | None) -> Mapping | None:
     """`prior` as a decision's: ``None`` for ``None`` and `NULL_CONTENT`."""
     return None if prior is None or isinstance(prior, NullContent) else prior
+
+
+# The checked decision of the save running (`applying`), until a save it
+# matches takes it (`take_pending`).
+_PENDING: ContextVar[WorkflowDecision | None] = ContextVar(
+    "scrud_pending_workflow_decision", default=None
+)
+
+
+@contextmanager
+def applying(decision: WorkflowDecision | None) -> Iterator[None]:
+    """The block in which `decision` (the workflow check's of the write the
+    block saves; ``None``: no check ran) is pending, for the save it
+    matches to take (`take_pending`). It is reset to what was pending
+    before however the block ends: a decision no save took is discarded."""
+    token = _PENDING.set(decision)
+    try:
+        yield
+    finally:
+        _PENDING.reset(token)
+
+
+def take_pending(*, type_iri: str, pk, content) -> WorkflowDecision | None:
+    """The pending decision (`applying`) when it is the one of saving
+    `content` as the resource `pk` (``None``: a create) of the type
+    `type_iri`: its ``type_iri``, ``stored_pk`` and ``proposed`` are those.
+    A match is consumed, so that a second save in the same block (an
+    ``after_write`` hook saving again) computes its own decision; no match
+    leaves it pending and answers ``None``."""
+    decision = _PENDING.get()
+    if (
+        decision is not None
+        and decision.type_iri == type_iri
+        and decision.stored_pk == pk
+        and decision.proposed == content
+    ):
+        _PENDING.set(None)
+        return decision
+    return None

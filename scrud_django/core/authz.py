@@ -23,6 +23,7 @@ from contextvars import ContextVar
 from scoped_rbac import access, policy
 from scoped_rbac.policy import Permission
 
+from scrud_django.core.decisions import WorkflowDecision
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 
 # The logger keeps its historical name: operators' log filters match it.
@@ -70,6 +71,9 @@ _MALFORMED_REPORTED_LOCK = threading.Lock()
 # The attribute of a request that records which write the workflow check
 # authorized: ``(type IRI, stored pk)`` (`_mark_workflow_authorized`).
 _WORKFLOW_AUTHORIZED = "_scrud_workflow_authorized"
+# The attribute of a request that holds the `WorkflowDecision` of the write
+# its mark authorized (`_mark_workflow_authorized`, `_workflow_decision`).
+_WORKFLOW_DECISION = "_scrud_workflow_decision"
 
 
 def current_transition():
@@ -124,14 +128,33 @@ def _not_checking_write():
     return _transition_state(_OUTSIDE)
 
 
-def _mark_workflow_authorized(request, *, type_iri: str, stored_pk: int | None):
+def _mark_workflow_authorized(
+    request,
+    *,
+    type_iri: str,
+    stored_pk: int | None,
+    decision: WorkflowDecision | None = None,
+):
     """Record that the workflow check authorized `request`'s write, in every
     context concerned, of the resource `stored_pk` (``None`` for a create)
     named by the type `type_iri` (the type its post-save check names):
     ``(type_iri, stored_pk)``, replacing any earlier mark
-    (`_workflow_authorized`). A save consumes it
+    (`_workflow_authorized`), with the check's `decision`, which rides with
+    it (`_workflow_decision`; its ``type_iri`` is the checked type, which
+    may differ from `type_iri`). A save consumes both
     (`_consume_workflow_mark`)."""
     setattr(request, _WORKFLOW_AUTHORIZED, (type_iri, stored_pk))
+    setattr(request, _WORKFLOW_DECISION, decision)
+
+
+def _workflow_decision(request) -> WorkflowDecision | None:
+    """The `WorkflowDecision` the mark on `request` carries
+    (`_mark_workflow_authorized`), only while the mark is set: ``None``
+    without a mark, or once a save consumed it."""
+    if type(getattr(request, _WORKFLOW_AUTHORIZED, None)) is not tuple:
+        return None
+    decision = getattr(request, _WORKFLOW_DECISION, None)
+    return decision if isinstance(decision, WorkflowDecision) else None
 
 
 def _workflow_authorized(
@@ -148,15 +171,18 @@ def _workflow_authorized(
 
 
 def _consume_workflow_mark(request) -> None:
-    """Remove `request`'s workflow mark (`_mark_workflow_authorized`), so
-    that one validation authorizes at most one save. It is removed from the
-    request a front end wraps too (DRF's ``Request`` reads an attribute it
-    lacks from it), so that no mark is left to read through the wrapper."""
+    """Remove `request`'s workflow mark (`_mark_workflow_authorized`) and
+    the decision it carries, so that one validation authorizes at most one
+    save. They are removed from the request a front end wraps too (DRF's
+    ``Request`` reads an attribute it lacks from it), so that no mark is
+    left to read through the wrapper."""
     for holder in (request, getattr(request, "_request", None)):
-        if holder is not None and _WORKFLOW_AUTHORIZED in getattr(
-            holder, "__dict__", {}
-        ):
-            delattr(holder, _WORKFLOW_AUTHORIZED)
+        if holder is None:
+            continue
+        attributes = getattr(holder, "__dict__", {})
+        for name in (_WORKFLOW_AUTHORIZED, _WORKFLOW_DECISION):
+            if name in attributes:
+                delattr(holder, name)
 
 
 def content_of(resource):

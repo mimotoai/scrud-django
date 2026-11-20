@@ -300,8 +300,9 @@ def workflow_check(
     (`_mark_workflow_authorized`) for this one write: of the stored
     resource (an `Update`'s ``stored_pk``; ``None`` for a `Create`), named
     by the type `post_save_type_iri` (the type the write's post-save check
-    names; by default `type_iri`). An `Update` without a ``stored_pk`` is
-    not marked: the post-save check of no save matches it. The save that
+    names; by default `type_iri`), carrying the decision it returns, which
+    the save then sends (`scrud_django.core.decisions.applying`). An
+    `Update` without a ``stored_pk`` is not marked: the post-save check of no save matches it. The save that
     uses the mark consumes it (`scrud_django.core.writes.save_checked`).
 
     Raises ``TypeError`` for a `write` that is neither (a delete runs no
@@ -387,15 +388,7 @@ def workflow_check(
     for c, policy in policies:
         if policy is None:
             authorize_without_policy(request, type_iri, c, proposed, narrow)
-    # The post-save check lets a grant conditioned on scrud_workflow allow
-    # only the one write authorized here: of this resource, of this type.
-    if prior is None or stored_pk is not None:
-        _mark_workflow_authorized(
-            request,
-            type_iri=type_iri if post_save_type_iri is None else post_save_type_iri,
-            stored_pk=stored_pk,
-        )
-    return _decision(
+    decision = _decision(
         type_iri,
         write,
         stored_pk,
@@ -404,6 +397,17 @@ def workflow_check(
         contexts_after,
         [entry for _, entry in transitions],
     )
+    # The post-save check lets a grant conditioned on scrud_workflow allow
+    # only the one write authorized here: of this resource, of this type.
+    # The decision rides with the mark to the save that writes it.
+    if prior is None or stored_pk is not None:
+        _mark_workflow_authorized(
+            request,
+            type_iri=type_iri if post_save_type_iri is None else post_save_type_iri,
+            stored_pk=stored_pk,
+            decision=decision,
+        )
+    return decision
 
 
 def _actor_of(request):
