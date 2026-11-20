@@ -91,6 +91,13 @@ def client_with(definition, context):
     return client
 
 
+def logged_in_writer():
+    """A client of a writer granted everything in "" but not a superuser,
+    logged in with a session: a superuser's write overrides a workflow
+    refusal (#31), so the refusals are pinned with this writer."""
+    return client_with(True, "")
+
+
 def a_todo(content=IN_PROGRESS, front_end="drf"):
     api_url(front_end, "todos-list")
     return ResourceRegistration.register(dict(content), "todos")
@@ -135,7 +142,7 @@ def test_a_transition_the_stored_state_forbids_is_refused(front_end):
     # in progress -> done is allowed; canceled -> done is not. The other
     # writer cancels the ToDo first.
     with concurrent_write_before_the_write_transaction(server_update(todo, CANCELED)):
-        response = logged_in_admin().put(
+        response = logged_in_writer().put(
             todo_url(todo, front_end),
             DONE,
             format="json",
@@ -366,7 +373,7 @@ def test_a_refused_transitions_policy_link_reads_no_type_through_the_router(
     workflow_policy_resource_type()
     ResourceRegistration.register(dict(STRICT_POLICY), "workflow-policies")
     with routed_reads() as reads:
-        response = logged_in_admin().put(
+        response = logged_in_writer().put(
             todo_url(todo, front_end),
             CANCELED,
             format="json",

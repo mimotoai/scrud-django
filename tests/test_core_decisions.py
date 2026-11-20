@@ -18,7 +18,7 @@ from scrud_django.core.decisions import (
     snapshot_prior,
 )
 from scrud_django.exceptions import DefaultPolicyReference, WorkflowTransitionError
-from scrud_django.workflow import INITIALIZE, SAME_STATE, TransitionData
+from scrud_django.workflow import INITIALIZE, OVERRIDE, SAME_STATE, TransitionData
 
 TYPE_IRI = "tests://ToDo"
 REF = DefaultPolicyReference(TYPE_IRI)
@@ -543,3 +543,55 @@ def test_same_transitions_compares_a_left_context_by_its_leaving_transition():
         ],
     )
     assert not same_transitions(checked, staying)
+
+
+def test_same_transitions_matches_a_checked_override_with_a_recomputed_error():
+    # The recompute (an unchecked save's decision) carries no override: where
+    # the checked decision overrode the policy, it has the policy's error.
+    error = WorkflowTransitionError(policy=REF, prior_state=None, proposed_state="x")
+    checked = make(
+        contexts=[
+            ContextDecision(
+                "a",
+                REF,
+                TransitionData("x", None, OVERRIDE),
+                None,
+                False,
+                overridden=error,
+            )
+        ],
+    )
+    saved = make(
+        checked=False, contexts=[ContextDecision("a", REF, None, error, False)]
+    )
+    assert checked.overrides == ("a",)
+    assert same_transitions(checked, saved)
+    # A recompute in other contexts is still another decision.
+    elsewhere = make(
+        checked=False, contexts=[ContextDecision("b", REF, None, error, False)]
+    )
+    assert not same_transitions(checked, elsewhere)
+
+
+def test_same_transitions_does_not_match_a_valid_transition_with_an_error():
+    # Only an override tolerates the recompute's error: a context the check
+    # found valid (no override) differs from one the recompute finds invalid.
+    error = WorkflowTransitionError(
+        policy=REF, prior_state="not started", proposed_state="done"
+    )
+    checked = make(
+        contexts=[
+            ContextDecision(
+                "a",
+                REF,
+                TransitionData("done", "not started", "finish"),
+                None,
+                False,
+            )
+        ],
+    )
+    saved = make(
+        checked=False, contexts=[ContextDecision("a", REF, None, error, False)]
+    )
+    assert checked.overrides == ()
+    assert not same_transitions(checked, saved)

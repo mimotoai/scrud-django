@@ -61,6 +61,13 @@ def admin():
     return UserFactory(is_staff=True, is_superuser=True)
 
 
+def writer(context):
+    """A user granted everything in `context` but not a superuser: a
+    superuser's write overrides a workflow refusal (#31), so the refusals
+    are pinned with this user."""
+    return user_with((True, context))
+
+
 def register(content, slug):
     reverse("todos-list", urlconf="tests.urls")
     return ResourceRegistration.register(content, slug)
@@ -102,7 +109,7 @@ def test_put_over_list_content_follows_the_policy(front_end):
     stored = register([dict(NOT_STARTED)], "todos")
     # The default ToDo policy: the stored content is in no state, so no
     # transition leads from it.
-    response = put(front_end, admin(), stored, dict(NOT_STARTED), "todos")
+    response = put(front_end, writer(""), stored, dict(NOT_STARTED), "todos")
     assert response.status_code == 400, response.content
     assert response.json()["type"] == WORKFLOW_ERROR
     assert_unchanged(stored)
@@ -400,7 +407,7 @@ def test_invalid_transition_error_names_prior_then_proposed_state(front_end):
     resource = locked_profile()
     response = put(
         front_end,
-        admin(),
+        writer("q"),
         resource,
         {"name": "n", "state": "open", "rbac_context": "q"},
         "partner-profiles",
@@ -414,7 +421,11 @@ def test_transition_from_no_state_error_names_no_prior_state(front_end):
     store_policy(dict(LOCKING_PP_POLICY, rbac_context=""))
     stored = register([{"name": "n"}], "partner-profiles")
     response = put(
-        front_end, admin(), stored, {"name": "n", "state": "open"}, "partner-profiles"
+        front_end,
+        writer(""),
+        stored,
+        {"name": "n", "state": "open"},
+        "partner-profiles",
     )
     assert response.status_code == 400, response.content
     assert states(response) == (None, "open")

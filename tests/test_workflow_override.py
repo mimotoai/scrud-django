@@ -204,6 +204,57 @@ def test_a_regular_writer_is_still_refused_from_no_state(front_end, reported_sav
 
 @pytest.mark.django_db
 @test_context
+def test_a_superuser_makes_a_transition_the_policy_lacks(
+    front_end, admin_login, reported_saves
+):
+    # The default ToDo policy has no transition from "in progress" back to
+    # "not started" (refused for a writer: test_rest_workflow's
+    # test_invalid_transition).
+    resource = todo(status="in progress", rbac_context="a")
+    Given.http.force_login(admin_login)
+    reported_saves.clear()
+    proposed = dict(NOT_STARTED, rbac_context="a")
+    put_todo(front_end, resource, proposed)
+    Then.http.status_code_is(HTTPStatus.OK)
+    assert Resource.objects.get(pk=resource.pk).content == proposed
+    decision = the_decision(reported_saves)
+    assert decision.transitions["a"] == TransitionData(
+        "not started", "in progress", OVERRIDE
+    )
+    assert decision.overrides == ("a",)
+    overridden = decision.get("a").overridden
+    assert type(overridden) is WorkflowTransitionError, overridden
+    assert (overridden.prior_state, overridden.proposed_state) == (
+        "in progress",
+        "not started",
+    )
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_superuser_puts_over_list_content(front_end, admin_login, reported_saves):
+    # Content stored as a list (before 0.12.0) is in no state, in the
+    # default context (refused for a writer: test_workflow_edge_cases's
+    # test_put_over_list_content_follows_the_policy).
+    serve_ninja()  # registers the test types
+    stored = ResourceRegistration.register([dict(NOT_STARTED)], "todos")
+    Given.http.force_login(admin_login)
+    reported_saves.clear()
+    put_todo(front_end, stored, dict(NOT_STARTED))
+    Then.http.status_code_is(HTTPStatus.OK)
+    assert Resource.objects.get(pk=stored.pk).content == NOT_STARTED
+    decision = the_decision(reported_saves)
+    assert decision.transitions[""] == TransitionData("not started", None, OVERRIDE)
+    assert decision.overrides == ("",)
+    overridden = decision.get("").overridden
+    assert (overridden.prior_state, overridden.proposed_state) == (
+        None,
+        "not started",
+    )
+
+
+@pytest.mark.django_db
+@test_context
 def test_a_superuser_updates_ambiguous_stored_content(
     front_end, admin_login, reported_saves
 ):

@@ -120,6 +120,19 @@ def cancel_only_user():
     return user
 
 
+def writer():
+    """A user granted everything in "" but not a superuser: a superuser's
+    write overrides a workflow refusal (#31), so the refusals are pinned
+    with this user."""
+    role = Role(definition=True, etag=uuid4().hex, modified_at=now())
+    role.save()
+    user = UserFactory()
+    RoleAssignment(
+        user=user, role=role, rbac_context="", etag=uuid4().hex, modified_at=now()
+    ).save()
+    return user
+
+
 def a_todo():
     reverse("todos-list")
     return ResourceRegistration.register(dict(NOT_STARTED), "todos")
@@ -158,9 +171,8 @@ def test_invalid_transition_under_stored_policy_is_400_under_any_handler(handler
     # The error's detail used to be the policy itself, here a stored one.
     store_policy(NO_TRANSITIONS_POLICY)
     resource = a_todo()
-    admin = UserFactory(is_staff=True, is_superuser=True)
     with with_handler(handler):
-        response = put(admin, resource, dict(NOT_STARTED, status="in progress"))
+        response = put(writer(), resource, dict(NOT_STARTED, status="in progress"))
     assert response.status_code == 400, response.content
     json.loads(response.content)
 
@@ -231,8 +243,7 @@ def test_scrud_handler_body_for_an_invalid_workflow_policy():
 def test_scrud_handler_body_for_a_stored_policy_error():
     stored = store_policy(NO_TRANSITIONS_POLICY)
     resource = a_todo()
-    admin = UserFactory(is_staff=True, is_superuser=True)
-    response = put(admin, resource, dict(NOT_STARTED, status="in progress"))
+    response = put(writer(), resource, dict(NOT_STARTED, status="in progress"))
     assert response.status_code == 400
     url = "http://testserver" + reverse("workflow-policies-detail", args=[stored.pk])
     assert response.json() == {
