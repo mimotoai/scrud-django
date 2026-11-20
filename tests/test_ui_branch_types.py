@@ -74,7 +74,7 @@ def test_branch_create_needs_grant_in_its_context(ui_alice_login, ui_bob_login):
     # test_ui_branch_authz.test_creating_a_branch_of_main_needs_get_on_main).
     for user in (ui_alice_login, ui_bob_login):
         grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     create("ui-branches", body)
     Then.http.status_code_is(201)
     created = Http.response.json()
@@ -84,7 +84,7 @@ def test_branch_create_needs_grant_in_its_context(ui_alice_login, ui_bob_login):
     assert created["branching_point"] == {"main": 1}
     create("ui-branches", {**body, "name": "bob-wip", "rbac_context": "bob"})
     Then.http.status_code_is(403)
-    Given.http.force_authenticate(ui_bob_login)
+    Given.http.force_login(ui_bob_login)
     create("ui-branches", {**body, "name": "alice-wip-2"})
     Then.http.status_code_is(403)
 
@@ -93,7 +93,7 @@ def test_branch_create_needs_grant_in_its_context(ui_alice_login, ui_bob_login):
 @test_context
 def test_a_branch_without_parent_is_created(ui_alice_login):
     # It has no ancestors: its branching point is empty (it was a 500).
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     create("ui-branches", {"name": "solo", "rbac_context": "alice", "parent": None})
     Then.http.status_code_is(201)
     assert Http.response.json()["branching_point"] == {}
@@ -105,7 +105,7 @@ def test_branch_refusals(ui_alice_login):
     a = make_branch("a", "alice")
     make_branch("b", "alice", parent="a")
     make_branch("pub", "alice", parent=None, prefix="/admin/")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     refused = [
         {"name": "a", "rbac_context": "alice", "parent": "main"},
         {"name": "x", "rbac_context": "alice", "parent": "nope"},
@@ -127,13 +127,13 @@ def test_branch_refusals(ui_alice_login):
     Then.http.status_code_is(403)
     publisher = assign_ui_role((UI_BRANCH_TYPE_URI,), "alice")
     grant(publisher, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "")
-    Given.http.force_authenticate(publisher)
+    Given.http.force_login(publisher)
     create("ui-branches", taken)
     Then.http.status_code_is(400)
     assert problem()["type"].endswith("/ui-branch-invalid")
     assert "already has the prefix" in problem()["detail"]
     details.append(problem()["detail"])
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     # re-parenting a under its child b
     When.http.put(
         reverse("ui-branches-detail", args=[a.pk]),
@@ -152,7 +152,7 @@ def test_branch_refusals(ui_alice_login):
 def test_main_is_reserved(admin_login):
     """`main` is the published branch at the API URLs: context "", prefix "",
     no parent (ruling R1)."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main = {"name": "main", "rbac_context": "", "parent": None, "prefix": ""}
     for wrong in (
         {"rbac_context": "alice"},
@@ -177,13 +177,13 @@ def test_item_branch_defaults_to_main_and_phase1_bodies_still_work(
     assert make_component("raw-row", "<i>{{ value }}</i>").content.get("branch") is None
     assert make_stylesheet("raw-theme", [("array", "raw-row")]).pk
     # The bodies those helpers store, written through the API.
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     create("ui-components", component(rbac_context=""))
     Then.http.status_code_is(201)
     When.http.get(Http.response["Location"])
     Then.http.status_code_is(200)
     assert Http.response.json()["branch"] == "main"
-    Given.http.force_authenticate(ui_acme_stylesheet_login)
+    Given.http.force_login(ui_acme_stylesheet_login)
     sheet = {
         "name": "theme",
         "prefixes": PREFIXES,
@@ -211,12 +211,12 @@ def test_item_rbac_context_must_be_the_authorizing_context(
     # answered as unknown instead, naming no context (ruling R36;
     # test_ui_branch_authz).
     grant(ui_author_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     create("ui-components", component(branch="alice-wip", rbac_context=""))
     Then.http.status_code_is(400)
     assert problem()["type"].endswith("/ui-branch-context")
     assert "'alice'" in problem()["detail"]
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     create("ui-components", component(branch="alice-wip", rbac_context="alice"))
     Then.http.status_code_is(201)
     assert Http.response.json()["branch"] == "alice-wip"
@@ -231,10 +231,10 @@ def test_item_rbac_context_must_be_the_authorizing_context(
 def test_published_stylesheet_authorized_in_applies_to(
     ui_acme_stylesheet_login, ui_author_login
 ):
-    Given.http.force_authenticate(ui_acme_stylesheet_login)
+    Given.http.force_login(ui_acme_stylesheet_login)
     create("ui-stylesheets", stylesheet(applies_to="acme", rbac_context="acme"))
     Then.http.status_code_is(201)
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     create(
         "ui-stylesheets", stylesheet(name="other", applies_to="acme", rbac_context="")
     )
@@ -246,7 +246,7 @@ def test_published_stylesheet_authorized_in_applies_to(
 @pytest.mark.django_db
 @test_context
 def test_unknown_branch_is_400(ui_author_login):
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     create("ui-components", component(branch="nope", rbac_context=""))
     Then.http.status_code_is(400)
     assert problem()["type"].endswith("/ui-branch-invalid")
@@ -257,12 +257,12 @@ def test_unknown_branch_is_400(ui_author_login):
 @test_context
 def test_names_are_unique_per_branch(ui_author_login, ui_alice_login):
     make_branch("alice-wip", "alice")
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     create("ui-components", component())
     Then.http.status_code_is(201)
     create("ui-stylesheets", stylesheet())
     Then.http.status_code_is(201)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     on_branch = {"branch": "alice-wip", "rbac_context": "alice"}
     create("ui-components", component(**on_branch))
     Then.http.status_code_is(201)
@@ -280,7 +280,7 @@ def test_names_are_unique_per_branch(ui_author_login, ui_alice_login):
 @test_context
 def test_deletion_marker_needs_only_name(ui_alice_login):
     make_branch("alice-wip", "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     create(
         "ui-components",
         {
@@ -376,7 +376,7 @@ def test_main_is_virtual_until_an_item_is_written_to_it(ui_author_login):
     reverse("ui-branches-list")
     assert branches()[MAIN] == MAIN_BRANCH
     make_branch("alice-wip", "alice")
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     create("ui-components", component())
     Then.http.status_code_is(201)
     stored = branches()
@@ -404,7 +404,7 @@ def test_an_item_stays_on_its_branch(ui_alice_login):
     refused (moving items between branches is a push)."""
     make_branch("alice-wip", "alice")
     make_branch("alice-2", "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     create("ui-components", component(branch="alice-wip", rbac_context="alice"))
     Then.http.status_code_is(201)
     url, etag = Http.response["Location"], Http.response["ETag"]
@@ -430,7 +430,7 @@ def test_an_item_stays_on_its_branch(ui_alice_login):
 @test_context
 def test_a_branch_keeps_its_name(ui_alice_login):
     wip = make_branch("alice-wip", "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.put(
         reverse("ui-branches-detail", args=[wip.pk]),
         data={"name": "alice-new", "rbac_context": "alice", "parent": "main"},

@@ -1,8 +1,8 @@
 # Pipelines run for merge requests, tags, the default branch (`develop`) and the
 # release branch (`main`). A branch push gets its own pipeline only when it has
-# no open merge request. `lint`, `docs`, `package`, `test`, `test-postgres` and
-# `test-mysql` run in all of them, `version-check` in merge requests into
-# `main`, and `publish` (PyPI) only on `main`.
+# no open merge request. `lint`, `docs`, `package`, `test`, `test-no-drf`,
+# `test-postgres` and `test-mysql` run in all of them, `version-check` in
+# merge requests into `main`, and `publish` (PyPI) only on `main`.
 #
 # Releasing: work lands on `develop` (no version bump needed). To release, set
 # the version on `develop` (`uv version --bump minor`, `uv version 1.0.0`) and
@@ -99,6 +99,33 @@ test:
         coverage_format: cobertura
         path: coverage.xml
 
+# The suite without DRF (the `drf` extra) on SQLite: the default install,
+# ninja's. safetydance-django, a dev dependency, requires DRF, so it stays
+# installed, and SCRUD_TEST_NO_DRF=1 has tests/conftest.py block its imports
+# (and django-filter's, scrudful's and scoped-rbac's DRF modules:
+# tests/no_drf.py) before anything imports them; the settings then have no
+# rest_framework apps or REST_FRAMEWORK and serve scrud_django.urls
+# (tests/settings.py). The `drf`-marked tests are skipped; a skip of any other
+# test that names DRF fails the run.
+test-no-drf:
+  stage: test
+  variables:
+    SCRUD_TEST_NO_DRF: "1"
+  cache:
+    when: always
+    key:
+      files: [uv.lock]
+      prefix: test-no-drf
+    paths:
+      - .uv-cache
+  script:
+    - uv sync --locked
+    - uv run --no-sync python -V
+    - uv run --no-sync pytest -q -rs
+    - uv run --no-sync pytest -q --reverse
+  after_script:
+    - uv cache prune --ci
+
 # The suite on PostgreSQL 14, where the PostgreSQL-only tests run (row locks
 # that PostgreSQL refuses through some querysets, READ COMMITTED, the
 # isolation check) and SQLite-only ones skip. tests/settings.py points both
@@ -194,7 +221,10 @@ test-mysql:
 # on every pipeline rather than at publish time. The wheel is also installed
 # into a clean venv to prove that it carries the project version and every
 # file under scrud_django/, and that it imports (`-I` keeps the checkout off
-# sys.path).
+# sys.path). It is installed twice: with no extras (ninja only, no DRF), where
+# a project including the default `scrud_django.urls` serves /api/services/
+# and a route's HTTP Schema Resource, and passes `manage.py check` (then with
+# `[ui]` and the UI app, a UI page too), and with `[drf]`.
 package:
   stage: test
   cache:
@@ -206,8 +236,146 @@ package:
   script:
     - uv build -q -o build/dist-check
     - uv run --no-project --with "twine==7.0.0" twine check --strict build/dist-check/*
+    - uv venv -q build/base-venv
+    - uv pip install -q -p build/base-venv build/dist-check/*.whl
+    # The base install has no DRF, imports ninja and serves the default
+    # scrud_django.urls. The UI app also needs the `ui` extra (jinja2); adding
+    # it still leaves DRF out.
+    - |
+      build/base-venv/bin/python -I - <<'EOF'
+      import importlib.util
+      import sys
+      import types
+
+      import django
+      from django.conf import settings
+
+      assert importlib.util.find_spec("rest_framework") is None, "DRF in the base install"
+
+      settings.configure(
+          INSTALLED_APPS=[
+              "django.contrib.auth",
+              "django.contrib.contenttypes",
+              "scoped_rbac",
+              "reversion",
+              "scrud_django",
+          ],
+          DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
+          ROOT_URLCONF="project_urls",
+          # The ninja API's HTTP Schema Resources resolve their links
+          # against it (scrud_django.W009 without it).
+          SCRUDFUL={"BASE_URL": "http://testserver"},
+      )
+      django.setup()
+      import scrud_django.ninja  # noqa: E402,F401
+
+      print("ok: the base install imports scrud_django.ninja")
+
+      # A project's URLconf including the default scrud_django.urls (ninja) under
+      # api/, imported once the database is migrated (it registers the types).
+      from django.core.management import call_command  # noqa: E402
+      from django.test import Client  # noqa: E402
+      from django.test.utils import setup_test_environment  # noqa: E402
+      from django.urls import include, path  # noqa: E402
+
+      call_command("migrate", verbosity=0)
+      project_urls = types.ModuleType("project_urls")
+      project_urls.urlpatterns = [path("api/", include("scrud_django.urls"))]
+      sys.modules["project_urls"] = project_urls
+      setup_test_environment()
+      response = Client().get("/api/services/")
+      assert response.status_code == 200, (response.status_code, response.content[:500])
+      assert "http://testserver/api/json-schema/" in response.json().values(), response.json()
+      # A route's HTTP Schema Resource, which its OPTIONS links to.
+      hsr_rel = 'rel="https://w3id.org/semantic-http/ns#http-schema-resource-document"'
+      options = Client().options("/api/indexing-policies/")
+      (hsr_link,) = [link for link in options["Link"].split(", ") if hsr_rel in link]
+      hsr_url = hsr_link.split(";")[0].strip("<>")
+      assert hsr_url.startswith("http://testserver/api/indexing-policies/_hsr/"), hsr_url
+      hsr = Client().get(hsr_url)
+      assert hsr.status_code == 200, (hsr_url, hsr.status_code, hsr.content[:500])
+      assert "get" in hsr.json(), hsr.json()
+      call_command("check")
+      assert "rest_framework" not in sys.modules
+      print("ok: scrud_django.urls serves /api/services/ and an HTTP Schema Resource, and check passes, without DRF")
+      EOF
+    - |
+      wheel="$(ls build/dist-check/*.whl)"
+      uv pip install -q -p build/base-venv "scrud-django[ui] @ file://$PWD/$wheel"
+    - |
+      build/base-venv/bin/python -I - <<'EOF'
+      import importlib.util
+      import sys
+      import types
+
+      import django
+      from django.conf import settings
+
+      assert importlib.util.find_spec("rest_framework") is None, "DRF in the ui install"
+
+      settings.configure(
+          INSTALLED_APPS=[
+              "django.contrib.auth",
+              "django.contrib.contenttypes",
+              "django.contrib.sessions",
+              "scoped_rbac",
+              "reversion",
+              "scrud_django",
+              "scrud_django.ui",
+          ],
+          MIDDLEWARE=[
+              "django.contrib.sessions.middleware.SessionMiddleware",
+              "django.middleware.csrf.CsrfViewMiddleware",
+              "django.contrib.auth.middleware.AuthenticationMiddleware",
+          ],
+          TEMPLATES=[
+              {
+                  "BACKEND": "django.template.backends.django.DjangoTemplates",
+                  "APP_DIRS": True,
+              }
+          ],
+          DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
+          ROOT_URLCONF="project_urls",
+          SECRET_KEY="package check",
+          SCRUDFUL={"BASE_URL": "http://testserver"},
+      )
+      django.setup()
+      import scrud_django.ui.urls  # noqa: E402,F401
+
+      print("ok: scrud_django.ui.urls imports without DRF")
+
+      from django.contrib.auth.models import User  # noqa: E402
+      from django.core.management import call_command  # noqa: E402
+      from django.test import Client  # noqa: E402
+      from django.test.utils import setup_test_environment  # noqa: E402
+      from django.urls import include, path  # noqa: E402
+
+      call_command("migrate", verbosity=0)
+      project_urls = types.ModuleType("project_urls")
+      project_urls.urlpatterns = [
+          path("api/", include("scrud_django.urls")),
+          path("", include("scrud_django.ui.urls")),
+      ]
+      sys.modules["project_urls"] = project_urls
+      setup_test_environment()
+      client = Client()
+      response = client.get("/api/services/")
+      assert response.status_code == 200, (response.status_code, response.content[:500])
+      assert "http://testserver/api/ui-components/" in response.json().values(), response.json()
+      # A UI page: the list of a built-in UI type, for a superuser.
+      client.force_login(User.objects.create_superuser("admin", "admin@example.com", "pw"))
+      page = client.get("/ui-components/")
+      assert page.status_code == 200, (page.status_code, page.content[:500])
+      assert page["Content-Type"].startswith("text/html"), page["Content-Type"]
+      assert 'data-scrud-href="/ui-components/"' in page.content.decode(), page.content
+      call_command("check")
+      assert "rest_framework" not in sys.modules
+      print("ok: scrud_django.urls serves /api/services/ and a UI page, and check passes, without DRF")
+      EOF
     - uv venv -q build/wheel-venv
-    - uv pip install -q -p build/wheel-venv build/dist-check/*.whl
+    - |
+      wheel="$(ls build/dist-check/*.whl)"
+      uv pip install -q -p build/wheel-venv "scrud-django[drf] @ file://$PWD/$wheel"
     - |
       expected="$(uv version --short)"
       EXPECTED="$expected" build/wheel-venv/bin/python -I - <<'EOF'
@@ -247,7 +415,7 @@ package:
           ]
       )
       django.setup()
-      import scrud_django.views  # noqa: E402,F401
+      import scrud_django.drf.views  # noqa: E402,F401
 
       print(f"ok: scrud_django {scrud_django.__version__} from {installed}")
       EOF

@@ -766,12 +766,9 @@ def test_computed_allow_parity(user_name):
 
 
 @pytest.mark.django_db
-def test_studio_computed_allow_is_pinned():
-    """KNOWN DIVERGENCE (follow-up ``studio-computed-to-compute``): the
-    studio's computed types register a ``viewset_class``, not ``compute=``,
-    so `served_methods` treats them as plain types and the facade lists PUT
-    and DELETE for a superuser where DRF lists GET only. Remove when they
-    take ``compute=``."""
+def test_studio_computed_allow_parity():
+    """The studio's computed types take ``compute=`` (follow-up
+    ``studio-computed-to-compute``): the facade lists GET (HEAD, OPTIONS)
+    for them, as their DRF routes do, no longer PUT and DELETE."""
     drf, core = computed_allow("ui-branch-status", "superuser")
-    assert drf == ["GET", "HEAD", "OPTIONS"]
-    assert core == ["DELETE", "GET", "HEAD", "OPTIONS", "PUT"]
+    assert core == drf == ["GET", "HEAD", "OPTIONS"]

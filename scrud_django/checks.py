@@ -630,9 +630,18 @@ def list_filter_errors(patterns, prefix=""):
     list answers every request with ``ImproperlyConfigured`` (a 500) rather
     than listing every object."""
     from django.urls import URLPattern, URLResolver
+
+    try:
+        import rest_framework  # noqa: F401
+    except ModuleNotFoundError as error:
+        if error.name != "rest_framework":
+            raise
+        # Without DRF no route is a DRF viewset. (Only its absence: an import
+        # error inside DRF or scrud's DRF modules raises.)
+        return []
     from scoped_rbac.filters import RbacFilter
 
-    from scrud_django.mixins.view_mixins import ListValidatorsMixin
+    from scrud_django.drf.mixins import ListValidatorsMixin
 
     errors = []
     for entry in patterns:
@@ -663,7 +672,7 @@ def list_filter_errors(patterns, prefix=""):
                 "ImproperlyConfigured (a 500).",
                 hint=(
                     "Put scoped_rbac.filters.RbacFilter (for resources, "
-                    "scrud_django.filters.ResourceRbacFilter) in its "
+                    "scrud_django.drf.filters.ResourceRbacFilter) in its "
                     "filter_backends."
                 ),
                 obj=view_class,
@@ -679,6 +688,262 @@ def check_list_filters(app_configs, **kwargs):
     from django.urls import get_resolver
 
     return list_filter_errors(get_resolver().url_patterns)
+
+
+def _namespace_counts(patterns, outer="", counts=None):
+    """How many includes of the URL `patterns` (walked recursively) are named
+    each namespace, qualified by the namespaces they are nested in
+    (``outer:inner``), as Django reverses them."""
+    from django.urls import URLResolver
+
+    counts = {} if counts is None else counts
+    for entry in patterns:
+        if not isinstance(entry, URLResolver):
+            continue
+        namespace = outer
+        if entry.namespace:
+            namespace = f"{outer}:{entry.namespace}" if outer else entry.namespace
+            counts[namespace] = counts.get(namespace, 0) + 1
+        _namespace_counts(entry.url_patterns, namespace, counts)
+    return counts
+
+
+def check_api_namespaces(app_configs, **kwargs):
+    """An Error (``scrud_django.E010``) for each namespace a scrud ninja API
+    names its routes in (``api(urls_namespace=...)``, noted in
+    `scrud_django.core.urls.api_namespaces`) that the project's URLconf
+    (``ROOT_URLCONF``) includes more than once, as when an app's own
+    ``api()`` and ``include("scrud_django.urls")`` both keep the default
+    ``"scrud"``. Django reverses the namespace's names within its first
+    include only, so every scrudful route of the other API fails (a 500:
+    scrudful cannot reverse its HTTP Schema Resource route) and links
+    reversed in the namespace point at the first. Registered with Django's
+    ``urls`` tag."""
+    from django.urls import get_resolver
+
+    from scrud_django.core.urls import api_namespaces
+
+    # Read first: importing the URLconf builds its APIs, which note their
+    # namespaces.
+    counts = _namespace_counts(get_resolver().url_patterns)
+    noted = {namespace for namespace in api_namespaces() if namespace}
+    return [
+        checks.Error(
+            f"The URL namespace {namespace!r} of a scrud API is included "
+            f"{count} times: Django reverses its names within the first "
+            "include only, so the requests of the other API's routes fail "
+            "(500: their HTTP Schema Resource routes cannot be reversed) and "
+            "links point at the first API.",
+            hint=(
+                "Give each scrud_django.ninja.api() its own urls_namespace; an "
+                "app building its own api() in the default namespace 'scrud' "
+                'replaces include("scrud_django.urls") rather than adding to it.'
+            ),
+            obj=namespace,
+            id="scrud_django.E010",
+        )
+        for namespace, count in counts.items()
+        if count > 1 and namespace.rsplit(":", 1)[-1] in noted
+    ]
+
+
+#: The routes of the built-in types the links of a DRF-registered type
+#: reverse by bare name (its schema and context), which
+#: ``scrud_django.drf.urls`` routes.
+DRF_BUILT_IN_ROUTES = ("json-schema-detail", "json-ld-detail")
+
+
+def check_drf_registrations_routed(app_configs, **kwargs):
+    """An Error (``scrud_django.E011``) when the project's URLconf
+    (``ROOT_URLCONF``) routes types registered for DRF
+    (``registration.json_resource_type``, whose routes are named outside any
+    namespace, `scrud_django.core.urls.api_slugs` of ``None``) but not the
+    DRF routes of the built-in types their links reverse by bare name
+    (`DRF_BUILT_IN_ROUTES`): an upgrade's ``include("scrud_django.urls")``,
+    the ninja API since 0.17.0, beside ``registration.resource_types(...)``.
+    Every request of those types would fail (500, ``NoReverseMatch``).
+    Registered with Django's ``urls`` tag."""
+    from django.urls import NoReverseMatch, get_resolver, reverse
+
+    from scrud_django.core.urls import api_slugs
+
+    def reverses(name, args):
+        try:
+            reverse(name, args=args)
+        except NoReverseMatch:
+            return False
+        return True
+
+    # Read first: importing the URLconf runs its registrations, which note
+    # their routes.
+    get_resolver().url_patterns  # noqa: B018
+    routed = [
+        slug
+        for slug in api_slugs(namespace=None)
+        if reverses(f"{slug}-list", ()) or reverses(f"{slug}-detail", ("key",))
+    ]
+    missing = [name for name in DRF_BUILT_IN_ROUTES if not reverses(name, ("key",))]
+    if not routed or not missing:
+        return []
+    return [
+        checks.Error(
+            f"The URLconf routes types registered for DRF ({', '.join(routed)}) "
+            f"but not the DRF routes {', '.join(missing)} their links reverse: "
+            "every request of those types would fail (500, NoReverseMatch). "
+            'include("scrud_django.urls") serves the ninja API since 0.17.0.',
+            hint=(
+                'Include "scrud_django.drf.urls" in place of "scrud_django.urls" '
+                "(with the drf extra), or move the types to "
+                "scrud_django.ninja.api(types=[registration."
+                "json_resource_type_spec(...)]) and include that API instead."
+            ),
+            id="scrud_django.E011",
+        )
+    ]
+
+
+def routed_api_namespaces():
+    """The namespaces of the scrud ninja APIs the project's URLconf
+    (``ROOT_URLCONF``) routes: each namespace it includes (qualified by the
+    namespaces it is nested in, ``outer:inner``) whose own name a scrud
+    ``api()`` named its routes in (`scrud_django.core.urls.api_namespaces`),
+    sorted."""
+    from django.urls import get_resolver
+
+    from scrud_django.core.urls import api_namespaces
+
+    # Read first: importing the URLconf builds its APIs, which note their
+    # namespaces.
+    counts = _namespace_counts(get_resolver().url_patterns)
+    noted = {namespace for namespace in api_namespaces() if namespace}
+    return sorted(
+        namespace for namespace in counts if namespace.rsplit(":", 1)[-1] in noted
+    )
+
+
+#: DRF's own ``DEFAULT_AUTHENTICATION_CLASSES``: the session's user, then
+#: Basic. A project that leaves them, or sets them again, is not warned
+#: (`check_drf_settings_on_ninja`).
+DRF_DEFAULT_AUTHENTICATION = frozenset(
+    {
+        "rest_framework.authentication.SessionAuthentication",
+        "rest_framework.authentication.BasicAuthentication",
+    }
+)
+
+
+def _dotted_path(value):
+    """The dotted path of `value`, an entry of a DRF class setting: itself
+    when a ``str``, else its module and qualified name."""
+    if isinstance(value, str):
+        return value
+    return f"{value.__module__}.{value.__qualname__}"
+
+
+def check_drf_settings_on_ninja(app_configs, **kwargs):
+    """A Warning (``scrud_django.W008``) for each ``REST_FRAMEWORK`` setting
+    that changed what scrud's DRF routes did but that a scrud ninja API the
+    project's URLconf (``ROOT_URLCONF``) routes (`routed_api_namespaces`,
+    as ``include("scrud_django.urls")`` does since 0.17.0) does not read:
+
+    - ``DEFAULT_THROTTLE_CLASSES`` (not empty): the ninja API is not rate
+      limited;
+    - ``DEFAULT_AUTHENTICATION_CLASSES`` other than DRF's own pair
+      (`DRF_DEFAULT_AUTHENTICATION`) while ``SCOPED_RBAC["NINJA_USER"]`` is
+      unset: their clients (a token's, Basic's) are anonymous on ninja,
+      which reads the session's user instead, so a token-only API accepts
+      session cookies.
+
+    Registered with Django's ``urls`` and ``security`` tags."""
+    from django.conf import settings
+
+    rest_framework = getattr(settings, "REST_FRAMEWORK", None)
+    if not isinstance(rest_framework, dict):
+        return []
+    throttled = bool(rest_framework.get("DEFAULT_THROTTLE_CLASSES"))
+    authentication = rest_framework.get("DEFAULT_AUTHENTICATION_CLASSES")
+    scoped_rbac = getattr(settings, "SCOPED_RBAC", None) or {}
+    authenticated_otherwise = (
+        authentication is not None
+        and {_dotted_path(entry) for entry in authentication}
+        != DRF_DEFAULT_AUTHENTICATION
+        and scoped_rbac.get("NINJA_USER") is None
+    )
+    if not (throttled or authenticated_otherwise):
+        return []
+    routed = routed_api_namespaces()
+    if not routed:
+        return []
+    api = f"the scrud ninja API (namespace {', '.join(map(repr, routed))})"
+    found = []
+    if throttled:
+        found.append(
+            checks.Warning(
+                "REST_FRAMEWORK sets DEFAULT_THROTTLE_CLASSES, which "
+                f"{api} does not read: its requests are not rate limited.",
+                hint=(
+                    "Build your own scrud_django.ninja.api(types=[...], "
+                    "throttle=[...]) with ninja's throttles (ninja.throttling) in "
+                    'place of include("scrud_django.urls"), or stay on DRF '
+                    '(include "scrud_django.drf.urls", with the drf extra). '
+                    "Silence scrud_django.W008 once the API has its own throttles."
+                ),
+                id="scrud_django.W008",
+            )
+        )
+    if authenticated_otherwise:
+        found.append(
+            checks.Warning(
+                "REST_FRAMEWORK sets DEFAULT_AUTHENTICATION_CLASSES, which "
+                f"{api} does not run: it reads the session's user, so their "
+                "clients (a token's, Basic's) are anonymous there, and a "
+                "session cookie authenticates where they accepted none.",
+                hint=(
+                    'Set SCOPED_RBAC["NINJA_USER"] = '
+                    '"scrud_django.drf.auth.drf_user" (with the drf extra), which '
+                    "runs them on each ninja request, or stay on DRF (include "
+                    '"scrud_django.drf.urls").'
+                ),
+                id="scrud_django.W008",
+            )
+        )
+    return found
+
+
+def check_base_url_for_ninja(app_configs, **kwargs):
+    """A Warning (``scrud_django.W009``) when the project's URLconf
+    (``ROOT_URLCONF``) routes a scrud ninja API (`routed_api_namespaces`)
+    and ``SCRUDFUL["BASE_URL"]`` is unset: scrudful builds a route's HTTP
+    Schema Resource without a request, so the HSRs whose links are relative
+    (those of every type's routes and of scoped-rbac's role routes) fail
+    (500, ninja's ``ConfigError``), as a DRF project's do without
+    scrudful's HSR route (``scrudful.E003``). A ``SCRUDFUL`` that is not a
+    mapping is left to scrudful, which refuses it on each request.
+    Registered with Django's ``urls`` tag."""
+    from collections.abc import Mapping
+
+    from django.conf import settings
+
+    scrudful = getattr(settings, "SCRUDFUL", {})
+    if not isinstance(scrudful, Mapping) or scrudful.get("BASE_URL") is not None:
+        return []
+    routed = routed_api_namespaces()
+    if not routed:
+        return []
+    named = ", ".join(repr(namespace) for namespace in routed)
+    return [
+        checks.Warning(
+            'SCRUDFUL["BASE_URL"] is unset, and the URLconf routes the scrud '
+            f"ninja API (namespace {named}): scrudful builds an HTTP Schema "
+            "Resource without a request, so those of its types' and role "
+            "routes, whose links are relative, fail (500, ConfigError).",
+            hint=(
+                'Set SCRUDFUL = {"BASE_URL": "https://api.example.com"}, the URL '
+                "the API is served at."
+            ),
+            id="scrud_django.W009",
+        )
+    ]
 
 
 ACTIONS_HINT = (
@@ -769,8 +1034,12 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
     ``SCRUD_WORKFLOW_ACTIONS`` that is not a registered resource type on the
     database ``ResourceType`` is written to (``router.db_for_write``), if it
     is among `databases`, migrated and holds the tables (`not_checked`): a
-    misspelled type URI runs nothing. Resource types are registered when the
-    URLconf is imported, which this does first (as Django's URL checks do).
+    misspelled type URI runs nothing. A type URI an app's own model is
+    governed as (`scrud_django.core.transitions.governed_type_iris`) is not
+    reported: its actions run for that model's writes. Resource types are
+    registered, and own models governed (``scrud_django.ninja.workflow_check``,
+    at the import of the module of an app's router), when the URLconf is
+    imported, which this does first (as Django's URL checks do).
     A setting that cannot be loaded is `check_workflow_actions`'s to
     report. A URLconf that cannot be imported, or a database error reading
     the migrated database, is reported (`could_not_run`,
@@ -781,6 +1050,7 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
     from django.urls import get_resolver
 
     from scrud_django.conf import workflow_actions
+    from scrud_django.core.transitions import governed_type_iris
     from scrud_django.models import ResourceType
 
     alias = router.db_for_write(ResourceType)
@@ -810,13 +1080,16 @@ def check_workflow_action_types(app_configs, databases=None, **kwargs):
         )
     except (OperationalError, ProgrammingError) as error:
         return [could_not_run("scrud_django.W006", alias, error_text(error))]
+    registered |= governed_type_iris()
     return [
         checks.Warning(
             f"SCRUD_WORKFLOW_ACTIONS has actions for {type_uri!r}, which is not a "
-            f"resource type registered on database {alias!r}: they never run.",
+            f"resource type registered on database {alias!r} nor the IRI of a "
+            "governed model: they never run.",
             hint=(
                 "Fix the type URI (it is the resource type's type_uri, as "
-                "registered with ResourceTypeRegistration), or remove the entry."
+                "registered with ResourceTypeRegistration, or the IRI a model "
+                "is governed as with workflow_check), or remove the entry."
             ),
             obj=type_uri,
             id="scrud_django.W006",

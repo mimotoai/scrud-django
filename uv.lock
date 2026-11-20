@@ -1285,20 +1285,20 @@ version = "0.16.0"
 source = { editable = "." }
 dependencies = [
     { name = "django" },
-    { name = "django-filter" },
+    { name = "django-ninja" },
     { name = "django-reversion" },
-    { name = "django-scoped-rbac", extra = ["drf"] },
-    { name = "djangorestframework" },
+    { name = "django-scoped-rbac", extra = ["ninja"] },
     { name = "fastjsonschema" },
     { name = "jsonpath-ng" },
-    { name = "scrudful", extra = ["drf"] },
+    { name = "scrudful", extra = ["ninja"] },
 ]
 
 [package.optional-dependencies]
-ninja = [
-    { name = "django-ninja" },
-    { name = "django-scoped-rbac", extra = ["ninja"] },
-    { name = "scrudful", extra = ["ninja"] },
+drf = [
+    { name = "django-filter" },
+    { name = "django-scoped-rbac", extra = ["drf"] },
+    { name = "djangorestframework" },
+    { name = "scrudful", extra = ["drf"] },
 ]
 search = [
     { name = "django-haystack" },
@@ -1321,7 +1321,7 @@ dev = [
     { name = "ruff" },
     { name = "safetydance" },
     { name = "safetydance-django" },
-    { name = "scrud-django", extra = ["ninja", "search", "ui"] },
+    { name = "scrud-django", extra = ["drf", "search", "ui"] },
 ]
 docs = [
     { name = "myst-parser" },
@@ -1334,21 +1334,21 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "django", specifier = ">=5.2,<6.0" },
-    { name = "django-filter", specifier = ">=25.1" },
+    { name = "django-filter", marker = "extra == 'drf'", specifier = ">=25.1" },
     { name = "django-haystack", marker = "extra == 'search'", specifier = ">=3.3" },
-    { name = "django-ninja", marker = "extra == 'ninja'", specifier = ">=1.7.0,<1.7.4" },
+    { name = "django-ninja", specifier = ">=1.7.0,<1.7.4" },
     { name = "django-reversion", specifier = ">=5.1" },
-    { name = "django-scoped-rbac", extras = ["drf"], specifier = ">=0.12.1,<0.13" },
-    { name = "django-scoped-rbac", extras = ["ninja"], marker = "extra == 'ninja'", specifier = ">=0.12.1,<0.13" },
-    { name = "djangorestframework", specifier = ">=3.15" },
+    { name = "django-scoped-rbac", extras = ["drf"], marker = "extra == 'drf'", specifier = ">=0.12.1,<0.13" },
+    { name = "django-scoped-rbac", extras = ["ninja"], specifier = ">=0.12.1,<0.13" },
+    { name = "djangorestframework", marker = "extra == 'drf'", specifier = ">=3.15" },
     { name = "fastjsonschema", specifier = ">=2.19" },
     { name = "jinja2", marker = "extra == 'ui'", specifier = ">=3.1,<4" },
     { name = "jsonpath-ng", specifier = ">=1.6" },
-    { name = "scrudful", extras = ["drf"], specifier = ">=0.10.1,<0.11" },
-    { name = "scrudful", extras = ["ninja"], marker = "extra == 'ninja'", specifier = ">=0.10.1,<0.11" },
+    { name = "scrudful", extras = ["drf"], marker = "extra == 'drf'", specifier = ">=0.10.1,<0.11" },
+    { name = "scrudful", extras = ["ninja"], specifier = ">=0.10.1,<0.11" },
     { name = "whoosh-reloaded", marker = "extra == 'search'", specifier = ">=2.7.5" },
 ]
-provides-extras = ["search", "ui", "ninja"]
+provides-extras = ["search", "ui", "drf", "ninja"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1363,7 +1363,7 @@ dev = [
     { name = "ruff" },
     { name = "safetydance", specifier = ">=0.5,<0.6" },
     { name = "safetydance-django", specifier = ">=0.1,<0.2" },
-    { name = "scrud-django", extras = ["search", "ui", "ninja"] },
+    { name = "scrud-django", extras = ["search", "ui", "drf"] },
 ]
 docs = [
     { name = "myst-parser", specifier = ">=5.1,<6" },

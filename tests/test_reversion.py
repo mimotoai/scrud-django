@@ -111,6 +111,7 @@ def test_loaddata_gives_fresh_validators(tmp_path):
     assert loaded.modified_at >= before_load > changed.modified_at
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 def test_a_restored_list_is_modified_after_every_removal_stamp(tmp_path):
     # A dump/flush/load keeps the removal stamps as dumped; the loaded

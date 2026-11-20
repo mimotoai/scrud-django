@@ -19,6 +19,7 @@ from django.http import QueryDict
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.models import Resource
 from scrud_django.registration import ResourceTypeRegistration
 from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
 from scrud_django.ui.types import UI_STYLESHEET_TYPE_URI
@@ -31,6 +32,7 @@ from .test_ui_branch_types import make_branch
 from .test_ui_http import grant, make_stylesheet
 from .test_ui_static import SCRUD_UI as SCRUD_UI_JS
 from .test_ui_static import require_node
+from .ui import page_request, ui_url
 
 LAYER_PACKAGE = "scrud_django.ui.studio.layer"
 
@@ -2920,11 +2922,12 @@ def test_pointer_with_tilde_explained_exactly(ui_alice_login, settings):
         ),
         context_func=lambda: json.dumps({"@type": "urn:x:Tilde"}),
         register_service=False,
+        build_urls=False,
     )
     reverse("todo-lists-list")
     make_branch("alice-wip", "alice")
     grant(ui_alice_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = live(type="studio-tilde", branch="alice-wip")
     pointer = "/a~1b~0c"
     assert f'<scrud-node data-pointer="{pointer}">' in page
@@ -4075,8 +4078,9 @@ def test_new_branch_form_body_from_main(studio_layer, admin_login, settings):
 
     settings.ROOT_URLCONF = "tests.mounted_urls"
     main = make_branch("main", "", parent=None)
-    Given.http.force_authenticate(admin_login)
-    When.http.get(workbench_url(main), HTTP_ACCEPT="text/html")
+    Given.http.force_login(admin_login)
+    url, headers = page_request(workbench_url(main))
+    When.http.get(url, **headers)
     Then.http.status_code_is(200)
     page = Page(Http.response.content.decode())
     [form] = page.having("data-studio-new-branch")
@@ -4100,14 +4104,17 @@ def test_new_branch_form_body_from_main(studio_layer, admin_login, settings):
     out = json.loads(done.stdout)
     assert out["bad"] == []
     assert out["body"] == {"name": "feature", "parent": "main", "rbac_context": ""}
+    # The form posts to the UI app, which creates the branch with the body.
+    assert form.attrs["hx-post"] == ui_url(reverse("ui-branches-list"))
+    url, headers = page_request(form.attrs["hx-post"], HTTP_HX_REQUEST="true")
     When.http.post(
-        form.attrs["hx-post"],
-        data=json.dumps(out["body"]),
-        content_type="application/json",
-        HTTP_ACCEPT="application/json",
+        url, data=json.dumps(out["body"]), content_type="application/json", **headers
     )
     Then.http.status_code_is(201)
-    assert Http.response.json()["rbac_context"] == ""
+    created = Resource.objects.get(
+        resource_type__slug="ui-branches", content__name="feature"
+    )
+    assert created.content["rbac_context"] == ""
 
 
 # ---- bodies from the server's markup, through the API ---------------------
@@ -4137,7 +4144,7 @@ def test_override_copy_sends_the_rendered_body(studio_layer, settings):
     settings.ROOT_URLCONF = "tests.mounted_urls"
     run_seed(load_seed())
     alice = seeded_branch("alice-wip")
-    Given.http.force_authenticate(get_user_model().objects.get(username="author"))
+    Given.http.force_login(get_user_model().objects.get(username="author"))
     page = Page(get_page(workbench_url(alice, STUDIO_ROOT)))
     classes, _row, li = page.entries()[("component", "todo-row")]
     assert "studio-own" not in classes
@@ -4193,12 +4200,12 @@ def test_promote_sends_the_rendered_bodies(studio_layer, admin_login, settings):
     )
     review = out["review"]
     assert review["verb"] == "GET" and review["source"] is True
-    When.http.get(
+    url, headers = page_request(
         review["path"],
-        HTTP_ACCEPT="text/html",
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_SCOPE=review["headers"]["Scrud-UI-Scope"],
     )
+    When.http.get(url, **headers)
     Then.http.status_code_is(200)
     [found] = Page(Http.response.content.decode()).having("data-studio-push-preview")
     answered = {
@@ -4241,7 +4248,7 @@ def test_new_rule_sends_what_the_server_offers(admin_login, ui_alice_login, sett
     reverse("todo-lists-list")
     make_wip(admin_login, name="alice-wip")
     grant(ui_alice_login, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.get(
         reverse("ui-branch-status-detail", args=["alice-wip"]),
         HTTP_ACCEPT="application/json",
@@ -4357,7 +4364,7 @@ def test_order_shows_its_default_and_saves_nothing_untouched(
         rules=[{"select": "string", "component": "scrud:string"}],
     )
     assert "order" not in sheet.content
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     classes, opened, _li, _page = workbench_entries(alice_wip)[("stylesheet", "plain")]
     assert "studio-own" in classes
     href = opened["href"]

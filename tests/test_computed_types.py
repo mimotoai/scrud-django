@@ -1,4 +1,4 @@
-"""Computed, read-only resource types (`scrud_django.computed`): content a
+"""Computed, read-only resource types (`scrud_django.drf.computed`): content a
 view computes for the requesting user, served with an ETag, rendered through
 the same cascade as stored resources, and never writable."""
 
@@ -9,17 +9,20 @@ import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django.computed import computed_etag
-from scrud_django.registration import get_resource_type_for
+from scrud_django.drf.computed import computed_etag
+from scrud_django.registration import ResourceRegistration, get_resource_type_for
 
 from .fixtures import *  # noqa
 from .fixtures import assign_role
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_prefixes import ADMIN, publish
-from .test_ui_branch_render import may_select_branches
+from .test_ui_branch_render import may_select_branches, put_item
 from .test_ui_http import HTML, assert_html, html, make_component, make_stylesheet
+from .ui import ui_url
 
 JSON = "application/json"
+# The page of ``summaries`` (a computed type with a ``compute`` hook).
+HOOKED_SUMMARY_TEMPLATE = "<section>{{ value.key }}:{{ value.user }}|{{ resource.decisions.GET }}|{{ resource.decisions.PUT }}|{{ resource.decisions.DELETE }}</section>"
 SUMMARY_TEMPLATE = "<section>{{ value.context }}:{{ value.titles|join:',' }}|{{ resource.decisions.GET }}|{{ resource.decisions.PUT }}|{{ resource.decisions.DELETE }}</section>"
 
 
@@ -27,6 +30,19 @@ SUMMARY_TEMPLATE = "<section>{{ value.context }}:{{ value.titles|join:',' }}|{{ 
 def api_at_api_path(settings):
     """The API at ``/api/``, for the published prefix."""
     settings.ROOT_URLCONF = "tests.mounted_urls"
+
+
+def make_summaries_stylesheet(component):
+    """main's stylesheet rendering ``summaries`` with `component`."""
+    ResourceRegistration.register(
+        {
+            "name": "summaries",
+            "prefixes": {"sum": "http://example.org/summary#"},
+            "rules": [{"select": "sum:Summary", "component": component}],
+            "rbac_context": "",
+        },
+        "ui-stylesheets",
+    )
 
 
 def summary_url(key="project-a"):
@@ -68,14 +84,17 @@ def test_computed_type_json_and_etag_304(todo_list, todo_reader_login):
 @pytest.mark.django_db
 @test_context
 def test_computed_type_renders_through_cascade(todo_list, todo_reader_login):
-    make_component("summary", SUMMARY_TEMPLATE)
-    make_stylesheet("s", [("ex:TodoSummary", "summary")])
-    Given.http.force_authenticate(todo_reader_login)
-    When.http.get(summary_url(), HTTP_ACCEPT=HTML)
+    # The UI serves a computed type with a ``compute`` hook (``summaries``);
+    # the viewset-computed ``todo-summaries`` has no page of the UI's.
+    make_component("hooked-summary", HOOKED_SUMMARY_TEMPLATE)
+    make_summaries_stylesheet("hooked-summary")
+    Given.http.force_login(todo_reader_login)
+    When.http.get(ui_url(reverse("summaries-detail", args=["k"])), HTTP_ACCEPT=HTML)
     Then.http.status_code_is(200)
     assert_html()
     # View-only decisions, whatever the user's grants.
-    assert "<section>project-a:Groceries|allowed|denied|denied</section>" in html()
+    name = todo_reader_login.get_username()
+    assert f"<section>k:{name}|allowed|denied|denied</section>" in html()
 
 
 @pytest.mark.django_db
@@ -117,15 +136,33 @@ def test_computed_type_shows_only_readable(todo_list, todo_reader_login):
 def test_computed_type_under_published_prefix(todo_list, todo_reader_login):
     make_component("summary", SUMMARY_TEMPLATE)
     make_stylesheet("s", [("ex:TodoSummary", "summary")])
+    make_component("hooked-summary", "<p>main's</p>")
+    make_summaries_stylesheet("hooked-summary")
     publish("admin", ADMIN)
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
-    url = f"{ADMIN}todo-summaries/project-a/"
-    When.http.get(url, HTTP_ACCEPT=JSON)
+    put_item("ui-components", "hooked-summary", HOOKED_SUMMARY_TEMPLATE, "admin")
+    user = may_select_branches(todo_reader_login)
+    Given.http.force_login(user)
+    # JSON is the API's: with the prefix's branch selected, the same content.
+    When.http.get(summary_url(), HTTP_ACCEPT=JSON, HTTP_SCRUD_UI_BRANCH="admin")
     Then.http.status_code_is(200)
     assert Http.response.json() == {"context": "project-a", "titles": ["Groceries"]}
-    When.http.get(url, HTTP_ACCEPT=HTML)
-    Then.http.status_code_is(200)
-    assert "<section>project-a:Groceries|allowed|denied|denied</section>" in html()
+    # Under the prefix only the UI answers: a computed type it serves no
+    # page of (computed by its viewset, not a ``compute`` hook) is not
+    # claimed, whatever the Accept.
+    for accept in (JSON, HTML):
+        When.http.get(f"{ADMIN}todo-summaries/project-a/", HTTP_ACCEPT=accept)
+        Then.http.status_code_is(404)
+        assert b"scrud-" not in Http.response.content
+    # One with a ``compute`` hook is: its page, rendered through the
+    # branch's cascade, view only, for a JSON Accept too.
+    name = user.get_username()
+    for accept in (JSON, HTML):
+        When.http.get(f"{ADMIN}summaries/project-a/", HTTP_ACCEPT=accept)
+        Then.http.status_code_is(200)
+        assert_html()
+        assert f"<section>project-a:{name}|allowed|denied|denied</section>" in html()
+    When.http.get("/summaries/project-a/")
+    assert "<p>main's</p>" in html() and "<section>" not in html()
 
 
 @pytest.mark.django_db
@@ -188,9 +225,9 @@ def test_computed_etag_of_encoder_types():
 @pytest.mark.django_db
 @test_context
 def test_computed_type_405_as_html(todo_list, todo_owner_login):
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     When.http.put(
-        summary_url(),
+        ui_url(reverse("summaries-detail", args=["k"])),
         data=json.dumps({"context": "x"}),
         content_type=JSON,
         HTTP_ACCEPT=HTML,
@@ -206,11 +243,17 @@ def test_computed_type_refused_under_prefix_without_branch_get(
     todo_list, todo_reader_login
 ):
     publish("admin", ADMIN)
-    Given.http.force_authenticate(todo_reader_login)
-    url = f"{ADMIN}todo-summaries/project-a/"
-    When.http.get(url, HTTP_ACCEPT=JSON)
-    Then.http.status_code_is(403)
-    assert "Groceries" not in Http.response.content.decode()
+    Given.http.force_login(todo_reader_login)
+    name = todo_reader_login.get_username()
+    When.http.get("/summaries/project-a/")
+    Then.http.status_code_is(200)
+    assert name in html()
+    # Under the prefix, refused: the user may not GET its branch.
+    for accept in (JSON, HTML):
+        When.http.get(f"{ADMIN}summaries/project-a/", HTTP_ACCEPT=accept)
+        Then.http.status_code_is(403)
+        assert_html()
+        assert name not in html()
 
 
 def test_computed_registration_has_no_service_flag():
@@ -234,7 +277,7 @@ def test_compute_must_return_a_mapping(computed):
     programming error, raised (``TypeError``), never served as content."""
     from types import SimpleNamespace
 
-    from scrud_django.computed import ComputedResourceViewSet
+    from scrud_django.drf.computed import ComputedResourceViewSet
 
     class Wrong(ComputedResourceViewSet):
         def compute(self, request, key):

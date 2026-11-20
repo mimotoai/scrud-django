@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from django.conf import settings
@@ -20,8 +21,8 @@ from ninja.errors import AuthenticationError
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django import ScrudServices, collection_type_uri_for, registration
-from scrud_django.computed import computed_etag
 from scrud_django.core.lists import list_etag
+from scrud_django.drf.computed import computed_etag
 from scrud_django.models import Resource, ResourceType
 
 from . import front_ends
@@ -43,6 +44,10 @@ from .resource_types import (
     encode_summary,
 )
 from .test_core_workflow import DRAFT, NOTE_POLICY, PUBLISHED
+
+UI_BRANCH_VERSION_TYPE_URI = "http://api.openteams.com/json-ld/UIBranchVersion"
+UI_COMPONENT_TYPE_URI = "http://api.openteams.com/json-ld/UIComponent"
+UI_STYLESHEET_TYPE_URI = "http://api.openteams.com/json-ld/UIStylesheet"
 
 pytestmark = [pytest.mark.urls("tests.parity_urls"), pytest.mark.django_db]
 
@@ -1957,28 +1962,27 @@ def test_services_differ_only_where_the_serving_mount_does():
     exactly how they differ. A catalog lists absolute URLs, which name the
     serving mount, and its ETag is a hash of the catalog served
     (`ScrudServices.etag_of`): the two ETags differ as the URLs do, and no
-    normalization of the harness can equate two hashes. And the UI's types
-    are served on DRF only (R3), so ninja's catalog names DRF's URL for
-    them, where they are served. So: each lists every type, in the same
-    order; a type both front ends serve on the serving mount (alike once
-    normalized); one ninja does not serve at the URL serving it (DRF's);
-    each ETag the hash of its own catalog; every other header alike."""
+    normalization of the harness can equate two hashes. Each front end
+    serves every type the catalog lists (the UI's types too, which the
+    ninja API serves since R3 was lifted). So: each lists every type, in
+    the same order, each at the serving mount (alike once normalized); each
+    ETag the hash of its own catalog; every other header alike."""
     drf, ninja = parity(Case("services", "GET", SERVICES))
 
     assert drf.status == ninja.status == 200, drf
     drf_catalog, ninja_catalog = _catalog(drf, "drf"), _catalog(ninja, "ninja")
     assert [uri for uri, _ in drf_catalog] == [uri for uri, _ in ninja_catalog]
     normalized_drf = json.loads(drf.body)
-    unserved = 0
+    assert normalized_drf == json.loads(ninja.body)
     for (type_uri, drf_url), (_, ninja_url) in zip(
         drf_catalog, ninja_catalog, strict=True
     ):
-        if _ninja_serves(normalized_drf[type_uri]):
-            assert ninja_url == drf_url.replace(MOUNTS["drf"], MOUNTS["ninja"])
-        else:
-            unserved += 1
-            assert ninja_url == drf_url, type_uri
-    assert 0 < unserved < len(drf_catalog)
+        assert _ninja_serves(normalized_drf[type_uri]), type_uri
+        assert ninja_url == drf_url.replace(MOUNTS["drf"], MOUNTS["ninja"])
+    # The UI's types among them.
+    listed = {uri for uri, _ in drf_catalog}
+    for type_uri in (UI_COMPONENT_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI):
+        assert type_uri in listed, listed
     for exchange, catalog in ((drf, drf_catalog), (ninja, ninja_catalog)):
         assert exchange.headers["ETag"] == quote_etag(
             ScrudServices.etag_of(dict(catalog))
@@ -2045,7 +2049,7 @@ ROLE_CASES = [
 ]
 
 #: Where scoped-rbac serves its schemas and contexts in `tests.parity_urls`:
-#: ``scoped_rbac.semantic_urls``, included once (``scrud_django.urls``, under
+#: ``scoped_rbac.semantic_urls``, included once (``scrud_django.drf.urls``, under
 #: the DRF mount), which both front ends link to.
 SEMANTIC = f"http://testserver{MOUNTS['drf']}semantic/"
 
@@ -2787,4 +2791,733 @@ def test_csrf_refusals_answer_alike(method, path):
     assert drf.status == 403, drf
     assert "CSRF Failed" in drf.body, drf
     assert drf.headers.get("Allow"), drf
+    assert drf == ninja
+
+
+# The UI resource types and the studio's computed types: both front ends
+# serve them through their hooks (`scrud_django.ui.hooks.UI_TYPE_OPTIONS`,
+# `scrud_django.ui.studio.computed.studio_computed_type_specs`). A setup
+# writes through the core (`_ui_setup`), as a superuser, so that the hooks
+# store what an API write would (a branch, its versions); every resource it
+# stores is named, the first by the name its write gave, the rest ``s1``,
+# ``s2`` ... in key order (versions recorded by the hooks included), so that
+# their keys, which differ between the runs on a database server, are
+# replaced in the answers. A list case's resources keep keys of their own
+# (`_rekeyed`), which the list's ETag hashes.
+
+WIP_BRANCH = {"name": "wip", "rbac_context": "alice", "parent": "main"}
+UI_PUSH = {
+    "source": "wip",
+    "target": "main",
+    "restore": None,
+    "state": "applied",
+    "rbac_context": "",
+}
+
+
+def _ui_component(**fields):
+    return {
+        "name": "todo-row",
+        "engine": "django",
+        "mode": "view",
+        "template": "<b>{{ value }}</b>",
+        "rbac_context": "",
+        **fields,
+    }
+
+
+def _ui_stylesheet(**fields):
+    return {
+        "name": "theme",
+        "rules": [{"select": "array", "component": "todo-row"}],
+        "rbac_context": "",
+        **fields,
+    }
+
+
+def _core_create(author, slug, body):
+    """`body` created as `slug` by `author` through the core, as an API's
+    POST creates it (its hooks run)."""
+    from django.db import transaction
+    from django.test import RequestFactory
+
+    from scrud_django.core import writes
+    from scrud_django.core.types import requirement_for
+
+    request = RequestFactory().post("/")
+    request.user = author
+    resource_type = registration.get_resource_type_for(slug)
+    using = registration.write_db()
+    with transaction.atomic(using=using):
+        return writes.create(
+            request,
+            resource_type,
+            body,
+            requirement=requirement_for(resource_type),
+            using=using,
+        )
+
+
+def _stored_branch(name):
+    from scrud_django.ui.branches import UI_BRANCH_TYPE_URI
+
+    return Resource.objects.get(
+        resource_type__type_uri=UI_BRANCH_TYPE_URI, content__name=name
+    )
+
+
+def _ui_setup(
+    *writes, grants=(), superuser=True, login=True, rekeyed=None, versions=False
+):
+    """A setup making each of `writes` (``(name, slug, body)``: `body`
+    created as `slug` through the core by a superuser, ``name`` its key's
+    name; ``(name, None, branch)``: the stored branch `branch` named so),
+    then logging in a user holding `grants` (each ``(definition, context)``),
+    else a superuser (unless not `superuser`: a user holding nothing), unless
+    not `login`. With `versions`, main's versions are named ``v<number>``.
+    Every other resource it stored is named ``s1``, ``s2`` ... With
+    `rekeyed` (a type's slug), its resources are stored again with keys of
+    their own first (`_rekeyed`)."""
+
+    def setup(client):
+        before = set(Resource.objects.values_list("pk", flat=True))
+        author = User.objects.create(
+            username="ui-author", is_staff=True, is_superuser=True
+        )
+        keys = {}
+        for name, slug, body in writes:
+            if slug is None:
+                keys[name] = _stored_branch(body).pk
+            else:
+                keys[name] = _core_create(author, slug, dict(body)).pk
+        if versions:
+            for version in Resource.objects.filter(
+                resource_type__type_uri=UI_BRANCH_VERSION_TYPE_URI,
+                content__branch="main",
+            ):
+                keys[f"v{version.content['number']}"] = version.pk
+        if rekeyed is not None:
+            keys = _rekeyed(rekeyed, before, keys)
+        others = (
+            Resource.objects.exclude(pk__in=before)
+            .exclude(pk__in=keys.values())
+            .order_by("pk")
+        )
+        for index, pk in enumerate(others.values_list("pk", flat=True), start=1):
+            keys[f"s{index}"] = pk
+        if login:
+            _user(client, *grants, superuser=superuser and not grants)
+        return keys
+
+    return setup
+
+
+def _rekeyed(slug, before, keys):
+    """The resources of `slug` stored since `before` stored again, in key
+    order, with keys of their own (`store`: a list's ETag hashes them), and
+    `keys` with theirs replaced."""
+    stored = Resource.objects.exclude(pk__in=before).filter(
+        resource_type=registration.get_resource_type_for(slug)
+    )
+    names = {pk: name for name, pk in keys.items()}
+    keys = dict(keys)
+    for obj in list(stored.order_by("pk")):
+        content = obj.content
+        name = names.get(obj.pk)
+        obj.delete()
+        again = store(slug, LIST_KEYS, content)
+        if name is not None:
+            keys[name] = again.pk
+    return keys
+
+
+def _ui_path(slug, key=None):
+    return "{mount}" + (f"{slug}/" if key is None else f"{slug}/{{{key}}}/")
+
+
+UI_COMPONENT = ("component", "ui-components", _ui_component())
+UI_WIP = ("wip", "ui-branches", WIP_BRANCH)
+UI_WIP_ROW = (
+    "override",
+    "ui-components",
+    _ui_component(
+        name="row", template="<i>wip</i>", branch="wip", rbac_context="alice"
+    ),
+)
+UI_MAIN_ROW = ("row", "ui-components", _ui_component(name="row"))
+
+UI_TYPE_CASES = [
+    # UI components.
+    (
+        Case(
+            "ui-components-create",
+            "POST",
+            _ui_path("ui-components"),
+            _ui_setup(),
+            body=_ui_component(),
+        ),
+        201,
+    ),
+    (
+        Case(
+            "ui-components-create-taken",
+            "POST",
+            _ui_path("ui-components"),
+            _ui_setup(UI_COMPONENT),
+            body=_ui_component(),
+        ),
+        400,
+    ),
+    (
+        Case(
+            "ui-components-create-bad-template",
+            "POST",
+            _ui_path("ui-components"),
+            _ui_setup(),
+            body=_ui_component(template="{% if %}"),
+        ),
+        400,
+    ),
+    (
+        Case(
+            "ui-components-get",
+            "GET",
+            _ui_path("ui-components", "component"),
+            _ui_setup(UI_COMPONENT),
+        ),
+        200,
+    ),
+    (
+        Case(
+            "ui-components-list",
+            "GET",
+            _ui_path("ui-components"),
+            _ui_setup(UI_COMPONENT, UI_MAIN_ROW, rekeyed="ui-components"),
+        ),
+        200,
+    ),
+    (
+        Case(
+            "ui-components-put",
+            "PUT",
+            _ui_path("ui-components", "component"),
+            _ui_setup(UI_COMPONENT),
+            body=_ui_component(template="<i>{{ value }}</i>", branch="main"),
+            headers=_etag("component"),
+        ),
+        200,
+    ),
+    (
+        Case(
+            "ui-components-put-bad-template",
+            "PUT",
+            _ui_path("ui-components", "component"),
+            _ui_setup(UI_COMPONENT),
+            body=_ui_component(template="{% if %}", branch="main"),
+            headers=_etag("component"),
+        ),
+        400,
+    ),
+    (
+        Case(
+            "ui-components-delete",
+            "DELETE",
+            _ui_path("ui-components", "component"),
+            _ui_setup(UI_COMPONENT),
+            headers=_etag("component"),
+        ),
+        204,
+    ),
+    # UI stylesheets.
+    (
+        Case(
+            "ui-stylesheets-create",
+            "POST",
+            _ui_path("ui-stylesheets"),
+            _ui_setup(),
+            body=_ui_stylesheet(),
+        ),
+        201,
+    ),
+    (
+        Case(
+            "ui-stylesheets-create-bad-selector",
+            "POST",
+            _ui_path("ui-stylesheets"),
+            _ui_setup(),
+            body=_ui_stylesheet(
+                rules=[
+                    {"select": "array", "component": "todo-row"},
+                    {"select": "[[", "component": "todo-row"},
+                ]
+            ),
+        ),
+        400,
+    ),
+    # UI branches.
+    (
+        Case(
+            "ui-branches-create",
+            "POST",
+            _ui_path("ui-branches"),
+            _ui_setup(),
+            body=WIP_BRANCH,
+        ),
+        201,
+    ),
+    (
+        Case(
+            "ui-branches-pull",
+            "PUT",
+            _ui_path("ui-branches", "wip"),
+            _ui_setup(UI_WIP),
+            body={**WIP_BRANCH, "pull": True},
+            headers=_etag("wip"),
+        ),
+        200,
+    ),
+    (
+        Case(
+            "ui-branches-delete-main",
+            "DELETE",
+            _ui_path("ui-branches", "main"),
+            _ui_setup(UI_COMPONENT, ("main", None, "main")),
+            headers=_etag("main"),
+        ),
+        400,
+    ),
+    (
+        Case(
+            "ui-branches-delete-with-children",
+            "DELETE",
+            _ui_path("ui-branches", "wip"),
+            _ui_setup(
+                UI_WIP,
+                (
+                    "child",
+                    "ui-branches",
+                    {**WIP_BRANCH, "name": "child", "parent": "wip"},
+                ),
+            ),
+            headers=_etag("wip"),
+        ),
+        409,
+    ),
+    (
+        Case(
+            "ui-branches-delete",
+            "DELETE",
+            _ui_path("ui-branches", "wip"),
+            _ui_setup(UI_WIP),
+            headers=_etag("wip"),
+        ),
+        204,
+    ),
+    # UI pushes.
+    (
+        Case(
+            "ui-pushes-create-applied",
+            "POST",
+            _ui_path("ui-pushes"),
+            _ui_setup(UI_MAIN_ROW, UI_WIP, UI_WIP_ROW),
+            body=UI_PUSH,
+        ),
+        201,
+    ),
+    (
+        Case(
+            "ui-pushes-delete-applied",
+            "DELETE",
+            _ui_path("ui-pushes", "push"),
+            _ui_setup(UI_MAIN_ROW, UI_WIP, UI_WIP_ROW, ("push", "ui-pushes", UI_PUSH)),
+            headers=_etag("push"),
+        ),
+        409,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case, status",
+    [pytest.param(case, status, id=case.id) for case, status in UI_TYPE_CASES],
+)
+def test_ui_type_routes_answer_alike(case, status):
+    drf, ninja = parity(case)
+
+    assert drf.status == status, drf
+    assert drf == ninja
+    if case.id == "ui-stylesheets-create-bad-selector":
+        # The problem names the refused rule's selector, the second.
+        assert json.loads(drf.body)["name"] == "rules[1].select", drf.body
+
+
+# UI branch versions: read in their branch's context, each narrowed to the
+# items its reader may read (the type's ``read_view``), its ETag too; and
+# never written (the type's ``methods``): a POST, PUT or DELETE is DRF's 405
+# once the request check passed (DRF's ``initial()`` authorizes before its
+# dispatch looks the method up, and the core's ``refuse_unserved`` follows
+# the request check), else the request check's refusal.
+
+#: Version 3 of main: the component ``row`` and the stylesheets ``theme``
+#: (in "") and ``acme-theme`` (in "acme").
+UI_VERSION_ITEMS = (
+    UI_MAIN_ROW,
+    ("theme", "ui-stylesheets", _ui_stylesheet()),
+    ("acme", "ui-stylesheets", _ui_stylesheet(name="acme-theme", rbac_context="acme")),
+)
+#: May read versions, and the items in "" alone.
+UI_VERSION_READER = (
+    {
+        "http.GET": [
+            UI_BRANCH_VERSION_TYPE_URI,
+            collection_type_uri_for(UI_BRANCH_VERSION_TYPE_URI),
+            UI_COMPONENT_TYPE_URI,
+            UI_STYLESHEET_TYPE_URI,
+        ]
+    },
+    "",
+)
+#: May read and write versions, as the grants go, in "".
+UI_VERSION_WRITER = (
+    {
+        "http.GET": [
+            UI_BRANCH_VERSION_TYPE_URI,
+            collection_type_uri_for(UI_BRANCH_VERSION_TYPE_URI),
+        ],
+        "http.POST": [UI_BRANCH_VERSION_TYPE_URI],
+        "http.PUT": [UI_BRANCH_VERSION_TYPE_URI],
+        "http.DELETE": [UI_BRANCH_VERSION_TYPE_URI],
+    },
+    "",
+)
+UI_VERSION_REQUESTERS = {
+    "anonymous": {"login": False},
+    "no-roles": {"superuser": False},
+    "reader": {"grants": (UI_VERSION_READER,)},
+    "writer": {"grants": (UI_VERSION_WRITER,)},
+    "admin": {},
+}
+UI_VERSION = _ui_path("ui-branch-versions", "v3")
+UI_VERSIONS = _ui_path("ui-branch-versions")
+
+
+def _ui_version_cases():
+    cases = []
+    for name, requester in UI_VERSION_REQUESTERS.items():
+        setup = _ui_setup(*UI_VERSION_ITEMS, versions=True, **requester)
+        cases.extend(
+            [
+                Case(f"ui-branch-versions-get-{name}", "GET", UI_VERSION, setup),
+                Case(
+                    f"ui-branch-versions-post-{name}",
+                    "POST",
+                    UI_VERSIONS,
+                    setup,
+                    body={},
+                ),
+                Case(
+                    f"ui-branch-versions-put-{name}",
+                    "PUT",
+                    UI_VERSION,
+                    setup,
+                    body={"branch": "main", "number": 3, "rbac_context": ""},
+                    headers=_etag("v3"),
+                ),
+                Case(
+                    f"ui-branch-versions-delete-{name}",
+                    "DELETE",
+                    UI_VERSION,
+                    setup,
+                    headers=_etag("v3"),
+                ),
+                Case(
+                    f"ui-branch-versions-list-{name}",
+                    "GET",
+                    UI_VERSIONS,
+                    _ui_setup(
+                        *UI_VERSION_ITEMS, rekeyed="ui-branch-versions", **requester
+                    ),
+                ),
+            ]
+        )
+    cases.append(
+        Case(
+            "ui-branch-versions-head-reader",
+            "HEAD",
+            UI_VERSION,
+            _ui_setup(*UI_VERSION_ITEMS, versions=True, grants=(UI_VERSION_READER,)),
+        )
+    )
+    return cases
+
+
+#: What DRF answers each requester of `UI_VERSION_REQUESTERS` (by the
+#: `_ui_version_cases` id's last part) for a GET of a version or of the list:
+#: the request check's refusal, else the version as they get it.
+UI_VERSION_READ_STATUS = {
+    "anonymous": 401,
+    "no-roles": 403,
+    "reader": 200,
+    "writer": 200,
+    "admin": 200,
+}
+
+
+@pytest.mark.parametrize("case", _ui_version_cases(), ids=lambda case: case.id)
+def test_ui_branch_versions_answer_alike(case):
+    """A POST, PUT or DELETE is DRF's 405 for every requester, the anonymous
+    included (DRF looks the method up once ``initial()`` passed, and
+    scoped-rbac's request check leaves a method the view does not serve to
+    its 405; the ninja routes do not route it), with the routes' ``Allow``;
+    a GET is the request check's answer."""
+    drf, ninja = parity(case)
+
+    method = case.method
+    requester = next(
+        name for name in UI_VERSION_REQUESTERS if case.id.endswith(f"-{name}")
+    )
+    if method in ("POST", "PUT", "DELETE"):
+        assert drf.status == 405, drf
+        assert drf.headers["Allow"] == "GET, HEAD, OPTIONS", drf
+    else:
+        assert drf.status == UI_VERSION_READ_STATUS[requester], drf
+    assert drf == ninja
+
+
+def test_ui_branch_versions_are_narrowed_alike():
+    """Version 3 of main holds the stylesheets ``theme`` (in "") and
+    ``acme-theme`` (in "acme"): a reader of the items in "" alone gets
+    ``theme`` alone, a reader of no item none, a superuser both; each with
+    the ETag of what they get, on both front ends."""
+    seen = {}
+    for name in ("reader", "writer", "admin"):
+        case = Case(
+            f"ui-branch-versions-narrowed-{name}",
+            "GET",
+            UI_VERSION,
+            _ui_setup(*UI_VERSION_ITEMS, versions=True, **UI_VERSION_REQUESTERS[name]),
+        )
+        drf, ninja = parity(case)
+        assert drf == ninja
+        body = json.loads(drf.body)
+        seen[name] = (
+            [item["name"] for item in body["items"]["stylesheet"]],
+            drf.headers["ETag"],
+        )
+    assert seen["reader"][0] == ["theme"]
+    assert seen["writer"][0] == []
+    assert sorted(seen["admin"][0]) == ["acme-theme", "theme"]
+    assert len({etag for _, etag in seen.values()}) == 3, seen
+
+
+def test_a_pull_records_a_version_alike():
+    """A PUT of a branch with ``pull: true`` records one version of it on
+    each front end (the type's ``after_write``), whose answer is alike."""
+    from scrud_django.ui import hooks
+
+    case = next(case for case, _ in UI_TYPE_CASES if case.id == "ui-branches-pull")
+    with mock.patch.object(
+        hooks, "record_version", wraps=hooks.record_version
+    ) as recorded:
+        drf, ninja = parity(case)
+
+    assert drf.status == 200, drf
+    assert drf == ninja
+    assert [call.args[0] for call in recorded.call_args_list] == ["wip", "wip"]
+
+
+def test_an_applied_push_answers_its_result_alike():
+    """A push created ``applied`` is answered as stored once applied: with
+    its ``result`` (the target's new version), on both front ends."""
+    case = next(
+        case for case, _ in UI_TYPE_CASES if case.id == "ui-pushes-create-applied"
+    )
+    drf, ninja = parity(case)
+
+    assert drf.status == 201, drf
+    assert drf == ninja
+    assert json.loads(drf.body)["result"] == {"version": 2}
+
+
+# OPTIONS of each UI type's routes: a 204 whose ``Allow`` is the core's (a UI
+# branch version's GET, HEAD and OPTIONS alone).
+
+#: Each UI type's item (but a version's) and the writes storing it.
+UI_OPTIONS_ITEMS = {
+    "ui-components": (UI_COMPONENT,),
+    "ui-stylesheets": (("theme", "ui-stylesheets", _ui_stylesheet()),),
+    "ui-css": (
+        ("css", "ui-css", {"name": "site", "css": "a { }", "rbac_context": ""}),
+    ),
+    "ui-js": (("js", "ui-js", {"name": "site", "js": "1;", "rbac_context": ""}),),
+    "ui-branches": (UI_WIP,),
+    "ui-pushes": (UI_MAIN_ROW, UI_WIP, UI_WIP_ROW, ("push", "ui-pushes", UI_PUSH)),
+}
+
+
+def _ui_options_cases():
+    cases = []
+    for slug, writes in UI_OPTIONS_ITEMS.items():
+        setup = _ui_setup(*writes)
+        item = writes[-1][0]
+        cases.append(Case(f"options-{slug}-list", "OPTIONS", _ui_path(slug), setup))
+        cases.append(
+            Case(f"options-{slug}-item", "OPTIONS", _ui_path(slug, item), setup)
+        )
+    setup = _ui_setup(*UI_VERSION_ITEMS, versions=True)
+    cases.append(Case("options-ui-branch-versions-list", "OPTIONS", UI_VERSIONS, setup))
+    cases.append(Case("options-ui-branch-versions-item", "OPTIONS", UI_VERSION, setup))
+    return cases
+
+
+@pytest.mark.parametrize("case", _ui_options_cases(), ids=lambda case: case.id)
+def test_ui_type_options_answer_alike(case):
+    drf, ninja = parity(case)
+
+    assert drf.status == 204, drf
+    if "ui-branch-versions" in case.id:
+        assert drf.headers["Allow"] == "GET, OPTIONS, HEAD", drf
+    elif case.id.endswith("-list"):
+        assert drf.headers["Allow"] == "GET, POST, OPTIONS, HEAD", drf
+    else:
+        assert drf.headers["Allow"] == "GET, PUT, DELETE, OPTIONS, HEAD", drf
+    assert drf == ninja
+
+
+# The studio's computed types, each read by a superuser (the anonymous is
+# refused), over main's ``row``, which ``wip`` overrides.
+
+UI_STUDIO_SETUP = (UI_MAIN_ROW, UI_WIP, UI_WIP_ROW)
+#: ``(slug, key, links)``: `links`, the answer links to the API's routes
+#: (hrefs, actions), so its ETag is the serving mount's
+#: (`Case.etag_hashes_the_mount`); the others' are alike.
+UI_STUDIO_CASES = [
+    ("ui-branch-items", "wip/", True),
+    ("ui-branch-items", "main/", True),
+    ("ui-branch-status", "wip/", True),
+    ("ui-branch-status", "wip/?type=todo-lists", True),
+    ("ui-type-catalog", "all/", False),
+    ("ui-selectable-branches", "mine/", True),
+    ("ui-push-previews", "wip/", False),
+    ("ui-push-previews", "wip/?target=main", False),
+]
+
+
+def _ui_studio_cases():
+    cases = []
+    for slug, key, links in UI_STUDIO_CASES:
+        path = "{mount}" + f"{slug}/{key}"
+        name = f"{slug}-{key.strip('/').replace('/?', '-').replace('=', '-')}"
+        cases.append(
+            Case(
+                name,
+                "GET",
+                path,
+                _ui_setup(*UI_STUDIO_SETUP),
+                etag_hashes_the_mount=links,
+            )
+        )
+    cases.append(
+        Case(
+            "ui-branch-status-anonymous",
+            "GET",
+            "{mount}ui-branch-status/wip/",
+            _ui_setup(*UI_STUDIO_SETUP, login=False),
+        )
+    )
+    cases.append(
+        Case(
+            "ui-type-catalog-head",
+            "HEAD",
+            "{mount}ui-type-catalog/all/",
+            _ui_setup(),
+        )
+    )
+    return cases
+
+
+@pytest.mark.parametrize("case", _ui_studio_cases(), ids=lambda case: case.id)
+def test_studio_computed_types_answer_alike(case):
+    """Each studio computed type's answer is alike, its links to the API's
+    routes the serving front end's (`scrud_django.core.urls.api_reverse`
+    of the request: R5), so that its ETag, the hash of its content, is
+    each front end's own (`Case.etag_hashes_the_mount`)."""
+    drf, ninja = parity(case)
+
+    assert drf.status == (401 if case.id.endswith("-anonymous") else 200), drf
+    assert drf == ninja
+
+
+def test_studio_computed_links_name_the_serving_mount():
+    """A studio computed answer's hrefs are under the mount that served it:
+    no front end's links point at the other's routes."""
+    case = Case(
+        "ui-selectable-branches-links",
+        "GET",
+        "{mount}ui-selectable-branches/mine/",
+        _ui_setup(*UI_STUDIO_SETUP),
+        etag_hashes_the_mount=True,
+    )
+    drf, ninja = parity(case)
+
+    assert drf == ninja
+    hrefs = [branch["href"] for branch in json.loads(drf.body)["branches"]]
+    assert "{mount}ui-branches/{wip}/" in hrefs, hrefs
+    for exchange in (drf, ninja):
+        assert "/drf/" not in exchange.body and "/ninja/" not in exchange.body
+
+
+def test_the_harness_checks_a_masked_etag_is_the_bodys_hash():
+    """`Case.etag_hashes_the_mount` masks an ETag only once it is the hash
+    of the body (one that is not fails the case), and only where it is
+    needed: a 2xx with an ETag on each front end, the two different. An
+    answer whose ETags are alike (the type catalog links nowhere), or one
+    with none (a refusal), fails the flagged case."""
+    links = Case(
+        "ui-selectable-branches-masked",
+        "GET",
+        "{mount}ui-selectable-branches/mine/",
+        _ui_setup(*UI_STUDIO_SETUP),
+        etag_hashes_the_mount=True,
+    )
+    drf, ninja = parity(links)
+    assert drf.headers["ETag"] == ninja.headers["ETag"] == front_ends.BODY_ETAG
+    assert drf.raw_etag != ninja.raw_etag
+
+    with mock.patch("scrud_django.core.computed.computed_etag", return_value='"other"'):
+        with pytest.raises(AssertionError, match="not the hash of the body"):
+            parity(links)
+    alike = dataclasses.replace(
+        links, id="ui-type-catalog-masked", path="{mount}ui-type-catalog/all/"
+    )
+    with pytest.raises(AssertionError, match="unnecessary"):
+        parity(alike)
+    refused = dataclasses.replace(
+        links,
+        id="ui-selectable-branches-refused",
+        setup=_ui_setup(*UI_STUDIO_SETUP, login=False),
+    )
+    with pytest.raises(AssertionError, match="without an ETag"):
+        parity(refused)
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+def test_a_csrf_refusal_comes_before_a_versions_405_alike(method):
+    """A session user's write without a CSRF token to a UI branch version
+    (which serves none) is refused 403 before the 405, as DRF
+    authenticates before it looks the method up."""
+    serve_both()
+    client = Client(enforce_csrf_checks=True)
+    keys = _ui_setup(*UI_VERSION_ITEMS, versions=True)(client)
+    path = (
+        UI_VERSIONS if method == "POST" else UI_VERSION.format(mount="{mount}", **keys)
+    )
+
+    drf, ninja = (
+        front_ends.exchange(client, front_end, method, path, body={}, keys=keys)
+        for front_end in MOUNTS
+    )
+
+    assert drf.status == 403, drf
+    assert "CSRF Failed" in drf.body, drf
     assert drf == ninja

@@ -14,11 +14,19 @@ from unittest import mock
 
 import fastjsonschema
 import pytest
+from django.http import Http404
+from django.test import RequestFactory
 from django.urls import resolve, reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
+from scrud_django.core.computed import computed_answer, served_content
+from scrud_django.core.types import type_options
 from scrud_django.models import Resource
-from scrud_django.registration import ResourceRegistration, write_db
+from scrud_django.registration import (
+    ResourceRegistration,
+    get_resource_type_for,
+    write_db,
+)
 from scrud_django.ui.branches import (
     UI_BRANCH_TYPE_URI,
     UI_BRANCH_VERSION_TYPE_URI,
@@ -28,6 +36,7 @@ from scrud_django.ui.branches import (
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.branches.versions import record_version
 from scrud_django.ui.layers import layer_item
+from scrud_django.ui.studio.computed import STUDIO_COMPUTED_TYPES
 from scrud_django.ui.studio.views import registered_types
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
@@ -37,7 +46,8 @@ from .steps import *  # noqa: F403, F401
 from .test_studio_page import CONFLICT, SLUG, section, setup_branches, store_item
 from .test_ui_branch_push import make_wip, quoted
 from .test_ui_branch_types import make_branch
-from .test_ui_http import HTML, assert_html, grant, html, make_component
+from .test_ui_http import assert_html, grant, html, make_component
+from .ui import API_URLCONF, ui_url
 
 JSON = "application/json"
 OT = "http://api.openteams.com/json-ld/"
@@ -191,7 +201,7 @@ def test_branch_items_marks_own_inherited_packaged(ui_alice_login):
     row = stored(setup_branches(ui_alice_login))
     head = head_component()
     site = css_site()
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     body = items()
     assert body == {
         "branch": "wip",
@@ -288,7 +298,7 @@ def test_branch_items_hides_unreadable_rows(ui_alice_login):
     reader = assign_role(
         {"http.GET": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "alice"
     )
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     listed = items()["items"]
     assert [(i["kind"], i["name"]) for i in listed] == [
         ("component", "row"),
@@ -304,7 +314,7 @@ def test_branch_items_hides_unreadable_rows(ui_alice_login):
     # A reader of the branch alone sees the packaged items only, and none
     # of its changes or conflicts.
     branch_only = assign_role({"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(branch_only)
+    Given.http.force_login(branch_only)
     assert items()["items"] == [layer_sheet_item()]
     status = get("ui-branch-status", "wip")
     assert status["changed"] == [] and status["conflicts"] == []
@@ -330,7 +340,7 @@ def test_branch_items_reports_parent_and_layer_conflicts(ui_alice_login):
     ghost = {"kind": "component", "key": ["ghost"], "base": "a", "current": "b"}
     branch.content = {**branch.content, "conflicts": [CONFLICT, ghost]}
     branch.save()
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     listed = {(i["kind"], i["name"]): i for i in items()["items"]}
     assert listed["component", "row"]["conflict"] == "parent"
     assert listed["component", "head"]["conflict"] is None
@@ -356,7 +366,7 @@ def test_branch_items_reports_parent_and_layer_conflicts(ui_alice_login):
 def test_unselectable_branch_404(ui_alice_login):
     setup_branches(ui_alice_login)
     make_branch("gap", "alice", branching_point={"main": 999}, base="pinned")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     bodies = []
     for slug in ("ui-branch-items", "ui-branch-status"):
         # bobs is in "bob"; nope is no branch; gap is pinned to a missing
@@ -371,7 +381,7 @@ def test_unselectable_branch_404(ui_alice_login):
     get("ui-type-catalog", "other", status=404)
     get("ui-selectable-branches", "other", status=404)
     # Anonymous: refused.
-    Given.http.force_authenticate(None)
+    Http.api_client.logout()
     When.http.get(url("ui-branch-items", "wip"), HTTP_ACCEPT=JSON)
     Then.http.status_code_is(401)
 
@@ -381,7 +391,7 @@ def test_unselectable_branch_404(ui_alice_login):
 def test_branch_status_chain_and_browse_url(ui_alice_login):
     setup_branches(ui_alice_login)
     make_branch("feat", "alice", parent="shop")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     status = get("ui-branch-status", "wip", type=SLUG)
     wip = Resource.objects.get(
         resource_type__type_uri=UI_BRANCH_TYPE_URI, content__name="wip"
@@ -446,7 +456,7 @@ def test_branch_status_chain_hides_published_ancestors_not_readable(ui_alice_log
     make_branch("vault", "vault", prefix="/vault/")
     make_branch("outlet", "project-a", parent="vault", prefix="/outlet/")
     make_branch("feat", "alice", parent="outlet")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     status = get("ui-branch-status", "feat", type=SLUG)
     assert status["chain"] == [
         {"name": "feat", "published": False, "prefix": None},
@@ -469,7 +479,7 @@ def test_branch_status_chain_hides_published_ancestors_not_readable(ui_alice_log
 @test_context
 def test_type_catalog_matches_bootstrap_list(ui_bob_login):
     reverse("todo-lists-list")  # the URLconf registers the types
-    Given.http.force_authenticate(ui_bob_login)
+    Given.http.force_login(ui_bob_login)
     body = get("ui-type-catalog", "all")
     assert body == {"types": registered_types()}
     slugs = [t["slug"] for t in body["types"]]
@@ -488,7 +498,7 @@ def test_type_catalog_matches_bootstrap_list(ui_bob_login):
 def test_selectable_branches_per_user(ui_alice_login, ui_bob_login):
     setup_branches(ui_alice_login)
     stored_branches = branches()
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     assert get("ui-selectable-branches", "mine") == {
         "branches": [
             # alice may not GET main itself (in ""): no href.
@@ -507,7 +517,7 @@ def test_selectable_branches_per_user(ui_alice_login, ui_bob_login):
             },
         ]
     }
-    Given.http.force_authenticate(ui_bob_login)
+    Given.http.force_login(ui_bob_login)
     assert get("ui-selectable-branches", "mine")["branches"] == [
         {"name": "main", "published": True, "href": None},
         {
@@ -539,18 +549,18 @@ def test_studio_types_render_as_html(ui_alice_login):
         },
         "ui-stylesheets",
     )
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     for slug, key in (
         ("ui-branch-items", "wip"),
         ("ui-branch-status", "wip"),
         ("ui-type-catalog", "all"),
         ("ui-selectable-branches", "mine"),
     ):
-        When.http.get(url(slug, key), HTTP_ACCEPT=HTML)
+        When.http.get(ui_url(url(slug, key)))
         Then.http.status_code_is(200)
         assert_html()
         assert 'class="scrud-resource"' in html(), slug
-    When.http.get(url("ui-branch-items", "wip"), HTTP_ACCEPT=HTML)
+    When.http.get(ui_url(url("ui-branch-items", "wip")))
     assert "<section>items of wip</section>" in html()
     # Each type has its schema and JSON-LD context, linked from the
     # response.
@@ -565,7 +575,7 @@ def test_bootstrap_strip_unchanged(ui_alice_login):
     implementation: the same changes, conflicts and browse link (the rest
     of ``tests/test_studio_page.py`` pins the strip itself)."""
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.get(
         reverse("scrud-studio:strip", args=[SLUG]),
         {"branch": "wip"},
@@ -644,7 +654,7 @@ def test_status_of_a_branch_with_no_published_root_is_logged(ui_alice_login, cap
     from scrud_django.ui.branches.store import BranchChainError
 
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     with (
         mock.patch(
             "scrud_django.ui.studio.computed.published_root",
@@ -674,7 +684,7 @@ def test_items_beneath_a_broken_chain_are_logged(ui_alice_login, caplog):
     from scrud_django.ui.branches.store import BranchChainError
 
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     with (
         mock.patch(
             "scrud_django.ui.studio.computed.parent_state",
@@ -704,7 +714,7 @@ def test_override_body_creates_the_override(ui_alice_login):
     setup_branches(ui_alice_login)
     head = head_component()
     sheet_etag, _sheet = layer_item("stylesheet", ("layertest:sheet", ""))
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     listed = {(i["kind"], i["name"]): i for i in items()["items"]}
     inherited = listed["component", "head"]["override"]
     assert inherited["method"] == "POST" and inherited["etag"] is None
@@ -737,7 +747,7 @@ def test_override_body_creates_the_override(ui_alice_login):
 @test_context
 def test_override_null_on_published_or_without_grant(ui_alice_login):
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     # A published branch is written by a push, never by an override.
     for published in ("main", "shop"):
         listed = items(published)["items"]
@@ -748,7 +758,7 @@ def test_override_null_on_published_or_without_grant(ui_alice_login):
         {"http.GET": [UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI]}, "alice"
     )
     grant(reader, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     listed = {(i["kind"], i["name"]): i for i in items()["items"]}
     assert listed["component", "head"]["origin"] == "inherited"
     assert listed["stylesheet", "layertest:sheet"]["origin"] == "packaged"
@@ -765,7 +775,7 @@ def test_override_null_on_published_or_without_grant(ui_alice_login):
 @test_context
 def test_status_may_flags(ui_alice_login):
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
 
     def flags(branch):
         found = status(branch)
@@ -778,12 +788,12 @@ def test_status_may_flags(ui_alice_login):
     assert flags("main") == (False, False)
     # A reader of wip may not write it.
     reader = assign_role({"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     assert flags("wip") == (False, False)
     # PUT on branches in "" publishes, on any branch.
     grant(reader, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "")
     assert flags("wip") == (False, True)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     grant(ui_alice_login, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "")
     assert flags("wip") == (True, True)
     assert flags("shop") == (False, True)
@@ -799,7 +809,7 @@ def test_status_pushes_and_versions_readable_only(ui_alice_login):
     restore = store_push(None, "wip", "alice", restore=1)
     for _ in range(21):
         record_version("wip", write_db())
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     # No GET on pushes nor on versions: none listed.
     found = status()
     assert found["pushes"] == [] and found["versions"] == []
@@ -878,7 +888,7 @@ def test_status_actions_round_trip(admin_login, ui_alice_login):
     make_wip(admin_login, parent="team")
     Then.http.status_code_is(201)
     pushes_into(ui_alice_login, "team", "")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     # wip overrides main's row (which team shows), then changes it.
     listed = {(i["kind"], i["name"]): i for i in items()["items"]}
     assert listed["component", "row"]["from"] == "main"
@@ -958,7 +968,7 @@ def test_status_actions_null_on_published_T(ui_alice_login):
     make_branch("team", "alice", parent="shop", prefix="/team/")
     pushes_into(ui_alice_login, "", "project-a", "alice")
     grant(ui_alice_login, {"http.PUT": [UI_BRANCH_TYPE_URI]}, "project-a")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     # Published: no action, whatever the grants.
     for published in ("main", "shop", "team"):
         found = status(published)
@@ -972,7 +982,7 @@ def test_status_actions_null_on_published_T(ui_alice_login):
     assert found["actions"]["promote"][0]["apply"] is not None
     # Without PUT on wip, and without POST on pushes: none.
     reader = assign_role({"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     assert status()["actions"] == {
         "pull": None,
         "promote": [{"target": "main", "apply": None, "propose": None}],
@@ -983,7 +993,7 @@ def test_status_actions_null_on_published_T(ui_alice_login):
 @test_context
 def test_endpoints_in_status_reverse_correctly(ui_alice_login, settings):
     setup_branches(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     endpoints = status()["endpoints"]
     assert endpoints == ENDPOINTS
     assert endpoints["live_preview"] == reverse("scrud-studio:live-preview")
@@ -1003,7 +1013,7 @@ def test_endpoints_in_status_reverse_correctly(ui_alice_login, settings):
         match = resolve(path.replace("{slug}", SLUG))
         assert match.namespace == "scrud-studio", name
     # Without the studio's URLs (tests.urls), there are none.
-    settings.ROOT_URLCONF = "tests.urls"
+    settings.ROOT_URLCONF = API_URLCONF
     found = status()
     assert found["endpoints"] is None
     conforms("UIBranchStatus", found)
@@ -1020,7 +1030,7 @@ def test_override_null_on_a_pinned_view(ui_alice_login):
     ResourceRegistration.update(
         {**head.content, "template": "<h1>changed</h1>"}, "ui-components", head.pk
     )
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     pinned = {(i["kind"], i["name"]): i for i in items("wip@pinned")["items"]}
     assert pinned["component", "head"]["origin"] == "inherited"
     assert pinned["component", "head"]["content"]["template"] == "<h1>main</h1>"
@@ -1032,3 +1042,55 @@ def test_override_null_on_a_pinned_view(ui_alice_login):
     # The status of a pinned view keeps its actions: they act on the
     # branch's stored rows, not on what the snapshot shows.
     assert status("wip@pinned")["actions"] == status()["actions"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_studio_computed_types_register_their_compute():
+    """The studio's computed types are ``compute=`` types
+    (follow-up ``studio-computed-to-compute``): any front end gets their
+    content from the core."""
+    reverse("todo-lists-list")  # the URLconf registers the types
+    for name, slug, compute in STUDIO_COMPUTED_TYPES:
+        resource_type = get_resource_type_for(slug)
+        assert resource_type.type_uri == OT + name
+        assert type_options(resource_type.type_uri).compute is compute, slug
+        # Their routes are named as before.
+        assert reverse(f"{slug}-detail", args=["k"]).endswith(f"/{slug}/k/")
+
+
+def core_answer(user, slug, key, **params):
+    """`computed_answer` of `slug`'s `key` for `user` (a plain Django GET
+    with `params`), as the DRF route serves it (`served_content`)."""
+    request = RequestFactory().get(url(slug, key), params)
+    request.user = user
+    content, etag = computed_answer(request, get_resource_type_for(slug), key)
+    return served_content(content), etag
+
+
+@pytest.mark.django_db
+@test_context
+def test_studio_computed_types_answer_through_the_core(ui_alice_login):
+    setup_branches(ui_alice_login)
+    grant(ui_alice_login, {"http.GET": [UI_PUSH_TYPE_URI]}, "alice")
+    store_push("wip", "main", "alice", label="p")
+    Given.http.force_login(ui_alice_login)
+    cases = [
+        ("ui-branch-items", "wip", {}),
+        ("ui-branch-items", "wip@pinned", {}),
+        ("ui-branch-status", "wip", {}),
+        ("ui-branch-status", "wip", {"type": SLUG}),
+        ("ui-type-catalog", "all", {}),
+        ("ui-selectable-branches", "mine", {}),
+        ("ui-push-previews", "wip", {}),
+        ("ui-push-previews", "wip", {"target": "main"}),
+    ]
+    for slug, key, params in cases:
+        drf = get(slug, key, **params)
+        content, etag = core_answer(ui_alice_login, slug, key, **params)
+        assert content == drf, (slug, key, params)
+        assert etag == Http.response["ETag"], (slug, key, params)
+    # A branch alice may not select: the same Http404 the DRF route answers.
+    get("ui-branch-items", "bobs", status=404)
+    with pytest.raises(Http404):
+        core_answer(ui_alice_login, "ui-branch-items", "bobs")

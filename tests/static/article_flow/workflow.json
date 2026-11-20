@@ -1,0 +1,9 @@
+{
+  "resource_type": "tests://Article",
+  "initial_states": {"draft": "state == \"draft\""},
+  "states": {"published": "state == \"published\"", "archived": "state == \"archived\""},
+  "transitions": {
+    "publish": {"from": "draft", "to": "published"},
+    "archive": {"from": "published", "to": "archived"}
+  }
+}

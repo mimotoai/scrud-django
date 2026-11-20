@@ -60,7 +60,7 @@ def test_cached_template_reuses_compiled_template():
 @pytest.mark.django_db
 @test_context
 def test_component_with_bad_template_is_400(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     body = {
         "name": "bad",
         "engine": "django",
@@ -75,7 +75,7 @@ def test_component_with_bad_template_is_400(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_update_with_bad_template_is_400(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     body = {
         "name": "good",
         "engine": "jinja2",
@@ -142,7 +142,7 @@ def test_jinja2_not_installed_is_a_compile_error(no_jinja2):
 @pytest.mark.django_db
 @test_context
 def test_posting_a_jinja2_component_without_jinja2_is_400(admin_login, no_jinja2):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     body = {
         "name": "j",
         "engine": "jinja2",

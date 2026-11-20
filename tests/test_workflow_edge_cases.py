@@ -12,13 +12,13 @@ from django.utils.timezone import now
 from rest_framework.test import APIClient
 from scoped_rbac.models import Role, RoleAssignment
 
+from scrud_django.drf.serializers import ResourceSerializer
 from scrud_django.models import Resource, ResourceType
 from scrud_django.registration import (
     ResourceRegistration,
     workflow_policy_resource_type,
 )
 from scrud_django.scrud_signals import scrud_post_save
-from scrud_django.serializers import ResourceSerializer
 from scrud_django.workflow import WorkflowPolicy, workflow_policy_for
 
 from .factories import UserFactory

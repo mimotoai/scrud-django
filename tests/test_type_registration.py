@@ -44,7 +44,7 @@ SCHEMA = {
     "properties": {"name": {"type": "string"}},
 }
 
-# The built-in types `scrud_django.urls` registers, by slug, and the module
+# The built-in types `scrud_django.drf.urls` registers, by slug, and the module
 # attributes `registration` caches them in.
 BUILT_IN_SLUGS = ["json-schema", "json-ld", "indexing-policies", "workflow-policies"]
 BUILT_IN_CACHES = [

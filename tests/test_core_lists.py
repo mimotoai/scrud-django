@@ -24,8 +24,8 @@ from scoped_rbac.models import Role, RoleAssignment
 from scrud_django import collection_type_uri_for
 from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.core.types import requirement_for
+from scrud_django.drf.filters import ui_parameters
 from scrud_django.exceptions import ScrudException
-from scrud_django.filters import ui_parameters
 from scrud_django.models import Resource, ResourceRemoval
 from scrud_django.registration import ResourceRegistration, get_resource_type_for
 
@@ -414,8 +414,8 @@ def test_readable_queryset_refuses_a_leaf_with_its_own_contexts():
 
     from scrud_django.core.lists import list_last_modified, readable_queryset
     from scrud_django.core.types import HookLeaf, TypeOptions
-    from scrud_django.drf_requirements import requirement_of
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.requirements import requirement_of
+    from scrud_django.drf.views import ResourceViewSet
 
     from .urls import TeamIsAuthorized
 
@@ -657,16 +657,18 @@ def test_page_url_is_drfs(query, number):
     assert page_url(request, number) == expected
 
 
-def test_page_url_under_a_published_branch_is_the_apis():
+def test_page_url_under_a_published_branch_is_the_prefixs():
+    """Under a published branch's prefix only the UI answers (with the
+    prefix's own links), so a page's URL is the prefix's, not the API's."""
     from scrud_django.core.lists import page_url
 
     class Mount:
         def canonical(self, url):
-            return url.replace("/branch/", "/api/")
+            raise AssertionError("page_url maps no URL out of the prefix")
 
     request = RequestFactory().get("/branch/notes/?page=1")
     request.scrud_ui_mount = Mount()
-    assert page_url(request, 2) == "http://testserver/api/notes/?page=2"
+    assert page_url(request, 2) == "http://testserver/branch/notes/?page=2"
 
 
 @pytest.mark.django_db
@@ -816,7 +818,7 @@ def test_ui_parameters_name_the_uis():
     from scrud_django.core.lists import ui_parameters as core_ui_parameters
     from scrud_django.ui.branches.effective import BRANCH_PARAMETER, SAFE_PARAMETER
     from scrud_django.ui.branches.selection import CONFIRM_PARAMETER
-    from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER
+    from scrud_django.ui.html import MODE_PARAMETER, SCOPE_PARAMETER
 
     assert UI_PARAMETERS == {
         BRANCH_PARAMETER,

@@ -1,7 +1,7 @@
 """A computed type's answer without DRF: the content its ``compute`` gives for
 a key and the requester, the strong ETag of that content, the
 ``If-None-Match`` that makes it a 304, and its schema and JSON-LD context
-``Link``, as ``scrud_django.computed.ComputedResourceViewSet`` and the ninja
+``Link``, as ``scrud_django.drf.computed.ComputedResourceViewSet`` and the ninja
 computed route (``scrud_django.ninja.computed``) answer them, to an
 authenticated requester only (`check_authenticated`, DRF's
 ``IsAuthenticated``)."""

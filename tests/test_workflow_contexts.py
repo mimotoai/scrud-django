@@ -908,8 +908,8 @@ def test_a_server_side_save_fails_closed_on_duplicate_policies_of_any_context():
     "rbac_context", [["a", "b"], [], None, 5, {"@id": "x"}], ids=repr
 )
 def test_policy_rbac_context_must_be_a_string(rbac_context):
+    from scrud_django.drf.validators import WorkflowValidator
     from scrud_django.exceptions import WorkflowPolicyInvalidError
-    from scrud_django.validators import WorkflowValidator
 
     with pytest.raises(WorkflowPolicyInvalidError) as excinfo:
         WorkflowValidator().validate_policy(

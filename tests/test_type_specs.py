@@ -68,6 +68,7 @@ def unreachable(execute, sql, params, many, context):
     raise OperationalError("could not connect to server: Connection refused")
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_json_resource_type_returns_todays_paths():
@@ -101,10 +102,18 @@ def test_spec_register_twice_is_idempotent(caplog):
 def test_spec_register_builds_no_drf_views(monkeypatch):
     # The DRF views cannot be imported: registering a spec, and the built-in
     # types its documents are stored as, needs none.
-    import scrud_django
-
-    monkeypatch.delattr(scrud_django, "views")
-    monkeypatch.setitem(sys.modules, "scrud_django.views", None)
+    try:
+        import scrud_django.drf
+    except ImportError:  # DRF is not installed (the suite without it).
+        pass
+    else:
+        # The DRF views' module, and its deprecated alias.
+        if hasattr(scrud_django.drf, "views"):
+            monkeypatch.delattr(scrud_django.drf, "views")
+        monkeypatch.setitem(sys.modules, "scrud_django.drf.views", None)
+        monkeypatch.setitem(sys.modules, "scrud_django.views", None)
+    with pytest.raises(ImportError):
+        from scrud_django.drf import views  # noqa: F401
     for name in BUILT_IN_CACHES:
         monkeypatch.setattr(registration, name, getattr(registration, name))
     for spec in registration.built_in_type_specs():
@@ -354,6 +363,7 @@ def test_json_spec_configuration_is_keyword_only():
         registration.json_resource_type_spec(TYPE_URI, SLUG, "2")
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @test_context
 def test_ninja_type_specs_share_the_drf_registrations_hooks(caplog):
@@ -517,6 +527,7 @@ def test_register_urls_without_routes_is_a_type_error(db):
         row.register_urls()
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 def test_the_drf_path_still_registers_a_slug_with_a_dot():
     # The slug's shape is ninja's to check (`api()`); a DRF route takes it.
@@ -533,3 +544,133 @@ def test_the_drf_path_still_registers_a_slug_with_a_dot():
         registration._PENDING_REGISTRATIONS.pop("v1.notes", None)
         with core_types._OPTIONS_LOCK:
             core_types._SLUG_IRIS.pop("v1.notes", None)
+
+
+def _a_check(request, resource_type, body, context):
+    return True
+
+
+def _another_check(request, resource_type, body, context):
+    return True
+
+
+def _prepare(request, resource_type, body, *, instance, using):
+    return body
+
+
+def test_a_json_spec_takes_options_merged_with_its_hooks():
+    """`options` carry the hooks the keyword arguments do not (here a
+    ``prepare_write`` and ``methods``), merged with ``checks``,
+    ``object_checks`` and ``content_filter``."""
+    options = core_types.TypeOptions(prepare_write=_prepare, methods={"GET"})
+    spec = registration.json_resource_type_spec(
+        TYPE_URI, SLUG, checks=[_a_check], content_filter=True, options=options
+    )
+    assert spec.options == dataclasses.replace(
+        options, checks=(_a_check,), content_filter=True
+    )
+    # Alone, they are the spec's.
+    assert (
+        registration.json_resource_type_spec(TYPE_URI, SLUG, options=options).options
+        == options
+    )
+    # A hook set in both to one value is no conflict.
+    both = dataclasses.replace(options, checks=(_a_check,))
+    assert (
+        registration.json_resource_type_spec(
+            TYPE_URI, SLUG, checks=[_a_check], options=both
+        ).options
+        == both
+    )
+
+
+@pytest.mark.parametrize("keyword", ["checks", "object_checks"])
+def test_a_json_spec_refuses_a_hook_set_twice_differently(keyword):
+    # (``content_filter`` cannot be: its one value besides the default is
+    # True, which both may set.)
+    options = core_types.TypeOptions(**{keyword: (_a_check,)})
+    with pytest.raises(TypeError, match=keyword):
+        registration.json_resource_type_spec(
+            TYPE_URI, SLUG, options=options, **{keyword: [_another_check]}
+        )
+
+
+def test_a_json_spec_refuses_options_that_are_not_type_options_or_compute():
+    with pytest.raises(TypeError, match="TypeOptions"):
+        registration.json_resource_type_spec(TYPE_URI, SLUG, options={"checks": ()})
+    with pytest.raises(ImproperlyConfigured, match="compute"):
+        registration.json_resource_type_spec(
+            TYPE_URI, SLUG, options=core_types.TypeOptions(compute=lambda r, k: {})
+        )
+
+
+@pytest.mark.django_db
+@test_context
+def test_the_ui_type_specs_carry_the_ui_hooks(caplog):
+    """`ui_type_specs` are the UI types, each with its hooks
+    (`UI_TYPE_OPTIONS`); a branch version keeps no reversion history. The
+    studio's computed types (`studio_computed_type_specs`) each have their
+    ``compute``. Registering them warns of nothing."""
+    from scrud_django.ui.hooks import UI_TYPE_OPTIONS
+    from scrud_django.ui.studio.computed import (
+        STUDIO_COMPUTED_TYPES,
+        studio_computed_type_specs,
+    )
+    from scrud_django.ui.types import ui_type_specs
+
+    specs = ui_type_specs()
+    assert [spec.slug for spec in specs] == [
+        "ui-components",
+        "ui-stylesheets",
+        "ui-branches",
+        "ui-branch-versions",
+        "ui-pushes",
+        "ui-css",
+        "ui-js",
+    ]
+    for spec in specs:
+        assert spec.kind == "json"
+        assert spec.options == UI_TYPE_OPTIONS[spec.slug]
+        assert spec._registration_arguments()["uses_reversion"] is (
+            spec.slug != "ui-branch-versions"
+        )
+    computed = studio_computed_type_specs()
+    assert [(spec.slug, spec.kind, spec.options.compute) for spec in computed] == [
+        (slug, "computed", compute) for _, slug, compute in STUDIO_COMPUTED_TYPES
+    ]
+    with caplog.at_level(logging.WARNING):
+        for spec in [*specs, *computed]:
+            spec.register()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    for spec in [*specs, *computed]:
+        assert core_types.type_options_for_slug(spec.slug) == spec.options
+        assert ResourceType.objects.filter(
+            type_uri=spec.resource_type_uri, slug=spec.slug
+        ).exists()
+
+
+@pytest.mark.drf
+@pytest.mark.django_db
+@test_context
+def test_the_drf_routes_register_the_ui_type_specs_replacing_no_hook(caplog):
+    """The DRF routes of the UI types and the studio's computed types
+    register the same specs (`test_the_ui_type_specs_carry_the_ui_hooks`):
+    registering both warns of nothing and replaces no hook."""
+    from scrud_django.ui.studio.computed import (
+        studio_computed_type_specs,
+        studio_computed_type_urls,
+    )
+    from scrud_django.ui.types import ui_resource_type_urls, ui_type_specs
+
+    specs = [*ui_type_specs(), *studio_computed_type_specs()]
+    with caplog.at_level(logging.WARNING):
+        for spec in specs:
+            spec.register()
+        ui_resource_type_urls()
+        studio_computed_type_urls()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    for spec in specs:
+        assert core_types.type_options_for_slug(spec.slug) == spec.options
+        assert ResourceType.objects.filter(
+            type_uri=spec.resource_type_uri, slug=spec.slug
+        ).exists()

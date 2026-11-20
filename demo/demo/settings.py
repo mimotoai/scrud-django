@@ -69,16 +69,17 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'rest_framework',
     'scoped_rbac',
     'scrud_django',
     # Server-rendered UI components and stylesheets, stored as resources.
     'scrud_django.ui',
-    # The bootstrap studio: /studio/ (sign in first at /api-auth/login/).
+    # The bootstrap studio: /studio/ (sign in first at /accounts/login/).
     'scrud_django.ui.studio',
     'reversion',
     # The demo itself: its seed_todo_demo management command.
     'demo',
+    # An app's own model with a two-state workflow, served at /api/articles/.
+    'articles',
 ]
 
 MIDDLEWARE = [
@@ -156,18 +157,12 @@ USE_I18N = True
 USE_TZ = True
 
 
-# Django REST Framework: authorize with scoped-rbac (DRF's own default is
-# AllowAny) and answer errors with scrud-django's handler.
-
-REST_FRAMEWORK = {
-    "DEFAULT_PERMISSION_CLASSES": ["scoped_rbac.permissions.IsAuthorized"],
-    "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
-}
-
 # scrudful builds each path's HTTP Schema Resource without a request: its
 # links (schemas, contexts), and the link to it each response carries, resolve
 # against this base URL (scrud's other response Links are absolute, built from
-# the request). Set it to the URL the API is served at.
+# the request). Set it to the URL the API is served at; without it the API's
+# HTTP Schema Resources fail (500), and manage.py check warns
+# (scrud_django.W009).
 
 SCRUDFUL = {"BASE_URL": "http://127.0.0.1:8000"}
 
@@ -180,5 +175,10 @@ SCRUD_UI_STUDIO_BRANCH = "studio"
 
 STATIC_URL = '/static/'
 
-# After logging in at /api-auth/login/ without a ?next= page.
-LOGIN_REDIRECT_URL = "/api/"
+# After logging in at /accounts/login/ without a ?next= page.
+LOGIN_REDIRECT_URL = "/todo-lists/"
+
+# The demo's own workflow policies (articles.Article, demo://Article).
+SCRUD_WORKFLOW = {
+    "DEFAULT_WORKFLOW_POLICIES": "articles.workflow.policies",
+}

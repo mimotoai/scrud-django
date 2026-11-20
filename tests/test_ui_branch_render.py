@@ -19,19 +19,59 @@ from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_types import component, create, make_branch
 from .test_ui_http import (
-    HTML,
     detail_url,
     grant,
     html,
     make_component,
     make_stylesheet,
 )
+from .ui import UI_URLCONF, ui_url
 
-# The queries of a render with no branch selected: the 10 measured on 48d2844
-# (before branches were read at all) less the one saved by reading the stored
-# components, stylesheets and CSS items together (`cascade._stored`); a render
-# of main must not read branch rows.
-MAIN_RENDER_QUERIES = 9
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
+
+# The queries of a UI page's render with no branch selected. The API's HTML
+# render made 9 (the 10 of 48d2844, before branches were read at all, less the
+# one saved by reading the stored components, stylesheets and CSS items
+# together, `cascade._stored`); the UI page's are those 7 besides the two
+# lookups of a resource type by its id the API's render made, and plus the
+# session's (`force_login`: the session row and its user) and the
+# published-branch middleware's one read of the stored branches (every request
+# outside the API, ruling R1). `assert_main_render_queries` pins that
+# composition.
+MAIN_RENDER_QUERIES = 10
+SESSION_TABLES = ("django_session", "auth_user")
+
+
+def assert_main_render_queries(queries):
+    """The queries of a UI page's render of main are the session's (one read
+    of each of its tables), exactly one read of the UIBranch rows, the
+    middleware's (`store.stored_branches`: a ``values_list("pk", "content")``,
+    so a select of the aliases ``pk`` and ``content``), and no lookup of a
+    resource type by its id; and there are `MAIN_RENDER_QUERIES` of them.
+    The SQL is matched with the database's own quoting."""
+    quote = connection.ops.quote_name
+    resource = quote("scrud_django_resource")
+    branches_select = (
+        f"SELECT {resource}.{quote('id')} AS {quote('pk')}, "
+        f"{resource}.{quote('content')} AS {quote('content')} FROM"
+    )
+    type_by_id = f"FROM {quote('scrud_django_resourcetype')} WHERE " + (
+        f"{quote('scrud_django_resourcetype')}.{quote('id')}"
+    )
+    sqls = [q["sql"] for q in queries]
+    for table in SESSION_TABLES:
+        assert len([q for q in sqls if f"FROM {quote(table)}" in q]) == 1, sqls
+    branch_reads = [q for q in sqls if "UIBranch" in q]
+    assert len(branch_reads) == 1 and branch_reads[0].startswith(branches_select), (
+        branch_reads
+    )
+    assert not [q for q in sqls if type_by_id in q], sqls
+    assert len(sqls) == MAIN_RENDER_QUERIES, sqls
+
 
 # The items on another branch the main-render test adds.
 WIP_ITEMS = 5
@@ -59,7 +99,7 @@ def put_item(slug, name, template, branch, context="project-a", **fields):
 
 def render_with(todo_list, branch=None):
     headers = {} if branch is None else {BRANCH_HEADER: branch}
-    When.http.get(detail_url(todo_list), HTTP_ACCEPT=HTML, **headers)
+    When.http.get(ui_url(detail_url(todo_list)), **headers)
     Then.http.status_code_is(200)
     return html()
 
@@ -84,7 +124,7 @@ def test_live_branch_inherits_untouched_and_overrides_touched(
     todo_list, todo_reader_login
 ):
     setup_main_and_wip()
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     page = render_with(todo_list, "wip")
     assert "<i>Buy milk</i>" in page and "<h1>Groceries" in page
     assert "<b>Buy milk</b>" not in page
@@ -105,7 +145,7 @@ def test_deletion_marker_hides_inherited_item(todo_list, todo_reader_login):
     setup_main_and_wip()
     Resource.objects.filter(content__name="row", content__branch="wip").delete()
     put_item("ui-components", "row", "", "wip", deleted=True)
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     page = render_with(todo_list, "wip")
     assert "<b>Buy milk</b>" not in page and "<i>Buy milk</i>" not in page
     assert "scrud-object" in page  # the built-in
@@ -120,9 +160,9 @@ def test_unauthorized_or_unknown_selection_renders_main(
     setup_main_and_wip()
     with caplog.at_level(logging.WARNING):
         # No GET on the branch.
-        Given.http.force_authenticate(todo_reader_login)
+        Given.http.force_login(todo_reader_login)
         assert "<b>Buy milk</b>" in render_with(todo_list, "wip")
-        Given.http.force_authenticate(may_select_branches(todo_reader_login))
+        Given.http.force_login(may_select_branches(todo_reader_login))
         assert "<i>Buy milk</i>" in render_with(todo_list, "wip")
         assert "<b>Buy milk</b>" in render_with(todo_list, "nope")
         assert "<b>Buy milk</b>" in render_with(todo_list, "main")
@@ -135,7 +175,7 @@ def test_broken_chain_renders_main(todo_list, todo_reader_login, caplog):
     setup_main_and_wip()
     make_branch("child", "project-a", parent="wip")
     put_item("ui-components", "row", "<u>{{ value.text }}</u>", "child")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     assert "<u>Buy milk</u>" in render_with(todo_list, "child")
     Resource.objects.filter(
         resource_type__type_uri=UI_BRANCH_TYPE_URI, content__name="wip"
@@ -155,7 +195,7 @@ def test_base_is_server_managed(ui_alice_login):
     make_branch("wip", "alice")
     parent_row = make_component("row", "<b>{{ value.text }}</b>")
     parent_etag = Resource.objects.get(pk=parent_row.pk).etag
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     create(
         "ui-components",
         component(name="row", rbac_context="alice", branch="wip", base="junk"),
@@ -183,12 +223,11 @@ def test_main_without_branches_makes_no_extra_queries(
     put_item("ui-components", "row", "<i>{{ value.text }}</i>", "wip")
     for n in range(WIP_ITEMS):
         put_item("ui-components", f"extra-{n}", "<i/>", "wip")
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     render_with(todo_list)
     with CaptureQueriesContext(connection) as queries:
         assert "<b>Buy milk</b>" in render_with(todo_list)
-    assert len(queries) == MAIN_RENDER_QUERIES, [q["sql"] for q in queries]
-    assert not [q for q in queries if "UIBranch" in q["sql"]]
+    assert_main_render_queries(queries)
     # The one query of the stored items reads main's only, however many
     # other branches hold (ruling R39).
     read = []
@@ -218,7 +257,7 @@ def test_rows_without_a_string_name_are_skipped_and_logged(
     raw = {"engine": "django", "mode": "view", "template": "", "rbac_context": ""}
     unnamed = ResourceRegistration.register(raw, "ui-components")
     listed = ResourceRegistration.register({**raw, "name": ["a"]}, "ui-components")
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     with caplog.at_level(logging.WARNING):
         assert "<b>Buy milk</b>" in render_with(todo_list)
     found = [r.getMessage() for r in caplog.records if "no name" in r.getMessage()]
@@ -243,7 +282,7 @@ def test_component_in_another_context_on_main_is_skipped(
         content={**stored.content, "rbac_context": "project-a"}
     )
     make_stylesheet("s", [("ex:TodoItem", "row")])
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     with caplog.at_level(logging.WARNING):
         page = render_with(todo_list)
     assert "<b>Buy milk</b>" not in page
@@ -266,7 +305,7 @@ def test_an_unauthorized_override_lets_the_parent_item_show(
     Resource.objects.filter(
         content__branch="wip", content__name="row", content__rbac_context="project-a"
     ).delete()
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     with caplog.at_level(logging.WARNING):
         page = render_with(todo_list, "wip")
     assert "<b>Buy milk</b>" in page and "<u>Buy milk</u>" not in page

@@ -17,8 +17,6 @@ from django.contrib.auth.models import AnonymousUser, User
 from django.test import RequestFactory
 from django.urls import NoReverseMatch, resolve
 from django.utils.functional import lazy
-from rest_framework.renderers import JSONRenderer
-from rest_framework.utils.encoders import JSONEncoder
 from scoped_rbac import access
 
 from scrud_django import ScrudServices, registration
@@ -31,6 +29,8 @@ from .resource_types import SUMMARIES_TYPE
 def drf_etag(content):
     """The ETag ``ComputedResourceViewSet`` gave before the core did: DRF's
     ``JSONEncoder``."""
+    from rest_framework.utils.encoders import JSONEncoder
+
     canonical = json.dumps(
         content,
         sort_keys=True,
@@ -41,6 +41,7 @@ def drf_etag(content):
     return '"' + hashlib.sha256(canonical.encode()).hexdigest() + '"'
 
 
+@pytest.mark.drf
 @pytest.mark.parametrize(
     "value",
     [
@@ -76,6 +77,7 @@ def test_computed_etag_is_drfs(value):
         assert computed.computed_etag({"v": value}) == drf_etag({"v": value})
 
 
+@pytest.mark.drf
 def test_computed_etag_refuses_an_aware_time_as_drf_does():
     aware = datetime.time(3, tzinfo=datetime.UTC)
     with pytest.raises(ValueError):
@@ -84,6 +86,7 @@ def test_computed_etag_refuses_an_aware_time_as_drf_does():
         computed.computed_etag({"t": aware})
 
 
+@pytest.mark.drf
 def test_computed_etag_of_the_queryset_of_a_model(django_db_blocker):
     with django_db_blocker.unblock():
         rows = User.objects.none()
@@ -169,6 +172,7 @@ def test_check_authenticated_refuses_the_anonymous():
     computed.check_authenticated(request)
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @pytest.mark.urls("tests.parity_urls")
 def test_computed_link_names_the_types_documents_on_the_serving_mount():
@@ -225,6 +229,7 @@ def test_first_absolute_reverse_prefers_the_serving_namespace():
     )
 
 
+@pytest.mark.drf
 @pytest.mark.django_db
 @pytest.mark.urls("tests.parity_urls")
 def test_a_catalog_lists_each_list_on_the_serving_mount():
@@ -249,6 +254,7 @@ def test_a_catalog_lists_each_list_on_the_serving_mount():
         assert catalog.etag_for(request) == catalog.etag_of(served)
 
 
+@pytest.mark.drf
 def test_served_content_is_the_json_drf_writes():
     content = {
         "z": datetime.datetime(2026, 1, 2, 3, 4, 5, 678901, tzinfo=datetime.UTC),
@@ -267,6 +273,8 @@ def test_served_content_is_the_json_drf_writes():
         "é": "ü",
     }
     # In the order DRF writes it, and hashing as the content does.
+    from rest_framework.renderers import JSONRenderer
+
     assert list(served) == list(content)
     drf = JSONRenderer().render(content)
     assert JSONRenderer().render(served) == drf

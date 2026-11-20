@@ -1,14 +1,22 @@
-"""The checks of a write's request body without DRF: a body that is missing,
-nested too deeply, holds a NUL character, or names an ``rbac_context`` that
-cannot be stored. They depend on the body alone, so a caller with any kind of
-request passes the parsed body in."""
+"""A write's request body without DRF: read as the DRF routes read it
+(`request_json`), and checked: a body that is missing, nested too deeply,
+holds a NUL character, or names an ``rbac_context`` that cannot be stored.
+The checks depend on the body alone, so a caller with any kind of request
+passes the parsed body in."""
 
 from collections.abc import Mapping
+from typing import Any
 
+from django.conf import settings
 from django.db import connections, router
+from django.utils.http import parse_header_parameters
+from scoped_rbac.bodies import decode_json
 
+from scrud_django.core.errors import parse_error_detail
 from scrud_django.exceptions import (
     RbacContextInvalidError,
+    RequestBodyMalformedError,
+    RequestBodyMediaTypeError,
     RequestBodyMissingError,
     RequestBodyNulError,
     RequestBodyTooDeepError,
@@ -126,3 +134,53 @@ def check_body(body, *, present):
     check_depth(body)
     check_nul(body)
     check_contexts(body)
+
+
+def request_json(request) -> tuple[Any, bool]:
+    """``(body, present)``: the JSON body of the Django `request`, and whether
+    it has one, as the DRF routes read ``request.data`` (their only parser,
+    scoped-rbac's ``RbacJSONParser``) and decide it is present:
+
+    - a body is present when its ``Content-Length`` is above 0; one that is
+      not is ``(None, False)``, whatever its media type (`check_body` then
+      refuses it, `check_present`);
+    - a ``Content-Type`` DRF's ``JSONParser`` does not take (it takes
+      ``application/json``, and wildcards of it) is
+      `RequestBodyMediaTypeError` (415);
+    - a body that is not JSON in its charset (the ``Content-Type``'s, else
+      ``DEFAULT_CHARSET``), or that ``json.loads`` reads as another value
+      (``scoped_rbac.bodies.decode_json``), is `RequestBodyMalformedError`
+      (400, of DRF's message, `parse_error_detail`);
+    - else the JSON value, any value."""
+    if _content_length(request) <= 0:
+        return None, False
+    meta = request.META
+    media_type = meta.get("CONTENT_TYPE", meta.get("HTTP_CONTENT_TYPE", ""))
+    if not _is_json_media_type(media_type):
+        raise RequestBodyMediaTypeError(media_type)
+    encoding = getattr(request, "encoding", None) or settings.DEFAULT_CHARSET
+    try:
+        return decode_json(request.body, encoding), True
+    except ValueError:
+        raise RequestBodyMalformedError(parse_error_detail(request)) from None
+
+
+def _content_length(request) -> int:
+    """`request`'s ``Content-Length``, as DRF reads it (0 when absent or not
+    a number)."""
+    meta = request.META
+    try:
+        return int(meta.get("CONTENT_LENGTH", meta.get("HTTP_CONTENT_LENGTH", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_json_media_type(media_type: str) -> bool:
+    """Whether DRF's ``JSONParser`` (``application/json``) takes `media_type`,
+    as DRF's content negotiation matches a parser (wildcards included)."""
+    try:
+        full_type, _params = parse_header_parameters(media_type)
+    except ValueError:
+        return False
+    main_type, _, sub_type = full_type.strip().lower().partition("/")
+    return main_type in ("application", "*") and sub_type in ("json", "*")

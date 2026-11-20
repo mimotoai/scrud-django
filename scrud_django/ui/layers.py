@@ -390,7 +390,7 @@ _REQUIRED = {
 
 @cache
 def _schema_validator(kind: str):
-    from scrud_django.validators import compile_json_schema
+    from scrud_django.core.writes import compile_json_schema
 
     document = importlib.resources.files("scrud_django.ui.documents").joinpath(
         _SCHEMAS[kind]

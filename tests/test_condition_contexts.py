@@ -242,7 +242,7 @@ def test_the_workflow_check_reads_each_context():
 
 
 def test_in_context_sets_the_context_a_condition_is_evaluated_in():
-    from scrud_django.permissions import in_context
+    from scrud_django.drf.permissions import in_context
 
     as_string = {"foo": 1, "rbac_context": "a"}
     assert in_context(as_string, "a") is as_string
@@ -272,8 +272,8 @@ def test_reading_content_reads_each_context_without_changing_the_class():
     from scoped_rbac.permissions import IsAuthorized
     from scoped_rbac.policy import RequestResource
 
-    from scrud_django.filters import overrides_object_checks
-    from scrud_django.permissions import reading_content
+    from scrud_django.drf.filters import overrides_object_checks
+    from scrud_django.drf.permissions import reading_content
 
     class Recording(IsAuthorized):
         def has_context_permission(self, request, view, obj, context):
@@ -297,7 +297,7 @@ def test_reading_content_reads_each_context_without_changing_the_class():
 
     # What it then gives scoped-rbac's has_context_permission (whose
     # conditions read `fields`, its operators `instance`):
-    from scrud_django.permissions import condition_resource
+    from scrud_django.drf.permissions import condition_resource
 
     resource = condition_resource(stored, "b")
     assert isinstance(resource, RequestResource)
@@ -433,7 +433,7 @@ def test_a_workflow_error_under_a_policy_stored_as_a_list_is_hidden():
 def test_in_context_reads_a_context_as_scoped_rbac_names_it():
     from enum import StrEnum
 
-    from scrud_django.permissions import in_context
+    from scrud_django.drf.permissions import in_context
 
     class Ctx(StrEnum):
         A = "a"
@@ -492,7 +492,7 @@ def test_a_view_reading_its_own_contexts_lists_what_its_detail_route_shows():
 def test_reading_content_keeps_an_instance_level_has_context_permission():
     from scoped_rbac.permissions import IsAuthorized
 
-    from scrud_django.permissions import reading_content
+    from scrud_django.drf.permissions import reading_content
 
     seen = []
     permission = IsAuthorized()
@@ -508,8 +508,8 @@ def test_reading_content_keeps_an_instance_level_has_context_permission():
 def test_the_scrud_viewsets_decide_403_or_404_with_object_readable():
     # AccessControlledAPIView.check_object_permissions asks self.is_readable:
     # ReadableMixin, first, makes that the per-context object_readable.
-    from scrud_django.mixins.view_mixins import ReadableMixin
-    from scrud_django.views import ResourceViewSet, ResourceViewSetGenericFilter
+    from scrud_django.drf.mixins import ReadableMixin
+    from scrud_django.drf.views import ResourceViewSet, ResourceViewSetGenericFilter
 
     for viewset in (ResourceViewSet, ResourceViewSetGenericFilter):
         assert viewset.is_readable is ReadableMixin.is_readable
@@ -521,7 +521,7 @@ def test_a_workflow_error_outside_a_view_reads_each_context():
     # used outside the scrud views) reads each of the resource's contexts.
     from rest_framework.test import APIRequestFactory
 
-    from scrud_django.validators import WorkflowValidator
+    from scrud_django.drf.validators import WorkflowValidator
 
     request = APIRequestFactory().get("/")
     request.user = user_with(everywhere_but("victim"))
@@ -631,7 +631,7 @@ def test_the_per_object_list_reads_each_context_with_its_own_content():
     from rest_framework.test import APIRequestFactory
     from scoped_rbac.policy import Permission
 
-    from scrud_django.filters import filter_readable_resources_per_object
+    from scrud_django.drf.filters import filter_readable_resources_per_object
     from scrud_django.mixins.resource_mixin import rbac_contexts_of
 
     resource = store({"foo": 1, "rbac_context": ["a", "b"]})
@@ -675,8 +675,8 @@ def test_readable_by_grants_reads_each_context_through_any_requirement():
     from scoped_rbac import access
     from scoped_rbac.permissions import IsAuthorized
 
-    from scrud_django.filters import readable_by_grants
-    from scrud_django.permissions import reading_content
+    from scrud_django.drf.filters import readable_by_grants
+    from scrud_django.drf.permissions import reading_content
 
     request = APIRequestFactory().get("/")
     request.user = in_its_own_context()  # reads ["a", "b"] in each

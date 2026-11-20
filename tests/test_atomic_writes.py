@@ -512,7 +512,7 @@ def recorded_write_order():
     writes import it from ``scrud_django.workflow`` when they run."""
     from scrud_django import workflow
     from scrud_django.core import writes
-    from scrud_django.mixins import view_mixins
+    from scrud_django.drf import mixins as view_mixins
 
     connection = connections[write_db()]
     quote = connection.ops.quote_name
@@ -598,7 +598,7 @@ def test_a_write_reads_the_row_inside_its_transaction(front_end, method):
 @pytest.mark.django_db
 @pytest.mark.parametrize("method", ["put", "delete"])
 def test_the_locked_lookup_selects_for_update_on_the_write_database(method):
-    from scrud_django.mixins.view_mixins import ResourceViewMixin
+    from scrud_django.drf.mixins import ResourceViewMixin
 
     todo = a_todo()
     seen = []
@@ -777,7 +777,7 @@ def test_a_locked_lookup_reads_the_write_database_whatever_get_queryset_uses(
     # replica: "other" has no resource) does not move a locked write's
     # lookup there: the row is read and locked on the write database, and
     # the If-Match is evaluated against it.
-    from scrud_django.mixins.view_mixins import ResourceViewMixin
+    from scrud_django.drf.mixins import ResourceViewMixin
 
     todo = a_todo()
     original = ResourceViewMixin.get_queryset

@@ -6,19 +6,19 @@ branch's overrides into another branch, and restoring a version of a branch."""
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from rest_framework.exceptions import PermissionDenied
+from scoped_rbac import access
 from scoped_rbac.policy import Permission
 
+from scrud_django.core.authz import (
+    may_act_in_context,
+    resource_contexts,
+)
 from scrud_django.exceptions import (
     UIBranchInvalidError,
     UIPushConflictError,
     UIPushForbiddenError,
 )
 from scrud_django.models import Resource, ResourceType
-from scrud_django.permissions import (
-    may_act_in_context,
-    resource_contexts,
-)
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
@@ -343,7 +343,7 @@ def _once(compute):
 
 
 def _may_on_branch(request, method, branch: Branch, stored: Resource | None):
-    """Refuse (``PermissionDenied``, 403) unless `request` may `method`
+    """Refuse (``access.AccessDenied``, 403) unless `request` may `method`
     branch `branch` (stored as `stored`, ``None`` for a virtual main) in
     its context."""
     content = (
@@ -353,7 +353,7 @@ def _may_on_branch(request, method, branch: Branch, stored: Resource | None):
     )
     permission = Permission(method, UI_BRANCH_TYPE_URI)
     if not may_act_in_context(request, permission, content, [branch.context]):
-        raise PermissionDenied(
+        raise access.AccessDenied(
             f"A push from branch {branch.name!r} needs {method} on it: it reads "
             "and empties its overrides."
         )
@@ -601,7 +601,7 @@ def apply_push(request, content, using) -> int:
     """Write the overrides of branch ``content["source"]`` into branch
     ``content["target"]`` for `request`, in its transaction on `using`, and
     return the target's new version. Everything is checked before anything
-    is written: GET and PUT on the source (``PermissionDenied``, 403), no
+    is written: GET and PUT on the source (``access.AccessDenied``, 403), no
     `conflicts` of the source against the target (`UIPushConflictError`,
     409, describing only those on items the pusher may read there), and, for
     each item, the grant a direct write of it into the target needs

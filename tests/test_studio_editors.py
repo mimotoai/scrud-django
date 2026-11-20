@@ -19,8 +19,8 @@ from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.models import Resource
 from scrud_django.ui.branches import UI_CSS_TYPE_URI, UI_JS_TYPE_URI
+from scrud_django.ui.html import STALE_MESSAGE
 from scrud_django.ui.layers import layer_item
-from scrud_django.ui.renderer import STALE_MESSAGE
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI
 
 from .fixtures import *  # noqa
@@ -31,9 +31,12 @@ from .test_studio_workbench import STUDIO_ROOT, Page, setup_studio, workbench_ur
 from .test_ui_branch_css import make_css
 from .test_ui_branch_js import make_js
 from .test_ui_branch_types import make_branch
-from .test_ui_http import HTML, grant, html
+from .test_ui_http import grant, html
+from .ui import page_request, ui_url
 
 JSON = "application/json"
+# The branch published at `STUDIO_ROOT` (`setup_studio`).
+STUDIO_BRANCH = "studio"
 EDITOR_SCOPE = "studio studio-editor"
 OT = "http://api.openteams.com/json-ld/"
 EDITORS = {
@@ -94,16 +97,20 @@ def open_editor(href, view=False, status=200):
 
 
 def get_page(url, status=200, **headers):
-    When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+    url, headers = page_request(url, **headers)
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
     return html()
 
 
 def root_frame(page, href):
+    """The frame of the resource at `href`: its API path or its UI path (the
+    UI app's pages name resources by the latter)."""
+    ui_href = ui_url(href) if href.startswith("/api/") else href
     [frame] = [
         e
         for e in page.having("data-scrud-href")
-        if e.attrs["data-scrud-href"] == href and "scrud-resource" in e.classes()
+        if e.attrs["data-scrud-href"] == ui_href and "scrud-resource" in e.classes()
     ]
     return frame
 
@@ -135,8 +142,9 @@ def put_item(href, body, etag=None, html_mode=True, **headers):
     if etag is not None:
         headers["HTTP_IF_MATCH"] = etag
     if html_mode:
-        headers.update(
-            HTTP_ACCEPT=HTML,
+        href, headers = page_request(
+            href,
+            **headers,
             HTTP_HX_REQUEST="true",
             HTTP_SCRUD_UI_SCOPE=EDITOR_SCOPE,
             HTTP_SCRUD_UI_POINTER="",
@@ -176,7 +184,7 @@ def test_editor_rules_and_components(studio_layer):
 @test_context
 def test_own_component_editor_has_save_and_revert(studio_layer, ui_alice_login):
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     entries = workbench_entries(alice_wip)
     for key, field, kind in (
         (("component", "row"), "/template", "component"),
@@ -194,7 +202,11 @@ def test_own_component_editor_has_save_and_revert(studio_layer, ui_alice_login):
         assert frame.tag == "form", key
         assert frame.attrs["hx-put"] == href
         assert frame.attrs["data-scrud-scope"] == EDITOR_SCOPE
-        When.http.get(href, HTTP_ACCEPT=JSON)
+        # The item's JSON is the API's (a prefix serves the UI only), with
+        # the prefix's branch selected.
+        When.http.get(
+            api_of(href), HTTP_ACCEPT=JSON, HTTP_SCRUD_UI_BRANCH=STUDIO_BRANCH
+        )
         assert frame.attrs["data-scrud-etag"] == Http.response["ETag"]
         stored = Http.response.json()
         content = content_of(page, frame)
@@ -233,7 +245,7 @@ def test_inherited_item_view_mode_with_override_button(studio_layer, admin_login
     it): read-only even for a user who may PUT and DELETE it; the editor
     pane offers the items tree's "Override on this branch" instead."""
     _studio, alice_wip, _bobs = setup_editors(admin_login)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     entries = workbench_entries(alice_wip)
     classes, opened, li, tree = entries[("component", "card")]
     assert "studio-inherited" in classes and opened["href"]
@@ -279,7 +291,7 @@ def test_override_then_save_round_trip(studio_layer, ui_alice_login):
     the frame's PUT with the frame's ETag as ``If-Match``."""
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
     card = resource(UI_COMPONENT_TYPE_URI, "card", "main")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     _classes, opened, li, tree = workbench_entries(alice_wip)[("component", "card")]
     [button] = [e for e in tree.writes() if e.within(li)]
     body = button.attrs["data-scrud-body"]
@@ -287,13 +299,8 @@ def test_override_then_save_round_trip(studio_layer, ui_alice_login):
     # As scrud-json sends it: the body byte for byte, no If-Match (empty
     # data-scrud-etag), HTML accepted.
     assert button.attrs["data-scrud-etag"] == ""
-    When.http.post(
-        button.attrs["hx-post"],
-        data=body,
-        content_type=JSON,
-        HTTP_ACCEPT=HTML,
-        HTTP_HX_REQUEST="true",
-    )
+    url, headers = page_request(button.attrs["hx-post"], HTTP_HX_REQUEST="true")
+    When.http.post(url, data=body, content_type=JSON, **headers)
     Then.http.status_code_is(201)
     own = resource(UI_COMPONENT_TYPE_URI, "card", "alice-wip")
     assert own.content["base"] == card.etag
@@ -326,10 +333,16 @@ def test_override_then_save_round_trip(studio_layer, ui_alice_login):
     assert textarea_value(code) == "<p>saved {{ value }}</p>"
 
 
-def crafted_put(href, body, etag):
+def crafted_put(href, body, etag, **headers):
     """A PUT as JSON with `etag`: ``(status, body)``."""
-    response = put_item(href, body, etag=etag, html_mode=False)
+    response = put_item(href, body, etag=etag, html_mode=False, **headers)
     return response.status_code, response.json()
+
+
+def api_of(href):
+    """The API URL of `href`, a URL under the studio's prefix."""
+    assert href.startswith(STUDIO_ROOT), href
+    return "/api/" + href[len(STUDIO_ROOT) :]
 
 
 @pytest.mark.django_db
@@ -340,7 +353,7 @@ def test_published_T_editor_view_only(studio_layer, admin_login, ui_alice_login)
     exactly what the API answers that user."""
     studio, _alice_wip, _bobs = setup_editors(ui_alice_login)
     main = make_branch("main", "", parent=None)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     for branch in (studio, main):
         entries = workbench_entries(branch)
         hrefs = [o["href"] for _c, o, _li, _p in entries.values() if o["href"]]
@@ -362,40 +375,51 @@ def test_published_T_editor_view_only(studio_layer, admin_login, ui_alice_login)
     assert page.one("data-studio-workbench").attrs["data-studio-published"] == "true"
     opened = Page(open_editor(row["href"], view=True))
     assert opened.writes() == [] and "Save" not in opened.buttons()
-    # A crafted save of main's row through the studio's mount: the API's own
-    # answer, for a user who may not PUT it and for one who may.
+    # A crafted save of main's row: the API's own answer, for a user who may
+    # not PUT it and for one who may, with the studio's branch selected too.
     stored = resource(UI_COMPONENT_TYPE_URI, "row", "main")
     api_href = reverse("ui-components-detail", args=[stored.pk])
     assert row["href"] == STUDIO_ROOT + api_href[len("/api/") :]
     body = {**stored.content, "template": "<b>crafted</b>"}
     etag = f'"{stored.etag}"'
+    studio_branch = {"HTTP_SCRUD_UI_BRANCH": STUDIO_BRANCH}
     grant(ui_alice_login, {"http.GET": [UI_COMPONENT_TYPE_URI]}, "")
-    Given.http.force_authenticate(ui_alice_login)
-    refused = crafted_put(row["href"], body, etag)
+    Given.http.force_login(ui_alice_login)
+    refused = crafted_put(api_href, body, etag, **studio_branch)
     assert refused[0] == 403
     assert crafted_put(api_href, body, etag) == refused
-    # As the editor's form would send it (HTML): refused alike.
-    put_item(row["href"], body, etag=etag)
-    assert Http.response.status_code == 403
-    assert "crafted" not in Http.response.content.decode()
-    Given.http.force_authenticate(admin_login)
-    stale = crafted_put(row["href"], body, '"stale"')
+    # Through the studio's mount, as JSON or as the editor's form would send
+    # it (HTML): the UI's answer (a prefix serves no JSON), refused alike.
+    for html_mode in (False, True):
+        put_item(row["href"], body, etag=etag, html_mode=html_mode)
+        assert Http.response.status_code == 403
+        assert Http.response["Content-Type"] == "text/html; charset=utf-8"
+        assert "crafted" not in Http.response.content.decode()
+    Given.http.force_login(admin_login)
+    stale = crafted_put(api_href, body, '"stale"', **studio_branch)
     assert stale[0] == 412 and crafted_put(api_href, body, '"stale"') == stale
+    put_item(row["href"], body, etag='"stale"', html_mode=False)
+    assert Http.response.status_code == 412
+    assert Http.response["Content-Type"] == "text/html; charset=utf-8"
     assert resource(UI_COMPONENT_TYPE_URI, "row", "main").etag == stored.etag
-    # One the API accepts is accepted: the server's checks decide.
-    status, saved = crafted_put(row["href"], body, etag)
+    # One the API accepts is accepted, through the mount too (the UI's
+    # write, answered with its HTML): the server's checks decide.
+    status, saved = crafted_put(api_href, body, etag, **studio_branch)
     assert status == 200 and saved["template"] == "<b>crafted</b>"
     stored = resource(UI_COMPONENT_TYPE_URI, "row", "main")
     again = {**stored.content, "template": "<b>again</b>"}
-    status, saved = crafted_put(api_href, again, f'"{stored.etag}"')
-    assert status == 200 and saved["template"] == "<b>again</b>"
+    put_item(row["href"], again, etag=f'"{stored.etag}"', html_mode=False)
+    assert Http.response.status_code == 200
+    assert Http.response["Content-Type"] == "text/html; charset=utf-8"
+    stored = resource(UI_COMPONENT_TYPE_URI, "row", "main")
+    assert stored.content["template"] == "<b>again</b>"
 
 
 @pytest.mark.django_db
 @test_context
 def test_django_engine_component_read_only(studio_layer, ui_alice_login):
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     entries = workbench_entries(alice_wip)
     classes, opened, _li, _page = entries[("component", "legacy")]
     assert "studio-own" in classes
@@ -432,7 +456,7 @@ def test_second_tab_save_gets_412_reload(studio_layer, ui_alice_login):
     and a frame that reloads the current state in the editor's scope. A
     live draft is never stored."""
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     _classes, opened, _li, _page = workbench_entries(alice_wip)[("component", "row")]
     href = opened["href"]
     tabs = []
@@ -526,7 +550,7 @@ def test_revert_offered_only_over_something(studio_layer, ui_alice_login, admin_
         (ui_alice_login, {}),
         (admin_login, {("css", "hidden"): "inherited"}),
     ):
-        Given.http.force_authenticate(user)
+        Given.http.force_login(user)
         When.http.get(
             reverse("ui-branch-items-detail", args=["alice-wip"]), HTTP_ACCEPT=JSON
         )
@@ -548,7 +572,7 @@ def test_component_header_labels_its_mode_field(studio_layer, ui_alice_login):
     read ``jinja2 · view`` above a live textarea. The label names the
     field, in edit and in view mode alike."""
     _studio, alice_wip, _bobs = setup_editors(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     entries = workbench_entries(alice_wip)
     _classes, opened, _li, _page = entries[("component", "card")]
     for view in (False, True):

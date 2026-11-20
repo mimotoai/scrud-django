@@ -15,6 +15,12 @@ mysqlclient, is not a dev dependency (it builds against the MySQL client
 library): add it with ``uv run --with mysqlclient==2.3.0``. pytest-django
 creates and drops the test databases (``test_`` and those names), in the
 server's default character set and collation.
+
+With ``SCRUD_TEST_NO_DRF=1`` (the suite without DRF, CI's ``test-no-drf``,
+where ``tests/conftest.py`` blocks DRF's imports) they are
+`without_drf`'s: no ``rest_framework*`` apps, no ``REST_FRAMEWORK``, and
+the URLconf ``tests.no_drf_urls`` (the test types' ninja routes where
+``tests.urls`` has their DRF routes, and ``scrud_django.urls``).
 """
 
 import os
@@ -109,7 +115,7 @@ SETTINGS: dict[str, Any] = dict(
     ),
     PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"],
     REST_FRAMEWORK={
-        "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+        "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
         "DEFAULT_PERMISSION_CLASSES": [
             "scoped_rbac.permissions.IsAuthorized",
         ],
@@ -137,3 +143,23 @@ SETTINGS: dict[str, Any] = dict(
     # tests that need it turn it on with the ``studio_layer`` fixture.
     SCRUD_UI_STUDIO_LAYER=False,
 )
+
+
+#: The flag of the suite without DRF.
+NO_DRF = os.environ.get("SCRUD_TEST_NO_DRF") == "1"
+
+
+def without_drf(settings: dict[str, Any]) -> dict[str, Any]:
+    """`settings` without DRF: no ``rest_framework*`` apps, no
+    ``REST_FRAMEWORK``, and the URLconf ``tests.no_drf_urls`` (ninja)."""
+    config = dict(settings)
+    config["INSTALLED_APPS"] = tuple(
+        app for app in config["INSTALLED_APPS"] if not app.startswith("rest_framework")
+    )
+    config.pop("REST_FRAMEWORK", None)
+    config["ROOT_URLCONF"] = "tests.no_drf_urls"
+    return config
+
+
+if NO_DRF:
+    SETTINGS = without_drf(SETTINGS)

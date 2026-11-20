@@ -24,6 +24,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scrud_django.ui.branches import UI_CSS_TYPE_URI, UI_JS_TYPE_URI
 from scrud_django.ui.branches.effective import Selection, effective_rows
 from scrud_django.ui.branches.store import branches
+from scrud_django.ui.html import STATIC_HTMX, STATIC_SCRUD_UI
 from scrud_django.ui.layers import (
     UILayer,
     check_layers,
@@ -32,7 +33,6 @@ from scrud_django.ui.layers import (
     layer_conflicts,
     layer_item,
 )
-from scrud_django.ui.renderer import STATIC_HTMX, STATIC_SCRUD_UI
 from scrud_django.ui.studio import studio_branch, studio_layer_enabled
 from scrud_django.ui.studio.apps import ScrudUIStudioConfig
 
@@ -42,7 +42,8 @@ from .test_ui_branch_prefixes import ADMIN, mounted, publish
 from .test_ui_branch_render import may_select_branches
 from .test_ui_branch_types import create, make_branch, problem
 from .test_ui_embeds import host, make_jinja, url_of
-from .test_ui_http import FRAME, HTML, html, make_component, make_stylesheet
+from .test_ui_http import FRAME, html, make_component, make_stylesheet
+from .ui import page_request, ui_url
 
 JSON = "application/json"
 
@@ -67,7 +68,8 @@ def api_at_api_path(settings):
 
 
 def get_page(url, status=200, **headers):
-    When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+    url, headers = page_request(url, **headers)
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
     return html()
 
@@ -288,7 +290,7 @@ def studio_item_names(slug):
 def test_studio_layer_setting_toggles_at_runtime(admin_login):
     row = make_component("row", "<b>{{ value }}</b>")
     url = url_of(row)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     config = apps.get_app_config("scrud_django_ui_studio")
 
     def assert_off():
@@ -360,7 +362,7 @@ def test_studio_layer_on_by_default():
 @test_context
 def test_bootstrap_studio_and_computed_types_without_layer(admin_login):
     assert studio_layer_enabled() is False
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     # The bootstrap studio.
     When.http.get(reverse("scrud-studio:types"))
     Then.http.status_code_is(200)
@@ -383,7 +385,7 @@ def test_studio_names_with_layer_off(admin_login):
     installed: a new item may not have it, and an override made while it was
     on is an orphan (kept, rendering, and reported), as when a layer's app
     is uninstalled."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     body = {
         "name": "studio:page",
         "engine": "django",
@@ -437,7 +439,7 @@ def test_check_clean_with_layer_on_and_off():
 def test_studio_page_only_in_studio_scope(studio_layer, admin_login):
     row = make_component("row", "<b>{{ value }}</b>")
     url = url_of(row)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     with override_settings(SCRUD_UI_STUDIO_LAYER=False):
         assert STUDIO_LAYER not in installed_layers()
         without = without_csrf(get_page(url))
@@ -466,11 +468,11 @@ def test_studio_page_only_in_studio_scope(studio_layer, admin_login):
         < js_items["studio:branch"][0]
     )
     css_tag = '<link rel="stylesheet" href="{}">\n'.format(
-        reverse("ui-css-file", args=["studio:studio", css_etag])
+        reverse("scrud_ui:ui-css-file", args=["studio:studio", css_etag])
     )
     js_tag = "".join(
         '<script src="{}" defer></script>\n'.format(
-            reverse("ui-js-file", args=[name, js_items[name][1]])
+            reverse("scrud_ui:ui-js-file", args=[name, js_items[name][1]])
         )
         for name in (
             "studio:studio",
@@ -513,11 +515,11 @@ def test_component_globals_in_mount_and_api_url(todo_list, todo_reader_login):
         "</p>"
     )
     publish("admin", ADMIN)
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
-    # At the API's URLs, in_mount changes nothing.
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    # At the UI app's URLs, in_mount maps an API path into the UI app.
     page = get_page(url_of(todo_list), HTTP_SCRUD_UI_SCOPE="host")
     assert (
-        f"<p>/api/todo-lists/{pk}/|/api/todo-lists/{pk}/|/api/todo-lists/"
+        f"<p>/todo-lists/{pk}/|/api/todo-lists/{pk}/|/api/todo-lists/"
         "|/api/ui-branch-items/main/|3</p>"
     ) in page
     # Under a published prefix, in_mount maps an API path into it; api_url
@@ -533,7 +535,7 @@ def test_component_globals_in_mount_and_api_url(todo_list, todo_reader_login):
 @test_context
 def test_api_url_of_unknown_slug_fails_its_component(todo_list, todo_reader_login):
     host('<p class="host">{{ api_url("no-such-type") }}</p>')
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     page = get_page(url_of(todo_list), HTTP_SCRUD_UI_SCOPE="host")
     assert '<!-- scrud-ui: component "host" failed -->' in page
     assert '<p class="host">' not in page
@@ -566,9 +568,12 @@ def test_globals_in_list_and_page_components_not_django(todo_list, todo_reader_l
             ("plain ex:TodoList", "django-row"),
         ],
     )
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     page = get_page(reverse("todo-lists-list") + "?ui-scope=listing")
-    assert '<ul data-list="/api/todo-lists/">/api/x/</ul>' in page
+    # `api_url` is the API path of a type, for a component's own scripts to
+    # fetch as JSON (the `data-*` names are this test's, no shipped JS reads
+    # them): `/api/` is right, not the UI's pages.
+    assert '<ul data-list="/api/todo-lists/">/x/</ul>' in page
     assert '<body data-page="/api/todo-lists/">' in page
     page = get_page(url_of(todo_list), HTTP_SCRUD_UI_SCOPE="plain")
     assert '<i data-django="|">x</i>' in page
@@ -580,7 +585,7 @@ def test_studio_links_on_ui_type_pages_only(todo_list, admin_login):
     root = make_branch("studio-root", "project-a", parent=None, prefix=STUDIO_ROOT)
     make_branch("no-prefix", "project-a", parent=None)
     row = make_component("row", "<b>{{ value }}</b>")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     # The workbench in the scope studio, in view mode (the workbench is a view
     # of its branch, also for a user who may PUT it), the & escaped.
     studio_href = (
@@ -593,15 +598,14 @@ def test_studio_links_on_ui_type_pages_only(todo_list, admin_login):
         assert (
             f"{NAV}"
             f'<a href="{studio_href}">Studio</a>'
-            f'<a href="{url_of(row)}?ui-safe=1">Safe mode</a>'
+            f'<a href="{ui_url(url_of(row))}?ui-safe=1">Safe mode</a>'
             f'<a href="{bootstrap_href}">Bootstrap studio</a>'
             "</nav>"
         ) in page
         # The safe link keeps the query.
         page = get_page(url_of(row) + "?ui-scope=a")
-        assert f'<a href="{url_of(row)}?ui-scope=a&amp;ui-safe=1">Safe mode</a>' in (
-            page
-        )
+        safe = f'<a href="{ui_url(url_of(row))}?ui-scope=a&amp;ui-safe=1">Safe mode</a>'
+        assert safe in page
         # The UI types' lists, and the studio's computed types.
         assert NAV in get_page(reverse("ui-components-list"))
         assert NAV in get_page(url_of(root))
@@ -633,7 +637,7 @@ def test_studio_links_required_in_page(todo_list, admin_login):
     make_component("my-page", "<html><body>no body here</body></html>")
     make_stylesheet("pages", [("scrud:page", "my-page")])
     row = make_component("row", "<b>{{ value }}</b>")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     # On a page with no chrome, the page component is used.
     assert get_page(url_of(todo_list)) == "<html><body>no body here</body></html>"
     # The studio links are chrome: a page that leaves them out is replaced

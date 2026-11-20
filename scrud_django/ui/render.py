@@ -27,9 +27,9 @@ from django.utils.html import format_html
 from django.utils.safestring import SafeString, mark_safe
 
 from scrud_django import collection_type_uri_for
+from scrud_django.core.bodies import max_body_depth
 from scrud_django.exceptions import UIPointerNotFoundError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
-from scrud_django.mixins.view_mixins import max_body_depth
 from scrud_django.ui import ld
 from scrud_django.ui.authz import ALLOWED, POSSIBLY, decisions_for
 from scrud_django.ui.branches.effective import safe_mode

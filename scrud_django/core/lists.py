@@ -4,7 +4,7 @@ both in the list's order (`list_queryset`), a page of them read key first
 on MySQL (`page_of`, `rows_by_keys`), and the list's validators
 (`list_etag`, `list_last_modified`) and the preconditions of a POST to it
 (`evaluate_list_preconditions`), as the DRF routes answer them
-(`scrud_django.filters.ResourceRbacFilter`, ``ResourceContentFilter``,
+(`scrud_django.drf.filters.ResourceRbacFilter`, ``ResourceContentFilter``,
 ``StandardResultsSetPagination``, ``ListValidatorsMixin``).
 
 A requirement's leaves must read a resource's contexts as they are stored
@@ -82,7 +82,7 @@ from scrud_django.utils import http_date_for
 LIST_PRECONDITIONS = ("if-match", "if-none-match", "if-unmodified-since")
 
 # The paging rules of a list, as the DRF paginator
-# (`scrud_django.paginations.StandardResultsSetPagination`) has them: the
+# (`scrud_django.drf.paginations.StandardResultsSetPagination`) has them: the
 # query parameters naming the page and its size, the size of a page that
 # names none (or not a positive integer) and the largest size, and the page
 # names standing for the last page.
@@ -310,10 +310,13 @@ def list_queryset(
     requirement: Requirement | Sequence,
     ignored: frozenset[str] | None = None,
     using: str | None = None,
+    html: bool = False,
 ) -> QuerySet[Resource]:
     """The list of `resource_type` `request`'s user gets, as the DRF list
     route lists it: `readable_queryset` (its request check, its refusals,
-    `requirement` and `using` as it takes them), then, when the type's
+    `requirement` and `using` as it takes them), then the rows the type's
+    ``TypeOptions.list_rows`` shows of them, when it has one (`html`: the
+    list is asked for as HTML), then, when the type's
     ``TypeOptions.content_filter`` is set (`scrud_django.core.types.type_options`
     of its ``type_uri``), filtered on the query parameters `params` but those
     `ignored` (`content_filtered`; by default, for ``None``, those the list
@@ -329,8 +332,30 @@ def list_queryset(
         raise ValueError(
             f"list_queryset lists for a GET or HEAD, not a {request.method}"
         )
-    queryset = readable_queryset(request, resource_type, requirement, using=using)
+    queryset = listed_rows(request, resource_type, requirement, using=using, html=html)
     return _listed(queryset, resource_type, params, ignored)
+
+
+def listed_rows(
+    request,
+    resource_type,
+    requirement: Requirement | Sequence,
+    *,
+    using: str | None = None,
+    html: bool = False,
+) -> QuerySet[Resource]:
+    """The rows of `resource_type`'s list `request`'s user gets, before its
+    content filter and order: `readable_queryset` (`requirement` and
+    `using` as it takes them), then the rows the type's
+    ``TypeOptions.list_rows`` shows of them, when it has one (`html`: the
+    list is asked for as HTML). `list_queryset` (a GET's) and
+    `create_list_validators` (a POST's, never as HTML) read the list
+    through it."""
+    queryset = readable_queryset(request, resource_type, requirement, using=using)
+    list_rows = type_options(resource_type.type_uri).list_rows
+    if list_rows is not None:
+        queryset = list_rows(request, resource_type, queryset, html=html)
+    return queryset
 
 
 def _listed(queryset, resource_type, params, ignored):
@@ -504,9 +529,8 @@ def page_url(request, number: int, *, param: str = PAGE_PARAMETER) -> str:
     ``PageNumberPagination`` links the next and previous pages: `request`'s
     absolute URL with the page parameter `param` (by default the list's; a
     paginator passes its ``page_query_param``) set to `number` (left out for
-    page 1), the query parameters sorted; under a published branch's prefix
-    (``request.scrud_ui_mount``, ``scrud_django.ui``'s ``Mount``), the API's
-    URL."""
+    page 1), the query parameters sorted (under a published branch's
+    prefix, the prefix's URL: the UI page the prefix serves)."""
     scheme, netloc, path, query, fragment = urlsplit(
         force_str(request.build_absolute_uri())
     )
@@ -516,9 +540,19 @@ def page_url(request, number: int, *, param: str = PAGE_PARAMETER) -> str:
     else:
         params[force_str(param)] = [force_str(number)]
     query = urlencode(sorted(params.items()), doseq=True)
-    url = urlunsplit((scheme, netloc, path, query, fragment))
-    mount = getattr(request, "scrud_ui_mount", None)
-    return mount.canonical(url) if mount is not None else url
+    return urlunsplit((scheme, netloc, path, query, fragment))
+
+
+def read_view(request, resource_type, obj: Resource) -> tuple[object, str]:
+    """``(content, etag)`` (unquoted) of `obj` as `request`'s reader gets it:
+    the type's ``TypeOptions.read_view``, else as stored."""
+    hook = type_options(resource_type.type_uri).read_view
+    if hook is not None:
+        return hook(request, resource_type, obj)
+    content = obj.content
+    if isinstance(content, str):
+        content = json.loads(content)
+    return content, obj.etag
 
 
 def resource_envelope(request, resource_type, obj: Resource) -> dict:
@@ -526,16 +560,15 @@ def resource_envelope(request, resource_type, obj: Resource) -> dict:
     the DRF list serializes it: its absolute URL (``href``, its detail route
     within the URL namespace `request` was resolved under), ``last_modified``
     (an HTTP date), its quoted ``etag``, its ``link`` (the Link field value
-    of its schema and JSON-LD context) and its ``content``."""
-    content = obj.content
-    if isinstance(content, str):
-        content = json.loads(content)
+    of its schema and JSON-LD context) and its ``content``, the last two as
+    its reader gets them (`read_view`)."""
+    content, etag = read_view(request, resource_type, obj)
     return {
         "href": absolute_reverse(
             resource_type.route_name_detail(), args=[obj.pk], request=request
         ),
         "last_modified": http_date_for(obj.modified_at),
-        "etag": quote_django_etag(obj.etag),
+        "etag": quote_django_etag(etag),
         "link": get_link_header_for(resource_type, request),
         "content": content,
     }
@@ -563,11 +596,17 @@ def list_etag(
     items: Sequence[Resource],
     count: int,
     query: list[tuple[str, list[str]]],
+    request=None,
 ) -> str:
     """The list's ETag (unquoted): a hash of what the requester gets, the
-    page's `items` (key and ETag, in page order), the list's `count`, the
-    query parameters `query` (``QueryDict.lists()``, sorted here) and
+    page's `items` (key and ETag, in page order; each ETag as `request`'s
+    reader gets it, `read_view`, given a `request`), the list's `count`,
+    the query parameters `query` (``QueryDict.lists()``, sorted here) and
     `resource_type`'s link targets. Nothing else changes it."""
+    if request is None:
+        etags = [obj.etag for obj in items]
+    else:
+        etags = [read_view(request, resource_type, obj)[1] for obj in items]
     parts = [
         resource_type.pk,
         resource_type.revision,
@@ -577,7 +616,7 @@ def list_etag(
         resource_type.context_uri,
         count,
         urlencode(sorted(query), doseq=True),
-        *(f"{obj.pk}:{obj.etag}" for obj in items),
+        *(f"{obj.pk}:{etag}" for obj, etag in zip(items, etags, strict=True)),
     ]
     digest = hashlib.sha256("\n".join(map(str, parts)).encode("utf-8"))
     return digest.hexdigest()
@@ -621,6 +660,7 @@ def list_validators(
         items=page.items,
         count=page.count,
         query=sorted(request.GET.lists()),
+        request=request,
     )
     return etag, list_last_modified(request, resource_type, queryset, requirement)
 
@@ -640,11 +680,12 @@ def create_list_validators(
     `ignored` as `list_queryset` takes it), read on database `using` (the
     create's, under its `scrud_django.core.writes.conditional_create_lock`),
     as the DRF route reads them (``ListValidatorsMixin.create_list_validators``):
-    `readable_queryset` of the POST, which lists as its GET copy without the
-    list grant (the create's own request check governs it). A page that is
+    `listed_rows` of the POST (`readable_queryset`, which lists as its GET
+    copy without the list grant, the create's own request check governing
+    it, then the type's ``list_rows``, as JSON). A page that is
     not one of the list's raises ``django.core.paginator.InvalidPage`` (404
     on DRF), as the GET would."""
-    queryset = readable_queryset(request, resource_type, requirement, using=using)
+    queryset = listed_rows(request, resource_type, requirement, using=using)
     queryset = _listed(queryset, resource_type, request.GET, ignored)
     page = requested_page(queryset, request.GET)
     return list_validators(as_get(request), resource_type, queryset, page, requirement)

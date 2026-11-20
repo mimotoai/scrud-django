@@ -114,3 +114,80 @@ assert hash(ErrorText("x", "a")) == hash("x")
         [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+# The UI app's pages and URLconf, and the views serving its CSS and JS files,
+# import none of the denied modules either (the deny list).
+UI_APP = (
+    ROOT / "scrud_django" / "ui" / "pages.py",
+    ROOT / "scrud_django" / "ui" / "urls.py",
+    ROOT / "scrud_django" / "ui" / "branches" / "file_views.py",
+    ROOT / "scrud_django" / "ui" / "studio" / "views.py",
+)
+
+
+def test_ui_pages_import_no_drf():
+    """The UI app's modules import no DRF (directly: the deny list), and
+    import with it blocked (with what they import), ``scrud_django.ui``
+    installed."""
+    offenders = []
+    for path in UI_APP:
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                names = [base] + [f"{base}.{alias.name}" for alias in node.names]
+            else:
+                continue
+            for name in names:
+                if any(name == d or name.startswith(d + ".") for d in DENIED):
+                    offenders.append(f"{path.relative_to(ROOT)}: {name}")
+    assert not offenders
+    script = SCRIPT.replace(
+        '"scrud_django",\n    ],', '"scrud_django",\n        "scrud_django.ui",\n    ],'
+    ) + (
+        "\nfor name in ('scrud_django.ui.pages', 'scrud_django.ui.urls',"
+        " 'scrud_django.ui.branches.file_views',"
+        " 'scrud_django.ui.studio.views'):\n"
+        "    importlib.import_module(name)\n"
+    )
+    assert '"scrud_django.ui",' in script
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_project_without_drf_runs():
+    """`manage.py check`, the ninja API, the UI's files and the studio run in
+    a project where Django REST framework cannot be imported."""
+    from .no_drf import run_without_drf
+
+    result = run_without_drf(
+        """
+from django.contrib.auth import get_user_model
+from django.test import Client, RequestFactory
+
+call_command("check")
+assert "rest_framework" not in sys.modules
+
+client = Client()
+response = client.get("/api/services/")
+assert response.status_code == 200, (response.status_code, response.content)
+
+from scrud_django.ui.branches.file_urls import css_urls
+
+urls = css_urls(RequestFactory().get("/"))
+assert urls, "no packaged stylesheet"
+response = client.get(urls[0])
+assert response.status_code == 200, (urls[0], response.status_code)
+
+user = get_user_model().objects.create_user("studio", password="pw")
+client.force_login(user)
+response = client.get("/studio/")
+assert response.status_code == 200, (response.status_code, response.content[:500])
+assert "rest_framework" not in sys.modules
+"""
+    )
+    assert result.returncode == 0, result.stderr

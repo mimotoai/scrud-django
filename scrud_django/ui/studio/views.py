@@ -8,22 +8,18 @@ from django.http import Http404, HttpResponse
 from django.shortcuts import render
 from django.urls import reverse
 from django.views.decorators.clickjacking import xframe_options_sameorigin
-from rest_framework.decorators import (
-    api_view,
-    parser_classes,
-    permission_classes,
-    renderer_classes,
-)
-from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.parsers import FormParser, JSONParser
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.renderers import JSONRenderer
-from rest_framework.response import Response
+from django.views.decorators.csrf import csrf_exempt, csrf_protect
 
+from scrud_django.core.bodies import request_json
+from scrud_django.core.computed import check_authenticated
+from scrud_django.core.errors import error_answer
+from scrud_django.core.urls import api_reverse
 from scrud_django.exceptions import (
+    MethodNotAllowedError,
+    RequestBodyMediaTypeError,
+    RequestFieldsInvalidError,
     UIBranchUnavailableError,
     UIStudioContextUnavailableError,
-    drf_errors,
 )
 from scrud_django.models import ResourceType
 from scrud_django.registration import get_resource_type_for
@@ -36,8 +32,7 @@ from scrud_django.ui.branches.selection import parse_value, selectable
 from scrud_django.ui.branches.store import branches
 from scrud_django.ui.cascade import request_memo
 from scrud_django.ui.render import node_at
-from scrud_django.ui.studio import writes
-from scrud_django.ui.studio.dispatch import call_view
+from scrud_django.ui.studio import answers, writes
 from scrud_django.ui.studio.explain import explain as explain_node
 from scrud_django.ui.studio.live_preview import (
     live_preview_csp,
@@ -59,6 +54,51 @@ from scrud_django.ui.studio.preview import (
     render_preview,
     sample_of,
 )
+
+
+def _refusal(exc, request) -> HttpResponse:
+    """`exc` as the answer the API gives it (`error_answer`: its status, its
+    problem and its own headers); any other exception is raised again."""
+    answered = error_answer(exc, request)
+    if answered is None:
+        raise exc
+    status, body, headers = answered
+    response = answers.json_response(body, status=status)
+    for name, value in headers.items():
+        response[name] = value
+    return response
+
+
+def studio_view(*methods):
+    """The studio's view of `methods` only (any other: 405 with ``Allow``),
+    for an authenticated user (an anonymous one is refused as the API
+    refuses it: 401), whose refusals (`ScrudException`s and access errors,
+    ``Http404``, ``PermissionDenied``) are answered as the API answers them
+    (`_refusal`). The checks run in the order of DRF's ``initial()``:
+    authentication, then the method. The CSRF check is Django's, on the
+    unsafe methods."""
+    allow = ", ".join(methods)
+
+    def decorate(view):
+        @wraps(view)
+        def studio(request, *args, **kwargs):
+            try:
+                check_authenticated(request)
+                if request.method not in methods:
+                    raise MethodNotAllowedError(request.method)
+                response = view(request, *args, **kwargs)
+            except Exception as exc:
+                response = _refusal(exc, request)
+            response["Allow"] = allow
+            return response
+
+        # Not left to the middleware alone: an unsafe method is refused
+        # without the CSRF token whether or not it is installed.
+        if any(method not in ("GET", "HEAD") for method in methods):
+            studio = csrf_protect(studio)
+        return studio
+
+    return decorate
 
 
 def registered_types(q: str = "") -> list[dict]:
@@ -84,9 +124,7 @@ def registered_types(q: str = "") -> list[dict]:
     return sorted(found, key=lambda t: t["slug"])
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@drf_errors
+@studio_view("GET")
 def types(request):
     """The type browser, filtered by ``?q=``. An htmx request (``HX-Request``)
     gets the list alone."""
@@ -95,7 +133,7 @@ def types(request):
     template = "scrud_studio/types.html"
     if request.headers.get("HX-Request"):
         template = "scrud_studio/_type_list.html"
-    return render(request._request, template, context)
+    return render(request, template, context)
 
 
 def _registered_type(slug) -> dict:
@@ -105,21 +143,17 @@ def _registered_type(slug) -> dict:
     return found[0]
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@drf_errors
+@studio_view("GET")
 def type_page(request, slug):
     """The studio page of type `slug`: the branch picker and preview
     controls (`page.page_context`, from the query), the sandboxed preview,
     the inspector and editor that ``studio.js`` fills, and the branch
     strip."""
     context = {"type": _registered_type(slug), **page_context(request, slug)}
-    return render(request._request, "scrud_studio/type.html", context)
+    return render(request, "scrud_studio/type.html", context)
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@drf_errors
+@studio_view("GET")
 def strip(request, slug):
     """The branch strip of ``?branch=`` (a branch name; default ``main``)
     on the page of type `slug`, alone: the page refreshes it after a save.
@@ -134,13 +168,10 @@ def strip(request, slug):
             request, slug, branch, Selection(branch=branch.name), all_branches
         ),
     }
-    return render(request._request, "scrud_studio/_strip.html", context)
+    return render(request, "scrud_studio/_strip.html", context)
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@studio_view("GET")
 def item(request):
     """The item ``{kind, name, applies_to?}`` (query parameters) as the
     branch ``?branch=`` (a branch name; default ``main``) shows it live, for
@@ -151,9 +182,9 @@ def item(request):
     branch = _selected_branch(request)
     found = read_item(request, branch, kind, name, target)
     if found is None:
-        raise NotFound(f"Branch {branch.name!r} shows no such item you may read.")
+        raise Http404(f"Branch {branch.name!r} shows no such item you may read.")
     headers = {"ETag": found["etag"]} if found["etag"] else None
-    return Response(found, headers=headers)
+    return answers.json_response(found, headers=headers)
 
 
 def _selected_branch(request) -> Branch:
@@ -188,15 +219,12 @@ def _data_context(request, params=None) -> str:
     return context
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@studio_view("GET")
 def sample(request, slug):
     """The sample instance of type `slug` as JSON, in the data context
     ``?context=`` (its ``rbac_context``; default ``""``; `_data_context`)."""
     resource_type = get_resource_type_for(slug)
-    return Response(sample_of(resource_type, _data_context(request)))
+    return answers.json_response(sample_of(resource_type, _data_context(request)))
 
 
 # The CSP of every preview response (ruling S15): opened outside the
@@ -220,10 +248,7 @@ def _sandboxed(view):
 
 @_sandboxed
 @xframe_options_sameorigin
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@studio_view("GET")
 def preview(request, slug):
     """A page for the studio's preview iframe: type `slug`'s sample, or with
     ``?instance=<pk>`` that instance (read through its resource view with
@@ -255,7 +280,7 @@ def preview(request, slug):
         href=shown.href,
     )
     return render(
-        request._request,
+        request,
         "scrud_studio/preview.html",
         {
             "title": _schema_title(resource_type),
@@ -272,7 +297,7 @@ _NONCE_ATTR = "scrud_studio_preview_nonce"
 def _live_sandboxed(view):
     """`view` with `live_preview_csp` and ``X-Frame-Options: SAMEORIGIN`` on
     every response it gives, its nonce new with each (on the request as
-    `_NONCE_ATTR`). An exception DRF does not answer (a body over
+    `_NONCE_ATTR`). An exception `studio_view` does not answer (a body over
     ``DATA_UPLOAD_MAX_MEMORY_SIZE``, too many form fields, any error) is
     answered here as Django would answer it (``response_for_exception``:
     400 for a suspicious request, else 500, logged and signalled as usual),
@@ -293,13 +318,14 @@ def _live_sandboxed(view):
     return sandboxed
 
 
+# Django's CSRF check, made inside the sandbox (`csrf_protect`, not the
+# middleware's, which `csrf_exempt` leaves to it) so that its 403 carries the
+# same CSP and frame headers as every response of this view.
+@csrf_exempt
 @_live_sandboxed
 @xframe_options_sameorigin
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@parser_classes([FormParser])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@csrf_protect
+@studio_view("POST")
 def live_preview(request):
     """The live preview (`studio.live_preview`): a form-encoded POST, so
     that a ``<form target=...>`` can submit it into a frame with the CSRF
@@ -311,21 +337,18 @@ def live_preview(request):
     `render_live_preview` renders it. It writes nothing. Every response,
     errors included, is framable by the same origin only and carries
     `live_preview_csp` with its own nonce."""
-    live = parse_request(request.data.get("request"))
+    live = parse_request(_form_field(request, "request"))
     resource_type = get_resource_type_for(live.slug)
     shown = _shown(request, live.slug, resource_type, live.params())
     if isinstance(shown, HttpResponse):
         return shown
-    nonce = getattr(request._request, _NONCE_ATTR)
+    nonce = getattr(request, _NONCE_ATTR)
     return render_live_preview(
         request, resource_type, shown, live, nonce, _readable(request)
     )
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@studio_view("GET")
 def explain(request, slug):
     """The inspector's explanation (`studio.explain.explain`) of the node at
     ``?pointer=`` (a JSON Pointer; default ``""``, the resource) of what
@@ -348,7 +371,9 @@ def explain(request, slug):
             mode=shown.mode,
             contexts=shown.contexts,
         )
-        return Response(explain_node(info, shown.mode, readable=_readable(request)))
+        return answers.json_response(
+            explain_node(info, shown.mode, readable=_readable(request))
+        )
 
 
 def _readable(request):
@@ -395,7 +420,7 @@ def _shown(request, slug, resource_type, params=None) -> "_Shown | HttpResponse"
         selection = Selection()
     mode = params.get("mode") or "view"
     if mode not in ("view", "edit"):
-        raise ValidationError({"mode": ["Must be 'view' or 'edit'."]})
+        raise RequestFieldsInvalidError({"mode": ["Must be 'view' or 'edit'."]})
     scope_chain = tuple(params.get("scope", "").split())
     instance = params.get("instance") or None
     if instance is None:
@@ -409,16 +434,12 @@ def _shown(request, slug, resource_type, params=None) -> "_Shown | HttpResponse"
             decisions=SAMPLE_DECISIONS,
             data_context=context,
         )
-    read = call_view(request, slug, "GET", pk=instance)
-    if read.status_code != 200:
-        return HttpResponse(
-            read.content,
-            status=read.status_code,
-            content_type=read["Content-Type"],
-        )
+    read = answers.write(request, slug, "GET", pk=instance)
+    if read.status != 200:
+        return answers.as_response(read, saved_trigger=False)
     return _Shown(
-        content=read.data,
-        href=reverse(f"{slug}-detail", args=[instance]),
+        content=read.content,
+        href=api_reverse(slug, "detail", args=[instance]),
         selection=selection,
         mode=mode,
         scope_chain=scope_chain,
@@ -429,57 +450,56 @@ def _shown(request, slug, resource_type, params=None) -> "_Shown | HttpResponse"
 
 
 def _body(request) -> dict:
-    """The JSON object a studio write is sent with."""
-    if not isinstance(request.data, dict):
-        raise ValidationError({"body": ["A JSON object is required."]})
-    return request.data
+    """The JSON object a studio write is sent with (an empty body is an
+    empty object, as DRF reads it)."""
+    body, present = request_json(request)
+    if not present:
+        return {}
+    if not isinstance(body, dict):
+        raise RequestFieldsInvalidError({"body": ["A JSON object is required."]})
+    return body
 
 
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@parser_classes([JSONParser])
-@renderer_classes([JSONRenderer])
-@drf_errors
+def _form_field(request, name):
+    """The form field `name` of `request` (DRF's ``FormParser`` read it: a
+    body of another media type than a urlencoded form is
+    `RequestBodyMediaTypeError`, a 415)."""
+    meta = request.META
+    try:
+        length = int(meta.get("CONTENT_LENGTH") or 0)
+    except ValueError:
+        length = 0
+    if length > 0 and request.content_type != "application/x-www-form-urlencoded":
+        raise RequestBodyMediaTypeError(meta.get("CONTENT_TYPE", ""))
+    return request.POST.get(name)
+
+
+@studio_view("POST")
 def save_item(request):
     """Save an item on a working branch (`writes.save_item`)."""
     return writes.save_item(request, _body(request))
 
 
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@parser_classes([JSONParser])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@studio_view("POST")
 def revert_item(request):
     """Drop a branch's own row of an item, a published branch's too
     (`writes.revert_item`)."""
     return writes.revert_item(request, _body(request))
 
 
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@parser_classes([JSONParser])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@studio_view("POST")
 def pull(request):
     """Pull a working branch (`writes.pull`)."""
     return writes.pull(request, _body(request))
 
 
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@parser_classes([JSONParser])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@studio_view("POST")
 def push(request):
     """Push a working branch, to its parent by default (`writes.push`)."""
     return writes.push(request, _body(request))
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@studio_view("GET")
 def new_component_options(request, slug):
     """The options of "new component for this node"
     (`studio.new_component.options`) for the node at ``?pointer=`` (default
@@ -488,18 +508,14 @@ def new_component_options(request, slug):
     shown = _shown(request, slug, resource_type)
     if isinstance(shown, HttpResponse):
         return shown
-    return Response(
+    return answers.json_response(
         component_options(
             request, slug, resource_type, shown, request.GET.get("pointer", "")
         )
     )
 
 
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@parser_classes([JSONParser])
-@renderer_classes([JSONRenderer])
-@drf_errors
+@studio_view("POST")
 def new_component(request):
     """ "New component for this node" (`studio.new_component.create`): the
     body names the working ``branch`` (refused before anything is
@@ -510,7 +526,7 @@ def new_component(request):
     branch = writes._working_branch(request, body.get("branch"))
     slug = body.get("slug")
     if not isinstance(slug, str) or not slug:
-        raise ValidationError({"slug": ["A resource type slug is required."]})
+        raise RequestFieldsInvalidError({"slug": ["A resource type slug is required."]})
     params = {"branch": branch.name}
     for key in ("mode", "scope", "context", "instance"):
         value = body.get(key)
@@ -519,7 +535,7 @@ def new_component(request):
         if key == "instance" and type(value) is int:
             value = str(value)
         if not isinstance(value, str):
-            raise ValidationError({key: ["Must be a string."]})
+            raise RequestFieldsInvalidError({key: ["Must be a string."]})
         params[key] = value
     resource_type = get_resource_type_for(slug)
     shown = _shown(request, slug, resource_type, params)

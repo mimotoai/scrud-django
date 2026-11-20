@@ -5,7 +5,7 @@ previewed."""
 import copy
 import math
 
-from scrud_django.mixins.view_mixins import max_body_depth
+from scrud_django.core.bodies import max_body_depth
 
 _PLACEHOLDER = "Lorem ipsum"
 _FORMATS = {

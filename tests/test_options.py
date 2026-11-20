@@ -24,7 +24,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
-from scrud_django.mixins.view_mixins import LockedWriteMixin
+from scrud_django.drf.mixins import LockedWriteMixin
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 

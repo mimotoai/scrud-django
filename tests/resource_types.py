@@ -6,31 +6,13 @@ from django.core.exceptions import PermissionDenied
 from django.http import Http404
 
 from scrud_django import registration
-from scrud_django.computed import ComputedResourceViewSet
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
-from scrud_django.models import Resource
-from scrud_django.permissions import may_read_in_context
+
+# No DRF here (the suite without DRF registers `ninja_type_specs` in its
+# session setup): the DRF registrations import it when called.
 
 TODO_SUMMARY_TYPE_URI = "tests://TodoSummary"
 TODO_LIST_TYPE_URI = "tests://TodoList"
-
-
-class TodoSummaryViewSet(ComputedResourceViewSet):
-    """The titles of the to-do lists in the context `key` that the requesting
-    user may read: computed, never stored."""
-
-    def compute(self, request, key):
-        titles = []
-        lists = Resource.objects.filter(resource_type__type_uri=TODO_LIST_TYPE_URI)
-        for stored in lists:
-            content = stored.content
-            if content.get("rbac_context", "") != key:
-                continue
-            if may_read_in_context(
-                request, TODO_LIST_TYPE_URI, content, rbac_contexts_of(content)
-            ):
-                titles.append(content["title"])
-        return {"context": key, "titles": sorted(titles)}
 
 
 def static_text(package, name):
@@ -75,6 +57,8 @@ def json_resource_types():
     may be recreated in `conftest.py`, otherwise they're wiped on each clean of the
     database!.
     """
+    from .todo_summaries import TodoSummaryViewSet
+
     return [
         registration.json_resource_type(**PARTNER_PROFILES_TYPE),
         registration.json_resource_type(**TODOS_TYPE),
@@ -324,6 +308,166 @@ def hooked_resource_types():
         # stored type (`tests.test_core_parity`).
         registration.json_resource_type(**WORKFLOW_NOTES_TYPE),
     ]
+
+
+# The context `tests.urls.ContextDenyingIsAuthorized` refuses everything in
+# (its ``DENIED``), which the types of `drf_only_types` and
+# `hand_routed_types` refuse: by that ``IsAuthorized`` subclass alone, or by
+# their hooks too (``hooked-denied-notes``).
+DENIED = "denied"
+
+DENIED_NOTE_TYPE_URI = "tests://DeniedNote"
+CORE_DENIED_NOTE_TYPE_URI = "tests://CoreDeniedNote"
+HOOKED_DENIED_NOTE_TYPE_URI = "tests://HookedDeniedNote"
+CHECKED_DENIED_NOTE_TYPE_URI = "tests://CheckedDeniedNote"
+OBJECT_CHECKED_DENIED_NOTE_TYPE_URI = "tests://ObjectCheckedDeniedNote"
+HAND_ROUTED_NOTE_TYPE_URI = "tests://HandRoutedNote"
+CORE_HAND_ROUTED_NOTE_TYPE_URI = "tests://CoreHandRoutedNote"
+
+
+def not_in_denied(request, resource_type, body, context):
+    """The check of ``hooked-denied-notes``: nothing is written in the
+    context "denied" (`ContextDenyingIsAuthorized`'s rule)."""
+    return context != DENIED
+
+
+def readable_outside_denied(request, resource_type, obj):
+    """The object check of ``hooked-denied-notes``: a note stored in the
+    context "denied" is hidden."""
+    return DENIED not in rbac_contexts_of(obj)
+
+
+def note_type(type_uri, slug, title):
+    """The registration arguments of a note type `slug` (`type_uri`)."""
+    name = type_uri.removeprefix("tests://")
+    return {
+        "resource_type_uri": type_uri,
+        "revision": "1",
+        "slug": slug,
+        "schema_func": lambda: dict(
+            HOOKED_NOTE_SCHEMA, **{"$id": type_uri, "title": title}
+        ),
+        "context_func": lambda: dict(
+            HOOKED_NOTE_CONTEXT, **{"@type": f"http://example.org/hooked#{name}"}
+        ),
+    }
+
+
+def drf_only_types():
+    """Register the types of ``tests.drf_only_urls`` served by the custom
+    viewset ``tests.urls.ContextDenyingResourceViewSet`` (their rows, hooks
+    and routes), returning their routes: ``denied-notes`` (DRF-only
+    authorization), ``core-denied-notes`` (``ui_authorization="core"``),
+    ``hooked-denied-notes`` (``checks=`` and ``object_checks=`` declaring
+    the viewset's rule), and ``checked-denied-notes`` and
+    ``object-checked-denied-notes``, which declare only one of the two."""
+    from .urls import ContextDenyingIsAuthorized, ContextDenyingResourceViewSet
+
+    assert ContextDenyingIsAuthorized.DENIED == DENIED
+    viewset = {"viewset_class": ContextDenyingResourceViewSet}
+    return registration.resource_types(
+        registration.json_resource_type(
+            **note_type(DENIED_NOTE_TYPE_URI, "denied-notes", "Denied note"),
+            **viewset,
+        ),
+        registration.json_resource_type(
+            **note_type(CORE_DENIED_NOTE_TYPE_URI, "core-denied-notes", "Core note"),
+            **viewset,
+            ui_authorization="core",
+        ),
+        registration.json_resource_type(
+            **note_type(
+                HOOKED_DENIED_NOTE_TYPE_URI, "hooked-denied-notes", "Hooked note"
+            ),
+            **viewset,
+            checks=(not_in_denied,),
+            object_checks=(readable_outside_denied,),
+        ),
+        registration.json_resource_type(
+            **note_type(
+                CHECKED_DENIED_NOTE_TYPE_URI, "checked-denied-notes", "Checked note"
+            ),
+            **viewset,
+            checks=(not_in_denied,),
+        ),
+        registration.json_resource_type(
+            **note_type(
+                OBJECT_CHECKED_DENIED_NOTE_TYPE_URI,
+                "object-checked-denied-notes",
+                "Object-checked note",
+            ),
+            **viewset,
+            object_checks=(readable_outside_denied,),
+        ),
+    )
+
+
+def hand_routed_types():
+    """Register the types of ``tests.drf_only_urls`` whose routes are built
+    by hand, not by registration (``ResourceTypeRegistration(build_urls=
+    False)``, then ``ContextDenyingResourceViewSet.as_view(...)`` named as
+    registration names them), returning those routes: ``hand-routed-notes``,
+    and ``core-hand-routed-notes``, whose options declare
+    ``ui_authorization="core"`` (`register_type_options`)."""
+    from django.urls import path
+
+    from scrud_django.core.types import TypeOptions, register_type_options
+
+    from .urls import ContextDenyingResourceViewSet
+
+    routes = []
+    for type_uri, slug, title in (
+        (HAND_ROUTED_NOTE_TYPE_URI, "hand-routed-notes", "Hand-routed note"),
+        (CORE_HAND_ROUTED_NOTE_TYPE_URI, "core-hand-routed-notes", "Core hand"),
+    ):
+        arguments = note_type(type_uri, slug, title)
+        if slug.startswith("core-"):
+            register_type_options(
+                type_uri, TypeOptions(ui_authorization="core"), slug=slug
+            )
+        registration.ResourceTypeRegistration(**arguments, build_urls=False)
+        routes += [
+            path(
+                f"{slug}/",
+                ContextDenyingResourceViewSet.as_view(
+                    {"get": "list", "head": "list", "post": "create"},
+                    resource_type_name=slug,
+                ),
+                name=f"{slug}-list",
+            ),
+            path(
+                f"{slug}/<str:slug>/",
+                ContextDenyingResourceViewSet.as_view(
+                    {"get": "retrieve", "put": "update", "delete": "destroy"},
+                    resource_type_name=slug,
+                ),
+                name=f"{slug}-detail",
+            ),
+        ]
+    return routes
+
+
+# The types of ``tests.mixed_routes_urls``.
+MARKED_LIST_SLUG = "marked-list-notes"
+MARKED_DETAIL_SLUG = "marked-detail-notes"
+UNRESOLVED_DETAIL_SLUG = "unresolved-detail-notes"
+UNREGISTERED_SLUG = "unregistered-notes"
+UNREGISTERED_TYPE_URI = "tests://UnregisteredNote"
+
+MIXED_TYPES = (
+    ("tests://MarkedListNote", MARKED_LIST_SLUG, "Marked list note"),
+    ("tests://MarkedDetailNote", MARKED_DETAIL_SLUG, "Marked detail note"),
+    ("tests://UnresolvedDetailNote", UNRESOLVED_DETAIL_SLUG, "Unresolved note"),
+)
+
+
+def register_mixed_types():
+    """Register the types of ``tests.mixed_routes_urls`` (`MIXED_TYPES`), without
+    their routes, which it builds."""
+    for type_uri, slug, title in MIXED_TYPES:
+        registration.ResourceTypeRegistration(
+            **note_type(type_uri, slug, title), build_urls=False
+        )
 
 
 def ninja_type_specs():

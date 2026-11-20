@@ -1,4 +1,3 @@
-from django.core.exceptions import ImproperlyConfigured
 from django.urls import NoReverseMatch, reverse
 
 
@@ -18,9 +17,10 @@ try:  # DRF's own classes when it is installed, so that ``isinstance`` holds.
     from rest_framework.exceptions import ErrorDetail as _ErrorBase
 
     class ScrudAPIException(_APIException):
-        """The ``APIException`` that carries a scrud error (`as_drf`) through
-        DRF's views and exception handlers, as ``.scrud``. Defined once, at
-        import; ``None`` when DRF is not installed."""
+        """The ``APIException`` that carries a scrud error
+        (`scrud_django.drf.exceptions.as_drf`) through DRF's views and
+        exception handlers, as ``.scrud``. Defined once, at import; ``None``
+        when DRF is not installed."""
 
         def __init__(self, scrud):
             self.scrud = scrud
@@ -64,84 +64,41 @@ class ErrorText(_ErrorBase):
         __hash__ = str.__hash__
 
 
+#: The DRF names that moved to the DRF adapter, by their new module: their
+#: names here are deprecated aliases for one release (`__getattr__`). A
+#: project's ``REST_FRAMEWORK["EXCEPTION_HANDLER"]`` naming
+#: ``scrud_django.exceptions.scrud_exception_handler`` still resolves (it
+#: warns once); the setting's value is now
+#: ``scrud_django.drf.exceptions.scrud_exception_handler``.
+MOVED_TO_DRF = {
+    "scrud_exception_handler": "scrud_django.drf.exceptions",
+    "as_drf": "scrud_django.drf.exceptions",
+    "drf_errors": "scrud_django.drf.exceptions",
+    "DOCUMENT_RENDERERS": "scrud_django.drf.renderers",
+}
+
+
 def __getattr__(name):
-    """``DOCUMENT_RENDERERS`` (`scrud_django.renderers`), importable from here
-    as before, read on first use: the renderers import DRF, and this module
-    imports without it."""
-    if name == "DOCUMENT_RENDERERS":
-        from scrud_django.renderers import DOCUMENT_RENDERERS
+    """A name in `MOVED_TO_DRF`: the object of its new module, with a
+    ``DeprecationWarning`` (once). This module imports without DRF; those
+    names need it."""
+    if name in MOVED_TO_DRF:
+        from scrud_django._aliases import moved_name
 
-        return DOCUMENT_RENDERERS
+        return moved_name(globals(), name, MOVED_TO_DRF[name])
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def scrud_exception_handler(exc, context):
-    """Scrud errors keep their own body; everything else gets scoped-rbac's
-    RFC 9457 problem details."""
-    from rest_framework.views import exception_handler as drf_exception_handler
-    from scoped_rbac.rest import exception_handler as scoped_rbac_exception_handler
-
-    from scrud_django.renderers import DOCUMENT_RENDERERS
-
-    if isinstance(exc, ScrudAPIException):
-        exc = exc.scrud
-    if not isinstance(exc, ScrudException):
-        return scoped_rbac_exception_handler(exc, context)
-    response = drf_exception_handler(as_drf(exc), context)
-    response.data = exc.response_data(context)
-    response.data["status"] = response.status_code
-    try:
-        request = context["request"]
-        renderer = request.accepted_renderer
-        # The "json" format, or a schema or JSON-LD document's renderer
-        # (formats schema-json and ld-json). Another renderer (e.g. an
-        # adopter's application/vnd.api+json) keeps its media type.
-        if renderer.format == "json" or isinstance(renderer, DOCUMENT_RENDERERS):
-            response.content_type = "application/problem+json"
-            response["Content-Type"] = "application/problem+json"
-    except AttributeError:
-        pass
-    return response
-
-
-def as_drf(exc):
-    """`exc` (a `ScrudException`) as the ``APIException`` DRF's views and
-    handlers know: its status code, its detail (an ``ErrorDetail`` of the
-    message and the error's ``default_code``), and `exc` itself as ``.scrud``
-    (`ScrudAPIException`). Without DRF installed there is none:
-    ``ImproperlyConfigured``."""
-    if ScrudAPIException is None:
-        raise ImproperlyConfigured(
-            "scrud_django.exceptions.as_drf needs Django REST framework, which "
-            "is not installed: a scrud error is a ScrudException without it."
-        )
-    return ScrudAPIException(exc)
-
-
-def drf_errors(func):
-    """Decorate a DRF function view (``@api_view``) so that a `ScrudException`
-    it raises reaches DRF's handlers as `as_drf` of it. Apply it below
-    ``@api_view``."""
-    import functools
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except ScrudException as exc:
-            raise as_drf(exc) from exc
-
-    return wrapper
 
 
 class ScrudException(Exception):
     """A scrud error. It is neutral: no DRF. Its ``detail`` is a message
     carrying the class's ``default_code`` (`ErrorText`), so that any exception
     handler can render it and read its code. scrud's DRF views wrap it in an
-    ``APIException`` (`as_drf`, through ``ScrudErrorsMixin``; a function view
-    through `drf_errors`) before a handler sees it; `scrud_exception_handler`
-    accepts either. The RFC 7807 body
-    `scrud_exception_handler` sends is `response_data`, which may say more."""
+    ``APIException`` (`scrud_django.drf.exceptions.as_drf`, through
+    ``ScrudErrorsMixin``; a function view through
+    `scrud_django.drf.exceptions.drf_errors`) before a handler sees it;
+    `scrud_django.drf.exceptions.scrud_exception_handler` accepts either.
+    The RFC 7807 body that handler sends is `response_data`, which may say
+    more."""
 
     status_code = 500
     default_detail = "A server error occurred."
@@ -157,6 +114,10 @@ class ScrudException(Exception):
     # (``scoped_rbac.problems.PROBLEM_LINKS``); off, DRF's native body
     # (`native_response_data`) as ``application/json``.
     problem_links: bool = False
+    # The headers its answer carries beyond the error's own (a 401's
+    # ``WWW-Authenticate``, a 429's ``Retry-After``), on either front end. An
+    # instance sets its own; the class's is never changed.
+    answer_headers: dict[str, str] = {}
 
     def __init__(self, message=None):
         if message is None:
@@ -242,7 +203,7 @@ class QueryParameterError(ScrudException):
 class ContentFilterError(QueryParameterError):
     """A list's query parameters that cannot filter it, raised by
     `scrud_django.core.lists.content_filtered`, as the DRF list route answers
-    them: its filter (``scrud_django.filters.ResourceContentFilter``) raises
+    them: its filter (``scrud_django.drf.filters.ResourceContentFilter``) raises
     DRF's ``ValidationError`` of ``errors`` (code ``invalid``), which
     scoped-rbac's handler answers. While uniform errors are on, a validation
     problem (`response_data`: each message the canonical one of ``invalid``)
@@ -265,6 +226,15 @@ class ContentFilterError(QueryParameterError):
         """The body DRF answers with uniform errors off: each parameter's
         messages."""
         return {key: list(messages) for key, messages in self.errors.items()}
+
+
+class RequestFieldsInvalidError(ContentFilterError):
+    """A request's fields that the studio refuses (a missing name, a value of
+    the wrong type): 400, answered as DRF's ``ValidationError`` of ``errors``
+    (each field to its messages, code ``invalid``) was, as
+    `ContentFilterError` answers it."""
+
+    default_detail = "Invalid input."
 
 
 class RbacContextInvalidError(ScrudException):
@@ -715,7 +685,7 @@ class RequestBodyMissingError(ScrudException):
 
 class RequestBodyTooDeepError(ScrudException):
     """A POST or PUT (or PATCH) body nested deeper than
-    ``scrud_django.mixins.view_mixins.MAX_BODY_DEPTH`` levels (objects and
+    ``scrud_django.drf.mixins.MAX_BODY_DEPTH`` levels (objects and
     arrays; ``MARIADB_MAX_BODY_DEPTH`` on MariaDB): code that walks a body
     recursively (reversion's serializer, an operator) would fail on it with
     ``RecursionError``, and MariaDB would not store it, a 500."""
@@ -749,6 +719,92 @@ class RequestBodyNulError(ScrudException):
         )
         self.type = "https://api.openteams.com/http-problem/body-nul-character"
         self.title = "NUL character in request body"
+
+
+class MethodNotAllowedError(ScrudException):
+    """A write by a method its type does not serve (``TypeOptions.methods``,
+    as `scrud_django.core.writes` refuses it): 405, answered as the DRF
+    route answers the method (DRF's ``MethodNotAllowed``, through
+    scoped-rbac's handler). While uniform errors are on, scoped-rbac's
+    problem (`response_data`: ``error_problem`` of a 405, whose ``detail`` is
+    the reason phrase) with its problem-details Links; off, DRF's native
+    body (`native_response_data`: ``Method "PUT" not allowed.``) as
+    ``application/json``. The message (``detail``) is DRF's."""
+
+    status_code = 405
+    default_detail = "Method not allowed."
+    default_code = "method_not_allowed"
+    problem_links = True
+
+    def __init__(self, method):
+        super().__init__(f'Method "{method}" not allowed.')
+        self.method = method
+
+    def response_data(self, context):
+        from scoped_rbac.problems import error_problem
+
+        return error_problem(self.status_code, code=self.default_code)
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off."""
+        return {"detail": str(self.detail)}
+
+
+class RequestBodyMalformedError(ScrudException):
+    """A request body that is not JSON (or not in its charset), as the DRF
+    routes answer it (DRF's ``ParseError``, through scoped-rbac's handler):
+    400. While uniform errors are on, scoped-rbac's problem
+    (`response_data`: ``error_problem`` of a 400 coded ``parse_error``,
+    whose ``detail`` is the reason phrase) with its problem-details Links;
+    off, DRF's native body (`native_response_data`) as ``application/json``.
+    Its message is DRF's ``JSONParser``'s
+    (`scrud_django.core.errors.parse_error_detail` gives it for a
+    request)."""
+
+    status_code = 400
+    default_detail = "Malformed request."
+    default_code = "parse_error"
+    problem_links = True
+
+    def response_data(self, context):
+        from scoped_rbac.problems import error_problem
+
+        return error_problem(self.status_code, code=self.default_code)
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off."""
+        return {"detail": str(self.detail)}
+
+
+class RequestBodyMediaTypeError(ScrudException):
+    """A request body of another media type than JSON (a form, text), as the
+    DRF routes answer it (DRF's ``UnsupportedMediaType``, through
+    scoped-rbac's handler): 415. While uniform errors are on, scoped-rbac's
+    problem (`response_data`: ``error_problem`` of a 415 coded
+    ``unsupported_media_type``, whose ``detail`` is DRF's message) with its
+    problem-details Links; off, DRF's native body (`native_response_data`)
+    as ``application/json``. `media_type` is the request's
+    ``Content-Type``, as DRF names it."""
+
+    status_code = 415
+    default_detail = "Unsupported media type in request."
+    default_code = "unsupported_media_type"
+    problem_links = True
+
+    def __init__(self, media_type):
+        super().__init__(f'Unsupported media type "{media_type}" in request.')
+        self.media_type = media_type
+
+    def response_data(self, context):
+        from scoped_rbac.problems import error_problem
+
+        return error_problem(
+            self.status_code, code=self.default_code, detail=str(self.detail)
+        )
+
+    def native_response_data(self):
+        """The body DRF answers with uniform errors off."""
+        return {"detail": str(self.detail)}
 
 
 class RequestBodyNotAnObjectError(ScrudException):

@@ -60,7 +60,7 @@ def frame_tag(page):
 @pytest.mark.django_db
 @test_context
 def test_preview_flag_drops_write_attributes_and_marks_nodes(login_no_roles):
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     page = preview(mode="edit")
     assert '<scrud-node data-pointer="/items/0/text">' in page
     assert '<scrud-node data-pointer="">' in page
@@ -84,7 +84,7 @@ def test_preview_flag_drops_write_attributes_and_marks_nodes(login_no_roles):
 @pytest.mark.django_db
 @test_context
 def test_preview_defaults_to_view_mode(login_no_roles):
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     page = preview()
     assert "<input" not in page and "<textarea" not in page
     assert '<scrud-node data-pointer="/items/0/text">' in page
@@ -105,7 +105,7 @@ def test_preview_and_sample_need_login():
 @test_context
 def test_sample_endpoint_returns_the_sample(login_no_roles, ui_acme_stylesheet_login):
     reverse("todo-lists-list")
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     url = reverse("scrud-studio:sample", args=[SLUG])
     When.http.get(url)
     Then.http.status_code_is(200)
@@ -118,7 +118,7 @@ def test_sample_endpoint_returns_the_sample(login_no_roles, ui_acme_stylesheet_l
     When.http.get(url, {"context": "acme"})
     Then.http.status_code_is(400)
     assert problem()["type"] == NO_CONTEXT
-    Given.http.force_authenticate(ui_acme_stylesheet_login)
+    Given.http.force_login(ui_acme_stylesheet_login)
     When.http.get(url, {"context": "acme"})
     Then.http.status_code_is(200)
     assert Http.response.json()["rbac_context"] == "acme"
@@ -134,13 +134,13 @@ def test_sample_preview_is_never_stored(
 ):
     reverse("todo-lists-list")
     before = Resource.objects.count()
-    Given.http.force_authenticate(ui_acme_stylesheet_login)
+    Given.http.force_login(ui_acme_stylesheet_login)
     for mode in ("view", "edit"):
         preview(mode=mode)
         preview(mode=mode, context="acme")
     When.http.get(reverse("scrud-studio:sample", args=[SLUG]))
     Then.http.status_code_is(200)
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     preview(mode="edit", instance=todo_list.pk)
     assert Resource.objects.count() == before
     todo_list.refresh_from_db()
@@ -153,10 +153,10 @@ def test_preview_uses_the_branch_and_its_css(todo_reader_login):
     setup_main_and_wip()
     main_css = make_css("site", "p { color: red }")
     wip_css = make_css("site", "p { color: green }", branch="wip", context="project-a")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     page = preview(branch="wip")
     assert "<i>Lorem ipsum</i>" in page and "<b>Lorem ipsum</b>" not in page
-    assert branch_css(page) == [file_url(wip_css) + "?ui-branch=wip"]
+    assert branch_css(page) == [file_url(wip_css, "/") + "?ui-branch=wip"]
     # The link serves the branch's CSS, whatever branch a cookie browses.
     Http.api_client.cookies["scrud_ui_branch"] = "main"
     When.http.get(branch_css(page)[0])
@@ -166,7 +166,7 @@ def test_preview_uses_the_branch_and_its_css(todo_reader_login):
     for params in ({"branch": "main"}, {}):
         page = preview(**params)
         assert "<b>Lorem ipsum</b>" in page and "<i>Lorem ipsum</i>" not in page
-        assert branch_css(page) == [file_url(main_css) + "?ui-branch=main"]
+        assert branch_css(page) == [file_url(main_css, "/") + "?ui-branch=main"]
 
 
 @pytest.mark.django_db
@@ -176,7 +176,7 @@ def test_preview_of_a_published_branch_links_its_css_under_its_prefix(
 ):
     make_branch("shop", "project-a", prefix="/shop/")
     shop_css = make_css("site", "p { color: blue }", branch="shop", context="project-a")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     page = preview(branch="shop")
     assert branch_css(page) == [file_url(shop_css, "/shop/") + "?ui-branch=shop"]
     When.http.get(branch_css(page)[0])
@@ -190,7 +190,7 @@ def test_preview_refuses_an_unselectable_branch(todo_reader_login):
     setup_main_and_wip()
     make_branch("orphan", "project-a", parent="gone")
     # The reader may not GET wip: refused as an unknown branch is.
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     preview(400, branch="wip")
     unreadable = problem()
     preview(400, branch="nope")
@@ -212,7 +212,7 @@ def test_preview_of_a_real_instance_needs_read(
     todo_list, todo_reader_login, login_no_roles
 ):
     detail = reverse("todo-lists-detail", args=[todo_list.pk])
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     When.http.get(detail, HTTP_ACCEPT="application/json")
     refused = Http.response.status_code
     assert refused in (403, 404)
@@ -220,7 +220,7 @@ def test_preview_of_a_real_instance_needs_read(
     When.http.get(reverse("todo-lists-detail", args=[999999]))
     missing = Http.response.status_code
     preview(missing, instance=999999)
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     preview(404, instance=999999)
     preview(404, instance="not-a-pk")
     # No detail URL has these pks: the API's 404 for such a URL.
@@ -246,14 +246,14 @@ def test_preview_data_context_selects_context_stylesheets(
     make_stylesheet("acme", [("ex:TodoItem", "acme-row")], context="acme")
     # Previewing a context's styling needs read on its stylesheets (ruling
     # S7): refused alike for every context.
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     preview(400, context="acme")
     acme = problem()
     preview(400, context="nowhere")
     assert acme == problem() and acme["type"] == NO_CONTEXT
     preview(400, context="acme", instance=1)
     assert 'class="acme"' not in preview()
-    Given.http.force_authenticate(ui_acme_stylesheet_login)
+    Given.http.force_login(ui_acme_stylesheet_login)
     assert '<i class="acme">Lorem ipsum</i>' in preview(context="acme")
     assert 'class="acme"' not in preview()
     preview(400, context="other")
@@ -264,7 +264,7 @@ def test_preview_data_context_selects_context_stylesheets(
 def test_preview_scope_chain(login_no_roles):
     make_component("scoped-row", '<u>{{ value.text }}</u>')
     make_stylesheet("s", [("compact ex:TodoItem", "scoped-row")])
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     assert "<u>Lorem ipsum</u>" in preview(scope="compact")
     assert "<u>Lorem ipsum</u>" not in preview()
 
@@ -310,7 +310,7 @@ def test_every_preview_response_is_sandboxed(todo_list, todo_reader_login):
         assert Http.response["Content-Security-Policy"] == SANDBOX
         assert Http.response["X-Frame-Options"] == "SAMEORIGIN"
 
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     for mode in ("view", "edit"):
         preview(mode=mode)
         sandboxed()
@@ -328,7 +328,7 @@ def test_every_preview_response_is_sandboxed(todo_list, todo_reader_login):
     ):
         preview(status, **params)
         sandboxed()
-    Given.http.force_authenticate(None)
+    Http.api_client.logout()
     preview(401)
     sandboxed()
 
@@ -342,7 +342,7 @@ def test_embed_in_view_mode_preview_is_view_mode(todo_list, todo_owner_login):
     embedded resource. With ``mode=edit`` it keeps the user's own mode."""
     other = make_list("Chores", items=["Sweep"])
     host('<section class="host">{{ embed("' + url_of(other) + '") }}</section>')
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
 
     def embedded(page):
         found = re.search(r'<section class="host">(.*)</section>', page, re.S)

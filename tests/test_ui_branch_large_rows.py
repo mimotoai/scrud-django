@@ -22,9 +22,17 @@ from scrud_django.ui.branches.versions import current_version, snapshot
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_ui_branch_css import api_at_api_path, css_body, css_hrefs, get_css  # noqa: F401
-from .test_ui_branch_prefixes import api_url, get_html
+from .test_ui_branch_prefixes import api_url
 from .test_ui_branch_push import create, make_wip, own_rows, push
 from .test_ui_branch_render import may_select_branches
+from .test_ui_http import get_ui_html
+from .ui import UI_URLCONF, ui_url
+
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
 
 MAX_CSS = 262144
 LARGE = "a" * MAX_CSS
@@ -39,17 +47,17 @@ def css(name, text=LARGE, **fields):
 def test_a_page_and_its_css_render_with_a_max_size_item(
     admin_login, todo_list, todo_reader_login
 ):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     create("ui-css", css("site"))
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
-    [href] = css_hrefs(get_html(api_url(todo_list)))
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    [href] = css_hrefs(get_ui_html(ui_url(api_url(todo_list))))
     assert get_css(href).content == LARGE.encode()
 
 
 @pytest.mark.django_db
 @test_context
 def test_the_json_list_reads_max_size_items(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     create("ui-css", css("site"))
     When.http.get(reverse("ui-css-list"), HTTP_ACCEPT="application/json")
     Then.http.status_code_is(200)
@@ -62,7 +70,7 @@ def test_main_takes_writes_once_its_versions_are_large(admin_login):
     """Each write of main records a version holding all of main's items, so
     by the third write a version row is over 256 KB, and the next write
     reads the latest version and every own item again."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     for index in range(4):
         create("ui-css", css(f"site-{index}"))
     latest = snapshot("main", current_version("main", DEFAULT_DB_ALIAS))
@@ -72,7 +80,7 @@ def test_main_takes_writes_once_its_versions_are_large(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_pull_push_and_restore_move_max_size_items(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     create("ui-css", css("site"))
     make_wip(admin_login)
     create("ui-css", css("site", "b" * MAX_CSS, branch="wip", rbac_context="alice"))
@@ -105,7 +113,7 @@ def test_pull_push_and_restore_move_max_size_items(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_versions_read_and_branches_delete_with_max_size_items(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     wip = make_wip(admin_login)
     create("ui-css", css("site", branch="wip", rbac_context="alice"))
     create("ui-css", css("more", branch="wip", rbac_context="alice"))

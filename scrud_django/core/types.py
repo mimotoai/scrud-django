@@ -4,17 +4,33 @@ content_filter=)``, ``registration.computed_resource_type(..., compute=)``):
 the front-end-neutral counterpart of an ``IsAuthorized`` subclass and of a
 ``ComputedResourceViewSet.compute``.
 
-The hooks only refuse: a type's requirement (`requirement_for`) is its
-grants (`GrantsLeaf`) **and** its hooks (`HookLeaf`), so a hook can narrow
-what the grants allow, never allow what they refuse.
+The authorization hooks (``checks``, ``object_checks``) only refuse: a
+type's requirement (`requirement_for`) is its grants (`GrantsLeaf`) **and**
+those hooks (`HookLeaf`), so a hook can narrow what the grants allow, never
+allow what they refuse. The write hooks (``prepare_write``,
+``around_save``, ``after_write``, ``before_destroy``, ``after_destroy``)
+and ``methods`` are a type's own write behaviour, which
+`scrud_django.core.writes` runs, and the read hooks (``list_rows``,
+``read_view``) its own read behaviour, which `scrud_django.core.lists` and
+`scrud_django.core.resources` run: they authorize nothing, and make no
+`HookLeaf` (`has_hooks`).
+
+A type's API route may hold authorization the core never asks (a custom
+``viewset_class``, whose ``IsAuthorized`` subclasses and ``&``, ``|`` and
+``~`` compositions only DRF applies, or a view routed by hand): the
+builders the core trusts mark the views they build (`mark_route`), and a
+front end that reads through the core alone (the UI app) refuses a type
+whose route's view is not marked as the core's (`drf_only_authorization`)
+unless it declares its rules as ``checks`` and ``object_checks``, or that
+the core's checks are complete for it (``ui_authorization="core"``).
 """
 
 import importlib
 import logging
 import threading
-from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Protocol
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -52,6 +68,90 @@ class Compute(Protocol):
     def __call__(self, request, key: str) -> Mapping: ...
 
 
+class PrepareWrite(Protocol):
+    """A write's body as it is validated and saved: given the body, it
+    returns it, completed; a ``ScrudException`` (or an
+    ``access.AccessDenied``) refuses the write. The core gives it a copy of
+    the body; the DRF views give it ``request.data`` itself, which they then
+    validate and save: a hook must change the body it is given in place and
+    return that very object (the DRF views refuse any other with
+    ``TypeError``)."""
+
+    def __call__(
+        self,
+        request,
+        resource_type,
+        body: Any,
+        *,
+        instance: Resource | None,
+        using: str,
+    ) -> Any: ...
+
+
+class AroundSave(Protocol):
+    """The save of a write, wrapped: calls `save` (once) and returns what it
+    returned."""
+
+    def __call__(
+        self,
+        request,
+        resource_type,
+        save: Callable[[], Resource | None],
+        *,
+        instance: Resource | None,
+        using: str,
+    ) -> Resource | None: ...
+
+
+class AfterWrite(Protocol):
+    """What follows a saved write in its transaction (`save_checked`), given
+    the resource the save wrote (which it may change): a mapping it returns
+    is the write's answered content (``None``: the saved content)."""
+
+    def __call__(
+        self, request, resource_type, saved: Resource, *, created: bool, using: str
+    ) -> Mapping | None: ...
+
+
+class DestroyHook(Protocol):
+    """What precedes (refusing it) or follows a delete in its transaction."""
+
+    def __call__(
+        self, request, resource_type, instance: Resource, *, using: str
+    ) -> None: ...
+
+
+class ListRows(Protocol):
+    """The rows a type's list shows, given those the requester may list."""
+
+    def __call__(self, request, resource_type, queryset, *, html: bool) -> Any: ...
+
+
+class ReadView(Protocol):
+    """The content and ETag (unquoted) a reader of a resource gets."""
+
+    def __call__(
+        self, request, resource_type, obj: Resource
+    ) -> tuple[Mapping, str]: ...
+
+
+# What ``TypeOptions.ui_authorization`` declares: the core's checks are
+# complete for the type.
+CORE_AUTHORIZATION = "core"
+
+# The write hooks of `TypeOptions`, each a callable or ``None``.
+WRITE_HOOKS = (
+    "prepare_write",
+    "around_save",
+    "after_write",
+    "before_destroy",
+    "after_destroy",
+)
+
+# The read hooks of `TypeOptions`, each a callable or ``None``.
+READ_HOOKS = ("list_rows", "read_view")
+
+
 @dataclass(frozen=True)
 class TypeOptions:
     """A type's hooks, as registered:
@@ -69,14 +169,68 @@ class TypeOptions:
       detail route, a list, the post-save check): the counterpart of
       ``has_object_permission``; a refused read hides the resource (404);
     - ``content_filter``: a list filters on its query parameters
-      (``scrud_django.filters.ResourceContentFilter`` on DRF);
+      (``scrud_django.drf.filters.ResourceContentFilter`` on DRF);
     - ``compute``: ``(request, key: str) -> Mapping``, a computed type's
-      content for `key`."""
+      content for `key`;
+
+    and its write behaviour, which `scrud_django.core.writes` runs (no
+    authorization hooks: `has_hooks` does not count them):
+
+    - ``prepare_write``: ``(request, resource_type, body, *, instance,
+      using) -> body``, given a copy of a create's (`instance` ``None``) or
+      update's body once the request and object checks passed, before the
+      body is validated (its JSON Schema, the workflow check): it returns
+      the body that is validated and saved, and refuses with a
+      ``ScrudException`` (or ``access.AccessDenied``);
+    - ``around_save``: ``(request, resource_type, save, *, instance, using)
+      -> Resource``, the save wrapped, inside `save_checked`'s transaction;
+    - ``after_write``: ``(request, resource_type, saved, *, created, using)
+      -> Mapping | None``, run by `save_checked` in the save's transaction
+      once the saved resource passed its post-save check: a mapping
+      returned is the content answered (`answered_content`);
+    - ``before_destroy`` and ``after_destroy``: ``(request, resource_type,
+      instance, *, using) -> None``, run by `destroy` before the delete (a
+      refusal raises) and after it;
+    - ``methods``: the HTTP methods the type's routes serve, ``None`` for
+      all (`scrud_django.core.resources.served_methods`); `create`,
+      `update` and `destroy` refuse a write by another (405);
+
+    and its read behaviour (no authorization hooks either: the grants and
+    the object checks have decided what the requester may read before
+    them):
+
+    - ``list_rows``: ``(request, resource_type, queryset, *, html) ->
+      QuerySet``, the rows the type's list shows, given those the requester
+      may list (`scrud_django.core.lists.list_queryset`, before its content
+      filter and order); `html` says whether the list is asked for as HTML;
+    - ``read_view``: ``(request, resource_type, obj) -> (content, etag)``,
+      the content and ETag (unquoted) a reader of `obj` gets, in place of
+      its stored ones (`scrud_django.core.resources.item_read`, a list's
+      envelopes and ETag).
+
+    The hooks of one write share `scrud_django.core.writes.hook_state`.
+
+    And a declaration, which authorizes nothing either:
+
+    - ``ui_authorization``: ``"core"`` (`CORE_AUTHORIZATION`) declares that
+      the core's checks (the type's grants and its ``checks`` and
+      ``object_checks``) are complete for it, though its DRF route holds
+      authorization of its own (`drf_only_authorization`): the UI then
+      serves it; ``None`` (the default) declares nothing."""
 
     checks: tuple[Check, ...] = ()
     object_checks: tuple[ObjectCheck, ...] = ()
     content_filter: bool = False
     compute: Compute | None = None
+    prepare_write: PrepareWrite | None = None
+    around_save: AroundSave | None = None
+    after_write: AfterWrite | None = None
+    before_destroy: DestroyHook | None = None
+    after_destroy: DestroyHook | None = None
+    methods: frozenset[str] | None = None
+    list_rows: ListRows | None = None
+    read_view: ReadView | None = None
+    ui_authorization: str | None = None
 
     def __post_init__(self):
         # Any sequence given is kept as a tuple of the same hook objects
@@ -87,8 +241,26 @@ class TypeOptions:
                 if not callable(hook):
                     raise TypeError(f"TypeOptions.{name}: {hook!r} is not callable")
             object.__setattr__(self, name, hooks)
-        if self.compute is not None and not callable(self.compute):
-            raise TypeError(f"TypeOptions.compute: {self.compute!r} is not callable")
+        for name in ("compute", *WRITE_HOOKS, *READ_HOOKS):
+            hook = getattr(self, name)
+            if hook is not None and not callable(hook):
+                raise TypeError(f"TypeOptions.{name}: {hook!r} is not callable")
+        if self.methods is not None:
+            if isinstance(self.methods, str) or not all(
+                isinstance(method, str) for method in self.methods
+            ):
+                raise TypeError(
+                    f"TypeOptions.methods: {self.methods!r} is not a set of "
+                    "method names"
+                )
+            object.__setattr__(
+                self, "methods", frozenset(method.upper() for method in self.methods)
+            )
+        if self.ui_authorization not in (None, CORE_AUTHORIZATION):
+            raise ValueError(
+                f"TypeOptions.ui_authorization: {self.ui_authorization!r} is "
+                f"neither None nor {CORE_AUTHORIZATION!r}"
+            )
 
 
 # The methods whose body the request check reads (the scrud views' own
@@ -102,6 +274,8 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _OPTIONS: dict[str, TypeOptions] = {}
 _SLUG_IRIS: dict[str, str] = {}
 _IRI_SLUGS: dict[str, set[str]] = {}
+# The slugs of the types registered in this process (`note_type_slug`).
+_TYPE_SLUGS: set[str] = set()
 _OPTIONS_LOCK = threading.RLock()
 _LOAD_LOCK = threading.Lock()
 _loaded = False
@@ -145,15 +319,19 @@ def _same_hooks(old: TypeOptions, new: TypeOptions, *, same) -> bool:
     def pairs(a, b):
         return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b, strict=True))
 
+    def optional(a, b):
+        return a is b if a is None or b is None else same(a, b)
+
     return (
         pairs(old.checks, new.checks)
         and pairs(old.object_checks, new.object_checks)
         and old.content_filter == new.content_filter
-        and (
-            old.compute is new.compute
-            if old.compute is None or new.compute is None
-            else same(old.compute, new.compute)
+        and all(
+            optional(getattr(old, name), getattr(new, name))
+            for name in ("compute", *WRITE_HOOKS, *READ_HOOKS)
         )
+        and old.methods == new.methods
+        and old.ui_authorization == new.ui_authorization
     )
 
 
@@ -215,6 +393,99 @@ def type_options_for_slug(slug: str) -> TypeOptions:
     return TypeOptions() if type_iri is None else type_options(type_iri)
 
 
+# The attribute of a route's view that `mark_route` sets.
+ROUTE_AUTHORIZATION_ATTR = "scrud_route_authorization"
+
+# What `route_authorization` says of a view no trusted builder marked.
+UNRECORDED_ROUTE = (
+    "its API routes were not built by registration (resource_type_urls, "
+    "computed_urls) or by scrud's ninja api(), so nothing tells what "
+    "authorizes them"
+)
+
+
+@dataclass(frozen=True)
+class RouteAuthorization:
+    """What the builder of a route's `view` recorded of it: `drf_only`, what
+    of it authorizes beyond the core's checks (``None``: nothing; the view's
+    authorization is the core's)."""
+
+    view: Any = field(repr=False, compare=False)
+    drf_only: str | None = None
+    slug: str | None = None
+
+
+def mark_route(view, drf_only: str | None = None, slug: str | None = None):
+    """Mark `view`, a route's view a trusted builder built (DRF's
+    ``registration.resource_type_urls`` and ``computed_urls``, the ninja
+    ``api()``), with what of it authorizes beyond the core's checks
+    (`drf_only`, a description naming it; ``None`` for nothing), and return
+    it. The mark names `view` itself: a view wrapping it (whose
+    ``functools.wraps`` copies the mark) is not marked, as it may authorize
+    on its own. `slug` is the type the route was built for (``None``: not
+    recorded)."""
+    setattr(view, ROUTE_AUTHORIZATION_ATTR, RouteAuthorization(view, drf_only, slug))
+    return view
+
+
+def route_slug(view) -> str | None:
+    """The slug of the type `view` was marked as built for (`mark_route`), or
+    ``None`` for a view unmarked or marked without one."""
+    mark = getattr(view, ROUTE_AUTHORIZATION_ATTR, None)
+    if not isinstance(mark, RouteAuthorization) or mark.view is not view:
+        return None
+    return mark.slug
+
+
+def route_authorization(view) -> str | None:
+    """What of `view`, a type's API route's view, authorizes beyond the
+    core's checks, as its builder marked it (`mark_route`): ``None`` for
+    nothing; `UNRECORDED_ROUTE` for a view no trusted builder marked (a view
+    routed by hand, or one wrapping a marked view), which fails closed."""
+    mark = getattr(view, ROUTE_AUTHORIZATION_ATTR, None)
+    if not isinstance(mark, RouteAuthorization) or mark.view is not view:
+        return UNRECORDED_ROUTE
+    return mark.drf_only
+
+
+def drf_only_authorization(slug: str, view) -> str | None:
+    """What of `view`, the view the API route of the type `slug` resolves to
+    in the URLconf serving the request, authorizes beyond the core's checks
+    (`route_authorization`), which a front end reading through the core
+    alone cannot ask, so must refuse the type; ``None`` when nothing does,
+    or when the type declares that the core's checks are complete for it:
+    its options (`type_options_for_slug`) hold both ``checks`` and
+    ``object_checks`` (its rules, declared to the core), or
+    ``ui_authorization="core"``. The hooks are loaded first
+    (`ensure_hooks_loaded`)."""
+    authorization = route_authorization(view)
+    if authorization is None:
+        return None
+    ensure_hooks_loaded()
+    options = type_options_for_slug(slug)
+    if options.ui_authorization == CORE_AUTHORIZATION or (
+        options.checks and options.object_checks
+    ):
+        return None
+    return authorization
+
+
+def note_type_slug(slug: str | None) -> None:
+    """Note that a type was registered as `slug` in this process
+    (`type_slugs`); ``None`` or ``""`` notes nothing."""
+    if slug:
+        with _OPTIONS_LOCK:
+            _TYPE_SLUGS.add(slug)
+
+
+def type_slugs() -> list[str]:
+    """The slugs of the types registered in this process, sorted: noted
+    (`note_type_slug`, by every ``ResourceTypeRegistration``) or registered
+    with options (`register_type_options`)."""
+    with _OPTIONS_LOCK:
+        return sorted(_TYPE_SLUGS | set(_SLUG_IRIS))
+
+
 def hooks_loaded() -> bool:
     """Whether any type's options have been registered in this process."""
     return bool(_SLUG_IRIS)
@@ -246,7 +517,8 @@ def ensure_hooks_loaded() -> None:
 
 def has_hooks(options: TypeOptions) -> bool:
     """Whether `options` hold an authorization hook (``checks`` or
-    ``object_checks``)."""
+    ``object_checks``): the write and read hooks and ``methods`` are
+    none."""
     return bool(options.checks or options.object_checks)
 
 

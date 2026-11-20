@@ -1,8 +1,8 @@
 import json
 from copy import copy
+from http import HTTPStatus
 
 import pytest
-from rest_framework import status
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django.registration import ResourceRegistration
@@ -29,7 +29,7 @@ def test_resource_get_list(front_end, regular_login, partner_profiles):
 
     Given.http.force_login(regular_login)
     And.http.get(url)
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     And.http.content_type_is('application/json')
     And.http.response_json_is(serialize_page([partner_profiles], front_end))
     assert Http.response["Last-Modified"] == last_modified_for(partner_profiles)
@@ -47,7 +47,7 @@ def test_resource_get_detail(front_end, regular_login, partner_profiles):
 
     Given.http.force_login(regular_login)
     And.http.get(url)
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     And.http.content_type_is('application/json')
     And.http.response_json_is(serialize_resource(partner_profiles))
     assert Http.response["Last-Modified"] == last_modified_for(partner_profiles)
@@ -67,7 +67,7 @@ def test_resource_post(front_end, admin_login, partner_profile_post_data):
         data=json.dumps(partner_profile_post_data),
         content_type='application/json',
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     And.http.content_type_is('application/json')
     And.http.resource_json_is(serialized_data)
 
@@ -87,7 +87,7 @@ def test_resource_post_bad_request(front_end, admin_login, partner_profile_post_
         data=json.dumps(serialized_data),
         content_type='application/json',
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
     And.http.content_type_is('application/problem+json')
     And.http.response_json_matches(
         {
@@ -132,7 +132,7 @@ def test_resource_put(
         HTTP_IF_UNMODIFIED_SINCE=response["Last-Modified"],
         HTTP_IF_MATCH=response["ETag"],
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     And.http.content_type_is('application/json')
     And.http.resource_json_is(serialized_data)
 
@@ -157,7 +157,7 @@ def test_resource_delete(front_end, admin_login, partner_profile_post_data):
         HTTP_IF_UNMODIFIED_SINCE=response["Last-Modified"],
         HTTP_IF_MATCH=response["ETag"],
     )
-    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    Then.http.status_code_is(HTTPStatus.NO_CONTENT)
 
 
 # JSON SCHEMA
@@ -175,7 +175,7 @@ def test_js_schema_get_list(front_end, regular_login):
 
     Given.http.force_login(regular_login)
     And.http.get(url)
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     And.http.content_type_is('application/json')
     And.http.response_json_is({})
 
@@ -195,6 +195,6 @@ def test_js_ld_get_list(front_end, regular_login):
 
     Given.http.force_login(regular_login)
     And.http.get(url)
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     And.http.content_type_is('application/json')
     And.http.response_json_is({})

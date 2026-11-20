@@ -4,16 +4,17 @@ marked with its JSON Pointer), and the CSS links of that branch."""
 
 from urllib.parse import urlencode
 
-from django.urls import get_script_prefix, reverse
+from django.urls import reverse
 from django.utils.safestring import SafeString
 
-from scrud_django.ui.branches.css import CSS_FILE_URL_NAME, css_files
+from scrud_django.ui import UI_NAMESPACE
 from scrud_django.ui.branches.effective import (
     BRANCH_PARAMETER,
     Selection,
     using_selection,
 )
-from scrud_django.ui.branches.selection import Mount, api_base, selection_value
+from scrud_django.ui.branches.file_urls import CSS_FILE_URL_NAME, css_files
+from scrud_django.ui.branches.selection import mount_at, selection_value
 from scrud_django.ui.branches.store import BranchChainError, branches, published_root
 from scrud_django.ui.render import render_resource, using_view_preview
 from scrud_django.ui.studio.sample import sample_for
@@ -77,17 +78,17 @@ def preview_css_urls(selection: Selection) -> list[str]:
     must be `selectable`), each selecting it (`BRANCH_PARAMETER`), so that
     the file is served from that branch whatever a cookie browses: under the
     prefix of its published root, where the CSS view serves its tree; at the
-    API's URLs for ``main``'s."""
+    UI app's URLs for ``main``'s."""
     urls = [
-        reverse(CSS_FILE_URL_NAME, args=[name, etag])
+        reverse(f"{UI_NAMESPACE}:{CSS_FILE_URL_NAME}", args=[name, etag])
         for name, etag, _text in css_files(selection)
     ]
     try:
         root = published_root(selection.branch, branches())
     except BranchChainError:  # defensive: a selectable branch has a root
         root = None
-    if root is not None and root.prefix:
-        mount = Mount(root.prefix, root.name, api_base(), get_script_prefix())
+    mount = mount_at(root) if root is not None else None
+    if mount is not None:
         urls = [mount.href(url) for url in urls]
     query = urlencode({BRANCH_PARAMETER: selection_value(selection)})
     return [f"{url}?{query}" for url in urls]

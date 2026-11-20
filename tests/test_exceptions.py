@@ -14,12 +14,12 @@ from rest_framework.test import APIClient, APIRequestFactory
 from rest_framework.views import APIView
 from scoped_rbac.models import Role, RoleAssignment
 
+from scrud_django.drf.exceptions import scrud_exception_handler
 from scrud_django.exceptions import (
     JsonValidationError,
     StoredPolicyReference,
     WorkflowInvalidStateError,
     WorkflowPolicyInvalidError,
-    scrud_exception_handler,
 )
 from scrud_django.models import Resource
 from scrud_django.registration import (
@@ -64,7 +64,7 @@ def test_other_errors_use_scoped_rbac_problem_details(api_context):
 HANDLERS = [
     "rest_framework.views.exception_handler",
     "scoped_rbac.rest.exception_handler",
-    "scrud_django.exceptions.scrud_exception_handler",
+    "scrud_django.drf.exceptions.scrud_exception_handler",
 ]
 
 TODO = "tests://ToDo"
@@ -341,7 +341,7 @@ def test_scrud_error_under_drf_default_handler():
 def test_scrud_error_is_not_api_exception():
     from rest_framework.exceptions import APIException
 
-    from scrud_django.exceptions import as_drf
+    from scrud_django.drf.exceptions import as_drf
 
     error = JsonValidationError(
         fastjsonschema.JsonSchemaValueException(
@@ -359,7 +359,7 @@ def test_scrud_error_is_not_api_exception():
 def test_scrud_error_full_details_are_drfs():
     # A scrud error answers ``get_full_details`` as it did as an
     # ``APIException``: its message and its code.
-    from scrud_django.exceptions import as_drf
+    from scrud_django.drf.exceptions import as_drf
 
     error = JsonValidationError(
         fastjsonschema.JsonSchemaValueException(
@@ -379,12 +379,11 @@ def test_drf_wrapper_class_is_defined_once_at_import():
     from rest_framework.exceptions import APIException
 
     from scrud_django import exceptions
+    from scrud_django.drf.exceptions import as_drf
 
     assert issubclass(exceptions.ScrudAPIException, APIException)
-    first = exceptions.as_drf(WorkflowPolicyInvalidError("first"))
-    second = exceptions.as_drf(
-        JsonValidationError(fastjsonschema.JsonSchemaValueException("x"))
-    )
+    first = as_drf(WorkflowPolicyInvalidError("first"))
+    second = as_drf(JsonValidationError(fastjsonschema.JsonSchemaValueException("x")))
     assert type(first) is type(second) is exceptions.ScrudAPIException
     assert not hasattr(exceptions, "_drf_scrud_class")
 
@@ -395,10 +394,11 @@ def test_as_drf_without_drf_is_improperly_configured():
     from django.core.exceptions import ImproperlyConfigured
 
     from scrud_django import exceptions
+    from scrud_django.drf.exceptions import as_drf
 
     with mock.patch.object(exceptions, "ScrudAPIException", None):
         with pytest.raises(ImproperlyConfigured, match="Django REST framework"):
-            exceptions.as_drf(WorkflowPolicyInvalidError("x"))
+            as_drf(WorkflowPolicyInvalidError("x"))
 
 
 IMPORT_WITH = """

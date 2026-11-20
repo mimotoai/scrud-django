@@ -1,66 +1,36 @@
-"""The ``text/html`` representation of resources, at their own URLs.
+"""The neutral half of the HTML representation: `render_html` and what it
+reads of a plain Django request.
 
-`ScrudHTMLRenderer` renders what the view answered, as the JSON renderer
-would: a success's body (a resource, a page of a list) through the render
-tree, and an error as a notice, never with stored resource content (but see
-the refused PUT and the 412, below). It is chosen by content negotiation
-(``Accept: text/html``), ahead of DRF's browsable API, which ``?format=api``
-still reaches (`ui_renderers`).
-
-A request with ``HX-Request`` gets a fragment; any other gets a page, the
-fragment wrapped in the page component (the term ``scrud:page``, resolved in
-the root scope). The fragment protocol's request headers (`SCOPE_HEADER`,
-`POINTER_HEADER`) say which node to render and in which scope chain; they
-select presentation only, never what is authorized.
-
-The errors that render more than a notice: a refused PUT (400, 403), where
-the body the user submitted (never the stored content) comes back as the edit
-form, with the messages, provided the user may PUT the stored resource as the
-view loaded it (`remember_stored`, `load_stored`); and a 412 of a PUT or
-DELETE, or a 409 DELETE (in use), which answer with a notice and a frame that
-reloads the current state (a GET with the viewer's own rights), so that the
-item never looks deleted. A success that fails to render is a 500 with a
-notice.
+`render_html` answers a request with a page, or with a fragment for an htmx
+request (the fragment protocol, documented in docs/ui.md): a resource, a page
+of a list or an error as a notice, through the render tree. It takes plain
+arguments (the resource type, the kind of answer, the data, the ETag, the
+stored content of a refused PUT) and a Django ``HttpRequest``, and imports no
+DRF; the page views (`scrud_django.ui.pages`) and the embeds
+(`scrud_django.ui.embed`) call it after their core reads and writes.
+`html_headers` is what any HTML response carries: ``Vary``, ``no-store`` and
+the branch cookie.
 """
 
-import copy
 import json
 import logging
 import re
 from collections.abc import Mapping
-from contextlib import nullcontext
 from dataclasses import dataclass
 from http import HTTPStatus
 from urllib.parse import urlsplit
 
 from django.apps import apps
-from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
-from django.db import DatabaseError, transaction
-from django.http import Http404, QueryDict
 from django.middleware.csrf import get_token
 from django.templatetags.static import static
 from django.utils.cache import patch_cache_control, patch_vary_headers
 from django.utils.html import format_html
-from django.utils.http import quote_etag
 from django.utils.safestring import SafeString, mark_safe
-from rest_framework.exceptions import (
-    APIException,
-    AuthenticationFailed,
-    NotAuthenticated,
-    NotFound,
-    ParseError,
-    PermissionDenied,
-    UnsupportedMediaType,
-)
-from rest_framework.renderers import BaseRenderer, BrowsableAPIRenderer
-from rest_framework.response import Response
 
-from scrud_django.exceptions import ScrudException, UIHeaderInvalidError
+from scrud_django.exceptions import UIHeaderInvalidError
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
-from scrud_django.permissions import content_of
 from scrud_django.ui.authz import ALLOWED, DENIED, decisions_for, refusal_messages
 from scrud_django.ui.branches.chrome import SAFE_NOTICE, banner, confirm_page
-from scrud_django.ui.branches.css import css_urls
 from scrud_django.ui.branches.effective import (
     BRANCH_HEADER,
     SAFE_HEADER,
@@ -70,7 +40,7 @@ from scrud_django.ui.branches.effective import (
     using_safe_mode,
     using_selection,
 )
-from scrud_django.ui.branches.js import js_urls
+from scrud_django.ui.branches.file_urls import css_urls, js_urls
 from scrud_django.ui.branches.selection import (
     CONFIRM_PARAMETER,
     PARAM,
@@ -139,12 +109,6 @@ STATIC_SCRUD_UI = "scrud_ui/scrud-ui.js"
 STALE_MESSAGE = "This item changed since you opened it."
 RENDER_FAILED_MESSAGE = "Something went wrong rendering this page."
 
-# On the request: the ScrudHTMLRenderer content negotiation chose, else None.
-_NEGOTIATED_ATTR = "_scrud_ui_html_renderer"
-# On the view: the `Stored` resource a PUT replaces, as get_instance() (or
-# `load_stored`) first loaded it through the view's checks.
-_STORED_ATTR = "_scrud_ui_stored"
-
 # What fastjsonschema names a value it refuses: ``data.items[0].text``.
 _SCHEMA_NAME_TOKEN = re.compile(r"\.([^.\[]+)|\[(\d+)\]")
 
@@ -158,118 +122,8 @@ class Stored:
     etag: str
 
 
-class ScrudHTMLRenderer(BaseRenderer):
-    """Resources as HTML: pages, htmx fragments and error notices."""
-
-    media_type = "text/html"
-    format = "html"
-    charset = "utf-8"
-
-    def render(self, data, accepted_media_type=None, renderer_context=None):
-        context = renderer_context or {}
-        request = context.get("request")
-        view = context.get("view")
-        response = context.get("response")
-        status = getattr(response, "status_code", 200)
-        if status < 400 and (data is None or status in (204, 304)):
-            return b""
-        try:
-            with request_memo():
-                chosen = choose(request)
-                if _asks_confirmation(chosen, request):
-                    return str(confirm_page(chosen, request)).encode(self.charset)
-                # An embedded request (`embed`) stays in its embedder's safe
-                # mode: it is only ever turned on here (and, for the CSS
-                # and JS file responses, in `branches.files`).
-                with (
-                    using_selection(chosen.selection),
-                    using_safe_mode(safe_mode_requested(request) or safe_mode()),
-                ):
-                    body, contexts = _body(data, status, request, view, response)
-                    if not _is_htmx(request):
-                        body = _page(
-                            body,
-                            request=request,
-                            resource_type=_resource_type(view),
-                            contexts=contexts,
-                            scope_chain=scope_chain_of(request),
-                            chosen=chosen,
-                        )
-        except Exception:
-            # The last resort: a notice, with no content (nor a traceback). A
-            # success becomes a 500, so that htmx treats it as an error; an
-            # error keeps its status.
-            logger.exception(
-                "scrud-ui: rendering %s (%s, status %s) failed",
-                getattr(request, "path", "?"),
-                type(view).__name__,
-                status,
-            )
-            if response is not None and status < 400:
-                response.status_code = 500
-            body = _notices([RENDER_FAILED_MESSAGE])
-        return str(body).encode(self.charset)
-
-
-def ui_renderers(renderers: list) -> list:
-    """`renderers` with a `ScrudHTMLRenderer` immediately before DRF's
-    ``BrowsableAPIRenderer``, else last (unless one is there already)."""
-    renderers = list(renderers)
-    if any(isinstance(r, ScrudHTMLRenderer) for r in renderers):
-        return renderers
-    for index, renderer in enumerate(renderers):
-        if isinstance(renderer, BrowsableAPIRenderer):
-            renderers.insert(index, ScrudHTMLRenderer())
-            return renderers
-    renderers.append(ScrudHTMLRenderer())
-    return renderers
-
-
-def note_negotiation(request, renderer) -> None:
-    """Record whether content negotiation chose HTML for `request`: an
-    exception handler may swap the accepted renderer for a JSON one
-    afterwards (scoped-rbac's and scrudful's problem details do)."""
-    setattr(
-        request,
-        _NEGOTIATED_ATTR,
-        renderer if isinstance(renderer, ScrudHTMLRenderer) else None,
-    )
-
-
-def negotiated_html(request):
-    """The `ScrudHTMLRenderer` content negotiation chose for `request`, or
-    ``None``."""
-    return getattr(request, _NEGOTIATED_ATTR, None)
-
-
-def finalize_html(request, response) -> None:
-    """For a request that negotiated HTML: render `response` with the
-    `ScrudHTMLRenderer`, as ``text/html; charset=utf-8``, whatever renderer
-    and media type an exception handler set (``application/problem+json``),
-    vary it on the fragment protocol's headers, and keep caches from storing
-    it (``Cache-Control: private, no-cache, no-store``). A GET whose
-    branch parameter came confirmed keeps the selection in the prefix's
-    cookie (`remember_branch`)."""
-    renderer = negotiated_html(request)
-    if renderer is None:
-        return
-    patch_vary_headers(response, VARY)
-    remember_branch(request, response)
-    # The HTML depends on the stylesheets, components and grants as well as
-    # the resource, whose ETag it carries; and a page and its htmx fragments
-    # share that ETag, so a stored copy revalidated with a 304 could show one
-    # as the other, or stale presentation. So no cache stores it (no-store;
-    # private and no-cache for caches that ignore no-store). A client that
-    # resends an old ETag itself still gets a 304 (ui-html-shared-etag in
-    # docs/follow-ups.md).
-    patch_cache_control(response, private=True, no_cache=True, no_store=True)
-    if not isinstance(response, Response):
-        return
-    request.accepted_renderer = renderer
-    request.accepted_media_type = renderer.media_type
-    response.accepted_renderer = renderer
-    response.accepted_media_type = renderer.media_type
-    response.content_type = CONTENT_TYPE
+# What a computed view's content offers: reading only.
+COMPUTED_DECISIONS = {"GET": ALLOWED, "PUT": DENIED, "DELETE": DENIED}
 
 
 def remember_branch(request, response) -> None:
@@ -302,27 +156,6 @@ def remember_branch(request, response) -> None:
         httponly=True,
         samesite="Lax",
     )
-
-
-def check_ui_headers(request) -> None:
-    """Refuse (400) an HTML request whose `POINTER_HEADER` is not a JSON
-    Pointer of at most `MAX_POINTER_LENGTH` characters, or whose requested
-    mode (`MODE_HEADER`, `MODE_PARAMETER`) is not ``"view"``: before the view
-    acts, so a PUT carrying one writes nothing. An invalid scope chain
-    (`SCOPE_HEADER`, `SCOPE_PARAMETER`) is ignored (`scope_chain_of`)."""
-    if negotiated_html(request) is None:
-        return
-    if pointer_of(request) is None:
-        raise UIHeaderInvalidError(
-            POINTER_HEADER,
-            f"a JSON Pointer (RFC 6901) of at most {MAX_POINTER_LENGTH} characters"
-            " is expected.",
-        )
-    mode = _requested_mode_value(request)
-    if mode is not None and mode != VIEW_MODE:
-        raise UIHeaderInvalidError(
-            MODE_HEADER, f'"{VIEW_MODE}" is the only mode that can be requested.'
-        )
 
 
 def scope_chain_of(request) -> tuple[str, ...]:
@@ -377,89 +210,127 @@ def pointer_of(request) -> str | None:
     return value
 
 
-def remember_stored(view, request, obj) -> None:
-    """Keep `obj`, the resource a PUT that negotiated HTML replaces, as the
-    view's checked lookup first returned it (its ``get_instance``), as
-    `Stored`: if the write is refused, whether the submitted body comes back
-    as the edit form, and how, is decided on it. Kept once per request, and
-    a copy, since the write changes the instance."""
-    if (
-        request.method == "PUT"
-        and negotiated_html(request) is not None
-        and _STORED_ATTR not in view.__dict__
-    ):
-        view.__dict__[_STORED_ATTR] = Stored(
-            content=copy.deepcopy(content_of(obj)), etag=quote_etag(obj.etag)
+def check_ui_headers(request) -> None:
+    """Refuse (`UIHeaderInvalidError`, 400) a request whose `POINTER_HEADER`
+    is not a JSON Pointer of at most `MAX_POINTER_LENGTH` characters, or
+    whose requested mode (`MODE_HEADER`, `MODE_PARAMETER`) is not
+    ``"view"``: before anything is read or written, so a PUT carrying one
+    writes nothing. An invalid scope chain (`SCOPE_HEADER`,
+    `SCOPE_PARAMETER`) is ignored (`scope_chain_of`)."""
+    if pointer_of(request) is None:
+        raise UIHeaderInvalidError(
+            POINTER_HEADER,
+            f"a JSON Pointer (RFC 6901) of at most {MAX_POINTER_LENGTH} characters"
+            " is expected.",
+        )
+    mode = _requested_mode_value(request)
+    if mode is not None and mode != VIEW_MODE:
+        raise UIHeaderInvalidError(
+            MODE_HEADER, f'"{VIEW_MODE}" is the only mode that can be requested.'
         )
 
 
-# What a lookup refused to the user raises: 401, 403, 404.
-_LOOKUP_REFUSALS = (
-    Http404,
-    DjangoPermissionDenied,
-    NotAuthenticated,
-    AuthenticationFailed,
-    PermissionDenied,
-    NotFound,
-)
+def html_headers(request, response) -> None:
+    """Make `response` an HTML response: vary it on the fragment protocol's
+    headers (`VARY`), keep caches from storing it (``Cache-Control: private,
+    no-cache, no-store``) and, for a GET whose branch parameter came
+    confirmed, keep the selection in the prefix's cookie (`remember_branch`).
+    The HTML depends on the stylesheets, components and grants as well as
+    the resource, whose ETag it carries; and a page and its htmx fragments
+    share that ETag, so a stored copy revalidated with a 304 could show one
+    as the other, or stale presentation. So no cache stores it (no-store;
+    private and no-cache for caches that ignore no-store). A client that
+    resends an old ETag itself still gets a 304 (ui-html-shared-etag
+    in docs/follow-ups.md)."""
+    patch_vary_headers(response, VARY)
+    remember_branch(request, response)
+    patch_cache_control(response, private=True, no_cache=True, no_store=True)
 
 
-def load_stored(view, request, response) -> None:
-    """For a refused PUT (400, 403) that negotiated HTML, refused before the
-    view looked the resource up (scoped-rbac's request check refuses on the
-    body): look it up now, through the view's own ``get_object()``, with its
-    filter and object permission checks for the PUT, but without the row
-    lock (``unlocked_lookups``): a refused request never waits for it or
-    holds it. Refused (401, 403, 404), or not readable (a database error,
-    another API error, logged), nothing is remembered and the response is
-    a notice."""
-    if (
-        request.method != "PUT"
-        or negotiated_html(request) is None
-        or getattr(response, "status_code", None) not in (400, 403)
-        or _STORED_ATTR in view.__dict__
-        or pointer_of(request) is None
-    ):
-        return
-    db = getattr(view, "locked_write_db", None)
-    unlocked = getattr(view, "unlocked_lookups", None)
-    try:
-        # A savepoint only when the view names a write database (`db`): a
-        # failed lookup then leaves the request's transaction usable. Without
-        # one the lookup runs in the request's own transaction.
+def render_html(
+    request,
+    *,
+    resource_type,
+    kind: str,
+    data,
+    status: int,
+    etag: str | None,
+    href: str,
+    location: str | None = None,
+    is_record: bool = False,
+    stored: Stored | None = None,
+    submitted: Mapping | None = None,
+) -> str:
+    """The HTML answering `request`: a page, or a fragment for an htmx
+    request; a confirmation page for a branch link not yet confirmed.
+
+    `kind` says what `data` is: ``"list"`` (a page of a list, or a list of
+    envelopes), ``"item"`` (a resource), ``"create"`` (the resource just
+    created, at `location`, its URL), ``"computed"`` (a computed view's
+    content, view-only) or any other (shown as JSON). `status` of 400 or
+    more makes `data` a problem, shown as notices; for a refused PUT the
+    `submitted` body comes back as the edit form, when `stored` (the stored
+    resource and its ETag) says the user may PUT it. `etag` is the item's,
+    `href` the URL the page is at, and `is_record` a read-only record
+    (rendered as a requested view).
+
+    Raises what rendering raises: the caller answers a notice, with no
+    content."""
+    with request_memo():
+        chosen = choose(request)
+        if _asks_confirmation(chosen, request):
+            return str(confirm_page(chosen, request))
+        # An embedded request (`embed`) stays in its embedder's safe mode:
+        # it is only ever turned on here (and, for the CSS and JS file
+        # responses, in `branches.file_views`).
         with (
-            transaction.atomic(using=db) if db else nullcontext(),
-            unlocked() if unlocked is not None else nullcontext(),
+            using_selection(chosen.selection),
+            using_safe_mode(safe_mode_requested(request) or safe_mode()),
         ):
-            obj = view.get_object()
-    except _LOOKUP_REFUSALS:
-        return
-    except (
-        APIException,
-        ScrudException,
-        DatabaseError,
-        transaction.TransactionManagementError,
-    ):
-        logger.warning(
-            "scrud-ui: looking up %s for a refused PUT failed",
-            getattr(request, "path", "?"),
-            exc_info=True,
-        )
-        return
-    remember_stored(view, request, obj)
+            body, contexts = _body(
+                request,
+                resource_type=resource_type,
+                kind=kind,
+                data=data,
+                status=status,
+                etag=etag,
+                href=href,
+                location=location,
+                is_record=is_record,
+                stored=stored,
+                submitted=submitted,
+            )
+            if not _is_htmx(request):
+                body = _page(
+                    body,
+                    request=request,
+                    resource_type=resource_type,
+                    contexts=contexts,
+                    scope_chain=scope_chain_of(request),
+                    chosen=chosen,
+                )
+    return str(body)
 
 
-# What a computed view's content offers: reading only.
-COMPUTED_DECISIONS = {"GET": ALLOWED, "PUT": DENIED, "DELETE": DENIED}
-
-
-def _body(data, status, request, view, response):
+def _body(
+    request,
+    *,
+    resource_type,
+    kind,
+    data,
+    status,
+    etag,
+    href,
+    location,
+    is_record,
+    stored,
+    submitted,
+):
     """``(html, contexts)``: the fragment answering the request, and the
     contexts whose stylesheets style its page."""
     scope_chain = scope_chain_of(request)
     pointer = pointer_of(request)
     mode = requested_mode_of(request)
-    resource_type = _resource_type(view)
     method = getattr(request, "method", None)
     if status >= 400:
         problem = data if isinstance(data, Mapping) else {}
@@ -472,35 +343,37 @@ def _body(data, status, request, view, response):
             return _reloading(request, scope_chain, pointer or "", messages), []
         if status in (400, 403) and method == "PUT" and pointer is not None:
             return _refused_put(
-                problem, status, request, view, resource_type, scope_chain, pointer
+                problem,
+                status,
+                request,
+                resource_type,
+                scope_chain,
+                pointer,
+                stored,
+                submitted,
             ), []
         return _notices(_problem_messages(problem, status)), []
-    action = getattr(view, "action", None)
-    if resource_type is not None and action == "list":
+    if resource_type is not None and kind == "list":
         return render_collection(
             _envelope(data),
             resource_type=resource_type,
-            href=request.path,
+            href=href,
             request=request,
             scope_chain=scope_chain,
             mode=mode,
         ), []
     if resource_type is not None and isinstance(data, Mapping):
-        href = request.path
-        if action == "create":
-            location = response.get("Location") if response is not None else None
+        if kind == "create":
             href = in_mount(request, urlsplit(location).path) if location else href
-        elif action not in ("retrieve", "update"):
+        elif kind not in ("item", "computed"):
             return _json(data), []
-        etag = response.get("ETag") if response is not None else None
         # A read-only record (an applied push: the API refuses a PUT and a
         # DELETE of it) is rendered as a requested view: no form, no Delete.
-        is_record = getattr(view, "is_record", None)
-        if mode is None and is_record is not None and is_record(data):
+        if mode is None and is_record:
             mode = VIEW_MODE
         # A computed view's content is view-only, its contexts the content's
         # own when it names them (never the stored resource's decisions).
-        computed = getattr(view, "computed", False)
+        computed = kind == "computed"
         contexts = (
             (rbac_contexts_of(data) if "rbac_context" in data else [])
             if computed
@@ -524,16 +397,18 @@ def _body(data, status, request, view, response):
     return _json(data), []
 
 
-def _refused_put(problem, status, request, view, resource_type, scope_chain, pointer):
-    """A refused PUT: the submitted body as the edit form, with the problem's
-    messages, only when the user may read the stored resource the view loaded
+def _refused_put(
+    problem, status, request, resource_type, scope_chain, pointer, stored, submitted
+):
+    """A refused PUT: the `submitted` body as the edit form, with the problem's
+    messages, only when the user may read the `stored` resource the view loaded
     (decision for GET allowed) and may not be denied a PUT of it (at its ETag,
     with its decisions and contexts); else the notices only, with no form and
     no ETag, as JSON would reveal neither."""
-    stored = view.__dict__.get(_STORED_ATTR) if view is not None else None
-    body = _submitted(request)
+    body = submitted
     if resource_type is None or not isinstance(stored, Stored):
         return _notices(_problem_messages(problem, status))
+
     type_uri = resource_type.type_uri
     messages = []
     if status == 403 and body is not None:
@@ -730,38 +605,12 @@ def _title(resource_type) -> str:
     return resource_type.slug or ""
 
 
-def _resource_type(view):
-    """The view's resource type, or ``None`` (a view without one, or whose
-    type is not registered: a 404). Any other error reading it propagates
-    (to `ScrudHTMLRenderer.render`'s last resort, which logs it)."""
-    get_resource_type = getattr(view, "get_resource_type", None)
-    if get_resource_type is None:
-        return None
-    try:
-        return get_resource_type()
-    except Http404:
-        return None
-
-
 def _envelope(data):
     """A list's body as `render_collection` reads it: the page envelope, or
     an unpaginated list of envelopes."""
     if isinstance(data, list):
         return {"count": len(data), "next": None, "previous": None, "content": data}
     return data
-
-
-def _submitted(request):
-    """The JSON object the request sent, or ``None`` (none, or one its
-    parser refused)."""
-    try:
-        body = request.data
-    except (ParseError, UnsupportedMediaType):
-        return None
-    # DRF leaves an empty QueryDict where a body failed to parse.
-    if isinstance(body, QueryDict) or not isinstance(body, Mapping):
-        return None
-    return body
 
 
 def _is_htmx(request) -> bool:

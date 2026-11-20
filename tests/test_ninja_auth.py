@@ -1,7 +1,10 @@
 """What ninja does with the credentials of a request: scoped-rbac's
 ``resolve_user`` (the ``SCOPED_RBAC["NINJA_USER"]`` hook, else ``request.auth``,
-else the session), not DRF's ``DEFAULT_AUTHENTICATION_CLASSES``. The README
-shows `tests.basic_auth_hook.basic_user`, the hook used here."""
+else the session), not DRF's ``DEFAULT_AUTHENTICATION_CLASSES`` unless the hook
+is scrud's `scrud_django.drf.auth.drf_user`, which runs them. The README shows
+`tests.basic_auth_hook.basic_user`, the hook used here. scrud's DRF hook,
+`scrud_django.drf.auth.drf_user`, is `tests.test_ninja_drf_auth`'s: these
+run without DRF too."""
 
 import base64
 import json
@@ -14,9 +17,9 @@ from django.test import Client, override_settings
 from django.utils.http import quote_etag
 
 from scrud_django.models import Resource
+from scrud_django.registration import ResourceRegistration
 
 from .front_ends import MOUNTS, serve_both
-from .test_front_end_parity import PROFILE
 
 pytestmark = [pytest.mark.urls("tests.parity_urls"), pytest.mark.django_db]
 
@@ -29,11 +32,17 @@ def _basic(username="boss", password="pw"):
     return {"Authorization": f"Basic {token}"}
 
 
+def _token(key):
+    return {"Authorization": f"Token {key}"}
+
+
 @pytest.fixture
 def item():
     serve_both()
     User.objects.create_superuser("boss", "boss@example.com", "pw")
-    return PROFILE.store("a")
+    return ResourceRegistration.register(
+        {"name": "x", "rbac_context": "a"}, "partner-profiles"
+    )
 
 
 def _put(client, item, **headers):
@@ -53,9 +62,6 @@ def test_basic_credentials_alone_are_the_anonymous_user_on_ninja(item):
 
     read = client.get(f"{NINJA}partner-profiles/{item.pk}/", headers=_basic())
     assert read.status_code == 401, read.content
-    # DRF authenticates the same header (its default Basic authentication).
-    drf = client.get(f"/drf/partner-profiles/{item.pk}/", headers=_basic())
-    assert drf.status_code == 200, drf.content
 
 
 def test_a_ninja_user_hook_maps_basic_credentials(item):

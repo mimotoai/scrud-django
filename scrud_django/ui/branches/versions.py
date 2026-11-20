@@ -12,11 +12,11 @@ from collections.abc import Mapping
 import reversion
 from django.db import transaction
 
+from scrud_django.core.signals import scrud_post_delete, scrud_post_save, write_alias
 from scrud_django.exceptions import UIBranchVersionMissingError
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 from scrud_django.rows import by_pk, first_by_pk, unsorted
-from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save, write_alias
 from scrud_django.ui.branches import (
     ITEM_KINDS,
     MAIN,

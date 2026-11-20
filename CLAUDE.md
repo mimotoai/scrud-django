@@ -1,8 +1,10 @@
 # scrud-django
 
-scrud-django is a Django/DRF library for building SCRUD (Search, Create, Read,
+scrud-django is a Django library for building SCRUD (Search, Create, Read,
 Update, Delete) REST APIs whose resources and resource types are stored as data
-and described with JSON Schema and JSON-LD. It layers on django-scoped-rbac for
+and described with JSON Schema and JSON-LD, served through django-ninja by
+default (`scrud_django.urls`) or Django REST Framework (the `drf` extra,
+`scrud_django.drf.urls`). It layers on django-scoped-rbac for
 authorization. `README.md` covers usage; this file covers working in the repo.
 
 ## Upstream packages
@@ -18,7 +20,7 @@ source are in `.venv/lib/python3.13/site-packages/<pkg>/` (for example
   `get_object()`. `ResourceViewSet` and `ResourceViewSetGenericFilter` set
   `permission_classes = [IsAuthorized]` themselves so they fail closed even
   under DRF's `AllowAny` default; keep it that way (`tests/test_authz.py`).
-- The combined exception handler is `scrud_django.exceptions.scrud_exception_handler`.
+- The combined exception handler is `scrud_django.drf.exceptions.scrud_exception_handler`.
 
 ## Architecture
 
@@ -29,11 +31,25 @@ neutral: it takes a plain Django request and imports nothing from
 DRF modules (`tests/test_core_imports.py` holds the deny list). It does import
 `scrud_django.exceptions`, which loads `rest_framework.exceptions` when DRF is
 installed (a scrud error's detail is then DRF's `ErrorDetail`), and works
-without it. The DRF views and mixins are adapters: they delegate to `core`
-for the pieces they call (requirements and grants, the workflow check, body
-checks, list queries and validators, the save and post-save checks, URLs)
-and map its `ScrudException`s and access errors to DRF's
-(`exceptions.as_drf`, `drf_error`). The facade in `core/resources.py`
+without it. Two front ends adapt it: django-ninja, the default
+(`scrud_django.urls` is `scrud_django.ninja.api(types=[])` in the URL
+namespace `scrud`, plus `scoped_rbac.semantic_urls`; the `checks.py`
+checks `scrud_django.E010` and `E011` report two scrud APIs in one
+namespace, and DRF registrations beside the ninja `scrud_django.urls`;
+`W008` and `W009`, a routed scrud ninja API beside `REST_FRAMEWORK`
+throttles or authentication classes it does not read, and without
+`SCRUDFUL["BASE_URL"]`), and
+DRF, the `drf` extra (`scrud_django.drf.urls`, which `tests/urls.py`
+includes so that the DRF suites test DRF). The DRF views and mixins are
+adapters (the `scrud_django.drf` package; the old paths
+`scrud_django.views`, `.filters`, `.permissions`, ... are deprecated
+aliases, `scrud_django/_aliases.py`, and scrud's own code and tests import
+the new paths: `pyproject.toml`'s `filterwarnings` makes an alias's warning
+an error): they delegate to `core` for the pieces they call (requirements
+and grants, the workflow check, body checks, list queries and validators,
+the save and post-save checks, URLs) and map its `ScrudException`s and
+access errors to DRF's
+(`drf.exceptions.as_drf`, `drf_error`). The facade in `core/resources.py`
 (`check_request`, `load_for_read`, `object_readable`, `readable_content`,
 `allowed_methods`, `check_object`, `readable_queryset`, `validate_write`,
 `create`, `update`, `destroy`) is not called by DRF (which calls the
@@ -68,23 +84,57 @@ others (a `contexts_for` of its own, or a class not registered with
 options ask their request checks before their object checks, as DRF's `|`
 does; the DRF views' list and readability (`meets_object_checks` without
 `request_checks`) keep asking object checks alone.
+A write runs through `core.writes`' steps, shared by every front end:
+`check_write_request` (the body, then the route's request check),
+`create_answer` (a list's POST) or `item_write_answer` (an item's PUT or
+DELETE: the row looked up locked, its preconditions, then `write_item`,
+which ninja's item routes call themselves once scrudful has evaluated the
+preconditions), each answering a `WriteAnswer`; JSON is written as DRF's
+renderer writes it, without DRF, by `core/json.py`.
 Put new domain logic in `core`, not in a view; per-type hooks are
 `core.types.TypeOptions`.
 
-`scrud_django/ninja/` is the second adapter (the optional `ninja` extra,
-`scrud_django.ninja.api(types=[...])`). Its handlers call only the core
+`scrud_django/ninja/` is the default adapter (django-ninja is a base
+dependency; `scrud_django.ninja.api(types=[...])`, which `scrud_django.urls`
+builds with none of an app's own types). Its handlers call only the core
 (`scrud_django/core/`: the facade above, `core.lists`, `core.collections`,
-`core.computed`, `core.writes`, `core.urls`, `core.bodies`, `core.types`) and
-the registration and service-catalog lookups (`scrud_django.registration`'s
+`core.computed`, `core.writes`, `core.urls`, `core.bodies`, `core.types`,
+`core.errors`) and the registration and service-catalog lookups (`scrud_django.registration`'s
 `get_resource_type_for`, `type_db`, `write_db`; `scrud_django.services`): no
 domain logic lives there, and a handler that needs something the core lacks
 adds it to the core with a core test. It authenticates with scoped-rbac's
 `resolve_user` (the `SCOPED_RBAC["NINJA_USER"]` hook, else `request.auth`
 (only on a router added with its own `auth=`), else the session), not DRF's
-authentication classes (see the README). It answers as the DRF routes do,
+authentication classes unless that hook is the opt-in
+`scrud_django.drf.auth.drf_user`, which runs them (see the README). It answers as the DRF routes do,
 and `tests/test_front_end_parity.py` is the proof (the same exchanges
 replayed against both, compared exactly); the generic suites take the
-`front_end` fixture and run on both. It serves no UI or studio types yet.
+`front_end` fixture and run on both. It serves the UI's types and the
+studio's computed types (`ui.types.ui_type_specs()`,
+`ui.studio.computed.studio_computed_type_specs()`) when their apps are
+installed, unless `api(ui_types=False)`.
+
+`scrud_django/ui/` is the third front end of the core, the htmx UI: plain
+Django views (`scrud_django/ui/pages.py`), routed by `scrud_django.ui.urls`
+(the app includes it last at `/` with no namespace argument; it is
+`scrud_ui:list` (`slug`) and `scrud_ui:detail` (`slug`, `pk`), the CSS and JS
+files, and the studio at `studio/`, namespace `scrud-studio`), read and write
+through the core and answer HTML through the neutral `render_html`
+(`scrud_django/ui/html.py`). `/api/` is JSON only (DRF's browsable API still
+answers a browser's `Accept` on DRF); a published branch's prefix maps to the
+UI views and serves no JSON, and a branch cannot be published at `/`. htmx
+writes go to the UI URLs and answer HTML. Pages and the studio authenticate
+with Django's session user only (tests use `force_login`, not DRF's
+`force_authenticate`) and enforce CSRF with `csrf_protect`. Embeds and the
+studio call the core too; nothing dispatches a DRF viewset in process.
+
+An app's own models get the workflow through `scrud_django/core/signals.py`
+(the signals and action runner, neutral of `Resource`),
+`scrud_django/core/transitions.py` (`Transitions`, `govern`, `checked_save`,
+and the receivers logging unchecked saves of governed models) and
+`scrud_django/ninja/workflow.py` (`workflow_check` and `ModelWorkflow`, which
+composes with scoped-rbac's ninja blocks). `tests/own_models.py` is the tested
+router the README shows (`tests/test_readme_own_models.py`).
 
 ## Commands
 
@@ -119,10 +169,12 @@ a single test, which is the usual way to run one while working:
 ```bash
 uv run pytest tests/test_rest.py::test_resource_get_list
 uv run pytest -q --reverse
+SCRUD_TEST_NO_DRF=1 uv run pytest -q
 ```
 
 `--reverse` (from `tests/conftest.py`) runs the suite in reverse order, as CI
-also does.
+also does. `SCRUD_TEST_NO_DRF=1` runs it without DRF (`tests/no_drf.py` blocks
+its imports, `tests/settings.py::without_drf`), skipping the `drf`-marked tests.
 
 These write files or touch the environment, so they prompt. Run them on the
 files you touched only; `ruff format .` and `ruff check --fix .` over the whole
@@ -156,9 +208,11 @@ MariaDB suite in CI's image instead
 default-libmysqlclient-dev pkg-config`, on a docker network with the server),
 as the `test-mysql` job does.
 
-Demo app (API root at http://127.0.0.1:8000/api/; resource routes need a
-login, at `/api-auth/login/` or with DRF's Basic auth; ninja does not read it
-without a `NINJA_USER` hook, see the README):
+Demo app (ninja only, no DRF: the API at http://127.0.0.1:8000/api/, such as
+`/api/todo-lists/<pk>/`, and the UI's pages at `/<slug>/<pk>/`, such as
+`/todo-lists/<pk>/`; sign in with Django's own login at `/accounts/login/`, a
+session that the API, the UI pages and the studio all read; the API takes no
+Basic auth):
 
 ```bash
 cd demo
@@ -168,11 +222,12 @@ uv run python manage.py createsuperuser
 uv run python manage.py runserver
 ```
 
-The seed prints the self-hosted studio's workbench URLs (sign in as
-`author`/`author`): `/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`.
+The seed prints the list's UI URL (`/todo-lists/<pk>/`) and the self-hosted
+studio's workbench URLs (sign in as `author`/`author`): `/workbench/ui-branches/<pk>/?ui-scope=studio&ui-mode=view`.
 
 CI is `.gitlab-ci.yml`: lint, migrations check, docs build, tests with
-coverage on 3.11-3.13 (then again with `--reverse`), the suite on PostgreSQL
+coverage on 3.11-3.13 (then again with `--reverse`), the suite without DRF
+(`test-no-drf`, `SCRUD_TEST_NO_DRF=1`), the suite on PostgreSQL
 14 via `SCRUD_TEST_PG_*` (`test-postgres`) and on MySQL 8.4 and MariaDB 11.4
 via `SCRUD_TEST_MYSQL_*` (`test-mysql`), a package build/README/installed-
 wheel check, and a version check on release merge requests into `main`. Run the lint and test
@@ -219,7 +274,7 @@ See `tests/test_conditional.py` for the idiom.
   the root `manage.py` both call `settings.configure(**SETTINGS)`; there is no
   settings module on disk and no `DJANGO_SETTINGS_MODULE`. Add settings there.
 - Request bodies are JSON-only (`parser_classes = [RbacJSONParser]` in
-  `scrud_django/views.py`): form or multipart bodies get 415.
+  `scrud_django/drf/views.py`): form or multipart bodies get 415.
 - Tests run on in-memory SQLite unless `SCRUD_TEST_PG_HOST` or
   `SCRUD_TEST_MYSQL_HOST` is set (CI's `test-postgres` and `test-mysql`; see
   `tests/settings.py`). Code the tests exercise must work on all four

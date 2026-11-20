@@ -14,13 +14,12 @@ from unittest import mock
 from urllib.parse import urlencode
 
 import pytest
-from django.test import RequestFactory
+from django.test import Client, RequestFactory
 from django.urls import reverse
-from rest_framework.test import force_authenticate
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
-from scrud_django.mixins.view_mixins import max_body_depth
+from scrud_django.core.bodies import max_body_depth
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 from scrud_django.ui.branches import (
@@ -28,7 +27,7 @@ from scrud_django.ui.branches import (
     UI_CSS_TYPE_URI,
     UI_JS_TYPE_URI,
 )
-from scrud_django.ui.renderer import STATIC_HTMX
+from scrud_django.ui.html import STATIC_HTMX
 from scrud_django.ui.studio import views
 from scrud_django.ui.studio.live_preview import MAX_DRAFTS
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
@@ -42,6 +41,7 @@ from .test_ui_branch_render import put_item
 from .test_ui_branch_types import make_branch, problem
 from .test_ui_embeds import embedded_content, host, make_list, url_of
 from .test_ui_http import PREFIXES, grant, html, make_component, make_stylesheet
+from .ui import ui_url
 
 SLUG = "todo-lists"
 UNAVAILABLE = "https://api.openteams.com/http-problem/ui-branch-unavailable"
@@ -113,7 +113,7 @@ def wip_for(user):
     reverse("todo-lists-list")
     make_branch("wip", "alice")
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
 
 
 def main_row():
@@ -301,7 +301,7 @@ def test_draft_raising_at_render_falls_back(ui_alice_login, engine, template):
 def test_drafts_on_published_branch_refused(admin_login):
     main_row()
     make_branch("shop", "", parent="main", prefix="/shop/")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     before = stored_state()
     for branch in ("main", "shop"):
         live(400, branch=branch, drafts=[django_component("row", "<i>x</i>")])
@@ -333,7 +333,7 @@ def test_after_push_needs_get_only_and_shows_source_overrides(
     # May GET wip, and nothing else: no write anywhere.
     user = login_no_roles
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     before = stored_state()
     page = live(branch="main")
     assert "<b>main Lorem ipsum</b>" in page and "<em>SHOUT</em>" in page
@@ -343,7 +343,7 @@ def test_after_push_needs_get_only_and_shows_source_overrides(
     assert errors_of(page) == []
     assert stored_state() == before
     # Without GET on the source: 403, as for one that does not exist.
-    Given.http.force_authenticate(ui_bob_login)
+    Given.http.force_login(ui_bob_login)
     for source in ("wip", "nope"):
         live(403, branch="main", after_push={"source": source})
         assert Http.response["Content-Security-Policy"].startswith("sandbox ")
@@ -356,7 +356,7 @@ def test_after_push_needs_get_only_and_shows_source_overrides(
 def test_after_push_with_drafts_refused(admin_login):
     main_row()
     make_branch("wip", "alice")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     live(
         400,
         branch="main",
@@ -547,7 +547,7 @@ def test_match_markers_agree_with_resolve_component(case, admin_login):
     make_component("row-b", "<i>{{ value.text }}</i>")
     make_component("row-edit", "<u>{{ value.text }}</u>", mode="edit")
     setup()
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     if mark["stylesheet"] is None:
         # The default stylesheet's first rule, by its name.
         from scrud_django.ui.cascade import _default_stylesheet
@@ -581,7 +581,7 @@ def test_edit_rule_moved_up_reports_its_rank(admin_login):
     make_component("row", "<b>{{ value.text }}</b>")
     make_component("row-edit", "<u>{{ value.text }}</u>", mode="edit")
     sheet = make_stylesheet("s", [("ex:TodoItem", "row"), ("ex:TodoItem", "row-edit")])
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     edit_after = {"stylesheet": "s", "applies_to": "", "index": 1}
     found = nodes(live(branch="main", mode="view", mark=edit_after))["/items/0"]
     assert found == ("loses", "wrong mode")
@@ -735,10 +735,8 @@ def test_preview_configures_htmx_without_inline_indicator_styles(
         for tag in re.findall(r"<style[^>]*>", page)
     )
     # A real page: no htmx-config, no indicator stylesheet.
-    Given.http.force_authenticate(todo_reader_login)
-    When.http.get(
-        reverse("todo-lists-detail", args=[todo_list.pk]), HTTP_ACCEPT="text/html"
-    )
+    Given.http.force_login(todo_reader_login)
+    When.http.get(ui_url(reverse("todo-lists-detail", args=[todo_list.pk])))
     Then.http.status_code_is(200)
     real = html()
     assert STATIC_HTMX in real
@@ -763,12 +761,10 @@ def test_live_preview_needs_login_and_post():
 @pytest.mark.django_db
 @test_context
 def test_live_preview_is_a_post_with_csrf(ui_alice_login):
-    from rest_framework.test import APIClient
-
     main_row()
     reverse("todo-lists-list")
     make_branch("wip", "alice")
-    client = APIClient(enforce_csrf_checks=True)
+    client = Client(enforce_csrf_checks=True)
     client.force_login(ui_alice_login)
     body = urlencode({"request": json.dumps({"type": SLUG, "branch": "main"})})
     response = client.post(
@@ -791,7 +787,7 @@ def test_errors_django_answers_are_sandboxed_too(ui_alice_login, settings):
     answered as Django answers it, with the sandbox."""
     reverse("todo-lists-list")
     make_branch("wip", "alice")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     settings.DATA_UPLOAD_MAX_NUMBER_FIELDS = 3
     When.http.post(
         reverse("scrud-studio:live-preview"),
@@ -810,7 +806,8 @@ def test_errors_django_answers_are_sandboxed_too(ui_alice_login, settings):
         data=urlencode({"request": json.dumps({"type": SLUG, "branch": "main"})}),
         content_type="application/x-www-form-urlencoded",
     )
-    force_authenticate(request, user=ui_alice_login)
+    request.user = ui_alice_login
+    request._dont_enforce_csrf_checks = True
     with mock.patch(
         "scrud_django.ui.studio.views.render_live_preview",
         side_effect=RuntimeError("boom"),
@@ -926,7 +923,7 @@ def test_studio_data_embedded_in_live_preview_shows_stored_items_not_drafts(
         {"http.GET": [TYPE_URI_TODO_LIST, collection_type_uri_for(TYPE_URI_TODO_LIST)]},
         todo_list.content["rbac_context"],
     )
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     When.http.get(items, HTTP_ACCEPT="application/json")
     Then.http.status_code_is(200)
     plain = Http.response.json()
@@ -1026,23 +1023,20 @@ def test_layer_prefixed_drafts_follow_the_save_rules(ui_alice_login):
 @pytest.mark.django_db
 @test_context
 def test_draft_check_failing_as_a_server_error_is_logged(ui_alice_login, caplog):
-    """A check that fails as a server error (an ``APIException`` of status
+    """A check that fails as a server error (a ``ScrudException`` of status
     500 or more) is listed as the draft's error, as any refusal is, and is
     also logged at ERROR with its traceback: it is no answer about the
     draft."""
-    from rest_framework.exceptions import APIException
-
-    from scrud_django.ui.views import UIComponentViewSet
+    from scrud_django.exceptions import ScrudException
 
     main_row()
     wip_for(ui_alice_login)
     with (
-        mock.patch.object(
-            UIComponentViewSet,
-            "validate_content",
-            side_effect=APIException("The check broke."),
+        mock.patch(
+            "scrud_django.core.writes.validate_schema",
+            side_effect=ScrudException("The check broke."),
         ),
-        caplog.at_level(logging.ERROR, logger="scrud_django.ui.studio.drafts"),
+        caplog.at_level(logging.ERROR, logger="scrud_django.ui.studio.answers"),
     ):
         page = live(drafts=[django_component("row", "<i>{{ value.text }}</i>")])
     assert errors_of(page) == [
@@ -1051,7 +1045,7 @@ def test_draft_check_failing_as_a_server_error_is_logged(ui_alice_login, caplog)
     logged = [
         r
         for r in caplog.records
-        if r.name == "scrud_django.ui.studio.drafts" and r.levelno == logging.ERROR
+        if r.name == "scrud_django.ui.studio.answers" and r.levelno == logging.ERROR
     ]
     assert len(logged) == 1 and logged[0].exc_info is not None
     assert "row" in logged[0].getMessage()

@@ -2,7 +2,7 @@
 versioned URLs (``ui-js-files/<name>/<etag>.js``) under the API's URLs and
 under a published branch's prefix, and linked by the built-in page after
 ``scrud-ui.js``. These tests serve the API at ``/api/``
-(``tests.mounted_urls``)."""
+and the UI at ``/`` (``tests.mounted_urls``)."""
 
 import re
 from html import unescape
@@ -41,14 +41,15 @@ from .test_ui_branch_push import (
 from .test_ui_branch_render import BRANCH_HEADER, may_select_branches
 from .test_ui_branch_types import make_branch, problem
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import grant
+from .test_ui_http import get_ui_html, grant
+from .ui import UI_URLCONF, ui_url
 
 PRIVATE = "private, max-age=31536000, immutable"
 
 
 @pytest.fixture(autouse=True)
 def api_at_api_path(settings):
-    settings.ROOT_URLCONF = "tests.mounted_urls"
+    settings.ROOT_URLCONF = UI_URLCONF
 
 
 def make_js(name, js="console.log(1)", branch=None, context="", **fields):
@@ -66,7 +67,10 @@ def script_srcs(page):
     ]
 
 
-def file_url(item, base="/api/"):
+UI = "/"  # the UI app's base: its pages link and serve the files there
+
+
+def file_url(item, base=UI):
     return f"{base}ui-js-files/{item.content['name']}/{item.etag}.js"
 
 
@@ -83,7 +87,7 @@ def js_body(**overrides):
 @pytest.mark.django_db
 @test_context
 def test_js_item_crud_with_branch_fields(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     created = create("ui-js", js_body())
     assert created.content["branch"] == "main" and created.content["base"] is None
     url = reverse("ui-js-detail", args=[created.pk])
@@ -124,7 +128,7 @@ def test_js_files_served_versioned_private_immutable(
 ):
     setup_admin_and_customer()
     app = make_js("app", "window.x = 1")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     response = get_js(file_url(app, ADMIN))
     assert response["Content-Type"] == "text/javascript; charset=utf-8"
     assert response["Cache-Control"] == PRIVATE
@@ -132,10 +136,12 @@ def test_js_files_served_versioned_private_immutable(
     assert response.content == b"window.x = 1"
     old_url = file_url(app)
     assert get_js(old_url).content == b"window.x = 1"
+    # The API serves no files: they are the UI app's.
+    get_js(file_url(app, "/api/"), status=404)
     # Only GET.
     When.http.post(old_url, data="x", content_type="text/javascript")
     Then.http.status_code_is(405)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.put(
         reverse("ui-js-detail", args=[app.pk]),
         data={**app.content, "js": "window.x = 2"},
@@ -144,10 +150,10 @@ def test_js_files_served_versioned_private_immutable(
     )
     Then.http.status_code_is(200)
     app.refresh_from_db()
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     # A stale ETag is a 404; so is an unknown name.
     get_js(old_url, status=404)
-    get_js("/api/ui-js-files/nope/x.js", status=404)
+    get_js("/ui-js-files/nope/x.js", status=404)
     assert get_js(file_url(app)).content == b"window.x = 2"
 
 
@@ -158,12 +164,12 @@ def test_js_gated_by_branch_get_under_prefix(todo_list, todo_reader_login):
     app = make_js("app")
     url = file_url(app, ADMIN)
     # The reader sees the page at the API, and so its script...
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     get_js(file_url(app))
     # ...but not under a prefix whose branch they may not GET.
     get_js(url, status=403)
-    Given.http.force_authenticate(None)
-    When.http.get(mounted(ADMIN), HTTP_ACCEPT="application/json")
+    Http.api_client.logout()
+    When.http.get(mounted(ADMIN))
     refused = Http.response.status_code
     assert refused in (401, 403)
     get_js(url, status=refused)
@@ -171,7 +177,7 @@ def test_js_gated_by_branch_get_under_prefix(todo_list, todo_reader_login):
     make_branch("wip", "project-a")
     wip = make_js("app", "secret()", branch="wip", context="project-a")
     get_js(file_url(wip), status=404, **{BRANCH_HEADER: "wip"})
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     assert get_js(url).content == app.content["js"].encode()
     assert get_js(file_url(wip), **{BRANCH_HEADER: "wip"}).content == b"secret()"
     get_js(file_url(wip), status=404)
@@ -186,10 +192,10 @@ def test_page_links_scripts_in_order(todo_list, todo_reader_login):
     hidden = make_js("hidden")
     make_branch("wip", "project-a", prefix="/wip/")
     make_js("hidden", "", branch="wip", deleted=True, context="project-a")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
-    page = get_html(api_url(todo_list))
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    page = get_ui_html(ui_url(api_url(todo_list)))
     srcs = script_srcs(page)
-    assert srcs[-4:] == [file_url(i) for i in (hidden, first, second, third)]
+    assert srcs[-4:] == [file_url(i, UI) for i in (hidden, first, second, third)]
     # They follow scrud-ui.js.
     assert "scrud-ui" in srcs[-5]
     assert len(srcs) == 6
@@ -198,15 +204,15 @@ def test_page_links_scripts_in_order(todo_list, todo_reader_login):
         file_url(i, "/wip/") for i in (first, second, third)
     ]
     # A fragment has no <head>.
-    When.http.get(api_url(todo_list), HTTP_ACCEPT="text/html", HTTP_HX_REQUEST="true")
+    When.http.get(ui_url(api_url(todo_list)), HTTP_HX_REQUEST="true")
     assert "ui-js-files" not in Http.response.content.decode()
 
 
 @pytest.mark.django_db
 @test_context
 def test_page_without_js_items_has_no_extra_scripts(todo_list, todo_reader_login):
-    Given.http.force_authenticate(todo_reader_login)
-    page = get_html(api_url(todo_list))
+    Given.http.force_login(todo_reader_login)
+    page = get_ui_html(ui_url(api_url(todo_list)))
     assert len(script_srcs(page)) == 2
     assert "scrud-ui" in script_srcs(page)[-1]
     assert page.count("<script src=") == 2
@@ -215,7 +221,7 @@ def test_page_without_js_items_has_no_extra_scripts(todo_list, todo_reader_login
 @pytest.mark.django_db
 @test_context
 def test_js_refuses_closing_script_tag(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     for text in ("a() </script><b>", "</SCRIPT >", "</Script"):
         When.http.post(
             reverse("ui-js-list"), data=js_body(name="x", js=text), format="json"
@@ -238,7 +244,7 @@ def test_js_refuses_closing_script_tag(admin_login):
 def test_js_write_needs_ui_js_grant_not_ui_components():
     make_branch("wip", "alice")
     user = assign_ui_role((UI_BRANCH_TYPE_URI, UI_COMPONENT_TYPE_URI), "alice")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     When.http.post(
         reverse("ui-js-list"),
         data=js_body(branch="wip", rbac_context="alice"),
@@ -262,7 +268,7 @@ def test_js_write_needs_ui_js_grant_not_ui_components():
 @test_context
 def test_push_pull_restore_and_conflicts_cover_js(admin_login):
     assert ITEM_KINDS["js"] == UI_JS_TYPE_URI
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_js = make_js("app", "a()")
     make_wip(admin_login)
     override = create("ui-js", js_body(js="b()", **WIP))
@@ -292,17 +298,17 @@ def test_push_pull_restore_and_conflicts_cover_js(admin_login):
     Resource.objects.filter(pk=override.pk).update(
         content={**override.content, "base": main_js.etag}
     )
-    Given.http.force_authenticate(pusher(**{"": {"http.PUT": [UI_COMPONENT_TYPE_URI]}}))
+    Given.http.force_login(pusher(**{"": {"http.PUT": [UI_COMPONENT_TYPE_URI]}}))
     push()
     Then.http.status_code_is(403)
-    Given.http.force_authenticate(pusher(**{"": {"http.PUT": [UI_JS_TYPE_URI]}}))
+    Given.http.force_login(pusher(**{"": {"http.PUT": [UI_JS_TYPE_URI]}}))
     push()
     Then.http.status_code_is(201)
     main_js.refresh_from_db()
     assert main_js.content["js"] == "b()"
     assert own_rows(UI_JS_TYPE_URI, "wip") == []
     # Restore brings the override back.
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     push(source=None, restore=number, target="wip", context="alice")
     Then.http.status_code_is(201)
     assert [r["js"] for r in own_rows(UI_JS_TYPE_URI, "wip")] == ["b()"]

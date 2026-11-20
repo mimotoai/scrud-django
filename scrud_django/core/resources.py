@@ -2,10 +2,11 @@
 list and items, with a Django request, the `ResourceType` and a neutral
 requirement (`scrud_django.core.requirements`), as the DRF routes answer
 (``ResourceViewMixin``): an item's lookup and object check (`load_for_read`),
-whether it is readable (`object_readable`), its validators and Links, and
-the ``Allow`` of an OPTIONS (`allowed_methods`, and `allowed_methods_for`,
-given the key, which looks nothing up for a requester refused every
-method). The list's and the writes' functions are re-exported from
+whether it is readable (`object_readable`), what its reader gets
+(`item_read`), its validators and Links, the status of its preconditions
+(`item_preconditions`), and the ``Allow`` of an OPTIONS (`allowed_methods`,
+and `allowed_methods_for`, given the key, which looks nothing up for a
+requester refused every method). The list's and the writes' functions are re-exported from
 `scrud_django.core.lists` and `scrud_django.core.writes`.
 
 A refusal of an object the requester cannot read is a 404 (``Http404``),
@@ -39,14 +40,23 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404
 from scoped_rbac import access
 from scoped_rbac.policy import Permission
+from scrudful._django import aware, precondition_headers
+from scrudful.conditional import (
+    ConditionalResult,
+    evaluate_preconditions,
+    http_timestamp,
+    quote_etag,
+)
 
 from scrud_django import collection_type_uri_for
 from scrud_django.core.authz import _not_checking_write, content_of
+from scrud_django.core.errors import precondition_answer
 from scrud_django.core.lists import (  # noqa: F401  (re-exported)
     content_filtered,
     evaluate_list_preconditions,
     list_etag,
     list_last_modified,
+    read_view,
     readable_queryset,
 )
 from scrud_django.core.requirements import (
@@ -69,6 +79,7 @@ from scrud_django.core.workflow import authorizing_write
 from scrud_django.core.writes import (  # noqa: F401  (re-exported)
     create,
     destroy,
+    refuse_unserved,
     update,
     validate_write,
 )
@@ -98,13 +109,31 @@ ITEM_METHODS = ("GET", "PUT", "DELETE")
 LIST_METHODS = ("GET", "POST")
 
 
+# The methods `allowed_methods` lists without checking them: HEAD with GET,
+# OPTIONS always.
+DERIVED_METHODS = ("HEAD", "OPTIONS")
+
+# The methods whose preconditions scrudful does not evaluate
+# (``scrudful._adapter.NO_PRECONDITION_METHODS``): their answer is no
+# representation of the item (`item_preconditions`).
+NO_PRECONDITION_METHODS = frozenset({"CONNECT", "OPTIONS", "TRACE"})
+
+
 def served_methods(resource_type, *, item: bool) -> tuple[str, ...]:
     """The methods the route of `resource_type` serves (`item`: its detail
     route, else its list): a computed type (``TypeOptions.compute``, by its
-    IRI) serves ``GET`` only; any other `ITEM_METHODS` or `LIST_METHODS`."""
-    if type_options(resource_type.type_uri).compute is not None:
+    IRI) serves ``GET`` only; a type whose ``TypeOptions.methods`` are set,
+    those of `ITEM_METHODS` or `LIST_METHODS`, then of `DERIVED_METHODS`,
+    that they name; any other `ITEM_METHODS` or `LIST_METHODS`."""
+    options = type_options(resource_type.type_uri)
+    if options.compute is not None:
         return ("GET",)
-    return ITEM_METHODS if item else LIST_METHODS
+    route = ITEM_METHODS if item else LIST_METHODS
+    if options.methods is not None:
+        return tuple(
+            method for method in route + DERIVED_METHODS if method in options.methods
+        )
+    return route
 
 
 # The order of the methods ``Allow`` lists, as scrudful's ``allow_value``
@@ -305,6 +334,7 @@ def load_for_read(
     method: str,
     lock_using: str | None = None,
     body: Mapping | None = None,
+    request_checked: bool = False,
 ) -> Resource:
     """The resource `pk` of `resource_type`, looked up and checked for a
     `method` request (every method's lookup, not only a read's), as the
@@ -323,6 +353,10 @@ def load_for_read(
       check), and so is pairing an ``AnyOf`` option's request check of the
       body with its object check, as DRF's ``|`` does (`validate_write`
       asks the object check again with the body, `check_object`);
+    - then a `method` the type does not serve (``TypeOptions.methods``) is
+      refused (`scrud_django.core.writes.refuse_unserved`, 405); DRF's view
+      and the ninja routes answer it before any authorization (follow-up
+      ``core-unserved-order``);
     - missing, or a `pk` that is no key, it is ``Http404``; so is one stored
       in a context reserved once normalised (`found_item`, which caches the
       type on it). The lookup is not narrowed by readability, as the DRF
@@ -344,15 +378,24 @@ def load_for_read(
     writer holding the type lock and waiting for the row. Else the row is
     read as the router reads.
 
+    With `request_checked`, the caller asked the request check itself
+    (`check_request` of `request` on the item route, with `body`) before
+    the checks DRF's ``initial()`` asks after it (a UI page's prefix and
+    headers, `scrud_django.ui.pages`): it is not asked again; everything
+    after it is.
+
     `requirement` is taken through `Requirement.of`: one that asks no
     grants (empty, or hooks only) is ``ImproperlyConfigured``, before any
     lookup: it would let anyone load any resource."""
     requirement = Requirement.of(requirement, caller="load_for_read")
-    if body is None and method in BODY_METHODS:
-        checked = _options_copy(request, method)
-    else:
-        checked = _as_method(request, method)
-    check_request(checked, resource_type, requirement, list_route=False, body=body)
+    if not request_checked:
+        if body is None and method in BODY_METHODS:
+            checked = _options_copy(request, method)
+        else:
+            checked = _as_method(request, method)
+        check_request(checked, resource_type, requirement, list_route=False, body=body)
+    # A HEAD is served where a GET is.
+    refuse_unserved(resource_type, "GET" if method == "HEAD" else method)
     queryset = Resource.objects.filter(resource_type=resource_type)
     if lock_using is not None:
         lock_if_workflow_policy(resource_type, lock_using)
@@ -378,6 +421,72 @@ def item_validators(obj: Resource) -> tuple[str, datetime]:
     """`obj`'s ``(etag, last_modified)``: its ``etag`` (unquoted) and
     ``modified_at``, as ``ScrudfulMeta`` gives scrudful."""
     return (obj.etag, obj.modified_at)
+
+
+def item_read(request, resource_type, obj: Resource) -> tuple[Mapping, str, datetime]:
+    """``(content, etag, last_modified)`` of `obj` (of `resource_type`, loaded
+    for `request` by `load_for_read`) as its reader gets it, as the detail
+    route answers a GET: the content and ETag (unquoted) the type's
+    ``TypeOptions.read_view`` gives (a UI branch version narrowed to the
+    items its reader may read), else its stored ones (`content_of`,
+    `item_validators`), and its ``modified_at``."""
+    content, etag = read_view(request, resource_type, obj)
+    return content, etag, obj.modified_at
+
+
+def _item_preconditions_result(
+    request, *, etag, last_modified, method
+) -> ConditionalResult | None:
+    method = method.upper()
+    if method in NO_PRECONDITION_METHODS:
+        return None
+    return evaluate_preconditions(
+        method,
+        precondition_headers(request),
+        etag=None if etag is None else quote_etag(etag),
+        last_modified=http_timestamp(aware(last_modified)),
+        exists=True,
+        require_precondition=True,
+    )
+
+
+def item_preconditions(
+    request,
+    *,
+    etag: str | None,
+    last_modified: datetime | None,
+    method: str,
+) -> int | None:
+    """The status a request of `method` to an item route answers for its
+    preconditions (``If-Match``, ``If-Unmodified-Since``,
+    ``If-None-Match``, ``If-Modified-Since`` of `request`), against the
+    item's `etag` (unquoted) and `last_modified` (`item_read`'s), as
+    scrudful's DRF viewset evaluates them on the detail route
+    (``scrudful.conditional.evaluate_preconditions`` of an existing
+    resource, `require_precondition`): ``None`` to proceed, else 304 (a GET
+    or HEAD whose ``If-None-Match`` or ``If-Modified-Since`` matches), 412
+    (a precondition that fails), 428 (a PUT, PATCH or DELETE without
+    ``If-Match`` or ``If-Unmodified-Since``) or 400 (a malformed
+    ``If-Match`` or ``If-None-Match``). An OPTIONS (or TRACE, CONNECT) has
+    none evaluated. `item_precondition_answer` gives the answer itself."""
+    result = _item_preconditions_result(
+        request, etag=etag, last_modified=last_modified, method=method
+    )
+    return None if result is None else result.status
+
+
+def item_precondition_answer(
+    request, *, etag: str | None, last_modified: datetime | None, method: str
+) -> tuple[int, dict | list, dict[str, str]] | None:
+    """``(status, body, headers)`` of the DRF item route's answer to a
+    failed precondition (`item_preconditions` evaluates them; the answer is
+    `scrud_django.core.errors.precondition_answer`'s: a 304 with its
+    validators, or a 400, 412 or 428 as the route words it), else ``None``
+    to proceed."""
+    result = _item_preconditions_result(
+        request, etag=etag, last_modified=last_modified, method=method
+    )
+    return None if result is None else precondition_answer(request, result)
 
 
 def item_link_targets(
@@ -617,9 +726,15 @@ def _allowed_methods(
 def _checked_methods(resource_type, methods, *, item: bool) -> tuple[str, ...]:
     """The methods whose use OPTIONS checks, upper-cased, in `ALLOW_ORDER`
     (a method not in it after those, in the order given): `methods`, by
-    default those the route serves (`served_methods`)."""
-    given = methods if methods is not None else served_methods(resource_type, item=item)
-    upper = dict.fromkeys(method.upper() for method in given)
+    default those the route serves (`served_methods`) but `DERIVED_METHODS`,
+    which are not checked."""
+    if methods is None:
+        methods = [
+            method
+            for method in served_methods(resource_type, item=item)
+            if method not in DERIVED_METHODS
+        ]
+    upper = dict.fromkeys(method.upper() for method in methods)
     return tuple(
         [method for method in ALLOW_ORDER if method in upper]
         + [method for method in upper if method not in ALLOW_ORDER]

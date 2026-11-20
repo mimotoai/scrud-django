@@ -23,6 +23,13 @@ from .test_ui_branch_render import (
 from .test_ui_branch_types import component, problem
 from .test_ui_branch_versions import versions_of
 from .test_ui_http import make_component
+from .ui import UI_URLCONF
+
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
 
 WIP = {"branch": "wip", "rbac_context": "alice"}
 
@@ -86,7 +93,7 @@ def put_item(resource, body):
 def conflicted(admin_login):
     """`wip` overrides `row`, then main edits `row` and `wip` is pulled.
     Returns the main row's first and current ETags, and wip's override."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b>1</b>")
     first_etag = main_row.etag
     When.http.post(
@@ -131,7 +138,7 @@ def test_pull_moves_branching_point_and_lists_conflicts(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_pull_without_conflicts_lists_none(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     make_component("row", "<b/>")
     When.http.post(
         reverse("ui-branches-list"),
@@ -151,7 +158,7 @@ def test_pull_without_conflicts_lists_none(admin_login):
 def test_pull_needs_put_on_branch(todo_reader_login):
     setup_main_and_wip()
     stored = stored_branch("wip")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     put_branch(pull_body(rbac_context="project-a"))
     Then.http.status_code_is(403)
     assert stored_branch("wip").etag == stored.etag
@@ -218,7 +225,7 @@ def test_dropping_override_resolves_conflict(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_rebase_is_refused_where_there_is_nothing_to_keep(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_row = make_component("row", "<b/>")
     # On main (no parent).
     put_item(main_row, {**component(name="row", rbac_context=""), "rebase": True})
@@ -247,17 +254,17 @@ def test_pull_of_live_branch_changes_no_rendering(
     todo_list, todo_reader_login, admin_login
 ):
     setup_main_and_wip()
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     before = rendered(todo_list, "wip")
     main_before = rendered(todo_list)
     make_component("extra", "<u/>")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     put_branch(pull_body(rbac_context="project-a"))
     Then.http.status_code_is(200)
     assert Http.response.json()["branching_point"] == {
         "main": current_version("main", write_db())
     }
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     after = rendered(todo_list, "wip")
     # The banner (outside the rendering) now offers the view at the new
     # branching point; the page around it is unchanged.

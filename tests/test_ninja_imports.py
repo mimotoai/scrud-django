@@ -52,13 +52,14 @@ def test_ninja_package_imports():
     assert Version("1.7.0") <= Version(ninja.__version__) < Version("1.7.4")
 
 
-def test_ninja_package_names_the_extra_without_ninja():
+def test_ninja_package_names_the_base_install_without_ninja():
     result = run(
         """
 try:
     import scrud_django.ninja
 except ImportError as error:
-    assert "scrud-django[ninja]" in str(error), str(error)
+    assert "pip install scrud-django" in str(error), str(error)
+    assert "[ninja]" not in str(error), str(error)
 else:
     raise SystemExit("import succeeded")
 """
