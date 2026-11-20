@@ -701,9 +701,9 @@ def test_an_own_model_save_that_wrote_another_state_sends_the_recomputed_decisio
 
 
 def test_an_own_model_update_leaving_a_context_sends_the_checked_decision(reported):
-    # Until #36 the check reports a left context as the check's transition
-    # and the recompute as __LEAVE__ from the same state: still the same
-    # transitions, so the checked decision is sent.
+    # The check and the recompute both decide the left context "a" as the
+    # transition there, flagged leaving (#36): the same transitions, so the
+    # checked decision is sent.
     workflow = own_models().ARTICLE_WORKFLOW
     request = put_request(assign_role(WRITER, "a", "b"))
     article = draft_in_a()
@@ -718,3 +718,7 @@ def test_an_own_model_update_leaving_a_context_sends_the_checked_decision(report
     )
     [kwargs] = reported
     assert kwargs["decision"].checked is True
+    left = kwargs["transitions"]["a"]
+    assert left.leaving is True and kwargs["decision"].get("a").leaving is True
+    assert (left.prior_state, left.proposed_state) == ("draft", "draft")
+    assert left.transition != "__LEAVE__"

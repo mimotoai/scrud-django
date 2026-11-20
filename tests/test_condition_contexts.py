@@ -10,6 +10,7 @@ of strings so (0.11.2); scrud's post-save, workflow and object checks and its
 lists now read every context so too.
 """
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -29,6 +30,8 @@ from scrud_django.registration import (
 
 from .factories import UserFactory
 from .fixtures import *  # noqa: F401, F403
+from .fixtures import register_test_types
+from .front_ends import api_url
 from .steps import *  # noqa: F403, F401
 
 JSON_LD = "http://www.w3.org/ns/json-ld#context"
@@ -395,6 +398,99 @@ def test_leaving_a_context_is_checked_with_that_context():
     )
     Then.http.status_code_is(status.HTTP_200_OK)
     assert Resource.objects.get(pk=both.pk).rbac_contexts == ["a"]
+
+
+TODO = "tests://ToDo"
+
+
+@pytest.fixture
+def reported_todo_saves():
+    """The keyword arguments of each ToDo ``scrud_post_save``, in order."""
+    from scrud_django.core.signals import scrud_post_save
+
+    reported = []
+
+    def record(sender, resource_type_uri=None, **kwargs):
+        if resource_type_uri == TODO:
+            reported.append(kwargs)
+
+    scrud_post_save.connect(
+        record, weak=False, dispatch_uid="test-condition-contexts-saves"
+    )
+    try:
+        yield reported
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-condition-contexts-saves")
+
+
+@pytest.mark.django_db
+@test_context
+def test_leaving_a_context_reports_the_transition_authorized_there(
+    front_end, reported_todo_saves
+):
+    # #36, option (b): a writer allowed only "finish" in "a" moves a ToDo out
+    # of "a" (into "b", where any content is an initial state) while
+    # finishing it. The check authorizes "finish" in "a", and the save
+    # reports that transition there, flagged leaving, not __LEAVE__.
+    from scrud_django.workflow import TransitionData
+
+    register_test_types()
+    workflow_policy_resource_type()
+    ResourceRegistration.register(
+        {
+            "resource_type": TODO,
+            "initial_states": {"any": "true"},
+            "states": {},
+            "transitions": {},
+            "rbac_context": "b",
+        },
+        "workflow-policies",
+    )
+    not_started = {
+        "title": "Buy milk",
+        "status": "not started",
+        "priority": "medium",
+        "assignee": "http://somewhere.example/someone",
+    }
+    resource = ResourceRegistration.register(
+        dict(not_started, rbac_context="a"), "todos"
+    )
+    finisher = {
+        "http.GET": [TODO],
+        "http.PUT": {
+            TODO: {
+                "condition": {
+                    "operator": "scrud_workflow",
+                    "authorized_transitions": ["finish"],
+                }
+            }
+        },
+    }
+    writer = {m: [TODO] for m in ALL_METHODS}
+    Given.http.force_login(user_with((finisher, "a"), (writer, "b")))
+    reported_todo_saves.clear()
+    When.http.put(
+        api_url(front_end, "todos-detail", args=[resource.pk]),
+        data=json.dumps(dict(not_started, status="done", rbac_context="b")),
+        content_type="application/json",
+        HTTP_IF_MATCH=quote_etag(resource.etag),
+    )
+    Then.http.status_code_is(status.HTTP_200_OK)
+    (reported,) = reported_todo_saves
+    decision = reported["decision"]
+    assert decision.checked is True
+    assert reported["transitions"] == decision.transitions
+    assert reported["transitions"]["a"] == TransitionData(
+        "done", "not started", "finish", leaving=True
+    )
+    assert decision.get("a").leaving is True
+    assert reported["transitions"]["b"] == TransitionData("any", None, "__INITIALIZE__")
+    assert decision.get("b").leaving is False
+    assert all(
+        data is None or data.transition != "__LEAVE__"
+        for data in reported["transitions"].values()
+    )
+    assert Resource.objects.get(pk=resource.pk).rbac_contexts == ["b"]
 
 
 @pytest.mark.django_db

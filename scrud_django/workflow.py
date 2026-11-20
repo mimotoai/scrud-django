@@ -4,7 +4,7 @@ import re
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import product
 
 from django.core.exceptions import ImproperlyConfigured
@@ -40,10 +40,10 @@ INITIALIZE = "__INITIALIZE__"
 # An update that stays in its state (unless a transition of the policy leads
 # from that state to itself).
 SAME_STATE = "__SAME_STATE__"
-# What ``scrud_post_save``'s ``transitions`` reports for a context a write
-# moves a resource out of: no proposed state, the prior state the one it
-# left. No grant is asked for it (the ``WorkflowValidator`` checks a move
-# out of a context as a transition from the stored content there).
+# Retired: never reported. A context a write moves a resource out of is
+# reported as the transition authorized there, from the stored content, with
+# ``TransitionData.leaving`` (#36). Kept importable, and reserved, for one
+# release.
 LEAVE = "__LEAVE__"
 RESERVED_TRANSITIONS = (INITIALIZE, SAME_STATE, LEAVE)
 RESERVED_TRANSITION_PREFIX = "__"
@@ -52,15 +52,18 @@ RESERVED_TRANSITION_PREFIX = "__"
 @dataclass(frozen=True)
 class TransitionData:
     """A write's transition under one policy: from `prior_state` (``None``
-    for a create or a move into the context) to `proposed_state` (``None``
-    for a move out of it, `LEAVE`), by `transition`, the policy's
-    transition name or a reserved one (`INITIALIZE`, `SAME_STATE`,
-    `LEAVE`). Immutable: the same instance may be reported to several
+    for a create or a move into the context) to `proposed_state`, by
+    `transition`, the policy's transition name or a reserved one
+    (`INITIALIZE`, `SAME_STATE`). `leaving` (keyword-only) says the write
+    moves the resource out of the context: the transition is the one
+    authorized there, from the stored content, as for a context it stays
+    in. Immutable: the same instance may be reported to several
     receivers."""
 
     proposed_state: str | None
     prior_state: str | None
     transition: str
+    leaving: bool = field(default=False, kw_only=True)
 
 
 class WorkflowPolicy:

@@ -356,11 +356,13 @@ def workflow_check(
             continue
         # A context the resource enters (not one it is stored in, or any
         # of a create's) has no prior state there: the write creates it
-        # there.
+        # there. One it leaves (stored in, not named) is an ordinary
+        # transition there from the stored content, flagged leaving (#36).
         entering = is_entering(c, prior=prior, contexts_before=contexts_before)
+        leaving = c in contexts_before and c not in contexts_after
         with errors_hidden_unless_readable(policy, request, prior, readable):
             transition_data = context_transition(
-                policy, prior, proposed, entering=entering
+                policy, prior, proposed, entering=entering, leaving=leaving
             )
         transitions.append(
             (
@@ -371,6 +373,7 @@ def workflow_check(
                     transition=transition_data,
                     error=None,
                     entering=entering,
+                    leaving=leaving,
                 ),
             )
         )
