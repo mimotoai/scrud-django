@@ -432,3 +432,24 @@ def test_a_context_decision_overrides_exactly_when_it_names_the_error():
             False,
             overridden=error,
         )
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_applied_override_is_logged_once_at_warning(
+    front_end, admin_login, reported_saves, caplog
+):
+    resource = todo(status="nonsense", rbac_context="a")
+    Given.http.force_login(admin_login)
+    reported_saves.clear()
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="scrud_django.workflow"):
+        put_todo(front_end, resource, dict(NOT_STARTED, rbac_context="a"))
+    Then.http.status_code_is(HTTPStatus.OK)
+    decision = the_decision(reported_saves)
+    records = [r for r in caplog.records if r.name == "scrud_django.workflow"]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    message = records[0].getMessage()
+    assert TODO in message
+    assert "'a'" in message
+    assert decision.get("a").overridden.message in message

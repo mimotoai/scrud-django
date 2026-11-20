@@ -34,6 +34,7 @@ from scrud_django.core.signals import scrud_post_delete, scrud_post_save
 from scrud_django.core.transitions import (
     checked_save,
     govern,
+    log_overrides,
     log_skipped_check,
     transitions_between,
 )
@@ -149,7 +150,9 @@ class ModelWorkflow:
            values (a ``Model.save`` override, say), each context where the
            saved state is invalid is logged as a WARNING on the
            ``scrud_django.workflow`` logger (``log_skipped_check``), as an
-           unchecked save is.
+           unchecked save is. A context the check overrode (a
+           superuser's write) is logged as an override instead
+           (``log_overrides``).
 
         Any failure rolls the write back and sends nothing. The request's
         workflow mark is removed however it ends. Returns what
@@ -231,11 +234,20 @@ class ModelWorkflow:
                 # The checked values were valid; a `save` (or a Model.save
                 # override) that wrote another state is logged, as an
                 # unchecked save is (checked_save kept the receiver quiet).
+                subject = f"{model._meta.label} pk {obj.pk}"
+                # A context the sent decision overrode errors in the
+                # recompute (it carries no override): logged as an
+                # override, not as a skipped check.
                 log_skipped_check(
-                    recomputed.errors,
-                    subject=f"{model._meta.label} pk {obj.pk}",
+                    {
+                        context: error
+                        for context, error in recomputed.errors.items()
+                        if context not in found.overrides
+                    },
+                    subject=subject,
                     type_iri=self.iri,
                 )
+                log_overrides(found, subject=subject)
                 scrud_post_save.send(
                     sender=model,
                     instance=obj,

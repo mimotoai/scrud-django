@@ -175,6 +175,33 @@ def log_skipped_check(errors: Mapping, *, subject: str, type_iri: str) -> None:
         )
 
 
+def log_overrides(decision: WorkflowDecision, *, subject: str) -> None:
+    """Log each context where `decision` is a superuser's override of the
+    policy (`WorkflowDecision.overrides`) as a WARNING on the
+    ``scrud_django.workflow`` logger: the policy that would have refused the
+    write and why. `subject` names what was saved ("resource pk 7")."""
+    for context in decision.overrides:
+        entry = decision.get(context)
+        error = entry.overridden
+        logger.warning(
+            "Saving %s of %s overrode the workflow policy in context %r "
+            "(policy %r), a superuser's write it would refuse: %s "
+            "(prior state %r, proposed state %r%s).",
+            subject,
+            decision.type_iri,
+            context,
+            entry.policy,
+            error.message,
+            error.prior_state,
+            error.proposed_state,
+            (
+                f", matching states {error.matching_states!r}"
+                if isinstance(error, WorkflowAmbiguousStateError)
+                else ""
+            ),
+        )
+
+
 class Governed(NamedTuple):
     """A governed model's entry in the registry (`govern`)."""
 

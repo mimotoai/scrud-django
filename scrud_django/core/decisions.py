@@ -233,11 +233,15 @@ def same_transitions(checked: WorkflowDecision, saved: WorkflowDecision) -> bool
     """Whether `saved` (the decision recomputed from what a save wrote)
     describes the same transitions as `checked` (the workflow check's): the
     same contexts, and equal `TransitionData` in each (a left context's
-    included, ``leaving`` and all)."""
+    included, ``leaving`` and all). A context `checked` overrode (a
+    superuser's write the policy refuses) counts as the same when `saved`
+    has an error there: the recompute carries no override."""
     if {e.context for e in checked.contexts} != {e.context for e in saved.contexts}:
         return False
     for entry in checked.contexts:
         other = saved.get(entry.context)
+        if entry.override and other is not None and other.error is not None:
+            continue
         if (
             other is None
             or entry.transition is None

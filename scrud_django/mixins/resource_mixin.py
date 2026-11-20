@@ -18,6 +18,7 @@ from ..core.signals import scrud_post_delete, scrud_post_save
 from ..core.transitions import (  # noqa: F401  (re-exported)
     WORKFLOW_ERRORS,
     Transitions,
+    log_overrides,
     log_skipped_check,
     transition_in,
     transitions_between,
@@ -146,6 +147,7 @@ class ResourceMixin(ScrudfulMixin):
             update_fields=update_fields,
         )
         self.log_workflow_errors(decision.errors)
+        log_overrides(decision, subject=f"resource pk {self.pk}")
         scrud_post_save.send(
             sender=self.__class__,
             instance=self,

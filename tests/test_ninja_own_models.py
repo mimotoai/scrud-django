@@ -25,7 +25,7 @@ from scrud_django.registration import (
 )
 
 from .factories import UserFactory
-from .fixtures import assign_role
+from .fixtures import admin_login, assign_role  # noqa: F401
 from .models import Article
 from .workflow_actions import article_calls
 from .workflow_defaults import ARTICLE, article_state
@@ -722,3 +722,30 @@ def test_an_own_model_update_leaving_a_context_sends_the_checked_decision(report
     assert left.leaving is True and kwargs["decision"].get("a").leaving is True
     assert (left.prior_state, left.proposed_state) == ("draft", "draft")
     assert left.transition != "__LEAVE__"
+
+
+def test_an_own_model_superuser_override_is_reported_and_logged(
+    client, admin_login, reported, caplog
+):
+    with transitions.checked_save(Article):
+        article = Article.objects.create(title="t", state="bogus", rbac_context="a")
+    client.force_login(admin_login)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="scrud_django.workflow"):
+        response = client.put(
+            item(article.pk),
+            {"title": "t", "state": "draft", "rbac_context": "a"},
+            content_type="application/json",
+        )
+    assert response.status_code == 200, response.content
+    [kwargs] = reported
+    decision = kwargs["decision"]
+    assert decision.checked is True
+    assert kwargs["transitions"]["a"].transition == "__OVERRIDE__"
+    assert decision.overrides == ("a",)
+    records = [r for r in caplog.records if r.name == "scrud_django.workflow"]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    message = records[0].getMessage()
+    assert "skipped the workflow check" not in message
+    assert "'a'" in message
+    assert decision.get("a").overridden.message in message
