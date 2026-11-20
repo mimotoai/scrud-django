@@ -2427,3 +2427,31 @@ the anonymous and by a user without roles each raising
 `MethodNotAllowedError`, and `load_for_read(method="PUT")` likewise, before
 any `access.AccessDenied`.
 
+
+<a id="superuser-is-active"></a>
+## superuser-is-active: scoped-rbac allows an inactive superuser everything; the workflow does not let one override
+
+The workflow override (#31) is for active superusers only
+(`scrud_django.core.authz.is_workflow_superuser`: `is_active` and
+`is_superuser`), but scoped-rbac decides superusers by `is_superuser` alone
+(`scoped_rbac.access`: `_build_policy_for` answers `ALLOWED`, and
+`may_act_on` lets a superuser act on an object in no context, without
+reading `is_active`). Django's `ModelBackend`, its login and DRF's
+authentication classes refuse an inactive user, so the two agree for those.
+A user authenticated some other way (`AllowAllUsersModelBackend`, a custom
+backend, a `SCOPED_RBAC["NINJA_USER"]` hook, a ninja router's own `auth=`,
+DRF's `force_authenticate` in tests) can be an inactive superuser: every
+RBAC check allows them (any read, any write, in any context), yet the
+workflow check refuses their write where the policy refuses it, as for
+anyone who is not a superuser. scoped-rbac is upstream and not edited here;
+the fix is either scoped-rbac requiring `is_active` (then nothing changes
+here) or scrud dropping `is_active` from `is_workflow_superuser` (an
+inactive superuser then overrides too). The test that would show the
+divergence: with `AUTHENTICATION_BACKENDS` set to
+`django.contrib.auth.backends.AllowAllUsersModelBackend`, `force_login` an
+inactive superuser (`is_active=False`, `is_superuser=True`) holding no
+roles, on both front ends; a GET of a ToDo in a context where they hold no
+role answers 200 (scoped-rbac allows), while a PUT of a ToDo stored in no
+state (`status="nonsense"`) to `"not started"` answers 400
+(`workflow-transition-invalid`), where an active superuser's answers 200
+with `__OVERRIDE__`. Aligned, both answers would follow one rule.

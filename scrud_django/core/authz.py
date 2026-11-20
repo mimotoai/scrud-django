@@ -333,7 +333,9 @@ def authorized_transitions(resource, configuration):
     ```
 
     The name for the initial transition is `__INITIALIZE__`, and for an update
-    that stays in the same state `__SAME_STATE__`.
+    that stays in the same state `__SAME_STATE__`. `__OVERRIDE__` reaches
+    only superusers (`is_workflow_superuser`), whose write the policy would
+    refuse: naming it in a grant gives anyone else nothing.
     """
     transitions = configuration.get("authorized_transitions")
     if not (
