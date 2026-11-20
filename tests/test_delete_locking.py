@@ -42,6 +42,7 @@ from scrud_django.registration import ResourceRegistration, write_db
 from scrud_django.workflow import lock_workflow_policy_type
 
 from .factories import UserFactory
+from .fixtures import TWO_WRITERS, run_together
 from .front_ends import api_url
 
 # Quoted as the database quotes them ("x" or `x`).
@@ -410,10 +411,6 @@ def test_a_sync_check_of_a_policy_takes_no_policy_lock():
 # `test_a_policy_write_locks_the_type_before_it_reads_the_row` on every
 # database: neither duplicates these.
 
-TWO_WRITERS = pytest.mark.skipif(
-    connection.vendor == "sqlite", reason="SQLite runs one writer at a time"
-)
-
 
 def admin_api_client():
     """A superuser's client logged in with a session, which both front ends
@@ -421,31 +418,6 @@ def admin_api_client():
     client = APIClient(raise_request_exception=False)
     client.force_login(UserFactory(is_staff=True, is_superuser=True))
     return client
-
-
-def run_together(first, second, *, delay):
-    """Run `first` and, `delay` seconds later, `second`, in two threads (two
-    connections); their results (or the exceptions they raised)."""
-    results = {}
-
-    def run(name, function, wait):
-        time.sleep(wait)
-        try:
-            results[name] = function()
-        except Exception as exc:  # noqa: BLE001 - reported to the test
-            results[name] = exc
-        finally:
-            connections.close_all()
-
-    threads = [
-        threading.Thread(target=run, args=("first", first, 0)),
-        threading.Thread(target=run, args=("second", second, delay)),
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(30)
-    return results["first"], results["second"]
 
 
 #: How long a paused writer holds its locks (`paused_while_locked`,

@@ -1,13 +1,14 @@
 """The studio links: server chrome on the pages of the UI's types and the
-studio's computed types (`renderer._page` adds them when the studio app is
+studio's computed types (`scrud_django.ui.pages` adds them when the studio app is
 installed), so that a broken studio can always be reached in safe mode or in
 the bootstrap studio."""
 
-from django.urls import NoReverseMatch, get_script_prefix, reverse
+from django.urls import NoReverseMatch, reverse
 from django.utils.encoding import escape_uri_path
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import SafeString
 
+from scrud_django.core.urls import api_reverse
 from scrud_django.ui.branches import (
     UI_BRANCH_SLUG,
     UI_BRANCH_TYPE_URI,
@@ -17,9 +18,9 @@ from scrud_django.ui.branches import (
     UI_PUSH_TYPE_URI,
 )
 from scrud_django.ui.branches.effective import SAFE_PARAMETER
-from scrud_django.ui.branches.selection import Mount, api_base
+from scrud_django.ui.branches.selection import mount_at
 from scrud_django.ui.branches.store import branches
-from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER, VIEW_MODE
+from scrud_django.ui.html import MODE_PARAMETER, SCOPE_PARAMETER, VIEW_MODE
 from scrud_django.ui.types import UI_COMPONENT_TYPE_URI, UI_STYLESHEET_TYPE_URI
 
 # The scope of the self-hosted studio's pages.
@@ -46,7 +47,7 @@ def has_studio_links(resource_type) -> bool:
 
     type_uri = getattr(resource_type, "type_uri", None)
     return type_uri in UI_TYPE_URIS or type_uri in {
-        TYPE_URI_BASE + name for name, _slug, _viewset in STUDIO_COMPUTED_TYPES
+        TYPE_URI_BASE + name for name, _slug, _compute in STUDIO_COMPUTED_TYPES
     }
 
 
@@ -83,8 +84,10 @@ def studio_href() -> str | None:
     branch = branches().get(name) if name is not None else None
     if branch is None or not branch.prefix or branch.pk is None:
         return None
-    mount = Mount(branch.prefix, branch.name, api_base(), get_script_prefix())
-    detail = reverse(f"{UI_BRANCH_SLUG}-detail", args=[branch.pk])
+    mount = mount_at(branch)
+    if mount is None:
+        return None
+    detail = api_reverse(UI_BRANCH_SLUG, "detail", args=[branch.pk])
     return (
         f"{mount.href(detail)}?{SCOPE_PARAMETER}={STUDIO_SCOPE}"
         f"&{MODE_PARAMETER}={VIEW_MODE}"

@@ -43,7 +43,8 @@ from .test_ui_branch_js import make_js, script_srcs
 from .test_ui_branch_push import created, own_rows
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import HTML, grant
+from .test_ui_http import grant
+from .ui import page_request
 
 STUDIO_ROOT = "/workbench/"
 STUDIO_CONTEXT = "ui-studio"
@@ -117,7 +118,7 @@ def studio_tree():
         },
         WIP_CONTEXT,
     )
-    Given.http.force_authenticate(author)
+    Given.http.force_login(author)
     return studio, studio_wip, author
 
 
@@ -148,7 +149,8 @@ def override(name, branch, template):
 
 
 def get_text(url, status=200, **headers):
-    When.http.get(url, HTTP_ACCEPT=HTML, **headers)
+    url, headers = page_request(url, **headers)
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
     return Http.response.content.decode()
 
@@ -541,12 +543,12 @@ def test_broken_override_deleted_from_the_items_pages(studio_layer):
 def delete_with_frame_etag(button, frame):
     """Send a frame's Delete `button` as scrud-ui.js does: with the frame's
     ``If-Match``."""
-    When.http.delete(
+    url, headers = page_request(
         button.attrs["hx-delete"],
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_IF_MATCH=frame.attrs["data-scrud-etag"],
     )
+    When.http.delete(url, **headers)
     Then.http.status_code_is(204)
 
 

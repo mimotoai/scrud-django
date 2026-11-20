@@ -2,10 +2,11 @@
 and desired properties
 """
 
+from http import HTTPStatus
+
 import pytest
 from django.urls import reverse
 from rdflib import URIRef
-from rest_framework import status
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
@@ -29,12 +30,12 @@ HSR_REL = "https://w3id.org/semantic-http/ns#http-schema-resource-document"
 def get_hsr_of_options():
     """OPTIONS is a 204 without content (scrudful 0.10) linking the path's
     HTTP Schema Resource: GET that, which describes the methods."""
-    Then.http.status_code_is(status.HTTP_204_NO_CONTENT)
+    Then.http.status_code_is(HTTPStatus.NO_CONTENT)
     (link,) = [
         link for link in Http.response["Link"].split(", ") if f'rel="{HSR_REL}"' in link
     ]
     When.http.get(link.split(";")[0].strip("<>"))
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
 
 
 @pytest.mark.django_db
@@ -52,7 +53,7 @@ def test_collection_json_ld():
     context_url = Scrud.json_path_match[0].value
 
     When.http.get(context_url)
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     And.ld_context_states_sub_class_of(
         type_partner_profiles_collection, type_resource_collection
     )
@@ -73,7 +74,7 @@ def test_detail_json_ld(admin_login):
     context_url = Scrud.json_path_match[0].value
 
     # the context resource may be protected in our configuration.
-    When.http.force_authenticate(admin_login)
+    When.http.force_login(admin_login)
     When.http.get(context_url)
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
     # TODO add more validation

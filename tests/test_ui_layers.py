@@ -39,7 +39,14 @@ from .steps import *  # noqa: F403, F401
 from .test_ui_branch_render import may_select_branches, put_item
 from .test_ui_branch_types import create, make_branch, problem
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import HTML, detail_url, html, make_component, make_stylesheet
+from .test_ui_http import html, make_component, make_stylesheet, ui_detail_url
+from .ui import UI_URLCONF
+
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
 
 LAYER_APP = "tests.apps.UILayerTestConfig"
 MORE_APP = "tests.apps.UILayerMoreConfig"
@@ -64,14 +71,14 @@ def render(todo_list, scope="layertest", branch=None):
     if branch is not None:
         headers["HTTP_SCRUD_UI_BRANCH"] = branch
     query = f"?ui-scope={scope}" if scope else ""
-    When.http.get(detail_url(todo_list) + query, HTTP_ACCEPT=HTML, **headers)
+    When.http.get(ui_detail_url(todo_list) + query, **headers)
     Then.http.status_code_is(200)
     return html()
 
 
 def page(todo_list):
     """The page of `todo_list`, without its (per request) CSRF token."""
-    When.http.get(detail_url(todo_list), HTTP_ACCEPT=HTML)
+    When.http.get(ui_detail_url(todo_list))
     Then.http.status_code_is(200)
     return re.sub(r'name="csrf-token" content="[^"]*"', "", html())
 
@@ -137,7 +144,7 @@ def test_installed_layers_and_rows():
 @pytest.mark.django_db
 @test_context
 def test_layer_items_render_beneath_main(todo_list, todo_reader_login):
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     # The suite layer's rule, with a built-in.
     assert LAYER_JSON in render(todo_list)
     # Inert outside its scope.
@@ -157,13 +164,13 @@ def test_layer_items_render_beneath_main(todo_list, todo_reader_login):
 def test_branch_overrides_layer_item_by_name(todo_list, admin_login, todo_reader_login):
     make_branch("wip", "project-a")
     with installed(MORE_APP):
-        Given.http.force_authenticate(admin_login)
+        Given.http.force_login(admin_login)
         create("ui-components", override_body(branch="wip", rbac_context="project-a"))
         Then.http.status_code_is(201)
         # Its base is the layer item's ETag: the layer is beneath main.
         etag, _content = layer_item("component", ("layermore:list",))
         assert Http.response.json()["base"] == etag
-        Given.http.force_authenticate(may_select_branches(todo_reader_login))
+        Given.http.force_login(may_select_branches(todo_reader_login))
         output = render(todo_list, branch="wip")
         assert OVERRIDE in output and MORE_LIST not in output
         assert MORE_LIST in render(todo_list)  # main still shows the layer's
@@ -173,18 +180,18 @@ def test_branch_overrides_layer_item_by_name(todo_list, admin_login, todo_reader
 @test_context
 def test_deleting_override_reverts_to_layer(todo_list, admin_login, todo_reader_login):
     with installed(MORE_APP):
-        Given.http.force_authenticate(admin_login)
+        Given.http.force_login(admin_login)
         create("ui-components", override_body())
         Then.http.status_code_is(201)
         location = Http.response["Location"]
         etag = Http.response["ETag"]
-        Given.http.force_authenticate(todo_reader_login)
+        Given.http.force_login(todo_reader_login)
         output = render(todo_list)
         assert OVERRIDE in output and MORE_LIST not in output
-        Given.http.force_authenticate(admin_login)
+        Given.http.force_login(admin_login)
         When.http.delete(location, HTTP_IF_MATCH=etag)
         Then.http.status_code_is(204)
-        Given.http.force_authenticate(todo_reader_login)
+        Given.http.force_login(todo_reader_login)
         assert MORE_LIST in render(todo_list)
 
 
@@ -235,7 +242,7 @@ def test_layers_stack_in_installed_apps_order_and_ship_css_and_js(
             "layertest:sheet": (0, 1, 0, 0, 0),
             "layermore:sheet": (0, 1, 1, 0, 0),
         }
-        Given.http.force_authenticate(todo_reader_login)
+        Given.http.force_login(todo_reader_login)
         # The later layer's rule wins the same selector.
         output = render(todo_list)
         assert MORE_LIST in output and LAYER_JSON not in output
@@ -243,8 +250,8 @@ def test_layers_stack_in_installed_apps_order_and_ship_css_and_js(
         output = page(todo_list)
         [(_pk, css_etag, _css)] = effective_rows(UI_CSS_TYPE_URI, Selection())
         [(_pk, js_etag, _js)] = effective_rows(UI_JS_TYPE_URI, Selection())
-        css_url = reverse("ui-css-file", args=["layermore:theme", css_etag])
-        js_url = reverse("ui-js-file", args=["layermore:app", js_etag])
+        css_url = reverse("scrud_ui:ui-css-file", args=["layermore:theme", css_etag])
+        js_url = reverse("scrud_ui:ui-js-file", args=["layermore:app", js_etag])
         assert css_url in output and js_url in output
         When.http.get(css_url)
         Then.http.status_code_is(200)
@@ -258,7 +265,7 @@ def test_layers_stack_in_installed_apps_order_and_ship_css_and_js(
 @pytest.mark.django_db
 @test_context
 def test_new_item_cannot_use_layer_prefix(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     refused = [
         ("ui-components", override_body(name="layermore:new")),
         # A layer stylesheet's name, but a component.
@@ -321,7 +328,7 @@ def test_new_item_cannot_use_layer_prefix(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_prefixed_name_with_a_malformed_body_is_a_400(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     for applies_to in (["acme"], {"a": 1}, 3):
         create(
             "ui-stylesheets",
@@ -338,7 +345,7 @@ def test_prefixed_name_with_a_malformed_body_is_a_400(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_scrud_prefix_still_reserved(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     for slug, body in (
         ("ui-components", override_body(name="scrud:object")),
         ("ui-components", override_body(name="scrud:new")),
@@ -368,7 +375,7 @@ def test_scrud_prefix_still_reserved(admin_login):
 @test_context
 def test_unknown_prefix_refused(admin_login):
     make_branch("wip", "project-a")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     for body in (
         override_body(name="nolayer:list"),
         override_body(name="nolayer:list", branch="wip", rbac_context="project-a"),
@@ -388,7 +395,7 @@ def test_unknown_prefix_refused(admin_login):
 def test_layer_items_not_in_lists(admin_login):
     make_branch("wip", "project-a")
     make_component("row", "<b>{{ value.text }}</b>")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     with installed(MORE_APP):
         for slug in ("ui-components", "ui-stylesheets", "ui-css", "ui-js"):
             for query in ("", "?ui-branch=wip"):
@@ -563,7 +570,7 @@ def test_pinned_branch_sees_layer(todo_list, todo_reader_login):
     )
     put_item("ui-components", "row", "<i>{{ value.text }}</i>", "wip")
     make_branch("live", "project-a", branching_point={"main": versions_of("main")[-1]})
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     assert LAYER_JSON in render(todo_list, branch="wip")
     with installed(MORE_APP):
         output = render(todo_list, branch="wip")
@@ -577,7 +584,7 @@ def test_pinned_branch_sees_layer(todo_list, todo_reader_login):
 def test_no_layer_installed_changes_nothing(todo_list, todo_reader_login):
     make_component("row", "<b>{{ value.text }}</b>")
     make_stylesheet("s", [("ex:TodoItem", "row")])
-    Given.http.force_authenticate(todo_reader_login)
+    Given.http.force_login(todo_reader_login)
     with_layer = page(todo_list), render(todo_list, scope=None)
     with rules_memo():
         layered_rules = effective_rules([])

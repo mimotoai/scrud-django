@@ -25,14 +25,14 @@ from scrud_django.core.workflow import (
     prior_of,
     workflow_check,
 )
-from scrud_django.exceptions import (
-    HiddenWorkflowTransitionError,
-    WorkflowTransitionError,
-)
-from scrud_django.permissions import (
+from scrud_django.drf.permissions import (
     _WORKFLOW_AUTHORIZED,
     _workflow_authorized,
     current_transition,
+)
+from scrud_django.exceptions import (
+    HiddenWorkflowTransitionError,
+    WorkflowTransitionError,
 )
 from scrud_django.registration import (
     ResourceRegistration,
@@ -274,7 +274,7 @@ def test_a_delete_is_not_checked_yet():
 def test_authorizing_write_lets_scrud_workflow_allow_a_covered_write():
     from scrud_django.core.authz import _transition
     from scrud_django.core.workflow import authorizing_write
-    from scrud_django.permissions import _OUTSIDE, _WRITE, _mark_workflow_authorized
+    from scrud_django.drf.permissions import _OUTSIDE, _WRITE, _mark_workflow_authorized
 
     request = put_request(UserFactory())
     with authorizing_write(request, covered=True):
@@ -523,8 +523,8 @@ def test_a_failed_check_leaves_no_earlier_mark():
 @pytest.mark.django_db
 @test_context
 def test_a_failed_drf_validation_leaves_no_earlier_mark():
+    from scrud_django.drf.serializers import ResourceSerializer
     from scrud_django.models import ResourceType
-    from scrud_django.serializers import ResourceSerializer
 
     reverse("json-ld-list")
     workflow_policy_resource_type()

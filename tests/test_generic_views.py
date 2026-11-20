@@ -472,7 +472,7 @@ def recorded_collection_locks(events=None):
     ``(thread name, time.monotonic())``; also ``"locked"`` appended to
     `events`, if given. A rollback undoes the lock's ``holds``, not this
     record."""
-    from scrud_django.mixins.view_mixins import GenericViewMixin
+    from scrud_django.drf.mixins import GenericViewMixin
 
     original = GenericViewMixin.conditional_create_lock
     taken = []
@@ -853,7 +853,7 @@ def test_which_posts_are_to_the_list(initkwargs, url_kwargs, expected):
 
 
 def test_only_a_post_is_to_the_list():
-    from scrud_django.mixins.view_mixins import LockedWriteMixin
+    from scrud_django.drf.mixins import LockedWriteMixin
 
     view = LockedWriteMixin()
     assert view.is_list_post(APIRequestFactory().post("/")) is True
@@ -1705,7 +1705,7 @@ def test_an_unlocked_read_is_refused_before_the_callback_runs():
     from rest_framework.views import APIView
     from scrudful.rest_framework import scrudful_viewset
 
-    from scrud_django.mixins.view_mixins import ScrudfulMeta
+    from scrud_django.drf.mixins import ScrudfulMeta
 
     from .urls import NoteViewSet
 
@@ -1775,7 +1775,7 @@ def test_a_scoped_rbac_handlers_callbacks_record_its_evaluation(header, status_c
     from scoped_rbac.rest import AccessControlledModelViewSet
     from scrudful.rest_framework import ScrudfulViewFunc
 
-    from scrud_django.mixins.view_mixins import (
+    from scrud_django.drf.mixins import (
         GenericViewMixin,
         ReadableMixin,
         ScrudfulMeta,
@@ -1829,7 +1829,7 @@ def test_a_list_callback_that_raises_records_no_evaluation():
     from django.http import Http404
     from scrudful.rest_framework import scrudful_viewset
 
-    from scrud_django.mixins.view_mixins import ScrudfulMeta
+    from scrud_django.drf.mixins import ScrudfulMeta
 
     from .urls import NoteViewSet
 
@@ -1884,38 +1884,3 @@ def test_a_412_of_list_precondition_response_the_handler_drops_is_not_detected()
     assert view.response.data == {"failed": 412}
     assert view.list_preconditions_evaluated()
     assert created("audit") == 1
-
-
-@pytest.mark.django_db
-def test_get_object_inside_unlocked_lookups_locks_no_row():
-    # Inside a locked write, get_object() locks the row first; inside
-    # unlocked_lookups it reads the row, on the write database, with no lock
-    # (neither the row's lock query nor FOR UPDATE on the lookup).
-    from rest_framework.request import Request
-
-    from .urls import NoteViewSet
-
-    note = a_note("abc")
-
-    def look_up(unlocked):
-        view = NoteViewSet()
-        request = APIRequestFactory().get(detail(note))
-        user = UserFactory(is_staff=True, is_superuser=True)
-        view.request = Request(request)
-        view.request.user = user
-        view.kwargs = {"slug": note.pk}
-        view.format_kwarg = None
-        view.locked_write_db = "default"
-        with evaluated_note_queries() as events:
-            if unlocked:
-                with view.unlocked_lookups():
-                    assert view.get_object().pk == note.pk
-            else:
-                assert view.get_object().pk == note.pk
-        assert view.lookups_unlocked is False
-        return events
-
-    assert any(locked for _, locked, _ in look_up(unlocked=False))
-    events = look_up(unlocked=True)
-    assert events and not any(locked for _, locked, _ in events), events
-    assert {db for db, _, _ in events} == {"default"}

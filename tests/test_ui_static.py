@@ -16,15 +16,20 @@ import pytest
 from django.urls import reverse
 from safetydance_django.test import *  # noqa: F403, F401
 
-from scrud_django.ui import renderer
+from scrud_django import ui
 
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
+from .ui import UI_URLCONF, ui_url
 
-STATIC_DIR = Path(renderer.__file__).parent / "static" / "scrud_ui"
+STATIC_DIR = Path(ui.__file__).parent / "static" / "scrud_ui"
 HTMX = STATIC_DIR / "htmx.min.js"
 SCRUD_UI = STATIC_DIR / "scrud-ui.js"
-HTML = "text/html"
+
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
 
 
 def require_node():
@@ -71,8 +76,8 @@ def test_delete_does_not_send_form_values_as_url_params():
 @pytest.mark.django_db
 @test_context
 def test_page_references_static(todo_list, todo_owner_login):
-    Given.http.force_authenticate(todo_owner_login)
-    When.http.get(detail_url(todo_list), HTTP_ACCEPT=HTML)
+    Given.http.force_login(todo_owner_login)
+    When.http.get(ui_url(detail_url(todo_list)))
     Then.http.status_code_is(200)
     page = Http.response.content.decode()
     assert re.search(r'<script src="/static/scrud_ui/htmx\.min\.js" defer>', page)
@@ -82,13 +87,12 @@ def test_page_references_static(todo_list, todo_owner_login):
 @pytest.mark.django_db
 @test_context
 def test_fragment_frame_embeds_whole_content(todo_list, todo_owner_login):
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     When.http.get(detail_url(todo_list), HTTP_ACCEPT="application/json")
     Then.http.status_code_is(200)
     full = Http.response.json()
     When.http.get(
-        detail_url(todo_list),
-        HTTP_ACCEPT=HTML,
+        ui_url(detail_url(todo_list)),
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_POINTER="/items/1",
     )

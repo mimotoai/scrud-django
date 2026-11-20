@@ -349,9 +349,9 @@ in `"y"`: expect 200 (and 404 for one in `"x"`); get 403 today.
 ## ui-name-uniqueness-race: concurrent creates can duplicate a UI component or stylesheet name
 
 UI component names are unique site-wide and stylesheet names unique per
-context, but `UIContentValidationMixin` checks that with a query, without a
-lock or a database constraint, so two concurrent creates of the same name can
-both succeed. Resolution is deterministic: the lowest pk wins
+context, but the UI types' `prepare_write` hooks (`scrud_django.ui.hooks`)
+check that with a query, without a lock or a database constraint, so two
+concurrent creates of the same name can both succeed. Resolution is deterministic: the lowest pk wins
 (`scrud_django.ui.cascade`), so a duplicate is shadowed, not an error. Suggested
 fix: serialize the check as `serialized_policy_save` does for policies, or add a
 unique index on a generated name column. Test: two threads creating the same
@@ -405,30 +405,21 @@ an off-site link. It is not script execution (the scheme is still http(s)).
 Suggested fix: refuse a value with ASCII control characters or whitespace in the
 first three characters. Test: those values render as text.
 
-<a id="ui-json-vary-accept"></a>
-## ui-json-vary-accept: JSON from UI-enabled resource views does not send `Vary: Accept`
-
-The same URL now has an HTML representation, but its JSON responses do not
-vary on `Accept`, so a cache could serve a stored JSON response to an HTML
-request. HTML responses are `private, no-cache, no-store`, so an HTML response
-is never stored and served for JSON; but that does nothing for the JSON
-responses, which a cache may still store and then serve to an HTML request. Suggested fix: add `Accept` to
-`Vary` on the JSON responses of the views when the UI app is installed. Test:
-a JSON GET carries `Vary: Accept`.
-
 <a id="ui-html-shared-etag"></a>
-## ui-html-shared-etag: HTML responses reuse the resource's strong ETag and Last-Modified
+## ui-html-shared-etag: the UI's pages reuse the resource's strong ETag and Last-Modified
 
-The HTML depends on the stylesheets, components and the viewer's grants as well
-as the resource, but carries the resource's ETag and `Last-Modified`, so a
-conditional GET can answer 304 for HTML that would now differ. `Cache-Control:
-private, no-cache, no-store` keeps browser and proxy caches from storing the
-HTML, so they hold no stale copy to revalidate. It does not change the
-validators: a client that keeps an ETag itself and resends it (`If-None-Match`)
-after a component, stylesheet or grant changed still gets a 304, and keeps
-showing the old HTML. Suggested fix: a weak ETag for HTML derived from the
-resource's and the presentation's (and the viewer's decisions). Test: change a
-component; a conditional GET with the old validator gets a 200.
+The API no longer answers the scrud UI's HTML, so its validators are no longer
+shared with it. The UI app's pages (`scrud_django.ui.pages`) still carry the
+resource's ETag and `Last-Modified` (a form needs the ETag for its `If-Match`),
+though the HTML depends on the stylesheets, components and the viewer's grants
+as well as the resource. `Cache-Control: private, no-cache, no-store` keeps
+caches from storing a page, but a client that keeps an ETag itself and resends
+it (`If-None-Match`) after a component, stylesheet or grant changed still gets
+a 304 (`tests/test_ui_http.py::test_html_if_none_match_is_304_with_no_body`)
+and keeps showing the old HTML. Suggested fix: a weak ETag for a page derived
+from the resource's and the presentation's (and the viewer's decisions), the
+strong one kept in the form for `If-Match`. Test: change a component; a
+conditional GET of the page with the old validator gets a 200.
 
 <a id="ui-number-precision"></a>
 ## ui-number-precision: a browser edit rewrites numbers JSON.parse cannot keep
@@ -1191,18 +1182,6 @@ resource, and its detail GET answers 403. It should leave the resource out
 and answer 404, as the facade does
 (`test_anyof_option_refused_at_request_level_is_not_satisfied`).
 
-<a id="studio-computed-to-compute"></a>
-## studio-computed-to-compute: the studio's computed types still register a viewset class
-
-The ninja front-end design
-(`docs/superpowers/specs/2026-11-11-ninja-front-end-design.md`, §1.4) moves
-the studio's computed types to the neutral `compute=` hook, but
-`scrud_django/ui/studio/computed.py` (`studio_computed_type_urls`) still
-registers each with `viewset_class=`, so a non-DRF front end gets no content
-for them. Test: in `tests/test_studio_computed.py`, assert that
-`core.types.type_options(slug).compute` is set for each slug of
-`STUDIO_COMPUTED_TYPES` (it is `None` today).
-
 <a id="core-save-checked-mark-body"></a>
 ## core-save-checked-mark-body: `save_checked` trusts the workflow mark, not the body
 
@@ -1259,18 +1238,6 @@ requirement: ask a `ViewLeaf` whose permission's class overrides
 requirement of a `ViewLeaf` wrapping an `IsAuthorized` subclass whose
 `has_permission` refuses, as a user holding the list grant; assert
 `AccessDenied` (today it allows).
-
-<a id="ninja-semantic-urls-include"></a>
-## ninja-semantic-urls-include: a ninja-only URLconf must include `scoped_rbac.semantic_urls`
-
-The role routes (`roles/`, `role-assignments/`, `user-rbac-policy/`) add
-semantic Links that scoped-rbac reverses by global name. A URLconf that
-mounts only `scrud_django.ninja.api().urls` lacks them, and those three
-routes answer 500 (`NoReverseMatch`). 0.16.0 documents the
-`include("scoped_rbac.semantic_urls")` in the README; a system check, or
-`api()` mounting them, belongs to the release that makes ninja the default
-`scrud_django.urls`. Test: a URLconf of the ninja API alone; GET `roles/` as
-a superuser; assert 200 (a 500 without the include).
 
 <a id="ninja-hsr-link-targets"></a>
 ## ninja-hsr-link-targets: an API included under an outer namespace cannot describe its links
@@ -1370,6 +1337,11 @@ Each is worked around here; none has a public replacement upstream yet.
   way to keep scrudful's automatic OPTIONS while supplying the whole `Allow`
   (its `allowed=` takes a per-method hook on a loaded object, ruled out by
   R4).
+- `scrud_django.drf.auth.AuthenticatorError` answers an error a DRF
+  authenticator raises on ninja with scoped-rbac's private
+  `scoped_rbac.rest._problem_for` (the problem its DRF handler answers that
+  exception with); a public form would replace it. Its test is
+  `tests/test_ninja_auth.py::test_the_drf_hook_answers_another_authenticator_error_as_drf`.
 - Every URL-level wrapper monkeypatches ninja's private `NinjaAPI._get_urls`:
   `entry.authenticate_first`, `errors.answer_natively_when_off`,
   `negotiation.negotiate_as_drf` and `routers._wrap_patterns` (which feeds
@@ -1535,6 +1507,13 @@ authentication alone gives the item GET a 200 on ninja.
 Owner's decision (2026-11-13): keep `resolve_user` as it is for now; revisit
 with part C.
 
+Part C (owner, 2026-11-17): scrud ships the opt-in hook,
+`scrud_django.drf.auth.drf_user` (`SCOPED_RBAC["NINJA_USER"]`), which runs
+DRF's `DEFAULT_AUTHENTICATION_CLASSES` (or `SCRUD_DRF_AUTHENTICATION`);
+`tests/test_ninja_auth.py` compares its answers with the DRF route's (Basic,
+token, refused credentials, a session write without CSRF, the anonymous).
+Without the hook, ninja still reads no DRF authenticator.
+
 <a id="ninja-renderer-settings"></a>
 ## ninja-renderer-settings: ninja negotiates with DRF's default renderers whatever the project sets
 
@@ -1600,10 +1579,13 @@ record.
 `entry` opens its write transaction on `write_db` (scrud's resource
 database, `core.writes.write_transaction`). An app's own models, routed to
 another database (part B's), are not in that transaction: a rollback on a
-400 does not undo their writes. Part B decides whether `entry` takes the
-database as an argument (`entry_for(using=...)`) or an app router opens its
-own. Test: a probe route writing a model of a second database and answering
-400; the row should be rolled back.
+400 does not undo their writes. Part B's ruling: an own-model router built
+from scoped-rbac's blocks does not use `entry` (the README's example has no
+`entry` decorator), and `ModelWorkflow.save_checked` opens its transaction on
+the model's write database (`router.db_for_write(model)`), so its write and its
+workflow check roll back together there. `entry` stays on scrud's write
+database for routes that use it. Test: a probe route under `entry` writing a
+model of a second database and answering 400; the row should be rolled back.
 
 <a id="ninja-computed-link-none"></a>
 ## ninja-computed-link-none: `computed_link` accepts "no type"
@@ -1715,6 +1697,60 @@ pinned by `tests/test_front_end_parity.py::test_failing_credentials_are_refused_
 A ScrudfulRouter an app adds itself is not covered, and the upstream
 proposal is still open (catch `AuthenticationError` too): a hook raising `AuthenticationError`, PATCH a `crud_router` path,
 assert 401.
+
+<a id="ui-page-body-size-limit"></a>
+## ui-page-body-size-limit: a UI write over Django's upload limit gets Django's plain 400, not the API's 413
+
+A UI page's write (`scrud_django.ui.pages`: a POST to a list, a PUT of an
+item) reads its body with `scrud_django.core.bodies.request_json`, which reads
+`request.body`, so Django's `DATA_UPLOAD_MAX_MEMORY_SIZE` (2.5 MB by default)
+applies: a larger body raises `RequestDataTooBig`, which `error_answer` does
+not map, so no page answers it and Django's own plain 400 page (its
+`SuspiciousOperation` answer, `text/html` without the UI's notice or headers)
+is the response. The API refuses the same body too, but as a 413 problem
+("Content Too Large", `scoped_rbac.problems.REQUEST_TOO_LARGE_STATUS`).
+Checked when recording: a PUT of a to-do list whose title is 3,000,000
+characters answers 400 (Django's "Bad Request (400)" page) at its UI URL and
+413 (`application/problem+json`) at its `/api/` URL. The test that would
+expose it: that PUT, asserting the page's status equals the API's (413) and
+that it answers a UI notice. A fix maps `RequestDataTooBig` to the 413 in
+`core.errors.error_answer` (or in `request_json`). Not fixed here (Task 5a,
+fix round 1: recorded only; the review's premise that the API accepts the
+larger body did not hold).
+
+<a id="ui-included-before-api"></a>
+## ui-included-before-api: no check names a URLconf that includes the UI first
+
+When a project includes `scrud_django.ui.urls` before its API under the same
+prefix, the UI declines every type it would shadow (a re-entered decision
+answers "not served"; `tests/test_ui_routes.py`), so the API's JSON stays
+reachable, but those types have no UI pages and no system check says why:
+W003 asks `refusal`, which resolves to the API's views, and W004 sees the
+routes. The docs say to include the UI last. A check could call
+`pages.served(slug)` for each asked slug whose `refusal` is `None` and name
+those a re-entry declined. Also: W005's message says a slug's pages are among
+the UI's own routes; for the CSS/JS file segments that holds under a
+published prefix (the middleware takes that segment for the file route), not
+at the unprefixed UI, where only `<segment>/<name>/<etag>.css` is taken.
+
+<a id="no-drf-namespaced-ui-mount"></a>
+## no-drf-namespaced-ui-mount: without DRF, the UI tests mount the ninja test types outside any namespace
+
+Without DRF (`SCRUD_TEST_NO_DRF=1`, CI's `test-no-drf`), the UI and studio
+suites (`tests.mounted_urls`, `mounted_no_studio_urls`, and the root
+`tests.no_drf_urls`) mount the test types' ninja routes outside any URL
+namespace (`tests.ninja_api.PATTERNS`), as `tests.urls` names the DRF routes,
+so that their bare `reverse("todos-list")` keep working. A ninja-only project
+includes its `api()` under its namespace (`scrud`, or the API's
+`urls_namespace`), where a bare DRF-style name does not reverse: a bare
+`reverse("<slug>-list")` creeping into UI code (instead of
+`core.urls.api_reverse`) would pass the no-DRF run and fail such a project.
+`tests/test_ui_on_ninja.py` runs some UI paths on the namespaced
+`tests.ninja_ui_urls`, not all. The fix: mount the test types' ninja API under
+its namespace in those URLconfs and move the UI tests' `reverse` of API routes
+to `api_reverse`. The test that would expose it: the UI suites run on a
+URLconf with the ninja API namespaced (`tests.ninja_ui_urls`) failing on a
+bare `reverse` in UI code.
 
 # Decided
 
@@ -2051,7 +2087,12 @@ Decided in `docs/superpowers/plans/2026-11-12-ninja-phase3a-front-end.md`
 - **R3. Not served on ninja in 0.16.0:** the UI types (`ui_resource_type_urls()`),
   the studio's computed types (`studio_computed_type_urls()`) and the
   `ui-css-files` and `ui-js-files` views. `api()` does not mount them; a later release
-  moves them onto core hooks.
+  moves them onto core hooks. Lifted in part C: `api()` serves the UI types
+  (`ui.types.ui_type_specs()`) and the studio's computed types
+  (`ui.studio.computed.studio_computed_type_specs()`) when their apps are
+  installed (`api(ui_types=False)` opts out), through their core hooks, and
+  `tests/test_front_end_parity.py` pins their exchanges against DRF's; the
+  file views are the UI app's own routes, served whatever the API.
 - **R4. OPTIONS is scrud's own operation**, not scrudful's automatic one with
   an `allowed=` hook (see `core-allowed-methods-existence-leak`).
 - **R5. Links follow the serving API's namespace.** The ninja routes keep
@@ -2078,6 +2119,123 @@ scrudful's automatic OPTIONS. The collection documents
 
 Follow-ups fixed since they were recorded, each with the commit that fixed
 it.
+
+<a id="ui-ninja-routes"></a>
+## ui-ninja-routes: the UI does not serve ninja-routed types
+
+The UI app decides whether it serves a type by the views its API routes
+resolve to (`scrud_django.ui.pages.route_views`), which it finds by
+reversing `<slug>-list` and `<slug>-detail` outside any URL namespace, as
+DRF's registration names them. scrud's ninja `api()` marks the views it
+builds as the core's (`core.types.mark_route`), but names its routes in its
+`urls_namespace` (`"scrud"` by default), so in a ninja-only project the UI
+finds no route for any type: every page is the 404 of a slug it does not
+serve, and every embed of one is refused. The system check
+`scrud_django_ui.W004` names each such type (it said nothing before), and
+the README and `docs/ui.md` say so. The test that would expose it: with
+`tests.ninja_ui_urls` (the test types' ninja API under `/api/`, the UI at
+`/`), `pages.served("partner-profiles")` should be the type, and a signed-in
+GET of `/partner-profiles/` should answer the list's page (it answers 404;
+`tests/test_ui_routes.py::test_a_type_routed_only_in_a_namespace_is_named`
+pins today's behaviour). A fix (phase 3C) finds a type's routes under the
+namespaces of the ninja APIs the project serves too, and maps API hrefs to
+the UI from them (`selection.in_mount`, `embed._resolve`).
+
+Fixed in 835331b ("feat(ui): the UI serves types routed by either front
+end"): `scrud_django.core.urls` keeps a registry both front ends fill
+(`note_api_routes(slugs, namespace=)`: DRF's registration with `None`,
+`api()` with its `urls_namespace`), and `api_route_name` / `api_reverse`
+find a type's route by its bare name, then in each noted namespace, as the
+current URLconf reverses it; `absolute_reverse` falls back to those
+namespaces too. The UI's route lookup (`pages.route_views`), embeds
+(`embed.api_url`, `_resolve`), the API base (`selection.api_base`), the
+studio's reverses and `scrud_django_ui.W004` use them. Pinned by
+`tests/test_ui_on_ninja.py` (pages, writes, embeds, `in_mount`, the cookie
+path, a published prefix and W003/W004 on `tests.mounted_urls` and
+`tests.ninja_ui_urls` alike), `tests/test_core_urls.py` and
+`tests/test_ui_routes.py::test_a_type_routed_only_in_a_namespace_is_served`.
+
+<a id="ninja-semantic-urls-include"></a>
+## ninja-semantic-urls-include: a ninja-only URLconf must include `scoped_rbac.semantic_urls`
+
+The role routes (`roles/`, `role-assignments/`, `user-rbac-policy/`) add
+semantic Links that scoped-rbac reverses by global name. A URLconf that
+mounts only `scrud_django.ninja.api().urls` lacks them, and those three
+routes answer 500 (`NoReverseMatch`). 0.16.0 documents the
+`include("scoped_rbac.semantic_urls")` in the README; a system check, or
+`api()` mounting them, belongs to the release that makes ninja the default
+`scrud_django.urls`. Test: a URLconf of the ninja API alone; GET `roles/` as
+a superuser; assert 200 (a 500 without the include).
+
+Fixed in ad9d847 ("feat!: scrud_django.urls serves ninja"): the default
+`scrud_django.urls` is the ninja API with `scoped_rbac.semantic_urls` at
+`semantic/` (`tests/test_default_urls.py` follows the role list's Links
+there). A URLconf of an app's own `api()` still includes it itself, as the
+README says; one that does not is reported by scoped-rbac's own system
+check, `scoped_rbac.E002` (`scoped_rbac.semantic_urls is not in the
+URLconf`), whenever a front end serves a scoped-rbac resource, which every
+scrud `api()` does. Pinned by
+`tests/test_default_urls.py::test_an_own_api_without_the_semantic_urls_is_an_error`
+(`tests.no_semantic_urls`: `roles/` raises `NoReverseMatch`, and the
+checks report `scoped_rbac.E002`) and
+`::test_the_default_urls_include_the_semantic_urls`.
+
+<a id="core-write-orchestration"></a>
+## core-write-orchestration: three front ends each orchestrated a write
+
+Fixed in the commit "refactor(core): one write orchestration and one
+DRF-identical JSON writer". A write's steps, in the DRF route's order, are
+written once, in `scrud_django/core/writes.py`: `check_write_request` (the
+body check of a POST or PUT, then the route's request check with the body),
+`create_answer` (unless `request_checked`, those checks; then under the
+conditional-create lock when the list's preconditions need its validators,
+the preconditions, `create`, `answered_content`, the validators and the
+`Location`), `item_write_answer` (unless `request_checked`, those checks;
+the item looked up for the method with its row locked, given to an optional
+`loaded`, its preconditions, then `write_item`) and `write_item` (the
+`update` or `destroy` of an item already looked up, its preconditions
+passed, and its answer). Each answers a `WriteAnswer` (status, content,
+validators, `Location`, the written resource, or a failed precondition's
+`problem`) that the front end only renders. The UI pages ask
+`check_write_request`, then their prefix and header checks (`_entered`),
+then `create_answer` or `item_write_answer` with `request_checked=True`
+(the update keeping the item `loaded` for a refused PUT's form); the
+studio's `answers._write` calls `create_answer` and `item_write_answer`;
+ninja's `create` calls `create_answer` and its item writes `write_item`
+(scrudful's item decorator looked the item up and evaluated its
+preconditions). The DRF viewsets keep their own path. Pinned by
+`tests/test_core_writes.py::test_create_answer_*` and
+`::test_item_write_answer_*` (each answer, refusals and failed
+preconditions included, against the DRF route's), with
+`tests/test_front_end_parity.py`, `tests/test_ui_app.py`,
+`tests/test_studio_writes.py` and the `front_end` suites unchanged.
+
+<a id="core-json-response"></a>
+## core-json-response: DRF-identical JSON bytes were written in two places
+
+Fixed in the commit "refactor(core): one write orchestration and one
+DRF-identical JSON writer". `scrud_django/core/json.py` (Django only) writes
+JSON as DRF's `JSONRenderer` does (`drf_json_text`, `dumps_like_drf`,
+`json_response`): compact or DRF-indented separators, UTF-8, U+2028 and
+U+2029 escaped, NaN and the infinities refused. The studio's answers (its
+`answers.json_response` is the core's), the UI's file views (which no
+longer import the studio) and the ninja front end's indented JSON
+(`negotiation.IndentingJSONRenderer`) write through it. Pinned by
+`tests/test_core_json.py` (byte equality with `JSONRenderer`, compact and
+indented).
+
+<a id="studio-computed-to-compute"></a>
+## studio-computed-to-compute: the studio's computed types still registered a viewset class
+
+Fixed in 6224a24. `studio_computed_type_urls` registered each studio
+computed type with `viewset_class=`, so a non-DRF front end got no content
+for them, and the facade's `served_methods` listed PUT and DELETE for them.
+Each now registers a `compute=` function (reading `request.GET`), served on
+DRF by `ComputedResourceViewSet` with the same URLs and route names, and by
+`scrud_django.core.computed.computed_answer` for any front end. Pinned by
+`tests/test_studio_computed.py::test_studio_computed_types_register_their_compute`,
+`::test_studio_computed_types_answer_through_the_core` and
+`tests/test_core_parity.py::test_studio_computed_allow_parity`.
 
 <a id="services-unrouted-types"></a>
 ## services-unrouted-types: `services/` failed when the serving URLconf did not route every registered type
@@ -2143,3 +2301,126 @@ Both front ends answer `Vary: Cookie` (68022e6): `authenticate_first`
 resolves the user, which touches the session, on the `scoped-rbac-*` routes.
 scoped-rbac's ninja router alone sends none. Pinned by
 `tests/test_front_end_parity.py::test_role_routes_vary_alike`.
+
+<a id="own-model-governance-edges"></a>
+## own-model-governance-edges: three saves a governed model's receivers misjudge
+
+`core.transitions.govern` connects `pre_save` and `post_save` receivers for the
+model class itself, which leaves three edges:
+
+* A multi-table-inheritance child of a governed model is not governed: the
+  `pre_save` sender is the child class, which has no receiver, so its saves
+  are never logged as skipping the check. Test: govern a parent, save a child
+  instance outside `checked_save`; a WARNING on `scrud_django.workflow` is
+  expected and none is logged.
+* A save with `update_fields` is judged on the whole instance, not on the
+  fields it writes: a transition (or an invalid state) in a field the save
+  does not write is still logged. Test: load a governed instance, set its
+  `state` in memory to a value the policy refuses, save with
+  `update_fields=["title"]`; the row's state is unchanged, yet a WARNING is
+  logged for the unsaved state.
+* A thread started inside `checked_save` starts with an empty context
+  (`contextvars`), so its saves of the model warn although the toolkit checked
+  them. Test: inside `checked_save(Model)`, start a `threading.Thread` that
+  saves an instance; its save logs a WARNING.
+
+<a id="own-model-router-checks-before-transaction"></a>
+## own-model-router-checks-before-transaction: the router's checks run before the write transaction
+
+An own-model router built from scoped-rbac's blocks runs its request and
+object checks (`rbac_load`, `item_check`, as `crud_router` does) before
+`save_checked` opens its transaction, on the row as loaded. A concurrent
+write that moves the row's `rbac_context` between the load and the lock lets
+a stale PUT that sends the old context pass the object check on the old
+context. `save_checked` locks the row and runs the workflow check on the
+stored state, but the object check is not repeated on it. The routes have no
+`entry` decorator either (see `ninja-entry-write-db`). Test: two clients;
+the first moves an article to another `rbac_context` after the second's
+load but before its PUT is saved (a `before` hook that pauses); the second,
+who may write only the old context, sends the old context: it should get
+403 and gets 200.
+
+<a id="context-limits-test-alone"></a>
+## context-limits-test-alone: a test that fails when run by itself
+
+`uv run pytest -q tests/test_context_limits.py::test_a_context_over_2048_bytes_is_400`
+fails on its own (`assert 49 == 37`, the `Resource` count after the request
+against the count before it), on the base branch too, and passes in a full
+run. The test counts `Resource` rows before its first `reverse(...)`, which is
+what imports the URLconf and registers the types (12 rows); nothing earlier in
+a lone run has done that. Fix: take `before` after the `reverse`, or register
+the types in a fixture. Not fixed here.
+
+<a id="ui-json-vary-accept"></a>
+## ui-json-vary-accept: JSON from UI-enabled resource views does not send `Vary: Accept`
+
+Fixed in the commit "feat!: /api/ serves JSON only", by removing the cause: the API no longer has an HTML
+representation of the scrud UI at its URLs (the UI's pages are the UI app's, at
+URLs of their own), so a JSON response of the API never shares a URL with
+scrud UI HTML and no cache can serve one for the other. DRF's JSON responses
+keep the `Vary: Accept` DRF's content negotiation sets (its browsable API is
+still among its renderers). Pinned by
+`tests/test_ui_negotiation.py::test_json_from_the_api_has_no_ui_vary`.
+
+<a id="hooks-loaded-root-urlconf"></a>
+## hooks-loaded-root-urlconf: `ensure_hooks_loaded` imports only `ROOT_URLCONF`
+
+`scrud_django.core.types.ensure_hooks_loaded` imports `settings.ROOT_URLCONF`
+once per process, so that a process that never served a request has the hooks
+(and the `ui_authorization` declarations) its URLconf registers. A project
+that sets a per-request URLconf (`request.urlconf`, from a middleware) whose
+module registers types the root URLconf does not is served by that module's
+registrations only once it has been imported (by its first request there).
+Until then `requirement_for` and the UI's `pages.refusal` read the options
+as registered so far: for the UI that fails closed (a custom viewset's type
+is refused, not served, until its `ui_authorization` is registered), but a
+type's `checks` and `object_checks` would be missing from a requirement asked
+before. The test that would expose it: a process that imports only a
+per-request URLconf's module lazily, asked `requirement_for` of one of its
+hooked types before any request routed there. Not fixed here: scrud's apps
+route through `ROOT_URLCONF`.
+
+<a id="ui-api-base-cache"></a>
+## ui-api-base-cache: `api_base` repeats its failed reverses for each href on an API not routing the UI's types
+
+`scrud_django.ui.branches.selection.api_base` asks `api_route_name` for the
+UI components' list first, then for each noted slug's list in turn
+(`core.urls.api_slugs`) until one reverses. On an API that does not route
+the UI's types (a ninja `api(ui_types=False)`; DRF and a default `api()`
+route them), every call fails the UI components' reverses (the bare name,
+then each noted namespace's) before it finds another type's list, and
+`api_base` is called for each href a page maps (`Mount.href`, `in_mount`,
+`cookie_path`, the middleware's `find_mount`): a page of many frames repeats
+the same failed reverses many times. The answer depends only on the URLconf
+serving the request, so a memo per URLconf (keyed by `get_urlconf()`,
+cleared on `setting_changed` for `ROOT_URLCONF` as Django's own URL caches
+are) would answer each later call at once. The test that would expose it:
+on `tests/ninja_no_ui_types_urls.py`, count the `reverse` calls (or patch
+`api_route_name`) over two `api_base()` calls, asserting the second makes
+none.
+
+<a id="core-unserved-order"></a>
+## core-unserved-order: the core facade refuses an unserved method after the request check; both API front ends answer 405 first
+
+A type whose `TypeOptions.methods` leave a method out (a UI branch
+version's: GET, HEAD and OPTIONS) is refused that method by the core
+(`core.writes.refuse_unserved`, 405) only after the request check:
+`core.resources.load_for_read` and `core.writes.check_write_request` (so
+`create`, `update`, `create_answer`, `item_write_answer`, `write_item`) ask
+`check_request` first, so the anonymous get 401 and a requester without the
+grant 403. Both API front ends answer it 405 first, for anyone: DRF's view
+because scoped-rbac's request check leaves a method the view does not serve
+(`http_method_names`) to its 405, the ninja routes because `type_router`
+routes no operation for it (scrudful's 405, after authentication). The UI's
+pages refuse it first too (`pages._allowed`). Who still meets the core's
+order: a direct caller of the facade, the studio's writes
+(`scrud_django/ui/studio/answers.py`: `load_for_read`, `create_answer`,
+`item_write_answer`, which only write types the studio serves) and the
+`tests/test_core_*` modules
+(`test_core_ui_types.py::test_core_create_of_a_version_asks_the_request_check_first`
+pins the current order). The test that would pin alignment: that test
+inverted, `core_create`, `core_update` and `core_destroy` of a version by
+the anonymous and by a user without roles each raising
+`MethodNotAllowedError`, and `load_for_read(method="PUT")` likewise, before
+any `access.AccessDenied`.
+

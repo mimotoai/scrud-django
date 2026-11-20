@@ -388,7 +388,7 @@ def paused_after_evaluation(thread_name, front_end="drf", seconds=0.8):
     them, then calls ``core.writes.create``. `timeline` records when
     (``paused``, ``resumed``) and `evaluated` is set as it pauses."""
     from scrud_django.core import writes
-    from scrud_django.mixins.view_mixins import ResourceViewMixin
+    from scrud_django.drf.mixins import ResourceViewMixin
 
     target, name = {
         "drf": (ResourceViewMixin, "create_resource"),
@@ -588,7 +588,7 @@ def test_a_conditional_create_and_another_write_do_not_deadlock(
 @pytest.mark.django_db
 def test_scoped_rbacs_own_lists_evaluate_a_creates_preconditions():
     # scoped-rbac 0.12 (#62) evaluates them on its role and role-assignment
-    # lists, which scrud_django.urls mounts (formerly scrud's follow-up
+    # lists, which scrud_django.drf.urls mounts (formerly scrud's follow-up
     # scrudful-create-preconditions).
     client = APIClient()
     client.force_authenticate(UserFactory(is_superuser=True, is_staff=True))
@@ -788,7 +788,7 @@ def test_a_create_a_scrudful_function_view_delegates_to_evaluates_itself(writer,
     from rest_framework.test import APIRequestFactory
     from scrudful.rest_framework import scrudful
 
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.views import ResourceViewSet
 
     @scrudful()
     def outer(request):

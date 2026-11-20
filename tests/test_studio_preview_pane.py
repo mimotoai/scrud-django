@@ -66,7 +66,7 @@ def test_type_picker_rule_and_component(studio_layer):
 @test_context
 def test_preview_pane_markup(studio_layer, ui_alice_login):
     _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = Page(get_page(workbench_url(alice_wip, STUDIO_ROOT)))
     no_inline_code(page)
     pane = preview_pane(page)
@@ -121,7 +121,7 @@ def test_preview_pane_markup(studio_layer, ui_alice_login):
 @test_context
 def test_type_picker_lists_catalog(studio_layer, ui_alice_login):
     _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     catalog = reverse("ui-type-catalog-detail", args=["all"])
     When.http.get(catalog, HTTP_ACCEPT="application/json")
     Then.http.status_code_is(200)
@@ -158,7 +158,7 @@ def test_type_picker_lists_catalog(studio_layer, ui_alice_login):
 def test_published_T_inspector_has_no_new_rule(studio_layer, admin_login):
     studio, _alice_wip, _bobs = setup_studio(admin_login)
     main = make_branch("main", "", parent=None)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     for branch in (studio, main):
         page = Page(get_page(workbench_url(branch, STUDIO_ROOT)))
         assert page.one("data-studio-workbench").attrs["data-studio-published"] == (

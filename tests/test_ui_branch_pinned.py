@@ -28,6 +28,12 @@ from .test_ui_branch_render import (
 from .test_ui_branch_types import component, make_branch, problem
 from .test_ui_branch_versions import versions_of
 from .test_ui_http import make_component, make_stylesheet, put_json
+from .ui import UI_URLCONF
+
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
 
 
 def setup_main():
@@ -56,7 +62,7 @@ def test_pinned_branch_ignores_later_parent_changes(todo_list, todo_reader_login
     )
     put_item("ui-components", "row", "<i>{{ value.text }}</i>", "wip")
     edit_main_title("h2")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     page = render_with(todo_list, "wip")
     assert "<h1>Groceries" in page and "<h2>Groceries" not in page
     assert "<i>Buy milk</i>" in page  # its own override stays live
@@ -70,7 +76,7 @@ def test_pinned_view_of_live_branch(todo_list, todo_reader_login):
     make_branch("wip", "project-a", branching_point={"main": versions_of("main")[-1]})
     put_item("ui-components", "row", "<i>{{ value.text }}</i>", "wip")
     edit_main_title("h2")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     live = render_with(todo_list, "wip")
     assert "<h2>Groceries" in live and "<i>Buy milk</i>" in live
     pinned = render_with(todo_list, "wip@pinned")
@@ -81,20 +87,20 @@ def test_pinned_view_of_live_branch(todo_list, todo_reader_login):
 @pytest.mark.django_db
 @test_context
 def test_pinned_view_by_query_parameter(todo_list, todo_reader_login):
-    from .test_ui_http import HTML, detail_url, html
+    from .test_ui_http import html, ui_detail_url
 
     setup_main()
     make_branch("wip", "project-a", branching_point={"main": versions_of("main")[-1]})
     edit_main_title("h2")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     # A link (the parameter) asks before it switches branch; confirmed, it
     # shows the pinned view.
-    url = detail_url(todo_list) + "?ui-branch=wip@pinned"
-    When.http.get(url, HTTP_ACCEPT=HTML)
+    url = ui_detail_url(todo_list) + "?ui-branch=wip@pinned"
+    When.http.get(url)
     Then.http.status_code_is(200)
     assert "You're about to browse branch wip" in html()
     found = re.search(r'class="scrud-branch-continue" href="([^"]*)"', html())
-    When.http.get(unescape(found.group(1)), HTTP_ACCEPT=HTML)
+    When.http.get(unescape(found.group(1)))
     Then.http.status_code_is(200)
     assert "<h1>Groceries" in html() and "<h2>Groceries" not in html()
 
@@ -117,7 +123,7 @@ def test_pinned_chain_uses_every_ancestor_version(todo_list, todo_reader_login):
     # main moves on; testing does not change.
     edit_main_title("h2")
     assert versions_of("testing") == [1]
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     pinned = render_with(todo_list, "alice@pinned")
     assert "<h1>Groceries" in pinned and "<h2>Groceries" not in pinned
     assert "<i>Buy milk</i>" in pinned  # testing's override, from its snapshot
@@ -130,7 +136,7 @@ def test_missing_snapshot_renders_main(todo_list, todo_reader_login, caplog):
     setup_main()
     make_branch("wip", "project-a", base="pinned", branching_point={"main": 99})
     put_item("ui-components", "row", "<i>{{ value.text }}</i>", "wip")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     seen = []
     real = effective.effective_rows
 
@@ -169,7 +175,7 @@ def test_an_override_on_a_pinned_branch_is_based_on_the_pinned_item(admin_login)
     pinned; main then edits it (v2); an override made on ``wip`` replaces
     v1, the item ``wip`` shows, so its ``base`` is v1's ETag (ruling R38),
     and pushing it into main is a conflict, not a silent overwrite of v2."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     v1 = push_create("ui-components", component(name="row", template="<b>1</b>"))
     push_create(
         "ui-branches",
@@ -202,7 +208,7 @@ def test_a_version_without_etags_bases_overrides_on_its_own_key(admin_login):
     of its own (``v<number>:<branch>:<key>``), which no live item has: an
     override based on it conflicts with the parent's item, never silently
     overwrites it (ruling R38)."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     push_create("ui-components", component(name="row", template="<b>1</b>"))
     (number,) = versions_of("main")
     legacy = dict(snapshot("main", number))
@@ -229,7 +235,7 @@ def test_conflicts_are_found_against_the_target_as_it_shows_itself(admin_login):
     override on ``wip`` replaces main's v1 item, which ``testing`` shows
     even after main moves to v2. Pushing it into ``testing`` is no conflict;
     pulling ``testing`` then lists one against main's v2."""
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     v1 = push_create("ui-components", component(name="row", template="<b>1</b>"))
     push_create(
         "ui-branches",

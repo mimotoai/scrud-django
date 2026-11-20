@@ -1,5 +1,5 @@
 """The workflow check of a write, without DRF: every scrud front end asks it
-(``scrud_django.validators.WorkflowValidator`` on DRF), and so may an app's
+(``scrud_django.drf.validators.WorkflowValidator`` on DRF), and so may an app's
 own models, with a type IRI and plain JSON mappings.
 
 A write is checked under the workflow policy of every context concerned

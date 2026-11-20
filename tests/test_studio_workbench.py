@@ -32,7 +32,8 @@ from .test_studio_page import CONFLICT, store_item
 from .test_ui_branch_css import make_css
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import HTML, grant, html, make_component
+from .test_ui_http import grant, html, make_component
+from .ui import page_request, ui_url
 
 STUDIO_ROOT = "/workbench/"
 STUDIO_CONTEXT = "ui-studio"
@@ -109,7 +110,8 @@ def workbench_url(branch, prefix=None):
 
 
 def get_page(url, status=200):
-    When.http.get(url, HTTP_ACCEPT=HTML)
+    url, headers = page_request(url)
+    When.http.get(url, **headers)
     Then.http.status_code_is(status)
     return html()
 
@@ -220,7 +222,7 @@ def test_workbench_rules_select_branch_items_and_status(studio_layer):
 @test_context
 def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login):
     _studio, alice_wip, bobs = setup_studio(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     text = get_page(workbench_url(alice_wip))
     page = Page(text)
     workbench = page.one("data-studio-workbench")
@@ -242,8 +244,8 @@ def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login)
     notice = page.one("data-studio-notice")
     assert "hidden" in notice.attrs and notice.attrs["role"] == "alert"
     # The items and the strip are embedded: T's studio data in their scopes.
-    items_url = reverse("ui-branch-items-detail", args=["alice-wip"])
-    status_url = reverse("ui-branch-status-detail", args=["alice-wip"])
+    items_url = ui_url(reverse("ui-branch-items-detail", args=["alice-wip"]))
+    status_url = ui_url(reverse("ui-branch-status-detail", args=["alice-wip"]))
     embeds = {
         e.attrs["data-studio-embed"]: (
             e.tag,
@@ -257,8 +259,8 @@ def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login)
     # final review adds the top bar's branch picker: the user's selectable
     # branches in the scope studio studio-branches
     # (test_workbench_branch_picker_links_readable_branches).
-    branch_url = reverse("ui-branches-detail", args=[alice_wip.pk])
-    branches_url = reverse("ui-selectable-branches-detail", args=["mine"])
+    branch_url = ui_url(reverse("ui-branches-detail", args=[alice_wip.pk]))
+    branches_url = ui_url(reverse("ui-selectable-branches-detail", args=["mine"]))
     assert embeds == {
         "branches": ("div", branches_url, "studio studio-branches"),
         "branch": ("div", branch_url, "studio studio-branch"),
@@ -344,7 +346,7 @@ def test_workbench_renders_for_branch_user_may_get(studio_layer, ui_alice_login)
 @test_context
 def test_workbench_embeds_items_and_strip_for_T_not_S(studio_layer, ui_alice_login):
     _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     # S is the studio root (the prefix's branch); T is alice-wip.
     page = Page(get_page(workbench_url(alice_wip, STUDIO_ROOT)))
     assert page.one("data-studio-workbench").attrs["data-studio-branch"] == "alice-wip"
@@ -424,7 +426,7 @@ def test_workbench_branch_picker_links_readable_branches(studio_layer, ui_alice_
     one they may not GET (main here) is text, with no workbench to open. A
     branch the user may not select (bobs) is absent."""
     studio, alice_wip, _bobs = setup_studio(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = Page(get_page(workbench_url(alice_wip, STUDIO_ROOT)))
     topbar = page.one("data-studio-topbar")
     [embed] = [
@@ -481,10 +483,13 @@ def test_workbench_branch_picker_links_readable_branches(studio_layer, ui_alice_
     assert name.tag == "span" and name.text == "main"
     # The picker writes nothing.
     assert not [e for e in page.writes() if e.within(picker)]
-    # At the API's URLs the links stay there.
+    # At the UI app's URLs the links stay there.
     page = Page(get_page(workbench_url(alice_wip)))
     links = [href for _n, _c, href, _b, _cur in picker_entries(page) if href]
-    assert links == [workbench_url(alice_wip), workbench_url(studio)]
+    assert links == [
+        ui_url(workbench_url(alice_wip)),
+        ui_url(workbench_url(studio)),
+    ]
     # Each link is the workbench of its branch.
     for href in links:
         assert Page(get_page(href)).one("data-studio-workbench")
@@ -494,14 +499,14 @@ def test_workbench_branch_picker_links_readable_branches(studio_layer, ui_alice_
 @test_context
 def test_override_button_is_the_items_action(studio_layer, ui_alice_login):
     _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = Page(get_page(workbench_url(alice_wip)))
     _classes, head, head_li = page.entries()[("component", "head")]
     [button] = [e for e in page.writes() if e.within(head_li)]
     action = head["override"]
     assert button.tag == "button" and button.text == "Override on this branch"
     assert button.attrs["type"] == "button"
-    assert button.attrs["hx-post"] == action["href"]
+    assert button.attrs["hx-post"] == ui_url(action["href"])
     assert button.attrs["hx-ext"] == "scrud-json"
     assert button.attrs["hx-swap"] == "none"
     assert button.attrs["data-scrud-json"] == "fixed"
@@ -517,7 +522,7 @@ def test_items_tree_collapses_packaged_items_per_kind(studio_layer, ui_alice_log
     kind lists the branch's own and inherited items, and its packaged ones
     in a collapsed ``<details data-studio-packaged>`` "Packaged (N)"."""
     _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = Page(get_page(workbench_url(alice_wip)))
     sections = {
         e.attrs["data-studio-kind"]: e
@@ -567,7 +572,7 @@ def test_items_tree_kind_headings(studio_layer, ui_alice_login):
     the system font's bold its C and S can look like lower case) and
     JavaScript (it was "JS")."""
     _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = Page(get_page(workbench_url(alice_wip)))
     headings = [
         (e.parent.attrs["data-studio-kind"], e.text)
@@ -593,7 +598,7 @@ def test_reader_without_ui_grants_sees_no_write_controls(studio_layer, ui_alice_
     without a write control."""
     _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
     reader = assign_role({"http.GET": [UI_BRANCH_TYPE_URI]}, "alice", STUDIO_CONTEXT)
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     page = Page(get_page(workbench_url(alice_wip, STUDIO_ROOT)))
     assert page.one("data-studio-workbench").attrs["data-studio-branch"] == "alice-wip"
     found = page.entries()
@@ -625,7 +630,7 @@ def test_reader_without_ui_grants_sees_no_write_controls(studio_layer, ui_alice_
 def test_published_T_strip_has_no_write_actions(studio_layer, admin_login):
     studio, _alice_wip, _bobs = setup_studio(admin_login)
     main = make_branch("main", "", parent=None)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     for branch in (studio, main):
         page = Page(get_page(workbench_url(branch, STUDIO_ROOT)))
         workbench = page.one("data-studio-workbench")
@@ -660,7 +665,7 @@ def test_published_T_strip_has_no_write_actions(studio_layer, admin_login):
 def test_workbench_hrefs_stay_in_mount(studio_layer, ui_alice_login):
     _studio, alice_wip, _bobs = setup_studio(ui_alice_login)
     pushes_into(ui_alice_login, "")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = Page(get_page(workbench_url(alice_wip, STUDIO_ROOT)))
     opened = [o for _c, o, _li in page.entries().values()]
     hrefs = [o["href"] for o in opened if o["href"] is not None]
@@ -763,7 +768,7 @@ def test_seed_creates_studio_tree_and_grants(studio_layer, settings):
         assert f"/workbench/ui-branches/{branch.pk}/{WORKBENCH}" in first
 
     author = get_user_model().objects.get(username="author")
-    Given.http.force_authenticate(author)
+    Given.http.force_login(author)
     # The workbench of the working branch, served by the published studio.
     get_page(workbench_url(wip, STUDIO_ROOT))
     get_page(workbench_url(studio, STUDIO_ROOT))
@@ -794,7 +799,7 @@ def test_seed_creates_studio_tree_and_grants(studio_layer, settings):
     # Only the author holds the studio's grants: the owner may not write
     # its working branch. (The author's POST on the studio root itself is
     # allowed too: applying a push needs the grants a direct write needs.)
-    Given.http.force_authenticate(get_user_model().objects.get(username="owner"))
+    Given.http.force_login(get_user_model().objects.get(username="owner"))
     When.http.post(
         reverse("ui-components-list"),
         data={**component, "branch": "studio-wip", "rbac_context": "ui-studio-wip"},
@@ -825,7 +830,7 @@ def test_seed_todo_row_override_is_editable_in_the_workbench(studio_layer):
 
     run_seed(load_seed())
     alice = seeded_branch("alice-wip")
-    Given.http.force_authenticate(get_user_model().objects.get(username="author"))
+    Given.http.force_login(get_user_model().objects.get(username="author"))
     page = Page(get_page(workbench_url(alice, STUDIO_ROOT)))
     _classes, row, _li = page.entries()[("component", "todo-row")]
     action = row["override"]

@@ -184,16 +184,16 @@ def test_stylesheet_same_name_other_context_is_201(admin_login):
 
 @pytest.mark.django_db
 def test_without_ui_app_no_ui_routes():
-    import scrud_django.urls
+    import scrud_django.drf.urls
 
-    # scrud_django.urls is resolved by name: tests.urls includes it once at
-    # import, so its routes are looked up on that module's own resolver.
-    urlconf = "scrud_django.urls"
+    # scrud_django.drf.urls is resolved by name: tests.urls includes it once
+    # at import, so its routes are looked up on that module's own resolver.
+    urlconf = "scrud_django.drf.urls"
     installed = [app for app in settings.INSTALLED_APPS if app != "scrud_django.ui"]
     try:
         with override_settings(INSTALLED_APPS=installed):
             clear_url_caches()
-            importlib.reload(scrud_django.urls)
+            importlib.reload(scrud_django.drf.urls)
             with pytest.raises(NoReverseMatch):
                 reverse("ui-components-list", urlconf=urlconf)
             with pytest.raises(NoReverseMatch):
@@ -201,5 +201,5 @@ def test_without_ui_app_no_ui_routes():
             assert reverse("services", urlconf=urlconf) == "/services/"
     finally:
         clear_url_caches()
-        importlib.reload(scrud_django.urls)
+        importlib.reload(scrud_django.drf.urls)
     assert reverse("ui-components-list", urlconf=urlconf) == "/ui-components/"

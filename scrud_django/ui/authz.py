@@ -1,20 +1,20 @@
 """What the viewing user may do with a resource, for the render tree to offer,
 and why a write was refused, for the HTML representation to show.
 
-Both ask the same policy the API's checks ask (`scrud_django.permissions`), so
+Both ask the same policy the API's checks ask (`scrud_django.drf.permissions`), so
 what a page offers is what a request would be allowed.
 """
 
 from scoped_rbac import access
 from scoped_rbac.policy import Decision, Permission
 
-from scrud_django.mixins.resource_mixin import rbac_contexts_of
-from scrud_django.permissions import (
+from scrud_django.core.authz import (
     _checking_write,
     condition_resource,
     may_act_in_context,
     may_read_in_context,
 )
+from scrud_django.mixins.resource_mixin import rbac_contexts_of
 
 ALLOWED = "allowed"
 POSSIBLY = "possibly"

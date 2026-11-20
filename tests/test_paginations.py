@@ -1,4 +1,4 @@
-"""`scrud_django.paginations.StandardResultsSetPagination` pages with the
+"""`scrud_django.drf.paginations.StandardResultsSetPagination` pages with the
 core's rules (`scrud_django.core.lists`), given its own attributes: a
 subclass configuring them is paged as DRF's own ``PageNumberPagination``
 pages with the same configuration."""
@@ -9,8 +9,8 @@ from rest_framework.exceptions import NotFound
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.request import Request
 
+from scrud_django.drf.paginations import StandardResultsSetPagination
 from scrud_django.models import Resource
-from scrud_django.paginations import StandardResultsSetPagination
 from scrud_django.registration import ResourceRegistration
 
 pytestmark = pytest.mark.django_db

@@ -506,7 +506,7 @@ def test_explain_endpoint_uses_branch_and_context(todo_list, todo_reader_login):
     make_stylesheet("pa", [("ex:TodoItem", "acme-row")], context="project-a")
     user = may_select_branches(todo_reader_login)
     may_read_stylesheets(user, "", "project-a", "acme")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     # main, by default or by name: main's stylesheet.
     for params in ({}, {"branch": "main"}, {"branch": ""}):
         explained = get_explain(pointer="/items/0", **params)
@@ -562,7 +562,7 @@ def test_explain_endpoint_uses_branch_and_context(todo_list, todo_reader_login):
     get_explain(404, instance=999999)
     When.http.get(reverse("scrud-studio:explain", args=["no-such-type"]))
     Then.http.status_code_is(404)
-    Given.http.force_authenticate(None)
+    Http.api_client.logout()
     get_explain(401)
 
 
@@ -573,7 +573,7 @@ def test_unreadable_rules_show_rank_only(login_no_roles, ui_acme_stylesheet_logi
     make_stylesheet("hidden-sheet", [("ex:TodoItem", "secret-row")])
     make_component("acme-row", "<u>{{ value.text }}</u>")
     make_stylesheet("acme-sheet", [("ex:TodoItem", "acme-row")], context="acme")
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     explained = get_explain(pointer="/items/0")
     body = Http.response.content.decode()
     hidden = winning(explained)
@@ -589,7 +589,7 @@ def test_unreadable_rules_show_rank_only(login_no_roles, ui_acme_stylesheet_logi
         set(r) == SOURCE_KEYS | {"readable", "rank", "outcome"} for r in defaults
     )
     # One who reads acme's stylesheets, not the app-wide ones.
-    Given.http.force_authenticate(ui_acme_stylesheet_login)
+    Given.http.force_login(ui_acme_stylesheet_login)
     explained = get_explain(pointer="/items/0", context="acme")
     body = Http.response.content.decode()
     assert winning(explained)["stylesheet"] == "acme-sheet"
@@ -607,7 +607,7 @@ def test_unreadable_rules_show_rank_only(login_no_roles, ui_acme_stylesheet_logi
 def test_packaged_rules_are_readable_to_anyone(login_no_roles):
     """A packaged layer's stylesheet is public (spec R1): its rules show
     their source to a user who may read no stylesheet."""
-    Given.http.force_authenticate(login_no_roles)
+    Given.http.force_login(login_no_roles)
     explained = get_explain(scope="layertest")
     won = winning(explained)
     assert won["readable"] is True
@@ -622,7 +622,7 @@ def test_unreadable_rules_of_a_pinned_snapshot(todo_reader_login):
     make_stylesheet("hidden-sheet", [("ex:TodoItem", "secret-row")])
     make_branch("wip", "project-a", branching_point={"main": versions_of("main")[-1]})
     user = may_select_branches(todo_reader_login)
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     explained = get_explain(pointer="/items/0", branch="wip@pinned")
     body = Http.response.content.decode()
     assert set(winning(explained)) == {"readable", "rank", "outcome"}

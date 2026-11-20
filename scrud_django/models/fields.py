@@ -6,7 +6,7 @@ from django.db import models
 class ContextField(models.CharField):
     """An RBAC context (a string), compared exactly, code point for code
     point, on every database, as scoped-rbac compares contexts in Python: a
-    list filtered by it in SQL (`scrud_django.filters`) agrees with the
+    list filtered by it in SQL (`scrud_django.drf.filters`) agrees with the
     detail route.
 
     On SQLite and PostgreSQL it is a ``CharField``. MySQL and MariaDB

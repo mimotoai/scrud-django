@@ -1,7 +1,7 @@
 """The branch a request browses: chosen from its `BRANCH_HEADER`, its
 `BRANCH_PARAMETER` query parameter or its cookie (`cookie_name`: one per
 prefix), in that order, else the published branch of the request's prefix
-(`Mount`; ``main`` at the API URLs).
+(`Mount`; ``main`` at the UI's own URLs and the API's).
 
 A value is ``<name>`` or ``<name>@pinned`` (`VALUE`, at most
 `MAX_VALUE_BYTES`); any other is ignored, as if absent. An empty header or
@@ -18,14 +18,17 @@ import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from django.middleware.csrf import get_token
-from django.urls import reverse
+from django.urls import NoReverseMatch, get_script_prefix, reverse
 from django.utils.crypto import constant_time_compare, salted_hmac
+from scoped_rbac import access
 
+from scrud_django.core.authz import may_read_in_context, resource_contexts
+from scrud_django.core.urls import api_route_name, api_slugs
 from scrud_django.models import Resource
-from scrud_django.permissions import may_read_in_context, resource_contexts
+from scrud_django.ui import UI_NAMESPACE
 from scrud_django.ui.branches import MAIN, UI_BRANCH_TYPE_URI
 from scrud_django.ui.branches.effective import (
     BRANCH_HEADER,
@@ -54,6 +57,9 @@ HEADER, PARAM, COOKIE, NONE = "header", "param", "cookie", "none"
 
 # On the request: its `Mount` (`PublishedBranchMiddleware`).
 MOUNT_ATTR = "scrud_ui_mount"
+# On the request of a UI page (`scrud_django.ui.pages`): the UI's base path,
+# which its API hrefs are mapped under (`in_mount`).
+UI_BASE_ATTR = "scrud_ui_base"
 # On the request: {use the cookie: Chosen}.
 _CHOSEN_ATTR = "_scrud_ui_chosen"
 # The key the stored branch contents are memoised under in a `rules_memo`.
@@ -76,24 +82,82 @@ class Chosen:
 
 def api_base() -> str:
     """The path the API's type URLs start with (``/api/``): the path of the
-    UI components' list without its slug."""
-    path = reverse("ui-components-list")
-    suffix = UI_COMPONENT_SLUG + "/"
+    UI components' list without its slug, else (a project whose API does
+    not route the UI's types: a ninja ``api(ui_types=False)``) of the first
+    type whose list the URLconf routes, among those a front end built
+    routes of (`scrud_django.core.urls.api_slugs`), outside any URL
+    namespace or in a ninja ``api()``'s
+    (`scrud_django.core.urls.api_route_name`). ``NoReverseMatch`` when it
+    routes none."""
+    # The UI components' first: asking imports the URLconf, whose APIs note
+    # their routes, so that the slugs are read once noted (on a process's
+    # first call too).
+    name = api_route_name(UI_COMPONENT_SLUG, "list")
+    if name is not None:
+        return _list_base(name, UI_COMPONENT_SLUG)
+    for slug in api_slugs():
+        name = api_route_name(slug, "list")
+        if name is not None:
+            return _list_base(name, slug)
+    raise NoReverseMatch("The URLconf routes no type's list.")
+
+
+def _list_base(name, slug) -> str:
+    """The path of the list route `name` of the type `slug`, without its
+    slug."""
+    path = reverse(name)
+    suffix = slug + "/"
     return path[: -len(suffix)] if path.endswith(suffix) else path
+
+
+def ui_base() -> str:
+    """The path the UI app's pages start with (``/`` when the project
+    includes ``scrud_django.ui.urls`` at its root): the URL of a list page
+    in the UI's namespace (``scrud_ui:list``) without its slug.
+    ``NoReverseMatch`` when the project does not include the UI app."""
+    slug = "x"
+    path = reverse(f"{UI_NAMESPACE}:list", kwargs={"slug": slug})
+    return path[: -len(slug) - 1]
+
+
+def as_path_info(path: str, script: str | None = None) -> str:
+    """The URL path `path` as a ``path_info`` (as prefixes are matched):
+    without the script prefix `script` (default: `get_script_prefix`); a
+    path not under it as it is."""
+    if script is None:
+        script = get_script_prefix()
+    return "/" + path[len(script) :] if path.startswith(script) else path
+
+
+def api_base_info() -> str | None:
+    """The API's base (`api_base`) as a ``path_info``; ``None`` when the
+    project routes no type's list."""
+    try:
+        return as_path_info(api_base())
+    except NoReverseMatch:
+        return None
+
+
+def ui_base_info() -> str:
+    """The UI app's base (`ui_base`) as a ``path_info``, which a prefix's
+    URLs are routed under. ``NoReverseMatch`` when the project does not
+    include the UI app."""
+    return as_path_info(ui_base())
 
 
 @dataclass(frozen=True)
 class Mount:
     """A request under the `prefix` of the published branch `branch`, which
-    `PublishedBranchMiddleware` routed to the API's URL: `prefix` is a path
-    as the URLconf matches it (under the script prefix, `script`), and
-    `api_base` is `api_base()`, a URL path. `content` is the branch as
-    stored when the middleware read it (`may_get_stored`), so that
-    `check_mount` reads no branch again; ``None``: read it then."""
+    `PublishedBranchMiddleware` routed to the UI app's page of the same URL
+    under `ui_base` (`ui_base()`, a URL path): `prefix` is a path as the
+    URLconf matches it (under the script prefix, `script`). `content` is
+    the branch as stored when the middleware read it (`may_get_stored`), so
+    that `check_mount_access` reads no branch again; ``None``: read it
+    then."""
 
     prefix: str
     branch: str
-    api_base: str
+    ui_base: str
     script: str = "/"
     content: Mapping | None = field(default=None, compare=False, repr=False)
 
@@ -102,15 +166,55 @@ class Mount:
         """`prefix` as a URL path (with the script prefix)."""
         return self.script + self.prefix[1:]
 
-    def href(self, canonical: str) -> str:
-        """The URL `canonical` (an API URL, absolute or a path) under the
-        prefix; any other URL as it is."""
-        return _moved(canonical, self.api_base, self.url_prefix)
+    def href(self, url: str) -> str:
+        """`url` (absolute or a path) under the prefix: an API URL with the
+        API's base (`api_base`) swapped for the prefix, a UI page's (one the
+        prefix claims: `middleware.routes_to_ui`) with the UI's base; any
+        other URL (one already under the prefix too) as it is."""
+        path = urlsplit(url).path
+        try:
+            api = api_base()
+        except NoReverseMatch:
+            api = None
+        if api is not None and path.startswith(api):
+            return _moved(url, api, self.url_prefix)
+        if path.startswith(self.ui_base) and self._claims_ui_path(path):
+            return _moved(url, self.ui_base, self.url_prefix)
+        return url
 
     def canonical(self, href: str) -> str:
-        """The API URL of `href`, a URL under the prefix; any other URL as
-        it is."""
-        return _moved(href, self.url_prefix, self.api_base)
+        """The UI app's URL of `href`, a URL under the prefix (the page the
+        prefix serves it with); any other URL as it is."""
+        return _moved(href, self.url_prefix, self.ui_base)
+
+    def _claims_ui_path(self, path) -> bool:
+        """Whether the UI path `path` is one of a page a prefix claims."""
+        from scrud_django.ui.branches.middleware import routes_to_ui
+
+        if not path.startswith(self.script):
+            return False
+        # As the server hands the path to Django: decoded.
+        path_info = "/" + unquote(path[len(self.script) :])
+        rest = unquote(path[len(self.ui_base) :])
+        return routes_to_ui(path_info, rest)
+
+
+def mount_at(branch: Branch) -> Mount | None:
+    """The `Mount` of the published `branch`'s prefix, which links into it
+    are mapped by (`Mount.href`); ``None`` when it has no prefix, when its
+    prefix is the UI's own base (main's pages: the middleware never mounts
+    it, so links must not lead there), or when the project does not include
+    the UI app."""
+    if not branch.prefix:
+        return None
+    try:
+        base = ui_base()
+    except NoReverseMatch:
+        return None
+    script = get_script_prefix()
+    if branch.prefix == as_path_info(base, script):
+        return None
+    return Mount(branch.prefix, branch.name, base, script)
 
 
 def _moved(url, old, new):
@@ -127,16 +231,34 @@ def mount_of(request) -> Mount | None:
     return mount if isinstance(mount, Mount) else None
 
 
+def ui_base_of(request) -> str | None:
+    """The UI's base path of `request`, a UI page's (``request.scrud_ui_base``,
+    which `scrud_django.ui.pages` sets), or ``None``."""
+    base = getattr(request, UI_BASE_ATTR, None)
+    return base if isinstance(base, str) else None
+
+
 def in_mount(request, href: str) -> str:
-    """`href`, an API URL, as the request's prefix serves it (`Mount.href`):
-    HTML links stay in the mount; JSON keeps the API's."""
+    """`href`, an API URL, as the request's page serves it: under its prefix
+    (`Mount.href`); else, on a UI page (`ui_base_of`), under the UI's base
+    instead of the API's (`api_base`); else as it is (the API serves JSON only: a request
+    that is no UI page's keeps the API's URLs)."""
     mount = mount_of(request)
-    return mount.href(href) if mount is not None else href
+    if mount is not None:
+        return mount.href(href)
+    ui_base = ui_base_of(request)
+    if ui_base is None:
+        return href
+    try:
+        base = api_base()
+    except NoReverseMatch:
+        return href
+    return _moved(href, base, ui_base)
 
 
 def published_branch(request) -> str:
     """The name of the published branch of `request`'s prefix (its
-    `Mount`), else ``main``, at the API's URLs."""
+    `Mount`), else ``main``: at the UI's own URLs and the API's."""
     mount = mount_of(request)
     return mount.branch if mount is not None else MAIN
 
@@ -156,9 +278,11 @@ def cookie_name(request) -> str:
 
 def cookie_path(request) -> str:
     """The path the cookie (`cookie_name`) is scoped to: the prefix's, else
-    the API's."""
+    a UI page's base (`ui_base_of`), else the API's."""
     mount = mount_of(request)
-    return mount.url_prefix if mount is not None else api_base()
+    if mount is not None:
+        return mount.url_prefix
+    return ui_base_of(request) or api_base()
 
 
 def selection_value(selection: Selection) -> str:
@@ -362,7 +486,7 @@ def may_get_chain(request, chain: list[Branch]) -> bool:
     R36): a branch shows its ancestors' items, so it would otherwise show a
     working branch its viewer may not see. A published ancestor is not
     checked: it is the site's presentation, opened at its own prefix only
-    with GET on it (`middleware.check_mount`)."""
+    with GET on it (`check_mount_access`)."""
     branch, *ancestors = chain
     return may_get(request, branch) and all(
         may_get(request, ancestor) for ancestor in ancestors if not ancestor.published
@@ -377,6 +501,31 @@ def branch_content(branch: Branch, using=None) -> Mapping | None:
         return {"name": branch.name, "rbac_context": branch.context}
     rows = Resource.objects.using(using) if using else Resource.objects
     return rows.filter(pk=branch.pk).values_list("content", flat=True).first()
+
+
+def may_get_mount(request, mount: Mount) -> bool:
+    """Whether the user of `request` may GET `mount`'s branch: as the
+    middleware read it (`Mount.content`), else as stored now (and still
+    published at the mount's prefix)."""
+    if mount.content is not None:
+        return may_get_stored(request, mount.content)
+    branch = branches().get(mount.branch)
+    return (
+        branch is not None
+        and branch.prefix == mount.prefix
+        and may_get(request, branch)
+    )
+
+
+def check_mount_access(request) -> None:
+    """Refuse a request under a published branch's prefix (`mount_of`)
+    whose user may not GET the prefix's branch (`may_get_mount`), as a
+    refused GET is refused: ``access.AccessDenied`` (401 for the anonymous
+    user, else 403, as `scrud_django.core.errors.error_answer` answers it).
+    The neutral check of the UI app's views."""
+    mount = mount_of(request)
+    if mount is not None and not may_get_mount(request, mount):
+        raise access.AccessDenied()
 
 
 def may_get_stored(request, content) -> bool:

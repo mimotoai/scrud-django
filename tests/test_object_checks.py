@@ -16,9 +16,9 @@ from django.utils.timezone import now
 from rest_framework.test import APIClient
 from scoped_rbac.models import Role, RoleAssignment
 
+from scrud_django.drf.permissions import content_of, resource_contexts
 from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
-from scrud_django.permissions import content_of, resource_contexts
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory

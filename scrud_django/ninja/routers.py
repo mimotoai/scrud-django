@@ -1,10 +1,9 @@
 """The ninja front end's per-type routers: each operation a thin adapter over
 the core facade (`scrud_django.core`), answering as the DRF route does."""
 
-import dataclasses
 import functools
 import inspect
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 
 from django.core.exceptions import PermissionDenied
 from django.core.paginator import InvalidPage
@@ -15,7 +14,7 @@ from ninja import Router
 from ninja.errors import HttpError
 from scoped_rbac import access, problems
 from scoped_rbac.ninja import request_json, resolve_user
-from scrudful._adapter import set_validator_headers
+from scrudful._adapter import expose_headers, set_validator_headers
 from scrudful._django import aware, conditional_response, precondition_headers
 from scrudful._hsr import is_preflight
 from scrudful.conditional import http_timestamp, quote_etag
@@ -24,7 +23,8 @@ from scrudful.ninja import Entity, ScrudfulRouter, described, scrudful
 from scrud_django.core import lists, resources, writes
 from scrud_django.core.bodies import check_body
 from scrud_django.core.collections import collection_context, collection_schema
-from scrud_django.core.types import SAFE_METHODS, requirement_for
+from scrud_django.core.errors import precondition_answer
+from scrud_django.core.types import SAFE_METHODS, mark_route, requirement_for
 from scrud_django.core.urls import absolute_reverse
 from scrud_django.ninja import negotiation
 from scrud_django.ninja.entry import entry
@@ -45,6 +45,9 @@ API_ATTR = "_scrud_ninja_api"
 
 #: The request attribute caching the request's resource type.
 TYPE_ATTR = "_scrud_ninja_resource_type"
+
+#: The methods whose answer is the item as its reader gets it (`type_router`).
+READ_METHODS = frozenset({"GET", "HEAD"})
 
 #: The methods whose row an item operation reads locked, in the request's
 #: write transaction (`scrud_django.ninja.entry`).
@@ -120,6 +123,18 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
     API's, which the links its HTTP Schema Resource describes (without a
     request) are reversed in.
 
+    A type whose hooks name the methods it serves (``TypeOptions.methods``:
+    a UI branch version's, GET, HEAD and OPTIONS) has routes for those
+    alone: any other is scrudful's 405 with the path's ``Allow``, once the
+    requester is authenticated and before anything is authorized, as
+    DRF's view answers a method its ``http_method_names`` leave out
+    (scoped-rbac's request check leaves it to the 405).
+
+    A GET or HEAD of an item answers what its reader gets
+    (`scrud_django.core.resources.item_read`: the type's ``read_view``, a
+    UI branch version narrowed to the items its reader may read), its ETag
+    too, as the DRF view's ``get_object`` gives it.
+
     OPTIONS of either route is scrud's own operation, not scrudful's
     automatic one (`_options`): its ``Allow`` is the core's
     (``core.resources.allowed_methods_for``), which looks nothing up for a
@@ -136,10 +151,17 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
     url_name = f"{slug}-detail"
     item = _item_operation_options(spec, urls_namespace)
     list_name = f"{slug}-list"
+    served = _served_methods(spec)
 
-    @router.api_operation(
-        ["GET", "HEAD"], "/", url_name=list_name, operation_id=f"{slug}_list"
-    )
+    def operation(methods, path, **kwargs):
+        """``router.api_operation`` of those of `methods` the type serves,
+        or no operation for none."""
+        methods = [method for method in methods if method in served]
+        if not methods:
+            return lambda handler: handler
+        return router.api_operation(methods, path, **kwargs)
+
+    @operation(["GET", "HEAD"], "/", url_name=list_name, operation_id=f"{slug}_list")
     @described(_collection_entity(spec, urls_namespace))
     def list_resources(request, response: HttpResponse):
         rtype = _resource_type(request, spec)
@@ -166,51 +188,36 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         _set_validators(response, etag, last_modified)
         return lists.list_body(request, rtype, page)
 
-    @router.api_operation(
-        ["POST"], "/", url_name=list_name, operation_id=f"{slug}_create"
-    )
+    @operation(["POST"], "/", url_name=list_name, operation_id=f"{slug}_create")
     @described(_item_entity(spec, urls_namespace))
     def create(request):
         rtype = _resource_type(request, spec)
         requirement = requirement_for(rtype)
         body = request_json(request)
-        check_body(body, present=_body_present(request))
-        resources.check_request(request, rtype, requirement, list_route=True, body=body)
-        headers = precondition_headers(request)
-        with ExitStack() as locks:
-            # Inside the entry's transaction (`entry`), held until it ends:
-            # conditional creates of the type run one at a time, each
-            # evaluated against the list the previous one left.
-            if lists.list_validators_needed(headers):
-                locks.enter_context(writes.conditional_create_lock(rtype, write_db()))
-            failed = lists.evaluate_list_preconditions(
-                request.method,
-                headers,
-                lambda: _requested_page(
-                    lambda: lists.create_list_validators(
-                        request,
-                        rtype,
-                        requirement=requirement,
-                        ignored=lists.ignored_list_parameters(),
-                        using=write_db(),
-                    )
-                ),
+        # Inside the entry's transaction (`entry`), which holds a
+        # conditional create's lock until it ends.
+        answer = _requested_page(
+            lambda: writes.create_answer(
+                request,
+                rtype,
+                body,
+                requirement=requirement,
+                using=write_db(),
+                present=_body_present(request),
+                ignored=lists.ignored_list_parameters(),
+                uniform=True,
             )
-            if failed is not None:
-                return _precondition_response(request, failed)
-            obj = writes.create(
-                request, rtype, body, requirement=requirement, using=write_db()
-            )
+        )
+        if answer.problem is not None:
+            return _problem_response(request, answer.problem)
         response = _serving_api(request).create_response(
-            request, obj.content, status=201
+            request, answer.content, status=answer.status
         )
-        response["Location"] = absolute_reverse(
-            rtype.route_name_detail(), args=[obj.pk], request=request
-        )
-        _set_validators(response, *resources.item_validators(obj))
+        response["Location"] = answer.location
+        _set_validators(response, answer.etag, answer.last_modified)
         return response
 
-    @router.api_operation(
+    @operation(
         ["GET", "HEAD"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_retrieve"
     )
     @scrudful(**item)
@@ -218,37 +225,22 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         _as_document(request, response, spec)
         return obj.content
 
-    @router.api_operation(
-        ["PUT"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_replace"
-    )
+    @operation(["PUT"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_replace")
     @scrudful(**item)
     def replace(request, slug: str, obj, response: HttpResponse):
-        rtype = _resource_type(request, spec)
-        written = writes.update(
-            request,
-            rtype,
-            obj,
-            request_json(request),
-            requirement=requirement_for(rtype),
-            using=write_db(),
-        )
-        setattr(request, WRITTEN_ATTR, written)
+        # scrudful's item decorator looked `obj` up and evaluated its
+        # preconditions.
+        answer = _item_write(request, spec, obj, request_json(request))
+        setattr(request, WRITTEN_ATTR, answer.written)
         _as_document(request, response, spec)
-        return written.content
+        return answer.content
 
-    @router.api_operation(
+    @operation(
         ["DELETE"], "/{slug}/", url_name=url_name, operation_id=f"{slug}_destroy"
     )
     @scrudful(**item)
     def destroy(request, slug: str, obj):
-        rtype = _resource_type(request, spec)
-        writes.destroy(
-            request,
-            rtype,
-            obj,
-            requirement=requirement_for(rtype),
-            using=write_db(),
-        )
+        _item_write(request, spec, obj, None)
         return _no_content()
 
     # scrud's own OPTIONS, replacing scrudful's automatic one on each path.
@@ -263,6 +255,17 @@ def type_router(spec: TypeSpec, *, urls_namespace: str | None = None) -> Scrudfu
         return _options(request, spec, slug)
 
     return router
+
+
+#: The methods of a type's routes but OPTIONS (`type_router`).
+ROUTED_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "DELETE"})
+
+
+def _served_methods(spec) -> frozenset[str]:
+    """The methods of `ROUTED_METHODS` `spec`'s type serves: those its
+    ``TypeOptions.methods`` name, else all."""
+    methods = spec.options.methods
+    return ROUTED_METHODS if methods is None else ROUTED_METHODS & methods
 
 
 def _options(request, spec, slug):
@@ -487,26 +490,42 @@ def _serving_api(request):
 
 def _precondition_response(request, result):
     """scrudful's answer to the failed precondition `result`, as the DRF
-    routes answer it: a bare 304, else problem details
-    (``problems.conditional_problem``) with their Links, written by the
-    serving API's renderer (answered natively while uniform errors are off,
-    `scrud_django.ninja.errors.answer_natively_when_off`)."""
+    routes answer it (`scrud_django.core.errors.precondition_answer`): a bare
+    304, else its problem (`_problem_response`)."""
     if result.body is None:
         return conditional_response(result)
-    result = dataclasses.replace(
-        result, body=problems.conditional_problem(request, result)
+    return _problem_response(
+        request, precondition_answer(request, result, uniform=True)
     )
 
-    def render(data, status, content_type):
-        response = _serving_api(request).create_response(request, data, status=status)
-        response["Content-Type"] = content_type
-        return response
 
-    return conditional_response(
-        result,
-        link=problems.PROBLEM_LINKS,
-        content_type=problems.PROBLEM_JSON,
-        render=render,
+def _problem_response(request, problem):
+    """The answer of a failed precondition other than a 304, `problem`
+    (``(status, body, headers)`` of `scrud_django.core.errors
+    .precondition_answer` with uniform errors): problem details with their
+    Links, written by the serving API's renderer (answered natively while
+    uniform errors are off, `scrud_django.ninja.errors
+    .answer_natively_when_off`)."""
+    status, body, headers = problem
+    response = _serving_api(request).create_response(request, body, status=status)
+    for name, value in headers.items():
+        response[name] = value
+    expose_headers(response)
+    return response
+
+
+def _item_write(request, spec, obj, body):
+    """The write of the item `obj` of `spec`'s type by `request`'s method
+    (`scrud_django.core.writes.write_item`), on the write database."""
+    rtype = _resource_type(request, spec)
+    return writes.write_item(
+        request,
+        rtype,
+        obj,
+        request.method,
+        body,
+        requirement=requirement_for(rtype),
+        using=write_db(),
     )
 
 
@@ -539,7 +558,7 @@ def _item_operation_options(spec, urls_namespace):
             body = request_json(request)
         lock = request.method in LOCKED_METHODS and not allow_copy
         with _options_denials(request):
-            return resources.load_for_read(
+            obj = resources.load_for_read(
                 request,
                 rtype,
                 slug,
@@ -548,6 +567,11 @@ def _item_operation_options(spec, urls_namespace):
                 body=body,
                 lock_using=write_db() if lock else None,
             )
+        if request.method in READ_METHODS:
+            # What its reader gets (the type's read_view), which the answer
+            # and its validators are made of, as DRF's get_object gives it.
+            obj.content, obj.etag, _ = resources.item_read(request, rtype, obj)
+        return obj
 
     def targets(request):
         return resources.item_link_targets(
@@ -622,6 +646,17 @@ def vary_on_accept(api, url_names, *, described=frozenset()) -> None:
         [name for name in url_names if name in described],
         functools.partial(_varying_on_accept, preflights=False),
     )
+
+
+def mark_core_routes(api, slugs) -> None:
+    """Mark `api`'s URL patterns named in `slugs` (a mapping of route name to
+    the slug of its type: the types' and the computed types' routes) as the
+    core's (`scrud_django.core.types.mark_route`): their handlers call only
+    the core, so they authorize nothing beyond its checks. Call it last,
+    after every other wrapping of them, before ``api.urls`` is read: the
+    mark names the view it is set on, and the type's slug."""
+    for name, slug in slugs.items():
+        _wrap_patterns(api, [name], functools.partial(mark_route, slug=slug))
 
 
 def _wrap_patterns(api, url_names, wrap):

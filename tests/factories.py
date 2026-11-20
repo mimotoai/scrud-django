@@ -3,6 +3,8 @@ from uuid import uuid4
 import factory
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.utils.timezone import now
+from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.models import Resource, ResourceType
 
@@ -52,3 +54,19 @@ class ResourceFactory(factory.django.DjangoModelFactory):
     resource_type = factory.SubFactory(ResourceTypeFactory)
     modified_at = factory.LazyFunction(timezone.now)
     etag = factory.LazyFunction(lambda: uuid4().hex)
+
+
+def user_with(*grants, superuser=False):
+    """A user holding each ``(role definition, context)`` of `grants`."""
+    user = UserFactory(is_staff=superuser, is_superuser=superuser)
+    for definition, context in grants:
+        role = Role(definition=definition, etag=uuid4().hex, modified_at=now())
+        role.save()
+        RoleAssignment(
+            user=user,
+            role=role,
+            rbac_context=context,
+            etag=uuid4().hex,
+            modified_at=now(),
+        ).save()
+    return user

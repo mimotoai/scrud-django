@@ -5,20 +5,16 @@ validators and Links, and the ``Allow`` of an OPTIONS (`allowed_methods`),
 asked with a plain Django request and a neutral requirement, as the DRF
 routes answer them."""
 
-from uuid import uuid4
-
 import pytest
 from django.contrib.auth.models import AnonymousUser
 from django.http import Http404
 from django.test import RequestFactory
 from django.urls import reverse
-from django.utils.timezone import now
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.test import APIClient
 from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac import access
-from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django import collection_type_uri_for
 from scrud_django.core.authz import content_of
@@ -26,7 +22,7 @@ from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration, get_resource_type_for
 
-from .factories import UserFactory
+from .factories import UserFactory, user_with  # noqa: F401  (re-exported)
 from .steps import *  # noqa: F403, F401
 
 JSON_LD = "http://www.w3.org/ns/json-ld#context"
@@ -35,22 +31,6 @@ SCRUD_WORKFLOW = {
     "condition": {"operator": "scrud_workflow", "authorized_transitions": ["any"]}
 }
 CONTEXTS = ["", "a", "b", ["a", "b"]]
-
-
-def user_with(*grants, superuser=False):
-    """A user holding each ``(role definition, context)`` of `grants`."""
-    user = UserFactory(is_staff=superuser, is_superuser=superuser)
-    for definition, context in grants:
-        role = Role(definition=definition, etag=uuid4().hex, modified_at=now())
-        role.save()
-        RoleAssignment(
-            user=user,
-            role=role,
-            rbac_context=context,
-            etag=uuid4().hex,
-            modified_at=now(),
-        ).save()
-    return user
 
 
 def users():
@@ -270,7 +250,7 @@ def test_object_readable_matches_the_drf_views():
     view's ``object_readable`` answers it, which tells its 404 from its
     403."""
     from scrud_django.core.resources import object_readable
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.views import ResourceViewSet
 
     resource_type = json_ld()
     requirement = [GrantsLeaf(JSON_LD)]
@@ -466,7 +446,7 @@ def test_drf_views_keep_their_refusals_and_their_not_path():
     from rest_framework.exceptions import PermissionDenied
     from scoped_rbac.permissions import IsAuthorized
 
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.views import ResourceViewSet
 
     from .urls import ContextDenyingIsAuthorized
 
@@ -1056,3 +1036,54 @@ def test_allowed_methods_for_asks_each_request_check_once():
         "HEAD",
     ]
     assert sorted(asked) == ["DELETE", "GET", "PUT"]
+
+
+@pytest.mark.django_db
+@test_context
+def test_load_for_read_skips_a_request_check_the_caller_asked(monkeypatch):
+    """With ``request_checked`` the request check is the caller's (a UI page
+    asks it before its prefix and header checks): not asked again; the
+    lookup and the object check still are."""
+    from scrud_django.core import resources
+
+    resource_type = json_ld()
+    requirement = [GrantsLeaf(JSON_LD)]
+    note = store("a")
+    hidden = store("b")
+    matrix = users()
+    asked = []
+    check_request = resources.check_request
+
+    def recording(*args, **kwargs):
+        asked.append(args[0].method)
+        return check_request(*args, **kwargs)
+
+    monkeypatch.setattr(resources, "check_request", recording)
+
+    def load(name, method, pk, **options):
+        return resources.load_for_read(
+            request_of(method, matrix[name]),
+            resource_type,
+            pk,
+            requirement=requirement,
+            method=method,
+            **options,
+        )
+
+    assert load("reader-a", "GET", note.pk) == note
+    assert asked == ["GET"]
+    asked.clear()
+    assert load("reader-a", "GET", note.pk, request_checked=True) == note
+    assert asked == []
+    # The object check: hidden is a 404, readable but refused a 403.
+    with pytest.raises(Http404):
+        load("reader-a", "GET", hidden.pk, request_checked=True)
+    with pytest.raises(access.AccessDenied):
+        load("reader-a", "DELETE", note.pk, request_checked=True)
+    # Unchecked, the anonymous user's request is refused only by the object
+    # check, as a hidden object.
+    with pytest.raises(Http404):
+        load("anonymous", "GET", note.pk, request_checked=True)
+    with pytest.raises(Http404):
+        load("reader-a", "GET", "no-such-key", request_checked=True)
+    assert asked == []

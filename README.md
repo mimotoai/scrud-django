@@ -11,6 +11,17 @@ uv add scrud-django
 # or: pip install scrud-django
 ```
 
+django-ninja is part of the base install, and `scrud_django.urls` serves the
+API through it. Projects that serve the API through Django REST Framework
+install the `drf` extra (see [Staying on DRF](#staying-on-drf)):
+
+```bash
+uv add "scrud-django[drf]"
+```
+
+(The `ninja` extra of 0.16 stays as an empty alias, so existing requirement
+files keep working.)
+
 For haystack search support, install the `search` extra:
 
 ```bash
@@ -20,23 +31,24 @@ uv add "scrud-django[search]"
 ## Server-rendered UI
 
 The optional `scrud_django.ui` app (`pip install "scrud-django[ui]"`) serves
-every resource URL as `text/html` as well, rendered on the server through
+a `text/html` page for every resource type at the site's own URLs
+(`/todo-lists/7/`; `/api/` stays JSON only), rendered on the server through
 templates and stylesheets stored as resources, layered per RBAC context and
-shown exactly as the viewer is authorized, with htmx for editing. See the
-[UI documentation](docs/ui.md).
+shown exactly as the viewer is authorized, with htmx for editing. Include it
+last in the root URLconf: `path("", include("scrud_django.ui.urls"))`. See the
+[UI documentation](docs/ui.md) and
+[Migrating to 0.17.0](#migrating-to-0170-the-ui-app).
 
-## django-ninja (preview)
+## The API (django-ninja)
 
-scrud-django can also serve its resource types through
-[django-ninja](https://django-ninja.dev), answering as the DRF routes do (the
+scrud-django serves its resource types through
+[django-ninja](https://django-ninja.dev), answering as its DRF routes do (the
 same statuses, headers and bodies; `tests/test_front_end_parity.py` replays
-the same exchanges against both). It is additive and a preview: nothing
-changes for a DRF project.
-
-```bash
-uv add "scrud-django[ninja]"
-# or: pip install 'scrud-django[ninja]'
-```
+the same exchanges against both). `include("scrud_django.urls")` mounts
+`scrud_django.ninja.api(types=[])`, in the URL namespace `scrud`, and
+scoped-rbac's semantic documents at `semantic/` (see
+[Configuration](#required)). To serve types of your own, build the API with
+them and include it **instead of** `scrud_django.urls`:
 
 ```python
 # urls.py
@@ -56,19 +68,31 @@ scrud_api = api(
 )
 
 urlpatterns = [
-    path("api/", scrud_api.urls),
-    path("", include("scoped_rbac.semantic_urls")),
+    path("api/", scrud_api.urls),  # in place of include("scrud_django.urls")
+    path("api/semantic/", include("scoped_rbac.semantic_urls")),
 ]
 ```
 
 * The factory is `scrud_django.ninja.api(*, types=(), urls_namespace="scrud",
-  **ninja_kwargs)`. `types` are `TypeSpec`s, from
+  ui_types=True, **ninja_kwargs)`. `types` are `TypeSpec`s, from
   `registration.json_resource_type_spec(...)` and
   `registration.computed_resource_type_spec(...)`; it serves them and always
   the built-in types (`json-schema/`, `json-ld/`, `indexing-policies/`,
   `workflow-policies/`: every type's Links name its schema and context
   resources there), with the service catalog (`services/`), scoped-rbac's
-  role routes and the collection documents.
+  role routes and the collection documents. With `ui_types` (the default)
+  it also serves the UI app's types when `scrud_django.ui` is installed
+  (`ui-components/`, `ui-stylesheets/`, `ui-css/`, `ui-js/`, `ui-branches/`,
+  `ui-branch-versions/`, `ui-pushes/`, with their write and read behaviour)
+  and the studio's computed types when `scrud_django.ui.studio` is too
+  (`ui-branch-items/`, `ui-branch-status/`, `ui-type-catalog/`,
+  `ui-selectable-branches/`, `ui-push-previews/`), as `scrud_django.drf.urls`
+  serves them on DRF; `ui_types=False` leaves them out (one API of several
+  serves them). A type of yours cannot take one of their slugs.
+  `json_resource_type_spec(..., options=TypeOptions(...))` gives a spec the
+  hooks the keyword arguments do not (`scrud_django.core.types.TypeOptions`:
+  write and read behaviour, the methods it serves), merged with `checks`,
+  `object_checks` and `content_filter`.
 * It serves no interactive docs and no OpenAPI document unless you pass
   `docs_url=` and `openapi_url=` (they go to `NinjaAPI`, as the rest of
   `ninja_kwargs` do); those routes are public. Each operation has an
@@ -131,6 +155,34 @@ urlpatterns = [
   Basic credentials suit non-browser API clients, not browsers. Send Basic
   credentials only over TLS. See
   `ninja-drf-authenticators` in the follow-ups.
+
+  To keep a DRF project's clients as they are, use scrud's own hook instead,
+  which runs DRF's authentication classes on the ninja request (DRF
+  installed):
+
+  ```python
+  SCOPED_RBAC = {..., "NINJA_USER": "scrud_django.drf.auth.drf_user"}
+  ```
+
+  It runs `REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"]`, or the
+  classes (or dotted paths) of the `SCRUD_DRF_AUTHENTICATION` setting when
+  it is set, and the first that authenticates the request gives the user
+  (none: the anonymous user). Each client is then the user it is on the DRF
+  routes and is refused alike: credentials an authenticator refuses are the
+  401 DRF answers (uniform errors on or off), any other error an
+  authenticator raises (a `Throttled`, say) is answered as DRF answers it,
+  a 401 carries the first authenticator's challenge as `WWW-Authenticate`
+  as on DRF (`Basic realm="api"` when Basic authentication comes first;
+  none when the session's does, DRF's default), a session user's write
+  without a valid CSRF token is a 403 (`CSRF Failed: ...`) as with DRF's
+  `SessionAuthentication`, and Basic and token clients need no CSRF token
+  (`tests/test_ninja_auth.py` compares each with the DRF route). One
+  difference, stricter and safe: when Basic or token authentication comes
+  before the session's and a browser sends the session user's own Basic or
+  token credentials together with that user's session cookie, DRF takes
+  the write as Basic or token (no CSRF check) while ninja's `resolve_user`
+  CSRF-checks the session's user however it was found: a write without a
+  CSRF token is a 403 on ninja, a 200 on DRF.
 * A computed type's `compute(request, key)` receives a plain Django
   `HttpRequest` on ninja (a DRF `Request` on DRF): read `request.GET` and
   `request.user`, not `request.query_params` or `request.data`, and do not
@@ -173,13 +225,22 @@ urlpatterns = [
 
 * Two APIs in one process need distinct `urls_namespace`s. Links (`href`,
   `Location`, `Link` headers, `services/`) are reversed within the namespace
-  the request was resolved under.
-* A ninja-only URLconf must also `include("scoped_rbac.semantic_urls")`: the
-  role routes' (`roles/`, `role-assignments/`, `user-rbac-policy/`) semantic
-  Links reverse those global names, and answer 500 without it.
+  the request was resolved under, and the UI finds a type's routes by it.
+  Django reverses a namespace's names within its first include only, so an
+  API of your own in the default namespace `scrud` beside
+  `include("scrud_django.urls")` (also `scrud`) fails: every scrudful route
+  of the one included second answers 500 (its HTTP Schema Resource route
+  cannot be reversed), and links in the namespace point at the first.
+  `manage.py check` reports a scrud API's namespace included more than once
+  (`scrud_django.E010`). Include your `api()` in place of
+  `scrud_django.urls`, or give it another `urls_namespace`.
+* A URLconf of your own `api()` must also `include("scoped_rbac.semantic_urls")`
+  once, as `scrud_django.urls` does: the role routes' (`roles/`,
+  `role-assignments/`, `user-rbac-policy/`) semantic Links reverse those
+  global names, and answer 500 without it.
 * `services/` lists the types the serving API routes. A type registered in
-  the process that it does not route (another API's, or a UI type on a ninja
-  API) is left out, on both front ends.
+  the process that it does not route (another API's, or a UI type on an
+  `api(ui_types=False)`) is left out, on both front ends.
 * Content negotiation is DRF's with DRF's default renderers (`JSONRenderer`,
   `BrowsableAPIRenderer`): an `Accept` none of a route's renderers serves
   (`Accept: application/xml`) is DRF's 406 (`not_acceptable`), and a
@@ -189,26 +250,323 @@ urlpatterns = [
   `ninja-renderer-settings`). The document routes choose their media type as
   DRF does, and JSON is indented as DRF indents it for
   `Accept: application/json; indent=4`.
-* The UI types (`scrud_django.ui`) and the studio types are not served on
-  ninja yet, nor are the `ui-css-files` and `ui-js-files` views, and a ninja
-  route never answers `text/html`: a request that DRF would answer as HTML
-  (`Accept: text/html`, `?format=api`) gets the JSON answer.
-* `scrud_django.urls` stays DRF until the release that switches it; include
-  it as before for a DRF project.
+* The `ui-css-files` and `ui-js-files` views are the UI app's, at its base,
+  whichever front end serves the API. A ninja route never answers
+  `text/html`: a request that DRF would answer as HTML (`Accept: text/html`,
+  `?format=api`) gets the JSON answer.
+* A studio computed type's answer links to the API serving the request, so
+  its ETag (the hash of that content) is that API's own: with both front
+  ends mounted, the two answers differ only in those links and their ETag.
+
+## Staying on DRF
+
+The Django REST Framework front end is the `drf` extra, in the
+`scrud_django.drf` package, and answers as it did before 0.17.0, apart from
+the UI app's move off `/api/` (see
+[Migrating to 0.17.0: the UI app](#migrating-to-0170-the-ui-app)):
+
+```bash
+uv add "scrud-django[drf]"
+```
+
+Add `rest_framework` to `INSTALLED_APPS`, set scrud's exception handler, and
+include `scrud_django.drf.urls` where the ninja API's `scrud_django.urls`
+would go, with scrudful's HTTP Schema Resource route once in the root
+URLconf (see [Configuration](#required)):
+
+```python
+# settings.py
+REST_FRAMEWORK = {
+    ...,
+    "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
+}
+```
+
+```python
+# urls.py (the root URLconf)
+from scrudful.rest_framework import hsr_urls
+
+urlpatterns = [
+    path("api/", include("scrud_django.drf.urls")),
+    path("", include(hsr_urls())),
+]
+```
+
+`scrud_django.drf.urls` includes scoped-rbac's DRF role routes and its
+semantic documents (`semantic/`). Register types of your own on it with
+`registration.json_resource_type` (see
+[Registering resource types](#registering-resource-types)); the views,
+serializers, filters and permissions are in `scrud_django.drf` (see
+[Migrating to 0.17.0: the DRF adapter](#migrating-to-0170-the-drf-adapter)).
+DRF's authentication classes authenticate these routes as before; to keep
+the same clients on a ninja API, use the `scrud_django.drf.auth.drf_user`
+hook (see [The API (django-ninja)](#the-api-django-ninja)).
+
+## Your own models with workflow (ninja)
+
+An app's own Django models (not scrud resources) can be served through ninja
+with scrud's workflow: its policies, its `scrud_post_save` and
+`scrud_post_delete` signals and its `SCRUD_WORKFLOW_ACTIONS`. A model needs no
+scrud base class. You write the router from scoped-rbac's public ninja blocks
+and add `scrud_django.ninja.workflow_check`, which returns a `ModelWorkflow`:
+
+```python
+workflow_check(iri, *, model, schema_out=None, state_of=None, contexts_for=None)
+```
+
+* `iri` is the model's type IRI, the `resource_type` of its policies.
+* Pass exactly one of `schema_out` (the state a policy's conditions read is the
+  JSON the API answers with, `schema_out`'s `model_dump(mode="json")`) or
+  `state_of` (a function of the instance returning a mapping); anything else is
+  a `TypeError`. The default state reads an unsaved instance on a create, so
+  `schema_out`'s fields the database fills in must be optional (`id: int | None
+  = None`), else a create is a `TypeError` that says so; or pass `state_of=`.
+* `contexts_for` is the instance's contexts, by default scoped-rbac's
+  `object_contexts` (`rbac_contexts`, else `rbac_context`). Pass the same
+  function to scoped-rbac's blocks.
+* Call it once per model, where the router is built. It also governs the
+  model (below).
+
+The router below is the one `tests/own_models.py` runs (the test suite checks
+that the README shows it):
+
+```python
+from django.http import HttpResponse
+from ninja import Schema
+from scoped_rbac import access
+from scoped_rbac.ninja import (
+    authorize_write,
+    checked_list,
+    default_contexts_from,
+    detail_iri,
+    item_check,
+    list_check,
+    rbac_load,
+    request_json,
+    resolve_user,
+    validate_body,
+)
+from scrudful.ninja import ScrudfulRouter, scrudful, scrudful_create, scrudful_list
+
+from scrud_django.ninja import workflow_check
+
+from .models import Article
+
+
+class ArticleIn(Schema):
+    title: str = ""
+    state: str = "draft"
+    rbac_context: str = ""
+
+
+class ArticleOut(Schema):
+    # Optional: the workflow reads ArticleOut's JSON of a create's unsaved
+    # instance too, which has no primary key yet.
+    id: int | None = None
+    title: str
+    state: str
+    rbac_context: str
+
+
+ARTICLE = "myapp://Article"
+
+# Its workflow reads the JSON the API answers with (ArticleOut's).
+ARTICLE_WORKFLOW = workflow_check(ARTICLE, model=Article, schema_out=ArticleOut)
+
+DETAIL = "article-detail"
+QUERYSET = Article.objects.all()
+
+
+def href(request, obj):
+    return detail_iri(request, DETAIL, obj.pk)
+
+
+def rows():
+    return QUERYSET.order_by("pk")
+
+
+# The request and object checks run inside ARTICLE_WORKFLOW.covering: a grant
+# conditioned on scrud_workflow allows a POST to the list and a PUT to an item
+# (the workflow check then decides the transition), and refuses anything
+# else, as on scrud's resource routes. A list's GET is never covered.
+load = ARTICLE_WORKFLOW.covered(
+    rbac_load(Article, ARTICLE, queryset=QUERYSET, post_save_checked=True),
+    item=True,
+)
+before = item_check(ARTICLE, load=load)["before"]
+create_check = {"before": ARTICLE_WORKFLOW.covered(before, item=False)}
+item_hooks = {"load": load, "before": ARTICLE_WORKFLOW.covered(before, item=True)}
+listing = list_check(ARTICLE, lambda request, **path_params: rows())
+
+
+def updater(obj, values):
+    """The save of an update: `values` set on `obj` (the row as
+    ``save_checked`` locked it), then saved."""
+
+    def save():
+        for name, value in values.items():
+            setattr(obj, name, value)
+        obj.save()
+        return obj
+
+    return save
+
+
+router = ScrudfulRouter()
+
+
+@router.api_operation(
+    ["GET", "HEAD"],
+    "/",
+    response=list[ArticleOut],
+    url_name="article-list",
+    operation_id="article_list",
+)
+@scrudful_list(href_func=href, page_size=100, max_page_size=1000, **listing)
+def list_articles(request):
+    return checked_list(request)
+
+
+@router.post(
+    "/",
+    response={201: ArticleOut},
+    url_name="article-list",
+    operation_id="article_create",
+)
+@scrudful_create(location_func=href, **create_check)
+def create_article(request):
+    resolve_user(request)
+    content = request_json(request)
+    contexts = access.call_contexts_from(
+        default_contexts_from,
+        access.contexts_body(content),
+        where=f"create of {ARTICLE}",
+    )
+    with ARTICLE_WORKFLOW.covering(request, item=False):
+        authorize_write(request, ARTICLE, contexts, access.body_mapping(content))
+    values = validate_body(request, ArticleIn, content)
+    return ARTICLE_WORKFLOW.save_checked(
+        request,
+        instance=None,
+        values=values,
+        save=lambda: Article.objects.create(**values),
+        queryset=QUERYSET,
+    )
+
+
+@router.api_operation(
+    ["GET", "HEAD"],
+    "/{pk}/",
+    response=ArticleOut,
+    url_name=DETAIL,
+    operation_id="article_retrieve",
+)
+@scrudful(**item_hooks)
+def retrieve_article(request, pk: str, obj):
+    return obj
+
+
+@router.put(
+    "/{pk}/", response=ArticleOut, url_name=DETAIL, operation_id="article_replace"
+)
+@scrudful(**item_hooks)
+def replace_article(request, pk: str, obj):
+    values = validate_body(request, ArticleIn, request_json(request))
+    return ARTICLE_WORKFLOW.save_checked(
+        request,
+        instance=obj,
+        values=values,
+        save=updater(obj, values),
+        queryset=QUERYSET,
+    )
+
+
+@router.delete(
+    "/{pk}/", response={204: None}, url_name=DETAIL, operation_id="article_destroy"
+)
+@scrudful(**item_hooks)
+def destroy_article(request, pk: str, obj):
+    ARTICLE_WORKFLOW.delete_checked(request, instance=obj)
+    # No content, so no Content-Type (ninja's would be application/json).
+    response = HttpResponse(status=204)
+    del response["Content-Type"]
+    return response
+```
+
+* `save_checked` runs the whole write in one transaction: for an update it
+  locks the stored row (`select_for_update`) and copies the row's stored fields
+  onto `instance`, then runs the workflow check against the stored and the
+  proposed state, scoped-rbac's `save_checked` under `authorizing_write`, and
+  your `save`. So a router must pass every change through `values` and `save`:
+  a field set on the instance beforehand is overwritten. The transaction
+  commits, and `scrud_post_save` and the `SCRUD_WORKFLOW_ACTIONS` for the IRI
+  run on commit, with `sender` the model class, `instance`, `resource_type_uri`
+  the IRI, `using` the write's database, and `transitions`, `transition_data`
+  and `transition_error` computed from `state_of`, as for a resource (an
+  instance in no context, `contexts_for` giving none, is checked and reported
+  under the settings default, in context `None`). `save` must return the one
+  instance it saved (a `TypeError` otherwise). If it wrote something other
+  than the checked values (a `Model.save` override, say), each context where
+  the saved state is invalid is logged as a warning on the
+  `scrud_django.workflow` logger. `delete_checked` locks the row the same way
+  (a 404 when another request deleted it meanwhile, and no signal) and sends
+  `scrud_post_delete` on commit.
+* Per-transition grants (conditioned on `scrud_workflow`) work because the
+  router wraps its request and object checks with `covering` and `covered`,
+  which run them inside `authorizing_write`: a grant conditioned on
+  `scrud_workflow` then allows a POST to the list and a PUT to an item, and the
+  workflow check decides the transition, as on scrud's resource routes. Without
+  the wrapper such a grant allows nothing. A covered check is allowed on the
+  promise that the workflow check follows: wrap only the checks of a POST to
+  the list or a PUT to an item whose write goes through
+  `ModelWorkflow.save_checked`. A covered route that saves any other way lets
+  those grants write unchecked.
+* The policies for a model are `WorkflowPolicy` resources whose `resource_type`
+  is the model's IRI, or `SCRUD_WORKFLOW["DEFAULT_WORKFLOW_POLICIES"]`, as for
+  a scrud type (see Workflow policies). The system checks E002, E003, E005 and
+  W001 cover them, and W006 accepts a governed model's IRI.
+* A save of a governed model outside `save_checked` (the admin, the shell, a
+  management command, an endpoint that forgot the check) is not refused: each
+  context where it is invalid is logged as a warning on the
+  `scrud_django.workflow` logger, as for a resource. Whether such saves should
+  be refused is open (scrud-django's GitLab issue #56,
+  https://gitlab.com/dcharbon/scrud-django/-/issues/56). Server code that has
+  done the check itself wraps its saves in
+  `scrud_django.core.transitions.checked_save(Model)`. As for a resource,
+  `QuerySet.update()`, `bulk_create()` and `bulk_update()` send no signals and
+  are not logged. The model's `state_of` and `contexts_for` run on every such
+  save too: one that raises fails it (in the admin, say).
+* Deletes are not checked against the workflow, only authorized (follow-up
+  `delete-no-workflow-check`).
+* The router is written by hand because scoped-rbac 0.12.1's `crud_router`
+  takes no extra checks (follow-up `scoped-rbac-crud-router-checks`). It
+  leaves out what `crud_router` does beyond these blocks: its OPTIONS
+  `allowed` hook (the private `_allowed_as_drf`; scrudful decides `Allow`
+  from each method's `before` and `load` instead), its running a conditional
+  create in one transaction (the private `_conditional_create_atomic`; the
+  example's model has no validators, so a create takes no precondition), the
+  detail-route mark (`DETAIL_MARK`, not exported), the PATCH route, and the
+  schema and context links (`scoped_rbac.semantic`, which needs a type IRI
+  without `/`). The router's own checks run before the write transaction, on
+  the row as loaded (follow-up `own-model-router-checks-before-transaction`).
+
+The demo's `articles` app (`demo/articles/`) is a working copy: a model whose
+policy has a draft and a published state.
+
 
 ## Configuration
 
 ### Required
 
-Add `django.contrib.auth`, `django.contrib.contenttypes`, `rest_framework`,
-`reversion`, `scoped_rbac` and `scrud_django` to `INSTALLED_APPS`:
+Add `django.contrib.auth`, `django.contrib.contenttypes`, `reversion`,
+`scoped_rbac` and `scrud_django` to `INSTALLED_APPS` (and `rest_framework`
+on DRF, see [Staying on DRF](#staying-on-drf)):
 
 ```python
 INSTALLED_APPS = [
   ...
   'django.contrib.auth',
   'django.contrib.contenttypes',
-  'rest_framework',
   'reversion',
   'scoped_rbac',
   'scrud_django',
@@ -216,7 +574,8 @@ INSTALLED_APPS = [
 ]
 ```
 
-Include the scrud-django URLs. They include scoped-rbac's semantic URLs
+Include the scrud-django URLs, the ninja API (`scrud_django.ninja.api`, in
+the URL namespace `scrud`). They include scoped-rbac's semantic URLs
 (`semantic/`), which serve the schemas and JSON-LD contexts of scoped-rbac's
 own Role, RoleAssignment and Policy resources (the role endpoints' `Link`
 headers point there); a scrud resource type's schema and context are its
@@ -228,11 +587,14 @@ urlpatterns = [
 ]
 ```
 
-If you mount URLs yourself, include `scoped_rbac.semantic_urls`, for example
+On DRF, include `scrud_django.drf.urls` instead (it includes the semantic
+URLs too). If you mount URLs yourself (your own `api()`), include
+`scoped_rbac.semantic_urls` once, for example
 `path("semantic/", include("scoped_rbac.semantic_urls"))`.
 
-Include scrudful's HTTP Schema Resource route once, in the root URLconf, and
-set the base URL the API is served at. An OPTIONS is a 204 without content
+Set the base URL the API is served at, and, on DRF, include scrudful's HTTP
+Schema Resource route once, in the root URLconf (the ninja API serves its
+routes' HTTP Schema Resources itself). An OPTIONS is a 204 without content
 whose `Link` names the path's HTTP Schema Resource (HSR), a JSON document
 describing its methods that a GET serves; scrudful builds it without a request,
 so its links, and the HSR link each response carries, resolve against
@@ -247,11 +609,11 @@ that method may not reach, is a 404; a requester who may use no method there
 gets 204 with `Allow: OPTIONS` whether or not it exists.
 
 ```python
-# urls.py (the root URLconf)
+# urls.py (the root URLconf), on DRF
 from scrudful.rest_framework import hsr_urls
 
 urlpatterns = [
-    path("api/", include("scrud_django.urls")),
+    path("api/", include("scrud_django.drf.urls")),
     path("", include(hsr_urls())),
 ]
 ```
@@ -261,8 +623,11 @@ urlpatterns = [
 SCRUDFUL = {"BASE_URL": "https://api.example.com"}
 ```
 
-Without the include, every request of a scrud view raises
-`ImproperlyConfigured` (and `manage.py check` reports `scrudful.E003`).
+On DRF, without the include, every request of a scrud view raises
+`ImproperlyConfigured` (and `manage.py check` reports `scrudful.E003`). On
+ninja, without `SCRUDFUL["BASE_URL"]`, the HTTP Schema Resources whose links
+are relative (those of each type's routes and of the role routes) fail (500,
+ninja's `ConfigError`), and `manage.py check` warns (`scrud_django.W009`).
 
 ### Databases
 
@@ -300,11 +665,16 @@ MySQL and MariaDB:
 
 ### Registering resource types
 
-`scrud_django.urls` serves the built-in types (JSON Schemas, JSON-LD
-contexts, indexing and workflow policies). Register each type of your own
-with `registration.json_resource_type`, which stores the type, its JSON
-Schema and its JSON-LD context (as resources) and returns the URLs of its
-list (`<slug>/`: GET, HEAD, POST) and detail (`<slug>/<pk>/`: GET, HEAD,
+Both front ends serve the built-in types (JSON Schemas, JSON-LD contexts,
+indexing and workflow policies). On ninja, a type of your own is a
+`registration.json_resource_type_spec(...)` (the same arguments as below,
+but `viewset_class` and `indexing_policy_resource`) passed to your own
+`scrud_django.ninja.api(types=[...])`, which takes the place of
+`scrud_django.urls` (see [The API (django-ninja)](#the-api-django-ninja)).
+On DRF (`scrud_django.drf.urls`, the `drf` extra), register each type of
+your own with `registration.json_resource_type`, which stores the type, its
+JSON Schema and its JSON-LD context (as resources) and returns the URLs of
+its list (`<slug>/`: GET, HEAD, POST) and detail (`<slug>/<pk>/`: GET, HEAD,
 PUT, DELETE) routes, named `<slug>-list` and `<slug>-detail`:
 
 ```python
@@ -314,7 +684,7 @@ from scrud_django import registration
 NOTE = "https://example.com/json-ld/Note"
 
 urlpatterns = [
-    path("api/", include("scrud_django.urls")),
+    path("api/", include("scrud_django.drf.urls")),
     path(
         "api/",
         include(
@@ -358,7 +728,7 @@ type's row follows the registration's arguments (`slug`, `revision`,
 `schema_uri`, ...); outside
 it, the stored row keeps its slug, revision and URIs, and only its
 documents (and `uses_reversion`) are updated. Pass
-`viewset_class=ResourceViewSetGenericFilter` (`scrud_django.views`) for a
+`viewset_class=ResourceViewSetGenericFilter` (`scrud_django.drf.views`) for a
 list that filters on its query parameters (`?text=...`; with `scrud_django.ui`
 installed, its URL parameters `ui-branch`, `ui-branch-confirm`, `ui-scope`,
 `ui-mode` and `ui-safe` are not filters).
@@ -424,6 +794,48 @@ def readable_somewhere(request, resource_type, obj):
 
 json_resource_type(..., checks=[not_archived], object_checks=[readable_somewhere])
 ```
+
+The UI app (`scrud_django.ui`) reads through the core, which asks a type's
+grants and hooks but never a DRF view's own permissions, so it fails closed
+on a type registered with a custom `viewset_class` (any but
+`ResourceViewSet`, `ResourceViewSetGenericFilter`, the document types' own
+and `ComputedResourceViewSet`, or the `content_filter=True` variant of one):
+whatever authorizes there (`IsAuthorized` subclasses, their `&`, `|` and `~`
+compositions, the viewset's own methods) is DRF's only. Its pages, embeds,
+prefixes and studio previews answer 404, as for a slug the UI does not
+serve, and the system check `scrud_django_ui.W003` names it, unless the type
+opts in with either:
+
+- both `checks=` and `object_checks=`: its rules declared to the core, which
+  then applies them on the UI as on every front end; or
+- `ui_authorization="core"` (on `json_resource_type` or
+  `computed_resource_type`): a statement that the core's checks (its grants
+  and any hooks) are already complete for it, because the viewset adds no
+  authorization of its own. The UI then serves it by those checks alone, so
+  declare it only when that is true.
+
+The UI serves a type only when the views its API routes resolve to (in the
+URLconf serving the request) were built by registration: a type whose
+`<slug>-list` or `<slug>-detail` you route yourself
+(`MyViewSet.as_view(...)`, or a registration's view wrapped in a decorator)
+is refused the same way, since nothing tells what authorizes it. The UI finds
+a type's routes by those names outside any URL namespace (registration's)
+or in the `urls_namespace` of a scrud ninja `api()` (which notes it,
+`scrud_django.core.urls.note_api_routes`; `core.urls.api_route_name` and
+`api_reverse` look in both), so it serves the types of a DRF, ninja or mixed
+project alike; a namespace an outer `include` nests the API in is not looked
+in. The system check `scrud_django_ui.W004` names each registered type with
+no such route, and
+`scrud_django_ui.W005` each type whose slug is one of the UI app's own route
+segments (`ui-css-files`, `ui-js-files`, and `studio` with the studio
+installed), whose pages those routes shadow. Such a type
+opts in by registering its options with
+`scrud_django.core.types.register_type_options(type_uri,
+TypeOptions(ui_authorization="core"), slug=slug)` (or both hooks). ninja's
+`json_resource_type_spec` takes no `ui_authorization=`: a type registered on
+both front ends records the hooks of whichever registration runs last, so
+without it there the DRF declaration is replaced (a warning is logged) and the
+UI refuses the type.
 
 Grant roles (scoped-rbac) on the type URI for its resources (`http.GET`,
 `http.POST`, `http.PUT`, `http.DELETE`) and `http.GET` on its list type,
@@ -500,7 +912,7 @@ Code of your own reads what it always did: an operator function, and a
 `has_context_permission` of your own, get the content as stored (or the
 body as sent), its `rbac_context` the whole value. Its `super()` call reads
 that too; to have scoped-rbac's check read each context as the object is
-there, pass it `scrud_django.permissions.condition_resource(obj, context)`.
+there, pass it `scrud_django.drf.permissions.condition_resource(obj, context)`.
 On a view with such an override, the scrud views also ask the grants,
 each context read as the resource is there, on the detail route and after
 a write, as its list does: the override narrows what the grants allow.
@@ -508,7 +920,7 @@ A context that a `contexts_for` of your own names, and that is not one of
 the resource's, leaves the object as it is (`docs/follow-ups.md`,
 `custom-contexts-conditions`). A view of your own that composes scoped-rbac's
 `AccessControlledAPIView` with `ResourceViewMixin` puts
-`scrud_django.mixins.view_mixins.ReadableMixin` first, as the scrud viewsets
+`scrud_django.drf.mixins.ReadableMixin` first, as the scrud viewsets
 do, so that a refused write of a resource readable in one of its contexts is
 a 403, not a 404.
 
@@ -522,7 +934,7 @@ native `{"detail": ...}` bodies when it is off):
 ```python
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["scoped_rbac.permissions.IsAuthorized"],
-    "EXCEPTION_HANDLER": "scrud_django.exceptions.scrud_exception_handler",
+    "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
     ...
 }
 ```
@@ -592,7 +1004,7 @@ your `IsAuthorized` subclasses (`has_permission`, `contexts_from`) and the
 operators of your grants' conditions get the parsed body itself
 (`request.data`); the workflow check gives their `has_context_permission`
 and operators the body as sent, with the transition it authorizes as
-`scrud_django.permissions.current_transition()`; and every object check of a
+`scrud_django.drf.permissions.current_transition()`; and every object check of a
 `Resource` view (the detail route's, the post-save check, a list's
 per-object check) gives `has_object_permission`, `has_context_permission`,
 `contexts_for` and operators the resource's content, the `dict` the
@@ -611,7 +1023,7 @@ fields it reads are missing: on `{}` the CEL result is undetermined, and
 read, what the response shows), a bug in that check. Scoped-rbac's default
 `contexts_for` reads a resource's contexts from its content on the scrud
 views, whatever your `get_permissions` returns; a `contexts_for` of your own
-calls `scrud_django.permissions.resource_contexts(obj)` where it would call
+calls `scrud_django.drf.permissions.resource_contexts(obj)` where it would call
 `super().contexts_for(obj)`, which cannot read a `dict` (a 500, failing
 closed).
 
@@ -630,48 +1042,67 @@ write there bypasses scoped-rbac, the workflow and JSON Schema validation.
 
 A computed type has a schema and a JSON-LD context like any resource type, but
 its content is computed per request, never stored: a read-only view of data
-the server derives for the requesting user. Subclass
-`scrud_django.computed.ComputedResourceViewSet`, implement
-`compute(request, key)` (return a mapping; raise `Http404` or
-`PermissionDenied`), and register it with `computed_resource_type`:
+the server derives for the requesting user. Write its `compute(request, key)`
+(return a mapping; raise `Http404` or `PermissionDenied`) and give the API
+its spec, `registration.computed_resource_type_spec`:
 
 ```python
 from scrud_django import registration
-from scrud_django.computed import ComputedResourceViewSet
+from scrud_django.ninja import api
 
 
-class BranchSummaryViewSet(ComputedResourceViewSet):
-    def compute(self, request, key):
-        # Return only what request.user may read as JSON.
-        return {"name": key, "items": []}
+def branch_summary(request, key):
+    # Return only what request.user may read as JSON.
+    return {"name": key, "items": []}
 
 
+scrud_api = api(
+    types=[
+        registration.computed_resource_type_spec(
+            resource_type_uri="http://example.org/BranchSummary",
+            slug="branch-summaries",
+            schema_func=lambda: SCHEMA_JSON,
+            context_func=lambda: CONTEXT_JSON,
+            compute=branch_summary,
+        ),
+    ],
+)
+```
+
+It routes `branch-summaries/<key>/` only (route name `branch-summaries-detail`,
+in the API's namespace: `scrud:branch-summaries-detail`; no list route, so a
+computed type is not in the service catalog, which gives each type's list URL)
+and adds no revision history. A GET answers the content with an
+`ETag` (the SHA-256 of its canonical JSON) and a 304 for a matching
+`If-None-Match`; any method other than GET, HEAD and OPTIONS is a 405. The response carries the
+`Link` headers to the type's schema and JSON-LD context, as a stored resource's
+does. The route requires an authenticated
+user and applies no authorization of its own to the content: `compute` must ask
+the same checks the stored resources' views do. The type is registered, so a
+published branch's prefix claims its slug, and the UI's page for it renders it
+through the UI cascade as view-only content. Registering a slug again replaces
+its `compute`.
+
+On DRF (the `drf` extra), register it with
+`registration.computed_resource_type` instead, which takes the same
+arguments and returns the URL patterns to add (route name
+`branch-summaries-detail`, outside any namespace), served by
+`scrud_django.drf.computed.ComputedResourceViewSet`:
+
+```python
 urlpatterns += registration.computed_resource_type(
     resource_type_uri="http://example.org/BranchSummary",
     slug="branch-summaries",
     schema_func=lambda: SCHEMA_JSON,
     context_func=lambda: CONTEXT_JSON,
-    viewset_class=BranchSummaryViewSet,
+    compute=branch_summary,
 )
 ```
 
-It routes `branch-summaries/<key>/` only (route name `branch-summaries-detail`;
-no list route, so a computed type is not in the service catalog, which gives
-each type's list URL) and adds no revision history. A GET answers the content with an
-`ETag` (the SHA-256 of its canonical JSON) and a 304 for a matching
-`If-None-Match`; any method other than GET, HEAD and OPTIONS is a 405. The response carries the
-`Link` headers to the type's schema and JSON-LD context, as a stored resource's
-does. The view requires an authenticated
-user and applies no authorization of its own to the content: `compute` must ask
-the same checks the stored resources' views do. The type is registered, so a
-published branch's prefix claims its slug, and HTML negotiation renders it
-through the UI cascade as view-only content.
-
-Instead of subclassing, pass `compute=` to `computed_resource_type`: a
-callable `(request, key) -> Mapping` (raise `Http404` or `PermissionDenied`)
-that supplies the content for the default `ComputedResourceViewSet`. One of
-`compute=` and `viewset_class=` is needed; registering a slug again replaces
-its `compute`.
+In place of `compute=`, it takes a `viewset_class=`: a subclass of
+`ComputedResourceViewSet` implementing `compute(self, request, key)`. One of
+the two is needed; a type registered with only a DRF `viewset_class` has no
+UI page and is served on DRF alone.
 
 ### Search (optional)
 
@@ -837,9 +1268,10 @@ and never fails the write. Neither does an action that raises: it is logged,
 with its traceback, on the `scrud_django.workflow_actions` logger, naming
 the action, the type URI, `on_save` or `on_delete` and the resource's pk.
 
-The actions are run by a `scrud_django.scrud_signals.ScrudSignalProcessor`,
-which reads the setting again when it changes (`override_settings` in
-tests). One processor receives the signals at a time (a fixed
+The signals and the actions' runner live in `scrud_django.core.signals`
+(`scrud_django.scrud_signals` remains an alias of it). The actions are run by
+a `scrud_django.core.signals.ScrudSignalProcessor`, which reads the setting
+again when it changes (`override_settings` in tests). One processor receives the signals at a time (a fixed
 `dispatch_uid`, held strongly): building another one, such as an instance
 of a subclass in the `ready()` of an app listed after `scrud_django`,
 replaces the default one instead of running each action twice.
@@ -871,7 +1303,7 @@ from contextvars import ContextVar
 from django.db import router, transaction
 from django.dispatch import receiver
 from django.utils import timezone
-from scrud_django.scrud_signals import scrud_post_delete, scrud_post_save
+from scrud_django.core.signals import scrud_post_delete, scrud_post_save
 
 from .models import OutboxEvent
 
@@ -923,6 +1355,209 @@ def send_events(deliver, batch=100):
             event.sent_at = timezone.now()
             event.save(using=using, update_fields=["sent_at"])
 ```
+
+### Migrating to 0.17.0: the switch to django-ninja
+
+`include("scrud_django.urls")` serves the ninja API from 0.17.0 (see
+[The API (django-ninja)](#the-api-django-ninja)): the same routes, answering
+as the DRF ones did, from `scrud_django.ninja.api(types=[])` in the URL
+namespace `scrud`, and scoped-rbac's semantic documents at `semantic/`.
+What to do:
+
+* **To stay on DRF,** install `scrud-django[drf]` and include
+  `scrud_django.drf.urls` where you included `scrud_django.urls` (with
+  `hsr_urls()`, as before; see [Staying on DRF](#staying-on-drf)). Nothing
+  else changes for your DRF routes. A project that registers its own types
+  with `registration.resource_types(...)` beside `include("scrud_django.urls")`
+  is on DRF: switch that include, or move the types to
+  `api(types=[registration.json_resource_type_spec(...)])`. Left as it was,
+  every request of those types fails (500: their links reverse the DRF
+  routes of the built-in types, `json-schema-detail` and `json-ld-detail`,
+  which only `scrud_django.drf.urls` has), and `manage.py check` reports it
+  (`scrud_django.E011`).
+* **Old import paths** of the DRF adapter (`scrud_django.views`,
+  `scrud_django.exceptions.scrud_exception_handler`, ...) keep working for
+  this release with a `DeprecationWarning`: see
+  [Migrating to 0.17.0: the DRF adapter](#migrating-to-0170-the-drf-adapter).
+* **Leaving DRF without the `drf` extra,** remove what needs it, or a clean
+  install fails at startup (`ModuleNotFoundError`): `rest_framework`,
+  `rest_framework.authtoken` and `django_filters` from `INSTALLED_APPS`, the
+  `REST_FRAMEWORK` setting, and the `include(hsr_urls())` of
+  `scrudful.rest_framework` (the ninja API serves its own HTTP Schema
+  Resources). Keep `SCRUDFUL["BASE_URL"]`: the ninja API's HTTP Schema
+  Resources need it (`scrud_django.W009`).
+* **`REST_FRAMEWORK` settings no longer apply to `/api/`.** Of them, the
+  ninja API reads `URL_FORMAT_OVERRIDE` (the `?format=` parameter) and,
+  with DRF installed, `NON_FIELD_ERRORS_KEY` (the key of the 400 a body
+  that is not a JSON object gets with `UNIFORM_ERRORS` off, as DRF's
+  serializer answers it). `DEFAULT_VERSIONING_CLASS` stops applying: links
+  built through `scrud_django.reverse` follow `request.versioning_scheme`,
+  which only DRF's views set. Those that change what scrud's DRF routes
+  did:
+  * `DEFAULT_AUTHENTICATION_CLASSES`: on ninja the session's user is the
+    user, and a Basic or token client is anonymous; a token-only API now
+    accepts a session cookie. To keep those clients as they are, set
+    `SCOPED_RBAC = {..., "NINJA_USER": "scrud_django.drf.auth.drf_user"}`
+    (DRF installed), which runs your DRF authenticators on each ninja
+    request. While a scrud ninja API is routed, `manage.py check` warns
+    (`scrud_django.W008`) about authentication classes other than DRF's
+    default pair (session, Basic) unless `NINJA_USER` is set.
+  * `DEFAULT_THROTTLE_CLASSES` and `DEFAULT_THROTTLE_RATES`: the ninja API is
+    **not rate limited** unless you say so; `manage.py check` warns
+    (`scrud_django.W008`) while a scrud ninja API is routed and
+    `DEFAULT_THROTTLE_CLASSES` is set. Stay on DRF,
+    or build your own `api()` (in place of `scrud_django.urls`) with
+    ninja's throttles, which `api()` passes to `NinjaAPI`:
+    `api(types=[...], throttle=[UserRateThrottle("100/min")])`
+    (`ninja.throttling`; a 429 once the rate is spent), then silence
+    `scrud_django.W008` (`SILENCED_SYSTEM_CHECKS`) if you keep the setting
+    for DRF routes of your own. `UserRateThrottle`
+    keys a request by Django's `request.user` (else the client's
+    address); ninja's `AnonRateThrottle` and `AuthRateThrottle` key by
+    `request.auth`, which scrud's routes never set, so they treat every
+    request as anonymous.
+  * `DEFAULT_RENDERER_CLASSES`: ninja negotiates among DRF's default
+    renderers' media types whatever the setting says (follow-up
+    `ninja-renderer-settings`), and never answers `text/html`: DRF's
+    browsable API is gone from `/api/`, which answers JSON whatever `Accept`
+    asks. A project that changed the renderers stays on DRF.
+  * `EXCEPTION_HANDLER`: the ninja API answers errors as scrud's handler
+    does (problem details); a handler of your own wrapping it is not run.
+    Stay on DRF to keep it.
+
+  * `DEFAULT_PERMISSION_CLASSES`: scrud's DRF routes set `IsAuthorized`
+    themselves, and scoped-rbac's DRF role routes took the setting (the
+    `IsAuthorized` above); on ninja every route asks the grants itself, as
+    `IsAuthorized` does. A stricter permission of your own on the role
+    routes is not run on ninja: stay on DRF to keep it.
+
+  `DEFAULT_PARSER_CLASSES`, `DEFAULT_PAGINATION_CLASS` and `PAGE_SIZE`
+  change nothing: scrud's and scoped-rbac's DRF routes set their own JSON
+  parser and paginators (100 a page by default, `?page_size=` up to 1000),
+  which the ninja API follows.
+* **One API per namespace.** An app that builds its own `api()` includes it
+  **instead of** `scrud_django.urls`, not beside it: Django reverses the
+  namespace `scrud` within its first include only, so the other API's
+  requests fail (500), and `manage.py check` reports it
+  (`scrud_django.E010`). Give a second API its own `urls_namespace`.
+  Code that reverses scrud's route names on ninja qualifies them with the
+  namespace (`reverse("scrud:services")`, `"scrud:<slug>-list"`); on DRF
+  they are unqualified, as before.
+* **A branch's JSON,** which a published branch's prefix answered before
+  0.17.0, is the studio's `/api/ui-branch-items/<branch>/` (with
+  `scrud_django.ui.studio` installed); the prefix serves the UI's pages only.
+
+### Migrating to 0.17.0: the UI app
+
+The UI is now its own Django app, served at the site root, and `/api/` serves
+JSON only. If you use `scrud_django.ui`:
+
+```python
+# urls.py (the root URLconf)
+urlpatterns = [
+    path("api/", include("scrud_django.urls")),
+    ...,  # your own URLs
+    path("", include("scrud_django.ui.urls")),  # last, no namespace argument
+]
+```
+
+Add that last line, **last** (it claims only the slugs of the types it serves,
+so it does not swallow your other URLs), and delete your own
+`path("studio/", include("scrud_django.ui.studio.urls"))`: the UI's URLconf
+includes the studio at `studio/` (namespace `scrud-studio`) itself. The pages'
+route names are `scrud_ui:list` (`slug`) and `scrud_ui:detail` (`slug`, `pk`).
+What changes:
+
+* **HTML is no longer served under `/api/`.** `/api/<slug>/` answers JSON for
+  every `Accept` (DRF's browsable API still answers a browser's `Accept` on a
+  DRF route; ninja answers JSON). A resource's page is at `/<slug>/<pk>/`.
+  Links, bookmarks and `hx-get`s that expected HTML at `/api/...` need the UI
+  path (`/todo-lists/7/`).
+* **htmx writes go to the UI's URLs** and answer HTML (the re-rendered frame,
+  the refused-PUT form, the 412 and 409 reload).
+* **Prefixes are UI only.** A published branch's prefix serves the UI's pages;
+  there is no JSON under it. JSON is at `/api/`, where `Scrud-UI-Branch` or
+  `ui-branch` selects a branch within `main`'s tree only; every item a branch
+  shows is the studio's `/api/ui-branch-items/<branch>/`.
+* **A branch cannot be published at the UI's base `/`** (a 400; the system check
+  `scrud_django_ui.W001` warns about a stored one). `/` is always `main`'s UI,
+  so a site that used a restricted branch at `/` as a gate for the whole site
+  loses that gate.
+* **Pages and the studio authenticate with Django's session user only.** DRF's
+  Basic and Token authentication no longer apply to them (they still apply to
+  `/api/`). CSRF is enforced on their writes even without `CsrfViewMiddleware`,
+  an anonymous tokenless POST gets Django's CSRF 403, and `OPTIONS` on a page or
+  a studio endpoint is a 405 with `Allow`. A page sends no `Link` header, and
+  the JSON body of a page's write is subject to `DATA_UPLOAD_MAX_MEMORY_SIZE`.
+* **Types the UI cannot serve.** A computed type registered only with a DRF
+  `viewset_class` (no `compute=`) has no UI page and cannot be embedded. The
+  pages read through the core, which asks a type's grants and its neutral
+  `checks=` and `object_checks=` hooks, not the permission classes of a custom
+  `viewset_class` or `IsAuthorized` subclasses (DRF-only authorization). So
+  the UI refuses a type registered with a custom `viewset_class`: its pages,
+  embeds, prefixes and studio previews answer 404, and the system check
+  `scrud_django_ui.W003` names it. So does a type whose API routes you built
+  by hand rather than through registration. To serve it again, declare its
+  rules as both `checks=` and `object_checks=`, or, when the viewset adds no
+  authorization of its own, register it with `ui_authorization="core"` (see
+  "Hooks on `json_resource_type`").
+* **Stored component templates.** `in_mount(...)`, `embed(...)` and `api_url(...)`
+  with `/api/` paths keep working (they are mapped to the UI), but a raw
+  `hx-get="/api/..."` that expects HTML now gets JSON: use `in_mount`, `embed`
+  or the UI path.
+* **Tests of UI pages** sign in with a session (`client.force_login(user)`), not
+  DRF's `force_authenticate`, which pages do not read.
+
+### Migrating to 0.17.0: the DRF adapter
+
+scrud's DRF views, serializers, filters, permissions and exception handler
+moved to the `scrud_django.drf` package. The old import paths keep working
+for this release: each is the moved module (or object) itself, so
+`isinstance` checks and your subclasses are unaffected, and importing it
+raises a `DeprecationWarning` naming the new path. Change your imports:
+
+| Old path | New path |
+| --- | --- |
+| `scrud_django.views` | `scrud_django.drf.views` |
+| `scrud_django.computed.ComputedResourceViewSet` | `scrud_django.drf.computed` |
+| `scrud_django.computed.computed_etag` (and `computed_answer`, `computed_link`, `not_modified`) | `scrud_django.core.computed` |
+| `scrud_django.filters` | `scrud_django.drf.filters` |
+| `scrud_django.paginations` | `scrud_django.drf.paginations` |
+| `scrud_django.permissions` | `scrud_django.drf.permissions` |
+| `scrud_django.renderers` | `scrud_django.drf.renderers` |
+| `scrud_django.serializers` | `scrud_django.drf.serializers` |
+| `scrud_django.mixins.serializer_mixins` | `scrud_django.drf.serializers` |
+| `scrud_django.mixins.view_mixins` | `scrud_django.drf.mixins` |
+| `scrud_django.drf_requirements` | `scrud_django.drf.requirements` |
+| `scrud_django.ui.views`, `scrud_django.ui.branches.views` | `scrud_django.drf.ui` |
+| `scrud_django.validators.WorkflowValidator` (and `narrow_of`, `view_of`, `rbac_permissions_of`) | `scrud_django.drf.validators` |
+| `scrud_django.exceptions.scrud_exception_handler`, `as_drf`, `drf_errors` | `scrud_django.drf.exceptions` |
+
+`scrud_django.validators` and `scrud_django.exceptions` stay: their neutral
+names (the JSON Schema validator, the errors) import from there without a
+warning; only the DRF names in the table warn. `scrud_django.computed` names
+its moved objects one by one too: its neutral helpers resolve to
+`scrud_django.core.computed`'s, with the warning, even without DRF. The logger names
+(`scrud_django.permissions`, `scrud_django.validators`) are unchanged. Set
+the exception handler to its new path (the old value still resolves, with
+the warning):
+
+```python
+REST_FRAMEWORK = {
+    ...,
+    "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
+}
+```
+
+The DRF routes are `scrud_django.drf.urls`; `include("scrud_django.urls")`
+serves the ninja API from this release (see
+[Migrating to 0.17.0: the switch to django-ninja](#migrating-to-0170-the-switch-to-django-ninja)).
+Importing `scrud_django.drf` without DRF
+installed raises an `ImportError` naming `scrud-django[drf]`. To find the old
+paths in your code, run your tests with
+`-W "error:scrud_django:DeprecationWarning"`. To serve DRF's Basic and token
+clients on ninja too, see `scrud_django.drf.auth.drf_user` in
+[The API (django-ninja)](#the-api-django-ninja).
 
 ### Upgrading
 
@@ -986,11 +1621,11 @@ uv run python manage.py createsuperuser
 uv run python manage.py runserver
 ```
 
-The API root is at http://127.0.0.1:8000/api/. Resource routes need a login
-(anonymous requests get 401): log in to the browsable API at
-http://127.0.0.1:8000/api-auth/login/ (the API root's "Log in" link) with
-the superuser, or send Basic auth, for example
-`curl -u <user>:<password> http://127.0.0.1:8000/api/partner-profiles/`.
+The demo serves ninja alone (no DRF) at http://127.0.0.1:8000/api/, which has
+no root page: try `/api/services/`. Resource routes need a login (anonymous
+requests get 401): sign in at http://127.0.0.1:8000/accounts/login/ (Django's
+own login view, a session that the API, the UI and the studio read) with the
+superuser. The API takes no Basic auth.
 The superuser may do everything; other users need scoped-rbac roles
 (`api/roles/`, `api/role-assignments/`). The Django admin is at
 http://127.0.0.1:8000/admin/. The demo reads

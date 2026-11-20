@@ -18,8 +18,14 @@ from .steps import *  # noqa: F403, F401
 from .test_ui_client import BUILD_SCRIPT, parse_form, run_node
 from .test_ui_render import make_component, make_list, make_stylesheet
 from .test_ui_static import require_node
+from .ui import UI_URLCONF, ui_url
 
 HTML = "text/html"
+
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
 
 
 @pytest.mark.django_db
@@ -28,7 +34,7 @@ def test_create_through_rendered_form_markup_returns_201_html(
     todo_owner_login,
 ):
     require_node()
-    url = reverse("todo-lists-list")
+    url = ui_url(reverse("todo-lists-list"))
     make_component(
         "create-list",
         '<form hx-ext="scrud-json" hx-post="' + url + '" data-scrud-json="form">'
@@ -42,10 +48,9 @@ def test_create_through_rendered_form_markup_returns_201_html(
     )
     make_stylesheet("s", [("ex:TodoList", "create-list")], context="project-a")
     shell = make_list("Shell")
-    Given.http.force_authenticate(todo_owner_login)
+    Given.http.force_login(todo_owner_login)
     When.http.get(
-        reverse("todo-lists-detail", args=[shell.pk]),
-        HTTP_ACCEPT=HTML,
+        ui_url(reverse("todo-lists-detail", args=[shell.pk])),
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(200)
@@ -67,7 +72,6 @@ def test_create_through_rendered_form_markup_returns_201_html(
         url,
         data=json.dumps(built["body"]),
         content_type="application/json",
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(201)
@@ -96,7 +100,7 @@ def test_fixed_body_from_rendered_markup_posts_json_with_csrf(todo_owner_login):
     ``&`` and ``<`` that the attribute decodes to exactly; posted as the
     client posts it (the attribute's text, with the page's CSRF token as
     ``X-CSRFToken``), it is a create: refused without the token."""
-    url = reverse("todo-lists-list")
+    url = ui_url(reverse("todo-lists-list"))
     body = {
         "title": 'Tom & "Jerry" <3',
         "rbac_context": "project-a",
@@ -118,7 +122,7 @@ def test_fixed_body_from_rendered_markup_posts_json_with_csrf(todo_owner_login):
     shell = make_list("Shell")
     client = APIClient(enforce_csrf_checks=True)
     client.force_login(todo_owner_login)
-    page = client.get(reverse("todo-lists-detail", args=[shell.pk]), HTTP_ACCEPT=HTML)
+    page = client.get(ui_url(reverse("todo-lists-detail", args=[shell.pk])))
     assert page.status_code == 200
     markup = page.content.decode()
     parser = _Buttons()
@@ -135,7 +139,6 @@ def test_fixed_body_from_rendered_markup_posts_json_with_csrf(todo_owner_login):
         url,
         data=sent,
         content_type="application/json",
-        HTTP_ACCEPT="application/json",
         HTTP_X_CSRFTOKEN=token,
     )
     assert created.status_code == 201, created.content

@@ -1,7 +1,7 @@
 import json
+from http import HTTPStatus
 
 import pytest
-from rest_framework import status
 from safetydance_django.test import *
 
 from scrud_django.registration import ResourceRegistration
@@ -29,7 +29,7 @@ def test_invalid_initial_state(front_end, admin_login):
         ),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
 
 
 @pytest.mark.django_db
@@ -48,7 +48,7 @@ def test_valid_initial_state(front_end, admin_login):
         ),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
 
 
 @pytest.mark.django_db
@@ -68,7 +68,7 @@ def test_invalid_state(front_end, admin_login):
         ),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
 
     When.http.post(
         api_url(front_end, "todos-list"),
@@ -82,7 +82,7 @@ def test_invalid_state(front_end, admin_login):
         ),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
 
     When.http.post(
         api_url(front_end, "todos-list"),
@@ -96,7 +96,7 @@ def test_invalid_state(front_end, admin_login):
         ),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
 
 
 @pytest.mark.django_db
@@ -115,7 +115,7 @@ def test_invalid_transition(front_end, admin_login):
         data=json.dumps(data),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
 
     url = Http.response["Location"]
     Given.http.head(url)
@@ -126,7 +126,7 @@ def test_invalid_transition(front_end, admin_login):
         HTTP_IF_UNMODIFIED_SINCE=Http.response["Last-Modified"],
         HTTP_IF_MATCH=Http.response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
 
     data["status"] = "in progress"
     Given.http.head(url)
@@ -137,7 +137,7 @@ def test_invalid_transition(front_end, admin_login):
         HTTP_IF_UNMODIFIED_SINCE=Http.response["Last-Modified"],
         HTTP_IF_MATCH=Http.response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
 
     data["status"] = "not started"
     Given.http.head(url)
@@ -148,7 +148,7 @@ def test_invalid_transition(front_end, admin_login):
         HTTP_IF_UNMODIFIED_SINCE=Http.response["Last-Modified"],
         HTTP_IF_MATCH=Http.response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
 
 
 @pytest.mark.django_db
@@ -166,7 +166,7 @@ def test_valid_transition(front_end, admin_login):
         data=json.dumps(data),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     url = Http.response["Location"]
 
     data["status"] = "in progress"
@@ -178,7 +178,7 @@ def test_valid_transition(front_end, admin_login):
         HTTP_IF_UNMODIFIED_SINCE=Http.response["Last-Modified"],
         HTTP_IF_MATCH=Http.response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
 
     data["status"] = "blocked"
     data["blockers"] = [{"explanation": "Because I said so, perhaps..."}]
@@ -190,7 +190,7 @@ def test_valid_transition(front_end, admin_login):
         HTTP_IF_UNMODIFIED_SINCE=Http.response["Last-Modified"],
         HTTP_IF_MATCH=Http.response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
 
 
 @pytest.mark.django_db
@@ -208,7 +208,7 @@ def test_unauthorized_transition(front_end, todo_creator_login):
         data=json.dumps(data),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     url = Http.response["Location"]
 
     data["status"] = "in progress"
@@ -220,7 +220,7 @@ def test_unauthorized_transition(front_end, todo_creator_login):
         HTTP_IF_UNMODIFIED_SINCE=Http.response["Last-Modified"],
         HTTP_IF_MATCH=Http.response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
 
 
 @pytest.mark.django_db
@@ -238,7 +238,7 @@ def test_authorized_transition(front_end, todo_creator_login):
         data=json.dumps(data),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     url = Http.response["Location"]
 
     data["status"] = "canceled"
@@ -250,7 +250,7 @@ def test_authorized_transition(front_end, todo_creator_login):
         HTTP_IF_UNMODIFIED_SINCE=Http.response["Last-Modified"],
         HTTP_IF_MATCH=Http.response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_200_OK)
+    Then.http.status_code_is(HTTPStatus.OK)
 
 
 # ``"rbac_context": ""`` names the default context, exactly as leaving the key
@@ -273,7 +273,7 @@ def test_invalid_initial_state_with_empty_rbac_context(front_end, admin_login):
         data=json.dumps(dict(EMPTY_CONTEXT_TODO, status="done")),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
 
 
 @pytest.mark.django_db
@@ -286,7 +286,7 @@ def test_unauthorized_transition_with_empty_rbac_context(front_end, todo_creator
         data=json.dumps(data),
         content_type="application/json",
     )
-    Then.http.status_code_is(status.HTTP_201_CREATED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
     url = Http.response["Location"]
 
     data["status"] = "done"  # "finish": this role may only "cancel"
@@ -298,7 +298,7 @@ def test_unauthorized_transition_with_empty_rbac_context(front_end, todo_creator
         HTTP_IF_UNMODIFIED_SINCE=Http.response["Last-Modified"],
         HTTP_IF_MATCH=Http.response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)
 
 
 @pytest.mark.django_db
@@ -317,4 +317,4 @@ def test_invalid_transition_with_empty_rbac_context(front_end, admin_login):
         HTTP_IF_UNMODIFIED_SINCE=Http.response["Last-Modified"],
         HTTP_IF_MATCH=Http.response["Etag"],
     )
-    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    Then.http.status_code_is(HTTPStatus.BAD_REQUEST)

@@ -357,7 +357,7 @@ MALFORMED = [
 def test_a_malformed_authorized_transitions_denies_everywhere(
     transitions, caplog, fresh_malformed_log
 ):
-    from scrud_django.permissions import (
+    from scrud_django.drf.permissions import (
         _checking_transition,
         _checking_write,
         authorized_transitions,
@@ -519,7 +519,7 @@ def test_a_workflow_error_gives_the_stored_state_to_a_writer_who_reads(
 
 @pytest.fixture
 def fresh_malformed_log():
-    from scrud_django import permissions
+    from scrud_django.drf import permissions
 
     permissions._MALFORMED_REPORTED.clear()
     yield permissions
@@ -536,7 +536,7 @@ def malformed_records(caplog):
 
 
 def test_a_malformed_configuration_is_logged_once(fresh_malformed_log, caplog):
-    from scrud_django.permissions import (
+    from scrud_django.drf.permissions import (
         _checking_transition,
         _checking_write,
         authorized_transitions,
@@ -561,7 +561,7 @@ def test_a_malformed_configuration_is_logged_once(fresh_malformed_log, caplog):
 def test_the_malformed_configurations_remembered_are_bounded(
     fresh_malformed_log, caplog
 ):
-    from scrud_django.permissions import authorized_transitions
+    from scrud_django.drf.permissions import authorized_transitions
 
     limit = fresh_malformed_log._MALFORMED_REPORTED_MAX
     with caplog.at_level("ERROR", logger="scrud_django.permissions"):

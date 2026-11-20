@@ -1,9 +1,9 @@
 """The neutral requirement (`scrud_django.core.requirements`): what a scrud
 front end asks of an object without a DRF view. `GrantsLeaf` answers as
 scoped-rbac's ``IsAuthorized`` does on a scrud resource view, and a view's
-own permissions (`scrud_django.drf_requirements.requirement_of`, DRF's ``&``
+own permissions (`scrud_django.drf.requirements.requirement_of`, DRF's ``&``
 and ``|`` included) narrow a list as the view-based functions of
-`scrud_django.filters` narrow it. DRF's ``~`` has no neutral form."""
+`scrud_django.drf.filters` narrow it. DRF's ``~`` has no neutral form."""
 
 import json
 from uuid import uuid4
@@ -22,14 +22,15 @@ from scoped_rbac import access
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.permissions import IsAuthorized
 
-from scrud_django import collection_type_uri_for, filters
-from scrud_django.models import Resource
-from scrud_django.permissions import (
+from scrud_django import collection_type_uri_for
+from scrud_django.drf import filters
+from scrud_django.drf.permissions import (
     _not_checking_write,
     checks_read_content,
     content_of,
     reading_content,
 )
+from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 
 from .factories import UserFactory
@@ -80,7 +81,7 @@ def users():
 
 
 def resource_view(*permission_classes, request=None, action="retrieve"):
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.views import ResourceViewSet
 
     view = ResourceViewSet(resource_type_name="json-ld")
     if permission_classes:
@@ -253,7 +254,7 @@ def composed_views():
 @test_context
 def test_view_leaf_composed_permissions():
     from scrud_django.core.requirements import filter_by_object_checks
-    from scrud_django.drf_requirements import requirement_of
+    from scrud_django.drf.requirements import requirement_of
 
     stored = {
         "a": store({"n": "a", "rbac_context": "a"}),
@@ -308,7 +309,7 @@ def test_view_leaf_composed_permissions():
 @test_context
 def test_object_check_requirement_of_composed_views():
     from scrud_django.core.requirements import AnyOf, object_check_requirement
-    from scrud_django.drf_requirements import ViewLeaf, requirement_of
+    from scrud_django.drf.requirements import ViewLeaf, requirement_of
 
     views = composed_views()
     for name, narrows in (
@@ -332,7 +333,7 @@ def test_object_check_requirement_of_composed_views():
 @pytest.mark.django_db
 @test_context
 def test_not_permission_is_not_neutral():
-    from scrud_django.drf_requirements import NotNeutral, requirement_of
+    from scrud_django.drf.requirements import NotNeutral, requirement_of
 
     from .urls import ContextDenyingIsAuthorized
 
@@ -421,7 +422,7 @@ def drf_detail_status(permission, user, pk, method="GET"):
     whose permission is `permission` (DRF's composition), for `user`."""
     from rest_framework.test import force_authenticate
 
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.views import ResourceViewSet
 
     class Composed(ResourceViewSet):
         permission_classes = [permission]
@@ -585,7 +586,7 @@ def test_anyof_option_request_check_of_a_put_reads_its_body():
 @pytest.mark.django_db
 @test_context
 def test_not_neutral_compares_the_permissions_not_their_count():
-    from scrud_django.drf_requirements import NotNeutral, requirement_of
+    from scrud_django.drf.requirements import NotNeutral, requirement_of
 
     required, hidden = IsAuthorized(), IsAuthorized()
 
@@ -713,8 +714,8 @@ def test_drf_view_without_isauthorized_still_served():
     from rest_framework.test import force_authenticate
 
     from scrud_django.core.requirements import Requirement
-    from scrud_django.drf_requirements import requirement_of
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.requirements import requirement_of
+    from scrud_django.drf.views import ResourceViewSet
 
     in_a = store({"rbac_context": "a"})
     in_b = store({"rbac_context": "b"})
@@ -743,7 +744,7 @@ def test_drf_view_without_isauthorized_still_served():
 
 
 def test_view_leaf_reads_its_views_type_iri_once():
-    from scrud_django.drf_requirements import ViewLeaf
+    from scrud_django.drf.requirements import ViewLeaf
 
     class ListView:
         action = "list"

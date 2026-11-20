@@ -13,8 +13,13 @@ from safetydance_django.test import *  # noqa: F403, F401
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_ui_static import SCRUD_UI, STUB_DOM, require_node
+from .ui import UI_URLCONF, ui_url
 
-HTML = "text/html"
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
+
 
 HEADERS_SCRIPT = (
     STUB_DOM
@@ -233,11 +238,11 @@ def test_edit_form_round_trip_through_build_body(todo_list, todo_owner_login):
     frame's ETag: 200, and everything untouched is kept exactly, a multi-line
     string among it."""
     require_node()
-    url = reverse("todo-lists-detail", args=[todo_list.pk])
+    url = ui_url(reverse("todo-lists-detail", args=[todo_list.pk]))
     todo_list.content = {**todo_list.content, "notes": "line 1\nline 2\n\nline 4"}
     todo_list.save()
-    Given.http.force_authenticate(todo_owner_login)
-    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    Given.http.force_login(todo_owner_login)
+    When.http.get(url, HTTP_HX_REQUEST="true")
     Then.http.status_code_is(200)
     form = parse_form(Http.response.content.decode())
     assert form.frame["hx-put"] == url and form.content["notes"].count("\n") == 3
@@ -268,7 +273,6 @@ def test_edit_form_round_trip_through_build_body(todo_list, todo_owner_login):
         data=json.dumps(body),
         content_type="application/json",
         HTTP_IF_MATCH=etag,
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(200)
@@ -851,9 +855,9 @@ def test_array_op_after_stale_etag_gets_reload(todo_list, todo_owner_login):
     out = run_node(ARRAY_OP_SCRIPT)
     # the client swaps the 412 (the reload notice) in
     assert out["responseHandling"]["swap"] is True
-    url = reverse("todo-lists-detail", args=[todo_list.pk])
-    Given.http.force_authenticate(todo_owner_login)
-    When.http.get(url, HTTP_ACCEPT=HTML, HTTP_HX_REQUEST="true")
+    url = ui_url(reverse("todo-lists-detail", args=[todo_list.pk]))
+    Given.http.force_login(todo_owner_login)
+    When.http.get(url, HTTP_HX_REQUEST="true")
     form = parse_form(Http.response.content.decode())
     stale = form.frame["data-scrud-etag"]
     body = run_node(
@@ -873,7 +877,6 @@ def test_array_op_after_stale_etag_gets_reload(todo_list, todo_owner_login):
         data=json.dumps(body),
         content_type="application/json",
         HTTP_IF_MATCH=stale,
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(412)

@@ -30,7 +30,8 @@ INDEXING_POLICY = {"fields": []}
 
 
 def register(schema=SCHEMA, revision="1"):
-    """One process start's registration of the type."""
+    """One process start's registration of the type (its rows only: the
+    DRF routes, which need DRF, are not what is tested)."""
     return ResourceTypeRegistration(
         TYPE_URI,
         revision,
@@ -39,6 +40,7 @@ def register(schema=SCHEMA, revision="1"):
         context_func=lambda: json.dumps(CONTEXT),
         indexing_policy_func=lambda: json.dumps(INDEXING_POLICY),
         register_service=False,
+        build_urls=False,
     ).resource_type
 
 

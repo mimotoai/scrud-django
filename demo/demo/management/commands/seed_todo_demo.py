@@ -19,12 +19,12 @@ from uuid import uuid4
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.urls import reverse
 from django.utils.timezone import now
 from scoped_rbac.models import Role, RoleAssignment
 from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django import collection_type_uri_for
+from scrud_django.core.urls import api_reverse
 from scrud_django.models import Resource
 from scrud_django.registration import (
     ResourceRegistration,
@@ -191,7 +191,7 @@ body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
 </head>
 <body>
 <div class="todo-layout">
-<aside class="todo-sidebar" hx-get="/api/todo-lists/" hx-trigger="load" hx-headers='{"Scrud-UI-Scope": "sidebar", "Accept": "text/html"}'>Loading lists&hellip;</aside>
+<aside class="todo-sidebar" hx-get="/todo-lists/" hx-trigger="load" hx-headers='{"Scrud-UI-Scope": "sidebar"}'>Loading lists&hellip;</aside>
 <main>{{ body }}</main>
 </div>
 </body>
@@ -448,7 +448,7 @@ class Command(BaseCommand):
     def handle(self, *args, reset=False, **options):
         # Importing the URLconf registers the resource types.
         for name in (TODO_LIST_SLUG, UI_COMPONENT_SLUG, UI_STYLESHEET_SLUG):
-            reverse(f"{name}-list")
+            api_reverse(name, "list")
         with transaction.atomic():
             for username, roles in USERS.items():
                 self.seed_user(username, roles)
@@ -479,7 +479,8 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"Seeded: log in as owner/owner, reader/reader or author/author;"
-                f" the list is /api/{TODO_LIST_SLUG}/{groceries.pk}/"
+                f" the list is /{TODO_LIST_SLUG}/{groceries.pk}/"
+                f" (JSON at /api/{TODO_LIST_SLUG}/{groceries.pk}/)"
             )
         )
         for content in BRANCHES:
@@ -490,13 +491,18 @@ class Command(BaseCommand):
             f"; customer: /todo/{TODO_LIST_SLUG}/{groceries.pk}/"
             " (author, reader, owner)"
         )
-        self.stdout.write("the studio, as author (sign in at /api-auth/login/):")
+        self.stdout.write("the studio, as author (sign in at /accounts/login/):")
         for name in ("alice-wip", "studio-wip"):
             pk = self.find(UI_BRANCH_SLUG, name=name).pk
             self.stdout.write(
                 f"  {name}: {STUDIO_PREFIX}{UI_BRANCH_SLUG}/{pk}/"
                 "?ui-scope=studio&ui-mode=view"
             )
+
+        self.stdout.write(
+            "articles, an app's own model with a draft -> published workflow"
+            " (needs a role on demo://Article): /api/articles/"
+        )
 
     def seed_user(self, username, roles):
         user, created = get_user_model().objects.get_or_create(username=username)

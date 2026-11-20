@@ -433,7 +433,7 @@ def test_filtered_list_ignores_the_ui_parameters():
     from scrud_django.ui import is_enabled
     from scrud_django.ui.branches.effective import BRANCH_PARAMETER, SAFE_PARAMETER
     from scrud_django.ui.branches.selection import CONFIRM_PARAMETER
-    from scrud_django.ui.renderer import MODE_PARAMETER, SCOPE_PARAMETER
+    from scrud_django.ui.html import MODE_PARAMETER, SCOPE_PARAMETER
 
     assert is_enabled()
     profile("keep", rbac_context="b", display_name="Keep")
@@ -487,7 +487,7 @@ def test_resource_rows_are_never_listed_through_an_unfiltered_backend():
     from django.core.exceptions import ImproperlyConfigured
     from rest_framework.test import APIRequestFactory, force_authenticate
 
-    from scrud_django.views import ResourceViewSet
+    from scrud_django.drf.views import ResourceViewSet
 
     class Unfiltered(ResourceViewSet):
         filter_backends = []
@@ -518,7 +518,7 @@ def test_filtered_list_refuses_a_nul_in_a_parameter():
 def test_ui_parameters_are_content_filters_without_the_ui(monkeypatch):
     """Without ``scrud_django.ui`` installed, ``ui-*`` keys are ordinary
     content keys."""
-    from scrud_django import filters
+    from scrud_django.drf import filters
     from scrud_django.ui import django_apps
 
     monkeypatch.setattr(django_apps, "is_installed", lambda name: False)

@@ -16,12 +16,37 @@ body they save themselves (`validate_write`); `save_checked` trusts the
 workflow check's mark for one save (it consumes it), and cannot tell
 which body was validated. Access errors (`scoped_rbac.access.AccessError`)
 are raised for the front end to answer as it answers them.
+
+They run the type's write hooks (`scrud_django.core.types.TypeOptions`):
+`create` and `update` its ``prepare_write`` on the body (`prepared_body`),
+`save_checked` its ``around_save`` around the save and its
+``after_write`` once the saved resource passed its check, in the save's
+transaction, `destroy` its ``before_destroy`` and ``after_destroy``. The
+hooks of one write share `hook_state`, which the core clears before the
+``prepare_write`` and once the save is over. A front end answers a
+`create` or `update` with `answered_content`. A write by a method the
+type does not serve (``TypeOptions.methods``) is refused
+(`MethodNotAllowedError`, 405) once the request check passed (the API
+front ends answer it before any authorization: follow-up
+``core-unserved-order``).
+
+The whole sequence of a route's write, in the DRF route's order, is
+written once here, for every front end but DRF's viewsets (which keep
+their own): `create_answer` and `item_write_answer` (the body and request
+checks, `check_write_request`, unless the front end asked them already;
+the preconditions, under the conditional-create lock for a create that
+needs the list's validators; the write and its answer), and `write_item`
+(an item's write and answer, once the front end's route looked it up and
+evaluated its preconditions). Each answers a `WriteAnswer` the front end
+only renders.
 """
 
 import copy
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
+from datetime import datetime
 
 import fastjsonschema
 import reversion
@@ -29,19 +54,30 @@ from django.db import transaction
 from django.db.models import ProtectedError
 from scoped_rbac import access
 from scoped_rbac.policy import Permission
+from scrudful._django import precondition_headers
 
+from scrud_django.core import lists
 from scrud_django.core.authz import (
     _consume_workflow_mark,
     content_of,
     may_act_in_context,
 )
+from scrud_django.core.bodies import check_body
+from scrud_django.core.errors import precondition_answer
 from scrud_django.core.requirements import (
     Requirement,
     asks_grants_itself,
     is_hook,
     requirement_leaves,
 )
-from scrud_django.core.types import HookLeaf
+from scrud_django.core.types import (
+    BODY_METHODS,
+    HookLeaf,
+    TypeOptions,
+    ensure_hooks_loaded,
+    type_options,
+)
+from scrud_django.core.urls import absolute_reverse
 from scrud_django.core.workflow import (
     Create,
     Update,
@@ -54,6 +90,7 @@ from scrud_django.core.workflow import (
 from scrud_django.exceptions import (
     JsonSchemaInvalidError,
     JsonValidationError,
+    MethodNotAllowedError,
     RequestBodyNotAnObjectError,
     ResourceInUseError,
 )
@@ -221,6 +258,77 @@ def validate_schema(resource_type, body, *, validators=None) -> None:
     validators.validator_for(resource_type)(body)
 
 
+def write_hooks(resource_type) -> TypeOptions:
+    """The hooks registered for `resource_type` (by its ``type_uri``), once
+    they are loaded (`ensure_hooks_loaded`)."""
+    ensure_hooks_loaded()
+    return type_options(resource_type.type_uri)
+
+
+# The request attribute holding the state the write hooks of one write
+# share (`hook_state`).
+HOOK_STATE_ATTR = "_scrud_write_hook_state"
+# The attribute of a saved resource holding what its type's ``after_write``
+# answered (`written_answer`).
+ANSWER_ATTR = "_scrud_written_answer"
+
+
+def hook_state(request) -> dict:
+    """The state the write hooks of the write `request` makes share (a
+    ``dict``, keyed as the hooks choose): the core clears it before the
+    type's ``prepare_write`` (`prepared_body`) and once the save is over
+    (`save_checked`, however it ends), so one ``prepare_write`` covers at
+    most one save; a save with no ``prepare_write`` before it finds it
+    empty. Its hooks must be given the same `request` object."""
+    state = getattr(request, HOOK_STATE_ATTR, None)
+    if not isinstance(state, dict):
+        state = {}
+        setattr(request, HOOK_STATE_ATTR, state)
+    return state
+
+
+def _clear_hook_state(request) -> None:
+    setattr(request, HOOK_STATE_ATTR, None)
+
+
+def prepared_body(
+    request,
+    resource_type,
+    body,
+    *,
+    instance: Resource | None,
+    using: str,
+    prepare_write: Callable | None,
+):
+    """`body` as `prepare_write` (the type's ``prepare_write`` hook, or
+    ``None``: `body` itself) returns it for the write `request` makes over
+    `instance` (``None`` for a create) on `using`, the write's
+    `hook_state` cleared first. `create` and `update` give it a copy of the
+    body; the DRF views give it ``request.data`` itself."""
+    _clear_hook_state(request)
+    if prepare_write is None:
+        return body
+    return prepare_write(request, resource_type, body, instance=instance, using=using)
+
+
+def refuse_unserved(resource_type, method: str) -> None:
+    """Refuse (`MethodNotAllowedError`, 405) a write by `method` when the
+    type's ``TypeOptions.methods`` (`write_hooks`) are set and do not name
+    it. The core asks it after the request check, while DRF's view, and the
+    ninja routes, answer such a method 405 before any authorization
+    (scoped-rbac's request check leaves it to the 405): follow-up
+    ``core-unserved-order``."""
+    methods = write_hooks(resource_type).methods
+    if methods is not None and method not in methods:
+        raise MethodNotAllowedError(method)
+
+
+def written_answer(saved) -> Mapping | None:
+    """What the type's ``after_write`` answered for the write that saved
+    `saved` (`save_checked`), or ``None``."""
+    return getattr(saved, ANSWER_ATTR, None)
+
+
 def validate_write(
     request,
     resource_type,
@@ -232,6 +340,7 @@ def validate_write(
     readable: Callable[[], bool] | None,
     type_iri: str | None = None,
     covered: bool | None = None,
+    prepare: Callable[[object], object] | None = None,
 ) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
     """Validate `request`'s write of `body` (the body as sent) to
     `resource_type`, over the resource `stored` (``None`` for a create).
@@ -262,7 +371,15 @@ def validate_write(
     in every context the stored policy applies to, ``access.AccessDenied``
     otherwise), as DRF's ``update`` asks it after ``get_object()``, with
     `covered` (by default, as the object check, whether the request is the
-    PUT the workflow check covers). Then a body that is not a JSON object
+    PUT the workflow check covers). Right after the request check, a write
+    by a method the type does not serve (``POST`` for a create, ``PUT`` for
+    an update) is refused (`refuse_unserved`, 405); DRF's view and the
+    ninja routes answer it before any authorization (follow-up
+    ``core-unserved-order``). Then `prepare`, when given, is called
+    with the body, and the body it returns is the one validated from there
+    on (`create` and `update` give the type's ``prepare_write``, as the DRF
+    views run it after the request and object checks, before the
+    serializer). Then a body that is not a JSON object
     (a list, a string, a number) is refused (`RequestBodyNotAnObjectError`,
     400), as DRF's serializer refuses it. Then, in the order DRF's serializer validators
     check it:
@@ -316,6 +433,7 @@ def validate_write(
     check_request(
         request, resource_type, requirement, list_route=stored is None, body=body
     )
+    refuse_unserved(resource_type, "POST" if stored is None else "PUT")
     if stored is not None:
         # DRF's get_object() asks the object check of the stored resource:
         # a caller that looked it up itself must not skip it. With the body,
@@ -338,6 +456,8 @@ def validate_write(
             covered=covered_item if covered is None else covered,
             type_iri=type_iri,
         )
+    if prepare is not None:
+        body = prepare(body)
     # DRF's serializer refuses a body that is not a JSON object (400) once
     # the request and object checks have passed, before it validates.
     if not isinstance(body, Mapping):
@@ -525,7 +645,17 @@ def save_checked(
     `resource_type`'s resources).
 
     A ``WorkflowPolicy``'s save is serialised (`serialize`, by default
-    `serialized_policy_save`).
+    `serialized_policy_save`). The type's ``around_save`` hook
+    (`write_hooks`), if any, wraps `save`, inside the transaction. Its
+    ``after_write``, if any, runs in the same transaction once the saved
+    resource passed its check (and the workflow check's mark is consumed),
+    given the resource the save wrote (``created``: `instance` is
+    ``None``), which it may change; the resource returned is then read
+    again. A mapping it returns is kept as the write's answer, on both
+    (`written_answer`, `answered_content`); an answer an earlier write left
+    on either is dropped first, so that a caller writing the same object
+    twice never reads the first write's. The write's `hook_state` is
+    cleared once the save is over, however it ends.
 
     The check refreshes the saved resource from its row, which empties its
     cache of related objects: `resource_type` is cached on it again, and on
@@ -557,6 +687,15 @@ def save_checked(
             saved.append(instance if result is None else result)
             return result
 
+        around_save = write_hooks(resource_type).around_save
+
+        def run():
+            if around_save is None:
+                return recorded_save()
+            return around_save(
+                request, resource_type, recorded_save, instance=instance, using=using
+            )
+
         if recheck is None:
 
             def recheck(request, obj):
@@ -582,19 +721,45 @@ def save_checked(
             recheck=recheck_saved,
             queryset=queryset,
         )
-        run = recorded_save
         if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
-            run = (serialize or serialized_policy_save)(recorded_save, using)
+            run = (serialize or serialized_policy_save)(run, using)
+        after_write = write_hooks(resource_type).after_write
         with transaction.atomic(using=using):
             if instance is None:
                 result = check.create(run, db=using)
             else:
                 result = check.update(instance, run, db=using)
             cache_resource_type(resource_type, *saved, result)
+            # The object the save wrote: a create's is the one its caller
+            # holds (DRF's serializer.instance, whose validators a 201
+            # sends); the result is read again once the hook ran.
+            written = saved[-1] if saved and isinstance(saved[-1], Resource) else result
+            # This write's answer only: not one an earlier write of the same
+            # object left on it.
+            for obj in (written, result):
+                obj.__dict__.pop(ANSWER_ATTR, None)
+            if after_write is not None:
+                # What follows the save authorizes nothing by the mark.
+                _consume_workflow_mark(request)
+                answered = after_write(
+                    request,
+                    resource_type,
+                    written,
+                    created=instance is None,
+                    using=using,
+                )
+                if written is not result:
+                    result.refresh_from_db(using=using)
+                    cache_resource_type(resource_type, result)
+                if answered is not None:
+                    setattr(written, ANSWER_ATTR, answered)
+                    setattr(result, ANSWER_ATTR, answered)
         return result
     finally:
-        # One validation authorizes at most one save, however it ends.
+        # One validation authorizes at most one save, however it ends; one
+        # prepare_write covers at most one save.
         _consume_workflow_mark(request)
+        _clear_hook_state(request)
 
 
 @contextmanager
@@ -618,12 +783,17 @@ def _validated(
     stored: Resource | None,
     requirement,
     type_iri: str,
+    using: str,
     covered: bool | None = None,
 ):
     """Validate `request`'s write of `body` over `stored` (``None`` for a
     create) with `validate_write` (given `covered`), whether `stored` is
     readable (`object_readable`) telling whether its errors are hidden:
-    what `create` and `update` run on the body they save, always."""
+    what `create` and `update` run on the body they save, always. The
+    type's ``prepare_write`` (`write_hooks`), if any, is given a copy of
+    `body` (a shallow one, of a mapping) as `validate_write`'s `prepare`
+    (`prepared_body`, which clears the write's `hook_state` first).
+    Returns the body to save: the one validated."""
     # Imported here: scrud_django.core.resources imports this module.
     from scrud_django.core.resources import object_readable
 
@@ -632,6 +802,22 @@ def _validated(
 
         def readable():
             return object_readable(request, resource_type, stored, requirement)
+
+    validated = [body]
+    prepare_write = write_hooks(resource_type).prepare_write
+
+    def prepare(sent):
+        if prepare_write is not None and isinstance(sent, Mapping):
+            sent = dict(sent)
+        validated[0] = prepared_body(
+            request,
+            resource_type,
+            sent,
+            instance=stored,
+            using=using,
+            prepare_write=prepare_write,
+        )
+        return validated[0]
 
     validate_write(
         request,
@@ -642,7 +828,9 @@ def _validated(
         requirement=requirement,
         type_iri=type_iri,
         covered=covered,
+        prepare=prepare,
     )
+    return validated[0]
 
 
 def create(
@@ -658,8 +846,10 @@ def create(
     """Create a resource of `resource_type` whose content is `body` with
     ``ResourceRegistration.register_instance`` (in `creating_revision`),
     checked as stored (`save_checked`), once `body` itself is validated
-    (`_validated`: `validate_write`, always). `type_iri` is the type the
-    post-save check names (by default `resource_type`'s ``type_uri``).
+    (`_validated`: `validate_write`, always; the body saved is the one the
+    type's ``prepare_write`` returned). `type_iri` is the type the
+    post-save check names (by default `resource_type`'s ``type_uri``). The
+    caller answers with `answered_content`, in the same transaction.
 
     It takes no ``recheck``: its post-save check is `requirement`'s
     (`check_post_save`). A front end needing a post-save check of its own
@@ -668,17 +858,19 @@ def create(
     `requirement` is taken through `Requirement.of` (once any earlier mark
     is removed, as `validate_write` removes it)."""
     _consume_workflow_mark(request)
+    _clear_hook_state(request)
     requirement = Requirement.of(requirement, caller="create")
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
         type_iri = resource_type.type_uri
-    _validated(
+    body = _validated(
         request,
         resource_type,
         body,
         stored=None,
         requirement=requirement,
         type_iri=type_iri,
+        using=using,
     )
 
     def save():
@@ -718,8 +910,10 @@ def update(
     telling whether its errors are hidden). That validation asks the
     object check of `instance` with `body` (`check_object`), as DRF's
     ``get_object()`` does, whether or not the caller loaded it with
-    `scrud_django.core.resources.load_for_read`. `type_iri` is the type the
-    post-save check names (by default `resource_type`'s ``type_uri``).
+    `scrud_django.core.resources.load_for_read`. The body saved is the one
+    the type's ``prepare_write`` returned. `type_iri` is the type the
+    post-save check names (by default `resource_type`'s ``type_uri``). The
+    caller answers with `answered_content`, in the same transaction.
 
     It takes no ``recheck``: its post-save check is `requirement`'s
     (`check_post_save`). A front end needing a post-save check of its own
@@ -736,17 +930,19 @@ def update(
     if instance is None:
         raise TypeError("update needs the stored instance to write to, not None")
     _consume_workflow_mark(request)
+    _clear_hook_state(request)
     requirement = Requirement.of(requirement, caller="update")
     # One type IRI for the workflow check's mark and the post-save check.
     if type_iri is None:
         type_iri = resource_type.type_uri
-    _validated(
+    body = _validated(
         request,
         resource_type,
         body,
         stored=instance,
         requirement=requirement,
         type_iri=type_iri,
+        using=using,
         covered=covered,
     )
     return save_checked(
@@ -787,6 +983,12 @@ def destroy(
     `scrud_django.core.resources.load_for_read` with ``method="DELETE"``
     first (DRF's ``get_object()``), which asks it.
 
+    A type that does not serve DELETE (``TypeOptions.methods``) refuses it
+    (`refuse_unserved`, 405) first: its caller asked the request check
+    already (`load_for_read`). Then the type's ``before_destroy``
+    (`write_hooks`), if any, runs (a refusal raises, nothing deleted), and
+    its ``after_destroy`` once `instance` is deleted.
+
     Without a `check`, `requirement` is taken through `Requirement.of`: one
     that asks no grants (empty, or hooks only) is ``ImproperlyConfigured``,
     before anything is deleted, as in `save_checked`: its every-context check of a
@@ -794,6 +996,10 @@ def destroy(
     view's own check.)"""
     if check is None:
         requirement = Requirement.of(requirement, caller="destroy")
+    refuse_unserved(resource_type, "DELETE")
+    hooks = write_hooks(resource_type)
+    if hooks.before_destroy is not None:
+        hooks.before_destroy(request, resource_type, instance, using=using)
     check_every_context_of_policy(
         request,
         instance,
@@ -808,6 +1014,19 @@ def destroy(
         )
     except ProtectedError as exc:
         raise ResourceInUseError(instance, exc.protected_objects) from exc
+    if hooks.after_destroy is not None:
+        hooks.after_destroy(request, resource_type, instance, using=using)
+
+
+def answered_content(
+    request, resource_type, saved: Resource, *, created: bool, using: str
+) -> Mapping:
+    """The content a front end answers a write with, once `create` (`created`
+    true) or `update` returned `saved`: what the type's ``after_write``
+    answered for it (`written_answer`; it ran in `save_checked`), else the
+    saved content (`content_of`). It has no effect: the write is done."""
+    answered = written_answer(saved)
+    return content_of(saved) if answered is None else answered
 
 
 @contextmanager
@@ -823,3 +1042,242 @@ def conditional_create_lock(resource_type, using: str):
     that two conditional creates of the type run one at a time and the
     second is evaluated against the list the first left."""
     return type_locked(resource_type, using)
+
+
+@dataclass(frozen=True)
+class WriteAnswer:
+    """What a resource route answers a write with, for a front end to
+    render: its `status`, the `content` of its body (``None``: no body), the
+    written resource's validators (`etag` unquoted, `last_modified`), a
+    create's `location` (the API URL of the created item, absolute), and
+    `written`, the resource the write saved (``None`` for a delete). A
+    failed precondition is the `problem` ``(status, body, headers)`` of
+    `scrud_django.core.errors.precondition_answer` (nothing written; its
+    `status` is the answer's)."""
+
+    status: int
+    content: Mapping | None = None
+    etag: str | None = None
+    last_modified: datetime | None = None
+    location: str | None = None
+    problem: tuple[int, Mapping | list, Mapping[str, str]] | None = None
+    written: Resource | None = None
+
+
+def _failed(problem) -> WriteAnswer:
+    return WriteAnswer(problem[0], problem=problem)
+
+
+def check_write_request(
+    request,
+    resource_type,
+    body,
+    *,
+    requirement: Requirement | Sequence,
+    list_route: bool,
+    present: bool = True,
+) -> None:
+    """The checks a write's route asks first, as DRF's ``initial()`` asks
+    them: the body of a POST or PUT (`scrud_django.core.bodies.check_body`,
+    `present` saying whether the request carried one: a malformed body is a
+    400 before any 403), then the route's request check with it
+    (`scrud_django.core.resources.check_request` of the list's POST, for
+    `list_route`, else of the item's route; ``access.AccessDenied``). A
+    front end with checks of its own after these (a UI page's prefix and
+    headers) asks them next, then answers with `create_answer` or
+    `item_write_answer` given ``request_checked=True``."""
+    # Imported here: scrud_django.core.resources imports this module.
+    from scrud_django.core.resources import check_request
+
+    if request.method in BODY_METHODS:
+        check_body(body, present=present)
+    check_request(request, resource_type, requirement, list_route=list_route, body=body)
+
+
+def create_answer(
+    request,
+    resource_type,
+    body,
+    *,
+    requirement: Requirement | Sequence,
+    using: str,
+    request_checked: bool = False,
+    present: bool = True,
+    ignored: frozenset[str] | None = None,
+    uniform: bool | None = None,
+) -> WriteAnswer:
+    """The answer of the POST `request` of `body` to `resource_type`'s
+    list, as the DRF list route creates, inside the write's transaction on
+    `using` (the caller's, `write_transaction`), its steps in the route's
+    order:
+
+    1. unless `request_checked` (the caller asked it, `check_write_request`),
+       the body and request checks (`check_write_request`, with `present`);
+    2. the list's preconditions (`scrud_django.core.lists
+       .evaluate_list_preconditions`, against the list's validators read on
+       `using` with `ignored` as `create_list_validators` takes it): a
+       conditional create, whose preconditions need those validators, first
+       takes the type's lock (`conditional_create_lock`), held until the
+       caller's transaction ends. A failed one is answered (`WriteAnswer
+       .problem`, `precondition_answer` with `uniform`), nothing written;
+    3. the create (`create`) and its answer: 201, `answered_content`, the
+       created item's validators and its ``Location``.
+
+    A page of the list that is not one of its pages (the POST's query asks
+    it) raises ``django.core.paginator.InvalidPage``, for the front end to
+    answer as its paginator answers it (404 ``"Invalid page."``). Refusals
+    are raised, as `create` raises them."""
+    if not request_checked:
+        check_write_request(
+            request,
+            resource_type,
+            body,
+            requirement=requirement,
+            list_route=True,
+            present=present,
+        )
+    headers = precondition_headers(request)
+    with ExitStack() as locks:
+        # Inside the caller's transaction, which holds it until it ends:
+        # conditional creates of the type run one at a time, each evaluated
+        # against the list the previous one left.
+        if lists.list_validators_needed(headers):
+            locks.enter_context(conditional_create_lock(resource_type, using))
+        failed = lists.evaluate_list_preconditions(
+            request.method,
+            headers,
+            lambda: lists.create_list_validators(
+                request,
+                resource_type,
+                requirement=requirement,
+                ignored=ignored,
+                using=using,
+            ),
+        )
+        if failed is not None:
+            return _failed(precondition_answer(request, failed, uniform=uniform))
+        obj = create(request, resource_type, body, requirement=requirement, using=using)
+        content = answered_content(
+            request, resource_type, obj, created=True, using=using
+        )
+    location = absolute_reverse(
+        resource_type.route_name_detail(), args=[obj.pk], request=request
+    )
+    return WriteAnswer(
+        201,
+        content,
+        etag=obj.etag,
+        last_modified=obj.modified_at,
+        location=location,
+        written=obj,
+    )
+
+
+def item_write_answer(
+    request,
+    resource_type,
+    pk,
+    method: str,
+    body,
+    *,
+    requirement: Requirement | Sequence,
+    using: str,
+    request_checked: bool = False,
+    present: bool = True,
+    loaded: Callable[[Resource], None] | None = None,
+) -> WriteAnswer:
+    """The answer of the `method` request `request` (``PUT`` of `body`, or
+    ``DELETE``) to the item `pk` of `resource_type`, as the DRF detail
+    route writes, inside the write's transaction on `using` (the
+    caller's, `write_transaction`), its steps in the route's order:
+
+    1. unless `request_checked` (the caller asked it, `check_write_request`),
+       the body and request checks (`check_write_request`, with `present`);
+    2. the item looked up for `method` with its row locked on `using`, and
+       checked (`scrud_django.core.resources.load_for_read`, given `body`,
+       ``request_checked``), then given to `loaded` when one is (a UI page
+       keeps it to render a refused PUT's form);
+    3. its preconditions (`scrud_django.core.resources
+       .item_precondition_answer`: 428 without ``If-Match``, 412 for a
+       stale one): a failed one is answered (`WriteAnswer.problem`),
+       nothing written;
+    4. the write and its answer (`write_item`).
+
+    Refusals are raised. `method` must be `request`'s own (a ``ValueError``
+    otherwise): `check_write_request` decides from ``request.method``
+    whether there is a body to check."""
+    # Imported here: scrud_django.core.resources imports this module.
+    from scrud_django.core.resources import item_precondition_answer, load_for_read
+
+    if method not in ("PUT", "DELETE"):
+        raise ValueError(f"item_write_answer writes with PUT or DELETE, not {method}.")
+    if request.method != method:
+        raise ValueError(
+            f"item_write_answer: a {method} answering a {request.method} "
+            "request (its checks follow the request's method)."
+        )
+    if not request_checked:
+        check_write_request(
+            request,
+            resource_type,
+            body,
+            requirement=requirement,
+            list_route=False,
+            present=present,
+        )
+    obj = load_for_read(
+        request,
+        resource_type,
+        pk,
+        requirement=requirement,
+        method=method,
+        lock_using=using,
+        body=body,
+        request_checked=True,
+    )
+    if loaded is not None:
+        loaded(obj)
+    failed = item_precondition_answer(
+        request, etag=obj.etag, last_modified=obj.modified_at, method=method
+    )
+    if failed is not None:
+        return _failed(failed)
+    return write_item(
+        request, resource_type, obj, method, body, requirement=requirement, using=using
+    )
+
+
+def write_item(
+    request,
+    resource_type,
+    obj: Resource,
+    method: str,
+    body,
+    *,
+    requirement: Requirement | Sequence,
+    using: str,
+) -> WriteAnswer:
+    """The `method` write of the item `obj` (looked up for it with its row
+    locked, its preconditions passed: `item_write_answer`, or a front end
+    whose route evaluated them, as scrudful's item decorator does on
+    ninja) and its answer: a ``PUT`` of `body` (`update`) answers 200 with
+    `answered_content` and the saved item's validators; a ``DELETE``
+    (`destroy`) answers 204. Refusals are raised."""
+    if method == "DELETE":
+        destroy(request, resource_type, obj, requirement=requirement, using=using)
+        return WriteAnswer(204)
+    if method != "PUT":
+        raise ValueError(f"write_item writes with PUT or DELETE, not {method}.")
+    saved = update(
+        request, resource_type, obj, body, requirement=requirement, using=using
+    )
+    content = answered_content(
+        request, resource_type, saved, created=False, using=using
+    )
+    return WriteAnswer(
+        200,
+        content,
+        etag=saved.etag,
+        last_modified=saved.modified_at,
+        written=saved,
+    )

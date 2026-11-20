@@ -29,7 +29,6 @@ from rest_framework import status
 from safetydance_django.test import *  # noqa: F403, F401
 
 from scrud_django import collection_type_uri_for
-from scrud_django.computed import computed_etag
 from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.core.types import (
     HookLeaf,
@@ -39,14 +38,15 @@ from scrud_django.core.types import (
     type_options,
     type_options_for_slug,
 )
-from scrud_django.filters import ResourceContentFilter, ResourceRbacFilter
+from scrud_django.drf.computed import computed_etag
+from scrud_django.drf.filters import ResourceContentFilter, ResourceRbacFilter
+from scrud_django.drf.views import ResourceViewSet
 from scrud_django.models import Resource
 from scrud_django.registration import (
     ResourceRegistration,
     get_resource_type_for,
     workflow_policy_resource_type,
 )
-from scrud_django.views import ResourceViewSet
 
 from .fixtures import assign_role
 from .rbac_defaults import TYPE_URI_LIST_PARTNER_PROFILES, TYPE_URI_PARTNER_PROFILES
@@ -166,7 +166,7 @@ def test_object_check_hides_from_list_and_detail():
 @test_context
 def test_object_check_hides_on_a_view_with_no_neutral_requirement():
     # DRF's ~ over an IsAuthorized: the view keeps its view-based path
-    # (scrud_django.filters), which asks the type's hooks too.
+    # (scrud_django.drf.filters), which asks the type's hooks too.
     secret = note("hidden", "a", secret=True)
     shown = note("shown", "a")
     Given.http.force_authenticate(assign_role(READER, "a"))

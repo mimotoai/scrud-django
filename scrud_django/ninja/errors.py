@@ -7,11 +7,16 @@ import functools
 import json
 import threading
 
-from django.conf import settings
 from django.utils.translation import gettext
 from scoped_rbac import conf, problems
 from scoped_rbac.ninja import install_error_handlers
 
+from scrud_django.core.errors import (
+    AUTH_CHALLENGE_ATTR,
+    not_authenticated_detail,
+    parse_error_detail,
+    scrud_error_answer,
+)
 from scrud_django.exceptions import ScrudException
 
 PROBLEM_JSON = "application/problem+json"
@@ -46,7 +51,8 @@ def uniform_errors() -> bool:
 
 def install(api) -> None:
     """Answer `api`'s `ScrudException`s as
-    `scrud_django.exceptions.scrud_exception_handler` does on DRF: the
+    `scrud_django.drf.exceptions.scrud_exception_handler` does on DRF
+    (`scrud_django.core.errors.scrud_error_answer`): the
     error's status, its `ScrudException.response_data` with that ``status``,
     written as DRF's JSON (scoped-rbac's renderer, which
     `install_error_handlers` sets), as ``application/problem+json``, without
@@ -65,17 +71,12 @@ def install(api) -> None:
     ``"Unauthorized"``), not DRF's."""
 
     def scrud_error(request, exc):
-        native = exc.problem_links and not uniform_errors()
-        if native:
-            data = exc.native_response_data()
-        else:
-            data = exc.response_data({"request": request})
-            data["status"] = exc.status_code
-        response = api.create_response(request, data, status=exc.status_code)
-        if not native:
-            response["Content-Type"] = PROBLEM_JSON
-            if exc.problem_links:
-                response["Link"] = problems.PROBLEM_LINKS
+        status, data, headers = scrud_error_answer(
+            exc, request, uniform=uniform_errors()
+        )
+        response = api.create_response(request, data, status=status)
+        for name, value in headers.items():
+            response[name] = value
         setattr(response, OWN_ERROR_ATTR, True)
         return response
 
@@ -128,7 +129,10 @@ def answer_natively_when_off(api) -> None:
     (`_native`): scrudful's own 400, 412 and 428, which scrud's routers
     always describe as problem details, and scoped-rbac's errors, whose
     handlers `install` installs with uniform errors on. Call it after `install`,
-    before ``api.urls`` is read."""
+    before ``api.urls`` is read. A 401 without a ``WWW-Authenticate`` gets
+    the challenge the request's authentication hook noted
+    (`scrud_django.core.errors.AUTH_CHALLENGE_ATTR`), uniform errors on or
+    off."""
     get_urls = api._get_urls
 
     @functools.wraps(get_urls)
@@ -145,6 +149,12 @@ def _answering_natively(view, api):
     @functools.wraps(view)
     def answered(request, *args, **kwargs):
         response = view(request, *args, **kwargs)
+        if response.status_code == 401 and not response.has_header("WWW-Authenticate"):
+            # The challenge the request's authentication hook noted
+            # (`AUTH_CHALLENGE_ATTR`), as DRF gives its first authenticator's.
+            challenge = getattr(request, AUTH_CHALLENGE_ATTR, None)
+            if challenge:
+                response["WWW-Authenticate"] = challenge
         if response.status_code >= 400 and not uniform_errors():
             return _native(request, response, api)
         return response
@@ -152,33 +162,15 @@ def _answering_natively(view, api):
     return answered
 
 
-def _parse_error_detail(request):
-    """DRF's ``JSONParser`` message for `request`'s body, which is not JSON:
-    the error of decoding it with its charset (else ``DEFAULT_CHARSET``) and
-    parsing it strictly (no ``NaN`` or infinities)."""
-    try:
-        text = request.body.decode(request.encoding or settings.DEFAULT_CHARSET)
-        json.loads(text, parse_constant=_strict_constant)
-    except ValueError as exc:
-        return f"JSON parse error - {exc}"
-    return gettext("Malformed request.")
-
-
-def _strict_constant(value):
-    raise ValueError(f"Out of range float values are not JSON compliant: {value!r}")
-
-
 #: The ``detail`` DRF's own exception gives, with uniform errors off, where a
 #: problem (by its ``code``) words it otherwise: the reason phrase of a 401
 #: and a 405, a parse error's.
 NATIVE_DETAILS = {
-    "not_authenticated": lambda request: gettext(
-        "Authentication credentials were not provided."
-    ),
+    "not_authenticated": lambda request: not_authenticated_detail(),
     "method_not_allowed": lambda request: gettext(
         'Method "{method}" not allowed.'
     ).format(method=request.method),
-    "parse_error": _parse_error_detail,
+    "parse_error": parse_error_detail,
 }
 
 

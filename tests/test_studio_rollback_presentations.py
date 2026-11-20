@@ -42,7 +42,8 @@ from .test_ui_branch_push import (
 )
 from .test_ui_branch_types import make_branch
 from .test_ui_branch_versions import versions_of
-from .test_ui_http import HTML, grant, make_component
+from .test_ui_http import grant, make_component
+from .ui import page_request, ui_url
 
 JSON = "application/json"
 UIBRANCH = "http://api.openteams.com/json-ld/UIBranch"
@@ -81,7 +82,8 @@ def settings_frame(page, href):
     frames = [
         e
         for e in page.having("data-scrud-href")
-        if e.attrs["data-scrud-href"] == href and "scrud-resource" in e.classes()
+        if e.attrs["data-scrud-href"] == ui_url(href)
+        and "scrud-resource" in e.classes()
     ]
     panes = [
         e
@@ -117,16 +119,14 @@ def frame_put(page, href, values, status):
     for name, value in values.items():
         assert name in inputs, (name, sorted(inputs))
         body[name.lstrip("/")] = value
-    When.http.put(
+    url, headers = page_request(
         href,
-        data=json.dumps(body),
-        content_type=JSON,
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_SCRUD_UI_SCOPE=frame.attrs["data-scrud-scope"],
         HTTP_SCRUD_UI_POINTER="",
         HTTP_IF_MATCH=frame.attrs["data-scrud-etag"],
     )
+    When.http.put(url, data=json.dumps(body), content_type=JSON, **headers)
     Then.http.status_code_is(status)
     return get_page_text()
 
@@ -263,13 +263,13 @@ def test_restore_from_strip_round_trip(studio_layer, admin_login):
         if r.content["number"] == kept
     ]
     href = reverse("ui-branch-versions-detail", args=[kept_version.pk])
-    assert links[1].attrs["href"] == href + "?ui-scope=studio&ui-mode=view"
+    assert links[1].attrs["href"] == ui_url(href) + "?ui-scope=studio&ui-mode=view"
     # Opened in a new tab: the workbench stays open.
     for link in links:
         assert link.attrs["target"] == "_blank" and link.attrs["rel"] == "noopener"
     [button] = restore_buttons(page, entries[1])
     assert text_of(button) == f"Restore to version {kept}"
-    assert button.attrs["hx-post"] == reverse("ui-pushes-list")
+    assert button.attrs["hx-post"] == ui_url(reverse("ui-pushes-list"))
     assert button.attrs["hx-ext"] == "scrud-json"
     assert button.attrs["hx-swap"] == "none"
     assert button.attrs["data-scrud-json"] == "fixed"
@@ -339,7 +339,7 @@ def test_restore_needs_the_post_grant(studio_layer, admin_login):
         (UI_BRANCH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI, UI_COMPONENT_TYPE_URI),
         "alice",
     )
-    Given.http.force_authenticate(writer)
+    Given.http.force_login(writer)
     page = get_page(workbench_url(wip))
     assert version_links(page)
     assert restore_buttons(page) == []
@@ -371,7 +371,7 @@ def test_published_T_offers_restore_to_a_user_with_the_grant(studio_layer, admin
     # A reader of main's versions: the history, no restore.
     reader = assign_ui_role((), "")
     grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI]}, "")
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     page = get_page(workbench_url(main))
     assert page.one("data-studio-workbench").attrs["data-studio-published"] == "true"
     assert version_links(page) and restore_buttons(page) == []
@@ -381,7 +381,7 @@ def test_published_T_offers_restore_to_a_user_with_the_grant(studio_layer, admin
         (UI_PUSH_TYPE_URI, UI_BRANCH_VERSION_TYPE_URI, UI_COMPONENT_TYPE_URI), ""
     )
     grant(user, {"http.GET": [UI_BRANCH_TYPE_URI]}, "")
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     page = get_page(workbench_url(main))
     [button] = [
         b
@@ -413,7 +413,7 @@ def test_branch_settings_panel_saves_fields(studio_layer, admin_login):
         for e in page.having("data-studio-embed")
         if e.attrs["data-studio-embed"] == "branch"
     ]
-    assert pane.attrs["data-studio-src"] == branch_href(wip)
+    assert pane.attrs["data-studio-src"] == ui_url(branch_href(wip))
     assert pane.attrs["data-studio-scope"] == BRANCH_SCOPE
     assert "data-studio-mode" not in pane.attrs
     assert pane.within(page.one("data-studio-branch-panel"))
@@ -457,7 +457,7 @@ def test_branch_settings_panel_saves_fields(studio_layer, admin_login):
     # A user who may only GET T gets the view twin: text, no form.
     reader = assign_ui_role((), "")
     grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     page = load_settings(wip)
     assert page.one("data-studio-branch-settings").attrs["data-studio-mode"] == "view"
     assert page.writes() == []
@@ -487,7 +487,7 @@ def test_branch_settings_without_optional_fields_show_a_dash(studio_layer, admin
     reader = assign_ui_role((), "")
     grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
     grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI]}, "")
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     page = load_settings(wip)
     assert page.one("data-studio-branch-settings").attrs["data-studio-mode"] == "view"
     facts = branch_facts(page)
@@ -499,7 +499,7 @@ def test_branch_settings_without_optional_fields_show_a_dash(studio_layer, admin
     facts = branch_facts(page)
     assert facts["Parent"] == "\u2014" and facts["Label"] == "\u2014"
     assert facts["Description"] == "\u2014"
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     page = load_settings(main)
     assert page.one("data-studio-branch-settings").attrs["data-studio-mode"] == "edit"
     facts = branch_facts(page)
@@ -515,7 +515,7 @@ def test_prefix_input_only_with_site_grant(studio_layer, ui_alice_login):
     own = make_branch("own", "alice")
     # alice may PUT her branch but not publish: the strip says so, and the
     # settings (as embedded) have no prefix input.
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = get_page(workbench_url(own))
     status = page.one("data-studio-status")
     assert status.attrs["data-studio-may-publish"] == "false"
@@ -544,7 +544,7 @@ def test_prefix_input_only_with_site_grant(studio_layer, ui_alice_login):
     assert Http.response.json()["detail"] == PUBLISHER_MESSAGE
     # A publisher: the strip says so, the settings in the publisher's scope
     # have the input, and the save publishes the branch.
-    Given.http.force_authenticate(publisher())
+    Given.http.force_login(publisher())
     page = get_page(workbench_url(own))
     assert page.one("data-studio-status").attrs["data-studio-may-publish"] == "true"
     page = load_settings(own, PUBLISH_SCOPE)
@@ -573,27 +573,27 @@ def test_prefix_input_only_with_site_grant(studio_layer, ui_alice_login):
     assert named(page, frame)["/prefix"].attrs["value"] == "/own/"
     [remove] = [w for w in page.writes() if "studio-unpublish" in w.classes()]
     assert text_of(remove) == "Remove the prefix"
-    assert remove.attrs["hx-put"] == branch_href(own)
+    assert remove.attrs["hx-put"] == ui_url(branch_href(own))
     assert remove.attrs["hx-swap"] == "none"
     assert json.loads(remove.attrs["data-scrud-body"]) == {
         **content_of(page, frame),
         "prefix": None,
     }
     # Sent with the frame's ETag (the request goes to the frame's URL).
-    When.http.put(
+    url, headers = page_request(
         remove.attrs["hx-put"],
-        data=remove.attrs["data-scrud-body"],
-        content_type=JSON,
-        HTTP_ACCEPT=HTML,
         HTTP_HX_REQUEST="true",
         HTTP_IF_MATCH=frame.attrs["data-scrud-etag"],
+    )
+    When.http.put(
+        url, data=remove.attrs["data-scrud-body"], content_type=JSON, **headers
     )
     Then.http.status_code_is(200)
     own.refresh_from_db()
     assert own.content.get("prefix") is None
     # Without the grant, a published branch's prefix is text.
     shop = make_branch("shop", "alice", parent=None, prefix="/shop/")
-    Given.http.force_authenticate(ui_alice_login)
+    Given.http.force_login(ui_alice_login)
     page = load_settings(shop)
     frame = settings_frame(page, branch_href(shop))
     assert named(page, frame) == {}
@@ -607,7 +607,7 @@ def test_overlapping_prefix_error_beside_field(studio_layer, admin_login):
     reverse("todo-lists-list")  # the URLconf registers the types
     make_branch("shop", "", parent=None, prefix="/shop/")
     own = make_branch("own", "alice")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     page = load_settings(own, PUBLISH_SCOPE)
     refused = frame_put(
         page, branch_href(own), {"/prefix": "/shop/todo-lists/", "/label": "Mine"}, 400
@@ -658,7 +658,7 @@ def test_new_branch_form_creates_working_branch(studio_layer, admin_login):
     page = get_page(workbench_url(wip))
     [form] = page.having("data-studio-new-branch")
     assert form.tag == "form"
-    assert form.attrs["hx-post"] == reverse("ui-branches-list")
+    assert form.attrs["hx-post"] == ui_url(reverse("ui-branches-list"))
     assert form.attrs["hx-ext"] == "scrud-json"
     assert form.attrs["data-scrud-json"] == "form"
     assert form.attrs["data-scrud-etag"] == ""
@@ -684,14 +684,10 @@ def test_new_branch_form_creates_working_branch(studio_layer, admin_login):
     request_headers = {
         "HTTP_" + k.upper().replace("-", "_"): v for k, v in headers.items()
     }
-    When.http.post(
-        form.attrs["hx-post"],
-        data=json.dumps(body),
-        content_type=JSON,
-        HTTP_ACCEPT=HTML,
-        HTTP_HX_REQUEST="true",
-        **request_headers,
+    url, headers = page_request(
+        form.attrs["hx-post"], HTTP_HX_REQUEST="true", **request_headers
     )
+    When.http.post(url, data=json.dumps(body), content_type=JSON, **headers)
     Then.http.status_code_is(201)
     answer = get_page_text()
     made = stored_branch("wip-2")
@@ -700,20 +696,16 @@ def test_new_branch_form_creates_working_branch(studio_layer, admin_login):
     assert "prefix" not in made.content
     # The answer links the new branch's workbench, which works.
     [link] = [e for e in answer.elements if "studio-created-link" in e.classes()]
-    assert link.attrs["href"] == workbench_url(made)
+    assert link.attrs["href"] == ui_url(workbench_url(made))
     page = get_page(link.attrs["href"])
     workbench = page.one("data-studio-workbench")
     assert workbench.attrs["data-studio-branch"] == "wip-2"
     assert workbench.attrs["data-studio-published"] == "false"
     # A taken name is refused with the API's answer.
-    When.http.post(
-        form.attrs["hx-post"],
-        data=json.dumps(body),
-        content_type=JSON,
-        HTTP_ACCEPT=HTML,
-        HTTP_HX_REQUEST="true",
-        **request_headers,
+    url, headers = page_request(
+        form.attrs["hx-post"], HTTP_HX_REQUEST="true", **request_headers
     )
+    When.http.post(url, data=json.dumps(body), content_type=JSON, **headers)
     Then.http.status_code_is(400)
     assert "already exists" in Http.response.content.decode()
 
@@ -725,7 +717,7 @@ def test_new_branch_from_main(studio_layer, admin_login):
     context (scrud-ui.js would leave an empty text input out, and the
     schema requires ``rbac_context``)."""
     main = make_branch("main", "", parent=None)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     page = get_page(workbench_url(main))
     [form] = page.having("data-studio-new-branch")
     inputs = form_inputs(page, form)
@@ -733,13 +725,8 @@ def test_new_branch_from_main(studio_layer, admin_login):
     assert inputs["/parent"] == ("text", "main")
     body = form_body(inputs, name="feature")
     assert body == {"name": "feature", "parent": "main", "rbac_context": ""}
-    When.http.post(
-        form.attrs["hx-post"],
-        data=json.dumps(body),
-        content_type=JSON,
-        HTTP_ACCEPT=HTML,
-        HTTP_HX_REQUEST="true",
-    )
+    url, headers = page_request(form.attrs["hx-post"], HTTP_HX_REQUEST="true")
+    When.http.post(url, data=json.dumps(body), content_type=JSON, **headers)
     Then.http.status_code_is(201)
     made = stored_branch("feature")
     assert made.content["parent"] == "main"
@@ -752,7 +739,7 @@ def test_new_branch_absent_for_reader(studio_layer, admin_login):
     make_wip(admin_login)
     reader = assign_ui_role((), "")
     grant(reader, {"http.GET": [UI_BRANCH_TYPE_URI]}, "alice")
-    Given.http.force_authenticate(reader)
+    Given.http.force_login(reader)
     page = get_page(workbench_url(stored_branch("wip")))
     assert not page.having("data-studio-new-branch")
     assert page.writes() == []

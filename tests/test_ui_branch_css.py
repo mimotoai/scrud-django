@@ -1,7 +1,7 @@
 """CSS items (``ui-css``): stylesheets' text, per branch, served at versioned
 URLs (``ui-css-files/<name>/<etag>.css``) under the API's URLs and under a
 published branch's prefix, and linked by the built-in page. These tests serve
-the API at ``/api/`` (``tests.mounted_urls``)."""
+the API at ``/api/`` and the UI at ``/`` (``tests.mounted_urls``)."""
 
 import re
 from html import unescape
@@ -27,14 +27,15 @@ from .test_ui_branch_prefixes import (
 from .test_ui_branch_push import create, make_wip, own_rows, push, pusher
 from .test_ui_branch_render import BRANCH_HEADER, may_select_branches
 from .test_ui_branch_types import make_branch, problem
-from .test_ui_http import make_component
+from .test_ui_http import get_ui_html, make_component
+from .ui import UI_URLCONF, ui_url
 
 PRIVATE = "private, max-age=31536000, immutable"
 
 
 @pytest.fixture(autouse=True)
 def api_at_api_path(settings):
-    settings.ROOT_URLCONF = "tests.mounted_urls"
+    settings.ROOT_URLCONF = UI_URLCONF
 
 
 def make_css(name, css="body { margin: 0 }", branch=None, context="", **fields):
@@ -52,7 +53,10 @@ def css_hrefs(page):
     ]
 
 
-def file_url(item, base="/api/"):
+UI = "/"  # the UI app's base: its pages link and serve the CSS files there
+
+
+def file_url(item, base=UI):
     return f"{base}ui-css-files/{item.content['name']}/{item.etag}.css"
 
 
@@ -67,7 +71,7 @@ def get_css(url, status=200, **headers):
 def test_css_served_under_prefix_with_versioned_url(todo_list, todo_reader_login):
     setup_admin_and_customer()
     site = make_css("site", "h2 { color: red }")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     page = get_html(mounted(ADMIN, todo_list))
     assert css_hrefs(page) == [file_url(site, ADMIN)]
     response = get_css(file_url(site, ADMIN))
@@ -75,22 +79,25 @@ def test_css_served_under_prefix_with_versioned_url(todo_list, todo_reader_login
     assert response["Cache-Control"] == PRIVATE
     assert response["X-Content-Type-Options"] == "nosniff"
     assert response.content == b"h2 { color: red }"
-    # The API's URLs link and serve it too.
-    assert css_hrefs(get_html(api_url(todo_list))) == [file_url(site)]
-    assert get_css(file_url(site)).content == b"h2 { color: red }"
+    # The UI's own page (main's) links and serves it too, at the UI's URLs.
+    assert css_hrefs(get_html(ui_url(api_url(todo_list)))) == [file_url(site, UI)]
+    assert get_css(file_url(site, UI)).content == b"h2 { color: red }"
     # Only GET.
-    When.http.post(file_url(site), data="x", content_type="text/css")
-    Then.http.status_code_is(405)
+    for base in (ADMIN, UI):
+        When.http.post(file_url(site, base), data="x", content_type="text/css")
+        Then.http.status_code_is(405)
+    # The API serves no files: they are the UI app's.
+    get_css(file_url(site, "/api/"), status=404)
 
 
 @pytest.mark.django_db
 @test_context
 def test_old_etag_url_is_404_after_edit(todo_list, todo_reader_login, admin_login):
     site = make_css("site", "a { color: red }")
-    old_url = file_url(site)
-    Given.http.force_authenticate(todo_reader_login)
+    old_url = file_url(site, UI)
+    Given.http.force_login(todo_reader_login)
     get_css(old_url)
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     When.http.put(
         reverse("ui-css-detail", args=[site.pk]),
         data={**site.content, "css": "a { color: blue }"},
@@ -99,17 +106,17 @@ def test_old_etag_url_is_404_after_edit(todo_list, todo_reader_login, admin_logi
     )
     Then.http.status_code_is(200)
     site.refresh_from_db()
-    Given.http.force_authenticate(todo_reader_login)
-    assert file_url(site) != old_url
+    Given.http.force_login(todo_reader_login)
+    assert file_url(site, UI) != old_url
     get_css(old_url, status=404)
-    assert get_css(file_url(site)).content == b"a { color: blue }"
-    assert css_hrefs(get_html(api_url(todo_list))) == [file_url(site)]
+    assert get_css(file_url(site, UI)).content == b"a { color: blue }"
+    assert css_hrefs(get_ui_html(ui_url(api_url(todo_list)))) == [file_url(site, UI)]
     # Neither an unknown name nor a deleted item is served.
-    get_css("/api/ui-css-files/nope/x.css", status=404)
+    get_css("/ui-css-files/nope/x.css", status=404)
     Resource.objects.filter(pk=site.pk).update(
         content={**site.content, "deleted": True}
     )
-    get_css(file_url(site), status=404)
+    get_css(file_url(site, UI), status=404)
 
 
 @pytest.mark.django_db
@@ -121,14 +128,14 @@ def test_page_links_effective_css_in_order(todo_list, todo_reader_login):
     hidden = make_css("hidden")
     make_branch("wip", "project-a", prefix="/wip/")
     make_css("hidden", "", branch="wip", deleted=True, context="project-a")
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
-    page = get_html(api_url(todo_list))
-    assert css_hrefs(page) == [file_url(i) for i in (hidden, first, second, third)]
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    page = get_ui_html(ui_url(api_url(todo_list)))
+    assert css_hrefs(page) == [file_url(i, UI) for i in (hidden, first, second, third)]
     # The published branch hides main's item with its deletion marker.
     page = get_html(mounted("/wip/", todo_list))
     assert css_hrefs(page) == [file_url(i, "/wip/") for i in (first, second, third)]
     # A fragment has no <head>.
-    When.http.get(api_url(todo_list), HTTP_ACCEPT="text/html", HTTP_HX_REQUEST="true")
+    When.http.get(ui_url(api_url(todo_list)), HTTP_HX_REQUEST="true")
     assert "stylesheet" not in Http.response.content.decode()
 
 
@@ -139,24 +146,24 @@ def test_css_on_working_branch_overrides_published(todo_list, todo_reader_login)
     make_branch("wip", "project-a")
     wip = make_css("site", "p { color: green }", branch="wip", context="project-a")
     # A viewer who may not GET the branch is not shown it: its URL is 404.
-    Given.http.force_authenticate(todo_reader_login)
-    get_css(file_url(wip), status=404, **{BRANCH_HEADER: "wip"})
-    assert css_hrefs(get_html(api_url(todo_list), **{BRANCH_HEADER: "wip"})) == [
-        file_url(main)
-    ]
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
-    page = get_html(api_url(todo_list), **{BRANCH_HEADER: "wip"})
-    assert css_hrefs(page) == [file_url(wip)]
-    response = get_css(file_url(wip), **{BRANCH_HEADER: "wip"})
+    Given.http.force_login(todo_reader_login)
+    get_css(file_url(wip, UI), status=404, **{BRANCH_HEADER: "wip"})
+    assert css_hrefs(
+        get_ui_html(ui_url(api_url(todo_list)), **{BRANCH_HEADER: "wip"})
+    ) == [file_url(main, UI)]
+    Given.http.force_login(may_select_branches(todo_reader_login))
+    page = get_ui_html(ui_url(api_url(todo_list)), **{BRANCH_HEADER: "wip"})
+    assert css_hrefs(page) == [file_url(wip, UI)]
+    response = get_css(file_url(wip, UI), **{BRANCH_HEADER: "wip"})
     assert response.content == b"p { color: green }"
     assert response["Cache-Control"] == PRIVATE
     assert response["X-Content-Type-Options"] == "nosniff"
     # Not without the selection (main's item has another ETag)...
-    get_css(file_url(wip), status=404)
-    assert get_css(file_url(main)).content == b"p { color: red }"
-    assert get_css(file_url(main))["Cache-Control"] == PRIVATE
+    get_css(file_url(wip, UI), status=404)
+    assert get_css(file_url(main, UI)).content == b"p { color: red }"
+    assert get_css(file_url(main, UI))["Cache-Control"] == PRIVATE
     # main's item is not served as the working branch's either.
-    get_css(file_url(main), status=404, **{BRANCH_HEADER: "wip"})
+    get_css(file_url(main, UI), status=404, **{BRANCH_HEADER: "wip"})
 
 
 @pytest.mark.django_db
@@ -165,18 +172,18 @@ def test_css_refused_without_get_on_branch(todo_list, todo_reader_login):
     setup_admin_and_customer()
     site = make_css("site")
     url = file_url(site, ADMIN)
-    # The reader sees the page at the API, and so its CSS...
-    Given.http.force_authenticate(todo_reader_login)
-    get_css(file_url(site))
+    # The reader sees the page at the UI, and so its CSS...
+    Given.http.force_login(todo_reader_login)
+    get_css(file_url(site, UI))
     # ...but not under a prefix whose branch they may not GET.
     get_css(url, status=403)
-    Given.http.force_authenticate(None)
+    Http.api_client.logout()
     # The anonymous get what any refused GET under the mount gets.
-    When.http.get(mounted(ADMIN), HTTP_ACCEPT="application/json")
+    When.http.get(mounted(ADMIN))
     refused = Http.response.status_code
     assert refused in (401, 403)
     get_css(url, status=refused)
-    Given.http.force_authenticate(may_select_branches(todo_reader_login))
+    Given.http.force_login(may_select_branches(todo_reader_login))
     assert get_css(url).content == site.content["css"].encode()
 
 
@@ -186,8 +193,8 @@ def test_css_is_not_affected_by_stored_components(todo_reader_login):
     make_component("scrud:page", "<html>{{ body }}</html>")
     make_component("css", "<b>{{ value }}</b>")
     site = make_css("site", "x { y: z }")
-    Given.http.force_authenticate(todo_reader_login)
-    response = get_css(file_url(site), HTTP_ACCEPT="text/html")
+    Given.http.force_login(todo_reader_login)
+    response = get_css(file_url(site, UI), HTTP_ACCEPT="text/html")
     assert response.content == b"x { y: z }"
     assert response["Content-Type"] == "text/css; charset=utf-8"
 
@@ -199,7 +206,7 @@ def css_body(**overrides):
 @pytest.mark.django_db
 @test_context
 def test_css_validation(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     created = create("ui-css", css_body())
     assert created.content["branch"] == "main" and created.content["base"] is None
     for text in ("a{} </style><script>", "</STYLE >", "</Style"):
@@ -242,7 +249,7 @@ def test_css_validation(admin_login):
 @test_context
 def test_css_writes_are_versioned(admin_login):
     make_branch("wip", "alice")
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     create("ui-css", css_body(branch="wip", rbac_context="alice"))
     items = snapshot("wip", 1)["items"]
     assert [i["name"] for i in items["css"]] == ["site"]
@@ -252,13 +259,13 @@ def test_css_writes_are_versioned(admin_login):
 @pytest.mark.django_db
 @test_context
 def test_push_applies_css(admin_login):
-    Given.http.force_authenticate(admin_login)
+    Given.http.force_login(admin_login)
     main_css = make_css("site", "a { color: red }")
     make_wip(admin_login)
     create(
         "ui-css", css_body(css="a { color: blue }", branch="wip", rbac_context="alice")
     )
-    Given.http.force_authenticate(component_writer_with_css())
+    Given.http.force_login(component_writer_with_css())
     push()
     Then.http.status_code_is(201)
     main_css.refresh_from_db()

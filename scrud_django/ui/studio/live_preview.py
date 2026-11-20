@@ -21,23 +21,22 @@ import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from django.core.exceptions import PermissionDenied
 from django.shortcuts import render
 from django.templatetags.static import static
 from django.utils.safestring import mark_safe
-from rest_framework.exceptions import PermissionDenied
 
 from scrud_django.exceptions import (
     UIStudioBranchReadOnlyError,
     UIStudioPreviewInvalidError,
 )
-from scrud_django.ui.branches.css import css_files
 from scrud_django.ui.branches.effective import (
     Draft,
     effective_rows,
     using_drafts,
     using_selection,
 )
-from scrud_django.ui.branches.js import js_files
+from scrud_django.ui.branches.file_urls import css_files, js_files
 from scrud_django.ui.branches.model import branch_of, item_key
 from scrud_django.ui.branches.selection import branch_content, may_get_stored
 from scrud_django.ui.branches.store import branches
@@ -48,8 +47,8 @@ from scrud_django.ui.cascade import (
     _name_of,
     rules_memo,
 )
+from scrud_django.ui.html import STATIC_HTMX, STATIC_SCRUD_UI
 from scrud_django.ui.render import _JSON_SCRIPT_ESCAPES, Mark, using_mark
-from scrud_django.ui.renderer import STATIC_HTMX, STATIC_SCRUD_UI
 from scrud_django.ui.studio.drafts import (
     after_push_drafts,
     draft_item,
@@ -248,7 +247,7 @@ def render_live_preview(
         styles = _inlined(css_files(selection), "</style")
         scripts = _inlined(js_files(selection), "</script")
     return render(
-        request._request,
+        request,
         "scrud_studio/live_preview.html",
         {
             "title": _title(resource_type),

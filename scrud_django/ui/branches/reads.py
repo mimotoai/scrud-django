@@ -3,7 +3,7 @@ content asks (the studio's strip, explain and live-preview mark, its
 computed types and new-component action, a push's preview and
 conflicts)."""
 
-from scrud_django.permissions import may_read_in_context, resource_contexts
+from scrud_django.core.authz import may_read_in_context, resource_contexts
 from scrud_django.ui.branches import ITEM_KINDS
 from scrud_django.ui.layers import is_layer_row
 

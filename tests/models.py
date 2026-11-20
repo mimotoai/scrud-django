@@ -15,3 +15,12 @@ class Note(models.Model):
     # Nullable, so that a queryset may select_related it (an outer join). A
     # model of this unmigrated app: it cannot refer to a migrated one.
     author = models.ForeignKey(Person, null=True, blank=True, on_delete=models.SET_NULL)
+
+
+class Article(models.Model):
+    """A model of an adopter's own, governed by a workflow through
+    ``scrud_django.ninja.workflow_check`` (``tests.own_models``)."""
+
+    title = models.CharField(max_length=200, default="")
+    state = models.CharField(max_length=20, default="draft")
+    rbac_context = models.CharField(max_length=255, default="")

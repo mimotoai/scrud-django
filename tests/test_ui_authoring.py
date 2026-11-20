@@ -10,8 +10,12 @@ from scrud_django.models import Resource
 from .fixtures import *  # noqa
 from .steps import *  # noqa: F403, F401
 from .test_ui_http import make_component, make_stylesheet
+from .ui import UI_URLCONF, ui_url
 
-HTML = "text/html"
+
+@pytest.fixture(autouse=True)
+def ui_urlconf(settings):
+    settings.ROOT_URLCONF = UI_URLCONF
 
 
 def component(**overrides):
@@ -52,7 +56,7 @@ def update(url, etag, body):
 def test_author_creates_updates_and_deletes_in_the_default_context(
     ui_author_login, slug, make, changed
 ):
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     create(slug, make())
     Then.http.status_code_is(201)
     url, etag = Http.response["Location"], Http.response["ETag"]
@@ -69,7 +73,7 @@ def test_author_creates_updates_and_deletes_in_the_default_context(
 @pytest.mark.django_db
 @test_context
 def test_author_cannot_write_outside_the_default_context(ui_author_login):
-    Given.http.force_authenticate(ui_author_login)
+    Given.http.force_login(ui_author_login)
     create("ui-components", component(rbac_context="project-a"))
     Then.http.status_code_is(403)
     create("ui-stylesheets", stylesheet(rbac_context="project-a"))
@@ -82,7 +86,7 @@ def test_author_cannot_write_outside_the_default_context(ui_author_login):
 def test_context_stylesheet_role_writes_only_its_own_stylesheets(
     ui_stylesheet_author_login,
 ):
-    Given.http.force_authenticate(ui_stylesheet_author_login)
+    Given.http.force_login(ui_stylesheet_author_login)
     create("ui-stylesheets", stylesheet(rbac_context="project-a"))
     Then.http.status_code_is(201)
     url, etag = Http.response["Location"], Http.response["ETag"]
@@ -116,7 +120,7 @@ def test_context_stylesheet_role_writes_only_its_own_stylesheets(
 @pytest.mark.django_db
 @test_context
 def test_context_stylesheet_role_can_delete_its_own(ui_stylesheet_author_login):
-    Given.http.force_authenticate(ui_stylesheet_author_login)
+    Given.http.force_login(ui_stylesheet_author_login)
     create("ui-stylesheets", stylesheet(rbac_context="project-a"))
     url, etag = Http.response["Location"], Http.response["ETag"]
     When.http.delete(url, HTTP_IF_MATCH=etag)
@@ -129,7 +133,7 @@ def test_context_stylesheet_role_can_delete_its_own(ui_stylesheet_author_login):
 def test_put_moving_a_component_out_of_the_default_context(request, who):
     made = make_component("movable", "<i>{{ value }}</i>")
     user = request.getfixturevalue(who)
-    Given.http.force_authenticate(user)
+    Given.http.force_login(user)
     url = reverse("ui-components-detail", args=[made.pk])
     body = component(name="movable", rbac_context="project-a")
     update(url, f'"{made.etag}"', body)
@@ -149,7 +153,8 @@ def test_reader_without_ui_grants_sees_styled_pages_but_no_components(
 ):
     made = make_component("styled-list", '<div class="styled">{{ value.title }}</div>')
     sheet = make_stylesheet("pages", [("ex:TodoList", "styled-list")])
-    Given.http.force_authenticate(ui_reader_login)
+    Given.http.force_login(ui_reader_login)
+    Given.http.force_login(ui_reader_login)
     for resource, slug in ((made, "ui-components"), (sheet, "ui-stylesheets")):
         When.http.get(
             reverse(f"{slug}-detail", args=[resource.pk]),
@@ -161,8 +166,7 @@ def test_reader_without_ui_grants_sees_styled_pages_but_no_components(
         assert Http.response.status_code in (200, 403, 404)
         assert "styled" not in Http.response.content.decode()
     When.http.get(
-        reverse("todo-lists-detail", args=[todo_list.pk]),
-        HTTP_ACCEPT=HTML,
+        ui_url(reverse("todo-lists-detail", args=[todo_list.pk])),
         HTTP_HX_REQUEST="true",
     )
     Then.http.status_code_is(200)
