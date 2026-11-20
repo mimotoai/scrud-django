@@ -180,7 +180,9 @@ class ModelWorkflow:
                         contexts_before=contexts_before,
                         contexts_after=contexts_after,
                     )
-                check_write(request, type_iri=self.iri, write=write)
+                # What the check decided; the recompute below, sent as
+                # before, describes the same write (its resource and actor).
+                decision = check_write(request, type_iri=self.iri, write=write)
                 stored_pk = None if instance is None else instance.pk
                 with (
                     authorizing_write(
@@ -216,6 +218,8 @@ class ModelWorkflow:
                     # In no context: the settings default under None, as the
                     # workflow check applied it (as for a resource).
                     contexts_after=list(self.contexts_for(obj)) or [None],
+                    stored_pk=decision.stored_pk,
+                    actor=decision.actor,
                 )
                 # The checked values were valid; a `save` (or a Model.save
                 # override) that wrote another state is logged, as an

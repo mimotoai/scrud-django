@@ -46,7 +46,15 @@ from scrud_django.core.authz import (
     content_of,
     may_read_in_context,
 )
-from scrud_django.core.decisions import NULL_CONTENT, NullContent
+from scrud_django.core.decisions import (
+    NULL_CONTENT,
+    ContextDecision,
+    NullContent,
+    WorkflowDecision,
+    context_transition,
+    is_entering,
+    snapshot_prior,
+)
 from scrud_django.exceptions import (
     HiddenWorkflowTransitionError,
     WorkflowPolicyInvalidError,
@@ -56,7 +64,6 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
-    TransitionData,
     WorkflowPolicy,
     default_workflow_policy_for,
     stored_policies_in,
@@ -269,12 +276,17 @@ def workflow_check(
     write: Create | Update,
     narrow: Sequence[Callable] = (),
     post_save_type_iri: str | None = None,
-) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
+) -> WorkflowDecision:
     """Check `request`'s `write` (a `Create`, or an `Update` of its stored
-    content) of the type `type_iri`, as the module describes, and return the
-    transitions it authorized: ``(context, policy, transition data)`` for
-    each context with a policy (``None`` as the context: the resource is in
-    none).
+    content) of the type `type_iri`, as the module describes, and return
+    what it decided: the `WorkflowDecision` (``checked=True``) of the write
+    of the stored resource (an `Update`'s ``stored_pk``; ``None`` for a
+    `Create`) by the request's user (``None`` when there is none or it is
+    not authenticated), with the transition it authorized in each context
+    with a policy (``None`` as the context: the resource is in none), each
+    computed as `scrud_django.core.decisions.context_transition` computes
+    it. Without a request where no policy applies, a decision with no
+    contexts.
 
     `narrow` checks, ``(request, body, context) -> bool``, may refuse a
     transition the request's policy allows, never allow one it refuses:
@@ -332,22 +344,42 @@ def workflow_check(
     if request is None:
         if any(p is not None for _, p in policies):
             raise WorkflowRequestRequired()
-        return []
+        return _decision(type_iri, write, stored_pk, None, prior, contexts_after, ())
     transitions = []
     for c, policy in policies:
         if policy is None:
             continue
-        # A context the resource enters (not one it is stored in) has
-        # no prior state there: the write creates it there.
-        entering = prior is not None and c is not None
-        entering = entering and c not in contexts_before
+        # A context the resource enters (not one it is stored in, or any
+        # of a create's) has no prior state there: the write creates it
+        # there.
+        entering = is_entering(c, prior=prior, contexts_before=contexts_before)
         with errors_hidden_unless_readable(policy, request, prior, readable):
-            transitions.append(
-                (c, policy, transition_for(policy, proposed, prior, entering))
+            transition_data = context_transition(
+                policy, prior, proposed, entering=entering
             )
-    for c, policy, transition_data in transitions:
+        transitions.append(
+            (
+                policy,
+                ContextDecision(
+                    context=c,
+                    policy=policy.reference,
+                    transition=transition_data,
+                    error=None,
+                    entering=entering,
+                ),
+            )
+        )
+    for policy, entry in transitions:
         with errors_hidden_unless_readable(policy, request, prior, readable):
-            authorize(request, type_iri, policy, transition_data, c, proposed, narrow)
+            authorize(
+                request,
+                type_iri,
+                policy,
+                entry.transition,
+                entry.context,
+                proposed,
+                narrow,
+            )
     for c, policy in policies:
         if policy is None:
             authorize_without_policy(request, type_iri, c, proposed, narrow)
@@ -359,7 +391,38 @@ def workflow_check(
             type_iri=type_iri if post_save_type_iri is None else post_save_type_iri,
             stored_pk=stored_pk,
         )
-    return transitions
+    return _decision(
+        type_iri,
+        write,
+        stored_pk,
+        _actor_of(request),
+        prior,
+        contexts_after,
+        [entry for _, entry in transitions],
+    )
+
+
+def _actor_of(request):
+    """The user a checked write is decided for: the request's
+    (``access.request_user``) when it is authenticated, else ``None``."""
+    user = access.request_user(request)
+    if user is None or not getattr(user, "is_authenticated", False):
+        return None
+    return user
+
+
+def _decision(type_iri, write, stored_pk, actor, prior, contexts_after, contexts):
+    """`workflow_check`'s `WorkflowDecision` of `write`."""
+    return WorkflowDecision(
+        type_iri=type_iri,
+        stored_pk=stored_pk,
+        actor=actor,
+        checked=True,
+        prior=snapshot_prior(prior),
+        proposed=write.proposed,
+        contexts_after=contexts_after,
+        contexts=contexts,
+    )
 
 
 @contextmanager
@@ -392,16 +455,6 @@ def errors_hidden_unless_readable(workflow_policy, request, prior=None, readable
         if prior is not None and readable is not None and not readable():
             raise HiddenWorkflowTransitionError() from e
         raise
-
-
-def transition_for(workflow_policy, proposed, prior, entering=False):
-    """The `TransitionData` of writing `proposed` under `workflow_policy`: a
-    create's ``__INITIALIZE__`` (`proposed` must be an initial state) when
-    there is no `prior` content, or when the write moves the resource into
-    this context (`entering`); else the transition from `prior`."""
-    if prior is None or entering:
-        return workflow_policy.initial_transition(proposed)
-    return workflow_policy.determine_transition(proposed, prior)
 
 
 def authorize(

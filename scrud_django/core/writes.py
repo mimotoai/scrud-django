@@ -63,6 +63,7 @@ from scrud_django.core.authz import (
     may_act_in_context,
 )
 from scrud_django.core.bodies import check_body
+from scrud_django.core.decisions import WorkflowDecision
 from scrud_django.core.errors import precondition_answer
 from scrud_django.core.requirements import (
     Requirement,
@@ -98,8 +99,6 @@ from scrud_django.models import Resource, ResourceType
 from scrud_django.registration import ResourceRegistration, type_locked
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
-    TransitionData,
-    WorkflowPolicy,
     lock_workflow_policy_type,
 )
 
@@ -341,7 +340,7 @@ def validate_write(
     type_iri: str | None = None,
     covered: bool | None = None,
     prepare: Callable[[object], object] | None = None,
-) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
+) -> WorkflowDecision:
     """Validate `request`'s write of `body` (the body as sent) to
     `resource_type`, over the resource `stored` (``None`` for a create).
 
@@ -387,12 +386,13 @@ def validate_write(
     policy's own checks (`validate_policy_write`), then the workflow check
     (`scrud_django.core.workflow.workflow_check`, given `stored`'s content
     as its ``prior``, `prior_of`, and `narrow` and `readable` as they are).
-    Returns the transitions the workflow check authorized; the request
-    then carries their mark for this one write (``(type_iri,
-    stored.pk)``, ``None`` as the pk for a create), which the save that
-    uses it consumes (`save_checked`). `type_iri` is the type the write's
-    post-save check names (by default `resource_type`'s ``type_uri``): the
-    save must be given the same one, or its check does not find the mark.
+    Returns the workflow check's `WorkflowDecision` (the transition it
+    authorized in each context with a policy); the request then carries
+    its mark for this one write (``(type_iri, stored.pk)``, ``None`` as the
+    pk for a create), which the save that uses it consumes (`save_checked`).
+    `type_iri` is the type the write's post-save check names (by default
+    `resource_type`'s ``type_uri``): the save must be given the same one,
+    or its check does not find the mark.
 
     `requirement` (required: the type's, `scrud_django.core.types
     .requirement_for`) gives the `narrow`: the checks of each type's hooks

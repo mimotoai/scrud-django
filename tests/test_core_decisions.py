@@ -169,3 +169,126 @@ def test_null_content_moved_and_re_exported():
 
     assert workflow.NULL_CONTENT is NULL_CONTENT
     assert workflow.NULL_STORED_CONTENT is NULL_CONTENT
+
+
+IN_PROGRESS = {"status": "in progress", "priority": "high", "assignee": "me"}
+
+
+def request_by(method, user):
+    from django.test import RequestFactory
+
+    request = getattr(RequestFactory(), method)("/")
+    request.user = user
+    return request
+
+
+@pytest.mark.django_db
+def test_a_checked_and_an_unchecked_decision_agree():
+    from scrud_django.core.transitions import transitions_between
+    from scrud_django.core.workflow import Create, Update, workflow_check
+
+    from .factories import UserFactory
+
+    # A superuser is allowed every transition: the check refuses nothing.
+    user = UserFactory(is_superuser=True)
+    checked = workflow_check(
+        request_by("post", user),
+        type_iri=TYPE_IRI,
+        write=Create(proposed=NOT_STARTED, contexts_after=["a"]),
+    )
+    unchecked = transitions_between(
+        TYPE_IRI,
+        prior=None,
+        proposed=NOT_STARTED,
+        contexts_before=[],
+        contexts_after=["a"],
+    )
+    assert checked.contexts == unchecked.contexts
+    assert [entry.context for entry in checked.contexts] == ["a"]
+    assert checked.contexts[0].transition.transition == INITIALIZE
+    assert checked.contexts[0].entering
+    # An update that stays in "a" and moves into "b" (it leaves none).
+    checked = workflow_check(
+        request_by("put", user),
+        type_iri=TYPE_IRI,
+        write=Update(
+            prior=NOT_STARTED,
+            proposed=IN_PROGRESS,
+            readable=lambda: True,
+            stored_pk=7,
+            contexts_before=["a"],
+            contexts_after=["a", "b"],
+        ),
+    )
+    unchecked = transitions_between(
+        TYPE_IRI,
+        prior=NOT_STARTED,
+        proposed=IN_PROGRESS,
+        contexts_before=["a"],
+        contexts_after=["a", "b"],
+    )
+    assert checked.contexts == unchecked.contexts
+    stayed, entered = checked.contexts
+    assert (stayed.context, stayed.transition.transition, stayed.entering) == (
+        "a",
+        "start",
+        False,
+    )
+    assert (entered.context, entered.transition.transition, entered.entering) == (
+        "b",
+        INITIALIZE,
+        True,
+    )
+    assert checked.checked and not unchecked.checked
+
+
+@pytest.mark.django_db
+def test_workflow_check_returns_the_decision_with_its_actor():
+    from scrud_django.core.workflow import Update, workflow_check
+
+    from .factories import UserFactory
+
+    user = UserFactory(is_superuser=True)
+    decision = workflow_check(
+        request_by("put", user),
+        type_iri=TYPE_IRI,
+        write=Update(
+            prior=NOT_STARTED,
+            proposed=IN_PROGRESS,
+            readable=lambda: True,
+            stored_pk=7,
+            contexts_before=["a"],
+            contexts_after=["a"],
+        ),
+    )
+    assert isinstance(decision, WorkflowDecision)
+    assert decision.actor == user
+    assert decision.checked
+    assert decision.stored_pk == 7
+    assert decision.type_iri == TYPE_IRI
+    assert decision.prior == NOT_STARTED
+    assert decision.proposed == IN_PROGRESS
+    assert decision.contexts_after == ("a",)
+    assert decision.transitions["a"].transition == "start"
+
+
+@pytest.mark.django_db
+def test_an_anonymous_or_absent_requester_is_no_actor():
+    from django.contrib.auth.models import AnonymousUser
+
+    from scrud_django.core.workflow import Create, workflow_check
+
+    # No policy applies to this type: no request is needed, nor any user.
+    decision = workflow_check(
+        None, type_iri="tests://NoDefault", write=Create(proposed={})
+    )
+    assert decision.contexts == ()
+    assert decision.actor is None
+    assert decision.stored_pk is None
+    assert decision.checked
+    decision = workflow_check(
+        request_by("post", AnonymousUser()),
+        type_iri="tests://NoDefault",
+        write=Create(proposed={}),
+    )
+    assert decision.actor is None

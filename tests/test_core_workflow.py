@@ -139,12 +139,15 @@ def marked(request):
 @pytest.mark.django_db
 @test_context
 def test_allowed_transition_marks_request():
-    store_note_policy()
+    stored_policy = store_note_policy()
     request = put_request(user_with((may_transition("publish"), "a")))
     assert not marked(request)
-    ((context, policy, transition),) = publish(request)
+    (entry,) = publish(request).contexts
+    context, policy, transition = entry.context, entry.policy, entry.transition
     assert context == "a"
-    assert policy.policy["transitions"] == NOTE_POLICY["transitions"]
+    # The decision names the stored policy it was checked under.
+    assert policy.resource.pk == stored_policy.pk
+    assert policy.resource.content["transitions"] == NOTE_POLICY["transitions"]
     assert transition.transition == "publish"
     assert (transition.prior_state, transition.proposed_state) == (
         "draft",
@@ -407,9 +410,10 @@ def test_an_update_says_whether_its_stored_resource_is_readable():
 def test_create_is_checked_as_a_create():
     store_note_policy()
     request = put_request(user_with((may_transition("__INITIALIZE__"), "a")))
-    ((context, _, transition),) = workflow_check(
+    (entry,) = workflow_check(
         request, type_iri=NOTE, write=Create(proposed=DRAFT)
-    )
+    ).contexts
+    context, transition = entry.context, entry.transition
     assert context == "a"
     assert transition.transition == "__INITIALIZE__"
     assert (transition.prior_state, transition.proposed_state) == (None, "draft")
