@@ -93,9 +93,10 @@ class WorkflowDecision:
     of the stored resource `stored_pk` (``None``: a create) by `actor`:
     `checked` says the workflow check ran. `prior` and `proposed` are
     snapshots (deep copies) of the stored and proposed content;
-    `contexts_after` are the contexts the proposed content names (none is
-    ``(None,)``: the settings default), and `contexts` the decision in each
-    context concerned."""
+    `contexts_after` are the contexts the proposed content names, as its
+    builder gives them (`normalized_contexts_after`: ``(None,)``, the
+    settings default, for a write in no context at all), and `contexts` the
+    decision in each context concerned."""
 
     type_iri: str
     stored_pk: object | None
@@ -109,9 +110,7 @@ class WorkflowDecision:
     def __post_init__(self):
         object.__setattr__(self, "prior", copy.deepcopy(self.prior))
         object.__setattr__(self, "proposed", copy.deepcopy(self.proposed))
-        object.__setattr__(
-            self, "contexts_after", tuple(self.contexts_after) or (None,)
-        )
+        object.__setattr__(self, "contexts_after", tuple(self.contexts_after))
         object.__setattr__(self, "contexts", tuple(self.contexts))
 
     def get(self, context: str | None) -> ContextDecision | None:
@@ -158,6 +157,20 @@ class WorkflowDecision:
         return None if entry is None else entry.error
 
 
+def normalized_contexts_after(
+    contexts_before: Sequence[str | None], contexts_after: Sequence[str | None]
+) -> tuple[str | None, ...]:
+    """`contexts_after` as a decision holds them: ``(None,)``, the settings
+    default, when the write is in no context at all (neither
+    `contexts_before` nor `contexts_after` names one), as the workflow check
+    decides it; else `contexts_after` itself, as a tuple (an update out of
+    every context it was in concerns those contexts alone)."""
+    after = tuple(contexts_after)
+    if not after and not list(contexts_before):
+        return (None,)
+    return after
+
+
 def concerned_policies(
     type_iri: str,
     *,
@@ -166,10 +179,11 @@ def concerned_policies(
 ) -> list[tuple[str | None, WorkflowPolicy]]:
     """``(context, policy)`` for each context a write concerns that has a
     policy: `contexts_before` (the stored content's), then `contexts_after`
-    (the proposed content's), duplicates dropped; none in `contexts_after`
-    is ``None``, the settings default. The stored policies of the named
-    contexts are read in one query."""
-    after = list(contexts_after) or [None]
+    (the proposed content's, `normalized_contexts_after`), duplicates
+    dropped: a write in no context at all concerns ``None``, the settings
+    default. The stored policies of the named contexts are read in one
+    query."""
+    after = normalized_contexts_after(contexts_before, contexts_after)
     concerned = list(dict.fromkeys([*contexts_before, *after]))
     named = [context for context in concerned if context is not None]
     found = dict(workflow_policies_for(type_iri, named)) if named else {}

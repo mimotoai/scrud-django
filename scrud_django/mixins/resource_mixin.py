@@ -254,8 +254,9 @@ class ResourceMixin(ScrudfulMixin):
             contexts_before=(
                 rbac_contexts_of(prior_data) if prior_data is not None else []
             ),
-            # Defensive: `rbac_contexts_of` never gives no context.
-            contexts_after=list(self.rbac_contexts) or [None],
+            # `rbac_contexts_of` never gives no context: None (the settings
+            # default) is defensive, for a write in none before or after.
+            contexts_after=list(self.rbac_contexts),
             stored_pk=None if stored is None else stored.pk,
         )
 

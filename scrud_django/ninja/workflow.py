@@ -215,9 +215,9 @@ class ModelWorkflow:
                     prior=prior,
                     proposed=self.state(obj),
                     contexts_before=contexts_before,
-                    # In no context: the settings default under None, as the
-                    # workflow check applied it (as for a resource).
-                    contexts_after=list(self.contexts_for(obj)) or [None],
+                    # In no context before or after: the settings default
+                    # under None, as the workflow check applied it.
+                    contexts_after=list(self.contexts_for(obj)),
                     stored_pk=decision.stored_pk,
                     actor=decision.actor,
                 )

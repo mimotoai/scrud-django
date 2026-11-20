@@ -53,6 +53,7 @@ from scrud_django.core.decisions import (
     WorkflowDecision,
     context_transition,
     is_entering,
+    normalized_contexts_after,
     snapshot_prior,
 )
 from scrud_django.exceptions import (
@@ -333,8 +334,11 @@ def workflow_check(
     contexts_after = write.contexts_after
     if contexts_after is None:
         contexts_after = rbac_contexts_of(proposed)
+    # A write in no context at all is checked under the settings default
+    # (`normalized_contexts_after`), in context None.
+    contexts_after = normalized_contexts_after(contexts_before, contexts_after)
     contexts = list(dict.fromkeys(list(contexts_before) + list(contexts_after)))
-    if contexts:
+    if contexts != [None]:
         policies = list(workflow_policies_for(type_iri, contexts))
     else:
         policies = [(None, default_workflow_policy_for(type_iri))]

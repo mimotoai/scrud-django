@@ -119,9 +119,12 @@ def test_leaving_into_a_context_without_a_policy():
 
 @pytest.mark.django_db
 def test_null_stored_content_is_an_update_from_no_state():
-    # Stored content that is JSON null is decided as the workflow check
-    # decides it: an update from no state (no transition leads from there),
-    # not a create (it was reported as __INITIALIZE__).
+    # Stored content that is JSON null (NULL_CONTENT) is decided as the
+    # workflow check decides it: an update from no state (no transition
+    # leads from there), not a create. transitions_between already decided
+    # NULL_CONTENT so; what changed is that Resource.get_transitions now
+    # passes it for a stored null row, which it reported as a create
+    # (test_a_resource_stored_with_null_content_is_an_update_from_no_state).
     result = transitions_between(
         TYPE_IRI,
         prior=NULL_CONTENT,

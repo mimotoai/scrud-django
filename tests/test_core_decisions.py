@@ -13,6 +13,7 @@ from scrud_django.core.decisions import (
     context_transition,
     decision_key,
     is_entering,
+    normalized_contexts_after,
     snapshot_prior,
 )
 from scrud_django.exceptions import DefaultPolicyReference, WorkflowTransitionError
@@ -106,7 +107,26 @@ def test_lists_become_tuples_and_no_context_is_none():
     decision = make(contexts_after=["a"], contexts=[])
     assert decision.contexts_after == ("a",)
     assert decision.contexts == ()
-    assert make(contexts_after=[]).contexts_after == (None,)
+    # A decision holds the contexts its builder gives it; no context at all
+    # is None (the settings default) by `normalized_contexts_after`.
+    assert make(contexts_after=[]).contexts_after == ()
+    assert make(contexts_after=normalized_contexts_after([], [])).contexts_after == (
+        None,
+    )
+
+
+def test_normalized_contexts_after():
+    assert normalized_contexts_after([], []) == (None,)
+    assert normalized_contexts_after([], ["a"]) == ("a",)
+    # An update out of every context concerns those it leaves alone.
+    assert normalized_contexts_after(["a"], []) == ()
+    assert normalized_contexts_after(["a"], ["b", "a"]) == ("b", "a")
+
+
+@pytest.mark.django_db
+def test_an_update_out_of_every_context_concerns_no_default():
+    pairs = concerned_policies(TYPE_IRI, contexts_before=["a"], contexts_after=[])
+    assert [c for c, _ in pairs] == ["a"]
 
 
 def entry(context, state="a"):
@@ -240,6 +260,152 @@ def test_a_checked_and_an_unchecked_decision_agree():
         True,
     )
     assert checked.checked and not unchecked.checked
+    # Under a stored policy in "a" (and the settings default in "b"): the
+    # two decisions name the same version of the stored policy.
+    from scrud_django.exceptions import StoredPolicyReference
+    from scrud_django.registration import (
+        ResourceRegistration,
+        workflow_policy_resource_type,
+    )
+
+    from .workflow_defaults import read_workflow_policy
+
+    workflow_policy_resource_type()
+    stored = ResourceRegistration.register(
+        dict(
+            read_workflow_policy("tests.static.todo_flow", "workflow.json"),
+            rbac_context="a",
+        ),
+        "workflow-policies",
+    )
+    checked = workflow_check(
+        request_by("put", user),
+        type_iri=TYPE_IRI,
+        write=Update(
+            prior=NOT_STARTED,
+            proposed=IN_PROGRESS,
+            readable=lambda: True,
+            stored_pk=7,
+            contexts_before=["a"],
+            contexts_after=["a", "b"],
+        ),
+    )
+    unchecked = transitions_between(
+        TYPE_IRI,
+        prior=NOT_STARTED,
+        proposed=IN_PROGRESS,
+        contexts_before=["a"],
+        contexts_after=["a", "b"],
+    )
+    assert checked.contexts == unchecked.contexts
+    stayed, entered = checked.contexts
+    assert isinstance(stayed.policy, StoredPolicyReference)
+    assert stayed.policy.resource.pk == stored.pk
+    assert stayed.transition.transition == "start"
+    assert entered.policy == DefaultPolicyReference(TYPE_IRI)
+
+
+@pytest.mark.django_db
+def test_stored_policy_references_compare_by_version():
+    from scrud_django.exceptions import StoredPolicyReference
+    from scrud_django.registration import (
+        ResourceRegistration,
+        workflow_policy_resource_type,
+    )
+
+    from .workflow_defaults import read_workflow_policy
+
+    workflow_policy_resource_type()
+    policy = dict(
+        read_workflow_policy("tests.static.todo_flow", "workflow.json"),
+        rbac_context="a",
+    )
+    stored = ResourceRegistration.register(policy, "workflow-policies")
+    again = type(stored).objects.get(pk=stored.pk)
+    assert StoredPolicyReference(stored) == StoredPolicyReference(again)
+    assert hash(StoredPolicyReference(stored)) == hash(StoredPolicyReference(again))
+    assert StoredPolicyReference(stored) != DefaultPolicyReference(TYPE_IRI)
+    assert StoredPolicyReference(stored) != stored
+    # Another version of the policy (a new etag) is another reference.
+    again.etag = "another"
+    assert StoredPolicyReference(stored) != StoredPolicyReference(again)
+
+
+@pytest.mark.django_db
+def test_an_update_out_of_every_context_decides_alike_with_no_default():
+    from scrud_django.core.transitions import transitions_between
+    from scrud_django.core.workflow import Update, workflow_check
+    from scrud_django.workflow import LEAVE, SAME_STATE
+
+    from .factories import UserFactory
+
+    # An own model's update from "a" into no context: only "a" is
+    # concerned, by both paths (no None entry, no settings default).
+    user = UserFactory(is_superuser=True)
+    checked = workflow_check(
+        request_by("put", user),
+        type_iri=TYPE_IRI,
+        write=Update(
+            prior=NOT_STARTED,
+            proposed=NOT_STARTED,
+            readable=lambda: True,
+            stored_pk=7,
+            contexts_before=["a"],
+            contexts_after=[],
+        ),
+    )
+    unchecked = transitions_between(
+        TYPE_IRI,
+        prior=NOT_STARTED,
+        proposed=NOT_STARTED,
+        contexts_before=["a"],
+        contexts_after=[],
+    )
+    assert [e.context for e in checked.contexts] == ["a"]
+    assert [e.context for e in unchecked.contexts] == ["a"]
+    assert checked.get(None) is None and unchecked.get(None) is None
+    assert checked.contexts_after == unchecked.contexts_after == ()
+    (checked_a,) = checked.contexts
+    (unchecked_a,) = unchecked.contexts
+    assert (checked_a.policy, checked_a.entering, checked_a.error) == (
+        unchecked_a.policy,
+        unchecked_a.entering,
+        unchecked_a.error,
+    )
+    # "a" is left: the check decides it as an ordinary transition, the
+    # unchecked path still reports __LEAVE__ until #36 (Task 6) makes the
+    # two entries equal.
+    assert checked_a.transition.transition == SAME_STATE
+    assert unchecked_a.transition.transition == LEAVE
+
+
+@pytest.mark.django_db
+def test_a_create_in_no_context_decides_the_settings_default():
+    from scrud_django.core.transitions import transitions_between
+    from scrud_django.core.workflow import Create, workflow_check
+
+    from .factories import UserFactory
+
+    user = UserFactory(is_superuser=True)
+    checked = workflow_check(
+        request_by("post", user),
+        type_iri=TYPE_IRI,
+        write=Create(proposed=NOT_STARTED, contexts_after=[]),
+    )
+    unchecked = transitions_between(
+        TYPE_IRI,
+        prior=None,
+        proposed=NOT_STARTED,
+        contexts_before=[],
+        contexts_after=[],
+    )
+    assert checked.contexts == unchecked.contexts
+    (entry,) = checked.contexts
+    assert entry.context is None
+    assert entry.policy == DefaultPolicyReference(TYPE_IRI)
+    assert entry.transition.transition == INITIALIZE
+    assert checked.contexts_after == unchecked.contexts_after == (None,)
+    assert checked.transition_data == unchecked.transition_data == entry.transition
 
 
 @pytest.mark.django_db

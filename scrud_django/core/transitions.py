@@ -25,6 +25,7 @@ from scrud_django.core.decisions import (
     concerned_policies,
     context_transition,
     is_entering,
+    normalized_contexts_after,
     snapshot_prior,
 )
 from scrud_django.workflow import (
@@ -96,8 +97,9 @@ def transitions_between(
     create, or a row not on the database written to; `NULL_CONTENT`: stored
     content that is JSON null, an update from no state) to `proposed`, in
     the contexts `contexts_before` (the stored content's) and
-    `contexts_after` (the proposed content's; none is ``[None]``, the
-    settings default):
+    `contexts_after` (the proposed content's; a write in neither is in
+    ``None``, the settings default, `normalized_contexts_after`, as the
+    workflow check decides it):
 
     - ``transition_data``, and ``transition_error``, the workflow error that
       made it ``None`` (an invalid transition, or content that meets the
@@ -107,10 +109,10 @@ def transitions_between(
       context the stored content or the proposed content is in (stored ones
       first, as the workflow check checks them) where a policy applies
       (`scrud_django.core.decisions.concerned_policies`), the write there.
-      (A ``None`` context, which callers pass in `contexts_after` when the
-      content is in none, is reported with the settings default, as the
-      workflow check checks it: for a resource it is defensive; an own
-      model's ``contexts_for`` may give none.) A context it stays in: the
+      (A ``None`` context, for a write in no context before or after, is
+      reported with the settings default, as the workflow check checks it:
+      for a resource it is defensive; an own model's ``contexts_for`` may
+      give none.) A context it stays in: the
       transition under its policy (``None`` if invalid); one it enters (or
       a create's): its ``__INITIALIZE__`` (``None`` if the content is in no
       initial state there); one it leaves: ``TransitionData(None, <the
@@ -122,11 +124,12 @@ def transitions_between(
 
     Each context is computed as the workflow check computes it
     (`transition_in`, `scrud_django.core.decisions.is_entering`), so that a
-    checked and an unchecked write of the same content decide alike (but
-    for a context it leaves, until then). Each context's policy is read
-    once."""
+    checked and an unchecked write of the same content decide alike, but
+    for a context it leaves: that is reported as ``__LEAVE__`` until a left
+    context is decided as the check decides it (#36). Each context's policy
+    is read once."""
     stored_contexts = list(contexts_before)
-    contexts = list(contexts_after) or [None]
+    contexts = normalized_contexts_after(stored_contexts, contexts_after)
     entries = []
     for context, policy in concerned_policies(
         type_iri, contexts_before=stored_contexts, contexts_after=contexts
@@ -287,9 +290,9 @@ def _governed_pre_save(sender, instance, raw=False, using=None, **kwargs):
         prior=None if stored is None else governed.state_of(stored),
         proposed=governed.state_of(instance),
         contexts_before=[] if stored is None else governed.contexts_for(stored),
-        # In no context: the settings default under None, as the workflow
-        # check applies it (as for a resource).
-        contexts_after=list(governed.contexts_for(instance)) or [None],
+        # In no context before or after: the settings default under None,
+        # as the workflow check applies it (as for a resource).
+        contexts_after=list(governed.contexts_for(instance)),
         stored_pk=None if stored is None else stored.pk,
     )
     setattr(instance, _PENDING, (governed.iri, found))
