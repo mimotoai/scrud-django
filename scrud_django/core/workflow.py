@@ -46,6 +46,7 @@ from scrud_django.core.authz import (
     content_of,
     may_read_in_context,
 )
+from scrud_django.core.decisions import NULL_CONTENT, NullContent
 from scrud_django.exceptions import (
     HiddenWorkflowTransitionError,
     WorkflowPolicyInvalidError,
@@ -142,36 +143,6 @@ def validate_policy_write(body: Mapping, stored_pk: int | None) -> None:
         raise WorkflowPolicyInvalidError(str(e)) from e
     check_policy_is_unique(body, stored_pk)
 
-
-class NullContent:
-    """The type of `NULL_CONTENT`, its one instance (``NullContent()`` is
-    it): falsy, ``repr`` ``NULL_CONTENT``."""
-
-    __slots__ = ()
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __bool__(self):
-        return False
-
-    def __repr__(self):
-        return "NULL_CONTENT"
-
-    def __reduce__(self):
-        # Copied or pickled, it stays the one instance.
-        return "NULL_CONTENT"
-
-
-# An `Update`'s stored content (`prior`) when the resource's content is JSON
-# null, or not an object (content stored before 0.12.0 could be a list):
-# the check reads it in the default context (`rbac_contexts_of`), in no
-# state (`WorkflowPolicy.state`), and an error about it is hidden unless the
-# stored resource is readable. A create is a `Create`, never null content.
-NULL_CONTENT = NullContent()
 
 # An alias of `NULL_CONTENT`, its earlier name (re-exported by
 # ``scrud_django.validators``).
