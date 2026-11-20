@@ -65,6 +65,44 @@ class TransitionData:
     transition: str
     leaving: bool = field(default=False, kw_only=True)
 
+    def __post_init__(self):
+        """Refuse a combination the transition's kind rules out (`ValueError`
+        naming the kind and the field)."""
+
+        def refuse(kind, field_name, rule):
+            raise ValueError(
+                f"TransitionData of kind {kind!r}: {field_name} {rule}, got "
+                f"{getattr(self, field_name)!r}."
+            )
+
+        name = self.transition
+        if not isinstance(name, str):
+            refuse("transition", "transition", "must be a str")
+        if name == INITIALIZE:
+            if self.prior_state is not None:
+                refuse(name, "prior_state", "must be None")
+            if self.proposed_state is None:
+                refuse(name, "proposed_state", "must not be None")
+            if self.leaving:
+                refuse(name, "leaving", "must be False")
+        elif name == SAME_STATE:
+            if self.prior_state is None:
+                refuse(name, "prior_state", "must not be None")
+            if self.proposed_state is None:
+                refuse(name, "proposed_state", "must not be None")
+            if self.prior_state != self.proposed_state:
+                refuse(name, "prior_state", "must equal proposed_state")
+        elif name == LEAVE:
+            if self.proposed_state is not None:
+                refuse(name, "proposed_state", "must be None")
+        elif name.startswith(RESERVED_TRANSITION_PREFIX):
+            refuse(name, "transition", "is reserved and not a kind of its own")
+        else:
+            if self.prior_state is None:
+                refuse(name, "prior_state", "must not be None")
+            if self.proposed_state is None:
+                refuse(name, "proposed_state", "must not be None")
+
 
 class WorkflowPolicy:
     """One workflow policy is in effect per resource type per access control
