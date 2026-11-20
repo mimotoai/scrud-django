@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Breaking changes
+
+* **A context a write leaves is reported as the transition authorized
+  there, with `leaving`, not `__LEAVE__` (#36).** On every path (checked
+  writes, saves that skip the check, own models), `transition_data` and
+  `transitions` report a context the write leaves as the ordinary transition
+  from the stored content under that context's policy (such as `submit` or
+  `__SAME_STATE__`), with `TransitionData.leaving` (and
+  `ContextDecision.leaving`) true. An unchecked save that leaves a context
+  whose stored content is in no state there now reports `None` with a logged
+  error, not `TransitionData(None, None, "__LEAVE__")`. `LEAVE` stays
+  importable but is never reported.
+* **`TransitionData` refuses inconsistent fields (#22).** It raises
+  `ValueError` for `__INITIALIZE__` with a `prior_state`, without a
+  `proposed_state` or with `leaving`; `__SAME_STATE__` with unequal or missing
+  states; a policy transition without both states; and any other name that
+  starts with `__`. `__LEAVE__` still constructs with no `proposed_state`.
+  `TransitionData` gained the keyword-only field `leaving`.
+
 ### Added
 
 * **`scrud_post_save` carries the workflow check's `decision`.** The new
@@ -32,11 +51,6 @@
   before 0.12.0) is reported as an update from no state in the default
   context where a policy applies (`transition_data` is `None`, and a WARNING
   is logged), not as a create (`__INITIALIZE__`).
-* Interim: a checked write (the API or the UI) that moves a resource out of
-  a context reports the context it leaves as the transition the check
-  authorized there (such as `__SAME_STATE__`), not `__LEAVE__`. Saves that
-  skip the check still report `__LEAVE__`. #36, later in this release,
-  changes this.
 
 ## 0.17.0
 
