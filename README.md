@@ -505,13 +505,14 @@ def destroy_article(request, pk: str, obj):
   `transition_data` and `transition_error` computed from `state_of`, as for a
   resource. `save_checked` sends the workflow check's decision (`checked`
   true) when the transitions recomputed for the saved object equal the
-  authorized ones, as when `save` wrote something other than the checked
-  values (a `Model.save` override, say); then it sends the recomputed decision
-  (`checked` false). Each context where the saved state is invalid is logged
-  as a WARNING on the `scrud_django.workflow` logger, as for an unchecked
-  save. An instance in no context, `contexts_for` giving none, is checked and
-  reported under the settings default, in context `None`. `save` must return
-  the one instance it saved (a `TypeError` otherwise). `delete_checked` locks the row the same way
+  authorized ones. When they differ, because `save` wrote something other than
+  the checked values (a `Model.save` override, say), it sends the recomputed
+  decision (`checked` false). Each context where the saved state is invalid is
+  logged as a WARNING on the `scrud_django.workflow` logger, as for an
+  unchecked save. An instance in no context, `contexts_for` giving none, is
+  checked and reported under the settings default, in context `None`. `save`
+  must return the one instance it saved (a `TypeError` otherwise).
+  `delete_checked` locks the row the same way
   (a 404 when another request deleted it meanwhile, and no signal) and sends
   `scrud_post_delete` on commit.
 * Per-transition grants (conditioned on `scrud_workflow`) work because the
