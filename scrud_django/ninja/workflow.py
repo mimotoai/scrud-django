@@ -28,6 +28,7 @@ from scoped_rbac import access
 from scoped_rbac.ninja import save_checked as rbac_save_checked
 
 from scrud_django.core.authz import _consume_workflow_mark
+from scrud_django.core.decisions import same_transitions
 from scrud_django.core.resources import COVERED_ITEM_METHOD, COVERED_LIST_METHOD
 from scrud_django.core.signals import scrud_post_delete, scrud_post_save
 from scrud_django.core.transitions import (
@@ -137,8 +138,9 @@ class ModelWorkflow:
            requires the request to be marked workflow-authorized for this
            write (``authorizing_write``); the save is not logged as skipping
            the workflow check (``checked_save``);
-        3. ``scrud_post_save``, with the transitions from the stored state to
-           ``state(saved)`` (``core.transitions.transitions_between``; in the
+        3. ``scrud_post_save``, with the check's decision (``decision``) when
+           the save wrote what it checked, else the decision recomputed from
+           the stored state to ``state(saved)`` (``core.transitions.transitions_between``; in the
            settings default's context ``None`` for an object in no context,
            as the workflow check applied it), whose workflow actions run once
            the write commits. `save` must return one instance of the model
@@ -210,7 +212,7 @@ class ModelWorkflow:
                         f"save must return one {model._meta.label}, not "
                         f"{type(obj).__name__} (save_checked writes one object)."
                     )
-                found = transitions_between(
+                recomputed = transitions_between(
                     self.iri,
                     prior=prior,
                     proposed=self.state(obj),
@@ -221,11 +223,16 @@ class ModelWorkflow:
                     stored_pk=decision.stored_pk,
                     actor=decision.actor,
                 )
+                # What the check decided when the save wrote what it
+                # checked (same transitions), else what the save wrote.
+                found = (
+                    decision if same_transitions(decision, recomputed) else recomputed
+                )
                 # The checked values were valid; a `save` (or a Model.save
                 # override) that wrote another state is logged, as an
                 # unchecked save is (checked_save kept the receiver quiet).
                 log_skipped_check(
-                    found.errors,
+                    recomputed.errors,
                     subject=f"{model._meta.label} pk {obj.pk}",
                     type_iri=self.iri,
                 )
@@ -238,6 +245,7 @@ class ModelWorkflow:
                     transition_data=found.transition_data,
                     transition_error=found.transition_error,
                     transitions=found.transitions,
+                    decision=found,
                     action="CREATE" if instance is None else "UPDATE",
                 )
                 return obj

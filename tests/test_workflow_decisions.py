@@ -247,3 +247,29 @@ def test_a_pending_decision_ends_with_its_block():
         assert take_pending(**match) is None
     with applying(None):
         assert take_pending(**match) is None
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_htmx_ui_write_sends_the_checked_decision(settings, reported_saves):
+    from django.urls import reverse
+
+    from .ui import UI_URLCONF, ui_url
+
+    settings.ROOT_URLCONF = UI_URLCONF
+    user = writer()
+    resource = todo()
+    Given.http.force_login(user)
+    reported_saves.clear()
+    When.http.put(
+        ui_url(reverse("todos-detail", args=[resource.id])),
+        data=json.dumps(IN_PROGRESS),
+        content_type="application/json",
+        HTTP_IF_MATCH=quote_etag(resource.etag),
+        HTTP_HX_REQUEST="true",
+    )
+    Then.http.status_code_is(HTTPStatus.OK)
+    (reported,) = reported_saves
+    assert reported["decision"].checked is True
+    assert reported["decision"].actor == user
+    assert_sent_from(reported)

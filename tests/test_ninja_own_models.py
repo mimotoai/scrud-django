@@ -15,6 +15,7 @@ from scoped_rbac import access
 
 from scrud_django.core import transitions
 from scrud_django.core.authz import _workflow_authorized
+from scrud_django.core.signals import scrud_post_save
 from scrud_django.exceptions import HiddenWorkflowTransitionError
 from scrud_django.ninja import ModelWorkflow, workflow_check
 from scrud_django.ninja.errors import PROBLEM_JSON
@@ -629,3 +630,86 @@ def test_a_save_must_return_one_instance(calls, django_capture_on_commit_callbac
             )
     assert not Article.objects.exists()
     assert calls == []
+
+
+@pytest.fixture
+def reported():
+    """The keyword arguments of each Article ``scrud_post_save``."""
+    found = []
+
+    def record(sender, resource_type_uri=None, **kwargs):
+        if resource_type_uri == ARTICLE:
+            found.append(kwargs)
+
+    scrud_post_save.connect(record, weak=False, dispatch_uid="test-own-decisions")
+    try:
+        yield found
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-own-decisions")
+
+
+def test_an_own_model_create_sends_the_checked_decision(writer, reported):
+    # ArticleOut.id was None when the create was checked, the saved row has
+    # one: the check's decision is still what is sent.
+    response = writer.post(
+        LIST,
+        {"title": "t", "state": "draft", "rbac_context": "a"},
+        content_type="application/json",
+    )
+    assert response.status_code == 201, response.content
+    [kwargs] = reported
+    decision = kwargs["decision"]
+    assert decision.checked is True
+    assert decision.stored_pk is None
+    assert kwargs["transitions"] == decision.transitions
+    assert kwargs["transition_data"] == decision.transition_data
+    assert decision.transition_data.transition == "__INITIALIZE__"
+
+
+def test_an_own_model_save_that_wrote_another_state_sends_the_recomputed_decision(
+    reported, caplog
+):
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a"))
+    article = draft_in_a()
+
+    def archived():
+        article.state = "archived"
+        article.save()
+        return article
+
+    with caplog.at_level(logging.WARNING, logger="scrud_django.workflow"):
+        workflow.save_checked(
+            request, instance=article, values={"state": "published"}, save=archived
+        )
+    [kwargs] = reported
+    decision = kwargs["decision"]
+    assert decision.checked is False
+    assert decision.proposed["state"] == "archived"
+    assert kwargs["transitions"] == decision.transitions
+    assert kwargs["transition_data"] is None
+    assert kwargs["transition_error"] is not None
+    assert any(
+        r.name == "scrud_django.workflow" and r.levelno == logging.WARNING
+        for r in caplog.records
+    )
+
+
+def test_an_own_model_update_leaving_a_context_sends_the_checked_decision(reported):
+    # Until #36 the check reports a left context as the check's transition
+    # and the recompute as __LEAVE__ from the same state: still the same
+    # transitions, so the checked decision is sent.
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a", "b"))
+    article = draft_in_a()
+
+    def moved():
+        article.rbac_context = "b"
+        article.save()
+        return article
+
+    workflow.save_checked(
+        request, instance=article, values={"rbac_context": "b"}, save=moved
+    )
+    [kwargs] = reported
+    assert kwargs["decision"].checked is True

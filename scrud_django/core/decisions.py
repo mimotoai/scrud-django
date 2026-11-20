@@ -29,6 +29,7 @@ from scrud_django.exceptions import (
     WorkflowTransitionError,
 )
 from scrud_django.workflow import (
+    LEAVE,
     TransitionData,
     WorkflowPolicy,
     default_workflow_policy_for,
@@ -177,6 +178,33 @@ def normalized_contexts_after(
     if not after and not list(contexts_before):
         return (None,)
     return after
+
+
+def same_transitions(checked: WorkflowDecision, saved: WorkflowDecision) -> bool:
+    """Whether `saved` (the decision recomputed from what a save wrote)
+    describes the same transitions as `checked` (the workflow check's): the
+    same contexts, and equal `TransitionData` in each."""
+    if {e.context for e in checked.contexts} != {e.context for e in saved.contexts}:
+        return False
+    for entry in checked.contexts:
+        other = saved.get(entry.context)
+        if entry.transition is not None and entry.transition == other.transition:
+            continue
+        # Task 6 (#36) removes this branch: until a left context is decided
+        # as the check decides it, the check reports the context the write
+        # leaves as its transition there (``__SAME_STATE__``, say) and the
+        # recompute as ``__LEAVE__`` from the same state.
+        left = entry.context not in checked.contexts_after
+        if (
+            left
+            and entry.transition is not None
+            and other.transition is not None
+            and other.transition.transition == LEAVE
+            and other.transition.prior_state == entry.transition.prior_state
+        ):
+            continue
+        return False
+    return True
 
 
 def concerned_policies(
