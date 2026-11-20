@@ -16,6 +16,8 @@ from scrud_django.registration import (
 )
 from scrud_django.workflow import INITIALIZE, LEAVE, WorkflowTransitionError
 
+from .fixtures import register_test_types
+
 TYPE_IRI = "tests://ToDo"
 NO_DEFAULT = "tests://NoDefault"
 NOT_STARTED = {"status": "not started"}
@@ -168,11 +170,10 @@ def test_transitions_between_builds_an_unchecked_decision():
 @pytest.mark.django_db
 def test_a_resource_stored_with_null_content_is_an_update_from_no_state():
     from django.db.models import JSONField, Value
-    from django.urls import reverse
 
     from scrud_django.models import Resource
 
-    reverse("todos-list", urlconf="tests.urls")  # registers the test types
+    register_test_types()
     resource = ResourceRegistration.register(dict(NOT_STARTED), "todos")
     # A row whose content is JSON null (only stored before 0.12.0) is an
     # update from no state in the default context, as the workflow check
