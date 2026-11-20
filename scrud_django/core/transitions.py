@@ -19,6 +19,7 @@ from django.db.models import Model
 from django.db.models.signals import post_save, pre_save
 
 from scrud_django.core.decisions import (
+    WORKFLOW_ERRORS,
     ContextDecision,
     NullContent,
     WorkflowDecision,
@@ -28,25 +29,13 @@ from scrud_django.core.decisions import (
     normalized_contexts_after,
     snapshot_prior,
 )
-from scrud_django.workflow import (
-    WorkflowAmbiguousStateError,
-    WorkflowInvalidInitialStateError,
-    WorkflowInvalidStateError,
-    WorkflowTransitionError,
-)
+from scrud_django.workflow import WorkflowAmbiguousStateError
+
+# `WORKFLOW_ERRORS` is defined in `scrud_django.core.decisions` and stays
+# importable from here.
 
 # The workflow errors of saves that skipped the ``WorkflowValidator``.
 logger = logging.getLogger("scrud_django.workflow")
-
-# The workflow errors a report of a transition catches: a write that skipped
-# the ``WorkflowValidator`` is still saved.
-WORKFLOW_ERRORS = (
-    WorkflowAmbiguousStateError,
-    WorkflowInvalidInitialStateError,
-    WorkflowInvalidStateError,
-    WorkflowTransitionError,
-)
-
 
 # Deprecated: the earlier name of `WorkflowDecision`, which
 # `transitions_between` returns (no longer a ``NamedTuple``: it neither

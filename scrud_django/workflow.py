@@ -45,7 +45,11 @@ SAME_STATE = "__SAME_STATE__"
 # ``TransitionData.leaving`` (#36). Kept importable, and reserved, for one
 # release.
 LEAVE = "__LEAVE__"
-RESERVED_TRANSITIONS = (INITIALIZE, SAME_STATE, LEAVE)
+# A superuser's write in a context whose policy would refuse it (#31): from
+# and to the one state each content is in there, ``None`` for none or
+# several (`scrud_django.core.decisions.override_transition`).
+OVERRIDE = "__OVERRIDE__"
+RESERVED_TRANSITIONS = (INITIALIZE, SAME_STATE, LEAVE, OVERRIDE)
 RESERVED_TRANSITION_PREFIX = "__"
 
 
@@ -54,11 +58,12 @@ class TransitionData:
     """A write's transition under one policy: from `prior_state` (``None``
     for a create or a move into the context) to `proposed_state`, by
     `transition`, the policy's transition name or a reserved one
-    (`INITIALIZE`, `SAME_STATE`). `leaving` (keyword-only) says the write
-    moves the resource out of the context: the transition is the one
-    authorized there, from the stored content, as for a context it stays
-    in. Immutable: the same instance may be reported to several
-    receivers."""
+    (`INITIALIZE`, `SAME_STATE`, `OVERRIDE`: a superuser's write the
+    policy would refuse, whose states may each be ``None``). `leaving`
+    (keyword-only) says the write moves the resource out of the context:
+    the transition is the one authorized there, from the stored content,
+    as for a context it stays in. Immutable: the same instance may be
+    reported to several receivers."""
 
     proposed_state: str | None
     prior_state: str | None
@@ -95,6 +100,9 @@ class TransitionData:
         elif name == LEAVE:
             if self.proposed_state is not None:
                 refuse(name, "proposed_state", "must be None")
+        elif name == OVERRIDE:
+            # Any states: each content's one state there, or None.
+            pass
         elif name.startswith(RESERVED_TRANSITION_PREFIX):
             refuse(name, "transition", "is reserved and not a kind of its own")
         else:

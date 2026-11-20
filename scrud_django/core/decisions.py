@@ -1,7 +1,8 @@
 """The workflow decision types and the per-context computation every
 workflow check shares: which contexts a write concerns under which policies
 (`concerned_policies`, which says whether it leaves each), whether it enters
-one (`is_entering`), and its transition there (`context_transition`).
+one (`is_entering`), its transition there (`context_transition`), and a
+superuser's override of a policy that refuses it (`override_transition`).
 
 A `WorkflowDecision` is what a workflow check decided about one write, as
 immutable data: it holds snapshots of the stored and proposed content, so that
@@ -26,13 +27,28 @@ from types import MappingProxyType
 from scrud_django.exceptions import (
     DefaultPolicyReference,
     StoredPolicyReference,
+    WorkflowAmbiguousStateError,
+    WorkflowInvalidInitialStateError,
+    WorkflowInvalidStateError,
     WorkflowTransitionError,
 )
 from scrud_django.workflow import (
+    OVERRIDE,
     TransitionData,
     WorkflowPolicy,
     default_workflow_policy_for,
     workflow_policies_for,
+)
+
+# The workflow errors a context's transition raises (`context_transition`):
+# a superuser's write overrides them (`override_transition`), and a report
+# of a save that skipped the workflow check catches them
+# (``scrud_django.core.transitions.transition_in``).
+WORKFLOW_ERRORS = (
+    WorkflowAmbiguousStateError,
+    WorkflowInvalidInitialStateError,
+    WorkflowInvalidStateError,
+    WorkflowTransitionError,
 )
 
 
@@ -82,7 +98,9 @@ class ContextDecision:
     is an ``__INITIALIZE__``; `leaving` that it moves the resource out of
     the context (one the stored content is in and the proposed content is
     not), so that `transition` is the transition there from the stored
-    content, flagged as `leaving` too."""
+    content, flagged as `leaving` too. `overridden` is the workflow error
+    the policy raised there that a superuser's write overrode: it is set
+    exactly when `transition` is an ``__OVERRIDE__`` (`override`)."""
 
     context: str | None
     policy: StoredPolicyReference | DefaultPolicyReference
@@ -90,6 +108,7 @@ class ContextDecision:
     error: WorkflowTransitionError | None
     entering: bool
     leaving: bool = False
+    overridden: WorkflowTransitionError | None = None
 
     def __post_init__(self):
         if (self.transition is None) == (self.error is None):
@@ -102,6 +121,22 @@ class ContextDecision:
                 "A ContextDecision's transition is leaving exactly when it is: "
                 f"got leaving={self.leaving!r}, transition={self.transition!r}."
             )
+        is_override = (
+            self.transition is not None and self.transition.transition == OVERRIDE
+        )
+        if is_override != (self.overridden is not None):
+            raise ValueError(
+                "A ContextDecision names the error it overrode exactly when its "
+                f"transition is {OVERRIDE}: got transition={self.transition!r}, "
+                f"overridden={self.overridden!r}."
+            )
+
+    @property
+    def override(self) -> bool:
+        """Whether the write is a superuser's override of the policy here:
+        its transition is ``__OVERRIDE__``, and `overridden` the error the
+        policy raised."""
+        return self.overridden is not None
 
 
 @dataclass(frozen=True)
@@ -151,6 +186,12 @@ class WorkflowDecision:
         return MappingProxyType(
             {e.context: e.error for e in self.contexts if e.error is not None}
         )
+
+    @property
+    def overrides(self) -> tuple[str | None, ...]:
+        """The contexts where the write is a superuser's override of the
+        policy (`ContextDecision.override`), in the decision's order."""
+        return tuple(e.context for e in self.contexts if e.override)
 
     def _first_entry(self) -> ContextDecision | None:
         for context in self.contexts_after:
@@ -268,6 +309,33 @@ def context_transition(
     else:
         data = policy.determine_transition(proposed, prior)
     return replace(data, leaving=True) if leaving else data
+
+
+def _single_state(policy: WorkflowPolicy, content) -> str | None:
+    """The one state (initial or not) of `policy` whose condition `content`
+    meets, or ``None`` when it meets none or several (or is not a mapping)."""
+    matches = policy.matching_states(content, policy.state_expressions)
+    return matches[0] if len(matches) == 1 else None
+
+
+def override_transition(
+    policy: WorkflowPolicy,
+    prior: Mapping | NullContent | None,
+    proposed: Mapping,
+    *,
+    entering: bool,
+    leaving: bool = False,
+) -> TransitionData:
+    """The ``__OVERRIDE__`` (`OVERRIDE`) `TransitionData` of a superuser's
+    write of `proposed` under `policy`, where `context_transition` raised a
+    workflow error: from the one state `prior` is in (none when there is no
+    `prior` or the write is `entering` the context) to the one state
+    `proposed` is in, each ``None`` when the content is in no state or in
+    several; flagged `leaving` as `context_transition` flags it."""
+    prior_state = None if prior is None or entering else _single_state(policy, prior)
+    return TransitionData(
+        _single_state(policy, proposed), prior_state, OVERRIDE, leaving=leaving
+    )
 
 
 def snapshot_prior(prior: Mapping | NullContent | None) -> Mapping | None:

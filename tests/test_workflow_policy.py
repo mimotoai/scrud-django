@@ -14,6 +14,7 @@ from scrud_django.exceptions import (
 from scrud_django.workflow import (
     INITIALIZE,
     LEAVE,
+    OVERRIDE,
     SAME_STATE,
     TransitionData,
     WorkflowPolicy,
@@ -518,12 +519,15 @@ def test_one_transition_naming_a_state_twice_is_no_duplicate():
     )
 
 
-@pytest.mark.parametrize("name", ["__INITIALIZE__", "__SAME_STATE__", "__LEAVE__"])
+@pytest.mark.parametrize(
+    "name", ["__INITIALIZE__", "__SAME_STATE__", "__LEAVE__", "__OVERRIDE__"]
+)
 def test_a_reserved_transition_name_is_refused_naming_every_reserved_one(name):
-    assert (INITIALIZE, SAME_STATE, LEAVE) == (
+    assert (INITIALIZE, SAME_STATE, LEAVE, OVERRIDE) == (
         "__INITIALIZE__",
         "__SAME_STATE__",
         "__LEAVE__",
+        "__OVERRIDE__",
     )
     with pytest.raises(ImproperlyConfigured) as excinfo:
         WorkflowPolicy(
@@ -535,7 +539,7 @@ def test_a_reserved_transition_name_is_refused_naming_every_reserved_one(name):
     assert str(excinfo.value) == (
         f"Invalid workflow transition {name!r}: a name must be a string not "
         "starting with '__', which is reserved (__INITIALIZE__, __SAME_STATE__, "
-        "__LEAVE__)."
+        "__LEAVE__, __OVERRIDE__)."
     )
 
 

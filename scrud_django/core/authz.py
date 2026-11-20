@@ -80,7 +80,8 @@ def current_transition():
     """The name of the workflow transition the workflow check
     (`scrud_django.core.workflow.workflow_check`) is authorizing
     (``"__INITIALIZE__"`` for a creation, ``"__SAME_STATE__"`` for an update
-    that stays in its state, else the policy's name for it), while
+    that stays in its state, ``"__OVERRIDE__"`` for a superuser's write the
+    policy would refuse, else the policy's name for it), while
     it asks the request's policy and the view's ``IsAuthorized`` permissions
     (``has_context_permission``) about it; ``None`` anywhere else: outside
     the workflow check (the request, object and post-save checks), and in its
@@ -92,6 +93,20 @@ def current_transition():
     check its ``obj`` is the request body as sent (a ``dict``)."""
     transition = _transition.get()
     return None if transition is _OUTSIDE or transition is _WRITE else transition
+
+
+def is_workflow_superuser(request) -> bool:
+    """Whether `request`'s user (``access.request_user``) is a superuser to
+    the workflow check: active and ``is_superuser``. Such a user's write
+    overrides the policy of a context that would refuse it
+    (``__OVERRIDE__``). scoped-rbac decides superusers without
+    ``is_active``."""
+    user = access.request_user(request)
+    return bool(
+        user is not None
+        and getattr(user, "is_active", False)
+        and getattr(user, "is_superuser", False)
+    )
 
 
 @contextmanager
