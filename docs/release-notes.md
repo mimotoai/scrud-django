@@ -22,20 +22,20 @@
   `core.transitions.transitions_between` return a `WorkflowDecision` (they
   returned a list of (context, policy, `TransitionData`) and the
   `Transitions` named tuple).
-* `scrud_django.core.transitions.Transitions` is a deprecated alias of
-  `WorkflowDecision` and no longer a `NamedTuple`: it cannot be unpacked and
+* `scrud_django.core.transitions.Transitions` is an alias of
+  `WorkflowDecision` kept for compatibility, and no longer a `NamedTuple`: it cannot be unpacked and
   has no `_replace`.
 * Overriding `ResourceMixin.get_transitions` or `get_transition_data` now
   affects only saves without a matching checked decision (a save that
   skipped the check, or whose content differs from the checked content).
 * A resource whose stored row holds JSON null (or non-object content stored
   before 0.12.0) is reported as an update from no state in the default
-  context (`transition_data` is `None`, and a WARNING is logged), not as a
-  create (`__INITIALIZE__`).
-* Interim: an API write that moves a resource out of a context reports the
+  context where a policy applies (`transition_data` is `None`, and a WARNING
+  is logged), not as a create (`__INITIALIZE__`).
+* Interim: a checked write (the API or the UI) that moves a resource out of a context reports the
   context it leaves as the transition the check authorized there (such as
   `__SAME_STATE__`), not `__LEAVE__`. Saves that skip the check still report
-  `__LEAVE__`. A later change in this release rewrites this.
+  `__LEAVE__`. #36, later in this release, changes this.
 
 ## 0.17.0
 

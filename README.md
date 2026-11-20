@@ -506,9 +506,10 @@ def destroy_article(request, pk: str, obj):
   resource. `save_checked` sends the workflow check's decision (`checked`
   true) when the transitions recomputed for the saved object equal the
   authorized ones; otherwise it sends the recomputed decision (`checked`
-  false) and logs, as before (an
+  false). Each context where the saved state is invalid is logged as a
+  WARNING on the `scrud_django.workflow` logger, as for an unchecked save. An
   instance in no context, `contexts_for` giving none, is checked and reported
-  under the settings default, in context `None`). `save` must return the one
+  under the settings default, in context `None`. `save` must return the one
   instance it saved (a `TypeError` otherwise). If it wrote something other
   than the checked values (a `Model.save` override, say), each context where
   the saved state is invalid is logged as a warning on the
@@ -1218,8 +1219,7 @@ snapshots in `prior` and `proposed`.
 
 A checked API or UI write does not compute its transitions again: those
 reported are the ones the check authorized, even if a policy changed between
-the check and the save. For now (until the change that reports what a move
-leaves, in this release's notes), an API write that moves a resource out of a
+the check and the save. For now (until #36 lands), a checked write (the API or the UI) that moves a resource out of a
 context reports the context it leaves as the transition the check authorized
 there (such as `__SAME_STATE__`), not `__LEAVE__`; a save that skips the check
 still reports `__LEAVE__` there.
