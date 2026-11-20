@@ -32,6 +32,7 @@ from scrud_django.core.types import TypeOptions, register_type_options, type_opt
 from scrud_django.exceptions import (
     WorkflowAmbiguousStateError,
     WorkflowInvalidInitialStateError,
+    WorkflowInvalidStateError,
     WorkflowTransitionError,
 )
 from scrud_django.models import Resource
@@ -74,6 +75,14 @@ OVERLAPPING_POLICY = {
     },
 }
 AMBIGUOUS = dict(NOT_STARTED, status="in progress", priority="high")
+
+# Only "in progress" (initial) and "done": "canceled" content is in no state.
+STRICT_POLICY = {
+    "resource_type": TODO,
+    "initial_states": {"in progress": 'status == "in progress"'},
+    "states": {"done": 'status == "done"'},
+    "transitions": {"finish": {"from": "in progress", "to": "done"}},
+}
 
 # "done" may not change in place: no transition names it alone on each side.
 RESTRICTED_POLICY = {
@@ -255,6 +264,26 @@ def test_a_superuser_puts_over_list_content(front_end, admin_login, reported_sav
 
 @pytest.mark.django_db
 @test_context
+def test_a_superuser_updates_into_no_state(front_end, admin_login, reported_saves):
+    # Under STRICT_POLICY "canceled" is in no state (refused for a writer:
+    # test_atomic_writes' test_a_transition_the_stored_state_forbids_is_refused).
+    store_policy(dict(STRICT_POLICY, rbac_context="w"))
+    resource = todo(status="in progress", rbac_context="w")
+    Given.http.force_login(admin_login)
+    reported_saves.clear()
+    proposed = dict(NOT_STARTED, status="canceled", rbac_context="w")
+    put_todo(front_end, resource, proposed)
+    Then.http.status_code_is(HTTPStatus.OK)
+    assert Resource.objects.get(pk=resource.pk).content == proposed
+    decision = the_decision(reported_saves)
+    assert decision.transitions["w"] == TransitionData(None, "in progress", OVERRIDE)
+    assert decision.overrides == ("w",)
+    overridden = decision.get("w").overridden
+    assert type(overridden) is WorkflowInvalidStateError, overridden
+
+
+@pytest.mark.django_db
+@test_context
 def test_a_superuser_updates_ambiguous_stored_content(
     front_end, admin_login, reported_saves
 ):
@@ -334,6 +363,26 @@ def test_a_superuser_creates_content_in_no_initial_state(
     assert decision.get("a").entering is True
     assert isinstance(decision.get("a").overridden, WorkflowInvalidInitialStateError)
     assert decision.overrides == ("a",)
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_superuser_creates_content_in_no_state(
+    front_end, admin_login, reported_saves
+):
+    # Under STRICT_POLICY "canceled" is in no state at all, initial or not.
+    serve_ninja()  # registers the test types
+    store_policy(dict(STRICT_POLICY, rbac_context="w"))
+    Given.http.force_login(admin_login)
+    reported_saves.clear()
+    post_todo(front_end, dict(NOT_STARTED, status="canceled", rbac_context="w"))
+    Then.http.status_code_is(HTTPStatus.CREATED)
+    decision = the_decision(reported_saves)
+    assert decision.transitions["w"] == TransitionData(None, None, OVERRIDE)
+    assert decision.get("w").entering is True
+    assert decision.overrides == ("w",)
+    overridden = decision.get("w").overridden
+    assert type(overridden) is WorkflowInvalidInitialStateError, overridden
 
 
 @pytest.mark.django_db

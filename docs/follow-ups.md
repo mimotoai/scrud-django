@@ -2447,11 +2447,17 @@ anyone who is not a superuser. scoped-rbac is upstream and not edited here;
 the fix is either scoped-rbac requiring `is_active` (then nothing changes
 here) or scrud dropping `is_active` from `is_workflow_superuser` (an
 inactive superuser then overrides too). The test that would show the
-divergence: with `AUTHENTICATION_BACKENDS` set to
-`django.contrib.auth.backends.AllowAllUsersModelBackend`, `force_login` an
-inactive superuser (`is_active=False`, `is_superuser=True`) holding no
-roles, on both front ends; a GET of a ToDo in a context where they hold no
-role answers 200 (scoped-rbac allows), while a PUT of a ToDo stored in no
-state (`status="nonsense"`) to `"not started"` answers 400
-(`workflow-transition-invalid`), where an active superuser's answers 200
-with `__OVERRIDE__`. Aligned, both answers would follow one rule.
+divergence, on the ninja front end (`serve_ninja()`, whose routes read the
+session through scoped-rbac's `resolve_user`): with
+`AUTHENTICATION_BACKENDS` set to
+`django.contrib.auth.backends.AllowAllUsersModelBackend` (so Django's
+session middleware loads an inactive user), `force_login` an inactive
+superuser (`is_active=False`, `is_superuser=True`) holding no roles; a GET
+of a ToDo in a context where they hold no role answers 200 (scoped-rbac
+allows), while a PUT of a ToDo stored in no state (`status="nonsense"`) to
+`"not started"` answers 400 (`workflow-transition-invalid`), where an
+active superuser's answers 200 with `__OVERRIDE__`. Not on DRF through the
+session: DRF's `SessionAuthentication` refuses an inactive user, who is
+then anonymous (401 or 403). On DRF the same two requests show it with
+`APIClient.force_authenticate` of that user instead. Aligned, both answers
+would follow one rule.

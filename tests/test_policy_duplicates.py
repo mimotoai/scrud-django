@@ -279,8 +279,6 @@ def test_other_writes_take_no_policy_lock(write_order):
 @pytest.mark.django_db
 @pytest.mark.parametrize("resource_type", [[TODO], {"@id": TODO}, None, 5], ids=repr)
 def test_system_check_reports_a_non_string_resource_type(resource_type):
-    from django.utils.timezone import now
-
     from scrud_django.models import ResourceType
 
     workflow_policy_resource_type()
@@ -547,8 +545,6 @@ def test_policy_lookup_compares_contexts_exactly():
 
 @pytest.mark.django_db
 def test_a_policy_without_context_rows_still_governs_its_context():
-    from django.utils.timezone import now
-
     from scrud_django.workflow import stored_policies_for
 
     store_policy(dict(PERMISSIVE_POLICY, rbac_context="other"))
