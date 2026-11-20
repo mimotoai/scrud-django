@@ -14,10 +14,11 @@ from scrud_django.core.decisions import (
     decision_key,
     is_entering,
     normalized_contexts_after,
+    same_transitions,
     snapshot_prior,
 )
 from scrud_django.exceptions import DefaultPolicyReference, WorkflowTransitionError
-from scrud_django.workflow import INITIALIZE, TransitionData
+from scrud_django.workflow import INITIALIZE, LEAVE, SAME_STATE, TransitionData
 
 TYPE_IRI = "tests://ToDo"
 REF = DefaultPolicyReference(TYPE_IRI)
@@ -458,3 +459,33 @@ def test_an_anonymous_or_absent_requester_is_no_actor():
         write=Create(proposed={}),
     )
     assert decision.actor is None
+
+
+def leaving(transition):
+    return ContextDecision("a", REF, transition, None, False)
+
+
+def test_same_transitions_accepts_a_left_context_leave_from_the_same_state():
+    checked = make(
+        contexts_after=("b",),
+        contexts=[leaving(TransitionData("draft", "draft", SAME_STATE))],
+    )
+    saved = make(
+        checked=False,
+        contexts_after=("b",),
+        contexts=[leaving(TransitionData(None, "draft", LEAVE))],
+    )
+    assert same_transitions(checked, saved)
+
+
+def test_same_transitions_refuses_a_left_context_leave_from_another_state():
+    checked = make(
+        contexts_after=("b",),
+        contexts=[leaving(TransitionData("draft", "draft", SAME_STATE))],
+    )
+    saved = make(
+        checked=False,
+        contexts_after=("b",),
+        contexts=[leaving(TransitionData(None, "published", LEAVE))],
+    )
+    assert not same_transitions(checked, saved)

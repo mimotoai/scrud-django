@@ -686,6 +686,11 @@ def test_an_own_model_save_that_wrote_another_state_sends_the_recomputed_decisio
     decision = kwargs["decision"]
     assert decision.checked is False
     assert decision.proposed["state"] == "archived"
+    # The saved state (draft -> archived) is invalid in context "a": no
+    # transition there, and the error is the one reported.
+    assert dict(kwargs["transitions"]) == {"a": None}
+    assert set(decision.errors) == {"a"}
+    assert kwargs["transition_error"] is decision.errors["a"]
     assert kwargs["transitions"] == decision.transitions
     assert kwargs["transition_data"] is None
     assert kwargs["transition_error"] is not None

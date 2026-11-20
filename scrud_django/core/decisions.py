@@ -188,6 +188,8 @@ def same_transitions(checked: WorkflowDecision, saved: WorkflowDecision) -> bool
         return False
     for entry in checked.contexts:
         other = saved.get(entry.context)
+        if other is None:
+            return False
         if entry.transition is not None and entry.transition == other.transition:
             continue
         # Task 6 (#36) removes this branch: until a left context is decided
