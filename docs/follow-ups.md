@@ -1196,7 +1196,10 @@ facade's `create` and `update` always validate the body they save, so
 front ends must write through them (or validate exactly the body their
 own `save` writes). Proposal: carry a fingerprint of the validated body
 (and its contexts) in the mark and compare it with what `save` wrote, or
-make `save_checked` take the body and validate it itself. Test: in
+make `save_checked` take the body and validate it itself. The
+`WorkflowDecision.proposed` that the mark now carries (a snapshot of the
+checked content; `core/decisions.py`) is the fingerprint this fix needs.
+Test: in
 `tests/test_core_writes.py`, with a JSON-LD policy in "a" where a draft is
 published by "publish" and a user holding `may_stay_json_ld()` in "a",
 `validate_write` a body that stays a draft, then `save_checked` an

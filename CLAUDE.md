@@ -130,6 +130,9 @@ studio call the core too; nothing dispatches a DRF viewset in process.
 
 An app's own models get the workflow through `scrud_django/core/signals.py`
 (the signals and action runner, neutral of `Resource`),
+`scrud_django/core/decisions.py` (the `WorkflowDecision` types, the per-context
+computation both the check and unchecked saves use, and the hand-off of a
+checked decision to the save, which sends it in `scrud_post_save`),
 `scrud_django/core/transitions.py` (`Transitions`, `govern`, `checked_save`,
 and the receivers logging unchecked saves of governed models) and
 `scrud_django/ninja/workflow.py` (`workflow_check` and `ModelWorkflow`, which
