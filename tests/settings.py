@@ -107,12 +107,18 @@ SETTINGS: dict[str, Any] = dict(
         "rest_framework.authtoken",
         "scoped_rbac",
         "scrud_django",
+        # The outbox, with no SCRUD_OUTBOX: it records nothing (the outbox
+        # tests list their types with override_settings), and W010, which
+        # says so, is silenced below.
+        "scrud_django.outbox",
         "scrud_django.ui",
         "scrud_django.ui.studio",
         "tests",
         "tests.apps.UILayerTestConfig",
         "reversion",
     ),
+    # tests/test_outbox.py asserts W010 itself (check_outbox_types).
+    SILENCED_SYSTEM_CHECKS=["scrud_django.W010"],
     PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"],
     REST_FRAMEWORK={
         "EXCEPTION_HANDLER": "scrud_django.drf.exceptions.scrud_exception_handler",
