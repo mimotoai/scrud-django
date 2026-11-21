@@ -2,6 +2,7 @@
 computation every workflow check shares."""
 
 import dataclasses
+from types import MappingProxyType
 
 import pytest
 
@@ -102,6 +103,33 @@ def test_snapshots_do_not_follow_later_changes():
     prior["status"] = "y"
     assert decision.proposed == {"status": "not started"}
     assert decision.prior == {"status": "x"}
+
+
+def test_snapshots_take_any_mapping():
+    """An own model's ``state_of`` may give a mapping ``copy.deepcopy``
+    cannot copy (a ``MappingProxyType``): the snapshot is plain dicts and
+    lists, detached from it."""
+    nested = {"tags": ["a", ("b", "c")], "owner": {"name": "x"}}
+    proposed = MappingProxyType(
+        {"status": "not started", "meta": MappingProxyType(nested)}
+    )
+    prior = MappingProxyType({"status": "x"})
+    decision = make(proposed=proposed, prior=prior)
+    assert decision.proposed == {
+        "status": "not started",
+        "meta": {"tags": ["a", ["b", "c"]], "owner": {"name": "x"}},
+    }
+    assert type(decision.proposed) is dict
+    assert type(decision.proposed["meta"]) is dict
+    assert decision.prior == {"status": "x"} and type(decision.prior) is dict
+    nested["tags"].append("d")
+    nested["owner"]["name"] = "y"
+    assert decision.proposed["meta"] == {
+        "tags": ["a", ["b", "c"]],
+        "owner": {"name": "x"},
+    }
+    # NULL_CONTENT stays the one instance.
+    assert make(prior=NULL_CONTENT).prior is NULL_CONTENT
 
 
 def test_lists_become_tuples_and_no_context_is_none():
@@ -571,6 +599,35 @@ def test_same_transitions_matches_a_checked_override_with_a_recomputed_error():
         checked=False, contexts=[ContextDecision("b", REF, None, error, False)]
     )
     assert not same_transitions(checked, elsewhere)
+
+
+def test_same_transitions_matches_an_override_only_by_the_overridden_states():
+    # The recompute's error where the check overrode counts as the same only
+    # when it is between the states the overridden error was: a save that
+    # wrote another invalid state there is another write.
+    overridden = WorkflowTransitionError(
+        policy=REF, prior_state=None, proposed_state="x"
+    )
+    checked = make(
+        contexts=[
+            ContextDecision(
+                "a",
+                REF,
+                TransitionData("x", None, OVERRIDE),
+                None,
+                False,
+                overridden=overridden,
+            )
+        ],
+    )
+    for prior_state, proposed_state in ((None, "y"), ("w", "x")):
+        drifted = WorkflowTransitionError(
+            policy=REF, prior_state=prior_state, proposed_state=proposed_state
+        )
+        saved = make(
+            checked=False, contexts=[ContextDecision("a", REF, None, drifted, False)]
+        )
+        assert not same_transitions(checked, saved), (prior_state, proposed_state)
 
 
 def test_same_transitions_does_not_match_a_valid_transition_with_an_error():

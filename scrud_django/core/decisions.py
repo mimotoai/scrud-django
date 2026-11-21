@@ -139,16 +139,29 @@ class ContextDecision:
         return self.overridden is not None
 
 
+def snapshot_content(value):
+    """A copy of `value` that its later changes do not reach: a mapping (any
+    ``Mapping``, a ``MappingProxyType`` included, which ``copy.deepcopy``
+    cannot copy) as a plain ``dict``, a list or tuple as a ``list``, each
+    item copied alike; anything else deep-copied (`NULL_CONTENT` stays the
+    one instance)."""
+    if isinstance(value, Mapping):
+        return {key: snapshot_content(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [snapshot_content(item) for item in value]
+    return copy.deepcopy(value)
+
+
 @dataclass(frozen=True)
 class WorkflowDecision:
     """What a workflow check decided about a write of the type `type_iri`
     of the stored resource `stored_pk` (``None``: a create) by `actor`:
     `checked` says the workflow check ran. `prior` and `proposed` are
-    snapshots (deep copies) of the stored and proposed content;
-    `contexts_after` are the contexts the proposed content names, as its
-    builder gives them (`normalized_contexts_after`: ``(None,)``, the
-    settings default, for a write in no context at all), and `contexts` the
-    decision in each context concerned."""
+    snapshots (`snapshot_content`: plain dicts and lists) of the stored and
+    proposed content; `contexts_after` are the contexts the proposed content
+    names, as its builder gives them (`normalized_contexts_after`:
+    ``(None,)``, the settings default, for a write in no context at all),
+    and `contexts` the decision in each context concerned."""
 
     type_iri: str
     stored_pk: object | None
@@ -160,8 +173,8 @@ class WorkflowDecision:
     contexts: tuple[ContextDecision, ...]
 
     def __post_init__(self):
-        object.__setattr__(self, "prior", copy.deepcopy(self.prior))
-        object.__setattr__(self, "proposed", copy.deepcopy(self.proposed))
+        object.__setattr__(self, "prior", snapshot_content(self.prior))
+        object.__setattr__(self, "proposed", snapshot_content(self.proposed))
         object.__setattr__(self, "contexts_after", tuple(self.contexts_after))
         object.__setattr__(self, "contexts", tuple(self.contexts))
 
@@ -235,12 +248,17 @@ def same_transitions(checked: WorkflowDecision, saved: WorkflowDecision) -> bool
     same contexts, and equal `TransitionData` in each (a left context's
     included, ``leaving`` and all). A context `checked` overrode (a
     superuser's write the policy refuses) counts as the same when `saved`
-    has an error there: the recompute carries no override."""
+    has an error there between the same states as the error the check
+    overrode (`ContextDecision.overridden`): the recompute carries no
+    override, and a save that wrote another invalid state there is another
+    write."""
     if {e.context for e in checked.contexts} != {e.context for e in saved.contexts}:
         return False
     for entry in checked.contexts:
         other = saved.get(entry.context)
         if entry.override and other is not None and other.error is not None:
+            if _error_states(other.error) != _error_states(entry.overridden):
+                return False
             continue
         if (
             other is None
@@ -249,6 +267,14 @@ def same_transitions(checked: WorkflowDecision, saved: WorkflowDecision) -> bool
         ):
             return False
     return True
+
+
+def _error_states(error: WorkflowTransitionError) -> tuple:
+    """The ``(prior_state, proposed_state)`` of a workflow error."""
+    return (
+        getattr(error, "prior_state", None),
+        getattr(error, "proposed_state", None),
+    )
 
 
 def concerned_policies(

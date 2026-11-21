@@ -752,6 +752,39 @@ def test_an_own_model_superuser_override_is_reported_and_logged(
     assert decision.get("a").overridden.message in message
 
 
+def test_an_own_model_override_whose_save_drifted_sends_the_recomputed_decision(
+    admin_login, reported, caplog
+):
+    # The superuser's override checked draft -> archived in "a" (refused by
+    # the policy); the save wrote another invalid state there (draft ->
+    # bogus): another error than the one overridden, so another write. The
+    # recompute is sent, unchecked, and the context logged as a skipped
+    # check, not as an override.
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(admin_login)
+    article = draft_in_a()
+
+    def bogus():
+        article.state = "bogus"
+        article.save()
+        return article
+
+    with caplog.at_level(logging.WARNING, logger="scrud_django.workflow"):
+        workflow.save_checked(
+            request, instance=article, values={"state": "archived"}, save=bogus
+        )
+    [kwargs] = reported
+    decision = kwargs["decision"]
+    assert decision.checked is False
+    assert decision.proposed["state"] == "bogus"
+    assert decision.overrides == ()
+    assert dict(kwargs["transitions"]) == {"a": None}
+    assert set(decision.errors) == {"a"}
+    records = [r for r in caplog.records if r.name == "scrud_django.workflow"]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    assert "skipped the workflow check" in records[0].getMessage()
+
+
 @pytest.fixture
 def reported_deletes():
     found = []
