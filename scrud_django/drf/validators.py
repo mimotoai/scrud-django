@@ -10,6 +10,7 @@ from scoped_rbac import access
 from scoped_rbac.permissions import drf_error
 
 from scrud_django.core import workflow as core_workflow
+from scrud_django.core.decisions import context_transition
 from scrud_django.core.workflow import (  # noqa: F401  (moved; re-exported)
     NULL_CONTENT,
     NULL_STORED_CONTENT,
@@ -239,13 +240,13 @@ class WorkflowValidator:
         )
 
     def transition_for(self, workflow_policy, data, instance, entering=False):
-        """`scrud_django.core.workflow.transition_for` from the stored
-        `instance` (``None`` for a create)."""
-        return core_workflow.transition_for(
+        """`scrud_django.core.decisions.context_transition` of `data` from
+        the stored `instance` (``None`` for a create)."""
+        return context_transition(
             workflow_policy,
-            data,
             None if instance is None else prior_of(instance),
-            entering,
+            data,
+            entering=entering,
         )
 
     def authorize(

@@ -13,6 +13,7 @@ from scrud_django.workflow import (
     workflow_policies_for,
 )
 
+from ..core.decisions import NULL_CONTENT, take_pending
 from ..core.signals import scrud_post_delete, scrud_post_save
 from ..core.transitions import (  # noqa: F401  (re-exported)
     WORKFLOW_ERRORS,
@@ -111,21 +112,32 @@ class ResourceMixin(ScrudfulMixin):
         self, force_insert=False, force_update=False, using=None, update_fields=None
     ) -> None:
         """``Model.save()``, then ``scrud_post_save``, sent with ``using`` the
-        database the save wrote to (`_write_db`) and the save's transitions
-        (`get_transitions`), read before it writes.
+        database the save wrote to (`_write_db`) and the save's
+        `WorkflowDecision` as ``decision`` (with its ``transition_data``,
+        ``transition_error`` and ``transitions``), taken before it writes:
+        the workflow check's, when one is pending for this save
+        (`scrud_django.core.decisions.take_pending`: an API or UI write's,
+        of this type, this pk, ``None`` for a create, and this content),
+        else computed (`get_transitions`, ``checked=False``).
 
-        A save is not checked against the workflow (the ``WorkflowValidator``
-        checks API writes; the admin, ``ResourceRegistration`` and server
-        code skip it): an invalid one is still saved, and each context where
-        it is invalid is logged as a WARNING on the ``scrud_django.workflow``
-        logger, naming the resource's pk, its type URI, the context, the
+        Otherwise a save is not checked against the workflow (the
+        ``WorkflowValidator`` checks API writes; the admin,
+        ``ResourceRegistration`` and server code skip it): an invalid one is
+        still saved, and each context where it is invalid is logged as a
+        WARNING on the ``scrud_django.workflow`` logger, naming the resource's pk, its type URI, the context, the
         policy and the workflow error (`log_workflow_errors`), with the
         states the content meets when it meets several. It is logged once
         the row is written and before ``scrud_post_save`` is sent, so that a
         receiver that raises cannot keep it from being logged (the save may
         still roll back)."""
         db = self._write_db(using)
-        transitions = self.get_transitions(db)
+        decision = take_pending(
+            type_iri=self.resource_type.type_uri,
+            pk=None if self._state.adding else self.pk,
+            content=self.content,
+        )
+        if decision is None:
+            decision = self.get_transitions(db)
         action = 'CREATE' if self._state.adding else 'UPDATE'
         super().save(
             force_insert=force_insert,
@@ -133,17 +145,18 @@ class ResourceMixin(ScrudfulMixin):
             using=using,
             update_fields=update_fields,
         )
-        self.log_workflow_errors(transitions.errors)
+        self.log_workflow_errors(decision.errors)
         scrud_post_save.send(
             sender=self.__class__,
             instance=self,
             update_fields=update_fields,
             using=db,
             resource_type_uri=self.resource_type.type_uri,
-            transition_data=transitions.transition_data,
-            transition_error=transitions.transition_error,
-            transitions=transitions.transitions,
+            transition_data=decision.transition_data,
+            transition_error=decision.transition_error,
+            transitions=decision.transitions,
             action=action,
+            decision=decision,
         )
 
     def log_workflow_errors(self, errors):
@@ -197,15 +210,26 @@ class ResourceMixin(ScrudfulMixin):
         writes to (`using`, else the router's for this instance), or ``None``
         for a create or a row that is not there (an instance copied to
         another database with ``save(using=...)``)."""
+        prior_version = self._stored_row(using)
+        return prior_version.content if prior_version is not None else None
+
+    def _stored_row(self, using=None):
+        """This resource's stored row on the database a save writes to
+        (`stored_content`), or ``None``."""
         if self._state.adding:
             return None
         db = self._write_db(using)
-        prior_version = self.__class__.objects.using(db).filter(pk=self.pk).first()
-        return prior_version.content if prior_version is not None else None
+        return self.__class__.objects.using(db).filter(pk=self.pk).first()
 
     def get_transitions(self, using=None):
-        """The `Transitions` ``scrud_post_save`` reports for this save, from
-        the stored content (`stored_content`) to the content:
+        """The unchecked `WorkflowDecision` (``checked=False``,
+        `transitions_between`) ``scrud_post_save`` reports for this save,
+        from the stored content (`stored_content`) to the content. A
+        create, and a save whose row is not on the database written to, is
+        a create; a stored row whose content is not an object (JSON null,
+        stored before 0.12.0) is an update from `NULL_CONTENT`, in no state
+        in the default context, as the workflow check decides it
+        (`scrud_django.core.workflow.prior_of`):
 
         - ``transition_data`` (`get_transition_data`), and
           ``transition_error``, the workflow error that made it ``None``
@@ -228,7 +252,13 @@ class ResourceMixin(ScrudfulMixin):
           without a policy is left out.
 
         Each context's policy is read once."""
-        prior_data = self.stored_content(using)
+        stored = self._stored_row(using)
+        if stored is None:
+            prior_data = None
+        elif isinstance(stored.content, Mapping):
+            prior_data = stored.content
+        else:
+            prior_data = NULL_CONTENT
         return transitions_between(
             self.resource_type.type_uri,
             prior=prior_data,
@@ -236,8 +266,10 @@ class ResourceMixin(ScrudfulMixin):
             contexts_before=(
                 rbac_contexts_of(prior_data) if prior_data is not None else []
             ),
-            # Defensive: `rbac_contexts_of` never gives no context.
-            contexts_after=list(self.rbac_contexts) or [None],
+            # `rbac_contexts_of` never gives no context: None (the settings
+            # default) is defensive, for a write in none before or after.
+            contexts_after=list(self.rbac_contexts),
+            stored_pk=None if stored is None else stored.pk,
         )
 
     def transition_in(self, workflow, prior_data, entering=False, leaving=False):

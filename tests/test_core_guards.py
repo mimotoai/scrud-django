@@ -387,7 +387,8 @@ def test_validate_write_narrows_by_the_requirements_hooks():
     assert asked == [(resource_type, body, "a")]
     # Without hooks, or with `narrow` given, the requirement's hooks are
     # not asked.
-    ((context, _, transition),) = validate(requirement=[GrantsLeaf(JSON_LD)])
+    (entry,) = validate(requirement=[GrantsLeaf(JSON_LD)]).contexts
+    context, transition = entry.context, entry.transition
     assert (context, transition.transition) == ("a", "__INITIALIZE__")
     validate(requirement=[GrantsLeaf(JSON_LD), hooks], narrow=())
     assert len(asked) == 1
@@ -445,7 +446,8 @@ def test_validate_write_asks_a_registered_types_checks():
         )
 
     requirement = requirement_for(hooked, "hooked-notes")
-    ((context, _, _),) = validate({"text": "x", "rbac_context": "a"}, requirement)
+    (entry,) = validate({"text": "x", "rbac_context": "a"}, requirement).contexts
+    context = entry.context
     assert context == "a"
     with pytest.raises(access.AccessDenied):
         validate({"text": "x", "rbac_context": "b"}, requirement)

@@ -1,5 +1,43 @@
 # Change Log
 
+## Unreleased
+
+### Added
+
+* **`scrud_post_save` carries the workflow check's `decision`.** The new
+  keyword argument is a `scrud_django.core.decisions.WorkflowDecision`
+  (immutable: the type IRI, the stored pk, the actor, `checked`, snapshots of
+  the stored and proposed content, the contexts after and a `ContextDecision`
+  per context concerned). A checked API or UI write sends the decision the
+  check authorized as it was made, so its `transition_data`,
+  `transition_error` and `transitions` are no longer computed again (a policy
+  that changed between the check and the save does not change them); a save
+  that skipped the check, or whose content was not the checked content, sends
+  a computed decision with `checked` false. See the README's "Workflow
+  actions". The decision types live in the new `scrud_django.core.decisions`.
+
+### Changed
+
+* `core.workflow.workflow_check`, `core.writes.validate_write` and
+  `core.transitions.transitions_between` return a `WorkflowDecision` (they
+  returned a list of (context, policy, `TransitionData`) and the
+  `Transitions` named tuple).
+* `scrud_django.core.transitions.Transitions` is an alias of
+  `WorkflowDecision` kept for compatibility, and no longer a `NamedTuple`: it
+  cannot be unpacked and has no `_replace`.
+* Overriding `ResourceMixin.get_transitions` or `get_transition_data` now
+  affects only saves without a matching checked decision (a save that
+  skipped the check, or whose content differs from the checked content).
+* A resource whose stored row holds JSON null (or non-object content stored
+  before 0.12.0) is reported as an update from no state in the default
+  context where a policy applies (`transition_data` is `None`, and a WARNING
+  is logged), not as a create (`__INITIALIZE__`).
+* Interim: a checked write (the API or the UI) that moves a resource out of
+  a context reports the context it leaves as the transition the check
+  authorized there (such as `__SAME_STATE__`), not `__LEAVE__`. Saves that
+  skip the check still report `__LEAVE__`. #36, later in this release,
+  changes this.
+
 ## 0.17.0
 
 This release makes django-ninja the default front end: `scrud_django.urls`

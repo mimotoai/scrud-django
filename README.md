@@ -501,14 +501,18 @@ def destroy_article(request, pk: str, obj):
   a field set on the instance beforehand is overwritten. The transaction
   commits, and `scrud_post_save` and the `SCRUD_WORKFLOW_ACTIONS` for the IRI
   run on commit, with `sender` the model class, `instance`, `resource_type_uri`
-  the IRI, `using` the write's database, and `transitions`, `transition_data`
-  and `transition_error` computed from `state_of`, as for a resource (an
-  instance in no context, `contexts_for` giving none, is checked and reported
-  under the settings default, in context `None`). `save` must return the one
-  instance it saved (a `TypeError` otherwise). If it wrote something other
-  than the checked values (a `Model.save` override, say), each context where
-  the saved state is invalid is logged as a warning on the
-  `scrud_django.workflow` logger. `delete_checked` locks the row the same way
+  the IRI, `using` the write's database, and `decision`, `transitions`,
+  `transition_data` and `transition_error` computed from `state_of`, as for a
+  resource. `save_checked` sends the workflow check's decision (`checked`
+  true) when the transitions recomputed for the saved object equal the
+  authorized ones. When they differ, because `save` wrote something other than
+  the checked values (a `Model.save` override, say), it sends the recomputed
+  decision (`checked` false). Each context where the saved state is invalid is
+  logged as a WARNING on the `scrud_django.workflow` logger, as for an
+  unchecked save. An instance in no context, `contexts_for` giving none, is
+  checked and reported under the settings default, in context `None`. `save`
+  must return the one instance it saved (a `TypeError` otherwise).
+  `delete_checked` locks the row the same way
   (a 404 when another request deleted it meanwhile, and no signal) and sends
   `scrud_post_delete` on commit.
 * Per-transition grants (conditioned on `scrud_workflow`) work because the
@@ -1193,10 +1197,32 @@ replica.
 Actions and receivers are called as `action(sender, **kwargs)`, with the
 keyword arguments Django gives a receiver: `signal` (the signal sent),
 `instance`, `using`, `resource_type_uri` and `action` (`CREATE`, `UPDATE` or
-`DELETE`); `scrud_post_save` adds `update_fields`, `transition_data`,
-`transition_error` and `transitions`, and `scrud_post_delete` adds `pk`, the
-deleted resource's primary key (the `instance` is the deleted one, whose `pk`
-Django has set to `None`).
+`DELETE`); `scrud_post_save` adds `update_fields`, `decision`,
+`transition_data`, `transition_error` and `transitions`, and
+`scrud_post_delete` adds `pk`, the deleted resource's primary key (the
+`instance` is the deleted one, whose `pk` Django has set to `None`).
+
+`decision` is a `scrud_django.core.decisions.WorkflowDecision`, immutable
+data about the write: `type_iri`, `stored_pk` (`None` for a create), `actor`,
+`checked`, `prior` and `proposed` (snapshots of the stored and the proposed
+content), `contexts_after` (the contexts the proposed content names) and
+`contexts`, a tuple of `ContextDecision` (`context`, `policy`, `transition`
+or `error`, `entering`), one per context concerned. Its views `transitions`,
+`transition_data`, `transition_error` and `errors` are what the keyword
+arguments of those names carry: they are taken from it. `checked` is `True`
+when the decision is the one the workflow check authorized, sent as it was
+made; it is `False` when it was computed for the save, because the save
+skipped the check (the admin, `ResourceRegistration`, server code) or its
+content was not the checked content. A receiver must not mutate the
+snapshots in `prior` and `proposed`.
+
+A checked API or UI write does not compute its transitions again: those
+reported are the ones the check authorized, even if a policy changed between
+the check and the save. For now (until #36 lands), a checked write (the API
+or the UI) that moves a resource out of a context reports the context it
+leaves as the transition the check authorized there (such as
+`__SAME_STATE__`), not `__LEAVE__`; a save that skips the check still reports
+`__LEAVE__` there.
 
 `transition_data` is a `scrud_django.workflow.TransitionData`
 (`proposed_state`, `prior_state`, `transition`; immutable) under the

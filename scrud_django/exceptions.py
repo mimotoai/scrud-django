@@ -908,6 +908,20 @@ class StoredPolicyReference:
             return request.build_absolute_uri(path) if request is not None else path
         return None
 
+    def _version(self):
+        return (self.resource.pk, self.resource.etag)
+
+    def __eq__(self, other):
+        """Equal to a reference to the same version of the same stored
+        policy: its pk and etag (two reads of an unchanged policy, as a
+        checked and an unchecked decision of one write make)."""
+        if not isinstance(other, StoredPolicyReference):
+            return NotImplemented
+        return self._version() == other._version()
+
+    def __hash__(self):
+        return hash((StoredPolicyReference, self._version()))
+
     def __repr__(self):
         return f"StoredPolicyReference(pk={self.resource.pk!r})"
 
