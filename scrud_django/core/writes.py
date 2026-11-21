@@ -662,7 +662,10 @@ def save_checked(
     (`written_answer`, `answered_content`); an answer an earlier write left
     on either is dropped first, so that a caller writing the same object
     twice never reads the first write's. The write's `hook_state` is
-    cleared once the save is over, however it ends.
+    cleared once the save is over, however it ends. The request's user
+    (`request_actor`) is the actor (`acting_as`) of every save in the
+    transaction: the checked one, and those its receivers and
+    ``after_write`` make.
 
     The check refreshes the saved resource from its row, which empties its
     cache of related objects: `resource_type` is cached on it again, and on
@@ -1004,7 +1007,9 @@ def destroy(
     (`refuse_unserved`, 405) first: its caller asked the request check
     already (`load_for_read`). Then the type's ``before_destroy``
     (`write_hooks`), if any, runs (a refusal raises, nothing deleted), and
-    its ``after_destroy`` once `instance` is deleted.
+    its ``after_destroy`` once `instance` is deleted; the request's user is
+    the actor (`acting_as`) of the delete and of what its receivers and
+    ``after_destroy`` save.
 
     Without a `check`, `requirement` is taken through `Requirement.of`: one
     that asks no grants (empty, or hooks only) is ``ImproperlyConfigured``,

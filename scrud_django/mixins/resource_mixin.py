@@ -125,9 +125,10 @@ class ResourceMixin(ScrudfulMixin):
         ``WorkflowValidator`` checks API writes; the admin,
         ``ResourceRegistration`` and server code skip it): an invalid one is
         still saved, and each context where it is invalid is logged as a
-        WARNING on the ``scrud_django.workflow`` logger, naming the resource's pk, its type URI, the context, the
-        policy and the workflow error (`log_workflow_errors`), with the
-        states the content meets when it meets several. It is logged once
+        WARNING on the ``scrud_django.workflow`` logger, naming the
+        resource's pk, its type URI, the context, the policy and the workflow
+        error (`log_workflow_errors`), with the states the content meets when
+        it meets several. It is logged once
         the row is written and before ``scrud_post_save`` is sent, so that a
         receiver that raises cannot keep it from being logged (the save may
         still roll back)."""

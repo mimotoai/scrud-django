@@ -140,8 +140,9 @@ def reset_default_workflow_policies(setting, **kwargs):
 
 
 # The keys of a type's entry in SCRUD_WORKFLOW_ACTIONS: the action run when a
-# write of a resource of the type commits (the ``scrud_django.E008`` check
-# reports any other key).
+# write of a resource of the type commits (``on_transition``: a mapping of
+# transition name to action); the ``scrud_django.E008`` check reports any
+# other key.
 WORKFLOW_ACTION_KINDS = ("on_save", "on_delete", "on_transition")
 
 
@@ -150,12 +151,13 @@ def workflow_action_settings():
 
 
 def workflow_actions():
-    """Type URI -> ``{"on_save": ..., "on_delete": ...}``: the mappings that
-    ``SCRUD_WORKFLOW_ACTIONS`` names, a sequence (a list or a tuple) of dotted
-    paths, merged in order (a later one replaces an earlier one's entry for
-    a type). Raises ``ImproperlyConfigured`` for a setting that is not such a
-    sequence (a string, a mapping, ``None``...) or a path to anything other
-    than a mapping (``ScrudConfig.ready()`` calls it, so the process does not
+    """Type URI -> ``{"on_save": ..., "on_delete": ..., "on_transition":
+    {...}}``: the mappings that ``SCRUD_WORKFLOW_ACTIONS`` names, a sequence
+    (a list or a tuple) of dotted paths, merged in order (a later one
+    replaces an earlier one's entry for a type). Raises
+    ``ImproperlyConfigured`` for a setting that is not such a sequence (a
+    string, a mapping, ``None``...) or a path to anything other than a
+    mapping (``ScrudConfig.ready()`` calls it, so the process does not
     start). The entries themselves are checked by
     `scrud_django.checks.check_workflow_actions`."""
     setting = workflow_action_settings()

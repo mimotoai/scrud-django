@@ -1370,13 +1370,15 @@ To act on a revert, connect a receiver to Django's `post_save` for
 `Resource`, which they send with `raw=True` (`loaddata` too).
 
 A setting that is not a list or tuple of paths to mappings stops the process
-at startup (`ImproperlyConfigured`). `manage.py check` reports a type's entry
-that is not a mapping (`scrud_django.E007`), a key other than `on_save`, `on_delete` and
-`on_transition` (`E008`), a value that is neither callable nor `None`
-(`E009`) and an `on_transition` entry that is not a mapping of transition
-name (a string; of the names starting with `__`, only `__INITIALIZE__`,
-`__SAME_STATE__` and `__OVERRIDE__`) to a callable or `None` (`E012`); `check --database <alias>` warns about a type URI that is not a
-registered resource type (`W006`). At write time such an entry runs nothing
+at startup (`ImproperlyConfigured`). `manage.py check` reports a type's
+entry that is not a mapping (`scrud_django.E007`), a key other than
+`on_save`, `on_delete` and `on_transition` (`E008`), a value that is neither
+callable nor `None` (`E009`) and an `on_transition` entry, other than
+`None`, that is not a mapping of transition name (a string; of the names
+starting with `__`, only `__INITIALIZE__`, `__SAME_STATE__` and
+`__OVERRIDE__`) to a callable or `None` (`E012`); `check --database <alias>`
+warns about a type URI that is not a registered resource type (`W006`). At
+write time such an entry runs nothing
 and never fails the write. Neither does an action that raises: it is logged,
 with its traceback, on the `scrud_django.workflow_actions` logger, naming
 the action, the type URI, `on_save`, `on_delete` or `on_transition[<name>]`

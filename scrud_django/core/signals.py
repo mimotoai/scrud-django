@@ -82,12 +82,13 @@ class WorkflowActionCall:
     """A workflow action's call, ``action(sender, **kwargs)``, as
     ``transaction.on_commit`` runs it. An exception it raises is logged on
     the ``scrud_django.workflow_actions`` logger, with the action's qualified
-    name, the type URI, the kind of action (`kind`, ``on_save`` or
-    ``on_delete``), the resource's pk (``scrud_post_delete``'s ``pk``, as the
-    deleted instance has none) and the traceback, and not raised again:
-    ``on_commit``'s ``robust`` would log it a second time, anonymously, on
-    ``django.db.backends.base``. Its ``__qualname__`` (which that log names)
-    is the action's, should anything else go wrong."""
+    name, the type URI, the kind of action (`kind`: ``on_save``,
+    ``on_delete`` or ``on_transition[<name>]``), the resource's pk
+    (``scrud_post_delete``'s ``pk``, as the deleted instance has none) and
+    the traceback, and not raised again: ``on_commit``'s ``robust`` would log
+    it a second time, anonymously, on ``django.db.backends.base``. Its
+    ``__qualname__`` (which that log names) is the action's, should anything
+    else go wrong."""
 
     def __init__(self, action, kind, sender, kwargs):
         self.action = action
@@ -154,13 +155,13 @@ class ScrudSignalProcessor:
 
     @property
     def workflow_actions(self):
-        """Type URI -> ``{"on_save": ..., "on_delete": ...}``: the mapping
-        assigned to this processor, as assigned, else a read-only view
-        (``MappingProxyType``) of ``SCRUD_WORKFLOW_ACTIONS``'s
-        (`configured_workflow_actions`: loaded once, and again after the
-        setting changes, as under ``override_settings``), which every
-        processor shares: to change it, change the setting or assign this
-        processor a mapping of its own."""
+        """Type URI -> ``{"on_save": ..., "on_delete": ...,
+        "on_transition": {...}}``: the mapping assigned to this processor, as
+        assigned, else a read-only view (``MappingProxyType``) of
+        ``SCRUD_WORKFLOW_ACTIONS``'s (`configured_workflow_actions`: loaded
+        once, and again after the setting changes, as under
+        ``override_settings``), which every processor shares: to change it,
+        change the setting or assign this processor a mapping of its own."""
         if self._workflow_actions is not None:
             return self._workflow_actions
         return MappingProxyType(configured_workflow_actions())
@@ -257,8 +258,9 @@ class ScrudSignalProcessor:
     def run_on_commit(self, action, sender, kwargs, kind):
         """Call ``action(sender, **kwargs)`` when the write's transaction
         commits, through a `WorkflowActionCall` that logs its failure as
-        `kind` of action (`post_save_literal` or `post_delete_literal`).
-        ``robust`` is a backstop: the call does not raise."""
+        `kind` of action (`post_save_literal`, `post_delete_literal`, or
+        ``on_transition[<name>]`` for a transition's). ``robust`` is a
+        backstop: the call does not raise."""
         transaction.on_commit(
             WorkflowActionCall(action, kind, sender, kwargs),
             using=write_alias(sender, kwargs),
@@ -266,17 +268,18 @@ class ScrudSignalProcessor:
         )
 
     def determine_action(self, post_literal, type_uri):
-        """The `post_literal` (``on_save`` or ``on_delete``) action of
-        `type_uri`, or None. A bad entry never fails the write: an entry
-        that is not a mapping, or an action that is not callable, is logged
-        on the ``scrud_django.workflow_actions`` logger and runs nothing (the
-        ``scrud_django.E007`` and ``E009`` checks report them). A missing key
-        or ``None`` is no action, and so is every action of a setting changed
-        (``override_settings``) to one that cannot be loaded
-        (``ImproperlyConfigured``, or ``ImportError`` importing a path it
-        names), which is logged. Any other error loading the setting (one
-        that importing the module of a mapping it names raises) is not
-        caught: it propagates, and fails the write."""
+        """The `post_literal` (``on_save``, ``on_delete``, or
+        ``on_transition``'s mapping, which `determine_transition_action`
+        checks) action of `type_uri`, or None. A bad entry never fails the
+        write: an entry that is not a mapping, or an action that is not
+        callable, is logged on the ``scrud_django.workflow_actions`` logger
+        and runs nothing (the ``scrud_django.E007`` and ``E009`` checks
+        report them). A missing key or ``None`` is no action, and so is every
+        action of a setting changed (``override_settings``) to one that
+        cannot be loaded (``ImproperlyConfigured``, or ``ImportError``
+        importing a path it names), which is logged. Any other error loading
+        the setting (one that importing the module of a mapping it names
+        raises) is not caught: it propagates, and fails the write."""
         try:
             all_actions = self.workflow_actions
         except (ImproperlyConfigured, ImportError) as error:

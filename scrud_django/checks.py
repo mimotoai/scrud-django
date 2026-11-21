@@ -1015,8 +1015,8 @@ def check_workflow_actions(app_configs, **kwargs):
     - ``scrud_django.E007`` for a type whose entry is not a mapping, or for a
       setting that cannot be loaded at all (``ScrudConfig.ready()`` refuses
       that at startup, so only a setting changed since gets here);
-    - ``scrud_django.E008`` for a key other than ``on_save`` and
-      ``on_delete`` (a misspelled one runs nothing);
+    - ``scrud_django.E008`` for a key other than ``on_save``,
+      ``on_delete`` and ``on_transition`` (a misspelled one runs nothing);
     - ``scrud_django.E009`` for a value that is neither callable nor ``None``
       (a dotted path is not imported);
     - ``scrud_django.E012`` for an ``on_transition`` entry, other than

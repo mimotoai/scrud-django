@@ -145,11 +145,14 @@ class ModelWorkflow:
            write (``authorizing_write``); the save is not logged as skipping
            the workflow check (``checked_save``);
         3. ``scrud_post_save``, with the check's decision (``decision``) when
-           the save wrote what it checked, else the decision recomputed from
-           the stored state to ``state(saved)`` (``core.transitions.transitions_between``; in the
-           settings default's context ``None`` for an object in no context,
-           as the workflow check applied it), whose workflow actions run once
-           the write commits. `save` must return one instance of the model
+           the save wrote what it checked (the same transitions; where the
+           check overrode, the same error), else the decision recomputed from
+           the stored state to ``state(saved)``
+           (``core.transitions.transitions_between``; in the settings
+           default's context ``None`` for an object in no context, as the
+           workflow check applied it), whose workflow actions run once the
+           write commits. The request's user acts (``acting_as``) for the
+           whole write, the receivers' saves included. `save` must return one instance of the model
            (``TypeError`` otherwise: a list of many is scoped-rbac's, not a
            workflow write). Should it have written other than the checked
            values (a ``Model.save`` override, say), each context where the

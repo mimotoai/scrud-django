@@ -318,8 +318,9 @@ def workflow_check(
     by the type `post_save_type_iri` (the type the write's post-save check
     names; by default `type_iri`), carrying the decision it returns, which
     the save then sends (`scrud_django.core.decisions.applying`). An
-    `Update` without a ``stored_pk`` is not marked: the post-save check of no save matches it. The save that
-    uses the mark consumes it (`scrud_django.core.writes.save_checked`).
+    `Update` without a ``stored_pk`` is not marked: the post-save check of
+    no save matches it. The save that uses the mark consumes it
+    (`scrud_django.core.writes.save_checked`).
 
     Raises ``TypeError`` for a `write` that is neither (a delete runs no
     workflow check: follow-up ``delete-no-workflow-check``),
