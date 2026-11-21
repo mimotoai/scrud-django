@@ -238,3 +238,25 @@ def test_a_save_without_a_decision_runs_no_transition_action(
             action="update",
         )
     assert [kind for kind, _ in transition_calls] == ["on_save"]
+
+
+@pytest.mark.django_db
+def test_a_string_on_transition_is_logged_as_e012_and_runs_nothing(
+    caplog, django_capture_on_commit_callbacks
+):
+    resource = todo(rbac_context="a")
+    user = UserFactory()
+    with caplog.at_level(logging.ERROR, logger="scrud_django.workflow_actions"):
+        with (
+            setting_of("transition_string"),
+            django_capture_on_commit_callbacks(execute=True),
+            acting_as(user),
+        ):
+            ResourceRegistration.update(
+                dict(IN_PROGRESS, rbac_context="a"), "todos", str(resource.pk)
+            )
+    assert Resource.objects.get(pk=resource.pk).content["status"] == "in progress"
+    assert transition_calls == []
+    (record,) = [r for r in caplog.records if r.name == "scrud_django.workflow_actions"]
+    assert "E012" in record.getMessage()
+    assert "E009" not in record.getMessage()

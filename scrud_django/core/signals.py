@@ -302,10 +302,8 @@ class ScrudSignalProcessor:
         if (
             action is not None
             and not callable(action)
-            and not (
-                post_literal == self.post_transition_literal
-                and isinstance(action, Mapping)
-            )
+            # on_transition is a mapping: determine_transition_action checks it.
+            and post_literal != self.post_transition_literal
         ):
             logger.error(
                 "SCRUD_WORKFLOW_ACTIONS: the %s action for %r is not callable "

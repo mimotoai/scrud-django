@@ -93,3 +93,6 @@ transition_valid = {
         }
     }
 }
+transition_string = {
+    "tests://ToDo": {"on_transition": "tests.workflow_actions.record_start"}
+}
