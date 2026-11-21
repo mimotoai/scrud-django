@@ -2461,3 +2461,30 @@ session: DRF's `SessionAuthentication` refuses an inactive user, who is
 then anonymous (401 or 403). On DRF the same two requests show it with
 `APIClient.force_authenticate` of that user instead. Aligned, both answers
 would follow one rule.
+
+
+<a id="outbox-autocommit-saves"></a>
+## outbox-autocommit-saves: a bare save in autocommit commits before its outbox event is stored
+
+`scrud_django.outbox.receivers.store_event` writes its `OutboxEvent` when
+`scrud_post_save` or `scrud_post_delete` is sent, in whatever transaction
+is open on the write's database. Every scrud front end, `ResourceRegistration`
+and `ModelWorkflow` write in a transaction, so their events commit with the
+write. A bare `resource.save()` or `resource.delete()` in autocommit does
+not: `ResourceMixin.save` sends `scrud_post_save` after `super().save()`
+returns, and `save_base`'s own `atomic(savepoint=False)` has committed the
+row by then (the delete likewise). If the event's insert then fails (a
+database error, a constraint, a JSON document MariaDB refuses), the write
+stays committed without its event, which the outbox exists to prevent.
+Today the receiver's docstring tells server code to wrap such
+a save or delete in `transaction.atomic(using=...)`. The fix would wrap
+`ResourceMixin.save` and `delete` (and `ResourceQuerySet.delete`'s
+signalled deletes) in `transaction.atomic(using=db)`, so that the write and
+its `scrud_post_*` receivers commit or roll back together, in autocommit
+too (a savepoint, no more, inside an open transaction). The test that would
+expose the gap: a `TransactionTestCase` (so that autocommit is real) with
+`SCRUD_OUTBOX={"TYPES": ["tests://ToDo"]}` that patches
+`OutboxEvent.objects.create` to raise, calls a bare `resource.save()` of a
+changed ToDo outside any atomic block, and asserts that the exception
+propagates, that the row's new content persists, and that no `OutboxEvent`
+exists; with the fix, the content would be the old one.

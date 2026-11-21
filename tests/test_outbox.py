@@ -4,11 +4,14 @@ written in the write's transaction, and `send_events` /
 ``manage.py scrud_outbox_send`` to deliver them."""
 
 import json
+import logging
 from http import HTTPStatus
 from io import StringIO
 from uuid import uuid4
 
 import pytest
+from django.contrib.auth.models import AnonymousUser
+from django.core import checks
 from django.core.management import CommandError, call_command
 from django.db import transaction
 from django.test import override_settings
@@ -477,3 +480,53 @@ def test_e013_reports_a_malformed_types(outbox):
 def test_well_formed_types_pass_the_check(types):
     with override_settings(SCRUD_OUTBOX={"TYPES": types}):
         assert check_outbox_types(None) == []
+
+
+@pytest.mark.django_db
+def test_an_event_without_a_pk_is_not_stored(caplog):
+    with (
+        RECORD_TODOS,
+        caplog.at_level(logging.WARNING, logger="scrud_django.workflow_actions"),
+    ):
+        store_event(
+            sender=Resource,
+            instance=Resource(content=NOT_STARTED),  # unsaved: no pk
+            using="default",
+            resource_type_uri=TODO,
+            action="UPDATE",
+        )
+    assert not OutboxEvent.objects.exists()
+    (record,) = [r for r in caplog.records if r.name == "scrud_django.workflow_actions"]
+    assert record.levelno == logging.WARNING
+    assert "no primary key" in record.getMessage()
+    assert TODO in record.getMessage()
+
+
+@pytest.mark.django_db
+def test_user_id_is_an_authenticated_users_pk_or_none():
+    resource = todo()
+    saved = UserFactory()
+    users = [None, AnonymousUser(), UserFactory.build(), saved]
+    with RECORD_TODOS:
+        for user in users:
+            store_event(
+                sender=Resource,
+                instance=resource,
+                using="default",
+                resource_type_uri=TODO,
+                action="UPDATE",
+                user=user,
+            )
+    recorded = list(
+        OutboxEvent.objects.order_by("pk").values_list("user_id", flat=True)
+    )
+    assert recorded == [None, None, None, str(saved.pk)]
+    assert "None" not in recorded
+
+
+@pytest.mark.django_db
+def test_the_outbox_check_is_registered():
+    # run_checks() imports the URLconf, which registers resource types.
+    with override_settings(SCRUD_OUTBOX={"TYPES": TODO}):
+        ran = checks.run_checks()
+    assert "scrud_django.E013" in {message.id for message in ran}, ran
