@@ -142,7 +142,7 @@ def reset_default_workflow_policies(setting, **kwargs):
 # The keys of a type's entry in SCRUD_WORKFLOW_ACTIONS: the action run when a
 # write of a resource of the type commits (the ``scrud_django.E008`` check
 # reports any other key).
-WORKFLOW_ACTION_KINDS = ("on_save", "on_delete")
+WORKFLOW_ACTION_KINDS = ("on_save", "on_delete", "on_transition")
 
 
 def workflow_action_settings():

@@ -138,6 +138,7 @@ class ScrudSignalProcessor:
 
     post_save_literal = 'on_save'
     post_delete_literal = 'on_delete'
+    post_transition_literal = 'on_transition'
     resource_type_uri_literal = 'resource_type_uri'
     post_save_dispatch_uid = 'scrud_django.ScrudSignalProcessor.post_save'
     post_delete_dispatch_uid = 'scrud_django.ScrudSignalProcessor.post_delete'
@@ -188,6 +189,62 @@ class ScrudSignalProcessor:
         )
         if action is not None:
             self.run_on_commit(action, sender, kwargs, self.post_save_literal)
+        self.run_transition_actions(sender, kwargs)
+
+    def run_transition_actions(self, sender, kwargs):
+        """Run the ``on_transition`` action of each distinct transition the
+        save's ``decision`` reports, in order of first appearance, once the
+        write commits, after ``on_save``: ``action(sender, **kwargs,
+        transition=name, contexts=(...))``, ``contexts`` being each context
+        the transition was taken in. A save sent without a ``decision`` (by
+        third-party code) runs none. A bad entry is logged and runs nothing
+        (``scrud_django.E012``)."""
+        decision = kwargs.get("decision")
+        if decision is None:
+            return
+        taken = {}
+        for entry in decision.contexts:
+            if entry.transition is not None:
+                taken.setdefault(entry.transition.transition, []).append(entry.context)
+        if not taken:
+            return
+        type_uri = kwargs.get(self.resource_type_uri_literal)
+        for name, contexts in taken.items():
+            action = self.determine_transition_action(name, type_uri)
+            if action is not None:
+                self.run_on_commit(
+                    action,
+                    sender,
+                    {**kwargs, "transition": name, "contexts": tuple(contexts)},
+                    f"{self.post_transition_literal}[{name}]",
+                )
+
+    def determine_transition_action(self, name, type_uri):
+        """The ``on_transition`` action of `type_uri` for the transition
+        `name`, or None. As `determine_action`, a bad entry (``on_transition``
+        not a mapping, an action not callable) is logged and runs nothing."""
+        transitions = self.determine_action(self.post_transition_literal, type_uri)
+        if transitions is None:
+            return None
+        if not isinstance(transitions, Mapping):
+            logger.error(
+                "SCRUD_WORKFLOW_ACTIONS: the on_transition entry for %r is not a "
+                "mapping (%r); no on_transition action runs (scrud_django.E012).",
+                type_uri,
+                transitions,
+            )
+            return None
+        action = transitions.get(name)
+        if action is not None and not callable(action):
+            logger.error(
+                "SCRUD_WORKFLOW_ACTIONS: the on_transition[%s] action for %r is "
+                "not callable (%r); it does not run (scrud_django.E012).",
+                name,
+                type_uri,
+                action,
+            )
+            return None
+        return action
 
     def post_delete_trigger(self, sender, **kwargs):
         action = self.determine_action(
@@ -242,7 +299,14 @@ class ScrudSignalProcessor:
             )
             return None
         action = actions.get(post_literal)
-        if action is not None and not callable(action):
+        if (
+            action is not None
+            and not callable(action)
+            and not (
+                post_literal == self.post_transition_literal
+                and isinstance(action, Mapping)
+            )
+        ):
             logger.error(
                 "SCRUD_WORKFLOW_ACTIONS: the %s action for %r is not callable "
                 "(%r); it does not run (scrud_django.E009).",

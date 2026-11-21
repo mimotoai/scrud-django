@@ -36,3 +36,60 @@ misspelled = {"tests://ToDo": {"on_saved": todo_on_save, "on_delete": todo_on_de
 not_callable = {"tests://ToDo": {"on_save": "tests.workflow_actions.todo_on_save"}}
 none_is_no_action = {"tests://ToDo": {"on_save": todo_on_save, "on_delete": None}}
 unregistered = {"tests://NoSuchType": {"on_save": todo_on_save}}
+
+
+# Recorders for tests/test_transition_actions.py: every call in order, as
+# ``(kind, kwargs)`` (``on_save``, or the transition's name); a test clears
+# it first.
+transition_calls = []
+
+
+def record_on_save(sender, **kwargs):
+    transition_calls.append(("on_save", kwargs))
+
+
+def record_start(sender, **kwargs):
+    transition_calls.append(("start", kwargs))
+
+
+def record_override(sender, **kwargs):
+    transition_calls.append(("__OVERRIDE__", kwargs))
+
+
+def failing_start(sender, **kwargs):
+    transition_calls.append(("start", kwargs))
+    raise RuntimeError("start failed")
+
+
+recording = {
+    "tests://ToDo": {
+        "on_save": record_on_save,
+        "on_transition": {"start": record_start, "__OVERRIDE__": record_override},
+    }
+}
+failing = {
+    "tests://ToDo": {
+        "on_save": record_on_save,
+        "on_transition": {"start": failing_start},
+    }
+}
+
+# Misconfigured ``on_transition`` entries, for the system checks.
+transition_not_a_mapping = {"tests://ToDo": {"on_transition": record_start}}
+transition_key_not_a_string = {"tests://ToDo": {"on_transition": {3: record_start}}}
+transition_value_not_callable = {
+    "tests://ToDo": {"on_transition": {"start": "tests.workflow_actions.record_start"}}
+}
+transition_reserved_key = {
+    "tests://ToDo": {"on_transition": {"__LEAVE__": record_start}}
+}
+transition_valid = {
+    "tests://ToDo": {
+        "on_transition": {
+            "start": record_start,
+            "__INITIALIZE__": record_start,
+            "__SAME_STATE__": None,
+            "__OVERRIDE__": record_override,
+        }
+    }
+}
