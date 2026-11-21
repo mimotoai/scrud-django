@@ -365,6 +365,9 @@ def test_an_own_model_write_records_its_iri_and_pk(client):
     assert created.checked is True
     assert created.prior_content is None
     assert created.content["state"] == "draft"
+    # The state checked, taken before the save: no pk yet (the README says
+    # to read resource_pk).
+    assert created.content["id"] is None
     assert updated.action == "UPDATE"
     assert updated.checked is True
     assert updated.prior_content == {
@@ -530,3 +533,8 @@ def test_the_outbox_check_is_registered():
     with override_settings(SCRUD_OUTBOX={"TYPES": TODO}):
         ran = checks.run_checks()
     assert "scrud_django.E013" in {message.id for message in ran}, ran
+
+
+def test_the_event_key_is_a_big_auto_field():
+    # Events are never pruned: a 32-bit key would run out first.
+    assert OutboxEvent._meta.pk.get_internal_type() == "BigAutoField"

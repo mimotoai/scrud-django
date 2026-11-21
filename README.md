@@ -1428,7 +1428,9 @@ the decision's order, of `{"context", "transition", "prior_state",
 the write; `None` for a create or a delete), `created_at` and `sent_at`.
 `content` and `prior_content` are stored with Django's `DjangoJSONEncoder`, so
 dates, times, decimals and UUIDs in an own model's state are recorded as
-strings.
+strings. An own model's `CREATE` event stores the state the workflow check
+checked, taken before the save: its primary key is `null` in `content`, so
+read the object's pk from `resource_pk`.
 
 Deliver the events with `manage.py scrud_outbox_send [--batch N]` (default
 100; run it again, from cron or a loop, to send more) or
@@ -1448,7 +1450,9 @@ delivered before the failure included, is marked sent and all are delivered
 again. An event `deliver` always refuses therefore stops those after it until
 it is fixed or removed. `deliver` runs while the batch's rows are locked
 (`select_for_update(skip_locked=True)` where the database supports it; SQLite
-locks nothing, so run one sender there), so keep it quick.
+locks nothing, so run one sender there), so keep it quick. Sent events are
+never pruned: delete old ones yourself, for example
+`OutboxEvent.objects.filter(sent_at__lt=cutoff).delete()`.
 
 `send_events` reads only `router.db_for_write(OutboxEvent)`, and each event is
 written where its write went: route `OutboxEvent`'s writes to the alias scrud's

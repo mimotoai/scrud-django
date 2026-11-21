@@ -5,7 +5,7 @@ class OutboxConfig(AppConfig):
     name = "scrud_django.outbox"
     label = "scrud_django_outbox"
     verbose_name = "scrud outbox"
-    default_auto_field = "django.db.models.AutoField"
+    default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self):
         """Connect `scrud_django.outbox.receivers.store_event` to
