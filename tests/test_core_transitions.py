@@ -14,7 +14,13 @@ from scrud_django.registration import (
     ResourceRegistration,
     workflow_policy_resource_type,
 )
-from scrud_django.workflow import INITIALIZE, LEAVE, WorkflowTransitionError
+from scrud_django.workflow import (
+    INITIALIZE,
+    LEAVE,
+    SAME_STATE,
+    TransitionData,
+    WorkflowTransitionError,
+)
 
 from .fixtures import register_test_types
 
@@ -54,7 +60,10 @@ def test_an_invalid_transition_is_reported_not_raised():
 
 
 @pytest.mark.django_db
-def test_leaving_a_context_with_a_policy_reports_leave():
+def test_leaving_a_context_reports_the_transition_there():
+    # #36, option (b): a left context is reported as the transition the
+    # check computes there, from the stored content, flagged leaving; no
+    # longer __LEAVE__.
     result = transitions_between(
         TYPE_IRI,
         prior=NOT_STARTED,
@@ -63,14 +72,34 @@ def test_leaving_a_context_with_a_policy_reports_leave():
         contexts_after=["b"],
     )
     left = result.transitions["a"]
-    assert (left.proposed_state, left.prior_state, left.transition) == (
-        None,
-        "not started",
-        LEAVE,
+    assert left == TransitionData(
+        "not started", "not started", SAME_STATE, leaving=True
     )
+    assert result.get("a").leaving is True
     entered = result.transitions["b"]
     assert (entered.proposed_state, entered.transition) == ("not started", INITIALIZE)
+    assert entered.leaving is False and result.get("b").leaving is False
     assert result.errors == {}
+    assert LEAVE not in {t.transition for t in result.transitions.values()}
+
+
+@pytest.mark.django_db
+def test_leaving_from_no_state_unchecked_is_an_error():
+    # Stored content in no state in the context it leaves: no transition
+    # leads from there, so the unchecked save reports None with the error
+    # there (logged), as the check would refuse it; not __LEAVE__.
+    result = transitions_between(
+        TYPE_IRI,
+        prior={"status": "nowhere"},
+        proposed=NOT_STARTED,
+        contexts_before=["a"],
+        contexts_after=["b"],
+    )
+    assert result.transitions["a"] is None
+    assert isinstance(result.errors["a"], WorkflowTransitionError)
+    assert result.errors["a"].prior_state is None
+    assert result.get("a").leaving is True
+    assert set(result.errors) == {"a"}
 
 
 def test_log_skipped_check_keeps_the_resource_wording(caplog):
@@ -108,11 +137,10 @@ def test_leaving_into_a_context_without_a_policy():
         contexts_before=["a"],
         contexts_after=["b"],
     )
-    left = result.transitions["a"]
-    assert (left.proposed_state, left.prior_state, left.transition) == (
-        None,
-        "any",
-        LEAVE,
+    # The left context is reported as the transition there, flagged
+    # leaving (#36), not __LEAVE__.
+    assert result.transitions["a"] == TransitionData(
+        "any", "any", SAME_STATE, leaving=True
     )
     assert "b" not in result.transitions
     assert result.transition_data is None

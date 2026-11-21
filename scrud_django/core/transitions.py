@@ -29,8 +29,6 @@ from scrud_django.core.decisions import (
     snapshot_prior,
 )
 from scrud_django.workflow import (
-    LEAVE,
-    TransitionData,
     WorkflowAmbiguousStateError,
     WorkflowInvalidInitialStateError,
     WorkflowInvalidStateError,
@@ -64,16 +62,18 @@ def transition_in(
     `entering` moves into, `leaving` moves out of, or else stays in, from
     `prior` (``None``: a create; `NULL_CONTENT`: stored content that is JSON
     null, in no state), as `scrud_django.core.decisions.context_transition`
-    computes it. An invalid transition, a create (or move in) whose content
-    is in no initial state (``WorkflowInvalidInitialStateError``) and content
-    that meets the conditions of more than one state
-    (``WorkflowAmbiguousStateError``) are reported as ``None`` with the
-    error, never raised."""
+    computes it for the workflow check: a context the content leaves is the
+    transition there from `prior`, flagged ``leaving``. An invalid
+    transition (from stored content in no state, too), a create (or move
+    in) whose content is in no initial state
+    (``WorkflowInvalidInitialStateError``) and content that meets the
+    conditions of more than one state (``WorkflowAmbiguousStateError``) are
+    reported as ``None`` with the error, never raised."""
     try:
-        if leaving:
-            prior_state = policy.state(prior)
-            return TransitionData(None, prior_state, LEAVE), None
-        return context_transition(policy, prior, proposed, entering=entering), None
+        data = context_transition(
+            policy, prior, proposed, entering=entering, leaving=leaving
+        )
+        return data, None
     except WORKFLOW_ERRORS as error:
         # Workflow validation is the workflow check's: the error is
         # reported, not raised.
@@ -115,32 +115,27 @@ def transitions_between(
       give none.) A context it stays in: the
       transition under its policy (``None`` if invalid); one it enters (or
       a create's): its ``__INITIALIZE__`` (``None`` if the content is in no
-      initial state there); one it leaves: ``TransitionData(None, <the
-      state it was in there>, "__LEAVE__")`` (`LEAVE`); ``None`` in any of
-      them where the state is ambiguous. A context without a policy is
-      left out;
+      initial state there); one it leaves: the transition there from the
+      stored content, as for one it stays in, flagged ``leaving`` (``None``
+      if invalid, from stored content in no state there too); ``None`` in
+      any of them where the state is ambiguous. A context without a policy
+      is left out;
     - ``errors``, context -> the workflow error that made its
       ``transitions`` entry ``None``.
 
     Each context is computed as the workflow check computes it
     (`transition_in`, `scrud_django.core.decisions.is_entering`), so that a
-    checked and an unchecked write of the same content decide alike, but
-    for a context it leaves: that is reported as ``__LEAVE__`` until a left
-    context is decided as the check decides it (#36). Each context's policy
-    is read once."""
+    checked and an unchecked write of the same content decide alike, a
+    context it leaves included. Each context's policy is read once."""
     stored_contexts = list(contexts_before)
     contexts = normalized_contexts_after(stored_contexts, contexts_after)
     entries = []
-    for context, policy in concerned_policies(
+    for context, policy, leaving in concerned_policies(
         type_iri, contexts_before=stored_contexts, contexts_after=contexts
     ):
         entering = is_entering(context, prior=prior, contexts_before=stored_contexts)
         data, error = transition_in(
-            policy,
-            prior,
-            proposed,
-            entering=entering,
-            leaving=context not in contexts,
+            policy, prior, proposed, entering=entering, leaving=leaving
         )
         entries.append(
             ContextDecision(
@@ -149,6 +144,7 @@ def transitions_between(
                 transition=data,
                 error=error,
                 entering=entering,
+                leaving=leaving,
             )
         )
     return WorkflowDecision(

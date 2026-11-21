@@ -548,6 +548,38 @@ def test_transition_data_is_immutable_and_hashable():
     assert {started: 1}[TransitionData("in progress", "not started", "start")] == 1
 
 
+@pytest.mark.parametrize(
+    "args,kwargs",
+    [
+        (("draft", None, INITIALIZE), {}),
+        (("a", "a", SAME_STATE), {}),
+        ((None, "a", LEAVE), {}),
+        (("b", "a", "submit"), {}),
+        (("a", "a", SAME_STATE), {"leaving": True}),
+    ],
+)
+def test_transition_data_kind_rules_accept(args, kwargs):
+    TransitionData(*args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "args,kwargs,field",
+    [
+        (("draft", "x", INITIALIZE), {}, "prior_state"),
+        ((None, None, INITIALIZE), {}, "proposed_state"),
+        (("draft", None, INITIALIZE), {"leaving": True}, "leaving"),
+        (("a", "b", SAME_STATE), {}, "prior_state"),
+        (("a", None, LEAVE), {}, "proposed_state"),
+        (("b", None, "submit"), {}, "prior_state"),
+        (("b", "a", "__mine"), {}, "transition"),
+        (("b", "a", 3), {}, "transition"),
+    ],
+)
+def test_transition_data_kind_rules_refuse(args, kwargs, field):
+    with pytest.raises(ValueError, match=field):
+        TransitionData(*args, **kwargs)
+
+
 # A condition whose evaluation fails (a property missing from the content)
 # is no match; it is logged at DEBUG on the scrud_django.workflow logger,
 # naming the policy and the state, so that a misspelled property can be

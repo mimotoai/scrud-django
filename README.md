@@ -1218,14 +1218,19 @@ snapshots in `prior` and `proposed`.
 
 A checked API or UI write does not compute its transitions again: those
 reported are the ones the check authorized, even if a policy changed between
-the check and the save. For now (until #36 lands), a checked write (the API
-or the UI) that moves a resource out of a context reports the context it
-leaves as the transition the check authorized there (such as
-`__SAME_STATE__`), not `__LEAVE__`; a save that skips the check still reports
-`__LEAVE__` there.
+the check and the save. A context the write leaves (the stored content is in
+it, the new content is not) is reported, on every path (a checked write, a
+save that skips the check, an app's own model), as the transition authorized
+there under that context's policy: an ordinary transition from the stored
+content (such as `submit` or `__SAME_STATE__`), with `TransitionData.leaving`
+(and `ContextDecision.leaving`) true. `__LEAVE__` is no longer reported. A save
+that skips the check and leaves a context whose stored content is in no state
+there reports `None` for it, with the error, logged as for any invalid
+unchecked save.
 
 `transition_data` is a `scrud_django.workflow.TransitionData`
-(`proposed_state`, `prior_state`, `transition`; immutable) under the
+(`proposed_state`, `prior_state`, `transition` and the keyword-only
+`leaving`; immutable) under the
 workflow policy in effect in the first context the content names that has
 one, or `None` when no policy applies or the write is invalid there;
 `transition_error` is then the workflow error, and `None` otherwise. Its
@@ -1241,8 +1246,14 @@ or stored content meets the conditions of more than one state
 to change it) of every context the stored resource or the new content is
 in, where a policy applies, to the write's `TransitionData` there (`None`
 if invalid there): a transition where the resource stays, `__INITIALIZE__`
-where it enters, and `__LEAVE__` (no `proposed_state`; `prior_state` is the
-state it left) where it leaves. A save of an instance whose row is not on
+where it enters, and where it leaves the transition authorized there from the
+stored content, with `leaving` true. `TransitionData` refuses (`ValueError`)
+fields that do not fit the kind of transition: `__INITIALIZE__` has no
+`prior_state`, has a `proposed_state` and is never `leaving`; `__SAME_STATE__`
+has equal `prior_state` and `proposed_state`; a policy's transition has both
+states; any other name starting with `__` is reserved and refused. `__LEAVE__`
+is retired and never reported, but still constructs with no `proposed_state`.
+A save of an instance whose row is not on
 the database written to (a copy with `save(using=...)`) is reported as a
 create.
 

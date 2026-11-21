@@ -246,10 +246,10 @@ class ResourceMixin(ScrudfulMixin):
           defensive.) A context it stays in: the transition under its
           policy (``None`` if invalid); one it enters (or a create's): its
           ``__INITIALIZE__`` (``None`` if the content is in no initial state
-          there); one it leaves: ``TransitionData(None, <the state it was
-          in there>, "__LEAVE__")`` (`LEAVE`); ``None`` in any of them where
-          the content's (or stored content's) state is ambiguous. A context
-          without a policy is left out.
+          there); one it leaves: the transition there from the stored
+          content, flagged ``leaving`` (``None`` if invalid); ``None`` in
+          any of them where the content's (or stored content's) state is
+          ambiguous. A context without a policy is left out.
 
         Each context's policy is read once."""
         stored = self._stored_row(using)

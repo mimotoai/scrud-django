@@ -1,7 +1,7 @@
 """The workflow decision types and the per-context computation every
 workflow check shares: which contexts a write concerns under which policies
-(`concerned_policies`), whether it enters one (`is_entering`), and its
-transition there (`context_transition`).
+(`concerned_policies`, which says whether it leaves each), whether it enters
+one (`is_entering`), and its transition there (`context_transition`).
 
 A `WorkflowDecision` is what a workflow check decided about one write, as
 immutable data: it holds snapshots of the stored and proposed content, so that
@@ -20,7 +20,7 @@ import copy
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 from scrud_django.exceptions import (
@@ -29,7 +29,6 @@ from scrud_django.exceptions import (
     WorkflowTransitionError,
 )
 from scrud_django.workflow import (
-    LEAVE,
     TransitionData,
     WorkflowPolicy,
     default_workflow_policy_for,
@@ -80,19 +79,28 @@ class ContextDecision:
     `policy` (`WorkflowPolicy.reference`), or the workflow `error` that made
     it invalid, never both. `entering` says the write moves the resource
     into the context (a create enters every context), so that `transition`
-    is an ``__INITIALIZE__``."""
+    is an ``__INITIALIZE__``; `leaving` that it moves the resource out of
+    the context (one the stored content is in and the proposed content is
+    not), so that `transition` is the transition there from the stored
+    content, flagged as `leaving` too."""
 
     context: str | None
     policy: StoredPolicyReference | DefaultPolicyReference
     transition: TransitionData | None
     error: WorkflowTransitionError | None
     entering: bool
+    leaving: bool = False
 
     def __post_init__(self):
         if (self.transition is None) == (self.error is None):
             raise ValueError(
                 "A ContextDecision has a transition or an error, exactly one: "
                 f"got transition={self.transition!r}, error={self.error!r}."
+            )
+        if self.transition is not None and self.transition.leaving != self.leaving:
+            raise ValueError(
+                "A ContextDecision's transition is leaving exactly when it is: "
+                f"got leaving={self.leaving!r}, transition={self.transition!r}."
             )
 
 
@@ -183,29 +191,18 @@ def normalized_contexts_after(
 def same_transitions(checked: WorkflowDecision, saved: WorkflowDecision) -> bool:
     """Whether `saved` (the decision recomputed from what a save wrote)
     describes the same transitions as `checked` (the workflow check's): the
-    same contexts, and equal `TransitionData` in each."""
+    same contexts, and equal `TransitionData` in each (a left context's
+    included, ``leaving`` and all)."""
     if {e.context for e in checked.contexts} != {e.context for e in saved.contexts}:
         return False
     for entry in checked.contexts:
         other = saved.get(entry.context)
-        if other is None:
-            return False
-        if entry.transition is not None and entry.transition == other.transition:
-            continue
-        # Task 6 (#36) removes this branch: until a left context is decided
-        # as the check decides it, the check reports the context the write
-        # leaves as its transition there (``__SAME_STATE__``, say) and the
-        # recompute as ``__LEAVE__`` from the same state.
-        left = entry.context not in checked.contexts_after
         if (
-            left
-            and entry.transition is not None
-            and other.transition is not None
-            and other.transition.transition == LEAVE
-            and other.transition.prior_state == entry.transition.prior_state
+            other is None
+            or entry.transition is None
+            or entry.transition != other.transition
         ):
-            continue
-        return False
+            return False
     return True
 
 
@@ -214,15 +211,17 @@ def concerned_policies(
     *,
     contexts_before: Sequence[str],
     contexts_after: Sequence[str | None],
-) -> list[tuple[str | None, WorkflowPolicy]]:
-    """``(context, policy)`` for each context a write concerns that has a
-    policy: `contexts_before` (the stored content's), then `contexts_after`
-    (the proposed content's, `normalized_contexts_after`), duplicates
-    dropped: a write in no context at all concerns ``None``, the settings
-    default. The stored policies of the named contexts are read in one
-    query."""
-    after = normalized_contexts_after(contexts_before, contexts_after)
-    concerned = list(dict.fromkeys([*contexts_before, *after]))
+) -> list[tuple[str | None, WorkflowPolicy, bool]]:
+    """``(context, policy, leaving)`` for each context a write concerns
+    that has a policy: `contexts_before` (the stored content's), then
+    `contexts_after` (the proposed content's, `normalized_contexts_after`),
+    duplicates dropped: a write in no context at all concerns ``None``, the
+    settings default. `leaving` says the write moves the resource out of
+    the context: it is in `contexts_before` and not in `contexts_after`.
+    The stored policies of the named contexts are read in one query."""
+    before = list(contexts_before)
+    after = normalized_contexts_after(before, contexts_after)
+    concerned = list(dict.fromkeys([*before, *after]))
     named = [context for context in concerned if context is not None]
     found = dict(workflow_policies_for(type_iri, named)) if named else {}
     pairs = [
@@ -234,7 +233,11 @@ def concerned_policies(
         )
         for context in concerned
     ]
-    return [(context, policy) for context, policy in pairs if policy is not None]
+    return [
+        (context, policy, context in before and context not in after)
+        for context, policy in pairs
+        if policy is not None
+    ]
 
 
 def is_entering(
@@ -252,14 +255,19 @@ def context_transition(
     proposed: Mapping,
     *,
     entering: bool,
+    leaving: bool = False,
 ) -> TransitionData:
     """The `TransitionData` of writing `proposed` under `policy`: a create's
     ``__INITIALIZE__`` when there is no `prior` or the write is `entering`
-    the context, else the transition from `prior`. Raises the workflow
-    errors; the caller decides what to do with them."""
+    the context, else the transition from `prior`, flagged `leaving` when
+    the write moves the resource out of the context (an ordinary transition
+    there all the same). Raises the workflow errors; the caller decides
+    what to do with them."""
     if prior is None or entering:
-        return policy.initial_transition(proposed)
-    return policy.determine_transition(proposed, prior)
+        data = policy.initial_transition(proposed)
+    else:
+        data = policy.determine_transition(proposed, prior)
+    return replace(data, leaving=True) if leaving else data
 
 
 def snapshot_prior(prior: Mapping | NullContent | None) -> Mapping | None:

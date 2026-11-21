@@ -18,7 +18,7 @@ from scrud_django.core.decisions import (
     snapshot_prior,
 )
 from scrud_django.exceptions import DefaultPolicyReference, WorkflowTransitionError
-from scrud_django.workflow import INITIALIZE, LEAVE, SAME_STATE, TransitionData
+from scrud_django.workflow import INITIALIZE, SAME_STATE, TransitionData
 
 TYPE_IRI = "tests://ToDo"
 REF = DefaultPolicyReference(TYPE_IRI)
@@ -43,13 +43,13 @@ def test_contexts_follow_stored_then_new_array_order():
     pairs = concerned_policies(
         TYPE_IRI, contexts_before=["b", "a"], contexts_after=["c", "a"]
     )
-    assert [c for c, _ in pairs] == ["b", "a", "c"]
+    assert [c for c, _, _ in pairs] == ["b", "a", "c"]
 
 
 @pytest.mark.django_db
 def test_no_context_is_the_settings_default_under_none():
     pairs = concerned_policies(TYPE_IRI, contexts_before=[], contexts_after=[])
-    assert [c for c, _ in pairs] == [None]
+    assert [c for c, _, _ in pairs] == [None]
 
 
 @pytest.mark.django_db
@@ -127,7 +127,7 @@ def test_normalized_contexts_after():
 @pytest.mark.django_db
 def test_an_update_out_of_every_context_concerns_no_default():
     pairs = concerned_policies(TYPE_IRI, contexts_before=["a"], contexts_after=[])
-    assert [c for c, _ in pairs] == ["a"]
+    assert [c for c, _, _ in pairs] == ["a"]
 
 
 def entry(context, state="a"):
@@ -177,6 +177,52 @@ def test_a_context_decision_has_a_transition_or_an_error():
             error=WorkflowTransitionError(REF, None, None),
             entering=False,
         )
+
+
+def test_a_context_decision_is_leaving_as_its_transition_is():
+    stays = TransitionData("s", "s", SAME_STATE)
+    left = TransitionData("s", "s", SAME_STATE, leaving=True)
+    assert not stays.leaving and left.leaving
+    assert left != stays
+    # leaving is keyword-only: positional construction is unchanged.
+    with pytest.raises(TypeError):
+        TransitionData("s", "s", SAME_STATE, True)
+    assert not ContextDecision("a", REF, stays, None, False).leaving
+    assert ContextDecision("a", REF, left, None, False, leaving=True).leaving
+    with pytest.raises(ValueError):
+        ContextDecision("a", REF, left, None, False)
+    with pytest.raises(ValueError):
+        ContextDecision("a", REF, stays, None, False, leaving=True)
+    # An invalid left context has no transition to agree with.
+    error = WorkflowTransitionError(REF, None, None)
+    assert ContextDecision("a", REF, None, error, False, leaving=True).leaving
+
+
+@pytest.mark.django_db
+def test_context_transition_flags_a_left_context():
+    policy = concerned_policies(TYPE_IRI, contexts_before=[], contexts_after=[])[0][1]
+    assert context_transition(
+        policy, NOT_STARTED, NOT_STARTED, entering=False, leaving=True
+    ) == TransitionData("not started", "not started", SAME_STATE, leaving=True)
+    assert not context_transition(
+        policy, NOT_STARTED, NOT_STARTED, entering=False
+    ).leaving
+
+
+@pytest.mark.django_db
+def test_concerned_policies_says_which_contexts_are_left():
+    found = concerned_policies(
+        TYPE_IRI, contexts_before=["b", "a"], contexts_after=["c", "a"]
+    )
+    assert [(c, left) for c, _, left in found] == [
+        ("b", True),
+        ("a", False),
+        ("c", False),
+    ]
+    found = concerned_policies(TYPE_IRI, contexts_before=["a"], contexts_after=[])
+    assert [(c, left) for c, _, left in found] == [("a", True)]
+    found = concerned_policies(TYPE_IRI, contexts_before=[], contexts_after=[])
+    assert [(c, left) for c, _, left in found] == [(None, False)]
 
 
 def test_decisions_are_frozen():
@@ -336,7 +382,6 @@ def test_stored_policy_references_compare_by_version():
 def test_an_update_out_of_every_context_decides_alike_with_no_default():
     from scrud_django.core.transitions import transitions_between
     from scrud_django.core.workflow import Update, workflow_check
-    from scrud_django.workflow import LEAVE, SAME_STATE
 
     from .factories import UserFactory
 
@@ -366,18 +411,21 @@ def test_an_update_out_of_every_context_decides_alike_with_no_default():
     assert [e.context for e in unchecked.contexts] == ["a"]
     assert checked.get(None) is None and unchecked.get(None) is None
     assert checked.contexts_after == unchecked.contexts_after == ()
+    # "a" is left: both paths decide it as the check does (#36, option
+    # (b)), the transition from the stored content there, flagged leaving;
+    # no path reports __LEAVE__.
+    assert checked.contexts == unchecked.contexts
     (checked_a,) = checked.contexts
-    (unchecked_a,) = unchecked.contexts
-    assert (checked_a.policy, checked_a.entering, checked_a.error) == (
-        unchecked_a.policy,
-        unchecked_a.entering,
-        unchecked_a.error,
+    assert checked_a == ContextDecision(
+        context="a",
+        policy=REF,
+        transition=TransitionData(
+            "not started", "not started", SAME_STATE, leaving=True
+        ),
+        error=None,
+        entering=False,
+        leaving=True,
     )
-    # "a" is left: the check decides it as an ordinary transition, the
-    # unchecked path still reports __LEAVE__ until #36 (Task 6) makes the
-    # two entries equal.
-    assert checked_a.transition.transition == SAME_STATE
-    assert unchecked_a.transition.transition == LEAVE
 
 
 @pytest.mark.django_db
@@ -462,30 +510,36 @@ def test_an_anonymous_or_absent_requester_is_no_actor():
 
 
 def leaving(transition):
-    return ContextDecision("a", REF, transition, None, False)
+    return ContextDecision("a", REF, transition, None, False, leaving=True)
 
 
-def test_same_transitions_accepts_a_left_context_leave_from_the_same_state():
+def test_same_transitions_compares_a_left_context_by_its_leaving_transition():
     checked = make(
         contexts_after=("b",),
-        contexts=[leaving(TransitionData("draft", "draft", SAME_STATE))],
+        contexts=[leaving(TransitionData("draft", "draft", SAME_STATE, leaving=True))],
     )
     saved = make(
         checked=False,
         contexts_after=("b",),
-        contexts=[leaving(TransitionData(None, "draft", LEAVE))],
+        contexts=[leaving(TransitionData("draft", "draft", SAME_STATE, leaving=True))],
     )
     assert same_transitions(checked, saved)
-
-
-def test_same_transitions_refuses_a_left_context_leave_from_another_state():
-    checked = make(
-        contexts_after=("b",),
-        contexts=[leaving(TransitionData("draft", "draft", SAME_STATE))],
-    )
-    saved = make(
+    other = make(
         checked=False,
         contexts_after=("b",),
-        contexts=[leaving(TransitionData(None, "published", LEAVE))],
+        contexts=[
+            leaving(TransitionData("published", "draft", "publish", leaving=True))
+        ],
     )
-    assert not same_transitions(checked, saved)
+    assert not same_transitions(checked, other)
+    # The same states, not flagged leaving: another transition.
+    staying = make(
+        checked=False,
+        contexts_after=("b",),
+        contexts=[
+            ContextDecision(
+                "a", REF, TransitionData("draft", "draft", SAME_STATE), None, False
+            )
+        ],
+    )
+    assert not same_transitions(checked, staying)
