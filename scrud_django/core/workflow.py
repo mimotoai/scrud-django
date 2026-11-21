@@ -56,6 +56,7 @@ from scrud_django.core.authz import (
     content_of,
     is_workflow_superuser,
     may_read_in_context,
+    request_actor,
 )
 from scrud_django.core.decisions import (
     NULL_CONTENT,
@@ -417,7 +418,7 @@ def workflow_check(
         type_iri,
         write,
         stored_pk,
-        _actor_of(request),
+        request_actor(request),
         prior,
         contexts_after,
         [entry for _, entry in transitions],
@@ -452,15 +453,6 @@ def _transition_or_override(policy, prior, proposed, *, entering, leaving, super
         )
         return data, error
     return data, None
-
-
-def _actor_of(request):
-    """The user a checked write is decided for: the request's
-    (``access.request_user``) when it is authenticated, else ``None``."""
-    user = access.request_user(request)
-    if user is None or not getattr(user, "is_authenticated", False):
-        return None
-    return user
 
 
 def _decision(type_iri, write, stored_pk, actor, prior, contexts_after, contexts):

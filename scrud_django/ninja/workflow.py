@@ -27,10 +27,15 @@ from django.db.models import Model, QuerySet
 from scoped_rbac import access
 from scoped_rbac.ninja import save_checked as rbac_save_checked
 
-from scrud_django.core.authz import _consume_workflow_mark
+from scrud_django.core.authz import _consume_workflow_mark, request_actor
 from scrud_django.core.decisions import same_transitions
 from scrud_django.core.resources import COVERED_ITEM_METHOD, COVERED_LIST_METHOD
-from scrud_django.core.signals import scrud_post_delete, scrud_post_save
+from scrud_django.core.signals import (
+    acting_as,
+    acting_user,
+    scrud_post_delete,
+    scrud_post_save,
+)
 from scrud_django.core.transitions import (
     checked_save,
     govern,
@@ -198,6 +203,7 @@ class ModelWorkflow:
                         stored_pk=stored_pk,
                     ),
                     checked_save(model),
+                    acting_as(request_actor(request)),
                 ):
                     obj = rbac_save_checked(
                         request,
@@ -258,6 +264,8 @@ class ModelWorkflow:
                     transition_error=found.transition_error,
                     transitions=found.transitions,
                     decision=found,
+                    user=found.actor,
+                    prior_content=found.prior,
                     action="CREATE" if instance is None else "UPDATE",
                 )
                 return obj
@@ -297,7 +305,7 @@ class ModelWorkflow:
         not; the route authorizes it (``scoped_rbac.ninja.rbac_load``)."""
         db = router.db_for_write(self.model, instance=instance)
         pk = instance.pk
-        with transaction.atomic(using=db):
+        with acting_as(request_actor(request)), transaction.atomic(using=db):
             self._lock_current(instance, db)
             (instance.delete if delete is None else delete)()
             scrud_post_delete.send(
@@ -307,6 +315,7 @@ class ModelWorkflow:
                 using=db,
                 resource_type_uri=self.iri,
                 action="DELETE",
+                user=acting_user(),
             )
 
 

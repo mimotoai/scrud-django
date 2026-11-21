@@ -15,7 +15,7 @@ from scoped_rbac import access
 
 from scrud_django.core import transitions
 from scrud_django.core.authz import _workflow_authorized
-from scrud_django.core.signals import scrud_post_save
+from scrud_django.core.signals import scrud_post_delete, scrud_post_save
 from scrud_django.exceptions import HiddenWorkflowTransitionError
 from scrud_django.ninja import ModelWorkflow, workflow_check
 from scrud_django.ninja.errors import PROBLEM_JSON
@@ -87,7 +87,8 @@ def writer(client):
     """A client logged in as a non-superuser who may read, list, create,
     update and delete articles in context "a" (superusers bypass the
     workflow)."""
-    client.force_login(assign_role(WRITER, "a"))
+    client.user = assign_role(WRITER, "a")
+    client.force_login(client.user)
     return client
 
 
@@ -749,3 +750,52 @@ def test_an_own_model_superuser_override_is_reported_and_logged(
     assert "skipped the workflow check" not in message
     assert "'a'" in message
     assert decision.get("a").overridden.message in message
+
+
+@pytest.fixture
+def reported_deletes():
+    found = []
+
+    def record(sender, resource_type_uri=None, **kwargs):
+        if resource_type_uri == ARTICLE:
+            found.append(kwargs)
+
+    scrud_post_delete.connect(record, weak=False, dispatch_uid="test-own-deletes")
+    try:
+        yield found
+    finally:
+        scrud_post_delete.disconnect(dispatch_uid="test-own-deletes")
+
+
+def test_an_own_model_put_sends_its_user_and_prior_content(writer, reported):
+    with transitions.checked_save(Article):
+        article = Article.objects.create(title="t", state="draft", rbac_context="a")
+    prior = own_models().ARTICLE_WORKFLOW.state(article)
+    response = writer.put(
+        item(article.pk), {"state": "published"}, content_type="application/json"
+    )
+    assert response.status_code == 200, response.content
+    [kwargs] = reported
+    assert kwargs["user"] == writer.user
+    assert kwargs["prior_content"] == prior
+    assert kwargs["prior_content"]["state"] == "draft"
+
+
+def test_an_own_model_create_sends_its_user_and_no_prior(writer, reported):
+    response = writer.post(
+        LIST,
+        {"title": "t", "state": "draft", "rbac_context": "a"},
+        content_type="application/json",
+    )
+    assert response.status_code == 201, response.content
+    [kwargs] = reported
+    assert kwargs["user"] == writer.user
+    assert kwargs["prior_content"] is None
+
+
+def test_an_own_model_delete_sends_its_user(writer, reported_deletes):
+    article = draft_in_a()
+    response = writer.delete(item(article.pk))
+    assert response.status_code == 204, response.content
+    [kwargs] = reported_deletes
+    assert kwargs["user"] == writer.user

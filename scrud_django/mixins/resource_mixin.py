@@ -14,7 +14,7 @@ from scrud_django.workflow import (
 )
 
 from ..core.decisions import NULL_CONTENT, take_pending
-from ..core.signals import scrud_post_delete, scrud_post_save
+from ..core.signals import acting_user, scrud_post_delete, scrud_post_save
 from ..core.transitions import (  # noqa: F401  (re-exported)
     WORKFLOW_ERRORS,
     Transitions,
@@ -159,6 +159,8 @@ class ResourceMixin(ScrudfulMixin):
             transitions=decision.transitions,
             action=action,
             decision=decision,
+            user=decision.actor,
+            prior_content=decision.prior,
         )
 
     def log_workflow_errors(self, errors):
@@ -190,6 +192,7 @@ class ResourceMixin(ScrudfulMixin):
             using=db,
             resource_type_uri=self.resource_type.type_uri,
             action='DELETE',
+            user=acting_user(),
         )
         return res
 

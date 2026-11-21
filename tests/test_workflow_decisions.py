@@ -20,6 +20,7 @@ from safetydance_django.test import *  # noqa: F403, F401
 from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.core.decisions import applying, take_pending
+from scrud_django.core.signals import acting_as
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 
@@ -273,3 +274,100 @@ def test_an_htmx_ui_write_sends_the_checked_decision(settings, reported_saves):
     assert reported["decision"].checked is True
     assert reported["decision"].actor == user
     assert_sent_from(reported)
+
+
+@pytest.fixture
+def reported_deletes():
+    """The keyword arguments of each ToDo ``scrud_post_delete``, in order."""
+    from scrud_django.core.signals import scrud_post_delete
+
+    reported = []
+
+    def record(sender, resource_type_uri=None, **kwargs):
+        if resource_type_uri == TODO:
+            reported.append(kwargs)
+
+    scrud_post_delete.connect(record, weak=False, dispatch_uid="test-decision-deletes")
+    try:
+        yield reported
+    finally:
+        scrud_post_delete.disconnect(dispatch_uid="test-decision-deletes")
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_put_sends_its_user_and_prior_content(front_end, reported_saves):
+    user = writer()
+    resource = todo()
+    stored = json.loads(json.dumps(resource.content))
+    Given.http.force_login(user)
+    reported_saves.clear()
+    put_todo(front_end, resource, IN_PROGRESS)
+    Then.http.status_code_is(HTTPStatus.OK)
+    (reported,) = reported_saves
+    assert reported["user"] == user
+    assert reported["prior_content"] == stored == NOT_STARTED
+    assert reported["prior_content"] == reported["decision"].prior
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_create_sends_no_prior_content(front_end, reported_saves):
+    user = writer()
+    serve_ninja()  # registers the test types
+    Given.http.force_login(user)
+    reported_saves.clear()
+    post_todo(front_end, NOT_STARTED)
+    Then.http.status_code_is(HTTPStatus.CREATED)
+    (reported,) = reported_saves
+    assert reported["user"] == user
+    assert reported["prior_content"] is None
+
+
+@pytest.mark.django_db
+@test_context
+def test_a_delete_sends_its_user(front_end, reported_deletes):
+    user = writer()
+    resource = todo()
+    Given.http.force_login(user)
+    When.http.delete(
+        api_url(front_end, "todos-detail", args=[resource.id]),
+        HTTP_IF_MATCH=quote_etag(resource.etag),
+    )
+    Then.http.status_code_is(HTTPStatus.NO_CONTENT)
+    (reported,) = reported_deletes
+    assert reported["user"] == user
+
+
+@pytest.mark.django_db
+def test_server_code_names_its_actor(reported_saves, reported_deletes):
+    user = UserFactory()
+    resource = todo()
+    reported_saves.clear()
+    with acting_as(user):
+        ResourceRegistration.update(
+            dict(NOT_STARTED, status="in progress"), "todos", str(resource.pk)
+        )
+    (reported,) = reported_saves
+    assert reported["user"] == user
+    assert reported["decision"].checked is False
+    assert reported["decision"].actor == user
+    assert reported["prior_content"] == NOT_STARTED
+    # Reset once the block ends.
+    from scrud_django.core.signals import acting_user
+
+    assert acting_user() is None
+    with acting_as(user):
+        ResourceRegistration.delete("todos", str(resource.pk))
+    assert reported_deletes[-1]["user"] == user
+    assert acting_user() is None
+
+
+@pytest.mark.django_db
+def test_acting_as_is_reset_when_the_block_raises():
+    from scrud_django.core.signals import acting_user
+
+    with pytest.raises(RuntimeError):
+        with acting_as(UserFactory()):
+            raise RuntimeError
+    assert acting_user() is None

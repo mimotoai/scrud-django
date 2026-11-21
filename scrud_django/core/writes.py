@@ -62,6 +62,7 @@ from scrud_django.core.authz import (
     _workflow_decision,
     content_of,
     may_act_in_context,
+    request_actor,
 )
 from scrud_django.core.bodies import check_body
 from scrud_django.core.decisions import WorkflowDecision, applying
@@ -72,6 +73,7 @@ from scrud_django.core.requirements import (
     is_hook,
     requirement_leaves,
 )
+from scrud_django.core.signals import acting_as
 from scrud_django.core.types import (
     BODY_METHODS,
     HookLeaf,
@@ -698,7 +700,7 @@ def save_checked(
         around_save = write_hooks(resource_type).around_save
 
         def run():
-            with applying(decision):
+            with acting_as(request_actor(request)), applying(decision):
                 if around_save is None:
                     return recorded_save()
                 return around_save(
@@ -1022,9 +1024,10 @@ def destroy(
         check=check,
     )
     try:
-        ResourceRegistration.delete_locked(
-            instance, resource_type=resource_type, using=using
-        )
+        with acting_as(request_actor(request)):
+            ResourceRegistration.delete_locked(
+                instance, resource_type=resource_type, using=using
+            )
     except ProtectedError as exc:
         raise ResourceInUseError(instance, exc.protected_objects) from exc
     if hooks.after_destroy is not None:

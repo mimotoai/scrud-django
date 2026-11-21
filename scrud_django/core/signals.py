@@ -1,5 +1,7 @@
 import logging
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from types import MappingProxyType
 
 from django.core.exceptions import ImproperlyConfigured
@@ -18,13 +20,37 @@ logger = logging.getLogger("scrud_django.workflow_actions")
 # description. Keyword arguments: ``signal``, ``sender``, ``instance``,
 # ``using`` (the database written to, `write_alias`), ``resource_type_uri``
 # and ``action``; ``scrud_post_save`` adds ``update_fields``,
-# ``decision`` (the save's ``core.decisions.WorkflowDecision``: the workflow
+# ``user`` (the decision's actor), ``prior_content`` (its ``prior``: the
+# stored content before the write; ``None`` for a create), ``decision`` (the save's ``core.decisions.WorkflowDecision``: the workflow
 # check's for a checked write, ``checked=True``; else computed,
 # ``ResourceMixin.get_transitions``), and ``transition_data``,
 # ``transition_error`` and ``transitions`` (a read-only mapping), taken from
-# it; ``scrud_post_delete`` adds ``pk``.
+# it; ``scrud_post_delete`` adds ``pk`` and ``user`` (`acting_user`).
 scrud_post_save = Signal()
 scrud_post_delete = Signal()
+
+# The user a write is made for, which unchecked saves and deletes report as
+# ``user`` (``acting_as``); ``None``: unknown.
+_ACTING: ContextVar = ContextVar("scrud_acting_user", default=None)
+
+
+@contextmanager
+def acting_as(user):
+    """Name `user` (``None``: no one) as the actor of the saves and deletes
+    run inside, in this thread or task: ``scrud_post_save`` and
+    ``scrud_post_delete`` send it as ``user`` where no workflow check named
+    one. Front ends wrap their writes in it for the request's user; server
+    code names its own actor. It is reset however the block ends."""
+    token = _ACTING.set(user)
+    try:
+        yield
+    finally:
+        _ACTING.reset(token)
+
+
+def acting_user():
+    """The user `acting_as` names, else ``None``."""
+    return _ACTING.get()
 
 
 def write_alias(sender, kwargs):

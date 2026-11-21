@@ -29,6 +29,7 @@ from scrud_django.core.decisions import (
     normalized_contexts_after,
     snapshot_prior,
 )
+from scrud_django.core.signals import acting_user
 from scrud_django.workflow import WorkflowAmbiguousStateError
 
 # `WORKFLOW_ERRORS` is defined in `scrud_django.core.decisions` and stays
@@ -81,7 +82,8 @@ def transitions_between(
 ) -> WorkflowDecision:
     """The `WorkflowDecision` (``checked=False``) of a save of a `type_iri`
     that skipped the workflow check, which ``scrud_post_save`` reports, by
-    `actor` (``None``: unknown) of the stored resource `stored_pk`
+    `actor` (``None``: the user `scrud_django.core.signals.acting_as` names,
+    else unknown) of the stored resource `stored_pk`
     (``None``: a create) from `prior` (the stored content; ``None``: a
     create, or a row not on the database written to; `NULL_CONTENT`: stored
     content that is JSON null, an update from no state) to `proposed`, in
@@ -116,6 +118,8 @@ def transitions_between(
     (`transition_in`, `scrud_django.core.decisions.is_entering`), so that a
     checked and an unchecked write of the same content decide alike, a
     context it leaves included. Each context's policy is read once."""
+    if actor is None:
+        actor = acting_user()
     stored_contexts = list(contexts_before)
     contexts = normalized_contexts_after(stored_contexts, contexts_after)
     entries = []
