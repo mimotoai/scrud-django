@@ -2437,30 +2437,37 @@ The workflow override (#31) is for active superusers only
 (`scoped_rbac.access`: `_build_policy_for` answers `ALLOWED`, and
 `may_act_on` lets a superuser act on an object in no context, without
 reading `is_active`). Django's `ModelBackend`, its login and DRF's
-authentication classes refuse an inactive user, so the two agree for those.
-A user authenticated some other way (`AllowAllUsersModelBackend`, a custom
-backend, a `SCOPED_RBAC["NINJA_USER"]` hook, a ninja router's own `auth=`,
-DRF's `force_authenticate` in tests) can be an inactive superuser: every
-RBAC check allows them (any read, any write, in any context), yet the
-workflow check refuses their write where the policy refuses it, as for
-anyone who is not a superuser. scoped-rbac is upstream and not edited here;
-the fix is either scoped-rbac requiring `is_active` (then nothing changes
-here) or scrud dropping `is_active` from `is_workflow_superuser` (an
-inactive superuser then overrides too). The test that would show the
-divergence, on the ninja front end (`serve_ninja()`, whose routes read the
-session through scoped-rbac's `resolve_user`): with
-`AUTHENTICATION_BACKENDS` set to
-`django.contrib.auth.backends.AllowAllUsersModelBackend` (so Django's
-session middleware loads an inactive user), `force_login` an inactive
-superuser (`is_active=False`, `is_superuser=True`) holding no roles; a GET
-of a ToDo in a context where they hold no role answers 200 (scoped-rbac
-allows), while a PUT of a ToDo stored in no state (`status="nonsense"`) to
-`"not started"` answers 400 (`workflow-transition-invalid`), where an
-active superuser's answers 200 with `__OVERRIDE__`. Not on DRF through the
-session: DRF's `SessionAuthentication` refuses an inactive user, who is
-then anonymous (401 or 403). On DRF the same two requests show it with
-`APIClient.force_authenticate` of that user instead. Aligned, both answers
-would follow one rule.
+`SessionAuthentication` refuse an inactive user, and the ninja front end
+cannot see one: scoped-rbac's `resolve_user`
+(`scoped_rbac/ninja/blocks.py`), which every ninja route calls, makes an
+inactive user anonymous whether it came from a `SCOPED_RBAC["NINJA_USER"]`
+hook, a router's own `auth=` or the session. The divergence shows only where
+the plain `request.user` is read: the htmx UI's pages and the studio
+(`scrud_django/ui/pages.py`, `scrud_django/ui/studio/views.py`), which take
+Django's session user as it is (an inactive one under
+`django.contrib.auth.backends.AllowAllUsersModelBackend`, or a custom
+backend whose `get_user` returns inactive users); DRF, under
+`APIClient.force_authenticate` in tests or a custom authentication class
+that returns an inactive user; and server code that builds a request for
+such a user. There every RBAC check allows them (any read, any write, in any
+context), yet the workflow check refuses their write where the policy
+refuses it, as for anyone who is not a superuser. scoped-rbac is upstream
+and not edited here; the fix is either scoped-rbac requiring `is_active`
+(then nothing changes here) or scrud dropping `is_active` from
+`is_workflow_superuser` (an inactive superuser then overrides too). The test
+that would show the divergence, on the UI pages (`tests/ui.py`'s
+`UI_URLCONF`, `ui_url`): with `AUTHENTICATION_BACKENDS` set to
+`AllowAllUsersModelBackend` (so Django's session middleware loads an
+inactive user), `force_login` an inactive superuser (`is_active=False`,
+`is_superuser=True`) holding no roles; a GET of a ToDo's UI page in a
+context where they hold no role answers 200 (scoped-rbac allows), while an
+htmx PUT of a ToDo stored in no state (`status="nonsense"`) to
+`"not started"` answers 400 with the workflow error
+(`workflow-transition-invalid`), where an active superuser's answers 200
+with `__OVERRIDE__`. On DRF the same two requests (GET 200, PUT 400) show it
+with `APIClient.force_authenticate` of that user; a ninja route answers
+that user as anonymous (401 or 403) and shows nothing. Aligned, both
+answers would follow one rule.
 
 
 <a id="outbox-autocommit-saves"></a>
