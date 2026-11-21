@@ -56,6 +56,34 @@
   a computed decision with `checked` false. See the README's "Workflow
   actions". The decision types live in the new `scrud_django.core.decisions`.
 
+* **`on_transition` workflow actions (#20).**
+  `SCRUD_WORKFLOW_ACTIONS[type_uri]["on_transition"]` maps a transition name
+  (the reserved `__INITIALIZE__`, `__SAME_STATE__` and `__OVERRIDE__`
+  included) to an action. Each distinct transition a write's decision took
+  runs its action once, on commit, after `on_save`, with `transition` and
+  `contexts` (where it was taken) added to the signal's keyword arguments. A
+  failure is logged as `on_transition[<name>]` and never fails the write. The
+  new check `scrud_django.E012` reports a malformed entry, and `E008` accepts
+  the `on_transition` key.
+
+* **`scrud_post_save` and `scrud_post_delete` carry the acting `user`;
+  `scrud_post_save` carries `prior_content` (#20).** `user` is the request's
+  authenticated user (`None` for an anonymous request or unknown actor);
+  `prior_content` is the stored content before the write (`None` for a
+  create). The new context manager `scrud_django.core.signals.acting_as(user)`
+  names the actor of server code's saves and deletes. See the README's
+  "Workflow actions".
+
+* **The opt-in transactional outbox, `scrud_django.outbox` (#20).** Add the
+  app to `INSTALLED_APPS`, migrate, and set `SCRUD_OUTBOX["TYPES"]` (type URIs
+  or `"__all__"`) and `SCRUD_OUTBOX["DELIVER"]`: each write of a listed type
+  stores an `OutboxEvent` (transitions, actor, content and prior content) in
+  its own transaction. `manage.py scrud_outbox_send [--batch N]` and
+  `scrud_django.outbox.send_events(deliver, batch=100)` deliver the events at
+  least once, so `deliver` must be idempotent. The new checks
+  `scrud_django.W010` (installed with no `TYPES`) and `E013` (a malformed
+  `SCRUD_OUTBOX`) report its configuration.
+
 ### Changed
 
 * `core.workflow.workflow_check`, `core.writes.validate_write` and

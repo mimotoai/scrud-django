@@ -19,13 +19,14 @@ logger = logging.getLogger("scrud_django.workflow_actions")
 # when (and when not) and what each argument holds; keep it the one full
 # description. Keyword arguments: ``signal``, ``sender``, ``instance``,
 # ``using`` (the database written to, `write_alias`), ``resource_type_uri``
-# and ``action``; ``scrud_post_save`` adds ``update_fields``,
-# ``user`` (the decision's actor), ``prior_content`` (its ``prior``: the
-# stored content before the write; ``None`` for a create), ``decision`` (the save's ``core.decisions.WorkflowDecision``: the workflow
-# check's for a checked write, ``checked=True``; else computed,
-# ``ResourceMixin.get_transitions``), and ``transition_data``,
-# ``transition_error`` and ``transitions`` (a read-only mapping), taken from
-# it; ``scrud_post_delete`` adds ``pk`` and ``user`` (`acting_user`).
+# and ``action``; ``scrud_post_save`` adds ``update_fields``, ``decision``
+# (the save's ``core.decisions.WorkflowDecision``: the workflow check's for
+# a checked write, ``checked=True``; else computed,
+# ``ResourceMixin.get_transitions``), ``user`` (the decision's actor),
+# ``prior_content`` (its ``prior``: the stored content before the write;
+# ``None`` for a create), and ``transition_data``, ``transition_error`` and
+# ``transitions`` (a read-only mapping), taken from the decision;
+# ``scrud_post_delete`` adds ``pk`` and ``user`` (`acting_user`).
 scrud_post_save = Signal()
 scrud_post_delete = Signal()
 

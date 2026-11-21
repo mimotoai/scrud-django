@@ -91,6 +91,9 @@ DELETE: the row looked up locked, its preconditions, then `write_item`,
 which ninja's item routes call themselves once scrudful has evaluated the
 preconditions), each answering a `WriteAnswer`; JSON is written as DRF's
 renderer writes it, without DRF, by `core/json.py`.
+The optional app `scrud_django/outbox/` (label `scrud_django_outbox`, opt-in
+through `INSTALLED_APPS`) records the types listed in `SCRUD_OUTBOX["TYPES"]`
+as `OutboxEvent` rows in the write's transaction.
 Put new domain logic in `core`, not in a view; per-type hooks are
 `core.types.TypeOptions`.
 
@@ -179,6 +182,14 @@ SCRUD_TEST_NO_DRF=1 uv run pytest -q
 `--reverse` (from `tests/conftest.py`) runs the suite in reverse order, as CI
 also does. `SCRUD_TEST_NO_DRF=1` runs it without DRF (`tests/no_drf.py` blocks
 its imports, `tests/settings.py::without_drf`), skipping the `drf`-marked tests.
+
+The migrations check over both apps (`scrud_django` and the outbox app)
+prompts, as it is not an exact allow rule; CI and the Makefile run this
+two-app check:
+
+```bash
+uv run python manage.py makemigrations scrud_django scrud_django_outbox --check --dry-run
+```
 
 These write files or touch the environment, so they prompt. Run them on the
 files you touched only; `ruff format .` and `ruff check --fix .` over the whole
@@ -296,6 +307,7 @@ See `tests/test_conditional.py` for the idiom.
   (or point it at a throwaway server) before running `manage.py`.
 - Migrations must keep the migrations check above clean. If a model change needs a
   migration, generate it with `uv run python manage.py makemigrations scrud_django`
+  (`scrud_django_outbox` for the outbox app's models)
   and commit it with the model change.
 - The `api.openteams.com` IRIs (JSON-LD contexts, schema and type identifiers)
   are part of the API's semantics and stored data. Do not rebrand or "fix" them.
