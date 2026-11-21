@@ -5,12 +5,15 @@ reports them and policies stored with a list ``rbac_context``."""
 
 from contextlib import contextmanager
 from unittest import mock
+from uuid import uuid4
 
 import pytest
 from django.core import checks
 from django.core.exceptions import ImproperlyConfigured
 from django.urls import reverse
+from django.utils.timezone import now
 from rest_framework.test import APIClient
+from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django import checks as scrud_checks
 from scrud_django.drf import mixins as view_mixins
@@ -276,8 +279,6 @@ def test_other_writes_take_no_policy_lock(write_order):
 @pytest.mark.django_db
 @pytest.mark.parametrize("resource_type", [[TODO], {"@id": TODO}, None, 5], ids=repr)
 def test_system_check_reports_a_non_string_resource_type(resource_type):
-    from django.utils.timezone import now
-
     from scrud_django.models import ResourceType
 
     workflow_policy_resource_type()
@@ -485,13 +486,33 @@ REFUSING_POLICY = {
 ABSENT = object()
 
 
+def writer_client():
+    """A client of a writer granted everything in each context these tests
+    create in, but not a superuser: a superuser's write overrides a workflow
+    refusal (#31), so the refusals are pinned with this writer."""
+    role = Role(definition=True, etag=uuid4().hex, modified_at=now())
+    role.save()
+    user = UserFactory()
+    for context in ("", "p", "q"):
+        RoleAssignment(
+            user=user,
+            role=role,
+            rbac_context=context,
+            etag=uuid4().hex,
+            modified_at=now(),
+        ).save()
+    client = APIClient()
+    client.force_authenticate(user)
+    return client
+
+
 def post_todo(context):
-    """An admin's create of a ToDo in `context` (``ABSENT``: none named),
+    """A writer's create of a ToDo in `context` (``ABSENT``: none named),
     valid under the default ToDo policy."""
     body = {"title": "t", "status": "not started"}
     if context is not ABSENT:
         body["rbac_context"] = context
-    return admin_client().post(reverse("todos-list"), body, format="json")
+    return writer_client().post(reverse("todos-list"), body, format="json")
 
 
 def row_contexts(resource):
@@ -524,8 +545,6 @@ def test_policy_lookup_compares_contexts_exactly():
 
 @pytest.mark.django_db
 def test_a_policy_without_context_rows_still_governs_its_context():
-    from django.utils.timezone import now
-
     from scrud_django.workflow import stored_policies_for
 
     store_policy(dict(PERMISSIVE_POLICY, rbac_context="other"))

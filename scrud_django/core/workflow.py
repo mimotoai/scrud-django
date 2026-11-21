@@ -21,6 +21,16 @@ allows nothing (`NoWorkflowPolicyDenied`). Operators and the `narrow`
 checks read the body as sent, a ``dict``; a CEL condition reads it with the
 context checked as its ``rbac_context`` (`condition_resource`).
 
+A superuser (`is_workflow_superuser`: active and ``is_superuser``) overrides
+the policy of a context that would refuse the write itself (content in no
+state or in several, no transition between its states, a ``restrict_update``
+state edited in place, a create or move in in no initial state): the
+transition there is ``__OVERRIDE__`` (`override_transition`), and the
+decision keeps the error it overrode (`ContextDecision.overridden`). It is
+authorized as any other transition: the type's own checks (`narrow`) are
+asked about ``__OVERRIDE__``. Where the policy allows the write, a
+superuser's is its own transition, not an override.
+
 An error under a stored policy the requester may not read, or about a stored
 resource they may not read, names neither the policy nor its states
 (`HiddenWorkflowTransitionError`).
@@ -44,16 +54,19 @@ from scrud_django.core.authz import (
     _workflow_authorized,
     condition_resource,
     content_of,
+    is_workflow_superuser,
     may_read_in_context,
 )
 from scrud_django.core.decisions import (
     NULL_CONTENT,
+    WORKFLOW_ERRORS,
     ContextDecision,
     NullContent,
     WorkflowDecision,
     context_transition,
     is_entering,
     normalized_contexts_after,
+    override_transition,
     snapshot_prior,
 )
 from scrud_django.exceptions import (
@@ -286,8 +299,10 @@ def workflow_check(
     not authenticated), with the transition it authorized in each context
     with a policy (``None`` as the context: the resource is in none), each
     computed as `scrud_django.core.decisions.context_transition` computes
-    it. Without a request where no policy applies, a decision with no
-    contexts.
+    it, or, for a superuser where that raises a workflow error,
+    ``__OVERRIDE__`` (`scrud_django.core.decisions.override_transition`)
+    with the error as the context's ``overridden``. Without a request where
+    no policy applies, a decision with no contexts.
 
     `narrow` checks, ``(request, body, context) -> bool``, may refuse a
     transition the request's policy allows, never allow one it refuses:
@@ -351,6 +366,7 @@ def workflow_check(
             raise WorkflowRequestRequired()
         return _decision(type_iri, write, stored_pk, None, prior, contexts_after, ())
     transitions = []
+    superuser = is_workflow_superuser(request)
     for c, policy in policies:
         if policy is None:
             continue
@@ -361,8 +377,13 @@ def workflow_check(
         entering = is_entering(c, prior=prior, contexts_before=contexts_before)
         leaving = c in contexts_before and c not in contexts_after
         with errors_hidden_unless_readable(policy, request, prior, readable):
-            transition_data = context_transition(
-                policy, prior, proposed, entering=entering, leaving=leaving
+            transition_data, overridden = _transition_or_override(
+                policy,
+                prior,
+                proposed,
+                entering=entering,
+                leaving=leaving,
+                superuser=superuser,
             )
         transitions.append(
             (
@@ -374,6 +395,7 @@ def workflow_check(
                     error=None,
                     entering=entering,
                     leaving=leaving,
+                    overridden=overridden,
                 ),
             )
         )
@@ -411,6 +433,25 @@ def workflow_check(
             decision=decision,
         )
     return decision
+
+
+def _transition_or_override(policy, prior, proposed, *, entering, leaving, superuser):
+    """``(TransitionData, overridden error or None)`` of the write in one
+    context: `context_transition`'s, or, when that raises a workflow error
+    and the user is a `superuser`, `override_transition`'s with that error.
+    Anyone else's error is raised."""
+    try:
+        data = context_transition(
+            policy, prior, proposed, entering=entering, leaving=leaving
+        )
+    except WORKFLOW_ERRORS as error:
+        if not superuser:
+            raise
+        data = override_transition(
+            policy, prior, proposed, entering=entering, leaving=leaving
+        )
+        return data, error
+    return data, None
 
 
 def _actor_of(request):

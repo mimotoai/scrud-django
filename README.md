@@ -1182,6 +1182,27 @@ conditions can both hold is not decidable in general); write each condition
 so that it excludes the others (`status == "review" && !published`, not
 `status == "review"` beside `published`).
 
+Superusers override the workflow policy where it would refuse their write
+(#31). A superuser here is an active one (`is_active` and `is_superuser`,
+`scrud_django.core.authz.is_workflow_superuser`). In each context the write
+concerns, including those it enters (a create, a move in) and those it
+leaves, a write the policy would refuse is allowed for them: content stored
+or proposed in no state or in several, a transition the policy lacks, a
+`restrict_update` state edited in place, a create or move in in no initial
+state. Their write is then the transition `__OVERRIDE__` there (see
+"Workflow actions"), and is logged. Where the policy allows a superuser's
+write, it is reported as its real transition (`submit`, `__SAME_STATE__`,
+`__INITIALIZE__`), not as an override, and nothing is logged. What still
+applies to them: the type's JSON Schema (a body that fails it is a 400), the
+RBAC checks (request, object and post-save; scoped-rbac allows superusers),
+and the type's own hook checks (`TypeOptions.checks`), which are asked about
+the transition `__OVERRIDE__` (`current_transition()` returns it), so a hook
+can refuse an override. scoped-rbac decides superusers by `is_superuser`
+alone, without `is_active`, while the workflow requires an active user
+(`docs/follow-ups.md`, `superuser-is-active`). A grant conditioned on
+`scrud_workflow` that names `__OVERRIDE__` gives anyone else nothing: only a
+superuser's write is ever an override.
+
 ### Workflow actions
 
 `SCRUD_WORKFLOW_ACTIONS` is a list (or tuple) of dotted paths to mappings of
@@ -1256,6 +1277,24 @@ is retired and never reported, but still constructs with no `proposed_state`.
 A save of an instance whose row is not on
 the database written to (a copy with `save(using=...)`) is reported as a
 create.
+
+`__OVERRIDE__` (`scrud_django.workflow.OVERRIDE`) is a superuser's write in
+a context whose policy would refuse it (see "Workflow policies"). Its
+`TransitionData` takes any states: `proposed_state` is the one state the new
+content is in there and `prior_state` the one state the stored content is in
+(`None` for a create or a move in), each `None` when the content is in no
+state or in several; it is `leaving` where the write leaves the context.
+The `ContextDecision` of such a context has `override` true and holds the
+workflow error the policy raised, which the write overrode, in `overridden`
+(set exactly when the transition is `__OVERRIDE__`; `None` otherwise);
+`WorkflowDecision.overrides` lists the contexts overridden, in the
+decision's order. When the save applies a checked decision with overrides
+(`Resource.save()`, an app's own model's `ModelWorkflow.save_checked`), each
+overridden context is logged as a WARNING on the `scrud_django.workflow`
+logger, before `scrud_post_save` is sent: one record per context, naming the
+saved resource (its pk), the type URI, the context, the policy, and the
+overridden error's message, prior and proposed states and, for content in
+several states, the states it meets (`matching_states`).
 
 Only API writes are checked against the workflow, so only a save that skipped
 the check (the admin, `ResourceRegistration`, server code) can be invalid: it

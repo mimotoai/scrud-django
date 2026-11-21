@@ -14,9 +14,10 @@ from .steps import *
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_initial_state(front_end, admin_login):
+def test_invalid_initial_state(front_end, regular_login):
     # TODO check the error response body for expected messages
-    Given.http.force_login(admin_login)
+    # Not a superuser, whose write would override the refusal (#31).
+    Given.http.force_login(regular_login)
     When.http.post(
         api_url(front_end, "todos-list"),
         data=json.dumps(
@@ -53,9 +54,10 @@ def test_valid_initial_state(front_end, admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_state(front_end, admin_login):
+def test_invalid_state(front_end, regular_login):
     # TODO check the error response body for expected messages
-    Given.http.force_login(admin_login)
+    # Not a superuser, whose write would override the refusal (#31).
+    Given.http.force_login(regular_login)
     When.http.post(
         api_url(front_end, "todos-list"),
         data=json.dumps(
@@ -101,7 +103,7 @@ def test_invalid_state(front_end, admin_login):
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_transition(front_end, admin_login):
+def test_invalid_transition(front_end, regular_login):
     # TODO check the error response body for expected messages
     data = {
         "title": "Buy milk",
@@ -109,7 +111,8 @@ def test_invalid_transition(front_end, admin_login):
         "priority": "medium",
         "assignee": "http://somewhere.example/someone",
     }
-    Given.http.force_login(admin_login)
+    # Not a superuser, whose write would override the refusal (#31).
+    Given.http.force_login(regular_login)
     When.http.post(
         api_url(front_end, "todos-list"),
         data=json.dumps(data),
@@ -266,8 +269,9 @@ EMPTY_CONTEXT_TODO = {
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_initial_state_with_empty_rbac_context(front_end, admin_login):
-    Given.http.force_login(admin_login)
+def test_invalid_initial_state_with_empty_rbac_context(front_end, regular_login):
+    # Not a superuser, whose write would override the refusal (#31).
+    Given.http.force_login(regular_login)
     When.http.post(
         api_url(front_end, "todos-list"),
         data=json.dumps(dict(EMPTY_CONTEXT_TODO, status="done")),
@@ -303,12 +307,13 @@ def test_unauthorized_transition_with_empty_rbac_context(front_end, todo_creator
 
 @pytest.mark.django_db
 @test_context
-def test_invalid_transition_with_empty_rbac_context(front_end, admin_login):
+def test_invalid_transition_with_empty_rbac_context(front_end, regular_login):
     done = ResourceRegistration.register(
         dict(EMPTY_CONTEXT_TODO, status="done"), "todos"
     )
     url = api_url(front_end, "todos-detail", args=[done.id])
-    Given.http.force_login(admin_login)
+    # Not a superuser, whose write would override the refusal (#31).
+    Given.http.force_login(regular_login)
     Given.http.head(url)
     When.http.put(  # no transition leads from "done" back to "not started"
         url,

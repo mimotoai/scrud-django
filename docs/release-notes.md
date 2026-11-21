@@ -20,8 +20,29 @@
   states; a policy transition without both states; and any other name that
   starts with `__`. `__LEAVE__` still constructs with no `proposed_state`.
   `TransitionData` gained the keyword-only field `leaving`.
+* **Superusers override the workflow policy where it would refuse (#31).**
+  An active superuser's write that a context's policy would refuse (content
+  in no state or in several, a transition the policy lacks,
+  `restrict_update`, a create or move in in no initial state), in any
+  context the write concerns, including those it enters or leaves, is saved
+  (200 or 201, not 400) and reported there as the transition
+  `__OVERRIDE__`, with the overridden error in the `ContextDecision`; each
+  such context is logged as a WARNING on the `scrud_django.workflow` logger
+  when the save applies it. A superuser's valid write is still reported as
+  its real transition. JSON Schema validation, the RBAC checks and the
+  type's own hook checks (asked about `__OVERRIDE__`) still apply. Tests or
+  code that relied on a superuser being refused by a workflow policy must
+  use a user who is not a superuser. See the README's "Workflow policies".
 
 ### Added
+
+* **`__OVERRIDE__` (#31).** `scrud_django.workflow.OVERRIDE`, a reserved
+  transition name (in `RESERVED_TRANSITIONS`) whose `TransitionData` takes
+  any states (each the one state the content is in, else `None`);
+  `ContextDecision.overridden` (the workflow error a superuser's write
+  overrode) and `ContextDecision.override`; `WorkflowDecision.overrides`
+  (the contexts overridden); `scrud_django.core.authz.is_workflow_superuser`.
+  See the README's "Workflow actions".
 
 * **`scrud_post_save` carries the workflow check's `decision`.** The new
   keyword argument is a `scrud_django.core.decisions.WorkflowDecision`
