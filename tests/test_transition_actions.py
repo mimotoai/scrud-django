@@ -21,8 +21,11 @@ from scrud_django.registration import ResourceRegistration
 from .factories import UserFactory
 from .fixtures import *  # noqa: F401, F403
 from .front_ends import api_url, serve_ninja
+from .post_commit_helpers import (
+    default_context_todo_writer_user,
+    todos_moved_after_save,
+)
 from .steps import *  # noqa: F403, F401
-from .test_post_commit import default_context_todo_writer, todos_moved_after_save
 from .workflow_actions import transition_calls
 
 TODO = "tests://ToDo"
@@ -117,24 +120,20 @@ def test_on_transition_does_not_run_for_other_transitions(
 
 
 @pytest.mark.django_db
+@test_context
 def test_on_transition_does_not_run_on_rollback(
     front_end, django_capture_on_commit_callbacks
 ):
     api_url(front_end, "todos-list")
     resource = ResourceRegistration.register(dict(NOT_STARTED), "todos")
-    client = default_context_todo_writer()
+    Given.http.force_login(default_context_todo_writer_user())
     with (
         setting_of("recording"),
         todos_moved_after_save(),
         django_capture_on_commit_callbacks(execute=True),
     ):
-        response = client.put(
-            api_url(front_end, "todos-detail", args=[resource.pk]),
-            IN_PROGRESS,
-            format="json",
-            HTTP_IF_MATCH=quote_etag(resource.etag),
-        )
-    assert response.status_code == 403, response.content
+        put_todo(front_end, resource, IN_PROGRESS)
+    Then.http.status_code_is(HTTPStatus.FORBIDDEN)
     assert transition_calls == []
 
 
