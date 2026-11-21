@@ -36,6 +36,7 @@ misspelled = {"tests://ToDo": {"on_saved": todo_on_save, "on_delete": todo_on_de
 not_callable = {"tests://ToDo": {"on_save": "tests.workflow_actions.todo_on_save"}}
 none_is_no_action = {"tests://ToDo": {"on_save": todo_on_save, "on_delete": None}}
 unregistered = {"tests://NoSuchType": {"on_save": todo_on_save}}
+transition_none = {"tests://ToDo": {"on_transition": None}}
 
 
 # Recorders for tests/test_transition_actions.py: every call in order, as

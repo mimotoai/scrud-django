@@ -143,6 +143,9 @@ def test_a_value_that_is_not_callable_is_an_error():
 def test_on_transition_is_a_known_key_and_valid_entries_pass():
     with setting_of("transition_valid"):
         assert check_workflow_actions(None) == []
+    # None is no action, for on_transition as for every key.
+    with setting_of("transition_none"):
+        assert check_workflow_actions(None) == []
 
 
 @pytest.mark.parametrize(

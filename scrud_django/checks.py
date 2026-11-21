@@ -1019,8 +1019,9 @@ def check_workflow_actions(app_configs, **kwargs):
       ``on_delete`` (a misspelled one runs nothing);
     - ``scrud_django.E009`` for a value that is neither callable nor ``None``
       (a dotted path is not imported);
-    - ``scrud_django.E012`` for an ``on_transition`` entry that is not a
-      mapping of transition name to callable (or ``None``), or names a
+    - ``scrud_django.E012`` for an ``on_transition`` entry, other than
+      ``None`` (no action), that is not a mapping of transition name to
+      callable (or ``None``), or names a
       reserved ``__`` transition other than ``__INITIALIZE__``,
       ``__SAME_STATE__`` and ``__OVERRIDE__``.
 
@@ -1068,7 +1069,9 @@ def check_workflow_actions(app_configs, **kwargs):
                     )
                 )
             elif key == "on_transition":
-                found.extend(check_on_transition(type_uri, action))
+                # None is no action, as for every key (and at write time).
+                if action is not None:
+                    found.extend(check_on_transition(type_uri, action))
             elif action is not None and not callable(action):
                 found.append(
                     checks.Error(
