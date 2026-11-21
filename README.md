@@ -501,9 +501,11 @@ def destroy_article(request, pk: str, obj):
   a field set on the instance beforehand is overwritten. The transaction
   commits, and `scrud_post_save` and the `SCRUD_WORKFLOW_ACTIONS` for the IRI
   run on commit, with `sender` the model class, `instance`, `resource_type_uri`
-  the IRI, `using` the write's database, and `decision`, `transitions`,
-  `transition_data` and `transition_error` computed from `state_of`, as for a
-  resource. `save_checked` sends the workflow check's decision (`checked`
+  the IRI, `using` the write's database, `user` and `prior_content`, and
+  `decision`, `transitions`, `transition_data` and `transition_error`
+  computed from `state_of`, as for a resource. The outbox records an own
+  model's writes too: its `content` is the decision's proposed state (`None`
+  for a delete). `save_checked` sends the workflow check's decision (`checked`
   true) when the transitions recomputed for the saved object equal the
   authorized ones. When they differ, because `save` wrote something other than
   the checked values (a `Model.save` override, say), it sends the recomputed
@@ -514,7 +516,7 @@ def destroy_article(request, pk: str, obj):
   must return the one instance it saved (a `TypeError` otherwise).
   `delete_checked` locks the row the same way
   (a 404 when another request deleted it meanwhile, and no signal) and sends
-  `scrud_post_delete` on commit.
+  `scrud_post_delete` on commit, with the `user`.
 * Per-transition grants (conditioned on `scrud_workflow`) work because the
   router wraps its request and object checks with `covering` and `covered`,
   which run them inside `authorizing_write`: a grant conditioned on
@@ -1206,7 +1208,8 @@ superuser's write is ever an override.
 ### Workflow actions
 
 `SCRUD_WORKFLOW_ACTIONS` is a list (or tuple) of dotted paths to mappings of
-type URI to `{"on_save": callable, "on_delete": callable}`; a later mapping's
+type URI to `{"on_save": callable, "on_delete": callable, "on_transition":
+{transition name: callable}}` (any key may be left out); a later mapping's
 entry for a type replaces an earlier one's. An action runs when the write
 of a resource of its type commits, never for a write that is rolled back. The
 `scrud_post_save` and `scrud_post_delete` signals fire inside the write; a
@@ -1218,10 +1221,11 @@ replica.
 Actions and receivers are called as `action(sender, **kwargs)`, with the
 keyword arguments Django gives a receiver: `signal` (the signal sent),
 `instance`, `using`, `resource_type_uri` and `action` (`CREATE`, `UPDATE` or
-`DELETE`); `scrud_post_save` adds `update_fields`, `decision`,
-`transition_data`, `transition_error` and `transitions`, and
+`DELETE`); `scrud_post_save` adds `update_fields`, `decision`, `user`,
+`prior_content`, `transition_data`, `transition_error` and `transitions`, and
 `scrud_post_delete` adds `pk`, the deleted resource's primary key (the
-`instance` is the deleted one, whose `pk` Django has set to `None`).
+`instance` is the deleted one, whose `pk` Django has set to `None`), and
+`user`.
 
 `decision` is a `scrud_django.core.decisions.WorkflowDecision`, immutable
 data about the write: `type_iri`, `stored_pk` (`None` for a create), `actor`,
@@ -1307,9 +1311,40 @@ save still reads the policy of every context it concerns, and fails
 (`ImproperlyConfigured`) where one has several stored policies or an invalid
 one, as an API write does.
 
-The requesting user is not passed: read it from a `contextvars.ContextVar`
-that a middleware sets (see the example below), since receivers and actions
-run in the request's thread.
+`user` is the user the write was made for: the request's authenticated user
+(`None` for an anonymous request), or, for a save or delete that no request
+made (the admin, `ResourceRegistration`, server code), the user that
+`scrud_django.core.signals.acting_as(user)` names around it, else `None`.
+The saves made inside an API or UI write, by its receivers and by the type's
+`after_write` and `after_destroy` hooks (or by the receivers of a
+`ModelWorkflow` write), are made for the request's user too.
+`acting_as` is a context manager that is reset however its block ends and
+holds for the thread or task that runs it:
+
+```python
+from scrud_django.core.signals import acting_as
+
+with acting_as(request.user):
+    resource.save()  # scrud_post_save's `user` is request.user
+```
+
+`prior_content` (`scrud_post_save` only) is a snapshot of the content stored
+before the write: `None` for a create, and for stored content that is JSON
+`null`. A receiver must not mutate it.
+
+`on_transition` maps the name of a transition to an action:
+`SCRUD_WORKFLOW_ACTIONS[type_uri]["on_transition"] = {"submit": fn, ...}`.
+Each distinct transition name the write's `decision` took, in any context,
+runs its action once, when the write commits and after the type's `on_save`,
+in the order the names first appear in the decision's contexts. It is called
+as `action(sender, **kwargs)` with the signal's keyword arguments and two
+more: `transition`, the name, and `contexts`, a tuple of the contexts where
+that transition was taken. The reserved names `__INITIALIZE__`,
+`__SAME_STATE__` and `__OVERRIDE__` may be keys. A transition a write leaves a
+context by fires like any other (`decision.get(context).leaving` is true
+there). A `scrud_post_save` sent without a `decision` (third-party code)
+runs no `on_transition` action. As for the other actions, one that raises is
+logged (as `on_transition[<name>]`) and never fails the write.
 
 Actions are delivered:
 
@@ -1335,14 +1370,19 @@ To act on a revert, connect a receiver to Django's `post_save` for
 `Resource`, which they send with `raw=True` (`loaddata` too).
 
 A setting that is not a list or tuple of paths to mappings stops the process
-at startup (`ImproperlyConfigured`). `manage.py check` reports a type's entry
-that is not a mapping (`scrud_django.E007`), a key other than `on_save` and
-`on_delete` (`E008`) and a value that is neither callable nor `None`
-(`E009`); `check --database <alias>` warns about a type URI that is not a
-registered resource type (`W006`). At write time such an entry runs nothing
+at startup (`ImproperlyConfigured`). `manage.py check` reports a type's
+entry that is not a mapping (`scrud_django.E007`), a key other than
+`on_save`, `on_delete` and `on_transition` (`E008`), a value that is neither
+callable nor `None` (`E009`) and an `on_transition` entry, other than
+`None`, that is not a mapping of transition name (a string; of the names
+starting with `__`, only `__INITIALIZE__`, `__SAME_STATE__` and
+`__OVERRIDE__`) to a callable or `None` (`E012`); `check --database <alias>`
+warns about a type URI that is not a registered resource type (`W006`). At
+write time such an entry runs nothing
 and never fails the write. Neither does an action that raises: it is logged,
 with its traceback, on the `scrud_django.workflow_actions` logger, naming
-the action, the type URI, `on_save` or `on_delete` and the resource's pk.
+the action, the type URI, `on_save`, `on_delete` or `on_transition[<name>]`
+and the resource's pk.
 
 The signals and the actions' runner live in `scrud_django.core.signals`
 (`scrud_django.scrud_signals` remains an alias of it). The actions are run by
@@ -1352,85 +1392,80 @@ again when it changes (`override_settings` in tests). One processor receives the
 of a subclass in the `ready()` of an app listed after `scrud_django`,
 replaces the default one instead of running each action twice.
 
-An event that must not be lost belongs in a transactional outbox: a
-receiver stores it in a table in the write's own transaction, so it
-commits or rolls back with the write, and a worker delivers it later, at
-least once:
+#### The transactional outbox
+
+An event that must not be lost belongs in a transactional outbox, which is an
+opt-in app: it stores each write of the types you list in a table, in the
+write's own transaction, so that the event commits or rolls back with the
+write, and a worker delivers it later, at least once. Add the app and migrate:
 
 ```python
-# myapp/models.py
-from django.db import models
+# settings.py
+INSTALLED_APPS = [
+    ...,
+    "scrud_django",
+    "scrud_django.outbox",
+]
 
-
-class OutboxEvent(models.Model):
-    resource_pk = models.BigIntegerField()
-    type_uri = models.TextField()
-    action = models.CharField(max_length=6)  # CREATE, UPDATE or DELETE
-    transition = models.JSONField(null=True)
-    user_id = models.BigIntegerField(null=True)
-    content = models.JSONField(null=True)
-    sent_at = models.DateTimeField(null=True)
-
-
-# myapp/outbox.py, imported in your AppConfig.ready()
-import dataclasses
-from contextvars import ContextVar
-
-from django.db import router, transaction
-from django.dispatch import receiver
-from django.utils import timezone
-from scrud_django.core.signals import scrud_post_delete, scrud_post_save
-
-from .models import OutboxEvent
-
-current_request = ContextVar("current_request", default=None)
-
-
-def current_request_middleware(get_response):  # add it to MIDDLEWARE
-    def middleware(request):
-        token = current_request.set(request)
-        try:
-            return get_response(request)
-        finally:
-            current_request.reset(token)
-
-    return middleware
-
-
-@receiver([scrud_post_save, scrud_post_delete], dispatch_uid="myapp.outbox")
-def store_event(sender, instance, using, resource_type_uri, action, **kwargs):
-    transition = kwargs.get("transition_data")
-    # DRF sets the user it authenticates on the Django request too.
-    user = getattr(current_request.get(), "user", None)
-    OutboxEvent.objects.using(using).create(
-        resource_pk=kwargs.get("pk", instance.pk),  # pk: sent for a delete
-        type_uri=resource_type_uri,
-        action=action,
-        transition=dataclasses.asdict(transition) if transition else None,
-        user_id=user.pk if user is not None and user.is_authenticated else None,
-        content=instance.content,
-    )
-
-
-def send_events(deliver, batch=100):
-    """Run by a worker (cron, Celery beat). `deliver` must be idempotent
-    (keyed on the event's pk): an event is sent again if marking it fails.
-    store_event writes each event where its write went (`using`): route
-    OutboxEvent's writes to the alias scrud_django's models are written to,
-    so that this reads them there, not from a replica."""
-    using = router.db_for_write(OutboxEvent)
-    with transaction.atomic(using=using):
-        events = (
-            OutboxEvent.objects.using(using)
-            .select_for_update(skip_locked=True)
-            .filter(sent_at=None)
-            .order_by("pk")[:batch]
-        )
-        for event in events:
-            deliver(event)
-            event.sent_at = timezone.now()
-            event.save(using=using, update_fields=["sent_at"])
+SCRUD_OUTBOX = {
+    "TYPES": ["myapp://Article", "https://example.com/types/order"],  # or "__all__"
+    "DELIVER": "myapp.outbox.deliver",
+}
 ```
+
+`TYPES` lists the type URIs (own models' IRIs too) whose writes are
+recorded, or is `"__all__"`; unset or empty records nothing (`W010`), and a
+malformed value (`SCRUD_OUTBOX` not a mapping, or `TYPES` neither `"__all__"`
+nor a list or tuple of strings) is `E013` and records nothing. `DELIVER` is
+the dotted path of `deliver(event)`, which `manage.py scrud_outbox_send` calls.
+
+Each `scrud_post_save` and `scrud_post_delete` of a listed type stores one
+`scrud_django.outbox.models.OutboxEvent`: `type_uri`, `resource_pk` (text),
+`action` (`CREATE`, `UPDATE` or `DELETE`), `checked` (the decision's; `None`
+for a delete or a save sent without a decision), `transitions` (a list, in
+the decision's order, of `{"context", "transition", "prior_state",
+"proposed_state", "leaving", "error"}`), `user_id` (the actor's pk as text, or
+`None`), `content` (the content written, from the decision's proposed state;
+`None` for an own model's delete), `prior_content` (the stored content before
+the write; `None` for a create or a delete), `created_at` and `sent_at`.
+`content` and `prior_content` are stored with Django's `DjangoJSONEncoder`, so
+dates, times, decimals and UUIDs in an own model's state are recorded as
+strings. An own model's `CREATE` event stores the state the workflow check
+checked, taken before the save: its primary key is `null` in `content`, so
+read the object's pk from `resource_pk`.
+
+Deliver the events with `manage.py scrud_outbox_send [--batch N]` (default
+100; run it again, from cron or a loop, to send more) or
+`scrud_django.outbox.send_events(deliver, batch=100)`, which returns the
+number sent:
+
+```python
+# myapp/outbox.py
+def deliver(event):
+    publish(event.type_uri, event.resource_pk, key=f"outbox-{event.pk}", ...)
+```
+
+Delivery is at least once. `deliver(event)` must be idempotent (key on the
+event's `pk`): a batch is one transaction, and when `deliver` raises, the
+exception propagates and the whole batch rolls back, so none of it, those
+delivered before the failure included, is marked sent and all are delivered
+again. An event `deliver` always refuses therefore stops those after it until
+it is fixed or removed. `deliver` runs while the batch's rows are locked
+(`select_for_update(skip_locked=True)` where the database supports it; SQLite
+locks nothing, so run one sender there), so keep it quick. Sent events are
+never pruned: delete old ones yourself, for example
+`OutboxEvent.objects.filter(sent_at__lt=cutoff).delete()`.
+
+`send_events` reads only `router.db_for_write(OutboxEvent)`, and each event is
+written where its write went: route `OutboxEvent`'s writes to the alias scrud's
+models are written to, so that the sender does not read a replica.
+
+The event commits with the write only when the write runs in a transaction,
+as those of every scrud front end, of `ResourceRegistration` and of
+`ModelWorkflow` do. Server code that saves or deletes in autocommit has
+committed by the time the event is stored, so wrap the save or delete in
+`transaction.atomic(using=...)` to have them commit or fail together (follow-up
+`outbox-autocommit-saves` in `docs/follow-ups.md`).
 
 ### Migrating to 0.17.0: the switch to django-ninja
 

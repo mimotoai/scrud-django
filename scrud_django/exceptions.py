@@ -920,6 +920,9 @@ class StoredPolicyReference:
         return self._version() == other._version()
 
     def __hash__(self):
+        """By the policy's pk and its resource's ``etag``, which a save of
+        that resource changes: do not hash a reference (keep it in a set, or
+        as a dict key) whose resource will be saved again."""
         return hash((StoredPolicyReference, self._version()))
 
     def __repr__(self):

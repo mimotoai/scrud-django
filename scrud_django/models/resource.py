@@ -18,7 +18,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 from scoped_rbac.rbac_contexts import SOME_CONTEXT
 
-from scrud_django.core.signals import scrud_post_delete
+from scrud_django.core.signals import acting_user, scrud_post_delete
 from scrud_django.mixins.resource_mixin import ResourceMixin, rbac_contexts_of
 from scrud_django.models.fields import ContextField
 from scrud_django.models.resource_type import ResourceType
@@ -252,6 +252,7 @@ class ResourceQuerySet(models.QuerySet):
                         using=db,
                         resource_type_uri=type_uris[pk],
                         action='DELETE',
+                        user=acting_user(),
                     )
                     signalled += 1
             removed = result[1].get(self.model._meta.label, 0)

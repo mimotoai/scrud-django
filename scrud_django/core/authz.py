@@ -51,6 +51,15 @@ _transition = ContextVar("scrud_django_transition", default=_OUTSIDE)
 _every_context = ContextVar("scrud_django_every_context", default=False)
 
 
+def request_actor(request):
+    """The user a write is made for: the request's (``access.request_user``)
+    when it is authenticated, else ``None``."""
+    user = access.request_user(request)
+    if user is None or not getattr(user, "is_authenticated", False):
+        return None
+    return user
+
+
 @contextmanager
 def _reading_every_context():
     token = _every_context.set(True)

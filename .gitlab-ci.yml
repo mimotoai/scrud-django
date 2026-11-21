@@ -50,7 +50,7 @@ lint:
     - uv sync --locked
     - uv run --locked ruff check .
     - uv run --locked ruff format --check .
-    - uv run --locked python manage.py makemigrations scrud_django --check --dry-run
+    - uv run --locked python manage.py makemigrations scrud_django scrud_django_outbox --check --dry-run
   after_script:
     - uv cache prune --ci
 

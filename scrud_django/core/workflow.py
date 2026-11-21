@@ -56,6 +56,7 @@ from scrud_django.core.authz import (
     content_of,
     is_workflow_superuser,
     may_read_in_context,
+    request_actor,
 )
 from scrud_django.core.decisions import (
     NULL_CONTENT,
@@ -317,8 +318,9 @@ def workflow_check(
     by the type `post_save_type_iri` (the type the write's post-save check
     names; by default `type_iri`), carrying the decision it returns, which
     the save then sends (`scrud_django.core.decisions.applying`). An
-    `Update` without a ``stored_pk`` is not marked: the post-save check of no save matches it. The save that
-    uses the mark consumes it (`scrud_django.core.writes.save_checked`).
+    `Update` without a ``stored_pk`` is not marked: the post-save check of
+    no save matches it. The save that uses the mark consumes it
+    (`scrud_django.core.writes.save_checked`).
 
     Raises ``TypeError`` for a `write` that is neither (a delete runs no
     workflow check: follow-up ``delete-no-workflow-check``),
@@ -417,7 +419,7 @@ def workflow_check(
         type_iri,
         write,
         stored_pk,
-        _actor_of(request),
+        request_actor(request),
         prior,
         contexts_after,
         [entry for _, entry in transitions],
@@ -452,15 +454,6 @@ def _transition_or_override(policy, prior, proposed, *, entering, leaving, super
         )
         return data, error
     return data, None
-
-
-def _actor_of(request):
-    """The user a checked write is decided for: the request's
-    (``access.request_user``) when it is authenticated, else ``None``."""
-    user = access.request_user(request)
-    if user is None or not getattr(user, "is_authenticated", False):
-        return None
-    return user
 
 
 def _decision(type_iri, write, stored_pk, actor, prior, contexts_after, contexts):

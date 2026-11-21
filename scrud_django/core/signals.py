@@ -1,5 +1,7 @@
 import logging
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from types import MappingProxyType
 
 from django.core.exceptions import ImproperlyConfigured
@@ -17,14 +19,39 @@ logger = logging.getLogger("scrud_django.workflow_actions")
 # when (and when not) and what each argument holds; keep it the one full
 # description. Keyword arguments: ``signal``, ``sender``, ``instance``,
 # ``using`` (the database written to, `write_alias`), ``resource_type_uri``
-# and ``action``; ``scrud_post_save`` adds ``update_fields``,
-# ``decision`` (the save's ``core.decisions.WorkflowDecision``: the workflow
-# check's for a checked write, ``checked=True``; else computed,
-# ``ResourceMixin.get_transitions``), and ``transition_data``,
-# ``transition_error`` and ``transitions`` (a read-only mapping), taken from
-# it; ``scrud_post_delete`` adds ``pk``.
+# and ``action``; ``scrud_post_save`` adds ``update_fields``, ``decision``
+# (the save's ``core.decisions.WorkflowDecision``: the workflow check's for
+# a checked write, ``checked=True``; else computed,
+# ``ResourceMixin.get_transitions``), ``user`` (the decision's actor),
+# ``prior_content`` (its ``prior``: the stored content before the write;
+# ``None`` for a create), and ``transition_data``, ``transition_error`` and
+# ``transitions`` (a read-only mapping), taken from the decision;
+# ``scrud_post_delete`` adds ``pk`` and ``user`` (`acting_user`).
 scrud_post_save = Signal()
 scrud_post_delete = Signal()
+
+# The user a write is made for, which unchecked saves and deletes report as
+# ``user`` (``acting_as``); ``None``: unknown.
+_ACTING: ContextVar = ContextVar("scrud_acting_user", default=None)
+
+
+@contextmanager
+def acting_as(user):
+    """Name `user` (``None``: no one) as the actor of the saves and deletes
+    run inside, in this thread or task: ``scrud_post_save`` and
+    ``scrud_post_delete`` send it as ``user`` where no workflow check named
+    one. Front ends wrap their writes in it for the request's user; server
+    code names its own actor. It is reset however the block ends."""
+    token = _ACTING.set(user)
+    try:
+        yield
+    finally:
+        _ACTING.reset(token)
+
+
+def acting_user():
+    """The user `acting_as` names, else ``None``."""
+    return _ACTING.get()
 
 
 def write_alias(sender, kwargs):
@@ -55,12 +82,13 @@ class WorkflowActionCall:
     """A workflow action's call, ``action(sender, **kwargs)``, as
     ``transaction.on_commit`` runs it. An exception it raises is logged on
     the ``scrud_django.workflow_actions`` logger, with the action's qualified
-    name, the type URI, the kind of action (`kind`, ``on_save`` or
-    ``on_delete``), the resource's pk (``scrud_post_delete``'s ``pk``, as the
-    deleted instance has none) and the traceback, and not raised again:
-    ``on_commit``'s ``robust`` would log it a second time, anonymously, on
-    ``django.db.backends.base``. Its ``__qualname__`` (which that log names)
-    is the action's, should anything else go wrong."""
+    name, the type URI, the kind of action (`kind`: ``on_save``,
+    ``on_delete`` or ``on_transition[<name>]``), the resource's pk
+    (``scrud_post_delete``'s ``pk``, as the deleted instance has none) and
+    the traceback, and not raised again: ``on_commit``'s ``robust`` would log
+    it a second time, anonymously, on ``django.db.backends.base``. Its
+    ``__qualname__`` (which that log names) is the action's, should anything
+    else go wrong."""
 
     def __init__(self, action, kind, sender, kwargs):
         self.action = action
@@ -112,6 +140,7 @@ class ScrudSignalProcessor:
 
     post_save_literal = 'on_save'
     post_delete_literal = 'on_delete'
+    post_transition_literal = 'on_transition'
     resource_type_uri_literal = 'resource_type_uri'
     post_save_dispatch_uid = 'scrud_django.ScrudSignalProcessor.post_save'
     post_delete_dispatch_uid = 'scrud_django.ScrudSignalProcessor.post_delete'
@@ -126,13 +155,13 @@ class ScrudSignalProcessor:
 
     @property
     def workflow_actions(self):
-        """Type URI -> ``{"on_save": ..., "on_delete": ...}``: the mapping
-        assigned to this processor, as assigned, else a read-only view
-        (``MappingProxyType``) of ``SCRUD_WORKFLOW_ACTIONS``'s
-        (`configured_workflow_actions`: loaded once, and again after the
-        setting changes, as under ``override_settings``), which every
-        processor shares: to change it, change the setting or assign this
-        processor a mapping of its own."""
+        """Type URI -> ``{"on_save": ..., "on_delete": ...,
+        "on_transition": {...}}``: the mapping assigned to this processor, as
+        assigned, else a read-only view (``MappingProxyType``) of
+        ``SCRUD_WORKFLOW_ACTIONS``'s (`configured_workflow_actions`: loaded
+        once, and again after the setting changes, as under
+        ``override_settings``), which every processor shares: to change it,
+        change the setting or assign this processor a mapping of its own."""
         if self._workflow_actions is not None:
             return self._workflow_actions
         return MappingProxyType(configured_workflow_actions())
@@ -162,6 +191,62 @@ class ScrudSignalProcessor:
         )
         if action is not None:
             self.run_on_commit(action, sender, kwargs, self.post_save_literal)
+        self.run_transition_actions(sender, kwargs)
+
+    def run_transition_actions(self, sender, kwargs):
+        """Run the ``on_transition`` action of each distinct transition the
+        save's ``decision`` reports, in order of first appearance, once the
+        write commits, after ``on_save``: ``action(sender, **kwargs,
+        transition=name, contexts=(...))``, ``contexts`` being each context
+        the transition was taken in. A save sent without a ``decision`` (by
+        third-party code) runs none. A bad entry is logged and runs nothing
+        (``scrud_django.E012``)."""
+        decision = kwargs.get("decision")
+        if decision is None:
+            return
+        taken = {}
+        for entry in decision.contexts:
+            if entry.transition is not None:
+                taken.setdefault(entry.transition.transition, []).append(entry.context)
+        if not taken:
+            return
+        type_uri = kwargs.get(self.resource_type_uri_literal)
+        for name, contexts in taken.items():
+            action = self.determine_transition_action(name, type_uri)
+            if action is not None:
+                self.run_on_commit(
+                    action,
+                    sender,
+                    {**kwargs, "transition": name, "contexts": tuple(contexts)},
+                    f"{self.post_transition_literal}[{name}]",
+                )
+
+    def determine_transition_action(self, name, type_uri):
+        """The ``on_transition`` action of `type_uri` for the transition
+        `name`, or None. As `determine_action`, a bad entry (``on_transition``
+        not a mapping, an action not callable) is logged and runs nothing."""
+        transitions = self.determine_action(self.post_transition_literal, type_uri)
+        if transitions is None:
+            return None
+        if not isinstance(transitions, Mapping):
+            logger.error(
+                "SCRUD_WORKFLOW_ACTIONS: the on_transition entry for %r is not a "
+                "mapping (%r); no on_transition action runs (scrud_django.E012).",
+                type_uri,
+                transitions,
+            )
+            return None
+        action = transitions.get(name)
+        if action is not None and not callable(action):
+            logger.error(
+                "SCRUD_WORKFLOW_ACTIONS: the on_transition[%s] action for %r is "
+                "not callable (%r); it does not run (scrud_django.E012).",
+                name,
+                type_uri,
+                action,
+            )
+            return None
+        return action
 
     def post_delete_trigger(self, sender, **kwargs):
         action = self.determine_action(
@@ -173,8 +258,9 @@ class ScrudSignalProcessor:
     def run_on_commit(self, action, sender, kwargs, kind):
         """Call ``action(sender, **kwargs)`` when the write's transaction
         commits, through a `WorkflowActionCall` that logs its failure as
-        `kind` of action (`post_save_literal` or `post_delete_literal`).
-        ``robust`` is a backstop: the call does not raise."""
+        `kind` of action (`post_save_literal`, `post_delete_literal`, or
+        ``on_transition[<name>]`` for a transition's). ``robust`` is a
+        backstop: the call does not raise."""
         transaction.on_commit(
             WorkflowActionCall(action, kind, sender, kwargs),
             using=write_alias(sender, kwargs),
@@ -182,17 +268,18 @@ class ScrudSignalProcessor:
         )
 
     def determine_action(self, post_literal, type_uri):
-        """The `post_literal` (``on_save`` or ``on_delete``) action of
-        `type_uri`, or None. A bad entry never fails the write: an entry
-        that is not a mapping, or an action that is not callable, is logged
-        on the ``scrud_django.workflow_actions`` logger and runs nothing (the
-        ``scrud_django.E007`` and ``E009`` checks report them). A missing key
-        or ``None`` is no action, and so is every action of a setting changed
-        (``override_settings``) to one that cannot be loaded
-        (``ImproperlyConfigured``, or ``ImportError`` importing a path it
-        names), which is logged. Any other error loading the setting (one
-        that importing the module of a mapping it names raises) is not
-        caught: it propagates, and fails the write."""
+        """The `post_literal` (``on_save``, ``on_delete``, or
+        ``on_transition``'s mapping, which `determine_transition_action`
+        checks) action of `type_uri`, or None. A bad entry never fails the
+        write: an entry that is not a mapping, or an action that is not
+        callable, is logged on the ``scrud_django.workflow_actions`` logger
+        and runs nothing (the ``scrud_django.E007`` and ``E009`` checks
+        report them). A missing key or ``None`` is no action, and so is every
+        action of a setting changed (``override_settings``) to one that
+        cannot be loaded (``ImproperlyConfigured``, or ``ImportError``
+        importing a path it names), which is logged. Any other error loading
+        the setting (one that importing the module of a mapping it names
+        raises) is not caught: it propagates, and fails the write."""
         try:
             all_actions = self.workflow_actions
         except (ImproperlyConfigured, ImportError) as error:
@@ -216,7 +303,12 @@ class ScrudSignalProcessor:
             )
             return None
         action = actions.get(post_literal)
-        if action is not None and not callable(action):
+        if (
+            action is not None
+            and not callable(action)
+            # on_transition is a mapping: determine_transition_action checks it.
+            and post_literal != self.post_transition_literal
+        ):
             logger.error(
                 "SCRUD_WORKFLOW_ACTIONS: the %s action for %r is not callable "
                 "(%r); it does not run (scrud_django.E009).",

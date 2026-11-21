@@ -948,9 +948,61 @@ def check_base_url_for_ninja(app_configs, **kwargs):
 
 ACTIONS_HINT = (
     "Each entry of a mapping SCRUD_WORKFLOW_ACTIONS names maps a type URI to "
-    "{'on_save': callable, 'on_delete': callable} (either key may be left out, "
-    "or given None: no action)."
+    "{'on_save': callable, 'on_delete': callable, 'on_transition': {name: "
+    "callable}} (any key may be left out, or given None: no action)."
 )
+
+
+def check_on_transition(type_uri, transitions):
+    """The ``scrud_django.E012`` errors of `type_uri`'s ``on_transition``
+    entry: not a mapping, a key that is not a string, a value neither
+    callable nor ``None``, or a ``__``-prefixed key that is not one of the
+    reserved transitions a write reports."""
+    from collections.abc import Mapping
+
+    from scrud_django.workflow import (
+        INITIALIZE,
+        OVERRIDE,
+        RESERVED_TRANSITION_PREFIX,
+        SAME_STATE,
+    )
+
+    hint = (
+        "on_transition maps a transition's name to a callable (or None): "
+        f"{INITIALIZE!r}, {SAME_STATE!r} and {OVERRIDE!r} are the reserved "
+        "names it may use."
+    )
+
+    def error(message):
+        return checks.Error(
+            f"SCRUD_WORKFLOW_ACTIONS: the on_transition entry for {type_uri!r} "
+            f"{message}",
+            hint=hint,
+            obj=type_uri,
+            id="scrud_django.E012",
+        )
+
+    if not isinstance(transitions, Mapping):
+        return [error(f"is {transitions!r}, not a mapping: no action runs.")]
+    found = []
+    for name, action in transitions.items():
+        if not isinstance(name, str):
+            found.append(error(f"has the key {name!r}, which is not a string."))
+        elif name.startswith(RESERVED_TRANSITION_PREFIX) and name not in (
+            INITIALIZE,
+            SAME_STATE,
+            OVERRIDE,
+        ):
+            found.append(
+                error(f"has the key {name!r}, a reserved name that is never taken.")
+            )
+        elif action is not None and not callable(action):
+            found.append(
+                error(
+                    f"has {action!r} for {name!r}, which is not callable: it never runs."
+                )
+            )
+    return found
 
 
 def check_workflow_actions(app_configs, **kwargs):
@@ -963,10 +1015,15 @@ def check_workflow_actions(app_configs, **kwargs):
     - ``scrud_django.E007`` for a type whose entry is not a mapping, or for a
       setting that cannot be loaded at all (``ScrudConfig.ready()`` refuses
       that at startup, so only a setting changed since gets here);
-    - ``scrud_django.E008`` for a key other than ``on_save`` and
-      ``on_delete`` (a misspelled one runs nothing);
+    - ``scrud_django.E008`` for a key other than ``on_save``,
+      ``on_delete`` and ``on_transition`` (a misspelled one runs nothing);
     - ``scrud_django.E009`` for a value that is neither callable nor ``None``
-      (a dotted path is not imported).
+      (a dotted path is not imported);
+    - ``scrud_django.E012`` for an ``on_transition`` entry, other than
+      ``None`` (no action), that is not a mapping of transition name to
+      callable (or ``None``), or names a
+      reserved ``__`` transition other than ``__INITIALIZE__``,
+      ``__SAME_STATE__`` and ``__OVERRIDE__``.
 
     Whether each type is registered takes the database:
     `check_workflow_action_types` (``scrud_django.W006``)."""
@@ -1011,6 +1068,10 @@ def check_workflow_actions(app_configs, **kwargs):
                         id="scrud_django.E008",
                     )
                 )
+            elif key == "on_transition":
+                # None is no action, as for every key (and at write time).
+                if action is not None:
+                    found.extend(check_on_transition(type_uri, action))
             elif action is not None and not callable(action):
                 found.append(
                     checks.Error(

@@ -33,6 +33,12 @@
   type's own hook checks (asked about `__OVERRIDE__`) still apply. Tests or
   code that relied on a superuser being refused by a workflow policy must
   use a user who is not a superuser. See the README's "Workflow policies".
+* **Stored content that is JSON null is an update from no state, not a
+  create.** A save of a resource whose stored row holds JSON null (or
+  non-object content stored before 0.12.0) is reported as an update from no
+  state in the default context where a policy applies (`transition_data` is
+  `None`, and a WARNING is logged), not as a create (`__INITIALIZE__`): a
+  receiver keyed on `__INITIALIZE__` no longer sees such a save.
 
 ### Added
 
@@ -56,6 +62,36 @@
   a computed decision with `checked` false. See the README's "Workflow
   actions". The decision types live in the new `scrud_django.core.decisions`.
 
+* **`on_transition` workflow actions (#20).**
+  `SCRUD_WORKFLOW_ACTIONS[type_uri]["on_transition"]` maps a transition name
+  (the reserved `__INITIALIZE__`, `__SAME_STATE__` and `__OVERRIDE__`
+  included) to an action. Each distinct transition a write's decision took
+  runs its action once, on commit, after `on_save`, with `transition` and
+  `contexts` (where it was taken) added to the signal's keyword arguments. A
+  failure is logged as `on_transition[<name>]` and never fails the write. The
+  new check `scrud_django.E012` reports a malformed entry, and `E008` accepts
+  the `on_transition` key.
+
+* **`scrud_post_save` and `scrud_post_delete` carry the acting `user`;
+  `scrud_post_save` carries `prior_content` (#20).** `user` is the request's
+  authenticated user (`None` for an anonymous request or unknown actor);
+  `prior_content` is the stored content before the write (`None` for a
+  create). The new context manager `scrud_django.core.signals.acting_as(user)`
+  names the actor of server code's saves and deletes; an API or UI write
+  names the request's user for every save it makes, those of its receivers
+  and of the type's `after_write` and `after_destroy` hooks included. See
+  the README's "Workflow actions".
+
+* **The opt-in transactional outbox, `scrud_django.outbox` (#20).** Add the
+  app to `INSTALLED_APPS`, migrate, and set `SCRUD_OUTBOX["TYPES"]` (type URIs
+  or `"__all__"`) and `SCRUD_OUTBOX["DELIVER"]`: each write of a listed type
+  stores an `OutboxEvent` (transitions, actor, content and prior content) in
+  its own transaction. `manage.py scrud_outbox_send [--batch N]` and
+  `scrud_django.outbox.send_events(deliver, batch=100)` deliver the events at
+  least once, so `deliver` must be idempotent. The new checks
+  `scrud_django.W010` (installed with no `TYPES`) and `E013` (a malformed
+  `SCRUD_OUTBOX`) report its configuration.
+
 ### Changed
 
 * `core.workflow.workflow_check`, `core.writes.validate_write` and
@@ -68,10 +104,11 @@
 * Overriding `ResourceMixin.get_transitions` or `get_transition_data` now
   affects only saves without a matching checked decision (a save that
   skipped the check, or whose content differs from the checked content).
-* A resource whose stored row holds JSON null (or non-object content stored
-  before 0.12.0) is reported as an update from no state in the default
-  context where a policy applies (`transition_data` is `None`, and a WARNING
-  is logged), not as a create (`__INITIALIZE__`).
+* `core.workflow.transition_for` is removed: use
+  `core.decisions.context_transition`.
+* `StoredPolicyReference` compares and hashes by the stored policy's
+  `(pk, etag)` (it compared by identity), so two reads of an unchanged
+  policy are equal.
 
 ## 0.17.0
 

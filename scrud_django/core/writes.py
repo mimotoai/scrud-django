@@ -62,6 +62,7 @@ from scrud_django.core.authz import (
     _workflow_decision,
     content_of,
     may_act_in_context,
+    request_actor,
 )
 from scrud_django.core.bodies import check_body
 from scrud_django.core.decisions import WorkflowDecision, applying
@@ -72,6 +73,7 @@ from scrud_django.core.requirements import (
     is_hook,
     requirement_leaves,
 )
+from scrud_django.core.signals import acting_as
 from scrud_django.core.types import (
     BODY_METHODS,
     HookLeaf,
@@ -660,7 +662,10 @@ def save_checked(
     (`written_answer`, `answered_content`); an answer an earlier write left
     on either is dropped first, so that a caller writing the same object
     twice never reads the first write's. The write's `hook_state` is
-    cleared once the save is over, however it ends.
+    cleared once the save is over, however it ends. The request's user
+    (`request_actor`) is the actor (`acting_as`) of every save in the
+    transaction: the checked one, and those its receivers and
+    ``after_write`` make.
 
     The check refreshes the saved resource from its row, which empties its
     cache of related objects: `resource_type` is cached on it again, and on
@@ -737,7 +742,9 @@ def save_checked(
         if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
             run = (serialize or serialized_policy_save)(run, using)
         after_write = write_hooks(resource_type).after_write
-        with transaction.atomic(using=using):
+        # The request's user acts for every save of the write: the one
+        # checked, and those its post-save receivers and after_write make.
+        with acting_as(request_actor(request)), transaction.atomic(using=using):
             if instance is None:
                 result = check.create(run, db=using)
             else:
@@ -1000,7 +1007,9 @@ def destroy(
     (`refuse_unserved`, 405) first: its caller asked the request check
     already (`load_for_read`). Then the type's ``before_destroy``
     (`write_hooks`), if any, runs (a refusal raises, nothing deleted), and
-    its ``after_destroy`` once `instance` is deleted.
+    its ``after_destroy`` once `instance` is deleted; the request's user is
+    the actor (`acting_as`) of the delete and of what its receivers and
+    ``after_destroy`` save.
 
     Without a `check`, `requirement` is taken through `Requirement.of`: one
     that asks no grants (empty, or hooks only) is ``ImproperlyConfigured``,
@@ -1021,14 +1030,17 @@ def destroy(
         type_iri=type_iri,
         check=check,
     )
-    try:
-        ResourceRegistration.delete_locked(
-            instance, resource_type=resource_type, using=using
-        )
-    except ProtectedError as exc:
-        raise ResourceInUseError(instance, exc.protected_objects) from exc
-    if hooks.after_destroy is not None:
-        hooks.after_destroy(request, resource_type, instance, using=using)
+    # The request's user acts for the delete and for what its receivers and
+    # after_destroy save.
+    with acting_as(request_actor(request)):
+        try:
+            ResourceRegistration.delete_locked(
+                instance, resource_type=resource_type, using=using
+            )
+        except ProtectedError as exc:
+            raise ResourceInUseError(instance, exc.protected_objects) from exc
+        if hooks.after_destroy is not None:
+            hooks.after_destroy(request, resource_type, instance, using=using)
 
 
 def answered_content(

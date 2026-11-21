@@ -15,4 +15,4 @@ docs:
 	uv run --group docs sphinx-build -W -b html docs docs/_build
 
 migrations-check:
-	uv run python manage.py makemigrations scrud_django --check --dry-run
+	uv run python manage.py makemigrations scrud_django scrud_django_outbox --check --dry-run

@@ -27,10 +27,15 @@ from django.db.models import Model, QuerySet
 from scoped_rbac import access
 from scoped_rbac.ninja import save_checked as rbac_save_checked
 
-from scrud_django.core.authz import _consume_workflow_mark
+from scrud_django.core.authz import _consume_workflow_mark, request_actor
 from scrud_django.core.decisions import same_transitions
 from scrud_django.core.resources import COVERED_ITEM_METHOD, COVERED_LIST_METHOD
-from scrud_django.core.signals import scrud_post_delete, scrud_post_save
+from scrud_django.core.signals import (
+    acting_as,
+    acting_user,
+    scrud_post_delete,
+    scrud_post_save,
+)
 from scrud_django.core.transitions import (
     checked_save,
     govern,
@@ -140,11 +145,14 @@ class ModelWorkflow:
            write (``authorizing_write``); the save is not logged as skipping
            the workflow check (``checked_save``);
         3. ``scrud_post_save``, with the check's decision (``decision``) when
-           the save wrote what it checked, else the decision recomputed from
-           the stored state to ``state(saved)`` (``core.transitions.transitions_between``; in the
-           settings default's context ``None`` for an object in no context,
-           as the workflow check applied it), whose workflow actions run once
-           the write commits. `save` must return one instance of the model
+           the save wrote what it checked (the same transitions; where the
+           check overrode, the same error), else the decision recomputed from
+           the stored state to ``state(saved)``
+           (``core.transitions.transitions_between``; in the settings
+           default's context ``None`` for an object in no context, as the
+           workflow check applied it), whose workflow actions run once the
+           write commits. The request's user acts (``acting_as``) for the
+           whole write, the receivers' saves included. `save` must return one instance of the model
            (``TypeError`` otherwise: a list of many is scoped-rbac's, not a
            workflow write). Should it have written other than the checked
            values (a ``Model.save`` override, say), each context where the
@@ -160,7 +168,9 @@ class ModelWorkflow:
         model = self.model
         db = router.db_for_write(model, instance=instance)
         try:
-            with transaction.atomic(using=db):
+            # The request's user acts for the save and for what the
+            # receivers of scrud_post_save save.
+            with acting_as(request_actor(request)), transaction.atomic(using=db):
                 if instance is not None:
                     self._lock_current(instance, db)
                 applied = model() if instance is None else copy.copy(instance)
@@ -258,6 +268,8 @@ class ModelWorkflow:
                     transition_error=found.transition_error,
                     transitions=found.transitions,
                     decision=found,
+                    user=found.actor,
+                    prior_content=found.prior,
                     action="CREATE" if instance is None else "UPDATE",
                 )
                 return obj
@@ -297,7 +309,7 @@ class ModelWorkflow:
         not; the route authorizes it (``scoped_rbac.ninja.rbac_load``)."""
         db = router.db_for_write(self.model, instance=instance)
         pk = instance.pk
-        with transaction.atomic(using=db):
+        with acting_as(request_actor(request)), transaction.atomic(using=db):
             self._lock_current(instance, db)
             (instance.delete if delete is None else delete)()
             scrud_post_delete.send(
@@ -307,6 +319,7 @@ class ModelWorkflow:
                 using=db,
                 resource_type_uri=self.iri,
                 action="DELETE",
+                user=acting_user(),
             )
 
 
