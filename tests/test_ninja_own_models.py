@@ -793,6 +793,40 @@ def test_an_own_model_create_sends_its_user_and_no_prior(writer, reported):
     assert kwargs["prior_content"] is None
 
 
+def test_an_own_models_receivers_act_for_the_writer(writer):
+    """A ``scrud_post_save`` or ``scrud_post_delete`` receiver runs inside
+    the write's ``acting_as``: the saves it makes are made for the writer."""
+    from scrud_django.core.signals import acting_user
+
+    actors = []
+
+    def record(sender, resource_type_uri=None, **kwargs):
+        if resource_type_uri == ARTICLE:
+            actors.append(acting_user())
+
+    scrud_post_save.connect(record, weak=False, dispatch_uid="test-own-actor")
+    scrud_post_delete.connect(record, weak=False, dispatch_uid="test-own-actor")
+    try:
+        response = writer.post(
+            LIST,
+            {"title": "t", "state": "draft", "rbac_context": "a"},
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+        pk = response.json()["id"]
+        response = writer.put(
+            item(pk), {"state": "published"}, content_type="application/json"
+        )
+        assert response.status_code == 200, response.content
+        response = writer.delete(item(pk))
+        assert response.status_code == 204, response.content
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-own-actor")
+        scrud_post_delete.disconnect(dispatch_uid="test-own-actor")
+    assert actors == [writer.user] * 3
+    assert acting_user() is None
+
+
 def test_an_own_model_delete_sends_its_user(writer, reported_deletes):
     article = draft_in_a()
     response = writer.delete(item(article.pk))

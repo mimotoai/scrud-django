@@ -700,7 +700,7 @@ def save_checked(
         around_save = write_hooks(resource_type).around_save
 
         def run():
-            with acting_as(request_actor(request)), applying(decision):
+            with applying(decision):
                 if around_save is None:
                     return recorded_save()
                 return around_save(
@@ -739,7 +739,9 @@ def save_checked(
         if resource_type.type_uri == WORKFLOW_POLICY_TYPE_URI:
             run = (serialize or serialized_policy_save)(run, using)
         after_write = write_hooks(resource_type).after_write
-        with transaction.atomic(using=using):
+        # The request's user acts for every save of the write: the one
+        # checked, and those its post-save receivers and after_write make.
+        with acting_as(request_actor(request)), transaction.atomic(using=using):
             if instance is None:
                 result = check.create(run, db=using)
             else:
@@ -1023,15 +1025,17 @@ def destroy(
         type_iri=type_iri,
         check=check,
     )
-    try:
-        with acting_as(request_actor(request)):
+    # The request's user acts for the delete and for what its receivers and
+    # after_destroy save.
+    with acting_as(request_actor(request)):
+        try:
             ResourceRegistration.delete_locked(
                 instance, resource_type=resource_type, using=using
             )
-    except ProtectedError as exc:
-        raise ResourceInUseError(instance, exc.protected_objects) from exc
-    if hooks.after_destroy is not None:
-        hooks.after_destroy(request, resource_type, instance, using=using)
+        except ProtectedError as exc:
+            raise ResourceInUseError(instance, exc.protected_objects) from exc
+        if hooks.after_destroy is not None:
+            hooks.after_destroy(request, resource_type, instance, using=using)
 
 
 def answered_content(

@@ -165,7 +165,9 @@ class ModelWorkflow:
         model = self.model
         db = router.db_for_write(model, instance=instance)
         try:
-            with transaction.atomic(using=db):
+            # The request's user acts for the save and for what the
+            # receivers of scrud_post_save save.
+            with acting_as(request_actor(request)), transaction.atomic(using=db):
                 if instance is not None:
                     self._lock_current(instance, db)
                 applied = model() if instance is None else copy.copy(instance)
@@ -203,7 +205,6 @@ class ModelWorkflow:
                         stored_pk=stored_pk,
                     ),
                     checked_save(model),
-                    acting_as(request_actor(request)),
                 ):
                     obj = rbac_save_checked(
                         request,

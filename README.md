@@ -1315,6 +1315,9 @@ one, as an API write does.
 (`None` for an anonymous request), or, for a save or delete that no request
 made (the admin, `ResourceRegistration`, server code), the user that
 `scrud_django.core.signals.acting_as(user)` names around it, else `None`.
+The saves made inside an API or UI write, by its receivers and by the type's
+`after_write` and `after_destroy` hooks (or by the receivers of a
+`ModelWorkflow` write), are made for the request's user too.
 `acting_as` is a context manager that is reset however its block ends and
 holds for the thread or task that runs it:
 

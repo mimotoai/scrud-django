@@ -10,6 +10,7 @@ ran for compute their own, unchecked (``checked=False``).
 
 import dataclasses
 import json
+from contextlib import contextmanager
 from http import HTTPStatus
 from uuid import uuid4
 
@@ -21,6 +22,12 @@ from scoped_rbac.models import Role, RoleAssignment
 
 from scrud_django.core.decisions import applying, take_pending
 from scrud_django.core.signals import acting_as
+from scrud_django.core.types import (
+    TypeOptions,
+    ensure_hooks_loaded,
+    register_type_options,
+    type_options,
+)
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
 
@@ -371,3 +378,73 @@ def test_acting_as_is_reset_when_the_block_raises():
         with acting_as(UserFactory()):
             raise RuntimeError
     assert acting_user() is None
+
+
+@contextmanager
+def todo_hooks(**hooks):
+    """The block in which the ToDo type has the write `hooks`; its hooks as
+    they were registered before once it ends."""
+    # The URLconf registers the type's own hooks as a write first imports
+    # it: import it now, so that it does not replace these.
+    ensure_hooks_loaded()
+    before = type_options(TODO)
+    register_type_options(TODO, TypeOptions(**hooks), slug="todos")
+    try:
+        yield
+    finally:
+        register_type_options(TODO, before, slug="todos")
+
+
+def save_another_todo(*args, **kwargs):
+    """A write hook that saves a second ToDo (as scrud's UI push applies a
+    branch from its ``after_write``)."""
+    ResourceRegistration.register(dict(NOT_STARTED, title="follow-up"), "todos")
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_after_write_hooks_saves_send_the_writer(front_end, reported_saves):
+    """The saves a type's ``after_write`` makes inside the write are made
+    for the writer too, not for no one."""
+    user = writer()
+    resource = todo()
+    Given.http.force_login(user)
+    with todo_hooks(after_write=save_another_todo):
+        reported_saves.clear()
+        put_todo(front_end, resource, IN_PROGRESS)
+        Then.http.status_code_is(HTTPStatus.OK)
+        written, hooked = reported_saves
+        assert written["decision"].checked is True
+        assert hooked["decision"].checked is False
+        assert hooked["decision"].proposed["title"] == "follow-up"
+        assert [written["user"], hooked["user"]] == [user, user]
+        reported_saves.clear()
+        post_todo(front_end, NOT_STARTED)
+        Then.http.status_code_is(HTTPStatus.CREATED)
+        written, hooked = reported_saves
+        assert hooked["decision"].proposed["title"] == "follow-up"
+        assert [written["user"], hooked["user"]] == [user, user]
+    from scrud_django.core.signals import acting_user
+
+    assert acting_user() is None
+
+
+@pytest.mark.django_db
+@test_context
+def test_an_after_destroy_hooks_saves_send_the_deleter(
+    front_end, reported_saves, reported_deletes
+):
+    user = writer()
+    resource = todo()
+    Given.http.force_login(user)
+    with todo_hooks(after_destroy=save_another_todo):
+        reported_saves.clear()
+        When.http.delete(
+            api_url(front_end, "todos-detail", args=[resource.id]),
+            HTTP_IF_MATCH=quote_etag(resource.etag),
+        )
+        Then.http.status_code_is(HTTPStatus.NO_CONTENT)
+    (deleted,) = reported_deletes
+    (hooked,) = reported_saves
+    assert hooked["decision"].proposed["title"] == "follow-up"
+    assert [deleted["user"], hooked["user"]] == [user, user]
