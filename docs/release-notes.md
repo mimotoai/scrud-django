@@ -110,6 +110,23 @@
   `(pk, etag)` (it compared by identity), so two reads of an unchanged
   policy are equal.
 
+### Fixed
+
+* **A `scrud_workflow` grant no longer blocks moving a resource out of a
+  context without a workflow policy (#4).** Leaving such a context asks
+  nothing there, as the README says: a writer whose only grant there is
+  conditioned on `scrud_workflow` may now move the resource out (200), as a
+  writer with no grant there already could; it was a 403. The contexts a
+  write keeps or moves the resource into are asked as before, and a context
+  with a policy authorizes the transition taken there as it is left (#36).
+* **Workflow actions run for the writer whatever commits the transaction.**
+  `on_save`, `on_delete` and `on_transition` actions run, on commit, inside
+  `acting_as` for the actor named when the write was made, so the saves
+  they make report that user. Before, they saw the writer only when the
+  write's own transaction was the outermost one; under `ATOMIC_REQUESTS`, a
+  caller's `atomic` or a test's transaction they saw no one (or whoever was
+  named when the outer transaction committed).
+
 ## 0.17.0
 
 This release makes django-ninja the default front end: `scrud_django.urls`

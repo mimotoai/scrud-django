@@ -890,7 +890,8 @@ A write is checked in the contexts the resource ends up in, every one of
 them, and (by the object check of a PUT or DELETE) in any one context it is
 stored in. Removing a resource from a context, by a PUT whose `rbac_context`
 leaves it out, needs no grant in that context unless a workflow policy applies
-there, as a DELETE allowed in one context deletes the resource from all of
+there (so a grant there conditioned on `scrud_workflow` does not refuse it
+either), as a DELETE allowed in one context deletes the resource from all of
 them.
 
 An `rbac_context` that is a list of strings stores the resource in each of
@@ -1317,7 +1318,10 @@ made (the admin, `ResourceRegistration`, server code), the user that
 `scrud_django.core.signals.acting_as(user)` names around it, else `None`.
 The saves made inside an API or UI write, by its receivers and by the type's
 `after_write` and `after_destroy` hooks (or by the receivers of a
-`ModelWorkflow` write), are made for the request's user too.
+`ModelWorkflow` write), are made for the request's user too, and so are
+those its workflow actions make on commit: an action runs inside `acting_as`
+for the actor named when the write was made, whenever the transaction
+commits.
 `acting_as` is a context manager that is reset however its block ends and
 holds for the thread or task that runs it:
 
