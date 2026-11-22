@@ -1,3 +1,5 @@
+from scrud_django.core.signals import acting_user
+
 from .workflow_defaults import ARTICLE
 
 
@@ -72,6 +74,31 @@ failing = {
     "tests://ToDo": {
         "on_save": record_on_save,
         "on_transition": {"start": failing_start},
+    }
+}
+
+# The actor (``acting_user()``) each action of ``acting`` sees as it runs, as
+# ``(kind, user)``; a test clears it first.
+acting_calls = []
+
+
+def acting_on_save(sender, **kwargs):
+    acting_calls.append(("on_save", acting_user()))
+
+
+def acting_on_delete(sender, **kwargs):
+    acting_calls.append(("on_delete", acting_user()))
+
+
+def acting_start(sender, **kwargs):
+    acting_calls.append(("start", acting_user()))
+
+
+acting = {
+    "tests://ToDo": {
+        "on_save": acting_on_save,
+        "on_delete": acting_on_delete,
+        "on_transition": {"start": acting_start},
     }
 }
 

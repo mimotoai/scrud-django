@@ -88,13 +88,20 @@ class WorkflowActionCall:
     the traceback, and not raised again: ``on_commit``'s ``robust`` would log
     it a second time, anonymously, on ``django.db.backends.base``. Its
     ``__qualname__`` (which that log names) is the action's, should anything
-    else go wrong."""
+    else go wrong.
+
+    The action runs for the actor (`acting_as`) named when it was scheduled,
+    inside the write, not when the transaction commits: a write whose
+    transaction commits after its ``acting_as`` has ended (under
+    ``ATOMIC_REQUESTS``, or a caller's ``atomic``) runs its actions for its
+    user all the same, and the saves they make report that user."""
 
     def __init__(self, action, kind, sender, kwargs):
         self.action = action
         self.kind = kind
         self.sender = sender
         self.kwargs = kwargs
+        self.actor = acting_user()
         self.name = action_name(action)
         self.__qualname__ = f"workflow action {self.name}"
 
@@ -105,7 +112,8 @@ class WorkflowActionCall:
 
     def __call__(self):
         try:
-            self.action(self.sender, **self.kwargs)
+            with acting_as(self.actor):
+                self.action(self.sender, **self.kwargs)
         except Exception as error:
             logger.error(
                 "Workflow action %s (%s for %s pk %s, %s) failed: %s",
