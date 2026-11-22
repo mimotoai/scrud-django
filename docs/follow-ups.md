@@ -305,24 +305,6 @@ without the row lock. Test: in `tests/test_generic_views.py`, a
 "stale"`, and expect 412 (or `ImproperlyConfigured`) with the note
 unchanged; it is a 200 today.
 
-<a id="workflow-grant-blocks-leaving"></a>
-## workflow-grant-blocks-leaving: a `scrud_workflow` grant refuses moving a resource out of a context without a policy
-
-A PUT that moves a resource out of a context needs no grant there unless a
-workflow policy applies there (README). But `WorkflowValidator` runs
-`authorize_without_policy` for every context the write concerns, those it
-leaves included. In a context without a policy, a writer whose grants there
-are conditioned on `scrud_workflow` gets 403, while a writer with no grant
-there at all may move the resource out. It fails closed, and it predates
-0.13.0. Found in the review of scrud-django#2; scrud-django#4.
-
-Fix: run `authorize_without_policy` only for the contexts the body writes
-(`rbac_contexts_of(data)`), not those the update leaves. Test: in
-`tests/test_workflow_contexts.py`, a resource stored as `["a", "b"]`
-(JSON-LD, no policy in `"b"`), a writer with JSON-LD writes in `"a"` and a
-`scrud_workflow` grant in `"b"`, PUTs it with `"rbac_context": "a"`: expect
-200, get 403 today.
-
 <a id="conditional-only-detail-reads"></a>
 ## conditional-only-detail-reads: a reader whose only grant is conditional lists resources but gets 403 on their detail route
 

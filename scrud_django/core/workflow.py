@@ -16,10 +16,11 @@ initial state and the user authorized for ``__INITIALIZE__`` by the
 request's method (``http.PUT``, not ``http.POST``). All of them must pass. A
 resource in no context is checked under the settings default, and only a
 superuser may make its transition, as scoped-rbac's object checks allow. In
-a context where no policy applies, a grant conditioned on ``scrud_workflow``
-allows nothing (`NoWorkflowPolicyDenied`). Operators and the `narrow`
-checks read the body as sent, a ``dict``; a CEL condition reads it with the
-context checked as its ``rbac_context`` (`condition_resource`).
+a context where no policy applies that the write keeps or moves the resource
+into, a grant conditioned on ``scrud_workflow`` allows nothing
+(`NoWorkflowPolicyDenied`); one it leaves is not asked (#4). Operators and
+the `narrow` checks read the body as sent, a ``dict``; a CEL condition reads
+it with the context checked as its ``rbac_context`` (`condition_resource`).
 
 A superuser (`is_workflow_superuser`: active and ``is_superuser``) overrides
 the policy of a context that would refuse the write itself (content in no
@@ -412,8 +413,12 @@ def workflow_check(
                 proposed,
                 narrow,
             )
+    # Without a policy only the contexts the write keeps or puts the resource
+    # in are asked: leaving one asks nothing there (#4), as a writer with no
+    # grant there may leave it, so a grant conditioned on scrud_workflow
+    # there must not refuse the move.
     for c, policy in policies:
-        if policy is None:
+        if policy is None and c in contexts_after:
             authorize_without_policy(request, type_iri, c, proposed, narrow)
     decision = _decision(
         type_iri,

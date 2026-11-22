@@ -342,24 +342,29 @@ def test_null_stored_content_is_checked_as_an_update(stored_content):
 
     reverse("json-ld-list")
     workflow_policy_resource_type()
-    ResourceRegistration.register(
-        {
-            "resource_type": JSON_LD,
-            "rbac_context": "a",
-            "initial_states": {"any": "true"},
-            "states": {},
-            "transitions": {},
-        },
-        "workflow-policies",
-    )
+    # A policy in "a", and one in "" (the default context, where the
+    # resource is stored): read as an update, the write leaves "" and is
+    # checked there, from stored content in no state; read as a create, ""
+    # would not be checked at all and the write would pass.
+    for context in ("a", ""):
+        ResourceRegistration.register(
+            {
+                "resource_type": JSON_LD,
+                "rbac_context": context,
+                "initial_states": {"any": "true"},
+                "states": {},
+                "transitions": {},
+            },
+            "workflow-policies",
+        )
     stored = ResourceRegistration.register({"x": 1}, "json-ld")
     Resource.objects.filter(pk=stored.pk).update(
         content=Value(stored_content, JSONField())
     )
     stored.refresh_from_db()
     assert stored.content == stored_content
-    # Only scrud_workflow-conditioned grants in "" (where no policy applies)
-    # and in "a": moving the resource out of "" is refused there.
+    # Only scrud_workflow-conditioned grants, in "" and in "a", and the
+    # stored resource unreadable: the error in "" is the generic one.
     Given.http.force_authenticate(
         user_with(
             (may_transition_json_ld("__INITIALIZE__"), ""),
@@ -372,8 +377,17 @@ def test_null_stored_content_is_checked_as_an_update(stored_content):
         content_type="application/json",
         HTTP_IF_MATCH=quote_etag(stored.etag),
     )
-    Then.http.status_code_is(status.HTTP_403_FORBIDDEN)
-    assert Http.response.json()["code"] == "permission_denied"
+    Then.http.status_code_is(status.HTTP_400_BAD_REQUEST)
+    problem = Http.response.json()
+    assert problem["type"] == (
+        "http://api.openteams.com/http-problem/workflow-transition-invalid"
+    )
+    assert problem["detail"] == HiddenWorkflowTransitionError.MESSAGE
+    assert [problem["policy"], problem["prior_state"], problem["proposed_state"]] == [
+        None,
+        None,
+        None,
+    ]
     assert Resource.objects.get(pk=stored.pk).content == stored_content
 
 
