@@ -259,3 +259,77 @@ def test_a_string_on_transition_is_logged_as_e012_and_runs_nothing(
     (record,) = [r for r in caplog.records if r.name == "scrud_django.workflow_actions"]
     assert "E012" in record.getMessage()
     assert "E009" not in record.getMessage()
+
+
+@pytest.fixture
+def acting_calls():
+    from .workflow_actions import acting_calls
+
+    acting_calls.clear()
+    yield acting_calls
+    acting_calls.clear()
+
+
+@pytest.mark.django_db
+@test_context
+def test_actions_act_for_the_writer_when_the_write_commits_later(
+    front_end, acting_calls, django_capture_on_commit_callbacks
+):
+    """The actions run, on commit, for the user the write was made for,
+    even when the transaction commits after the front end's ``acting_as``
+    has ended (here the test's, as under ``ATOMIC_REQUESTS`` or a caller's
+    ``atomic``): the saves an action makes are made for the writer."""
+    from scrud_django.core.signals import acting_user
+
+    user = writer("a")
+    resource = todo(rbac_context="a")
+    Given.http.force_login(user)
+    with (
+        setting_of("acting"),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        put_todo(front_end, resource, dict(IN_PROGRESS, rbac_context="a"))
+    Then.http.status_code_is(HTTPStatus.OK)
+    resource.refresh_from_db()
+    with (
+        setting_of("acting"),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        When.http.delete(
+            api_url(front_end, "todos-detail", args=[resource.id]),
+            HTTP_IF_MATCH=quote_etag(resource.etag),
+        )
+    Then.http.status_code_is(HTTPStatus.NO_CONTENT)
+    assert acting_calls == [("on_save", user), ("start", user), ("on_delete", user)]
+    assert acting_user() is None
+
+
+@pytest.mark.django_db
+def test_actions_act_for_the_actor_named_when_the_write_was_made(
+    acting_calls, django_capture_on_commit_callbacks
+):
+    """Server code's actions run for the actor ``acting_as`` named around
+    the save, not for whoever (if anyone) is named when it commits, and the
+    actor is reset once they have run."""
+    from scrud_django.core.signals import acting_user
+
+    user, other = UserFactory(), UserFactory()
+    resource = todo(rbac_context="a")
+    with (
+        setting_of("acting"),
+        acting_as(other),
+        django_capture_on_commit_callbacks(execute=True),
+        acting_as(user),
+    ):
+        ResourceRegistration.update(
+            dict(IN_PROGRESS, rbac_context="a"), "todos", str(resource.pk)
+        )
+    assert acting_calls == [("on_save", user), ("start", user)]
+    acting_calls.clear()
+    with (
+        setting_of("acting"),
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        ResourceRegistration.delete("todos", str(resource.pk))
+    assert acting_calls == [("on_delete", None)]
+    assert acting_user() is None
