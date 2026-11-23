@@ -1,6 +1,14 @@
 # Change Log
 
-## Unreleased
+## 0.18.0
+
+This release reworks workflow decisions. A write's workflow check now
+produces a `WorkflowDecision` that the save receives as it was authorized,
+and `scrud_post_save` sends it. A context the write leaves is reported as
+the transition taken there. Superusers override a policy that would refuse
+their write. Workflow actions can run per transition and know who acted, and
+an opt-in transactional outbox records writes. Some of these changes are
+breaking: read Breaking changes before you upgrade.
 
 ### Breaking changes
 
