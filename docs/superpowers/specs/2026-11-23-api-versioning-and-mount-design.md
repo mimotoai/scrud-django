@@ -3,6 +3,8 @@
 Date: 2026-11-23
 Status: builder-checked; awaiting owner approval
 Builds on:
+- scrud-django 0.18.0 (the workflow decisions rework: `WorkflowDecision`,
+  `on_transition` actions, the acting user, the outbox, `__OVERRIDE__`);
 - the ninja front end (`docs/superpowers/specs/2026-11-11-ninja-front-end-design.md`),
   `scrud_django.ninja.api()` and own-model routers (`ninja.workflow_check`);
 - scrudful 0.10.1 (`scrudful.ninja`, HSR) and django-scoped-rbac 0.12.1
@@ -104,7 +106,8 @@ as `/v1`. The design must also hold when `/v2` arrives.
 
 ## Current state (what the builder will change)
 
-Mapped on develop @ 0062760. Citations are to that tree.
+Mapped on 0.18.0 (develop @ 0062760, whose code 0.18.0 releases unchanged).
+Citations are to that tree.
 
 **One `api()` call builds one API.** `scrud_django.ninja.api(*, types=(),
 urls_namespace="scrud", ui_types=True, **ninja_kwargs)` (`ninja/api.py:97`)
@@ -480,7 +483,7 @@ and fires the same actions.
   shadows it.
 - **Global registries.** Re-keying the type registries by version touches
   much of `core/`; keep the unversioned path's keys and behaviour
-  byte-for-byte to avoid breaking 0.17 apps.
+  byte-for-byte to avoid breaking 0.18 apps.
 
 ## Left to the builder
 
