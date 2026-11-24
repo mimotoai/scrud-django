@@ -28,7 +28,6 @@ from scrud_django.core.authz import _WORKFLOW_AUTHORIZED, _workflow_authorized
 from scrud_django.core.errors import error_answer
 from scrud_django.core.requirements import GrantsLeaf
 from scrud_django.core.types import requirement_for
-from scrud_django.core.workflow import NoWorkflowPolicyDenied
 from scrud_django.core.writes import (
     WriteAnswer,
     check_post_save,
@@ -43,6 +42,7 @@ from scrud_django.core.writes import (
     write_transaction,
 )
 from scrud_django.exceptions import (
+    HiddenWorkflowTransitionError,
     RequestBodyNotAnObjectError,
     ResourceInUseError,
     WorkflowPolicyInvalidError,
@@ -259,29 +259,34 @@ def test_validate_write_checks_null_stored_content_as_an_update(stored_content):
 
     reverse("json-ld-list")
     workflow_policy_resource_type()
-    ResourceRegistration.register(
-        {
-            "resource_type": JSON_LD,
-            "rbac_context": "a",
-            "initial_states": {"any": "true"},
-            "states": {},
-            "transitions": {},
-        },
-        "workflow-policies",
-    )
+    # A policy in "a", and one in "" (the default context, where the
+    # resource is stored): read as an update, the write leaves "" and is
+    # checked there, from stored content in no state; read as a create, ""
+    # would not be checked at all and the write would pass.
+    for context in ("a", ""):
+        ResourceRegistration.register(
+            {
+                "resource_type": JSON_LD,
+                "rbac_context": context,
+                "initial_states": {"any": "true"},
+                "states": {},
+                "transitions": {},
+            },
+            "workflow-policies",
+        )
     stored = ResourceRegistration.register({"x": 1}, "json-ld")
     Resource.objects.filter(pk=stored.pk).update(
         content=Value(stored_content, JSONField())
     )
     stored = Resource.objects.get(pk=stored.pk)
     assert stored.content == stored_content
-    # Only scrud_workflow-conditioned grants in "" (where no policy applies)
-    # and in "a": moving the resource out of "" is refused there.
+    # Only scrud_workflow-conditioned grants, in "" and in "a", and the
+    # stored resource unreadable: the error in "" is the generic one.
     request = request_by(
         "put",
         user_with((may_initialize_json_ld(), ""), (may_initialize_json_ld(), "a")),
     )
-    with pytest.raises(NoWorkflowPolicyDenied):
+    with pytest.raises(HiddenWorkflowTransitionError):
         validate_write(
             request,
             stored.resource_type,

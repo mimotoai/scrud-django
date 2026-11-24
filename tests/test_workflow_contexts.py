@@ -1536,13 +1536,41 @@ def test_a_move_reports_leaving_one_context_and_entering_the_other(
     put_todo(front_end, resource, dict(NOT_STARTED, rbac_context="b"))
     Then.http.status_code_is(status.HTTP_200_OK)
     (reported,) = reported_saves
-    # Left "a" (the default policy) from "not started"; entered "b".
+    # An API write sends the workflow check's decision: in "a" (the default
+    # policy), which it leaves, the transition the check authorized there
+    # (the content stays "not started" under "a"'s policy), flagged
+    # leaving (#36), not __LEAVE__; it entered "b".
+    decision = reported["decision"]
+    assert decision.checked is True
+    assert reported["transitions"] == decision.transitions
     assert reported["transitions"] == {
-        "a": TransitionData(None, "not started", "__LEAVE__"),
+        "a": TransitionData(
+            "not started", "not started", "__SAME_STATE__", leaving=True
+        ),
         "b": TransitionData("open", None, "__INITIALIZE__"),
     }
+    assert decision.get("a").leaving is True
+    assert decision.get("b").leaving is False
     # transition_data is unchanged: the first context the content names.
     assert reported["transition_data"] == TransitionData("open", None, "__INITIALIZE__")
+    assert reported["transition_error"] is None
+
+    # A server-side move (unchecked) reports leaving "b" as the check
+    # would decide it, the transition there flagged leaving (#36), not
+    # __LEAVE__, and entering "a" as a creation there.
+    moved = Resource.objects.get(pk=resource.pk)
+    reported_saves.clear()
+    moved.content = dict(NOT_STARTED, rbac_context="a")
+    moved.save()
+    (reported,) = reported_saves
+    assert reported["decision"].checked is False
+    assert reported["transitions"] == {
+        "b": TransitionData("open", "open", "__SAME_STATE__", leaving=True),
+        "a": TransitionData("not started", None, "__INITIALIZE__"),
+    }
+    assert reported["transition_data"] == TransitionData(
+        "not started", None, "__INITIALIZE__"
+    )
     assert reported["transition_error"] is None
 
 
@@ -1634,10 +1662,13 @@ def test_a_server_side_move_into_a_context_in_no_initial_state_reports_its_error
     assert reported["transition_data"] is None
     error = reported["transition_error"]
     assert isinstance(error, WorkflowInvalidInitialStateError), error
+    # Leaving "w" is the transition the check computes there, from "done",
+    # flagged leaving (#36), not __LEAVE__.
     assert reported["transitions"] == {
-        "w": TransitionData(None, "done", "__LEAVE__"),
+        "w": TransitionData("done", "done", "__SAME_STATE__", leaving=True),
         "v": None,
     }
+    assert set(reported["decision"].errors) == {"v"}
 
 
 # A save that skipped the WorkflowValidator (the admin, ResourceRegistration,

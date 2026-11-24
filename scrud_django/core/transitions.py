@@ -12,56 +12,36 @@ import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from types import MappingProxyType
 from typing import NamedTuple
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db.models import Model
 from django.db.models.signals import post_save, pre_save
 
-from scrud_django.workflow import (
-    LEAVE,
-    TransitionData,
-    WorkflowAmbiguousStateError,
-    WorkflowInvalidInitialStateError,
-    WorkflowInvalidStateError,
-    WorkflowTransitionError,
-    default_workflow_policy_for,
-    workflow_policies_for,
+from scrud_django.core.decisions import (
+    WORKFLOW_ERRORS,
+    ContextDecision,
+    NullContent,
+    WorkflowDecision,
+    concerned_policies,
+    context_transition,
+    is_entering,
+    normalized_contexts_after,
+    snapshot_prior,
 )
+from scrud_django.core.signals import acting_user
+from scrud_django.workflow import WorkflowAmbiguousStateError
+
+# `WORKFLOW_ERRORS` is defined in `scrud_django.core.decisions` and stays
+# importable from here.
 
 # The workflow errors of saves that skipped the ``WorkflowValidator``.
 logger = logging.getLogger("scrud_django.workflow")
 
-# The workflow errors a report of a transition catches: a write that skipped
-# the ``WorkflowValidator`` is still saved.
-WORKFLOW_ERRORS = (
-    WorkflowAmbiguousStateError,
-    WorkflowInvalidInitialStateError,
-    WorkflowInvalidStateError,
-    WorkflowTransitionError,
-)
-
-
-class Transitions(NamedTuple):
-    """A save's workflow transitions (`transitions_between`):
-    ``scrud_post_save`` sends the first three as its keyword arguments of
-    the same names; the save logs `errors` (`log_skipped_check`). Its
-    mappings are read-only views (``MappingProxyType``): the same one reaches
-    every receiver, and none can change what the others are given."""
-
-    # Under the policy of the first context the content names that has one;
-    # ``None`` when no policy applies or the transition is invalid there.
-    transition_data: TransitionData | None
-    # The workflow error that made `transition_data` ``None``, else ``None``.
-    transition_error: WorkflowTransitionError | None
-    # Context -> `TransitionData` (``None``: invalid there), for every
-    # context the stored resource or the content is in under a policy.
-    transitions: Mapping[str | None, TransitionData | None]
-    # Context -> the workflow error that made its `transitions` entry
-    # ``None``, for each such context (not sent with the signal: the save
-    # logs them).
-    errors: Mapping[str | None, WorkflowTransitionError]
+# Deprecated: the earlier name of `WorkflowDecision`, which
+# `transitions_between` returns (no longer a ``NamedTuple``: it neither
+# unpacks nor has ``_replace``). Kept importable for a later release.
+Transitions = WorkflowDecision
 
 
 def transition_in(
@@ -70,24 +50,22 @@ def transition_in(
     """``(TransitionData or None, workflow error or None)``: a save of
     `proposed` under the `policy` (a workflow) in a context the content
     `entering` moves into, `leaving` moves out of, or else stays in, from
-    `prior` (``None``: a create). An invalid transition, a create (or move in)
-    whose content is in no initial state (``WorkflowInvalidInitialStateError``)
-    and content that meets the conditions of more than one state
-    (``WorkflowAmbiguousStateError``) are reported as ``None`` with the
-    error, never raised."""
+    `prior` (``None``: a create; `NULL_CONTENT`: stored content that is JSON
+    null, in no state), as `scrud_django.core.decisions.context_transition`
+    computes it for the workflow check: a context the content leaves is the
+    transition there from `prior`, flagged ``leaving``. An invalid
+    transition (from stored content in no state, too), a create (or move
+    in) whose content is in no initial state
+    (``WorkflowInvalidInitialStateError``) and content that meets the
+    conditions of more than one state (``WorkflowAmbiguousStateError``) are
+    reported as ``None`` with the error, never raised."""
     try:
-        if leaving:
-            prior_state = policy.state(prior)
-            return TransitionData(None, prior_state, LEAVE), None
-        if prior is None or entering:
-            # A create has no prior state; its proposed state is the
-            # initial state the content is in. Content in none is an
-            # invalid create (``WorkflowInvalidInitialStateError``), as
-            # the `WorkflowValidator` checks it.
-            return policy.initial_transition(proposed), None
-        return policy.determine_transition(proposed, prior), None
+        data = context_transition(
+            policy, prior, proposed, entering=entering, leaving=leaving
+        )
+        return data, None
     except WORKFLOW_ERRORS as error:
-        # Workflow validation is the WorkflowValidator's: the error is
+        # Workflow validation is the workflow check's: the error is
         # reported, not raised.
         return None, error
 
@@ -95,74 +73,82 @@ def transition_in(
 def transitions_between(
     type_iri: str,
     *,
-    prior: Mapping | None,
+    prior: Mapping | NullContent | None,
     proposed: Mapping,
     contexts_before: Sequence[str],
     contexts_after: Sequence[str | None],
-) -> Transitions:
-    """The `Transitions` ``scrud_post_save`` reports for a save of a `type_iri`
-    from `prior` (the stored content; ``None``: a create, or a row not on the
-    database written to) to `proposed`, in the contexts `contexts_before` (the
-    stored content's) and `contexts_after` (the proposed content's):
+    stored_pk: object | None = None,
+    actor: object | None = None,
+) -> WorkflowDecision:
+    """The `WorkflowDecision` (``checked=False``) of a save of a `type_iri`
+    that skipped the workflow check, which ``scrud_post_save`` reports, by
+    `actor` (``None``: the user `scrud_django.core.signals.acting_as` names,
+    else unknown) of the stored resource `stored_pk`
+    (``None``: a create) from `prior` (the stored content; ``None``: a
+    create, or a row not on the database written to; `NULL_CONTENT`: stored
+    content that is JSON null, an update from no state) to `proposed`, in
+    the contexts `contexts_before` (the stored content's) and
+    `contexts_after` (the proposed content's; a write in neither is in
+    ``None``, the settings default, `normalized_contexts_after`, as the
+    workflow check decides it):
 
     - ``transition_data``, and ``transition_error``, the workflow error that
       made it ``None`` (an invalid transition, or content that meets the
       conditions of more than one state, which a write that skipped the
-      ``WorkflowValidator`` still saves), else ``None``;
+      workflow check still saves), else ``None``;
     - ``transitions``, a read-only mapping (``MappingProxyType``): for each
       context the stored content or the proposed content is in (stored ones
-      first, as the ``WorkflowValidator`` checks them) where a policy applies
-      (`workflow_policies_for`), the write there. (A ``None`` context, which
-      callers pass in `contexts_after` when the content is in none, is
-      reported with the settings default, as the ``WorkflowValidator``
-      checks it: for a resource it is defensive; an own model's
-      ``contexts_for`` may give none.) A context it stays in: the
+      first, as the workflow check checks them) where a policy applies
+      (`scrud_django.core.decisions.concerned_policies`), the write there.
+      (A ``None`` context, for a write in no context before or after, is
+      reported with the settings default, as the workflow check checks it:
+      for a resource it is defensive; an own model's ``contexts_for`` may
+      give none.) A context it stays in: the
       transition under its policy (``None`` if invalid); one it enters (or
       a create's): its ``__INITIALIZE__`` (``None`` if the content is in no
-      initial state there); one it leaves: ``TransitionData(None, <the
-      state it was in there>, "__LEAVE__")`` (`LEAVE`); ``None`` in any of
-      them where the state is ambiguous. A context without a policy is left out.
+      initial state there); one it leaves: the transition there from the
+      stored content, as for one it stays in, flagged ``leaving`` (``None``
+      if invalid, from stored content in no state there too); ``None`` in
+      any of them where the state is ambiguous. A context without a policy
+      is left out;
+    - ``errors``, context -> the workflow error that made its
+      ``transitions`` entry ``None``.
 
-    Each context's policy is read once."""
+    Each context is computed as the workflow check computes it
+    (`transition_in`, `scrud_django.core.decisions.is_entering`), so that a
+    checked and an unchecked write of the same content decide alike, a
+    context it leaves included. Each context's policy is read once."""
+    if actor is None:
+        actor = acting_user()
     stored_contexts = list(contexts_before)
-    contexts = list(contexts_after)
-    concerned = list(dict.fromkeys(stored_contexts + contexts))
-    named = [context for context in concerned if context is not None]
-    # The stored policies of every named context, read in one query.
-    found = dict(workflow_policies_for(type_iri, named)) if named else {}
-    policies = {
-        context: (
-            default_workflow_policy_for(type_iri) if context is None else found[context]
+    contexts = normalized_contexts_after(stored_contexts, contexts_after)
+    entries = []
+    for context, policy, leaving in concerned_policies(
+        type_iri, contexts_before=stored_contexts, contexts_after=contexts
+    ):
+        entering = is_entering(context, prior=prior, contexts_before=stored_contexts)
+        data, error = transition_in(
+            policy, prior, proposed, entering=entering, leaving=leaving
         )
-        for context in concerned
-    }
-    reported = {
-        context: transition_in(
-            policy,
-            prior,
-            proposed,
-            entering=context is not None and context not in stored_contexts,
-            leaving=context not in contexts,
+        entries.append(
+            ContextDecision(
+                context=context,
+                policy=policy.reference,
+                transition=data,
+                error=error,
+                entering=entering,
+                leaving=leaving,
+            )
         )
-        for context, policy in policies.items()
-        if policy is not None
-    }
-    # transition_data's context: the first the content names with a policy.
-    picked = next((c for c in contexts if policies[c] is not None), None)
-    transition_data, transition_error = reported.get(picked, (None, None))
-    return Transitions(
-        transition_data=transition_data,
-        transition_error=transition_error,
-        transitions=MappingProxyType(
-            {context: data for context, (data, _) in reported.items()}
-        ),
-        errors=MappingProxyType(
-            {
-                context: error
-                for context, (_, error) in reported.items()
-                if error is not None
-            }
-        ),
+    return WorkflowDecision(
+        type_iri=type_iri,
+        stored_pk=stored_pk,
+        actor=actor,
+        checked=False,
+        prior=snapshot_prior(prior),
+        proposed=proposed,
+        contexts_after=contexts,
+        contexts=entries,
     )
 
 
@@ -182,6 +168,33 @@ def log_skipped_check(errors: Mapping, *, subject: str, type_iri: str) -> None:
             type_iri,
             context,
             error.policy,
+            error.message,
+            error.prior_state,
+            error.proposed_state,
+            (
+                f", matching states {error.matching_states!r}"
+                if isinstance(error, WorkflowAmbiguousStateError)
+                else ""
+            ),
+        )
+
+
+def log_overrides(decision: WorkflowDecision, *, subject: str) -> None:
+    """Log each context where `decision` is a superuser's override of the
+    policy (`WorkflowDecision.overrides`) as a WARNING on the
+    ``scrud_django.workflow`` logger: the policy that would have refused the
+    write and why. `subject` names what was saved ("resource pk 7")."""
+    for context in decision.overrides:
+        entry = decision.get(context)
+        error = entry.overridden
+        logger.warning(
+            "Saving %s of %s overrode the workflow policy in context %r "
+            "(policy %r), a superuser's write it would refuse: %s "
+            "(prior state %r, proposed state %r%s).",
+            subject,
+            decision.type_iri,
+            context,
+            entry.policy,
             error.message,
             error.prior_state,
             error.proposed_state,
@@ -214,8 +227,8 @@ _CHECKED: ContextVar[frozenset[type[Model]]] = ContextVar(
     "scrud_django_checked_saves", default=frozenset()
 )
 
-# The attribute a governed instance's pre-save stashes ``(iri, Transitions)``
-# under for its post-save.
+# The attribute a governed instance's pre-save stashes ``(iri,
+# WorkflowDecision)`` under for its post-save.
 _PENDING = "_scrud_governed_transitions"
 
 
@@ -273,10 +286,11 @@ def checked_save(model: type[Model]) -> Iterator[None]:
 
 def _governed_pre_save(sender, instance, raw=False, using=None, **kwargs):
     """Before a save of a governed model that skipped the workflow check:
-    stash its `Transitions` on the instance, from the stored row (re-read on
-    the database the save writes to, `using`; a create or a row not there
-    has no prior state and no contexts) to the instance. A raw save
-    (``loaddata``) is not logged, as a resource's is not."""
+    stash its unchecked `WorkflowDecision` (`transitions_between`) on the
+    instance, from the stored row (re-read on the database the save writes
+    to, `using`; a create or a row not there has no prior state and no
+    contexts) to the instance. A raw save (``loaddata``) is not logged, as
+    a resource's is not."""
     # One a save that raised before its post-save left behind is dropped.
     instance.__dict__.pop(_PENDING, None)
     governed = _GOVERNED.get(sender)
@@ -292,9 +306,10 @@ def _governed_pre_save(sender, instance, raw=False, using=None, **kwargs):
         prior=None if stored is None else governed.state_of(stored),
         proposed=governed.state_of(instance),
         contexts_before=[] if stored is None else governed.contexts_for(stored),
-        # In no context: the settings default under None, as the workflow
-        # check applies it (as for a resource).
-        contexts_after=list(governed.contexts_for(instance)) or [None],
+        # In no context before or after: the settings default under None,
+        # as the workflow check applies it (as for a resource).
+        contexts_after=list(governed.contexts_for(instance)),
+        stored_pk=None if stored is None else stored.pk,
     )
     setattr(instance, _PENDING, (governed.iri, found))
 

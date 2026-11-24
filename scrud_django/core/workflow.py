@@ -16,10 +16,21 @@ initial state and the user authorized for ``__INITIALIZE__`` by the
 request's method (``http.PUT``, not ``http.POST``). All of them must pass. A
 resource in no context is checked under the settings default, and only a
 superuser may make its transition, as scoped-rbac's object checks allow. In
-a context where no policy applies, a grant conditioned on ``scrud_workflow``
-allows nothing (`NoWorkflowPolicyDenied`). Operators and the `narrow`
-checks read the body as sent, a ``dict``; a CEL condition reads it with the
-context checked as its ``rbac_context`` (`condition_resource`).
+a context where no policy applies that the write keeps or moves the resource
+into, a grant conditioned on ``scrud_workflow`` allows nothing
+(`NoWorkflowPolicyDenied`); one it leaves is not asked (#4). Operators and
+the `narrow` checks read the body as sent, a ``dict``; a CEL condition reads
+it with the context checked as its ``rbac_context`` (`condition_resource`).
+
+A superuser (`is_workflow_superuser`: active and ``is_superuser``) overrides
+the policy of a context that would refuse the write itself (content in no
+state or in several, no transition between its states, a ``restrict_update``
+state edited in place, a create or move in in no initial state): the
+transition there is ``__OVERRIDE__`` (`override_transition`), and the
+decision keeps the error it overrode (`ContextDecision.overridden`). It is
+authorized as any other transition: the type's own checks (`narrow`) are
+asked about ``__OVERRIDE__``. Where the policy allows the write, a
+superuser's is its own transition, not an override.
 
 An error under a stored policy the requester may not read, or about a stored
 resource they may not read, names neither the policy nor its states
@@ -44,7 +55,21 @@ from scrud_django.core.authz import (
     _workflow_authorized,
     condition_resource,
     content_of,
+    is_workflow_superuser,
     may_read_in_context,
+    request_actor,
+)
+from scrud_django.core.decisions import (
+    NULL_CONTENT,
+    WORKFLOW_ERRORS,
+    ContextDecision,
+    NullContent,
+    WorkflowDecision,
+    context_transition,
+    is_entering,
+    normalized_contexts_after,
+    override_transition,
+    snapshot_prior,
 )
 from scrud_django.exceptions import (
     HiddenWorkflowTransitionError,
@@ -55,7 +80,6 @@ from scrud_django.mixins.resource_mixin import rbac_contexts_of
 from scrud_django.models import Resource
 from scrud_django.workflow import (
     WORKFLOW_POLICY_TYPE_URI,
-    TransitionData,
     WorkflowPolicy,
     default_workflow_policy_for,
     stored_policies_in,
@@ -142,36 +166,6 @@ def validate_policy_write(body: Mapping, stored_pk: int | None) -> None:
         raise WorkflowPolicyInvalidError(str(e)) from e
     check_policy_is_unique(body, stored_pk)
 
-
-class NullContent:
-    """The type of `NULL_CONTENT`, its one instance (``NullContent()`` is
-    it): falsy, ``repr`` ``NULL_CONTENT``."""
-
-    __slots__ = ()
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __bool__(self):
-        return False
-
-    def __repr__(self):
-        return "NULL_CONTENT"
-
-    def __reduce__(self):
-        # Copied or pickled, it stays the one instance.
-        return "NULL_CONTENT"
-
-
-# An `Update`'s stored content (`prior`) when the resource's content is JSON
-# null, or not an object (content stored before 0.12.0 could be a list):
-# the check reads it in the default context (`rbac_contexts_of`), in no
-# state (`WorkflowPolicy.state`), and an error about it is hidden unless the
-# stored resource is readable. A create is a `Create`, never null content.
-NULL_CONTENT = NullContent()
 
 # An alias of `NULL_CONTENT`, its earlier name (re-exported by
 # ``scrud_django.validators``).
@@ -298,12 +292,19 @@ def workflow_check(
     write: Create | Update,
     narrow: Sequence[Callable] = (),
     post_save_type_iri: str | None = None,
-) -> list[tuple[str | None, WorkflowPolicy, TransitionData]]:
+) -> WorkflowDecision:
     """Check `request`'s `write` (a `Create`, or an `Update` of its stored
-    content) of the type `type_iri`, as the module describes, and return the
-    transitions it authorized: ``(context, policy, transition data)`` for
-    each context with a policy (``None`` as the context: the resource is in
-    none).
+    content) of the type `type_iri`, as the module describes, and return
+    what it decided: the `WorkflowDecision` (``checked=True``) of the write
+    of the stored resource (an `Update`'s ``stored_pk``; ``None`` for a
+    `Create`) by the request's user (``None`` when there is none or it is
+    not authenticated), with the transition it authorized in each context
+    with a policy (``None`` as the context: the resource is in none), each
+    computed as `scrud_django.core.decisions.context_transition` computes
+    it, or, for a superuser where that raises a workflow error,
+    ``__OVERRIDE__`` (`scrud_django.core.decisions.override_transition`)
+    with the error as the context's ``overridden``. Without a request where
+    no policy applies, a decision with no contexts.
 
     `narrow` checks, ``(request, body, context) -> bool``, may refuse a
     transition the request's policy allows, never allow one it refuses:
@@ -316,9 +317,11 @@ def workflow_check(
     (`_mark_workflow_authorized`) for this one write: of the stored
     resource (an `Update`'s ``stored_pk``; ``None`` for a `Create`), named
     by the type `post_save_type_iri` (the type the write's post-save check
-    names; by default `type_iri`). An `Update` without a ``stored_pk`` is
-    not marked: the post-save check of no save matches it. The save that
-    uses the mark consumes it (`scrud_django.core.writes.save_checked`).
+    names; by default `type_iri`), carrying the decision it returns, which
+    the save then sends (`scrud_django.core.decisions.applying`). An
+    `Update` without a ``stored_pk`` is not marked: the post-save check of
+    no save matches it. The save that uses the mark consumes it
+    (`scrud_django.core.writes.save_checked`).
 
     Raises ``TypeError`` for a `write` that is neither (a delete runs no
     workflow check: follow-up ``delete-no-workflow-check``),
@@ -350,8 +353,11 @@ def workflow_check(
     contexts_after = write.contexts_after
     if contexts_after is None:
         contexts_after = rbac_contexts_of(proposed)
+    # A write in no context at all is checked under the settings default
+    # (`normalized_contexts_after`), in context None.
+    contexts_after = normalized_contexts_after(contexts_before, contexts_after)
     contexts = list(dict.fromkeys(list(contexts_before) + list(contexts_after)))
-    if contexts:
+    if contexts != [None]:
         policies = list(workflow_policies_for(type_iri, contexts))
     else:
         policies = [(None, default_workflow_policy_for(type_iri))]
@@ -361,34 +367,112 @@ def workflow_check(
     if request is None:
         if any(p is not None for _, p in policies):
             raise WorkflowRequestRequired()
-        return []
+        return _decision(type_iri, write, stored_pk, None, prior, contexts_after, ())
     transitions = []
+    superuser = is_workflow_superuser(request)
     for c, policy in policies:
         if policy is None:
             continue
-        # A context the resource enters (not one it is stored in) has
-        # no prior state there: the write creates it there.
-        entering = prior is not None and c is not None
-        entering = entering and c not in contexts_before
+        # A context the resource enters (not one it is stored in, or any
+        # of a create's) has no prior state there: the write creates it
+        # there. One it leaves (stored in, not named) is an ordinary
+        # transition there from the stored content, flagged leaving (#36).
+        entering = is_entering(c, prior=prior, contexts_before=contexts_before)
+        leaving = c in contexts_before and c not in contexts_after
         with errors_hidden_unless_readable(policy, request, prior, readable):
-            transitions.append(
-                (c, policy, transition_for(policy, proposed, prior, entering))
+            transition_data, overridden = _transition_or_override(
+                policy,
+                prior,
+                proposed,
+                entering=entering,
+                leaving=leaving,
+                superuser=superuser,
             )
-    for c, policy, transition_data in transitions:
+        transitions.append(
+            (
+                policy,
+                ContextDecision(
+                    context=c,
+                    policy=policy.reference,
+                    transition=transition_data,
+                    error=None,
+                    entering=entering,
+                    leaving=leaving,
+                    overridden=overridden,
+                ),
+            )
+        )
+    for policy, entry in transitions:
         with errors_hidden_unless_readable(policy, request, prior, readable):
-            authorize(request, type_iri, policy, transition_data, c, proposed, narrow)
+            authorize(
+                request,
+                type_iri,
+                policy,
+                entry.transition,
+                entry.context,
+                proposed,
+                narrow,
+            )
+    # Without a policy only the contexts the write keeps or puts the resource
+    # in are asked: leaving one asks nothing there (#4), as a writer with no
+    # grant there may leave it, so a grant conditioned on scrud_workflow
+    # there must not refuse the move.
     for c, policy in policies:
-        if policy is None:
+        if policy is None and c in contexts_after:
             authorize_without_policy(request, type_iri, c, proposed, narrow)
+    decision = _decision(
+        type_iri,
+        write,
+        stored_pk,
+        request_actor(request),
+        prior,
+        contexts_after,
+        [entry for _, entry in transitions],
+    )
     # The post-save check lets a grant conditioned on scrud_workflow allow
     # only the one write authorized here: of this resource, of this type.
+    # The decision rides with the mark to the save that writes it.
     if prior is None or stored_pk is not None:
         _mark_workflow_authorized(
             request,
             type_iri=type_iri if post_save_type_iri is None else post_save_type_iri,
             stored_pk=stored_pk,
+            decision=decision,
         )
-    return transitions
+    return decision
+
+
+def _transition_or_override(policy, prior, proposed, *, entering, leaving, superuser):
+    """``(TransitionData, overridden error or None)`` of the write in one
+    context: `context_transition`'s, or, when that raises a workflow error
+    and the user is a `superuser`, `override_transition`'s with that error.
+    Anyone else's error is raised."""
+    try:
+        data = context_transition(
+            policy, prior, proposed, entering=entering, leaving=leaving
+        )
+    except WORKFLOW_ERRORS as error:
+        if not superuser:
+            raise
+        data = override_transition(
+            policy, prior, proposed, entering=entering, leaving=leaving
+        )
+        return data, error
+    return data, None
+
+
+def _decision(type_iri, write, stored_pk, actor, prior, contexts_after, contexts):
+    """`workflow_check`'s `WorkflowDecision` of `write`."""
+    return WorkflowDecision(
+        type_iri=type_iri,
+        stored_pk=stored_pk,
+        actor=actor,
+        checked=True,
+        prior=snapshot_prior(prior),
+        proposed=write.proposed,
+        contexts_after=contexts_after,
+        contexts=contexts,
+    )
 
 
 @contextmanager
@@ -421,16 +505,6 @@ def errors_hidden_unless_readable(workflow_policy, request, prior=None, readable
         if prior is not None and readable is not None and not readable():
             raise HiddenWorkflowTransitionError() from e
         raise
-
-
-def transition_for(workflow_policy, proposed, prior, entering=False):
-    """The `TransitionData` of writing `proposed` under `workflow_policy`: a
-    create's ``__INITIALIZE__`` (`proposed` must be an initial state) when
-    there is no `prior` content, or when the write moves the resource into
-    this context (`entering`); else the transition from `prior`."""
-    if prior is None or entering:
-        return workflow_policy.initial_transition(proposed)
-    return workflow_policy.determine_transition(proposed, prior)
 
 
 def authorize(

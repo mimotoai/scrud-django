@@ -61,6 +61,13 @@ def admin():
     return UserFactory(is_staff=True, is_superuser=True)
 
 
+def writer(context):
+    """A user granted everything in `context` but not a superuser: a
+    superuser's write overrides a workflow refusal (#31), so the refusals
+    are pinned with this user."""
+    return user_with((True, context))
+
+
 def register(content, slug):
     reverse("todos-list", urlconf="tests.urls")
     return ResourceRegistration.register(content, slug)
@@ -102,7 +109,7 @@ def test_put_over_list_content_follows_the_policy(front_end):
     stored = register([dict(NOT_STARTED)], "todos")
     # The default ToDo policy: the stored content is in no state, so no
     # transition leads from it.
-    response = put(front_end, admin(), stored, dict(NOT_STARTED), "todos")
+    response = put(front_end, writer(""), stored, dict(NOT_STARTED), "todos")
     assert response.status_code == 400, response.content
     assert response.json()["type"] == WORKFLOW_ERROR
     assert_unchanged(stored)
@@ -294,6 +301,51 @@ def test_unconditional_put_without_a_policy_is_200(front_end):
     assert Resource.objects.get(pk=resource.pk).content == body
 
 
+def pp_writer():
+    return {"http.GET": [PP], "http.PUT": [PP]}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "grant_in_b",
+    [None, conditioned("http.PUT", ["__SAME_STATE__", "unlock"])],
+    ids=["no-grant", "conditioned-grant"],
+)
+def test_moving_out_of_a_context_without_a_policy_needs_no_grant_there(
+    front_end, grant_in_b
+):
+    """#4: a move out of a context where no workflow policy applies asks
+    nothing there, so a grant conditioned on ``scrud_workflow`` in that
+    context refuses nothing: it is allowed as it is with no grant there."""
+    resource = locked_profile(["a", "b"])
+    grants = [(pp_writer(), "a")]
+    if grant_in_b is not None:
+        grants.append((dict(pp_reader(), **grant_in_b), "b"))
+    user = user_with(*grants)
+    body = {"name": "moved", "state": "locked", "rbac_context": "a"}
+    response = put(front_end, user, resource, body, "partner-profiles")
+    assert response.status_code == 200, response.content
+    assert Resource.objects.get(pk=resource.pk).content == body
+
+
+@pytest.mark.django_db
+def test_moving_into_a_context_without_a_policy_under_a_conditioned_grant_is_403(
+    front_end,
+):
+    """The contexts a write moves into (or stays in) are still asked: there
+    a grant conditioned on ``scrud_workflow`` allows nothing without a
+    policy (#4 changes only the contexts a write leaves)."""
+    resource = locked_profile("a")
+    user = user_with(
+        (pp_writer(), "a"),
+        (dict(pp_reader(), **conditioned("http.PUT", ["__INITIALIZE__"])), "b"),
+    )
+    body = {"name": "moved", "state": "locked", "rbac_context": "b"}
+    response = put(front_end, user, resource, body, "partner-profiles")
+    assert response.status_code == 403, response.content
+    assert_unchanged(resource)
+
+
 @pytest.mark.django_db
 def test_conditioned_post_without_a_policy_is_403(front_end):
     api_url(front_end, "todos-list")
@@ -328,9 +380,10 @@ def test_cel_conditioned_post_without_a_policy_reads_the_body(front_end):
 
 
 @pytest.mark.django_db
-def test_leaving_a_context_whose_grant_is_conditioned_is_403(front_end):
+def test_leaving_a_context_whose_grant_is_conditioned_is_allowed(front_end):
     # Conditioned (no transitions) in "q", an unconditional writer in "r":
-    # the resource may not be moved out of "q".
+    # no policy applies in "q", so leaving it asks nothing there and the
+    # conditioned grant refuses nothing (#4; a 403 before).
     resource = locked_profile("q")
     user = user_with(
         (dict(pp_reader(), **conditioned("http.PUT", [])), "q"),
@@ -338,8 +391,8 @@ def test_leaving_a_context_whose_grant_is_conditioned_is_403(front_end):
     )
     body = {"name": "n", "state": "locked", "rbac_context": "r"}
     response = put(front_end, user, resource, body, "partner-profiles")
-    assert response.status_code == 403, response.content
-    assert_unchanged(resource)
+    assert response.status_code == 200, response.content
+    assert Resource.objects.get(pk=resource.pk).content == body
 
 
 @pytest.mark.django_db
@@ -400,7 +453,7 @@ def test_invalid_transition_error_names_prior_then_proposed_state(front_end):
     resource = locked_profile()
     response = put(
         front_end,
-        admin(),
+        writer("q"),
         resource,
         {"name": "n", "state": "open", "rbac_context": "q"},
         "partner-profiles",
@@ -414,7 +467,11 @@ def test_transition_from_no_state_error_names_no_prior_state(front_end):
     store_policy(dict(LOCKING_PP_POLICY, rbac_context=""))
     stored = register([{"name": "n"}], "partner-profiles")
     response = put(
-        front_end, admin(), stored, {"name": "n", "state": "open"}, "partner-profiles"
+        front_end,
+        writer(""),
+        stored,
+        {"name": "n", "state": "open"},
+        "partner-profiles",
     )
     assert response.status_code == 400, response.content
     assert states(response) == (None, "open")

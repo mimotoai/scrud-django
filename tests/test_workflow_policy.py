@@ -14,6 +14,7 @@ from scrud_django.exceptions import (
 from scrud_django.workflow import (
     INITIALIZE,
     LEAVE,
+    OVERRIDE,
     SAME_STATE,
     TransitionData,
     WorkflowPolicy,
@@ -518,12 +519,15 @@ def test_one_transition_naming_a_state_twice_is_no_duplicate():
     )
 
 
-@pytest.mark.parametrize("name", ["__INITIALIZE__", "__SAME_STATE__", "__LEAVE__"])
+@pytest.mark.parametrize(
+    "name", ["__INITIALIZE__", "__SAME_STATE__", "__LEAVE__", "__OVERRIDE__"]
+)
 def test_a_reserved_transition_name_is_refused_naming_every_reserved_one(name):
-    assert (INITIALIZE, SAME_STATE, LEAVE) == (
+    assert (INITIALIZE, SAME_STATE, LEAVE, OVERRIDE) == (
         "__INITIALIZE__",
         "__SAME_STATE__",
         "__LEAVE__",
+        "__OVERRIDE__",
     )
     with pytest.raises(ImproperlyConfigured) as excinfo:
         WorkflowPolicy(
@@ -535,7 +539,7 @@ def test_a_reserved_transition_name_is_refused_naming_every_reserved_one(name):
     assert str(excinfo.value) == (
         f"Invalid workflow transition {name!r}: a name must be a string not "
         "starting with '__', which is reserved (__INITIALIZE__, __SAME_STATE__, "
-        "__LEAVE__)."
+        "__LEAVE__, __OVERRIDE__)."
     )
 
 
@@ -546,6 +550,38 @@ def test_transition_data_is_immutable_and_hashable():
     assert started.transition == "start"
     assert started == TransitionData("in progress", "not started", "start")
     assert {started: 1}[TransitionData("in progress", "not started", "start")] == 1
+
+
+@pytest.mark.parametrize(
+    "args,kwargs",
+    [
+        (("draft", None, INITIALIZE), {}),
+        (("a", "a", SAME_STATE), {}),
+        ((None, "a", LEAVE), {}),
+        (("b", "a", "submit"), {}),
+        (("a", "a", SAME_STATE), {"leaving": True}),
+    ],
+)
+def test_transition_data_kind_rules_accept(args, kwargs):
+    TransitionData(*args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "args,kwargs,field",
+    [
+        (("draft", "x", INITIALIZE), {}, "prior_state"),
+        ((None, None, INITIALIZE), {}, "proposed_state"),
+        (("draft", None, INITIALIZE), {"leaving": True}, "leaving"),
+        (("a", "b", SAME_STATE), {}, "prior_state"),
+        (("a", None, LEAVE), {}, "proposed_state"),
+        (("b", None, "submit"), {}, "prior_state"),
+        (("b", "a", "__mine"), {}, "transition"),
+        (("b", "a", 3), {}, "transition"),
+    ],
+)
+def test_transition_data_kind_rules_refuse(args, kwargs, field):
+    with pytest.raises(ValueError, match=field):
+        TransitionData(*args, **kwargs)
 
 
 # A condition whose evaluation fails (a property missing from the content)

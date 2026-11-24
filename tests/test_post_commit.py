@@ -7,18 +7,14 @@ write, before the post-save check."""
 
 import logging
 import threading
-from contextlib import contextmanager, nullcontext
-from uuid import uuid4
+from contextlib import nullcontext
 
 import pytest
 from django.apps import apps
 from django.db import connection, connections, transaction
 from django.test import override_settings
 from django.utils.http import quote_etag
-from django.utils.timezone import now
 from rest_framework.test import APIClient
-from scoped_rbac.models import Role, RoleAssignment
-from scoped_rbac.rbac_contexts import DEFAULT_CONTEXT
 
 from scrud_django.models import Resource
 from scrud_django.registration import ResourceRegistration
@@ -27,6 +23,10 @@ from scrud_django.search_indexes import ResourceIndex
 
 from .factories import UserFactory
 from .front_ends import api_url
+from .post_commit_helpers import (
+    default_context_todo_writer_user,
+    todos_moved_after_save,
+)
 from .workflow_actions import actions
 
 TODO = "tests://ToDo"
@@ -123,41 +123,9 @@ def admin_client():
 
 
 def default_context_todo_writer():
-    user = UserFactory()
-    definition = {
-        m: [TODO] for m in ("http.GET", "http.POST", "http.PUT", "http.DELETE")
-    }
-    role = Role(definition=definition, etag=uuid4().hex, modified_at=now())
-    role.save()
-    RoleAssignment(
-        user=user,
-        role=role,
-        rbac_context=DEFAULT_CONTEXT,
-        etag=uuid4().hex,
-        modified_at=now(),
-    ).save()
     client = APIClient()
-    client.force_login(user)
+    client.force_login(default_context_todo_writer_user())
     return client
-
-
-@contextmanager
-def todos_moved_after_save(context="other"):
-    """A ``scrud_post_save`` receiver that moves every saved ToDo to
-    `context`: by default "other", where the writer may not write, so that
-    the post-save check refuses the write with 403 and rolls it back (a
-    reserved context is a 400, whoever writes)."""
-
-    def move(sender, instance, resource_type_uri=None, **kwargs):
-        if resource_type_uri == TODO:
-            content = {**instance.content, "rbac_context": context}
-            type(instance).objects.filter(pk=instance.pk).update(content=content)
-
-    scrud_post_save.connect(move, weak=False, dispatch_uid="test-post-commit-move")
-    try:
-        yield
-    finally:
-        scrud_post_save.disconnect(dispatch_uid="test-post-commit-move")
 
 
 def a_todo(content=NOT_STARTED, front_end="drf"):

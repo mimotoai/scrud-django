@@ -140,6 +140,35 @@ def test_a_value_that_is_not_callable_is_an_error():
     assert "'tests.workflow_actions.todo_on_save'" in found.msg
 
 
+def test_on_transition_is_a_known_key_and_valid_entries_pass():
+    with setting_of("transition_valid"):
+        assert check_workflow_actions(None) == []
+    # None is no action, for on_transition as for every key.
+    with setting_of("transition_none"):
+        assert check_workflow_actions(None) == []
+
+
+@pytest.mark.parametrize(
+    "name, mentions",
+    [
+        ("transition_not_a_mapping", "not a mapping"),
+        ("transition_key_not_a_string", "3"),
+        ("transition_value_not_callable", "'tests.workflow_actions.record_start'"),
+        ("transition_reserved_key", "'__LEAVE__'"),
+    ],
+)
+def test_a_bad_on_transition_is_an_e012_error(name, mentions):
+    with setting_of(name):
+        (found,) = check_workflow_actions(None)
+    assert (found.id, found.level, found.obj) == (
+        "scrud_django.E012",
+        checks.ERROR,
+        TODO,
+    )
+    assert mentions in found.msg
+    assert "on_transition" in found.msg
+
+
 @pytest.mark.django_db
 def test_the_checks_are_registered():
     with setting_of("not_a_mapping"):

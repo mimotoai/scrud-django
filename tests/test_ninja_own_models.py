@@ -15,6 +15,7 @@ from scoped_rbac import access
 
 from scrud_django.core import transitions
 from scrud_django.core.authz import _workflow_authorized
+from scrud_django.core.signals import scrud_post_delete, scrud_post_save
 from scrud_django.exceptions import HiddenWorkflowTransitionError
 from scrud_django.ninja import ModelWorkflow, workflow_check
 from scrud_django.ninja.errors import PROBLEM_JSON
@@ -24,7 +25,7 @@ from scrud_django.registration import (
 )
 
 from .factories import UserFactory
-from .fixtures import assign_role
+from .fixtures import admin_login, assign_role  # noqa: F401
 from .models import Article
 from .workflow_actions import article_calls
 from .workflow_defaults import ARTICLE, article_state
@@ -86,7 +87,8 @@ def writer(client):
     """A client logged in as a non-superuser who may read, list, create,
     update and delete articles in context "a" (superusers bypass the
     workflow)."""
-    client.force_login(assign_role(WRITER, "a"))
+    client.user = assign_role(WRITER, "a")
+    client.force_login(client.user)
     return client
 
 
@@ -629,3 +631,238 @@ def test_a_save_must_return_one_instance(calls, django_capture_on_commit_callbac
             )
     assert not Article.objects.exists()
     assert calls == []
+
+
+@pytest.fixture
+def reported():
+    """The keyword arguments of each Article ``scrud_post_save``."""
+    found = []
+
+    def record(sender, resource_type_uri=None, **kwargs):
+        if resource_type_uri == ARTICLE:
+            found.append(kwargs)
+
+    scrud_post_save.connect(record, weak=False, dispatch_uid="test-own-decisions")
+    try:
+        yield found
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-own-decisions")
+
+
+def test_an_own_model_create_sends_the_checked_decision(writer, reported):
+    # ArticleOut.id was None when the create was checked, the saved row has
+    # one: the check's decision is still what is sent.
+    response = writer.post(
+        LIST,
+        {"title": "t", "state": "draft", "rbac_context": "a"},
+        content_type="application/json",
+    )
+    assert response.status_code == 201, response.content
+    [kwargs] = reported
+    decision = kwargs["decision"]
+    assert decision.checked is True
+    assert decision.stored_pk is None
+    assert kwargs["transitions"] == decision.transitions
+    assert kwargs["transition_data"] == decision.transition_data
+    assert decision.transition_data.transition == "__INITIALIZE__"
+
+
+def test_an_own_model_save_that_wrote_another_state_sends_the_recomputed_decision(
+    reported, caplog
+):
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a"))
+    article = draft_in_a()
+
+    def archived():
+        article.state = "archived"
+        article.save()
+        return article
+
+    with caplog.at_level(logging.WARNING, logger="scrud_django.workflow"):
+        workflow.save_checked(
+            request, instance=article, values={"state": "published"}, save=archived
+        )
+    [kwargs] = reported
+    decision = kwargs["decision"]
+    assert decision.checked is False
+    assert decision.proposed["state"] == "archived"
+    # The saved state (draft -> archived) is invalid in context "a": no
+    # transition there, and the error is the one reported.
+    assert dict(kwargs["transitions"]) == {"a": None}
+    assert set(decision.errors) == {"a"}
+    assert kwargs["transition_error"] is decision.errors["a"]
+    assert kwargs["transitions"] == decision.transitions
+    assert kwargs["transition_data"] is None
+    assert kwargs["transition_error"] is not None
+    assert any(
+        r.name == "scrud_django.workflow" and r.levelno == logging.WARNING
+        for r in caplog.records
+    )
+
+
+def test_an_own_model_update_leaving_a_context_sends_the_checked_decision(reported):
+    # The check and the recompute both decide the left context "a" as the
+    # transition there, flagged leaving (#36): the same transitions, so the
+    # checked decision is sent.
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(assign_role(WRITER, "a", "b"))
+    article = draft_in_a()
+
+    def moved():
+        article.rbac_context = "b"
+        article.save()
+        return article
+
+    workflow.save_checked(
+        request, instance=article, values={"rbac_context": "b"}, save=moved
+    )
+    [kwargs] = reported
+    assert kwargs["decision"].checked is True
+    left = kwargs["transitions"]["a"]
+    assert left.leaving is True and kwargs["decision"].get("a").leaving is True
+    assert (left.prior_state, left.proposed_state) == ("draft", "draft")
+    assert left.transition != "__LEAVE__"
+
+
+def test_an_own_model_superuser_override_is_reported_and_logged(
+    client, admin_login, reported, caplog
+):
+    with transitions.checked_save(Article):
+        article = Article.objects.create(title="t", state="bogus", rbac_context="a")
+    client.force_login(admin_login)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="scrud_django.workflow"):
+        response = client.put(
+            item(article.pk),
+            {"title": "t", "state": "draft", "rbac_context": "a"},
+            content_type="application/json",
+        )
+    assert response.status_code == 200, response.content
+    [kwargs] = reported
+    decision = kwargs["decision"]
+    assert decision.checked is True
+    assert kwargs["transitions"]["a"].transition == "__OVERRIDE__"
+    assert decision.overrides == ("a",)
+    records = [r for r in caplog.records if r.name == "scrud_django.workflow"]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    message = records[0].getMessage()
+    assert "skipped the workflow check" not in message
+    assert "'a'" in message
+    assert decision.get("a").overridden.message in message
+
+
+def test_an_own_model_override_whose_save_drifted_sends_the_recomputed_decision(
+    admin_login, reported, caplog
+):
+    # The superuser's override checked draft -> archived in "a" (refused by
+    # the policy); the save wrote another invalid state there (draft ->
+    # bogus): another error than the one overridden, so another write. The
+    # recompute is sent, unchecked, and the context logged as a skipped
+    # check, not as an override.
+    workflow = own_models().ARTICLE_WORKFLOW
+    request = put_request(admin_login)
+    article = draft_in_a()
+
+    def bogus():
+        article.state = "bogus"
+        article.save()
+        return article
+
+    with caplog.at_level(logging.WARNING, logger="scrud_django.workflow"):
+        workflow.save_checked(
+            request, instance=article, values={"state": "archived"}, save=bogus
+        )
+    [kwargs] = reported
+    decision = kwargs["decision"]
+    assert decision.checked is False
+    assert decision.proposed["state"] == "bogus"
+    assert decision.overrides == ()
+    assert dict(kwargs["transitions"]) == {"a": None}
+    assert set(decision.errors) == {"a"}
+    records = [r for r in caplog.records if r.name == "scrud_django.workflow"]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    assert "skipped the workflow check" in records[0].getMessage()
+
+
+@pytest.fixture
+def reported_deletes():
+    found = []
+
+    def record(sender, resource_type_uri=None, **kwargs):
+        if resource_type_uri == ARTICLE:
+            found.append(kwargs)
+
+    scrud_post_delete.connect(record, weak=False, dispatch_uid="test-own-deletes")
+    try:
+        yield found
+    finally:
+        scrud_post_delete.disconnect(dispatch_uid="test-own-deletes")
+
+
+def test_an_own_model_put_sends_its_user_and_prior_content(writer, reported):
+    with transitions.checked_save(Article):
+        article = Article.objects.create(title="t", state="draft", rbac_context="a")
+    prior = own_models().ARTICLE_WORKFLOW.state(article)
+    response = writer.put(
+        item(article.pk), {"state": "published"}, content_type="application/json"
+    )
+    assert response.status_code == 200, response.content
+    [kwargs] = reported
+    assert kwargs["user"] == writer.user
+    assert kwargs["prior_content"] == prior
+    assert kwargs["prior_content"]["state"] == "draft"
+
+
+def test_an_own_model_create_sends_its_user_and_no_prior(writer, reported):
+    response = writer.post(
+        LIST,
+        {"title": "t", "state": "draft", "rbac_context": "a"},
+        content_type="application/json",
+    )
+    assert response.status_code == 201, response.content
+    [kwargs] = reported
+    assert kwargs["user"] == writer.user
+    assert kwargs["prior_content"] is None
+
+
+def test_an_own_models_receivers_act_for_the_writer(writer):
+    """A ``scrud_post_save`` or ``scrud_post_delete`` receiver runs inside
+    the write's ``acting_as``: the saves it makes are made for the writer."""
+    from scrud_django.core.signals import acting_user
+
+    actors = []
+
+    def record(sender, resource_type_uri=None, **kwargs):
+        if resource_type_uri == ARTICLE:
+            actors.append(acting_user())
+
+    scrud_post_save.connect(record, weak=False, dispatch_uid="test-own-actor")
+    scrud_post_delete.connect(record, weak=False, dispatch_uid="test-own-actor")
+    try:
+        response = writer.post(
+            LIST,
+            {"title": "t", "state": "draft", "rbac_context": "a"},
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+        pk = response.json()["id"]
+        response = writer.put(
+            item(pk), {"state": "published"}, content_type="application/json"
+        )
+        assert response.status_code == 200, response.content
+        response = writer.delete(item(pk))
+        assert response.status_code == 204, response.content
+    finally:
+        scrud_post_save.disconnect(dispatch_uid="test-own-actor")
+        scrud_post_delete.disconnect(dispatch_uid="test-own-actor")
+    assert actors == [writer.user] * 3
+    assert acting_user() is None
+
+
+def test_an_own_model_delete_sends_its_user(writer, reported_deletes):
+    article = draft_in_a()
+    response = writer.delete(item(article.pk))
+    assert response.status_code == 204, response.content
+    [kwargs] = reported_deletes
+    assert kwargs["user"] == writer.user

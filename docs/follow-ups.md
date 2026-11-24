@@ -305,24 +305,6 @@ without the row lock. Test: in `tests/test_generic_views.py`, a
 "stale"`, and expect 412 (or `ImproperlyConfigured`) with the note
 unchanged; it is a 200 today.
 
-<a id="workflow-grant-blocks-leaving"></a>
-## workflow-grant-blocks-leaving: a `scrud_workflow` grant refuses moving a resource out of a context without a policy
-
-A PUT that moves a resource out of a context needs no grant there unless a
-workflow policy applies there (README). But `WorkflowValidator` runs
-`authorize_without_policy` for every context the write concerns, those it
-leaves included. In a context without a policy, a writer whose grants there
-are conditioned on `scrud_workflow` gets 403, while a writer with no grant
-there at all may move the resource out. It fails closed, and it predates
-0.13.0. Found in the review of scrud-django#2; scrud-django#4.
-
-Fix: run `authorize_without_policy` only for the contexts the body writes
-(`rbac_contexts_of(data)`), not those the update leaves. Test: in
-`tests/test_workflow_contexts.py`, a resource stored as `["a", "b"]`
-(JSON-LD, no policy in `"b"`), a writer with JSON-LD writes in `"a"` and a
-`scrud_workflow` grant in `"b"`, PUTs it with `"rbac_context": "a"`: expect
-200, get 403 today.
-
 <a id="conditional-only-detail-reads"></a>
 ## conditional-only-detail-reads: a reader whose only grant is conditional lists resources but gets 403 on their detail route
 
@@ -1196,7 +1178,10 @@ facade's `create` and `update` always validate the body they save, so
 front ends must write through them (or validate exactly the body their
 own `save` writes). Proposal: carry a fingerprint of the validated body
 (and its contexts) in the mark and compare it with what `save` wrote, or
-make `save_checked` take the body and validate it itself. Test: in
+make `save_checked` take the body and validate it itself. The
+`WorkflowDecision.proposed` that the mark now carries (a snapshot of the
+checked content; `core/decisions.py`) is the fingerprint this fix needs.
+Test: in
 `tests/test_core_writes.py`, with a JSON-LD policy in "a" where a draft is
 published by "publish" and a user holding `may_stay_json_ld()` in "a",
 `validate_write` a body that stays a draft, then `save_checked` an
@@ -2424,3 +2409,71 @@ the anonymous and by a user without roles each raising
 `MethodNotAllowedError`, and `load_for_read(method="PUT")` likewise, before
 any `access.AccessDenied`.
 
+
+<a id="superuser-is-active"></a>
+## superuser-is-active: scoped-rbac allows an inactive superuser everything; the workflow does not let one override
+
+The workflow override (#31) is for active superusers only
+(`scrud_django.core.authz.is_workflow_superuser`: `is_active` and
+`is_superuser`), but scoped-rbac decides superusers by `is_superuser` alone
+(`scoped_rbac.access`: `_build_policy_for` answers `ALLOWED`, and
+`may_act_on` lets a superuser act on an object in no context, without
+reading `is_active`). Django's `ModelBackend`, its login and DRF's
+`SessionAuthentication` refuse an inactive user, and the ninja front end
+cannot see one: scoped-rbac's `resolve_user`
+(`scoped_rbac/ninja/blocks.py`), which every ninja route calls, makes an
+inactive user anonymous whether it came from a `SCOPED_RBAC["NINJA_USER"]`
+hook, a router's own `auth=` or the session. The divergence shows only where
+the plain `request.user` is read: the htmx UI's pages and the studio
+(`scrud_django/ui/pages.py`, `scrud_django/ui/studio/views.py`), which take
+Django's session user as it is (an inactive one under
+`django.contrib.auth.backends.AllowAllUsersModelBackend`, or a custom
+backend whose `get_user` returns inactive users); DRF, under
+`APIClient.force_authenticate` in tests or a custom authentication class
+that returns an inactive user; and server code that builds a request for
+such a user. There every RBAC check allows them (any read, any write, in any
+context), yet the workflow check refuses their write where the policy
+refuses it, as for anyone who is not a superuser. scoped-rbac is upstream
+and not edited here; the fix is either scoped-rbac requiring `is_active`
+(then nothing changes here) or scrud dropping `is_active` from
+`is_workflow_superuser` (an inactive superuser then overrides too). The test
+that would show the divergence, on the UI pages (`tests/ui.py`'s
+`UI_URLCONF`, `ui_url`): with `AUTHENTICATION_BACKENDS` set to
+`AllowAllUsersModelBackend` (so Django's session middleware loads an
+inactive user), `force_login` an inactive superuser (`is_active=False`,
+`is_superuser=True`) holding no roles; a GET of a ToDo's UI page in a
+context where they hold no role answers 200 (scoped-rbac allows), while an
+htmx PUT of a ToDo stored in no state (`status="nonsense"`) to
+`"not started"` answers 400 with the workflow error
+(`workflow-transition-invalid`), where an active superuser's answers 200
+with `__OVERRIDE__`. On DRF the same two requests (GET 200, PUT 400) show it
+with `APIClient.force_authenticate` of that user; a ninja route answers
+that user as anonymous (401 or 403) and shows nothing. Aligned, both
+answers would follow one rule.
+
+
+<a id="outbox-autocommit-saves"></a>
+## outbox-autocommit-saves: a bare save in autocommit commits before its outbox event is stored
+
+`scrud_django.outbox.receivers.store_event` writes its `OutboxEvent` when
+`scrud_post_save` or `scrud_post_delete` is sent, in whatever transaction
+is open on the write's database. Every scrud front end, `ResourceRegistration`
+and `ModelWorkflow` write in a transaction, so their events commit with the
+write. A bare `resource.save()` or `resource.delete()` in autocommit does
+not: `ResourceMixin.save` sends `scrud_post_save` after `super().save()`
+returns, and `save_base`'s own `atomic(savepoint=False)` has committed the
+row by then (the delete likewise). If the event's insert then fails (a
+database error, a constraint, a JSON document MariaDB refuses), the write
+stays committed without its event, which the outbox exists to prevent.
+Today the receiver's docstring tells server code to wrap such
+a save or delete in `transaction.atomic(using=...)`. The fix would wrap
+`ResourceMixin.save` and `delete` (and `ResourceQuerySet.delete`'s
+signalled deletes) in `transaction.atomic(using=db)`, so that the write and
+its `scrud_post_*` receivers commit or roll back together, in autocommit
+too (a savepoint, no more, inside an open transaction). The test that would
+expose the gap: a `TransactionTestCase` (so that autocommit is real) with
+`SCRUD_OUTBOX={"TYPES": ["tests://ToDo"]}` that patches
+`OutboxEvent.objects.create` to raise, calls a bare `resource.save()` of a
+changed ToDo outside any atomic block, and asserts that the exception
+propagates, that the row's new content persists, and that no `OutboxEvent`
+exists; with the fix, the content would be the old one.

@@ -4,12 +4,25 @@ import logging
 
 import pytest
 
-from scrud_django.core.transitions import log_skipped_check, transitions_between
+from scrud_django.core.decisions import NULL_CONTENT, WorkflowDecision
+from scrud_django.core.transitions import (
+    Transitions,
+    log_skipped_check,
+    transitions_between,
+)
 from scrud_django.registration import (
     ResourceRegistration,
     workflow_policy_resource_type,
 )
-from scrud_django.workflow import INITIALIZE, LEAVE, WorkflowTransitionError
+from scrud_django.workflow import (
+    INITIALIZE,
+    LEAVE,
+    SAME_STATE,
+    TransitionData,
+    WorkflowTransitionError,
+)
+
+from .fixtures import register_test_types
 
 TYPE_IRI = "tests://ToDo"
 NO_DEFAULT = "tests://NoDefault"
@@ -47,7 +60,10 @@ def test_an_invalid_transition_is_reported_not_raised():
 
 
 @pytest.mark.django_db
-def test_leaving_a_context_with_a_policy_reports_leave():
+def test_leaving_a_context_reports_the_transition_there():
+    # #36, option (b): a left context is reported as the transition the
+    # check computes there, from the stored content, flagged leaving; no
+    # longer __LEAVE__.
     result = transitions_between(
         TYPE_IRI,
         prior=NOT_STARTED,
@@ -56,14 +72,34 @@ def test_leaving_a_context_with_a_policy_reports_leave():
         contexts_after=["b"],
     )
     left = result.transitions["a"]
-    assert (left.proposed_state, left.prior_state, left.transition) == (
-        None,
-        "not started",
-        LEAVE,
+    assert left == TransitionData(
+        "not started", "not started", SAME_STATE, leaving=True
     )
+    assert result.get("a").leaving is True
     entered = result.transitions["b"]
     assert (entered.proposed_state, entered.transition) == ("not started", INITIALIZE)
+    assert entered.leaving is False and result.get("b").leaving is False
     assert result.errors == {}
+    assert LEAVE not in {t.transition for t in result.transitions.values()}
+
+
+@pytest.mark.django_db
+def test_leaving_from_no_state_unchecked_is_an_error():
+    # Stored content in no state in the context it leaves: no transition
+    # leads from there, so the unchecked save reports None with the error
+    # there (logged), as the check would refuse it; not __LEAVE__.
+    result = transitions_between(
+        TYPE_IRI,
+        prior={"status": "nowhere"},
+        proposed=NOT_STARTED,
+        contexts_before=["a"],
+        contexts_after=["b"],
+    )
+    assert result.transitions["a"] is None
+    assert isinstance(result.errors["a"], WorkflowTransitionError)
+    assert result.errors["a"].prior_state is None
+    assert result.get("a").leaving is True
+    assert set(result.errors) == {"a"}
 
 
 def test_log_skipped_check_keeps_the_resource_wording(caplog):
@@ -101,12 +137,87 @@ def test_leaving_into_a_context_without_a_policy():
         contexts_before=["a"],
         contexts_after=["b"],
     )
-    left = result.transitions["a"]
-    assert (left.proposed_state, left.prior_state, left.transition) == (
-        None,
-        "any",
-        LEAVE,
+    # The left context is reported as the transition there, flagged
+    # leaving (#36), not __LEAVE__.
+    assert result.transitions["a"] == TransitionData(
+        "any", "any", SAME_STATE, leaving=True
     )
     assert "b" not in result.transitions
     assert result.transition_data is None
     assert result.errors == {}
+
+
+@pytest.mark.django_db
+def test_null_stored_content_is_an_update_from_no_state():
+    # Stored content that is JSON null (NULL_CONTENT) is decided as the
+    # workflow check decides it: an update from no state (no transition
+    # leads from there), not a create. transitions_between already decided
+    # NULL_CONTENT so; what changed is that Resource.get_transitions now
+    # passes it for a stored null row, which it reported as a create
+    # (test_a_resource_stored_with_null_content_is_an_update_from_no_state).
+    result = transitions_between(
+        TYPE_IRI,
+        prior=NULL_CONTENT,
+        proposed=NOT_STARTED,
+        contexts_before=[""],
+        contexts_after=[""],
+    )
+    assert result.transitions[""] is None
+    assert type(result.errors[""]) is WorkflowTransitionError
+    assert (result.errors[""].prior_state, result.errors[""].proposed_state) == (
+        None,
+        "not started",
+    )
+    assert result.prior is None
+    assert not result.checked
+    assert not result.get("").entering
+
+
+@pytest.mark.django_db
+def test_transitions_between_builds_an_unchecked_decision():
+    result = transitions_between(
+        TYPE_IRI,
+        prior=NOT_STARTED,
+        proposed=NOT_STARTED,
+        contexts_before=["a"],
+        contexts_after=["a"],
+        stored_pk=7,
+        actor="someone",
+    )
+    assert isinstance(result, WorkflowDecision)
+    assert isinstance(result, Transitions)
+    assert (result.type_iri, result.stored_pk, result.actor) == (
+        TYPE_IRI,
+        7,
+        "someone",
+    )
+    assert not result.checked
+    assert result.transitions["a"].prior_state == "not started"
+
+
+@pytest.mark.django_db
+def test_a_resource_stored_with_null_content_is_an_update_from_no_state():
+    from django.db.models import JSONField, Value
+
+    from scrud_django.models import Resource
+
+    register_test_types()
+    resource = ResourceRegistration.register(dict(NOT_STARTED), "todos")
+    # A row whose content is JSON null (only stored before 0.12.0) is an
+    # update from no state in the default context, as the workflow check
+    # decides it; it was reported as a create (__INITIALIZE__). So is
+    # content stored then that is not an object.
+    for stored in (Value(None, output_field=JSONField()), ["x"]):
+        Resource.objects.filter(pk=resource.pk).update(content=stored)
+        resource.content = dict(NOT_STARTED)
+        result = resource.get_transitions()
+        assert result.transitions[""] is None
+        assert type(result.errors[""]) is WorkflowTransitionError
+        assert result.stored_pk == resource.pk
+        assert result.prior is None
+    assert Resource.objects.get(pk=resource.pk).content == ["x"]
+    # A create (no row) is still a create.
+    created = Resource(resource_type=resource.resource_type, content=NOT_STARTED)
+    result = created.get_transitions()
+    assert result.transitions[""].transition == INITIALIZE
+    assert result.stored_pk is None

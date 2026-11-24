@@ -1,5 +1,140 @@
 # Change Log
 
+## 0.18.0
+
+This release reworks workflow decisions. A write's workflow check now
+produces a `WorkflowDecision` that the save receives as it was authorized,
+and `scrud_post_save` sends it. A context the write leaves is reported as
+the transition taken there. Superusers override a policy that would refuse
+their write. Workflow actions can run per transition and know who acted, and
+an opt-in transactional outbox records writes. Some of these changes are
+breaking: read Breaking changes before you upgrade.
+
+### Breaking changes
+
+* **A context a write leaves is reported as the transition authorized
+  there, with `leaving`, not `__LEAVE__` (#36).** On every path (checked
+  writes, saves that skip the check, own models), `transition_data` and
+  `transitions` report a context the write leaves as the ordinary transition
+  from the stored content under that context's policy (such as `submit` or
+  `__SAME_STATE__`), with `TransitionData.leaving` (and
+  `ContextDecision.leaving`) true. An unchecked save that leaves a context
+  whose stored content is in no state there now reports `None` with a logged
+  error, not `TransitionData(None, None, "__LEAVE__")`. `LEAVE` stays
+  importable but is never reported.
+* **`TransitionData` refuses inconsistent fields (#22).** It raises
+  `ValueError` for `__INITIALIZE__` with a `prior_state`, without a
+  `proposed_state` or with `leaving`; `__SAME_STATE__` with unequal or missing
+  states; a policy transition without both states; and any other name that
+  starts with `__`. `__LEAVE__` still constructs with no `proposed_state`.
+  `TransitionData` gained the keyword-only field `leaving`.
+* **Superusers override the workflow policy where it would refuse (#31).**
+  An active superuser's write that a context's policy would refuse (content
+  in no state or in several, a transition the policy lacks,
+  `restrict_update`, a create or move in in no initial state), in any
+  context the write concerns, including those it enters or leaves, is saved
+  (200 or 201, not 400) and reported there as the transition
+  `__OVERRIDE__`, with the overridden error in the `ContextDecision`; each
+  such context is logged as a WARNING on the `scrud_django.workflow` logger
+  when the save applies it. A superuser's valid write is still reported as
+  its real transition. JSON Schema validation, the RBAC checks and the
+  type's own hook checks (asked about `__OVERRIDE__`) still apply. Tests or
+  code that relied on a superuser being refused by a workflow policy must
+  use a user who is not a superuser. See the README's "Workflow policies".
+* **Stored content that is JSON null is an update from no state, not a
+  create.** A save of a resource whose stored row holds JSON null (or
+  non-object content stored before 0.12.0) is reported as an update from no
+  state in the default context where a policy applies (`transition_data` is
+  `None`, and a WARNING is logged), not as a create (`__INITIALIZE__`): a
+  receiver keyed on `__INITIALIZE__` no longer sees such a save.
+
+### Added
+
+* **`__OVERRIDE__` (#31).** `scrud_django.workflow.OVERRIDE`, a reserved
+  transition name (in `RESERVED_TRANSITIONS`) whose `TransitionData` takes
+  any states (each the one state the content is in, else `None`);
+  `ContextDecision.overridden` (the workflow error a superuser's write
+  overrode) and `ContextDecision.override`; `WorkflowDecision.overrides`
+  (the contexts overridden); `scrud_django.core.authz.is_workflow_superuser`.
+  See the README's "Workflow actions".
+
+* **`scrud_post_save` carries the workflow check's `decision`.** The new
+  keyword argument is a `scrud_django.core.decisions.WorkflowDecision`
+  (immutable: the type IRI, the stored pk, the actor, `checked`, snapshots of
+  the stored and proposed content, the contexts after and a `ContextDecision`
+  per context concerned). A checked API or UI write sends the decision the
+  check authorized as it was made, so its `transition_data`,
+  `transition_error` and `transitions` are no longer computed again (a policy
+  that changed between the check and the save does not change them); a save
+  that skipped the check, or whose content was not the checked content, sends
+  a computed decision with `checked` false. See the README's "Workflow
+  actions". The decision types live in the new `scrud_django.core.decisions`.
+
+* **`on_transition` workflow actions (#20).**
+  `SCRUD_WORKFLOW_ACTIONS[type_uri]["on_transition"]` maps a transition name
+  (the reserved `__INITIALIZE__`, `__SAME_STATE__` and `__OVERRIDE__`
+  included) to an action. Each distinct transition a write's decision took
+  runs its action once, on commit, after `on_save`, with `transition` and
+  `contexts` (where it was taken) added to the signal's keyword arguments. A
+  failure is logged as `on_transition[<name>]` and never fails the write. The
+  new check `scrud_django.E012` reports a malformed entry, and `E008` accepts
+  the `on_transition` key.
+
+* **`scrud_post_save` and `scrud_post_delete` carry the acting `user`;
+  `scrud_post_save` carries `prior_content` (#20).** `user` is the request's
+  authenticated user (`None` for an anonymous request or unknown actor);
+  `prior_content` is the stored content before the write (`None` for a
+  create). The new context manager `scrud_django.core.signals.acting_as(user)`
+  names the actor of server code's saves and deletes; an API or UI write
+  names the request's user for every save it makes, those of its receivers
+  and of the type's `after_write` and `after_destroy` hooks included. See
+  the README's "Workflow actions".
+
+* **The opt-in transactional outbox, `scrud_django.outbox` (#20).** Add the
+  app to `INSTALLED_APPS`, migrate, and set `SCRUD_OUTBOX["TYPES"]` (type URIs
+  or `"__all__"`) and `SCRUD_OUTBOX["DELIVER"]`: each write of a listed type
+  stores an `OutboxEvent` (transitions, actor, content and prior content) in
+  its own transaction. `manage.py scrud_outbox_send [--batch N]` and
+  `scrud_django.outbox.send_events(deliver, batch=100)` deliver the events at
+  least once, so `deliver` must be idempotent. The new checks
+  `scrud_django.W010` (installed with no `TYPES`) and `E013` (a malformed
+  `SCRUD_OUTBOX`) report its configuration.
+
+### Changed
+
+* `core.workflow.workflow_check`, `core.writes.validate_write` and
+  `core.transitions.transitions_between` return a `WorkflowDecision` (they
+  returned a list of (context, policy, `TransitionData`) and the
+  `Transitions` named tuple).
+* `scrud_django.core.transitions.Transitions` is an alias of
+  `WorkflowDecision` kept for compatibility, and no longer a `NamedTuple`: it
+  cannot be unpacked and has no `_replace`.
+* Overriding `ResourceMixin.get_transitions` or `get_transition_data` now
+  affects only saves without a matching checked decision (a save that
+  skipped the check, or whose content differs from the checked content).
+* `core.workflow.transition_for` is removed: use
+  `core.decisions.context_transition`.
+* `StoredPolicyReference` compares and hashes by the stored policy's
+  `(pk, etag)` (it compared by identity), so two reads of an unchanged
+  policy are equal.
+
+### Fixed
+
+* **A `scrud_workflow` grant no longer blocks moving a resource out of a
+  context without a workflow policy (#4).** Leaving such a context asks
+  nothing there, as the README says: a writer whose only grant there is
+  conditioned on `scrud_workflow` may now move the resource out (200), as a
+  writer with no grant there already could; it was a 403. The contexts a
+  write keeps or moves the resource into are asked as before, and a context
+  with a policy authorizes the transition taken there as it is left (#36).
+* **Workflow actions run for the writer whatever commits the transaction.**
+  `on_save`, `on_delete` and `on_transition` actions run, on commit, inside
+  `acting_as` for the actor named when the write was made, so the saves
+  they make report that user. Before, they saw the writer only when the
+  write's own transaction was the outermost one; under `ATOMIC_REQUESTS`, a
+  caller's `atomic` or a test's transaction they saw no one (or whoever was
+  named when the outer transaction committed).
+
 ## 0.17.0
 
 This release makes django-ninja the default front end: `scrud_django.urls`
