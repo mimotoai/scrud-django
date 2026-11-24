@@ -1,7 +1,8 @@
 # API versioning and mount location — design
 
 Date: 2026-11-23
-Status: builder-checked; awaiting owner approval
+Status: approved by the owner 2026-11-24
+Plan: `docs/superpowers/plans/2026-11-24-api-versioning-and-mount.md`
 Builds on:
 - scrud-django 0.18.0 (the workflow decisions rework: `WorkflowDecision`,
   `on_transition` actions, the acting user, the outbox, `__OVERRIDE__`);
