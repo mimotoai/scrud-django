@@ -58,7 +58,7 @@
 
 ### Task 0: Branch setup and commit the plan (controller, with the owner)
 
-- [ ] With the owner's go-ahead, fix the author identity on the spec commits. Configure the scrud identity for this repo, then rebase `docs/api-versioning-design` onto `origin/develop` (v0.18.0) with `--exec "git commit --amend --no-edit --reset-author"`. Check `git log --format='%an <%ae>' origin/develop..` shows the scrud identity only, then force-push the branch to `github`. It is a fork-only branch.
+- [ ] Rebase `docs/api-versioning-design` onto `origin/develop` (v0.18.0), keeping the commits' authors (the owner's decision, 2026-11-24), then force-push the branch to `github`. It is a fork-only branch.
 - [ ] Commit this plan and the spec's approved status line on that branch, then push to `github`.
 - [ ] `git switch -c feature/api-versioning` off it. Run `uv sync` and confirm the baseline `uv run pytest -q` is green before any task.
 
